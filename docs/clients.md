@@ -12,12 +12,13 @@ As of this survey:
 - REST: `/api/kernels`, `/api/kernelspecs`, `/api/sessions`, `/api/contents`,
   `/api/status`, `/api/me`, `/api/config`, `/api/events`, and JupyterLab's
   `/lab/api/*`. Websocket at `/api/kernels/{id}/channels`.
-- Auth: token in header or `?token=`. No login page or cookie yet (see the [roadmap](roadmap.md)).
+- Auth: token in header or `?token=`, or the login cookie a token or the
+  `/login` form sets, with `jupyter_server`'s `_xsrf` check.
 - CORS via `allow_origins`.
 - Kernel connection files are written to `JUPYTER_RUNTIME_DIR`, so a ZMQ
   client can attach to a kernel Ganymede launched.
 - Not served: classic Notebook / Notebook 7 pages (`/tree`, `/notebooks`),
-  `/login`, terminals, `/lsp/*`, collaboration rooms (`/api/collaboration`),
+  terminals, `/lsp/*`, collaboration rooms (`/api/collaboration`),
   nbconvert exporters, server extensions.
 
 So a client works today if it speaks REST/websocket with a token and needs no
@@ -43,7 +44,7 @@ There is no maintained native Android Jupyter client; people use a browser.
 | Client | Maintained | Talks to | Against Ganymede |
 |---|---|---|---|
 | **nteract** (originally backed by Netflix) | Yes, rewritten. Last commit 2026-10-16. Now a Tauri + React app with a Rust daemon (`runtimed`), Automerge sync and hosted "rooms"; Electron version is gone | Direct ZMQ to local kernels via `jupyter-zmq-client` / `jupyter-protocol`. No Jupyter server client | No. It replaces the server rather than using one. Relevant as prior art (same Rust crates Ganymede's notes list) and as a place to run cdp-kernel. |
-| JupyterLab Desktop | Yes, last commit 2026-10-14 | Bundles a Python env; can also open a remote server URL, which loads that server's JupyterLab page | Same as JupyterLab in a browser, so blocked on cookie login. No separate test needed. |
+| JupyterLab Desktop | Yes, last commit 2026-10-14 | Bundles a Python env; can also open a remote server URL, which loads that server's JupyterLab page | Same as JupyterLab in a browser, which works with cookie login. No separate test needed. |
 | PyCharm / DataSpell (JetBrains) | Yes, commercial | REST/websocket to a server by URL + token | Likely works; it is a token client like VS Code. Manual test only. |
 | Positron (Posit) | Yes, last commit 2026-10-17 | Its own kernel supervisor (Kallichore, Rust) over ZMQ; no Jupyter server client | No. Prior art for a Rust kernel supervisor. |
 | Google Colab "local runtime" | Extension last commit 2021-08 | Needs the `jupyter_http_over_ws` server extension (an HTTP-over-websocket proxy) | No, and not worth adding. |
@@ -57,7 +58,7 @@ There is no maintained native Android Jupyter client; people use a browser.
 | **emacs-jupyter** | Yes, last commit 2026-08-13 | ZMQ locally, or REST/websocket via `jupyter-server-*` commands | Should work over REST. |
 | Emacs IPython Notebook (EIN) | Slow, last commit 2025-12 | REST/websocket, `/api/contents` | Probably works; lower priority than emacs-jupyter. |
 | molten-nvim | Yes, last commit 2026-07-02 | ZMQ locally, or `:MoltenInit <server URL>` over REST/websocket | Should work over REST. |
-| jupynium.nvim | Yes, last commit 2026-09-20 | Drives a browser running Notebook/JupyterLab via Selenium | Needs the classic or Lab UI in a browser; inherits the cookie gap. |
+| jupynium.nvim | Yes, last commit 2026-09-20 | Drives a browser running Notebook/JupyterLab via Selenium | Needs the classic or Lab UI in a browser; Lab works, the classic UI isn't served. |
 | euporie | Yes, last commit 2026-10-07 | ZMQ only: local kernelspecs or `--connection-file` | Can attach to a Ganymede-launched kernel's connection file. |
 | jupyter console / qtconsole | Yes (2026-09 / 2026-03) | ZMQ, `--existing` connection file | Same as euporie. |
 
@@ -91,7 +92,7 @@ There is no maintained native Android Jupyter client; people use a browser.
    Ganymede, cross-origin with a token, and a candidate base for Ganymede's own UI.
    Can be automated with the existing Playwright harness.
 4. **Juno Connect.** The only iPad client. Expect gaps (classic `/tree` page,
-   login form). Needs an iPad; worth doing after cookie login lands.
+   login form). Needs an iPad; cookie login has landed.
 5. **jpterm** (`--no-collaborative`) as a cheap scripted CI client, and
    **`jupyter console --existing`** on a Ganymede-launched kernel to check that
    two clients can share one kernel.

@@ -5,7 +5,6 @@
 // anywidget and jupyterlab_widgets extensions (`ganymede lab install`).
 //
 // Usage: node widgets.mjs <base-url> <token> <kernel-name> <out.json>
-// Env: WS_TOKEN=1 appends the token to websocket URLs (see notes.md).
 import { chromium } from 'playwright';
 import fs from 'node:fs';
 
@@ -47,18 +46,6 @@ const consoleErrors = [];
 const extensions = new Set();
 const browser = await chromium.launch();
 const page = await browser.newPage();
-if (process.env.WS_TOKEN) {
-  await page.addInitScript(t => {
-    const WS = window.WebSocket;
-    window.WebSocket = function (url, protocols) {
-      const u = new URL(url, location.href);
-      u.searchParams.set('token', t);
-      return new WS(u.toString(), protocols);
-    };
-    Object.assign(window.WebSocket, WS);
-    window.WebSocket.prototype = WS.prototype;
-  }, token);
-}
 const failed = [];
 page.on('response', r => {
   if (r.status() >= 400) failed.push(`${r.status()} ${new URL(r.url()).pathname}`);

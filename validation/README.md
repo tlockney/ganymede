@@ -20,7 +20,7 @@ CODE='print(6*7)' STDIN_CODE='print(input())' SLEEP_CODE='import time; time.slee
 ```
 
 `jupyterlab.mjs` writes every request the page made to the output JSON,
-with a screenshot next to it. Set `WS_TOKEN=1` to append the token to
-websocket URLs until the server has cookie login. The `CODE`, `EXPECT`,
+with a screenshot next to it. It opens the page with `?token=` and relies
+on the login cookie for websockets, as a browser does. The `CODE`, `EXPECT`,
 `STDIN_CODE`, and `SLEEP_CODE` defaults are Python; set them for other
 kernels.

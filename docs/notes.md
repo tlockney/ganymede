@@ -623,6 +623,81 @@ data dir. `ganymede serve` without `--static-dir` serves the newest one, or
 - The network test (`tests/lab.rs`) runs only with `GANYMEDE_E2E_LAB=1`,
   which CI's e2e job sets on Linux and macOS; `cargo test` stays offline.
 
+## 2026-10-17, cookie login
+
+JupyterLab in a browser now runs notebooks against `ganymede serve`
+without the `WS_TOKEN=1` workaround: its websockets authenticate with the
+login cookie. Checked against jupyter_server 2.21.1 (tornado 6.5) and
+JupyterLab 4.6 in headless Chromium.
+
+What jupyter_server does, and Ganymede now matches (the server e2e
+transcript records each of these, cookie attributes included):
+
+- Any token-authenticated request that arrives without a valid login
+  cookie gets one, API calls included. The cookie is
+  `username-<host with non-alphanumerics as dashes>`, a tornado version 2
+  signed value holding a JSON user, HttpOnly, `Path=<base_url>`, expiring
+  in 30 days; signatures are accepted for 31.
+- A correct token wins over the cookie. An invalid cookie is answered 403
+  and cleared (`name=""` with a past expiry).
+- Pages redirect a browser with no login to `login?next=<url-encoded
+  path and query>`; the API answers `403 {"message": "Forbidden"}`.
+- `/login` renders a form with a hidden `_xsrf` field and sets the `_xsrf`
+  cookie if missing. The POST needs that field (403 without it), answers
+  401 for a wrong token, and 302s to `next` with the cookie. `next` must
+  be a path under `base_url`, else `base_url`. `/logout` clears the cookie
+  and, being a rendered page, also sets `_xsrf`.
+- XSRF applies to methods other than GET, HEAD, and OPTIONS that did not
+  send the token, and runs before the auth check, so an unauthenticated
+  POST gets the XSRF message, not "Forbidden". The token comes from
+  `_xsrf` (query or form), `X-XSRFToken`, or `X-CSRFToken`. Messages:
+  `'_xsrf' argument missing from POST`, `'_xsrf' argument has invalid
+  format`, `XSRF cookie does not match POST argument`. A cross-origin
+  request fails first with 404. `_xsrf` values are `2|<4-byte
+  mask>|<masked token>|<time>` and compare by the unmasked token; any
+  other numbered version is invalid, and an unnumbered value is a
+  version 1 token, hex or verbatim. `_xsrf` is not HttpOnly, because
+  JupyterLab reads it to set the header.
+- Cookie-authenticated API requests from another origin get 404, as
+  jupyter_server's `check_origin` does when the token was not sent.
+- The page config still carries the token, so JupyterLab's REST calls
+  are token-authenticated and need no XSRF header; only websockets and
+  `<img>` loads (kernelspec logos, which were 403 before) rely on the
+  cookie.
+
+Choices where Ganymede differs:
+
+- The cookie secret is persisted, as jupyter_server does, in
+  `jupyter_cookie_secret` in the runtime dir (owner-only), with the same
+  derivation (HMAC-SHA256 of the file with an empty message, the no-password
+  case). `cookie_secret_file` in the config moves it. Logins survive a
+  restart; changing the token does not log browsers out, also as in
+  jupyter_server. If the file can't be written, the key is per process.
+- The login cookie adds `SameSite=Lax`, which jupyter_server does not
+  send. The e2e transcript ignores that attribute.
+- A page URL with a correct `?token=` sets the cookie and redirects to the
+  same URL without the token. jupyter_server renders the page with the
+  token still in the address bar. API paths and websocket upgrades keep
+  the parameter.
+- `next` is never followed to another origin, even one in
+  `allow_origins`.
+- With auth disabled there is no XSRF check. jupyter_server still checks
+  unless `disable_check_xsrf` is set.
+- `/api/me` still reports one anonymous identity; the cookie's user is
+  not read back.
+
+Findings:
+
+- Python's cookie formatting quotes values containing `=` (base64
+  padding), so jupyter_server's `Set-Cookie` sometimes has a quoted value
+  and sometimes not. Browsers send the quotes back; the parser strips
+  them.
+- tornado's `_websocket_mask` needs a 4-byte mask, so a shorter mask in a
+  version 2 `_xsrf` is "invalid format", not a mismatch. The transcript
+  caught this.
+- `form_urlencoded::Serializer::new` with a target that already ends in
+  `?` adds a `&`; build the query separately.
+
 ## 2026-10-17, prebuilt JupyterLab extensions from wheels
 
 `ganymede lab extension install|list|remove` (#16) unpacks
