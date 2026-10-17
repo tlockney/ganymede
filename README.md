@@ -16,7 +16,34 @@ each deployment profile (server, desktop, iPad) uses.
 
 ## Status
 
-Design sketch. Nothing built.
+Code sketch. The protocol, kernel host, nbformat, and headless executor
+crates build, pass their tests, and drive ipykernel over real ZeroMQ. The
+TypeScript frontend package has the protocol plumbing and renderer seams
+with tests, but no app shell. No server crate yet.
+
+## Code
+
+Cargo workspace at this directory; `frontend/` is an npm package.
+
+| Crate | What it is | Tests |
+|---|---|---|
+| [`crates/jcore-protocol`](crates/jcore-protocol/) | Message envelope, typed content with unknown-field passthrough, ZMQ wire framing with HMAC, connection file, websocket v1 and legacy codecs. No I/O. | 12 |
+| [`crates/jcore-nbformat`](crates/jcore-nbformat/) | nbformat 4.5 reader and a writer byte-identical to Python `nbformat.write`. | 24 |
+| [`crates/jcore-kernel-host`](crates/jcore-kernel-host/) | Kernelspec discovery, transport seam (ZMQ and in-process), subprocess and attach provisioners, the session state machine, a fake kernel. | 9 |
+| [`crates/jcore-exec`](crates/jcore-exec/) | Headless executor: iopub messages to nbformat outputs, with `clear_output`, `display_id`, and stream merging. | 2 |
+| [`crates/jcore-cli`](crates/jcore-cli/) | `jcore kernelspec list`, `jcore run`, `jcore attach`, `jcore exec`. | |
+| [`frontend/`](frontend/) | Protocol types, websocket codecs, `ServerConnection` with injectable `fetch` and `WebSocket`, REST client, `KernelConnection`, renderer registry, ANSI and stream handling, widget manager interfaces. | 45 |
+
+Try it:
+
+```
+cargo test --workspace
+cargo run -p jcore-cli -- run --kernel fake "hello"
+cargo run -p jcore-cli -- kernelspec list
+cargo run -p jcore-cli -- run --kernel python3 "print(1+1)"   # any installed kernelspec
+cargo run -p jcore-cli -- exec notebook.ipynb -o out.ipynb
+cd frontend && npm install && npm test
+```
 
 ## Findings
 
@@ -43,6 +70,8 @@ Design sketch. Nothing built.
 
 ## Next
 
-Resolve the open questions in `notes.md`, read cdp-kernel's generated
-`kernel.json`, then start with a protocol crate and a CLI that runs one
-cell on cdp-kernel.
+- Server crate: REST API and the websocket bridge over `KernelSession`,
+  token auth, static assets. Validate with VS Code and JupyterLab.
+- Run the conformance checks against cdp-kernel (needs Node 24).
+- Contents crate, document model, and an app shell for the frontend.
+- CurveZMQ for the ZMQ transport; ipykernel 7 already advertises it.
