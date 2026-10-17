@@ -1,0 +1,15 @@
+[package]
+name = "ganymede-nbformat"
+description = "Jupyter notebook file format (nbformat v4): types, lenient reader, and a writer that matches Python nbformat byte for byte. No I/O beyond optional file helpers."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

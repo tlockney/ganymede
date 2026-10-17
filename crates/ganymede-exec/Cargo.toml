@@ -1,0 +1,19 @@
+[package]
+name = "ganymede-exec"
+description = "Headless notebook execution: run a notebook's code cells on a kernel session and store the outputs. The nbclient of this workspace."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ganymede-protocol = { path = "../ganymede-protocol" }
+ganymede-kernel-host = { path = "../ganymede-kernel-host" }
+ganymede-nbformat = { path = "../ganymede-nbformat" }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

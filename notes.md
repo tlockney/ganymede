@@ -251,3 +251,16 @@ the Rust project (scope line, section 2.6 weighing Rust UI frameworks,
 shared rendering code for any web-view UI. No code changes: the Rust
 crates never depended on a UI.
 
+
+## 2026-10-17, rename to ganymede-
+
+Renamed the crates from `jcore-*` to `ganymede-*`, the CLI binary from
+`jcore` to `ganymede`, the server binary from `jcore-server` to
+`ganymede-server`, and the npm package to `@ganymede/frontend`. Entries
+above this one keep the old names.
+
+Things learned:
+
+- The longer crate prefix pushes some `use` lines and signatures past
+  rustfmt's width, so a rename needs `cargo fmt` before CI's
+  `fmt --check` passes.

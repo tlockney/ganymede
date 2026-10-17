@@ -1,9 +1,9 @@
 {
-  "name": "@jupyter-core-rs/frontend",
+  "name": "@ganymede/frontend",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "TypeScript frontend sketch for jupyter-core-rs: protocol plumbing, ServerConnection shim, renderer and widget seams.",
+  "description": "TypeScript frontend sketch for Ganymede: protocol plumbing, ServerConnection shim, renderer and widget seams.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {

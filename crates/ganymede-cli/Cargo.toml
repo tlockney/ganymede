@@ -1,0 +1,23 @@
+[package]
+name = "ganymede-cli"
+description = "Command line for the host: list kernelspecs, run code on a kernel, attach to a running kernel."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ganymede"
+path = "src/main.rs"
+
+[dependencies]
+ganymede-protocol = { path = "../ganymede-protocol" }
+ganymede-kernel-host = { path = "../ganymede-kernel-host" }
+ganymede-nbformat = { path = "../ganymede-nbformat" }
+ganymede-exec = { path = "../ganymede-exec" }
+clap.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
