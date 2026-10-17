@@ -39,7 +39,8 @@ pub struct ServeArgs {
     /// Installed JupyterLab version to serve when --static-dir is not given.
     #[arg(long, value_name = "VERSION")]
     pub lab_version: Option<String>,
-    /// Extra directory of prebuilt JupyterLab extensions. Repeatable.
+    /// Extra directory of prebuilt JupyterLab extensions, searched before
+    /// those from `ganymede lab extension install`. Repeatable.
     #[arg(long)]
     pub labextensions_path: Vec<PathBuf>,
     /// Frontend state directory; see `config_dir` in the config file.
@@ -139,6 +140,7 @@ pub async fn run(cfg: Config) -> Result<()> {
     };
     let lab = static_dir.as_ref().and_then(|dir| {
         let mut ext_dirs = cfg.labextensions_paths.clone();
+        ext_dirs.extend(crate::lab::extensions_dir());
         ext_dirs.extend(
             ganymede_kernel_host::kernelspec::jupyter_data_dirs()
                 .into_iter()

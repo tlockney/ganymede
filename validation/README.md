@@ -10,6 +10,9 @@ npm install
 #   ganymede-server --static-dir <prefix>/share/jupyter/lab/static \
 #     --labextensions-path <prefix>/share/jupyter/labextensions --token tok
 node jupyterlab.mjs http://127.0.0.1:8888 tok <kernel> out/lab.json
+# A cdp-kernel widget (anywidget) rendering in JupyterLab, clicked, and
+# read back from the kernel. Needs `ganymede lab install`'s extensions.
+node widgets.mjs http://127.0.0.1:8888 tok cdp-node out/widgets.json
 # Notebook trust: HTML and JavaScript outputs run again when a saved
 # notebook is reopened, and not in a copy no client vouched for.
 WS_TOKEN=1 node trust.mjs http://127.0.0.1:8888 tok python3 out/trust.json

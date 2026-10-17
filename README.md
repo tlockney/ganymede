@@ -71,6 +71,7 @@ ganymede run --existing kernel-....json 'x'      # reuse it
 ganymede serve --root-dir . --port 8888          # point VS Code or JupyterLab at the URL
 ganymede lab install                             # JupyterLab's frontend, from PyPI, no Python
 ganymede serve                                   # ... then served at /lab
+ganymede lab extension install <package>         # a prebuilt extension from its PyPI wheel
 ganymede serve --static-dir <prefix>/share/jupyter/lab/static   # or one installed elsewhere
 ```
 
@@ -114,7 +115,7 @@ UIs that render in a web view, `docs/` and `site/` are the website, and
 | [`crates/ganymede-kernel-host`](crates/ganymede-kernel-host/) | Kernelspec discovery, transport seam (ZMQ and in-process), subprocess and attach provisioners, the session state machine, a fake kernel. | 10 |
 | [`crates/ganymede-exec`](crates/ganymede-exec/) | Notebook executor with nbclient's semantics: outputs, `clear_output(wait)`, `display_id` across cells, `language_info`, timings, widget state, allowed errors and tags, timeouts. | 4 |
 | [`crates/ganymede-engine`](crates/ganymede-engine/) | The library to embed. `Engine` finds kernelspecs and starts, attaches, or adopts kernels; `Kernel` executes with streaming output and stdin, completes, inspects, interrupts, restarts, runs notebooks. Features `zmq` and `subprocess` (default) drop out for wasm. | 3 |
-| [`crates/ganymede-cli`](crates/ganymede-cli/) | The `ganymede` command: `kernelspec list/paths/install/remove`, `run`, `console`, `execute`, `kernel`, `nb clear`, `trust`, `lab install/list/remove`, `serve`, `info`. | 33 |
+| [`crates/ganymede-cli`](crates/ganymede-cli/) | The `ganymede` command: `kernelspec list/paths/install/remove`, `run`, `console`, `execute`, `kernel`, `nb clear`, `trust`, `lab install/list/remove`, `lab extension install/list/remove`, `serve`, `info`. | 39 |
 | [`crates/ganymede-contents`](crates/ganymede-contents/) | Contents seam and filesystem implementation matching `jupyter_server`'s model: atomic writes, mtime conflicts, checkpoints, configurable checkpoint dir, path safety, notebook trust with Jupyter's signing key and `nbsignatures.db`. | 52 |
 | [`crates/ganymede-api`](crates/ganymede-api/) | Kernel and session managers, response models, per-client bridge with reply filtering, idle culling. No HTTP. | 6 |
 | [`crates/ganymede-server`](crates/ganymede-server/) | axum routes, token auth, origin check, websocket v1 and legacy framing, static assets, TOML config, JupyterLab's page and `/lab/api/*`, installed JupyterLab bundles, notebook trust. | 16 |
@@ -132,7 +133,7 @@ kernels and Jupyter are installed, and skip what is missing:
 | `GANYMEDE_E2E_JUPYTER=/path/to/jupyter` | The reference `jupyter` (needs `nbclient` and `jupyter_server`). Defaults to `PATH`. |
 | `GANYMEDE_E2E_REQUIRE_JUPYTER=1` | Fail instead of skipping when it is missing. |
 | `E2E_DUMP=1` | Print both server transcripts. |
-| `GANYMEDE_E2E_LAB=1` | Run `lab.rs`, which downloads JupyterLab from PyPI (about 17 MB). |
+| `GANYMEDE_E2E_LAB=1` | Run `lab.rs`, which downloads JupyterLab and the widget extensions from PyPI (about 18 MB). |
 
 - `kernels.rs`: the same scenarios on every kernel, through the engine and
   the CLI: kernel_info passthrough, results, streams, errors, stdin,
@@ -146,7 +147,8 @@ kernels and Jupyter are installed, and skip what is missing:
   and `ganymede serve`, compared as transcripts, including which cells come
   back `trusted` after each kind of save and after `POST .../trust`.
 - `lab.rs`: `ganymede lab install` from PyPI, then `ganymede serve`
-  answering `/lab` and `/lab/api/settings` from the installed bundle.
+  answering `/lab` and `/lab/api/settings` from the installed bundle and
+  the default widget extensions.
 - [`e2e/wasm-smoke/`](e2e/wasm-smoke/): the engine built for
   `wasm32-wasip1`, running a notebook on the fake kernel under Node's WASI.
 
