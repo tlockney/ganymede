@@ -41,3 +41,8 @@ but kernels can't connect. Cookie login is the next step on the roadmap.
 JupyterLab server extensions, terminals, and the language server endpoints
 (`/lsp/*`) are Python and are not implemented. `/api/nbconvert` reports no
 exporters.
+
+## Other clients
+
+[Other Jupyter clients](clients.md) covers mobile, desktop, editor,
+embeddable, and headless clients, and which of them should work.

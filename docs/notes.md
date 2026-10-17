@@ -546,3 +546,22 @@ requests (so a dead link fails the PR) and deployed to GitHub Pages from
   an `<img>` they follow the system setting, not the docs' theme switch.
 - GitHub Pages must be enabled with "GitHub Actions" as the source before
   the first deploy.
+
+## 2026-10-17, survey of other Jupyter clients
+
+[Other Jupyter clients](clients.md) lists frontends beyond JupyterLab and
+VS Code and whether each could run against Ganymede.
+
+- Most non-browser clients only need token auth, `/api/kernelspecs`,
+  `/api/kernels` and the channels websocket, which Ganymede already serves.
+  Zed's REPL is one: it reads `JUPYTER_SERVER` and `JUPYTER_TOKEN` and sends
+  the token in the websocket query.
+- Clients that load server HTML pages (Juno Connect wants the classic
+  `/tree` page, jupynium drives a browser UI) are blocked on pages Ganymede
+  doesn't serve, not on the API.
+- nteract is now a Tauri app on a Rust daemon that talks ZMQ to local
+  kernels; it has no Jupyter server client. Its design records are useful
+  for our own UI.
+- papermill launches kernels itself; to drive Ganymede it needs an engine
+  using `jupyter_server`'s `GatewayKernelManager`, which also exercises
+  Ganymede as a kernel gateway.
