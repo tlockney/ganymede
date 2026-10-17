@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 456" width="860" height="456" role="img" aria-label="The reference Jupyter stack: frontends call jupyter_server over HTTP and websockets; jupyter_server, a Python process built on jupyter_client, nbformat and traitlets, launches kernels from kernelspecs and talks to them over ZeroMQ.">
+  <title>The reference Jupyter stack: frontends call jupyter_server over HTTP and websockets; jupyter_server, a Python process built on jupyter_client, nbformat and traitlets, launches kernels from kernelspecs and talks to them over ZeroMQ.</title>
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f6f7f9; stroke: #9aa3ad; stroke-width: 1.2; }
+    .inner { fill: #ffffff; stroke: #b8c0c8; stroke-width: 1; }
+    .acc { fill: #e8f0fe; stroke: #3b6fd8; stroke-width: 1.4; }
+    .warn { fill: #fdf0e6; stroke: #c96a1b; stroke-width: 1.4; }
+    .ok { fill: #e7f5ec; stroke: #2f8a4c; stroke-width: 1.4; }
+    .dash { stroke-dasharray: 5 4; }
+    .t { font: 600 14px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1f2328; }
+    .s { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #57606a; }
+    .m { font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f2328; }
+    .l { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #57606a; }
+    .ln { stroke: #6e7781; stroke-width: 1.4; fill: none; }
+    .ah { fill: #6e7781; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #1b1b1f; }
+      .box { fill: #25262b; stroke: #5c6370; }
+      .inner { fill: #1b1b1f; stroke: #4a505a; }
+      .acc { fill: #1e2a44; stroke: #6b9bff; }
+      .warn { fill: #3a2a1c; stroke: #e0904a; }
+      .ok { fill: #1d3326; stroke: #5cc27e; }
+      .t, .m { fill: #e6e8eb; }
+      .s, .l { fill: #a0a7b0; }
+      .ln { stroke: #a0a7b0; }
+      .ah { fill: #a0a7b0; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="860" height="456" rx="8"/>
+  <rect class="box" x="20" y="20" width="820" height="80" rx="6"/>
+  <text class="t" x="36" y="42">Frontends</text>
+  <rect class="inner" x="40" y="54" width="180" height="32" rx="4"/>
+  <text class="m" x="50" y="74">JupyterLab</text>
+  <text class="l" x="210" y="74" text-anchor="end">browser</text>
+  <rect class="inner" x="240" y="54" width="180" height="32" rx="4"/>
+  <text class="m" x="250" y="74">Notebook 7</text>
+  <text class="l" x="410" y="74" text-anchor="end">browser</text>
+  <rect class="inner" x="440" y="54" width="180" height="32" rx="4"/>
+  <text class="m" x="450" y="74">VS Code</text>
+  <text class="l" x="610" y="74" text-anchor="end">extension</text>
+  <rect class="inner" x="640" y="54" width="180" height="32" rx="4"/>
+  <text class="m" x="650" y="74">Juno Connect</text>
+  <text class="l" x="810" y="74" text-anchor="end">iPad</text>
+  <line class="ln" x1="430" y1="102" x2="430" y2="138" marker-start="url(#a)" marker-end="url(#a)"/>
+  <text class="l" x="444" y="124">HTTP REST + websocket: /api/kernels, /api/sessions, /api/contents, …</text>
+  <rect class="warn" x="20" y="140" width="820" height="176" rx="6"/>
+  <text class="t" x="36" y="162">jupyter_server</text>
+  <text class="s" x="36" y="180">One Python process. Everything in this box needs a Python environment.</text>
+  <rect class="inner" x="40" y="192" width="180" height="44" rx="4"/>
+  <text class="m" x="50" y="210">tornado handlers</text>
+  <text class="l" x="50" y="226">REST, websocket bridge</text>
+  <rect class="inner" x="240" y="192" width="180" height="44" rx="4"/>
+  <text class="m" x="250" y="210">auth</text>
+  <text class="l" x="250" y="226">token, cookie, XSRF</text>
+  <rect class="inner" x="440" y="192" width="180" height="44" rx="4"/>
+  <text class="m" x="450" y="210">contents manager</text>
+  <text class="l" x="450" y="226">files, checkpoints</text>
+  <rect class="inner" x="640" y="192" width="180" height="44" rx="4"/>
+  <text class="m" x="650" y="210">session manager</text>
+  <text class="l" x="650" y="226">notebook path ↔ kernel</text>
+  <rect class="inner" x="40" y="248" width="180" height="44" rx="4"/>
+  <text class="m" x="50" y="266">jupyter_client</text>
+  <text class="l" x="50" y="282">kernelspecs, provisioners</text>
+  <rect class="inner" x="240" y="248" width="180" height="44" rx="4"/>
+  <text class="m" x="250" y="266">kernel manager</text>
+  <text class="l" x="250" y="282">launch, restart, interrupt</text>
+  <rect class="inner" x="440" y="248" width="180" height="44" rx="4"/>
+  <text class="m" x="450" y="266">nbformat</text>
+  <text class="l" x="450" y="282">read, validate, write</text>
+  <rect class="inner" x="640" y="248" width="180" height="44" rx="4"/>
+  <text class="m" x="650" y="266">traitlets</text>
+  <text class="l" x="650" y="282">config, extensions</text>
+  <line class="ln" x1="430" y1="318" x2="430" y2="354" marker-start="url(#a)" marker-end="url(#a)"/>
+  <text class="l" x="444" y="340">ZeroMQ: shell, iopub, stdin, control, heartbeat</text>
+  <rect class="box" x="20" y="356" width="820" height="80" rx="6"/>
+  <text class="t" x="36" y="378">Kernels: one subprocess each, from a kernelspec</text>
+  <rect class="inner" x="40" y="390" width="180" height="32" rx="4"/>
+  <text class="m" x="50" y="410">ipykernel</text>
+  <text class="l" x="210" y="410" text-anchor="end">Python</text>
+  <rect class="inner" x="240" y="390" width="180" height="32" rx="4"/>
+  <text class="m" x="250" y="410">cdp-kernel</text>
+  <text class="l" x="410" y="410" text-anchor="end">TypeScript</text>
+  <rect class="inner" x="440" y="390" width="180" height="32" rx="4"/>
+  <text class="m" x="450" y="410">IRkernel</text>
+  <text class="l" x="610" y="410" text-anchor="end">R</text>
+  <rect class="inner" x="640" y="390" width="180" height="32" rx="4"/>
+  <text class="m" x="650" y="410">others</text>
+  <text class="l" x="810" y="410" text-anchor="end">any kernelspec</text>
+</svg>

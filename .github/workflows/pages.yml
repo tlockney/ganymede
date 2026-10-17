@@ -1,0 +1,59 @@
+name: pages
+on:
+  push:
+    branches: [main]
+    paths: [site/**, docs/**, .github/workflows/pages.yml]
+  # Builds without deploying, so a broken docs page or dead link fails the PR
+  # rather than the deploy.
+  pull_request:
+    paths: [site/**, docs/**, .github/workflows/pages.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  # The landing page is plain HTML and CSS in site/, served at /. The docs
+  # are Markdown in docs/, built by VitePress into /docs/
+  # (docs/.vitepress/config.mts). The design is cdp-kernel.org's.
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # Where the site is served; config.mts derives the docs' base path
+      # from it. Change it when the repository gets a custom domain.
+      SITE_URL: https://tlockney.github.io/ganymede
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - run: npm ci
+        working-directory: docs
+      - run: npm run build
+        working-directory: docs
+      - name: assemble
+        run: |
+          mkdir -p "$RUNNER_TEMP/site"
+          cp -R site/. "$RUNNER_TEMP/site/"
+          cp -R docs/.vitepress/dist "$RUNNER_TEMP/site/docs"
+          cp -R docs/images "$RUNNER_TEMP/site/images"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ runner.temp }}/site
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - id: deployment
+        uses: actions/deploy-pages@v4

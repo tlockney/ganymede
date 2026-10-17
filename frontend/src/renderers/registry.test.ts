@@ -12,7 +12,7 @@ function registryWith(...mimes: string[]): RendererRegistry {
   return registry;
 }
 
-test("default order matches sketch.md 2.6", () => {
+test("default order matches docs/ui.md", () => {
   assert.deepEqual(DEFAULT_MIME_ORDER, [
     WIDGET_VIEW_MIME,
     "text/html",

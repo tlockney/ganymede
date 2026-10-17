@@ -1,0 +1,56 @@
+# Roadmap
+
+What is done, and what comes next, in order. Each step lands as its own
+pull request with a GitHub issue, and records what it learned in the
+[development log](notes.md).
+
+## Done
+
+- **Core crates.** Protocol, kernel host, nbformat, executor, contents,
+  API, and server, with the `ganymede` CLI and the embeddable
+  `ganymede-engine`.
+- **Parity with Jupyter.** An end-to-end suite runs cdp-kernel and
+  ipykernel through Ganymede and compares the results with
+  `jupyter execute` and `jupyter server`.
+- **Existing frontends.** The VS Code Jupyter extension's remote-server
+  flow passes. JupyterLab's own bundle is served at `/lab` with its
+  `/lab/api/*` endpoints.
+- **Portability.** The engine builds for iOS, Android, and wasm, and runs
+  a notebook inside wasm under WASI.
+- **Releases.** A `vX.Y.Z` tag builds and publishes binaries for Linux,
+  macOS, and Windows.
+
+## Next
+
+1. **Cookie login** for browser frontends, so JupyterLab's websockets
+   authenticate.
+2. **cdp-kernel conformance** on Node 24: launch, execute, interrupt,
+   restart, comms, and stdin, the same scenarios as ipykernel, with
+   kernelspec metadata and `kernel_info_reply` extras passed through
+   untouched.
+3. **Kernel lifetime** for the iPad: kernels survive client disconnects,
+   clients reattach by kernel id, and idle culling is configurable.
+4. **Document model.** The file is the source of truth and is reloaded
+   when it changes on disk (iCloud). A `yrs` CRDT layer is optional and
+   later.
+5. **A first UI of our own**, outside the core: a Swift shell with a web
+   view for iPadOS and macOS, running a TypeScript notebook app, with the
+   Rust core embedded in the same process.
+6. **CurveZMQ** for the ZeroMQ transport. ipykernel 7 already advertises
+   it.
+
+## Open
+
+- A trust store, so cells come back `trusted` as from `jupyter_server`.
+- Restarting a kernel automatically when it crashes.
+- A runtime seam for the browser (timers and `spawn` on
+  `wasm-bindgen-futures`) and a websocket or `postMessage` transport, so
+  the engine runs in a page and not only under WASI.
+- Windows interrupts, which ipykernel does through a named event rather
+  than a signal.
+
+## Not planned
+
+JupyterLab and `jupyter_server` extensions, nbconvert export, and the
+JupyterHub single-user contract. See [Replacing Python](python-free.md)
+for why.

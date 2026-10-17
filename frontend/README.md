@@ -1,7 +1,8 @@
 # frontend
 
 TypeScript side of Ganymede: the module seams and the protocol
-plumbing from sketch.md sections 2.6, 7.2 and 7.3. No editor, no widget
+plumbing described in [`docs/ui.md`](../docs/ui.md) and the seams in
+[`docs/architecture.md`](../docs/architecture.md). No editor, no widget
 implementation, no UI framework yet. The layout mirrors the Rust crates.
 
 ## Run
