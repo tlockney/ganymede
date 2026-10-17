@@ -5,7 +5,7 @@ use crate::config::Config;
 use crate::AppState;
 use anyhow::{Context, Result};
 use ganymede_api::{KernelManager, KernelManagerConfig, SessionManager, ZmqTransportFactory};
-use ganymede_contents::{FsContents, FsOptions};
+use ganymede_contents::{FsContents, FsOptions, Notary};
 use ganymede_kernel_host::{FsKernelspecs, SubprocessProvisioner};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,8 +27,18 @@ pub struct ServeArgs {
     pub token: Option<String>,
     #[arg(long)]
     pub root_dir: Option<PathBuf>,
+    /// Directory with the notebook-signing key and trusted signatures;
+    /// see `notary_dir` in the config file.
+    #[arg(long)]
+    pub notary_dir: Option<PathBuf>,
+    /// Static assets to serve; JupyterLab's `share/jupyter/lab/static`
+    /// serves it at `/lab`. Defaults to the newest installed with
+    /// `ganymede lab install`.
     #[arg(long)]
     pub static_dir: Option<PathBuf>,
+    /// Installed JupyterLab version to serve when --static-dir is not given.
+    #[arg(long, value_name = "VERSION")]
+    pub lab_version: Option<String>,
     /// Extra directory of prebuilt JupyterLab extensions. Repeatable.
     #[arg(long)]
     pub labextensions_path: Vec<PathBuf>,
@@ -65,8 +75,14 @@ impl ServeArgs {
         if let Some(v) = cli.root_dir {
             cfg.root_dir = v;
         }
+        if let Some(v) = cli.notary_dir {
+            cfg.notary_dir = Some(v);
+        }
         if let Some(v) = cli.static_dir {
             cfg.static_dir = Some(v);
+        }
+        if let Some(v) = cli.lab_version {
+            cfg.lab_version = Some(v);
         }
         if let Some(v) = cli.default_kernel {
             cfg.default_kernel = Some(v);
@@ -82,6 +98,20 @@ impl ServeArgs {
 
         Ok(cfg)
     }
+}
+
+/// The notary for `dir`, else for the Jupyter data dir. When neither can
+/// hold a key, notebooks are signed for this process only.
+pub fn notary(dir: Option<PathBuf>) -> Notary {
+    let dir = dir.or_else(ganymede_kernel_host::kernelspec::jupyter_user_data_dir);
+    let opened = match &dir {
+        Some(d) => Notary::open(d).map_err(|e| format!("{}: {e}", d.display())),
+        None => Err("no Jupyter data dir".to_string()),
+    };
+    opened.unwrap_or_else(|e| {
+        tracing::warn!("notebook trust is per-process: {e}");
+        Notary::ephemeral().expect("the OS provides random bytes")
+    })
 }
 
 /// Serve until Ctrl-C, then shut down every kernel. Prints the URL, with
@@ -103,7 +133,11 @@ pub async fn run(cfg: Config) -> Result<()> {
         .config_dir
         .clone()
         .unwrap_or_else(ganymede_kernel_host::kernelspec::jupyter_config_dir);
-    let lab = cfg.static_dir.as_ref().and_then(|dir| {
+    let static_dir = match &cfg.static_dir {
+        Some(d) => Some(d.clone()),
+        None => installed_lab(cfg.lab_version.as_deref())?,
+    };
+    let lab = static_dir.as_ref().and_then(|dir| {
         let mut ext_dirs = cfg.labextensions_paths.clone();
         ext_dirs.extend(
             ganymede_kernel_host::kernelspec::jupyter_data_dirs()
@@ -141,27 +175,27 @@ pub async fn run(cfg: Config) -> Result<()> {
         &root_dir,
         FsOptions {
             checkpoint_dir: cfg.checkpoint_dir.clone(),
+            notary: Some(Arc::new(notary(cfg.notary_dir.clone()))),
             ..Default::default()
         },
     )?);
+    let cookie_secret_file = cfg.cookie_secret_file.clone().unwrap_or_else(|| {
+        ganymede_kernel_host::kernelspec::jupyter_runtime_dir().join("jupyter_cookie_secret")
+    });
     let state = AppState {
         kernels: kernels.clone(),
         sessions,
         contents,
         token: token.clone(),
+        cookie_secret: crate::auth::load_cookie_secret(&cookie_secret_file).into(),
         allow_origins: cfg.allow_origins.clone(),
         base_url: base_url.clone(),
         config_dir,
+        static_dir: if lab.is_some() { None } else { static_dir },
         lab: lab.map(Arc::new),
     };
 
-    let serves_lab = state.lab.is_some();
     let mut app = crate::build_router(state);
-    if let (Some(dir), false) = (&cfg.static_dir, serves_lab) {
-        app = app.fallback_service(
-            tower_http::services::ServeDir::new(dir).append_index_html_on_directories(true),
-        );
-    }
     if !base.is_empty() {
         app = axum::Router::new().nest(&base, app);
     }
@@ -199,6 +233,31 @@ pub async fn run(cfg: Config) -> Result<()> {
         .await?;
     kernels.shutdown_all().await;
     Ok(())
+}
+
+/// The static dir of the JupyterLab installed by `ganymede lab install`:
+/// `version` if given, which must be installed, else the newest. `None`
+/// when none is installed, so only the API is served.
+fn installed_lab(version: Option<&str>) -> Result<Option<PathBuf>> {
+    let installs = crate::lab::installs_dir()
+        .map(|d| crate::lab::installed(&d))
+        .unwrap_or_default();
+    match version {
+        Some(v) => match installs.iter().find(|i| i.version == v) {
+            Some(i) => Ok(Some(i.static_dir())),
+            None => anyhow::bail!(
+                "JupyterLab {v} is not installed; run `ganymede lab install --version {v}`"
+            ),
+        },
+        None => {
+            if installs.is_empty() {
+                tracing::info!(
+                    "no JupyterLab installed; serving the API only (`ganymede lab install` adds it)"
+                );
+            }
+            Ok(installs.first().map(crate::lab::Installed::static_dir))
+        }
+    }
 }
 
 /// Ctrl-C, or SIGTERM where there is one, so a service manager's stop

@@ -18,6 +18,7 @@ pre-release-hook = ["sh", "-c", "cd \"$WORKSPACE_ROOT\" && if [ \"$DRY_RUN\" = t
 [dependencies]
 ganymede-engine = { path = "../ganymede-engine" }
 ganymede-server = { path = "../ganymede-server" }
+ganymede-contents = { path = "../ganymede-contents", features = ["sqlite"] }
 clap.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "signal"] }
 serde_json.workspace = true
@@ -25,6 +26,13 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 rustyline = "19"
+sha2.workspace = true
+tempfile.workspace = true
+hex.workspace = true
+# `ganymede lab install`: HTTPS (rustls, platform trust store, proxy from
+# the environment) and the wheel's zip format, all in Rust.
+ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier", "json"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 tempfile.workspace = true

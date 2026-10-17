@@ -26,12 +26,14 @@
 mod fs;
 mod model;
 mod paths;
+pub mod trust;
 
 use async_trait::async_trait;
 
 pub use fs::{FsContents, FsOptions, CHECKPOINT_ID, DEFAULT_CHECKPOINT_DIR};
 pub use model::{Checkpoint, ContentType, ContentsModel, Format, GetOptions, SaveRequest};
 pub use paths::normalize_api_path;
+pub use trust::Notary;
 
 /// Errors from a [`Contents`] implementation. [`Error::status`] gives the
 /// HTTP status `jupyter_server` would answer with, so the HTTP layer needs no
@@ -154,6 +156,17 @@ pub trait Contents: Send + Sync {
 
     /// `DELETE /api/contents/{path}/checkpoints/{id}`.
     async fn delete_checkpoint(&self, path: &str, checkpoint_id: &str) -> Result<()>;
+
+    /// Trust a notebook's output whatever it contains, as the user asked
+    /// for it; `POST /api/contents/{path}/trust`. See [`trust`].
+    ///
+    /// The default refuses with `BadRequest`, for implementations without
+    /// a trust store.
+    async fn trust(&self, path: &str) -> Result<()> {
+        Err(Error::BadRequest(format!(
+            "notebook trust is not supported here: {path}"
+        )))
+    }
 }
 
 #[cfg(test)]

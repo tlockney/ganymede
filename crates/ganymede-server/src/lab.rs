@@ -12,7 +12,7 @@
 use crate::routes::HttpError;
 use crate::AppState;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -275,13 +275,19 @@ impl Lab {
 }
 
 /// Routes for the page, assets, and `/lab/api/*`. Assets are public, as
-/// in `jupyter_server`; the page and the API go through `auth`.
+/// in `jupyter_server`; the page sends a browser without a login to
+/// `/login`, and the API answers 403.
 pub fn router(state: AppState, lab: &Lab) -> Router {
-    let authed = Router::new()
+    let pages = Router::new()
         .route("/lab", get(page_root))
         .route("/lab/tree", get(page_root))
         .route("/lab/tree/{*path}", get(page_tree))
         .route("/lab/workspaces/{*name}", get(page_workspace))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::page,
+        ));
+    let api = Router::new()
         .route("/lab/api/settings", get(list_settings))
         .route(
             "/lab/api/settings/{*id}",
@@ -301,7 +307,7 @@ pub fn router(state: AppState, lab: &Lab) -> Router {
         .route("/lab/api/licenses", get(licenses))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
-            crate::routes::auth,
+            crate::auth::api,
         ));
     let mut public =
         Router::new()
@@ -319,7 +325,7 @@ pub fn router(state: AppState, lab: &Lab) -> Router {
             ServeDir::new(&e.dir),
         );
     }
-    authed.merge(public).with_state(state)
+    pages.merge(api).merge(public).with_state(state)
 }
 
 fn lab_of(s: &AppState) -> HttpResult<&Lab> {
@@ -332,34 +338,42 @@ type HttpResult<T> = std::result::Result<T, HttpError>;
 
 // ----- page -----------------------------------------------------------------
 
-async fn page_root(State(s): State<AppState>) -> HttpResult<Html<String>> {
-    page(&s, "", "default")
+async fn page_root(State(s): State<AppState>, headers: HeaderMap) -> HttpResult<Response> {
+    page(&s, &headers, "", "default")
 }
 
 async fn page_tree(
     State(s): State<AppState>,
     Path(path): Path<String>,
-) -> HttpResult<Html<String>> {
-    page(&s, &path, "default")
+    headers: HeaderMap,
+) -> HttpResult<Response> {
+    page(&s, &headers, &path, "default")
 }
 
 async fn page_workspace(
     State(s): State<AppState>,
     Path(name): Path<String>,
-) -> HttpResult<Html<String>> {
+    headers: HeaderMap,
+) -> HttpResult<Response> {
     // `/lab/workspaces/{name}/tree/{path}` opens a path in a workspace.
     let (name, tree) = name.split_once("/tree/").unwrap_or((&name, ""));
-    page(&s, tree, name)
+    page(&s, &headers, tree, name)
 }
 
-fn page(s: &AppState, tree_path: &str, workspace: &str) -> HttpResult<Html<String>> {
+/// The page, with an `_xsrf` cookie when the browser has none, as
+/// `jupyter_server` sets it on every page it renders.
+fn page(
+    s: &AppState,
+    headers: &HeaderMap,
+    tree_path: &str,
+    workspace: &str,
+) -> HttpResult<Response> {
     let lab = lab_of(s)?;
-    Ok(Html(lab.render_page(
-        &s.base_url,
-        s.token.as_deref(),
-        tree_path,
-        workspace,
-    )))
+    let html = Html(lab.render_page(&s.base_url, s.token.as_deref(), tree_path, workspace));
+    Ok(match crate::auth::xsrf_cookie(s, headers) {
+        Some(cookie) => ([(header::SET_COOKIE, cookie)], html).into_response(),
+        None => html.into_response(),
+    })
 }
 
 // ----- themes ---------------------------------------------------------------
@@ -716,6 +730,69 @@ pub fn find_extensions(dirs: &[PathBuf]) -> Vec<FederatedExtension> {
     out
 }
 
+// ----- installed bundles ------------------------------------------------
+
+/// Where `ganymede lab install` keeps JupyterLab bundles, one directory per
+/// version holding `static/`, `schemas/`, `themes/`, and `LICENSE`:
+/// `$GANYMEDE_DATA_DIR/lab`, else `ganymede/lab` under the platform's local
+/// data dir (`$XDG_DATA_HOME` or `~/.local/share` on Linux,
+/// `~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on Windows).
+pub fn installs_dir() -> Option<PathBuf> {
+    match std::env::var_os("GANYMEDE_DATA_DIR") {
+        Some(d) if !d.is_empty() => Some(PathBuf::from(d).join("lab")),
+        _ => dirs::data_local_dir().map(|d| d.join("ganymede").join("lab")),
+    }
+}
+
+/// A JupyterLab bundle installed under [`installs_dir`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Installed {
+    pub version: String,
+    /// The application directory: `static/`, `schemas/`, `themes/`.
+    pub dir: PathBuf,
+}
+
+impl Installed {
+    pub fn static_dir(&self) -> PathBuf {
+        self.dir.join("static")
+    }
+}
+
+/// Bundles under `root`, newest version first. A directory counts once its
+/// `static/index.html` exists; installs are renamed into place whole, and
+/// names starting with `.` (unfinished installs) are skipped.
+pub fn installed(root: &FsPath) -> Vec<Installed> {
+    let mut out: Vec<Installed> = read_dir_sorted(root)
+        .into_iter()
+        .filter(|d| !file_name(d).starts_with('.') && d.join("static/index.html").is_file())
+        .map(|dir| Installed {
+            version: file_name(&dir),
+            dir,
+        })
+        .collect();
+    out.sort_by(|a, b| compare_versions(&b.version, &a.version));
+    out
+}
+
+/// Orders versions such as `4.6.4`, `4.10.0`, and `4.7.0a2`: numeric
+/// components compare as numbers, and a pre-release sorts before the
+/// release it leads up to.
+pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    fn key(v: &str) -> (Vec<u64>, bool, &str) {
+        let split = v
+            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .unwrap_or(v.len());
+        let (nums, pre) = v.split_at(split);
+        let nums = nums
+            .split('.')
+            .filter(|p| !p.is_empty())
+            .map(|p| p.parse().unwrap_or(0))
+            .collect();
+        (nums, pre.is_empty(), pre)
+    }
+    key(a).cmp(&key(b))
+}
+
 /// Renders the packaged `index.html`, which is a Jinja template, with the
 /// handful of constructs it uses: `{# #}` comments, `{% set %}`,
 /// `{% block %}`, `{% if custom_css %}`, and `{{ }}` for the page config,
@@ -794,7 +871,7 @@ fn script_safe_json(v: &Value) -> String {
         .replace('\'', "\\u0027")
 }
 
-fn html_escape(s: &str) -> String {
+pub(crate) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -818,6 +895,34 @@ mod tests {
             html,
             "<head> <script id=\"jupyter-config-data\">{\"fullStaticUrl\":\"/b/static/lab\",\"x\":\"\\u003c/script\\u003e\"}</script><link href=\"/b/static/f.ico\"> <script src=\"/b/static/lab/main.js\"></script>{}</head>"
         );
+    }
+
+    #[test]
+    fn orders_versions_numerically_with_prereleases_first() {
+        let mut v = vec!["4.7.0a2", "4.10.0", "4.6.4", "4.7.0", "4.7.0rc1", "4.6.10"];
+        v.sort_by(|a, b| compare_versions(a, b));
+        assert_eq!(
+            v,
+            ["4.6.4", "4.6.10", "4.7.0a2", "4.7.0rc1", "4.7.0", "4.10.0"]
+        );
+    }
+
+    #[test]
+    fn lists_complete_installs_newest_first() {
+        let root = tempfile::tempdir().unwrap();
+        for v in ["4.6.4", "4.10.0", ".4.11.0.partial", "4.9.0"] {
+            let s = root.path().join(v).join("static");
+            std::fs::create_dir_all(&s).unwrap();
+            if v != "4.9.0" {
+                std::fs::write(s.join("index.html"), "").unwrap();
+            }
+        }
+        let found: Vec<String> = installed(root.path())
+            .into_iter()
+            .map(|i| i.version)
+            .collect();
+        assert_eq!(found, ["4.10.0", "4.6.4"]);
+        assert!(installed(&root.path().join("missing")).is_empty());
     }
 
     #[test]

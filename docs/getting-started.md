@@ -51,6 +51,21 @@ Execution stops at the first error unless you pass `--allow-errors`.
 `ganymede nb clear notebook.ipynb --inplace` removes outputs without a
 kernel.
 
+## Trust a notebook
+
+JupyterLab sanitizes HTML and skips JavaScript outputs of a notebook it
+did not see produced, so a notebook from elsewhere shows them only once
+it is trusted. The server trusts a notebook when you save it with outputs
+from this session; for one you got another way:
+
+```sh
+ganymede trust notebook.ipynb                    # like `jupyter trust`
+```
+
+Signatures are kept where Jupyter keeps them (`notebook_secret` and
+`nbsignatures.db` in the Jupyter data dir), so a notebook trusted by one
+is trusted by the other. `--reset` forgets every signature.
+
 ## Keep a kernel running
 
 `ganymede kernel` starts a kernel and leaves it running until Ctrl-C,
@@ -84,7 +99,9 @@ Useful flags, each of which can also be set in a TOML file passed with
 | `--token` | The auth token. Unset generates one; an empty string disables auth. |
 | `--default-kernel` | The kernelspec frontends offer first. |
 | `--cull-idle-secs` | Shut down kernels idle this long with no clients. |
-| `--static-dir` | Serve a frontend's static files; JupyterLab's bundle is recognized. |
+| `--static-dir` | Serve a frontend's static files; JupyterLab's bundle is recognized. Default: the newest JupyterLab from `ganymede lab install`. |
+| `--lab-version` | Which installed JupyterLab to serve. |
+| `--notary-dir` | Where the notebook-signing key and trusted signatures live. Default: the Jupyter data dir. |
 
 ## Embed it
 

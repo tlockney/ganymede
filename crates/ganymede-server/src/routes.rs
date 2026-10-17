@@ -1,7 +1,7 @@
 use crate::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, Request, StatusCode};
-use axum::middleware::{self, Next};
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -98,51 +98,12 @@ pub fn router(state: AppState) -> Router {
                 .delete(delete_contents)
                 .post(post_contents),
         )
-        .route_layer(middleware::from_fn_with_state(state.clone(), auth))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::api,
+        ))
         .route("/api", get(api_version));
     api.with_state(state)
-}
-
-// ----- auth -----------------------------------------------------------------
-
-/// `Authorization: token <t>` or `?token=<t>`. Browsers cannot set headers
-/// on a websocket upgrade, so the query form matters there.
-pub(crate) async fn auth(
-    State(state): State<AppState>,
-    req: Request<axum::body::Body>,
-    next: Next,
-) -> Response {
-    let Some(expected) = &state.token else {
-        return next.run(req).await;
-    };
-    let header_ok = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| {
-            v.strip_prefix("token ")
-                .or_else(|| v.strip_prefix("Token "))
-        })
-        .map(|t| t.trim() == expected)
-        .unwrap_or(false);
-    let query_ok = req
-        .uri()
-        .query()
-        .and_then(serde_urlencoded_token)
-        .map(|t| t == *expected)
-        .unwrap_or(false);
-    if header_ok || query_ok {
-        next.run(req).await
-    } else {
-        HttpError(403, "Forbidden: missing or invalid token".into()).into_response()
-    }
-}
-
-fn serde_urlencoded_token(query: &str) -> Option<String> {
-    query.split('&').find_map(|kv| {
-        let (k, v) = kv.split_once('=')?;
-        (k == "token").then(|| v.to_string())
-    })
 }
 
 // ----- status, identity, config ---------------------------------------------
@@ -390,10 +351,14 @@ enum ContentsTarget {
     Path(String),
     Checkpoints(String),
     Checkpoint(String, String),
+    Trust(String),
 }
 
 fn target(path: &str) -> ContentsTarget {
     let path = ganymede_contents::normalize_api_path(path);
+    if let Some(p) = path.strip_suffix("/trust") {
+        return ContentsTarget::Trust(p.to_string());
+    }
     if let Some(p) = path.strip_suffix("/checkpoints") {
         return ContentsTarget::Checkpoints(p.to_string());
     }
@@ -420,6 +385,7 @@ async fn get_contents(
             serde_json::to_value(s.contents.list_checkpoints(&p).await?).unwrap(),
         )),
         ContentsTarget::Checkpoint(..) => Err(HttpError(404, "not found".into())),
+        ContentsTarget::Trust(_) => Err(method_not_allowed()),
         ContentsTarget::Path(p) => {
             let content = q.content.as_deref().map(|c| c != "0").unwrap_or(true);
             let model = s
@@ -444,8 +410,10 @@ async fn put_contents(
     Path(path): Path<String>,
     LenientJson(req): LenientJson<Option<SaveRequest>>,
 ) -> HttpResult<Response> {
-    let ContentsTarget::Path(p) = target(&path) else {
-        return Err(HttpError(400, "cannot PUT a checkpoint".into()));
+    let p = match target(&path) {
+        ContentsTarget::Path(p) => p,
+        ContentsTarget::Trust(_) => return Err(method_not_allowed()),
+        _ => return Err(HttpError(400, "cannot PUT a checkpoint".into())),
     };
     let req =
         req.ok_or_else(|| HttpError(400, "PUT needs a body with type, format, content".into()))?;
@@ -469,8 +437,10 @@ async fn patch_contents(
     Path(path): Path<String>,
     LenientJson(body): LenientJson<RenameBody>,
 ) -> HttpResult<Json<ganymede_contents::ContentsModel>> {
-    let ContentsTarget::Path(p) = target(&path) else {
-        return Err(HttpError(400, "cannot rename a checkpoint".into()));
+    let p = match target(&path) {
+        ContentsTarget::Path(p) => p,
+        ContentsTarget::Trust(_) => return Err(method_not_allowed()),
+        _ => return Err(HttpError(400, "cannot rename a checkpoint".into())),
     };
     let new_path = body
         .path
@@ -489,7 +459,9 @@ async fn delete_contents(
     match target(&path) {
         ContentsTarget::Path(p) => s.contents.delete(&p).await?,
         ContentsTarget::Checkpoint(p, id) => s.contents.delete_checkpoint(&p, &id).await?,
-        ContentsTarget::Checkpoints(_) => return Err(HttpError(405, "method not allowed".into())),
+        ContentsTarget::Checkpoints(_) | ContentsTarget::Trust(_) => {
+            return Err(method_not_allowed())
+        }
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -523,6 +495,11 @@ async fn post_contents(
             s.contents.restore_checkpoint(&p, &id).await?;
             Ok(StatusCode::NO_CONTENT.into_response())
         }
+        // jupyter_server's TrustNotebooksHandler: 201 with an empty body.
+        ContentsTarget::Trust(p) => {
+            s.contents.trust(&p).await?;
+            Ok(StatusCode::CREATED.into_response())
+        }
         ContentsTarget::Path(dir) => {
             let model = if let Some(from) = body.copy_from {
                 s.contents
@@ -540,6 +517,10 @@ async fn post_contents(
             Ok((StatusCode::CREATED, Json(model)).into_response())
         }
     }
+}
+
+fn method_not_allowed() -> HttpError {
+    HttpError(405, "method not allowed".into())
 }
 
 /// Used by the websocket handler for its origin check.

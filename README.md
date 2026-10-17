@@ -21,34 +21,19 @@ gods on Olympus.
 Prebuilt binaries for Linux (x86_64, aarch64), macOS (Apple silicon,
 Intel), and Windows (x86_64) are on the
 [releases page](https://github.com/tlockney/ganymede/releases). On Linux or
-macOS, this downloads the latest release, checks its SHA-256, and installs
-`ganymede` into `~/.local/bin`:
+macOS, this script downloads the latest release, checks its SHA-256,
+installs `ganymede` into `~/.local/bin`, and, if Node 24 or later is
+installed, installs [cdp-kernel](https://cdp-kernel.org) for TypeScript
+notebooks:
 
 ```sh
-VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
-  https://github.com/tlockney/ganymede/releases/latest | sed 's|.*/v||')
-case "$(uname -s)-$(uname -m)" in
-  Linux-x86_64)                TARGET=x86_64-unknown-linux-gnu ;;
-  Linux-aarch64 | Linux-arm64) TARGET=aarch64-unknown-linux-gnu ;;
-  Darwin-arm64)                TARGET=aarch64-apple-darwin ;;
-  Darwin-x86_64)               TARGET=x86_64-apple-darwin ;;
-  *) echo "no prebuilt binary for $(uname -sm)" >&2 ;;
-esac
-NAME=ganymede-$VERSION-$TARGET
-cd "$(mktemp -d)"
-curl -fsSLO "https://github.com/tlockney/ganymede/releases/download/v$VERSION/$NAME.tar.gz"
-curl -fsSLO "https://github.com/tlockney/ganymede/releases/download/v$VERSION/$NAME.tar.gz.sha256"
-sha256sum -c "$NAME.tar.gz.sha256" 2>/dev/null || shasum -a 256 -c "$NAME.tar.gz.sha256"
-tar -xzf "$NAME.tar.gz"
-mkdir -p ~/.local/bin && install -m 755 "$NAME/ganymede" ~/.local/bin/
-export PATH="$HOME/.local/bin:$PATH"   # if it is not on PATH already
+curl -fsSL https://tlockney.github.io/ganymede/install.sh | sh
 ```
 
-Set `VERSION=0.1.0` instead of the first line to pin a release. The Linux
-binaries need glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36, or later).
-macOS does not quarantine files fetched with `curl`; after a browser
-download, run `xattr -d com.apple.quarantine ganymede` before the first
-run, since the binaries are not notarized.
+Pass options after `sh -s --`: `--version 0.1.0` pins a release,
+`--bin-dir DIR` installs elsewhere, `--no-kernel` skips cdp-kernel.
+[Install](docs/install.md) has the same steps done by hand, and the
+platform notes (glibc 2.35 or newer on Linux; unnotarized macOS binaries).
 
 Quick test, no kernel or Python needed (`fake` is a built-in kernel):
 
@@ -80,10 +65,13 @@ ganymede run -k cdp-node 'const x = 2; x * 21'   # any installed kernelspec
 ganymede run -k python3 -f script.py --json      # one JSON line per cell
 ganymede console -k cdp-node                     # completion, multiline, Ctrl-C interrupts
 ganymede execute notebook.ipynb -o out.ipynb     # like `jupyter execute`; --inplace, -o -
+ganymede trust notebook.ipynb                    # like `jupyter trust`; shares Jupyter's signatures
 ganymede kernel -k python3                       # standalone kernel; prints its connection file
 ganymede run --existing kernel-....json 'x'      # reuse it
 ganymede serve --root-dir . --port 8888          # point VS Code or JupyterLab at the URL
-ganymede serve --static-dir <prefix>/share/jupyter/lab/static   # JupyterLab at /lab
+ganymede lab install                             # JupyterLab's frontend, from PyPI, no Python
+ganymede serve                                   # ... then served at /lab
+ganymede serve --static-dir <prefix>/share/jupyter/lab/static   # or one installed elsewhere
 ```
 
 `-k fake` is a built-in in-process kernel for trying things out without
@@ -103,9 +91,8 @@ println!("{}", result.text());
 Early software. The protocol, kernel host, nbformat, executor, contents,
 API, and server pass their tests, and an end-to-end suite compares
 Ganymede against `jupyter execute` and `jupyter server` on cdp-kernel and
-ipykernel. The VS Code Jupyter extension's remote-server flow passes.
-JupyterLab's own bundle is served at `/lab` and runs notebooks once its
-websockets authenticate, which needs cookie login, the next step. The
+ipykernel. The VS Code Jupyter extension's remote-server flow passes, and
+JupyterLab's own bundle, served at `/lab`, runs notebooks in a browser. The
 engine builds for iOS, Android, and wasm. See the
 [roadmap](docs/roadmap.md).
 
@@ -127,10 +114,10 @@ UIs that render in a web view, `docs/` and `site/` are the website, and
 | [`crates/ganymede-kernel-host`](crates/ganymede-kernel-host/) | Kernelspec discovery, transport seam (ZMQ and in-process), subprocess and attach provisioners, the session state machine, a fake kernel. | 10 |
 | [`crates/ganymede-exec`](crates/ganymede-exec/) | Notebook executor with nbclient's semantics: outputs, `clear_output(wait)`, `display_id` across cells, `language_info`, timings, widget state, allowed errors and tags, timeouts. | 4 |
 | [`crates/ganymede-engine`](crates/ganymede-engine/) | The library to embed. `Engine` finds kernelspecs and starts, attaches, or adopts kernels; `Kernel` executes with streaming output and stdin, completes, inspects, interrupts, restarts, runs notebooks. Features `zmq` and `subprocess` (default) drop out for wasm. | 3 |
-| [`crates/ganymede-cli`](crates/ganymede-cli/) | The `ganymede` command: `kernelspec list/paths/install/remove`, `run`, `console`, `execute`, `kernel`, `nb clear`, `serve`, `info`. | 26 |
-| [`crates/ganymede-contents`](crates/ganymede-contents/) | Contents seam and filesystem implementation matching `jupyter_server`'s model: atomic writes, mtime conflicts, checkpoints, configurable checkpoint dir, path safety. | 30 |
+| [`crates/ganymede-cli`](crates/ganymede-cli/) | The `ganymede` command: `kernelspec list/paths/install/remove`, `run`, `console`, `execute`, `kernel`, `nb clear`, `trust`, `lab install/list/remove`, `serve`, `info`. | 33 |
+| [`crates/ganymede-contents`](crates/ganymede-contents/) | Contents seam and filesystem implementation matching `jupyter_server`'s model: atomic writes, mtime conflicts, checkpoints, configurable checkpoint dir, path safety, notebook trust with Jupyter's signing key and `nbsignatures.db`. | 52 |
 | [`crates/ganymede-api`](crates/ganymede-api/) | Kernel and session managers, response models, per-client bridge with reply filtering, idle culling. No HTTP. | 6 |
-| [`crates/ganymede-server`](crates/ganymede-server/) | axum routes, token auth, origin check, websocket v1 and legacy framing, static assets, TOML config, JupyterLab's page and `/lab/api/*`. | 13 |
+| [`crates/ganymede-server`](crates/ganymede-server/) | axum routes, token auth, origin check, websocket v1 and legacy framing, static assets, TOML config, JupyterLab's page and `/lab/api/*`, installed JupyterLab bundles, notebook trust. | 16 |
 | [`frontend/`](frontend/) | Protocol types, websocket codecs, `ServerConnection` with injectable `fetch` and `WebSocket`, REST client, `KernelConnection`, renderer registry, ANSI and stream handling, widget manager interfaces. | 45 |
 
 ## Testing
@@ -145,6 +132,7 @@ kernels and Jupyter are installed, and skip what is missing:
 | `GANYMEDE_E2E_JUPYTER=/path/to/jupyter` | The reference `jupyter` (needs `nbclient` and `jupyter_server`). Defaults to `PATH`. |
 | `GANYMEDE_E2E_REQUIRE_JUPYTER=1` | Fail instead of skipping when it is missing. |
 | `E2E_DUMP=1` | Print both server transcripts. |
+| `GANYMEDE_E2E_LAB=1` | Run `lab.rs`, which downloads JupyterLab from PyPI (about 17 MB). |
 
 - `kernels.rs`: the same scenarios on every kernel, through the engine and
   the CLI: kernel_info passthrough, results, streams, errors, stdin,
@@ -152,9 +140,13 @@ kernels and Jupyter are installed, and skip what is missing:
 - `parity.rs`: each notebook in [`e2e/notebooks/`](e2e/notebooks/) is
   executed by `jupyter execute` and by `ganymede execute`, and the files
   are compared after normalizing timestamps and ids. Mismatches are kept
-  under `$TMPDIR/ganymede-parity-*`.
+  under `$TMPDIR/ganymede-parity-*`. Also checks that `ganymede trust` and
+  `jupyter trust` share one signature store.
 - `server.rs`: one REST and websocket scenario against `jupyter server`
-  and `ganymede serve`, compared as transcripts.
+  and `ganymede serve`, compared as transcripts, including which cells come
+  back `trusted` after each kind of save and after `POST .../trust`.
+- `lab.rs`: `ganymede lab install` from PyPI, then `ganymede serve`
+  answering `/lab` and `/lab/api/settings` from the installed bundle.
 - [`e2e/wasm-smoke/`](e2e/wasm-smoke/): the engine built for
   `wasm32-wasip1`, running a notebook on the fake kernel under Node's WASI.
 

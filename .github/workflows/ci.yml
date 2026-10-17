@@ -33,6 +33,7 @@ jobs:
     env:
       GANYMEDE_E2E_KERNELS: cdp-node,python3
       GANYMEDE_E2E_REQUIRE_JUPYTER: "1"
+      GANYMEDE_E2E_LAB: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -95,3 +96,25 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm test
+
+  # site/install.sh against a stub release served over file://, under sh
+  # (bash on macOS), bash, and dash, then once more installing cdp-kernel
+  # on Node 24.
+  install-script:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: runner.os == 'Linux'
+        run: shellcheck -s sh site/install.sh scripts/test-install.sh
+      - run: scripts/test-install.sh sh
+      - run: scripts/test-install.sh bash
+      - if: runner.os == 'Linux'
+        run: scripts/test-install.sh dash
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: TEST_KERNEL=1 scripts/test-install.sh sh

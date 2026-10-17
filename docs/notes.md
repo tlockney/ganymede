@@ -566,6 +566,194 @@ VS Code and whether each could run against Ganymede.
   using `jupyter_server`'s `GatewayKernelManager`, which also exercises
   Ganymede as a kernel gateway.
 
+## 2026-10-17, install script
+
+`site/install.sh` wraps the [Install](install.md) steps:
+`curl -fsSL https://tlockney.github.io/ganymede/install.sh | sh`.
+
+- It lives in `site/` so Pages serves it at the site root; the raw GitHub
+  URL works too. Everything runs inside `main()`, so a truncated download
+  executes nothing.
+- The latest version comes from the `/releases/latest` redirect, as in the
+  manual steps. With no release published the redirect goes to
+  `/releases`, and the script says so and points to `cargo install`.
+- The cdp-kernel step is on by default and never fatal: without Node 24+
+  or with an `npm install -g` that needs root, it prints the commands
+  instead.
+- `GANYMEDE_DOWNLOAD_BASE` swaps the download base, so
+  `scripts/test-install.sh` tests the script against a stub release over
+  `file://` on Linux and macOS, under sh, bash, and dash, without a
+  published release.
+
+## 2026-10-17, `ganymede lab install`
+
+JupyterLab's frontend without Python (#15): `ganymede lab install
+[--version X]` downloads the `jupyterlab` wheel from PyPI, checks its
+SHA-256, and unpacks `<name>.data/data/share/jupyter/lab/{static,schemas,themes}`
+plus the dist-info `LICENSE` into `ganymede/lab/<version>/` under the local
+data dir. `ganymede serve` without `--static-dir` serves the newest one, or
+`--lab-version` / `lab_version`, and only the API when none is installed.
+
+- The default is 4.6.4 (latest 4.x on PyPI at the time). Its wheel's
+  SHA-256 is also pinned in the binary, so a changed PyPI listing for the
+  default fails the install; other versions trust PyPI's JSON
+  (`/pypi/jupyterlab/<v>/json`, the `bdist_wheel` entry of `urls`).
+- The wheel is about 17 MB and unpacks to 18 MB. Fetching on demand keeps
+  it out of the release archives; bundling would make offline installs work.
+- HTTP is `ureq` 3 (blocking, run under `spawn_blocking`) with rustls on
+  `ring` and `rustls-platform-verifier`, so there is no OpenSSL, no
+  aws-lc/cmake/nasm in the release build, and the OS trust store is used:
+  a corporate or sandbox proxy's CA installed there just works (it did
+  here, through the agent proxy, with no extra flags). ureq reads
+  `HTTPS_PROXY`/`ALL_PROXY` by default. The webpki roots compiled in by
+  ureq's `rustls` feature are unused.
+- `zip` 9 with only `deflate-flate2-zlib-rs`: wheels use stored and
+  deflate entries. `enclosed_name()` drops absolute and `..` paths.
+- Installs unpack into `.<version>-*` beside the target and are renamed
+  into place, so a bundle counts as installed once `static/index.html`
+  exists and dot-directories are ignored. `lab.rs` already derives
+  `schemas/` and `themes/` from `static/`'s parent, so the installed
+  layout needed no server changes beyond picking the directory.
+- The lookup (`lab::installs_dir`, `lab::installed`, version ordering)
+  lives in `ganymede-server`, which both binaries share; the network and
+  zip code stay in the CLI, away from the wasm-built crates.
+- `dirs::data_local_dir()` rather than `data_dir()`: the same on Linux and
+  macOS, but `%LOCALAPPDATA%` on Windows, so 18 MB doesn't roam.
+  `GANYMEDE_DATA_DIR` overrides it; the tests use that.
+- The network test (`tests/lab.rs`) runs only with `GANYMEDE_E2E_LAB=1`,
+  which CI's e2e job sets on Linux and macOS; `cargo test` stays offline.
+
+## 2026-10-17, cookie login
+
+JupyterLab in a browser now runs notebooks against `ganymede serve`
+without the `WS_TOKEN=1` workaround: its websockets authenticate with the
+login cookie. Checked against jupyter_server 2.21.1 (tornado 6.5) and
+JupyterLab 4.6 in headless Chromium.
+
+What jupyter_server does, and Ganymede now matches (the server e2e
+transcript records each of these, cookie attributes included):
+
+- Any token-authenticated request that arrives without a valid login
+  cookie gets one, API calls included. The cookie is
+  `username-<host with non-alphanumerics as dashes>`, a tornado version 2
+  signed value holding a JSON user, HttpOnly, `Path=<base_url>`, expiring
+  in 30 days; signatures are accepted for 31.
+- A correct token wins over the cookie. An invalid cookie is answered 403
+  and cleared (`name=""` with a past expiry).
+- Pages redirect a browser with no login to `login?next=<url-encoded
+  path and query>`; the API answers `403 {"message": "Forbidden"}`.
+- `/login` renders a form with a hidden `_xsrf` field and sets the `_xsrf`
+  cookie if missing. The POST needs that field (403 without it), answers
+  401 for a wrong token, and 302s to `next` with the cookie. `next` must
+  be a path under `base_url`, else `base_url`. `/logout` clears the cookie
+  and, being a rendered page, also sets `_xsrf`.
+- XSRF applies to methods other than GET, HEAD, and OPTIONS that did not
+  send the token, and runs before the auth check, so an unauthenticated
+  POST gets the XSRF message, not "Forbidden". The token comes from
+  `_xsrf` (query or form), `X-XSRFToken`, or `X-CSRFToken`. Messages:
+  `'_xsrf' argument missing from POST`, `'_xsrf' argument has invalid
+  format`, `XSRF cookie does not match POST argument`. A cross-origin
+  request fails first with 404. `_xsrf` values are `2|<4-byte
+  mask>|<masked token>|<time>` and compare by the unmasked token; any
+  other numbered version is invalid, and an unnumbered value is a
+  version 1 token, hex or verbatim. `_xsrf` is not HttpOnly, because
+  JupyterLab reads it to set the header.
+- Cookie-authenticated API requests from another origin get 404, as
+  jupyter_server's `check_origin` does when the token was not sent.
+- The page config still carries the token, so JupyterLab's REST calls
+  are token-authenticated and need no XSRF header; only websockets and
+  `<img>` loads (kernelspec logos, which were 403 before) rely on the
+  cookie.
+
+Choices where Ganymede differs:
+
+- The cookie secret is persisted, as jupyter_server does, in
+  `jupyter_cookie_secret` in the runtime dir (owner-only), with the same
+  derivation (HMAC-SHA256 of the file with an empty message, the no-password
+  case). `cookie_secret_file` in the config moves it. Logins survive a
+  restart; changing the token does not log browsers out, also as in
+  jupyter_server. If the file can't be written, the key is per process.
+- The login cookie adds `SameSite=Lax`, which jupyter_server does not
+  send. The e2e transcript ignores that attribute.
+- A page URL with a correct `?token=` sets the cookie and redirects to the
+  same URL without the token. jupyter_server renders the page with the
+  token still in the address bar. API paths and websocket upgrades keep
+  the parameter.
+- `next` is never followed to another origin, even one in
+  `allow_origins`.
+- With auth disabled there is no XSRF check. jupyter_server still checks
+  unless `disable_check_xsrf` is set.
+- `/api/me` still reports one anonymous identity; the cookie's user is
+  not read back.
+
+Findings:
+
+- Python's cookie formatting quotes values containing `=` (base64
+  padding), so jupyter_server's `Set-Cookie` sometimes has a quoted value
+  and sometimes not. Browsers send the quotes back; the parser strips
+  them.
+- tornado's `_websocket_mask` needs a 4-byte mask, so a shorter mask in a
+  version 2 `_xsrf` is "invalid format", not a mismatch. The transcript
+  caught this.
+- `form_urlencoded::Serializer::new` with a target that already ends in
+  `?` adds a `&`; build the query separately.
+
+## 2026-10-17, notebook trust
+
+Notebooks are signed and marked `trusted` as `jupyter_server` does, so
+JupyterLab runs the HTML and JavaScript outputs of a notebook it reopens
+(issue #18). `ganymede-contents` has `trust::Notary`, `FsContents` signs on
+save and marks cells on read, the server serves `POST
+/api/contents/{path}/trust`, and `ganymede trust` replaces `jupyter trust`.
+
+- Ganymede shares Jupyter's store instead of keeping its own:
+  `notebook_secret` and `nbsignatures.db` in the Jupyter data dir
+  (`--notary-dir` / `notary_dir` moves them). A user moving from Jupyter
+  keeps their trusted notebooks, and `jupyter trust` and `ganymede trust`
+  agree; `parity.rs` checks both directions.
+- There is no mature pure-Rust SQLite (`turso_core` is a pre-release), so
+  the database goes through `rusqlite` with SQLite compiled from C. It sits
+  behind the contents crate's `sqlite` feature, which only the server
+  enables: `ganymede-contents` alone still checks for iOS and Android with
+  no C cross compiler, and the engine, which does not depend on it, still
+  builds for wasm. Without the feature signatures are kept in memory, as
+  nbformat does when `sqlite3` is missing.
+- The signature is an HMAC-SHA256 over nbformat's `yield_everything`: for
+  each object, keys in sorted order each followed by its value; strings as
+  UTF-8; everything else as Python's `str()` (`True`, `None`, `1e-05`, so
+  the writer's float repr is reused); `metadata.signature` skipped. List
+  items are concatenated with no separator, so a source split into lines
+  hashes the same as the joined string. The key is the secret file's
+  bytes, trailing newlines included. Fixtures from
+  `tests/fixtures/generate_trust.py` pin it.
+- What is hashed is the notebook as served, without `trusted`. On save
+  Ganymede hashes the notebook as it will be read back rather than the
+  client's JSON, which is what makes the save-then-reopen round trip
+  verify. jupyter_server hashes the client's dict, so a `trusted` flag on a
+  markdown cell, which nbformat drops on read, would make its own
+  signature miss.
+- The save rule is `check_cells`: a code cell is trusted when its
+  `metadata.trusted` is truthy (popped either way) or no `execute_result`
+  or `display_data` output has a key besides `output_type`,
+  `execution_count` and `metadata`. An empty `data: {}` counts as unsafe.
+  JupyterLab sets `trusted` on cells it ran, which is how "every output was
+  produced in this session" reaches the server.
+- Signatures are content-addressed, so a byte-identical copy of a trusted
+  notebook is trusted too. The JupyterLab check in
+  `validation/trust.mjs` changes the copy's metadata before saving it
+  untrusted, or the control would pass for the wrong reason.
+- nbformat does not create the data dir before writing the key, so
+  `jupyter server --NotebookNotary.data_dir=<missing dir>` answers 500 on
+  every notebook read. Ganymede creates it; the parity test creates it for
+  the reference.
+- `jupyter trust --reset` writes 1024 raw random bytes as the new key; the
+  key Ganymede generates (then and on first use) is the base64 text nbformat
+  writes on first use. Any bytes work as an HMAC key.
+- Checked with JupyterLab 4 in headless Chromium against `ganymede serve`:
+  after save and reopen in a fresh page, the HTML output's `<script>` and
+  the `application/javascript` output both run; in an edited copy saved
+  without `trusted` flags neither does.
+
 ## 2026-10-17, releases through a PR
 
 - The first `release.sh --execute` could not push the release commit and

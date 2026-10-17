@@ -10,14 +10,28 @@ pub struct Config {
     pub port: u16,
     /// Empty string disables auth. Unset generates a random token.
     pub token: Option<String>,
+    /// Key for signing login cookies, created on first start so browsers
+    /// stay logged in across restarts. Defaults to `jupyter_cookie_secret`
+    /// in the Jupyter runtime dir, the file `jupyter_server` uses.
+    pub cookie_secret_file: Option<PathBuf>,
     /// Contents root. Defaults to the current directory.
     pub root_dir: PathBuf,
     /// Checkpoints outside the root, for synced folders.
     pub checkpoint_dir: Option<PathBuf>,
+    /// Where the notebook-signing key (`notebook_secret`) and the trusted
+    /// signatures (`nbsignatures.db`) live. Defaults to the Jupyter data
+    /// dir, so notebooks trusted by Jupyter are trusted here too
+    /// (`NotebookNotary.data_dir`).
+    pub notary_dir: Option<PathBuf>,
     /// Directory of static frontend assets served at `/`. When it is
     /// JupyterLab's static bundle (`share/jupyter/lab/static`), the server
     /// serves JupyterLab at `/lab` with its `/lab/api/*` endpoints instead.
+    ///
+    /// Unset, the newest JupyterLab installed by `ganymede lab install` is
+    /// served, or `lab_version` if set; with none installed, only the API.
     pub static_dir: Option<PathBuf>,
+    /// Which installed JupyterLab to serve when `static_dir` is unset.
+    pub lab_version: Option<String>,
     /// Extra directories of prebuilt JupyterLab extensions, searched before
     /// `labextensions` in the Jupyter data dirs.
     pub labextensions_paths: Vec<PathBuf>,
@@ -42,9 +56,12 @@ impl Default for Config {
             ip: "127.0.0.1".into(),
             port: 8888,
             token: None,
+            cookie_secret_file: None,
             root_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             checkpoint_dir: None,
+            notary_dir: None,
             static_dir: None,
+            lab_version: None,
             labextensions_paths: vec![],
             config_dir: None,
             base_url: "/".into(),

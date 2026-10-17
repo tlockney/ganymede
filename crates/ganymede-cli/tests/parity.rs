@@ -140,3 +140,38 @@ fn normalize_replaces_times_and_ids_consistently() {
         r#"{"a":"<timestamp>","m":"<id0>","r":"Widget(<id0>)","k":"<id1>","not":"6d9730a0x"}"#
     );
 }
+
+/// `ganymede trust` and `jupyter trust` share `notebook_secret` and
+/// `nbsignatures.db`: what one signs, the other finds signed.
+#[test]
+fn trust_store_is_shared_with_jupyter() {
+    let Some(jupyter) = jupyter() else { return };
+    let data = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut paths = Vec::new();
+    for (i, html) in ["<b>signed by jupyter</b>", "<b>signed by ganymede</b>"]
+        .iter()
+        .enumerate()
+    {
+        let p = dir.path().join(format!("n{i}.ipynb"));
+        let nb = serde_json::json!({"nbformat": 4, "nbformat_minor": 5, "metadata": {"numbers": [1.5, 1e-5, 7]}, "cells": [
+            {"cell_type": "code", "id": "c", "metadata": {}, "source": "x\ny", "execution_count": 1,
+             "outputs": [{"output_type": "display_data", "metadata": {}, "data": {"text/html": html}}]}]});
+        std::fs::write(&p, serde_json::to_string_pretty(&nb).unwrap()).unwrap();
+        paths.push(p.to_str().unwrap().to_string());
+    }
+    let jupyter_trust = |p: &str| {
+        let mut c = std::process::Command::new(&jupyter);
+        c.args(["trust", p]).env("JUPYTER_DATA_DIR", data.path());
+        stdout(&run_ok(c))
+    };
+    let ganymede_trust = |p: &str| {
+        let mut c = ganymede(&["trust", p]);
+        c.env("JUPYTER_DATA_DIR", data.path());
+        stdout(&run_ok(c))
+    };
+    assert!(jupyter_trust(&paths[0]).starts_with("Signing notebook"));
+    assert!(ganymede_trust(&paths[0]).starts_with("Notebook already signed"));
+    assert!(ganymede_trust(&paths[1]).starts_with("Signing notebook"));
+    assert!(jupyter_trust(&paths[1]).starts_with("Notebook already signed"));
+}
