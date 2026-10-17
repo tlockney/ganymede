@@ -481,3 +481,29 @@ Portability:
   before `gh release create --generate-notes`.
 - No code signing or notarization yet: macOS Gatekeeper quarantines a
   downloaded binary (`xattr -d com.apple.quarantine ganymede`).
+
+## 2026-10-17, release tooling, changelog, issue tracking
+
+- `scripts/release.sh <level> [--execute]` wraps cargo-release (version
+  bump across the workspace, Cargo.lock, commit, tag, push) and git-cliff
+  (CHANGELOG.md). Dry run is the default. It refuses unless HEAD is
+  `origin/main`. The release commit goes straight to `main`; it is the one
+  commit without a PR.
+- cargo-release runs `pre-release-hook` once per crate, so the hook lives
+  in `ganymede-cli`'s `[package.metadata.release]`, not `release.toml`.
+  Hooks also run in dry runs with `DRY_RUN=true`, so the hook prints the
+  changelog then instead of writing it. `CHANGELOG.md` must be tracked
+  before the first release: cargo-release commits modified files, not new
+  ones.
+- The changelog comes from merge commits, offline: GitHub's merge commit
+  is `Merge pull request #N from <branch>` with the PR title as its body,
+  and a squash merge's subject ends in `(#N)`. Preprocessors turn both
+  into `<title> (#N)`; every other commit is dropped. No GitHub token
+  needed. A rebase merge would leave no trace and drop the PR.
+- release.yml takes the notes from the version's CHANGELOG.md section
+  (and fails without one) instead of `--generate-notes`, so the release
+  page and the file agree.
+- Work is tracked in issues; `pr-issue.yml` fails a PR whose body has no
+  `Closes/Fixes/Resolves/Refs #N`. Issue templates: bug, task.
+- Install check: `ganymede run -k fake hello` and `ganymede serve` +
+  `/api/status` need no kernel, so they are the README's smoke test.

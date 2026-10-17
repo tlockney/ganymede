@@ -1,15 +1,16 @@
 name: Release
 
-# Pushing a `v*` tag builds the `ganymede` binary for each target, packages
-# it with SHA-256 checksums, and publishes a GitHub Release. Pull requests
-# that touch this file, and manual runs, build and package without
-# publishing.
+# scripts/release.sh pushes a `v*` tag, which builds the `ganymede` binary
+# for each target, packages it with SHA-256 checksums, and publishes a
+# GitHub Release whose notes are the version's CHANGELOG.md section. Pull
+# requests that touch the release tooling, and manual runs, build and
+# package without publishing.
 
 on:
   push:
     tags: ["v*"]
   pull_request:
-    paths: [.github/workflows/release.yml]
+    paths: [.github/workflows/release.yml, release.toml, cliff.toml, scripts/release.sh]
   workflow_dispatch:
 
 permissions:
@@ -101,6 +102,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -110,6 +112,16 @@ jobs:
         run: |
           cat *.sha256 > SHA256SUMS
           sha256sum -c SHA256SUMS
+      - name: Take the release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          awk -v v="$VERSION" '/^## /{p = index($0, "## [" v "]") == 1; next} p' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if ! grep -q . "$RUNNER_TEMP/notes.md"; then
+            echo "::error::CHANGELOG.md has no section for $VERSION; cut releases with scripts/release.sh"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/notes.md"
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -120,6 +132,6 @@ jobs:
           gh release create "$TAG" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "$TAG" \
-            --generate-notes \
+            --notes-file "$RUNNER_TEMP/notes.md" \
             --verify-tag \
             "${flags[@]}"

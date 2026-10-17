@@ -10,6 +10,11 @@ publish.workspace = true
 name = "ganymede"
 path = "src/main.rs"
 
+# Regenerates CHANGELOG.md during `cargo release` (scripts/release.sh). The
+# hook lives on one crate so it runs once per release, not once per crate.
+[package.metadata.release]
+pre-release-hook = ["sh", "-c", "cd \"$WORKSPACE_ROOT\" && if [ \"$DRY_RUN\" = true ]; then git cliff --tag \"v$NEW_VERSION\" --unreleased; else git cliff --tag \"v$NEW_VERSION\" -o CHANGELOG.md; fi"]
+
 [dependencies]
 ganymede-engine = { path = "../ganymede-engine" }
 ganymede-server = { path = "../ganymede-server" }
