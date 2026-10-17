@@ -53,7 +53,7 @@ try {
   await page.keyboard.press('Shift+Enter');
   const output = await page.waitForSelector('.jp-OutputArea-output', { timeout: 60000 });
   result.output = (await output.textContent()).trim();
-  await page.keyboard.press('Control+s');
+  await page.keyboard.press('ControlOrMeta+s');
   await page.waitForTimeout(2000);
   const saved = await (await fetch(`${base}/api/contents/${name}`, { headers: auth })).json();
   result.saved = JSON.stringify(saved.content.cells[0].outputs).includes(expect);

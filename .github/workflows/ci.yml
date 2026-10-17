@@ -109,7 +109,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - if: runner.os == 'Linux'
-        run: shellcheck -s sh site/install.sh scripts/test-install.sh
+        run: shellcheck -s sh site/install.sh scripts/test-install.sh scripts/test-workstation.sh
       - run: scripts/test-install.sh sh
       - run: scripts/test-install.sh bash
       - if: runner.os == 'Linux'
@@ -118,3 +118,40 @@ jobs:
         with:
           node-version: 24
       - run: TEST_KERNEL=1 scripts/test-install.sh sh
+
+  # docs/install.md on a workstation with no Python: the PR's release
+  # binary, packaged as release.yml does, installed by site/install.sh over
+  # file://; cdp-kernel from npm on Node 24; JupyterLab from
+  # `ganymede lab install`; then `ganymede lab --no-browser` driven by
+  # Playwright. scripts/test-workstation.sh hides Python from PATH and
+  # fails if anything ran it.
+  workstation:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked -p ganymede-cli
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # Test tooling only, set up before Python is hidden.
+      - name: Playwright
+        working-directory: validation
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Install and use Ganymede with no Python on PATH
+        run: scripts/test-workstation.sh target/release/ganymede
+        env:
+          OUT_DIR: ${{ runner.temp }}/workstation
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workstation-${{ matrix.os }}
+          path: ${{ runner.temp }}/workstation
+          if-no-files-found: ignore

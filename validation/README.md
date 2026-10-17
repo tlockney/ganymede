@@ -1,8 +1,11 @@
 # Validation against real clients
 
 Scripts that drive real Jupyter clients against a running server. They
-need a kernel and a browser, so they are not part of CI. Results and what
-broke are recorded in [`../docs/notes.md`](../docs/notes.md).
+need a kernel and a browser. CI's `workstation` job runs `login.mjs`,
+`trust.mjs`, and `widgets.mjs` on cdp-kernel through
+[`../scripts/test-workstation.sh`](../scripts/test-workstation.sh); the
+rest are run by hand. Results and what broke are recorded in
+[`../docs/notes.md`](../docs/notes.md).
 
 ```
 npm install
@@ -10,9 +13,12 @@ npm install
 #   ganymede-server --static-dir <prefix>/share/jupyter/lab/static \
 #     --labextensions-path <prefix>/share/jupyter/labextensions --token tok
 node jupyterlab.mjs http://127.0.0.1:8888 tok <kernel> out/lab.json
+# The URL `ganymede lab` printed logs in: lands on /lab with the cookie.
+node login.mjs 'http://127.0.0.1:8888/lab?token=tok' cdp-node out/login.png
 # A cdp-kernel widget (anywidget) rendering in JupyterLab, clicked, and
 # read back from the kernel. Needs `ganymede lab install`'s extensions.
-node widgets.mjs http://127.0.0.1:8888 tok cdp-node out/widgets.json
+# RELOAD=1 also saves, reopens, and checks the widget renders again.
+RELOAD=1 node widgets.mjs http://127.0.0.1:8888 tok cdp-node out/widgets.json
 # Notebook trust: HTML and JavaScript outputs run again when a saved
 # notebook is reopened, and not in a copy no client vouched for.
 WS_TOKEN=1 node trust.mjs http://127.0.0.1:8888 tok python3 out/trust.json

@@ -902,3 +902,54 @@ One command to start JupyterLab (#17): `ganymede lab [--no-browser]
   `package.json` with a `jupyterlab` key, under
   `$GANYMEDE_DATA_DIR/lab/<version>/`. It holds a port open to check the
   fallback.
+
+## 2026-10-17, workstation install with no Python
+
+CI's `workstation` job (#20) follows [Install](install.md) on
+`ubuntu-latest` and `macos-latest` with Python hidden, through
+`scripts/test-workstation.sh <binary>`: the PR's release build, packaged
+as `release.yml` packages it and served over `file://` with
+`GANYMEDE_DOWNLOAD_BASE`, installed with `curl ... | sh -s -- --version`;
+then `npm install -g @tlockney/cdp-kernel`, `cdp-kernel install --runtime
+node`, `ganymede kernelspec list` (must show `cdp-node`), `ganymede run -k
+cdp-node`, `ganymede lab install`, and `ganymede lab --no-browser` in a
+notebook directory. Playwright then runs `validation/login.mjs` (the
+printed URL lands on `/lab` with the login cookie, and the cookie alone
+lists `cdp-node`), `trust.mjs` with a TypeScript cell (`jupyter.html`
+with a `<script>`, plus a raw `application/javascript` bundle), and
+`widgets.mjs` with `RELOAD=1`.
+
+- Hiding Python: `PATH` is a shim dir, `~/.local/bin`, npm's global bin,
+  and a clean dir of symlinks to node, npm, npx, curl, tar, gzip,
+  sha256sum/shasum, and coreutils. Shims named `python`, `python3`,
+  `pip`, `pip3`, and `jupyter` log the call and exit 1. They miss
+  absolute paths, so a sampler also logs, every 0.5 s, any process named
+  `python*` that descends from the script. Sampling all processes would
+  fail on runners, which run Python daemons of their own. Both were
+  checked to fire by calling `python3` and `/usr/bin/python3` on purpose.
+- The script sets `HOME` to a new directory, as on a fresh machine, and
+  unsets the `XDG_*`, `JUPYTER_*`, and `GANYMEDE_DATA_DIR` variables, so
+  the kernelspec, JupyterLab, and extensions land under it and a local run
+  touches nothing else. Playwright's browsers are found through
+  `PLAYWRIGHT_BROWSERS_PATH`, defaulted from the real `HOME`.
+  `NPM_CONFIG_PREFIX` points npm's global installs into that `HOME`;
+  without it they go next to setup-node's `node`, which is not on the
+  clean `PATH`.
+- `install.sh` installs cdp-kernel itself when Node 24 is present; the
+  explicit npm and `cdp-kernel install` steps from "A kernel" then run
+  again, which also checks that both are idempotent.
+- npm 11 (Node 24.22) skips install scripts not listed in `allowScripts`
+  and warns about esbuild's postinstall. cdp-kernel runs without it.
+- Widgets after a reload need no saved widget state: JupyterLab's widget
+  manager asks the running kernel (`comm_info_request` for
+  `jupyter.widget`, then each model's state), and cdp-kernel answers, so
+  the reopened page shows `count is 3`. The saved notebook holds only the
+  `application/vnd.jupyter.widget-view+json` output.
+- The Playwright tooling (`npm ci`, `playwright install --with-deps`) is
+  set up before Python is hidden; it is the test harness, not the
+  workstation.
+- On macOS the script relies on `/usr/bin/shasum` (a Perl script with
+  an absolute shebang) and BSD `ps`.
+- JupyterLab saves on Cmd+S on macOS, where Playwright's Chromium reports a
+  Mac platform, so `Control+s` silently does nothing there. The scripts press
+  `ControlOrMeta+s`.

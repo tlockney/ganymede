@@ -69,7 +69,7 @@ try {
   await page.waitForSelector('.jp-OutputArea-output b.probe', { timeout: 60000 });
   await page.waitForTimeout(1000);
   result.live = await probes(page);
-  await page.keyboard.press('Control+s');
+  await page.keyboard.press('ControlOrMeta+s');
   await page.waitForTimeout(2000);
   await page.close();
 
