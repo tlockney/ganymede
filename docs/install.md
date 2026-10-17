@@ -20,9 +20,41 @@ From a checkout, `cargo install --path crates/ganymede-cli` does the same.
 Releases attach a prebuilt archive per platform: Linux (x86_64,
 aarch64), macOS (aarch64, x86_64), and Windows (x86_64), each with a
 `.sha256` beside it and `SHA256SUMS` for all of them. Get one from the
-[releases page](https://github.com/tlockney/ganymede/releases). On Linux or
-macOS, this downloads the latest release, checks its SHA-256, and installs
-`ganymede` into `~/.local/bin`:
+[releases page](https://github.com/tlockney/ganymede/releases).
+
+### Install script
+
+On Linux or macOS:
+
+```sh
+curl -fsSL https://tlockney.github.io/ganymede/install.sh | sh
+```
+
+It downloads the latest release for your platform, checks its SHA-256,
+and installs `ganymede` into `~/.local/bin`. If Node 24 or later is
+installed, it then installs cdp-kernel and its `cdp-node` kernelspec, as
+in [A kernel](#a-kernel); otherwise it prints the commands to run once
+Node is there. Options go after `sh -s --`:
+
+| Option | Effect |
+| --- | --- |
+| `--version X.Y.Z` | Install that release instead of the latest. |
+| `--bin-dir DIR` | Install into `DIR` instead of `~/.local/bin`. |
+| `--no-kernel` | Skip cdp-kernel. |
+| `--runtime NAME` | cdp-kernel's target runtime: `node` (default), `deno`, `bun`, `workerd`, or `celld`. |
+
+```sh
+curl -fsSL https://tlockney.github.io/ganymede/install.sh | sh -s -- --version 0.1.0 --no-kernel
+```
+
+Running it again upgrades in place. The script is
+[`site/install.sh`](https://github.com/tlockney/ganymede/blob/main/site/install.sh);
+it needs only `sh`, `curl` or `wget`, `tar`, and `sha256sum` or `shasum`.
+
+### By hand
+
+The same steps without the script. This downloads the latest release,
+checks its SHA-256, and installs `ganymede` into `~/.local/bin`:
 
 ```sh
 VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \

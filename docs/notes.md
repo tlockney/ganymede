@@ -565,3 +565,22 @@ VS Code and whether each could run against Ganymede.
 - papermill launches kernels itself; to drive Ganymede it needs an engine
   using `jupyter_server`'s `GatewayKernelManager`, which also exercises
   Ganymede as a kernel gateway.
+
+## 2026-10-17, install script
+
+`site/install.sh` wraps the [Install](install.md) steps:
+`curl -fsSL https://tlockney.github.io/ganymede/install.sh | sh`.
+
+- It lives in `site/` so Pages serves it at the site root; the raw GitHub
+  URL works too. Everything runs inside `main()`, so a truncated download
+  executes nothing.
+- The latest version comes from the `/releases/latest` redirect, as in the
+  manual steps. With no release published the redirect goes to
+  `/releases`, and the script says so and points to `cargo install`.
+- The cdp-kernel step is on by default and never fatal: without Node 24+
+  or with an `npm install -g` that needs root, it prints the commands
+  instead.
+- `GANYMEDE_DOWNLOAD_BASE` swaps the download base, so
+  `scripts/test-install.sh` tests the script against a stub release over
+  `file://` on Linux and macOS, under sh, bash, and dash, without a
+  published release.
