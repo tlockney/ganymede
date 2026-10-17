@@ -1,0 +1,40 @@
+name: Tag release
+
+# When a release PR from scripts/release.sh merges, main has a workspace
+# version with a CHANGELOG.md section and no tag yet: tag the merge commit
+# vX.Y.Z and run release.yml on it. A tag pushed with GITHUB_TOKEN starts
+# no workflow by itself, so the release is dispatched explicitly.
+
+on:
+  push:
+    branches: [main]
+    paths: [Cargo.toml]
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag the version if it is new, and start the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          test -n "$version"
+          tag="v$version"
+          if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+            echo "CHANGELOG.md has no $version section; not a release commit"
+            exit 0
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+            echo "$tag exists; nothing to do"
+            exit 0
+          fi
+          git tag "$tag" "$GITHUB_SHA"
+          git push origin "refs/tags/$tag"
+          gh workflow run release.yml --ref "$tag"
+          echo "Tagged $GITHUB_SHA as $tag and started release.yml"

@@ -34,8 +34,9 @@ test oracle and a kernel, never a dependency of the product.
 ## Releases
 
 `scripts/release.sh <level>` bumps the workspace version, writes
-`CHANGELOG.md`, tags `vX.Y.Z`, and pushes; the tag runs the release
-workflow. It is a dry run without `--execute`. The
+`CHANGELOG.md`, commits on `release/vX.Y.Z`, and opens an issue and a PR
+for it. Merging the PR tags `vX.Y.Z`, which runs the release workflow. It
+is a dry run without `--execute`. The
 [README](../README.md#contributing) has the details.
 
 ## This site

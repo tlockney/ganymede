@@ -77,12 +77,35 @@ impl Default for SubprocessProvisioner {
 }
 
 #[cfg(feature = "subprocess")]
-/// Five free TCP ports on `ip`. Racy by nature: the ports are released
-/// before the kernel binds them. `ipc` transport avoids this on POSIX.
+/// Five free TCP ports on `ip`, picked at random below the ephemeral port
+/// ranges (Linux 32768-60999, macOS and Windows 49152-65535). Port 0 would
+/// return an ephemeral port, which outgoing connections also take their
+/// source ports from: while the kernel starts, a client reconnecting to
+/// that port can be given it as its own source port and connect to
+/// itself, and the kernel then fails to bind. Racy against other
+/// processes binding the same port; `ipc` transport avoids this on POSIX.
 pub async fn allocate_ports(ip: &str) -> Result<[u16; 5]> {
+    const RANGE: std::ops::Range<u16> = 20000..32768;
     let mut listeners = Vec::new();
     let mut ports = [0u16; 5];
-    for p in &mut ports {
+    let mut found = 0;
+    for _ in 0..1000 {
+        if found == ports.len() {
+            break;
+        }
+        let span = u128::from(RANGE.end - RANGE.start);
+        let port = RANGE.start + (uuid::Uuid::new_v4().as_u128() % span) as u16;
+        if ports[..found].contains(&port) {
+            continue;
+        }
+        if let Ok(l) = tokio::net::TcpListener::bind((ip, port)).await {
+            ports[found] = port;
+            listeners.push(l);
+            found += 1;
+        }
+    }
+    // A crowded range: fall back to ports the OS picks.
+    for p in &mut ports[found..] {
         let l = tokio::net::TcpListener::bind((ip, 0)).await?;
         *p = l.local_addr()?.port();
         listeners.push(l);
@@ -312,6 +335,10 @@ mod tests {
         let ports = allocate_ports("127.0.0.1").await.unwrap();
         let set: std::collections::HashSet<_> = ports.iter().collect();
         assert_eq!(set.len(), 5);
+        assert!(
+            ports.iter().all(|p| (20000..32768).contains(p)),
+            "{ports:?}"
+        );
         let dir = tempfile::tempdir().unwrap();
         let info = ConnectionInfo::new_tcp("127.0.0.1", ports);
         let path = write_connection_file(dir.path(), "abc", &info).unwrap();
