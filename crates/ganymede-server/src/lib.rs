@@ -1,11 +1,13 @@
 //! HTTP server: `jupyter_server`'s REST and websocket API over
-//! [`ganymede_api`] and [`ganymede_contents`], with token auth and static assets.
+//! [`ganymede_api`] and [`ganymede_contents`], with token and cookie auth and
+//! static assets.
 //!
 //! Every handler is a thin mapping from a route to an API call; the logic
 //! lives in the API crates so an in-app bridge can skip HTTP entirely.
 
 #![recursion_limit = "256"]
 
+pub mod auth;
 pub mod config;
 pub mod lab;
 pub mod routes;
@@ -25,6 +27,8 @@ pub struct AppState {
     /// `None` disables auth. The server generates one at startup when
     /// nothing is configured.
     pub token: Option<String>,
+    /// Key for signing login cookies; see [`auth::load_cookie_secret`].
+    pub cookie_secret: Arc<[u8]>,
     /// Origins allowed to open websockets, beyond the request's own host.
     pub allow_origins: Vec<String>,
     /// URL prefix the routes are nested under, with a trailing `/`.
@@ -34,14 +38,25 @@ pub struct AppState {
     pub config_dir: PathBuf,
     /// JupyterLab's application, when `--static-dir` points at its bundle.
     pub lab: Option<Arc<lab::Lab>>,
+    /// Any other `--static-dir`, served at `/` behind the routes.
+    pub static_dir: Option<PathBuf>,
 }
 
-/// The API router, plus JupyterLab when configured, before generic static
-/// assets and the base URL prefix.
+/// The API router, login pages, and JupyterLab or generic static assets
+/// when configured, before the base URL prefix.
 pub fn build_router(state: AppState) -> axum::Router {
-    let api = routes::router(state.clone());
-    match state.lab.clone() {
-        Some(lab) => api.merge(lab::router(state, &lab)),
-        None => api,
+    let mut app = routes::router(state.clone()).merge(auth::router(state.clone()));
+    match (state.lab.clone(), &state.static_dir) {
+        (Some(lab), _) => app = app.merge(lab::router(state.clone(), &lab)),
+        (None, Some(dir)) => {
+            app = app.fallback_service(
+                tower_http::services::ServeDir::new(dir).append_index_html_on_directories(true),
+            )
+        }
+        (None, None) => {}
     }
+    app.layer(axum::middleware::from_fn_with_state(
+        state,
+        auth::strip_token,
+    ))
 }

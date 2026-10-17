@@ -103,9 +103,8 @@ println!("{}", result.text());
 Early software. The protocol, kernel host, nbformat, executor, contents,
 API, and server pass their tests, and an end-to-end suite compares
 Ganymede against `jupyter execute` and `jupyter server` on cdp-kernel and
-ipykernel. The VS Code Jupyter extension's remote-server flow passes.
-JupyterLab's own bundle is served at `/lab` and runs notebooks once its
-websockets authenticate, which needs cookie login, the next step. The
+ipykernel. The VS Code Jupyter extension's remote-server flow passes, and
+JupyterLab's own bundle, served at `/lab`, runs notebooks in a browser. The
 engine builds for iOS, Android, and wasm. See the
 [roadmap](docs/roadmap.md).
 

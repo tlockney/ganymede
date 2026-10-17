@@ -1,7 +1,7 @@
 use crate::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, Request, StatusCode};
-use axum::middleware::{self, Next};
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -98,51 +98,12 @@ pub fn router(state: AppState) -> Router {
                 .delete(delete_contents)
                 .post(post_contents),
         )
-        .route_layer(middleware::from_fn_with_state(state.clone(), auth))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::api,
+        ))
         .route("/api", get(api_version));
     api.with_state(state)
-}
-
-// ----- auth -----------------------------------------------------------------
-
-/// `Authorization: token <t>` or `?token=<t>`. Browsers cannot set headers
-/// on a websocket upgrade, so the query form matters there.
-pub(crate) async fn auth(
-    State(state): State<AppState>,
-    req: Request<axum::body::Body>,
-    next: Next,
-) -> Response {
-    let Some(expected) = &state.token else {
-        return next.run(req).await;
-    };
-    let header_ok = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| {
-            v.strip_prefix("token ")
-                .or_else(|| v.strip_prefix("Token "))
-        })
-        .map(|t| t.trim() == expected)
-        .unwrap_or(false);
-    let query_ok = req
-        .uri()
-        .query()
-        .and_then(serde_urlencoded_token)
-        .map(|t| t == *expected)
-        .unwrap_or(false);
-    if header_ok || query_ok {
-        next.run(req).await
-    } else {
-        HttpError(403, "Forbidden: missing or invalid token".into()).into_response()
-    }
-}
-
-fn serde_urlencoded_token(query: &str) -> Option<String> {
-    query.split('&').find_map(|kv| {
-        let (k, v) = kv.split_once('=')?;
-        (k == "token").then(|| v.to_string())
-    })
 }
 
 // ----- status, identity, config ---------------------------------------------

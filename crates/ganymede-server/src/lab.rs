@@ -12,7 +12,7 @@
 use crate::routes::HttpError;
 use crate::AppState;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -275,13 +275,19 @@ impl Lab {
 }
 
 /// Routes for the page, assets, and `/lab/api/*`. Assets are public, as
-/// in `jupyter_server`; the page and the API go through `auth`.
+/// in `jupyter_server`; the page sends a browser without a login to
+/// `/login`, and the API answers 403.
 pub fn router(state: AppState, lab: &Lab) -> Router {
-    let authed = Router::new()
+    let pages = Router::new()
         .route("/lab", get(page_root))
         .route("/lab/tree", get(page_root))
         .route("/lab/tree/{*path}", get(page_tree))
         .route("/lab/workspaces/{*name}", get(page_workspace))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::page,
+        ));
+    let api = Router::new()
         .route("/lab/api/settings", get(list_settings))
         .route(
             "/lab/api/settings/{*id}",
@@ -301,7 +307,7 @@ pub fn router(state: AppState, lab: &Lab) -> Router {
         .route("/lab/api/licenses", get(licenses))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
-            crate::routes::auth,
+            crate::auth::api,
         ));
     let mut public =
         Router::new()
@@ -319,7 +325,7 @@ pub fn router(state: AppState, lab: &Lab) -> Router {
             ServeDir::new(&e.dir),
         );
     }
-    authed.merge(public).with_state(state)
+    pages.merge(api).merge(public).with_state(state)
 }
 
 fn lab_of(s: &AppState) -> HttpResult<&Lab> {
@@ -332,34 +338,42 @@ type HttpResult<T> = std::result::Result<T, HttpError>;
 
 // ----- page -----------------------------------------------------------------
 
-async fn page_root(State(s): State<AppState>) -> HttpResult<Html<String>> {
-    page(&s, "", "default")
+async fn page_root(State(s): State<AppState>, headers: HeaderMap) -> HttpResult<Response> {
+    page(&s, &headers, "", "default")
 }
 
 async fn page_tree(
     State(s): State<AppState>,
     Path(path): Path<String>,
-) -> HttpResult<Html<String>> {
-    page(&s, &path, "default")
+    headers: HeaderMap,
+) -> HttpResult<Response> {
+    page(&s, &headers, &path, "default")
 }
 
 async fn page_workspace(
     State(s): State<AppState>,
     Path(name): Path<String>,
-) -> HttpResult<Html<String>> {
+    headers: HeaderMap,
+) -> HttpResult<Response> {
     // `/lab/workspaces/{name}/tree/{path}` opens a path in a workspace.
     let (name, tree) = name.split_once("/tree/").unwrap_or((&name, ""));
-    page(&s, tree, name)
+    page(&s, &headers, tree, name)
 }
 
-fn page(s: &AppState, tree_path: &str, workspace: &str) -> HttpResult<Html<String>> {
+/// The page, with an `_xsrf` cookie when the browser has none, as
+/// `jupyter_server` sets it on every page it renders.
+fn page(
+    s: &AppState,
+    headers: &HeaderMap,
+    tree_path: &str,
+    workspace: &str,
+) -> HttpResult<Response> {
     let lab = lab_of(s)?;
-    Ok(Html(lab.render_page(
-        &s.base_url,
-        s.token.as_deref(),
-        tree_path,
-        workspace,
-    )))
+    let html = Html(lab.render_page(&s.base_url, s.token.as_deref(), tree_path, workspace));
+    Ok(match crate::auth::xsrf_cookie(s, headers) {
+        Some(cookie) => ([(header::SET_COOKIE, cookie)], html).into_response(),
+        None => html.into_response(),
+    })
 }
 
 // ----- themes ---------------------------------------------------------------
@@ -794,7 +808,7 @@ fn script_safe_json(v: &Value) -> String {
         .replace('\'', "\\u0027")
 }
 
-fn html_escape(s: &str) -> String {
+pub(crate) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
