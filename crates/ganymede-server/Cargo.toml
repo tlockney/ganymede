@@ -14,7 +14,7 @@ path = "src/main.rs"
 ganymede-protocol = { path = "../ganymede-protocol" }
 ganymede-kernel-host = { path = "../ganymede-kernel-host" }
 ganymede-api = { path = "../ganymede-api" }
-ganymede-contents = { path = "../ganymede-contents" }
+ganymede-contents = { path = "../ganymede-contents", features = ["sqlite"] }
 axum.workspace = true
 tower-http.workspace = true
 tower.workspace = true

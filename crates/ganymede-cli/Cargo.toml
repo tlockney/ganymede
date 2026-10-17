@@ -18,6 +18,7 @@ pre-release-hook = ["sh", "-c", "cd \"$WORKSPACE_ROOT\" && if [ \"$DRY_RUN\" = t
 [dependencies]
 ganymede-engine = { path = "../ganymede-engine" }
 ganymede-server = { path = "../ganymede-server" }
+ganymede-contents = { path = "../ganymede-contents", features = ["sqlite"] }
 clap.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "signal"] }
 serde_json.workspace = true

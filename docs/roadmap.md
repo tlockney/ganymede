@@ -20,6 +20,9 @@ pull request with a GitHub issue, and records what it learned in the
   a notebook inside wasm under WASI.
 - **Releases.** A `vX.Y.Z` tag builds and publishes binaries for Linux,
   macOS, and Windows.
+- **Notebook trust.** Notebooks are signed on save and marked `trusted`
+  on read as `jupyter_server` does, with Jupyter's key and signature
+  database, and `ganymede trust` signs one by hand.
 
 ## Next
 
@@ -40,7 +43,6 @@ pull request with a GitHub issue, and records what it learned in the
 
 ## Open
 
-- A trust store, so cells come back `trusted` as from `jupyter_server`.
 - Restarting a kernel automatically when it crashes.
 - A runtime seam for the browser (timers and `spawn` on
   `wasm-bindgen-futures`) and a websocket or `postMessage` transport, so

@@ -18,6 +18,11 @@ pub struct Config {
     pub root_dir: PathBuf,
     /// Checkpoints outside the root, for synced folders.
     pub checkpoint_dir: Option<PathBuf>,
+    /// Where the notebook-signing key (`notebook_secret`) and the trusted
+    /// signatures (`nbsignatures.db`) live. Defaults to the Jupyter data
+    /// dir, so notebooks trusted by Jupyter are trusted here too
+    /// (`NotebookNotary.data_dir`).
+    pub notary_dir: Option<PathBuf>,
     /// Directory of static frontend assets served at `/`. When it is
     /// JupyterLab's static bundle (`share/jupyter/lab/static`), the server
     /// serves JupyterLab at `/lab` with its `/lab/api/*` endpoints instead.
@@ -54,6 +59,7 @@ impl Default for Config {
             cookie_secret_file: None,
             root_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             checkpoint_dir: None,
+            notary_dir: None,
             static_dir: None,
             lab_version: None,
             labextensions_paths: vec![],

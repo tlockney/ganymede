@@ -100,6 +100,8 @@ fn start_ganymede() -> Server {
         .arg(root.path())
         .arg("--config-dir")
         .arg(state.path())
+        .arg("--notary-dir")
+        .arg(state.path().join("notary"))
         .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -122,6 +124,8 @@ fn start_jupyter(jupyter: &std::path::Path) -> Server {
     let root = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
     let port = free_port();
+    // nbformat writes the signing key there but does not create the dir.
+    std::fs::create_dir(state.path().join("notary")).unwrap();
     let child = Command::new(jupyter)
         .args([
             "server",
@@ -132,6 +136,10 @@ fn start_jupyter(jupyter: &std::path::Path) -> Server {
             &format!("--IdentityProvider.token={TOKEN}"),
         ])
         .arg(format!("--ServerApp.root_dir={}", root.path().display()))
+        .arg(format!(
+            "--NotebookNotary.data_dir={}",
+            state.path().join("notary").display()
+        ))
         .env("JUPYTER_CONFIG_DIR", state.path().join("config"))
         .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
         .stdout(Stdio::null())
@@ -529,18 +537,14 @@ async fn scenario(base: &str, c: &Code) -> Vec<(String, Value)> {
         "contents save",
         json!({"status": s, "keys": keys(&v), "v": pick(&v, &["name", "path", "type", "format", "content", "writable", "mimetype"])}),
     );
-    let (s, mut v) = cl.call(M::GET, "api/contents/scenario.ipynb", None).await;
-    // jupyter_server marks code cells `trusted` from its notebook-signature
-    // store; Ganymede has no trust store yet. Compared without it.
-    for cell in v["content"]["cells"].as_array_mut().into_iter().flatten() {
-        cell["metadata"]
-            .as_object_mut()
-            .map(|m| m.remove("trusted"));
-    }
+    // Code cells come back with `trusted` from the signature store: the
+    // notebook has no rich output, so it was signed on save.
+    let (s, v) = cl.call(M::GET, "api/contents/scenario.ipynb", None).await;
     cl.record(
         "contents get",
         json!({"status": s, "keys": keys(&v), "v": pick(&v, &["name", "path", "type", "format", "mimetype", "writable"]), "content": v["content"]}),
     );
+    trust_steps(&mut cl).await;
     let (s, v) = cl
         .call(M::GET, "api/contents/scenario.ipynb?content=0&hash=1", None)
         .await;
@@ -726,6 +730,55 @@ async fn scenario(base: &str, c: &Code) -> Vec<(String, Value)> {
     );
 
     cl.transcript
+}
+
+/// Notebook signing: rich output is trusted when the client says it was
+/// produced in this session, or after `POST .../trust`, and not otherwise.
+async fn trust_steps(cl: &mut Client) {
+    use reqwest::Method as M;
+    let rich = |html: &str, trusted: Option<bool>| {
+        let mut metadata = json!({});
+        if let Some(t) = trusted {
+            metadata["trusted"] = json!(t);
+        }
+        json!({"type": "notebook", "content": {"nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [
+            {"cell_type": "markdown", "id": "m1", "metadata": {}, "source": "# rich"},
+            {"cell_type": "code", "id": "c1", "metadata": metadata, "source": "html()", "execution_count": 1,
+             "outputs": [{"output_type": "display_data", "metadata": {},
+                          "data": {"text/html": html, "text/plain": "<HTML>"}}]}
+        ]}})
+    };
+    let path = "api/contents/rich.ipynb";
+    let get_trusted = async |cl: &mut Client, step: &str| {
+        let (s, v) = cl.call(M::GET, path, None).await;
+        let flags: Vec<Value> = v["content"]["cells"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|c| c["metadata"].get("trusted").cloned().unwrap_or(Value::Null))
+            .collect();
+        cl.record(step, json!({"status": s, "trusted": flags}));
+    };
+    for (step, body) in [
+        ("save untrusted html", rich("<b>a</b>", None)),
+        ("save html marked untrusted", rich("<b>b</b>", Some(false))),
+    ] {
+        let (s, _) = cl.call(M::PUT, path, Some(body)).await;
+        cl.record(step, json!({"status": s}));
+        get_trusted(cl, &format!("{step}: get")).await;
+    }
+    let (s, v) = cl.call(M::POST, &format!("{path}/trust"), None).await;
+    cl.record("trust", json!({"status": s, "body": v}));
+    get_trusted(cl, "trust: get").await;
+    let (s, _) = cl.call(M::GET, &format!("{path}/trust"), None).await;
+    cl.record("trust GET", json!({"status": s}));
+    let (s, _) = cl
+        .call(M::PUT, path, Some(rich("<b>c</b>", Some(true))))
+        .await;
+    cl.record("save html from this session", json!({"status": s}));
+    get_trusted(cl, "save html from this session: get").await;
+    let (s, _) = cl.call(M::DELETE, path, None).await;
+    cl.record("delete rich", json!({"status": s}));
 }
 
 /// Object key order carries no meaning in the API.

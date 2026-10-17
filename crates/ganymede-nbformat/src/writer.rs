@@ -110,8 +110,9 @@ pub(crate) fn sort_keys(value: &mut Value) {
 /// differ only in layout. Python uses positional notation when the decimal
 /// exponent is in `-4..16` and otherwise scientific notation with a signed,
 /// at least two digit exponent (`1e-05`, `1e+16`), where serde_json would
-/// write `0.00001` and `1e16`.
-pub(crate) fn python_float_repr(f: f64) -> String {
+/// write `0.00001` and `1e16`. Notebook signing hashes numbers in this form
+/// too (nbformat's `yield_everything` uses `str()`).
+pub fn python_float_repr(f: f64) -> String {
     let sci = format!("{:e}", f.abs());
     let (mantissa, exp) = sci
         .split_once('e')

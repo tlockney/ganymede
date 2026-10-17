@@ -91,6 +91,23 @@ enum Cmd {
         #[command(subcommand)]
         cmd: NbCmd,
     },
+    /// Trust notebooks' HTML and JavaScript output, as `jupyter trust` does.
+    ///
+    /// Records each notebook's signature with the key and database Jupyter
+    /// uses (`notebook_secret` and `nbsignatures.db` in the Jupyter data
+    /// dir), so the server and Jupyter render its outputs unsanitized. With
+    /// no NOTEBOOK, one is read from stdin.
+    Trust {
+        notebooks: Vec<PathBuf>,
+        /// Delete the trusted signatures and generate a new key. Every
+        /// notebook becomes untrusted.
+        #[arg(long)]
+        reset: bool,
+        /// Directory with the key and signatures instead of the Jupyter
+        /// data dir.
+        #[arg(long, value_name = "DIR")]
+        notary_dir: Option<PathBuf>,
+    },
     /// Serve JupyterLab in the current directory and open it in the
     /// browser; or install, list, and remove JupyterLab's frontend.
     #[command(args_conflicts_with_subcommands = true)]
@@ -325,6 +342,11 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             write_notebook(&nb, dest.as_deref())?;
             Ok(ExitCode::SUCCESS)
         }
+        Cmd::Trust {
+            notebooks,
+            reset,
+            notary_dir,
+        } => trust(&notebooks, reset, notary_dir),
         // Blocking HTTP and file I/O, off the async workers.
         Cmd::Lab { cmd: Some(cmd), .. } => {
             tokio::task::spawn_blocking(move || lab::run(cmd)).await?
@@ -619,6 +641,52 @@ fn write_notebook(nb: &Notebook, dest: Option<&Path>) -> Result<()> {
         None => print!("{}", nb.to_file_string()),
     }
     Ok(())
+}
+
+/// `jupyter trust`: the same messages, the same exit status.
+fn trust(notebooks: &[PathBuf], reset: bool, dir: Option<PathBuf>) -> Result<ExitCode> {
+    use ganymede_contents::trust::{self, Notary, DB_FILE, SECRET_FILE};
+    let dir = match dir {
+        Some(d) => d,
+        None => ks::jupyter_user_data_dir().context("no Jupyter data directory")?,
+    };
+    if reset {
+        let db = dir.join(DB_FILE);
+        if db.exists() {
+            println!("Removing trusted signature cache: {}", db.display());
+            std::fs::remove_file(&db).with_context(|| format!("removing {}", db.display()))?;
+        }
+        let secret = dir.join(SECRET_FILE);
+        println!("Generating new notebook key: {}", secret.display());
+        trust::write_secret(&secret, &trust::generate_secret()?)
+            .with_context(|| format!("writing {}", secret.display()))?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    let notary = Notary::open(&dir).with_context(|| format!("notary in {}", dir.display()))?;
+    let sign = |nb: &Notebook, label: &str| -> Result<()> {
+        let nb = serde_json::to_value(nb)?;
+        if notary.check_signature(&nb) {
+            println!("Notebook already signed: {label}");
+        } else {
+            println!("Signing notebook: {label}");
+            notary.sign(&nb)?;
+        }
+        Ok(())
+    };
+    if notebooks.is_empty() {
+        let nb = Notebook::from_reader(std::io::stdin().lock()).context("reading stdin")?;
+        sign(&nb, "<stdin>")?;
+    }
+    for path in notebooks {
+        if !path.exists() {
+            eprintln!("Notebook missing: {}", path.display());
+            return Ok(ExitCode::FAILURE);
+        }
+        let nb = ganymede_engine::nbformat::read_file(path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        sign(&nb, &path.display().to_string())?;
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// What `jupyter nbconvert --clear-output` removes.
