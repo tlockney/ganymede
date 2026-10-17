@@ -387,6 +387,10 @@ impl KernelManager {
         kernel.set_state("restarting");
         let old = kernel.session();
         let _ = old.shutdown(true, self.config.shutdown_grace).await;
+        // The new kernel reuses the id, so its connection file has the same
+        // path. Dropping the old launch removes that file; do it before the
+        // new kernel can read it, not after.
+        kernel.launched.lock().unwrap().take();
         let (session, launched) = self.launch(&kernel.spec, kernel.cwd.clone(), id).await?;
         *kernel.session.write().unwrap() = session.clone();
         *kernel.launched.lock().unwrap() = Some(launched);
