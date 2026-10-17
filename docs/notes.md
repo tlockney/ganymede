@@ -812,3 +812,13 @@ kernels e2e binary failed 2 of 12 runs four at a time.
 - Result: 0 failures and 0 relaunches in 320 parallel CLI starts, and the
   whole `ganymede-cli` e2e suite passes 12 of 12 runs four at a time. The
   API's own launch path gets the reconnects but not the relaunch yet.
+
+The server parity test later failed once on CI with jupyter_server
+answering a DELETE with 400. Its contents manager sends files to the trash
+by default, and send2trash creates `~/.local/share/Trash` by checking that it
+exists and then calling `makedirs`. On a fresh runner the cdp-kernel and
+ipykernel parity tests delete at the same moment, both see no trash
+directory, and one `makedirs` fails. Paired deletes into a fresh home failed
+1 time in 30 locally. The reference server now runs with
+`--FileContentsManager.delete_to_trash=False`, which also matches ganymede,
+which deletes for good.
