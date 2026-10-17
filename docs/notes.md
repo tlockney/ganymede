@@ -754,6 +754,75 @@ save and marks cells on read, the server serves `POST
   the `application/javascript` output both run; in an edited copy saved
   without `trusted` flags neither does.
 
+## 2026-10-17, releases through a PR
+
+- The first `release.sh --execute` could not push the release commit and
+  tag to `main`: Claude sessions may push only their own branch (HTTP 403
+  from the proxy), and direct pushes also skip the PR-links-issue rule.
+- Now cargo-release only bumps and commits (`tag = false`, `push = false`
+  in release.toml). The script moves that commit to `release/vX.Y.Z`,
+  resets local `main`, pushes, and with `gh` opens an issue and a PR that
+  closes it. A release can be cut by merging a PR from the GitHub app.
+- `tag-release.yml` runs on pushes to `main` that touch `Cargo.toml`. It
+  tags only when the workspace version has a CHANGELOG.md section and no
+  tag, so dependency changes and the untagged 0.0.1 are ignored.
+- A tag pushed with `GITHUB_TOKEN` triggers no workflows, but
+  `workflow_dispatch` is exempt, so tag-release runs
+  `gh workflow run release.yml --ref vX.Y.Z` (needs `actions: write`).
+  Dispatched on a tag ref, `github.ref_type` is `tag`, so release.yml's
+  version check and publish job behave as on a pushed tag.
+
+## 2026-10-17, kernels that never answer under parallel starts (#25)
+
+`e2e (ubuntu-latest)` failed with "timed out waiting for
+kernel_info_reply" on a PR that changed no Rust. Locally, 40 parallel
+`ganymede run -k cdp-node` failed about 1 in 10, as "timed out", "kernel
+died", or "zmq: Provided sockets combination is not compatible"; the
+kernels e2e binary failed 2 of 12 runs four at a time.
+
+- Ports are free when picked and taken by whoever binds first. Until the
+  kernel binds, a host's connection can land on another socket on that
+  port: another host's free-port probe, or another kernel's PUB.
+- The `zeromq` crate reconnects SUB sockets but not DEALERs. A DEALER
+  whose first peer went away stayed unconnected, and every send failed
+  with "Not connected to peers" until the timeout. DEALERs now reconnect
+  on a failed send, and a failed handshake is retried, not fatal.
+- `zeromq`'s connect retries a refused port with backoff up to 5 s, and
+  cutting a handshake short with its `connect_timeout` can leave the
+  kernel's ROUTER holding our routing id, so later connections with it are
+  ignored (attach tests timed out that way). A plain TCP probe, retried
+  every 20-250 ms, now waits for the port before zeromq connects.
+- `ZmqTransport::connect` returns at once; each socket connects in its
+  task, so the startup timeout bounds the whole start. Shell sends nothing
+  until stdin and iopub are connected (an `input_request` needs the stdin
+  socket, a first request's outputs need iopub). The nudge keeps sending
+  `kernel_info_request` on shell until iopub has delivered something,
+  since the SUB socket can connect after shell and control answered.
+- Two kernels can still be given the same port; the loser exits or never
+  answers. `Relaunch::start` (engine start and restart) launches again on
+  fresh ports, up to 3 times, after `KernelDied` or a startup timeout.
+- Ports are picked at random from 20000-32767, below the ephemeral
+  ranges, so a reconnecting socket cannot be given the kernel's port as
+  its own source port.
+- Connecting lazily exposed a bug in the API's restart: the new kernel
+  reuses the id and so the connection file path, and dropping the old
+  launch afterwards deleted the new kernel's file. ipykernel that had not
+  read it yet wrote its own with other ports. The old launch is now
+  dropped before the new kernel starts.
+- Result: 0 failures and 0 relaunches in 320 parallel CLI starts, and the
+  whole `ganymede-cli` e2e suite passes 12 of 12 runs four at a time. The
+  API's own launch path gets the reconnects but not the relaunch yet.
+
+The server parity test later failed once on CI with jupyter_server
+answering a DELETE with 400. Its contents manager sends files to the trash
+by default, and send2trash creates `~/.local/share/Trash` by checking that it
+exists and then calling `makedirs`. On a fresh runner the cdp-kernel and
+ipykernel parity tests delete at the same moment, both see no trash
+directory, and one `makedirs` fails. Paired deletes into a fresh home failed
+1 time in 30 locally. The reference server now runs with
+`--FileContentsManager.delete_to_trash=False`, which also matches ganymede,
+which deletes for good.
+
 ## 2026-10-17, prebuilt JupyterLab extensions from wheels
 
 `ganymede lab extension install|list|remove` (#16) unpacks

@@ -15,6 +15,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 /// "No timeout", without overflowing an `Instant`.
 const FOREVER: Duration = Duration::from_secs(10 * 365 * 24 * 3600);
+/// Launches tried before a kernel that never answers counts as failed.
+const START_ATTEMPTS: u32 = 3;
 
 /// What it takes to launch the same kernel again.
 #[cfg_attr(not(feature = "zmq"), allow(dead_code))]
@@ -46,6 +48,33 @@ impl Relaunch {
         };
         let session = KernelSession::start(transport, Some(&launched));
         Ok((session, launched))
+    }
+
+    /// Launch and wait for `kernel_info_reply`. Ports are free when picked
+    /// but belong to whichever process binds them first, so two kernels
+    /// launched at once can be given the same one; the loser exits or never
+    /// answers. Such a launch is retried on fresh ports.
+    pub async fn start(
+        &self,
+        timeout: Duration,
+    ) -> Result<(KernelSession, LaunchedKernel, KernelInfoReply)> {
+        use ganymede_kernel_host::Error as HostError;
+        let mut attempt = 1;
+        loop {
+            let (session, launched) = self.launch().await?;
+            match session.nudge(timeout).await {
+                Ok(info) => return Ok((session, launched, info)),
+                Err(e) => {
+                    let _ = session.shutdown(false, Duration::from_millis(200)).await;
+                    let retry = matches!(e, HostError::KernelDied | HostError::Timeout(_));
+                    if !retry || attempt == START_ATTEMPTS {
+                        return Err(e.into());
+                    }
+                    tracing::warn!(kernel = %self.spec.name, "kernel failed to start ({e}); launching again");
+                    attempt += 1;
+                }
+            }
+        }
     }
 }
 
@@ -178,17 +207,27 @@ impl Kernel {
         relaunch: Option<Relaunch>,
         startup_timeout: Duration,
     ) -> Result<Kernel> {
-        let info = match session.nudge(startup_timeout).await {
-            Ok(i) => i,
-            Err(e) => {
-                if launched.is_some() && relaunch.is_some() {
-                    let _ = session.shutdown(false, Duration::from_millis(200)).await;
-                }
-                return Err(e.into());
-            }
-        };
+        let info = session.nudge(startup_timeout).await?;
+        Ok(Kernel::started(
+            session,
+            launched,
+            info,
+            spec,
+            relaunch,
+            startup_timeout,
+        ))
+    }
+
+    pub(crate) fn started(
+        session: KernelSession,
+        launched: Option<LaunchedKernel>,
+        info: KernelInfoReply,
+        spec: Option<Kernelspec>,
+        relaunch: Option<Relaunch>,
+        startup_timeout: Duration,
+    ) -> Kernel {
         let info_json = session.kernel_info_json().unwrap_or(Value::Null);
-        Ok(Kernel {
+        Kernel {
             current: RwLock::new(Current {
                 session,
                 launched,
@@ -198,7 +237,7 @@ impl Kernel {
             spec,
             relaunch,
             startup_timeout,
-        })
+        }
     }
 
     /// The protocol session underneath, for anything this type does not
@@ -404,8 +443,7 @@ impl Kernel {
             .ok_or_else(|| Error::Usage("restart needs a kernel this engine launched".into()))?;
         let old = self.session();
         let _ = old.shutdown(true, SHUTDOWN_GRACE).await;
-        let (session, launched) = relaunch.launch().await?;
-        let info = session.nudge(self.startup_timeout).await?;
+        let (session, launched, info) = relaunch.start(self.startup_timeout).await?;
         let info_json = session.kernel_info_json().unwrap_or(Value::Null);
         *self.current.write().unwrap() = Current {
             session,

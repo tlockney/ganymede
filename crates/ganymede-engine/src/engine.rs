@@ -95,15 +95,15 @@ impl Engine {
                 quiet: self.quiet,
             },
         };
-        let (session, launched) = relaunch.launch().await?;
-        Kernel::ready(
+        let (session, launched, info) = relaunch.start(self.startup_timeout).await?;
+        Ok(Kernel::started(
             session,
             Some(launched),
+            info,
             Some(spec),
             Some(relaunch),
             self.startup_timeout,
-        )
-        .await
+        ))
     }
 
     /// Use a running kernel by its connection file, as
