@@ -1,9 +1,14 @@
-# jupyter-core-rs
+# Ganymede
 
 A sketch of a Jupyter server in Rust with no Python anywhere in the
 product: a kernel-agnostic kernel host, the messaging protocol, and the
 server API. First target kernel is [cdp-kernel](https://cdp-kernel.org)
 for TypeScript notebooks.
+
+Named for Jupiter's largest moon, and for the cupbearer who served the
+gods on Olympus. Started as `jupyter-core-rs` in
+[tlockney/research](https://github.com/tlockney/research); the crates still
+carry the `jcore-` prefix.
 
 Only the core server is Rust. The UI is pluggable and lives outside the
 core: any Jupyter frontend, a TypeScript web UI, or a native shell such as
@@ -15,7 +20,7 @@ is shared TypeScript for UIs that render in a web view, not part of the core.
 - [`notes.md`](notes.md): findings and open questions.
 
 Section 6 of the sketch reads the server against the
-[ts-on-ipados](../ts-on-ipados/) plan, where it is the remote tier.
+[ts-on-ipados](https://github.com/tlockney/research/tree/main/ts-on-ipados) plan, where it is the remote tier.
 Section 7 gives the module seams, the crate layout, and which modules
 each deployment profile (server, desktop, iPad) uses.
 
