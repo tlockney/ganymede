@@ -62,6 +62,23 @@ ganymede kernel -k cdp-node
 ganymede run --existing kernel-<id>.json 'x'
 ```
 
+## Start JupyterLab
+
+In the directory with your notebooks, as with `jupyter lab`:
+
+```sh
+ganymede lab install     # once: JupyterLab's frontend, from PyPI, no Python
+ganymede lab
+```
+
+`ganymede lab` is `ganymede serve` with the installed JupyterLab. It
+prints the URL of `/lab`, with its token, and opens it in the default
+browser (`open` on macOS, `xdg-open` on Linux); `--no-browser` only
+prints it. The token in the URL logs the browser in. Port 8888 is tried
+first, then each next port while it is taken, up to 50 more. It takes
+`serve`'s flags below, and fails, naming `ganymede lab install`, when no
+JupyterLab is installed.
+
 ## Serve the Jupyter API
 
 `ganymede serve` serves the REST and websocket API that JupyterLab, VS

@@ -3,6 +3,7 @@
 
 mod console;
 mod lab;
+mod lab_start;
 mod render;
 
 use anyhow::{bail, Context, Result};
@@ -90,10 +91,14 @@ enum Cmd {
         #[command(subcommand)]
         cmd: NbCmd,
     },
-    /// Install, list, and remove JupyterLab's frontend for `serve`.
+    /// Serve JupyterLab in the current directory and open it in the
+    /// browser; or install, list, and remove JupyterLab's frontend.
+    #[command(args_conflicts_with_subcommands = true)]
     Lab {
         #[command(subcommand)]
-        cmd: lab::LabCmd,
+        cmd: Option<lab::LabCmd>,
+        #[command(flatten)]
+        start: Box<lab_start::StartArgs>,
     },
     /// Serve the Jupyter REST and websocket API (JupyterLab, VS Code, ...).
     Serve(Box<ganymede_server::serve::ServeArgs>),
@@ -321,7 +326,13 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         // Blocking HTTP and file I/O, off the async workers.
-        Cmd::Lab { cmd } => tokio::task::spawn_blocking(move || lab::run(cmd)).await?,
+        Cmd::Lab { cmd: Some(cmd), .. } => {
+            tokio::task::spawn_blocking(move || lab::run(cmd)).await?
+        }
+        Cmd::Lab { cmd: None, start } => {
+            lab_start::run(*start, cli.kernelspec_root).await?;
+            Ok(ExitCode::SUCCESS)
+        }
         Cmd::Serve(args) => {
             let mut cfg = args.into_config()?;
             cfg.kernelspec_roots.extend(cli.kernelspec_root);

@@ -93,9 +93,29 @@ impl ServeArgs {
     }
 }
 
+/// Called with the printed URL once the port is bound.
+pub type OnListening = Box<dyn FnOnce(&str) + Send>;
+
+/// What `ganymede lab` asks of [`run_with`] beyond `ganymede serve`.
+#[derive(Default)]
+pub struct Startup {
+    /// Ports after the configured one to try while it is taken, like
+    /// `jupyter_server`'s `port_retries`.
+    pub port_retries: u16,
+    /// Fail instead of serving only the API when there is no JupyterLab,
+    /// and print the URL of `/lab` rather than of the root.
+    pub require_lab: bool,
+    pub on_listening: Option<OnListening>,
+}
+
 /// Serve until Ctrl-C, then shut down every kernel. Prints the URL, with
 /// its token, as the only line on stdout.
 pub async fn run(cfg: Config) -> Result<()> {
+    run_with(cfg, Startup::default()).await
+}
+
+/// [`run`], adjusted by `startup`.
+pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     let token = match cfg.token.clone() {
         Some(t) if t.is_empty() => None,
         Some(t) => Some(t),
@@ -125,6 +145,19 @@ pub async fn run(cfg: Config) -> Result<()> {
         );
         crate::lab::Lab::detect(dir, &ext_dirs, &config_dir, &root_dir)
     });
+    match (&static_dir, &lab) {
+        (_, Some(_)) => {}
+        (Some(d), None) if startup.require_lab => {
+            anyhow::bail!("{} is not a JupyterLab static dir", d.display())
+        }
+        (None, None) if startup.require_lab => {
+            anyhow::bail!("no JupyterLab installed; run `ganymede lab install` first")
+        }
+        (None, None) => tracing::info!(
+            "no JupyterLab installed; serving the API only (`ganymede lab install` adds it)"
+        ),
+        (Some(_), None) => {}
+    }
     if let Some(lab) = &lab {
         tracing::info!(
             "serving {} {} from {} with {} prebuilt extension(s)",
@@ -190,17 +223,21 @@ pub async fn run(cfg: Config) -> Result<()> {
         });
     }
 
-    let listener = tokio::net::TcpListener::bind((cfg.ip.as_str(), cfg.port)).await?;
+    let listener = bind(&cfg.ip, cfg.port, startup.port_retries).await?;
     let addr = listener.local_addr()?;
+    let page = if startup.require_lab { "lab" } else { "" };
     let url = match &token {
-        Some(t) => format!("http://{addr}{base_url}?token={t}"),
-        None => format!("http://{addr}{base_url}"),
+        Some(t) => format!("http://{addr}{base_url}{page}?token={t}"),
+        None => format!("http://{addr}{base_url}{page}"),
     };
     tracing::info!("serving {} at {url}", root_dir.display());
     if token.is_none() {
         tracing::warn!("auth disabled: anyone who can reach this port can run code");
     }
     println!("{url}");
+    if let Some(f) = startup.on_listening {
+        f(&url);
+    }
 
     let shutdown = async {
         shutdown_signal().await;
@@ -211,6 +248,27 @@ pub async fn run(cfg: Config) -> Result<()> {
         .await?;
     kernels.shutdown_all().await;
     Ok(())
+}
+
+/// A listener on `port`, or on the first free one of the `retries` after
+/// it. Port 0 lets the OS choose.
+async fn bind(ip: &str, port: u16, retries: u16) -> Result<tokio::net::TcpListener> {
+    let mut port = port;
+    let mut left = if port == 0 { 0 } else { retries };
+    loop {
+        match tokio::net::TcpListener::bind((ip, port)).await {
+            Ok(l) => return Ok(l),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && left > 0 => {
+                tracing::info!("port {port} is in use, trying {}", port + 1);
+            }
+            Err(e) => return Err(e).with_context(|| format!("binding {ip}:{port}")),
+        }
+        let Some(next) = port.checked_add(1) else {
+            anyhow::bail!("no free port after {port}");
+        };
+        port = next;
+        left -= 1;
+    }
 }
 
 /// The static dir of the JupyterLab installed by `ganymede lab install`:
@@ -227,14 +285,7 @@ fn installed_lab(version: Option<&str>) -> Result<Option<PathBuf>> {
                 "JupyterLab {v} is not installed; run `ganymede lab install --version {v}`"
             ),
         },
-        None => {
-            if installs.is_empty() {
-                tracing::info!(
-                    "no JupyterLab installed; serving the API only (`ganymede lab install` adds it)"
-                );
-            }
-            Ok(installs.first().map(crate::lab::Installed::static_dir))
-        }
+        None => Ok(installs.first().map(crate::lab::Installed::static_dir)),
     }
 }
 
