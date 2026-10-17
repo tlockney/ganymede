@@ -23,12 +23,15 @@ stdin, and running cells.
 Ganymede serves JupyterLab's own static bundle, so no `jupyter lab`
 process is needed, only its files. `ganymede lab install` downloads them
 from PyPI's `jupyterlab` wheel (no Python involved) and checks its SHA-256;
-`ganymede serve` then serves the newest installed version:
+`ganymede lab` then serves the newest installed version in the current
+directory and opens it in the browser, like `jupyter lab`:
 
 ```sh
 ganymede lab install                    # JupyterLab 4.6.4; --version picks another
 ganymede lab list
-ganymede serve                          # JupyterLab at /lab
+ganymede lab                            # JupyterLab at /lab, opened in the browser
+ganymede lab --no-browser --port 9000   # takes `serve`'s flags
+ganymede serve                          # the same at /lab, no browser, API-only if none installed
 ganymede serve --lab-version 4.6.4      # a specific installed version
 ganymede lab remove 4.6.4
 ```
@@ -49,7 +52,11 @@ ganymede serve --static-dir <prefix>/share/jupyter/lab/static
 
 The page is served at `/lab`, with the `/lab/api/*` endpoints it calls.
 
-Open the URL `ganymede serve` printed. The token in it becomes a login
+`ganymede lab` fails when no JupyterLab is installed; `ganymede serve`
+serves the API alone. `lab` also moves past a taken port, from 8888 up
+to 50 more, as `jupyter lab` does, and prints the URL of `/lab`.
+
+Open the URL `ganymede lab` or `ganymede serve` printed. The token in it becomes a login
 cookie, and the browser is redirected to the same page without it; the
 cookie is what JupyterLab's websockets authenticate with. Without the
 token, the page sends you to `/login`, which asks for it. `/logout` ends

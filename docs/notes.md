@@ -863,3 +863,42 @@ and the kernel reads the count back (`validation/widgets.mjs`).
   (`@jupyter-widgets/jupyterlab-manager:plugin`).
 - `lab::data_dir()` is now the shared root for `lab/` and
   `labextensions/`.
+
+## 2026-10-17, `ganymede lab`
+
+One command to start JupyterLab (#17): `ganymede lab [--no-browser]
+[serve flags]` in the notebook directory.
+
+- Command shape: `lab` already had `install/list/remove`, so the start
+  flags are flattened onto `lab` itself with an optional subcommand and
+  clap's `args_conflicts_with_subcommands`. Bare `ganymede lab` matches
+  `jupyter lab`; `ganymede lab list --port 1` is a usage error, not a
+  silently ignored flag. A `lab start` subcommand would have been the
+  same code with worse parity. The start code is in its own module
+  (`lab_start.rs`) so `lab.rs` keeps only the bundle management.
+- The server side is `serve::run_with(cfg, Startup)`; `run` is
+  `run_with` with the default. `Startup` carries `port_retries`,
+  `require_lab`, and an `on_listening(url)` callback, so the browser is
+  opened by the CLI after the port is bound and nothing in the server
+  knows about browsers.
+- Port fallback follows jupyter_server's `port_retries` (default 50) but
+  sequentially, without its random ports after the first few, and also
+  when `--port` was given. Only
+  `AddrInUse` moves on; any other bind error fails at once. `--port 0`
+  never retries. `serve` keeps failing on a taken port.
+- The printed URL is `/lab?token=…`, as `jupyter lab` prints. The page's
+  `strip_token` middleware turns that into the login cookie and a
+  redirect to `/lab`, so the browser opened on it is logged in.
+- The browser is opened with `open` (macOS), `xdg-open` (elsewhere on
+  Unix), or `explorer` (Windows), spawned with null stdio and reaped on a
+  thread. A missing opener or a failing exit is a warning; the URL is on
+  stdout. `$BROWSER` is not consulted, unlike Python's `webbrowser`.
+- No JupyterLab installed (or a `--static-dir` that isn't a Lab bundle)
+  fails before binding, naming `ganymede lab install`. The "serving the
+  API only" log moved from `installed_lab` to the caller so `lab` doesn't
+  print it right before failing.
+- The test (`tests/lab_start.rs`) needs no network: `Lab::detect` only
+  needs `static/index.html` containing `jupyter-config-data` and a
+  `package.json` with a `jupyterlab` key, under
+  `$GANYMEDE_DATA_DIR/lab/<version>/`. It holds a port open to check the
+  fallback.
