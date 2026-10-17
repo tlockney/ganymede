@@ -1,5 +1,5 @@
 /**
- * jupyter-core-rs frontend: public surface.
+ * Ganymede frontend: public surface.
  *
  * Layout mirrors the Rust crates (sketch.md 7.3):
  *   protocol/    message types and websocket codecs (no I/O)

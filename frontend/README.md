@@ -1,6 +1,6 @@
 # frontend
 
-TypeScript side of jupyter-core-rs: the module seams and the protocol
+TypeScript side of Ganymede: the module seams and the protocol
 plumbing from sketch.md sections 2.6, 7.2 and 7.3. No editor, no widget
 implementation, no UI framework yet. The layout mirrors the Rust crates.
 

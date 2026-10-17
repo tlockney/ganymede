@@ -568,6 +568,143 @@ dependencies = [
 ]
 
 [[package]]
+name = "ganymede-api"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ganymede-kernel-host",
+ "ganymede-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ganymede-cli"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "ganymede-exec",
+ "ganymede-kernel-host",
+ "ganymede-nbformat",
+ "ganymede-protocol",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "ganymede-contents"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "base64",
+ "chrono",
+ "ganymede-nbformat",
+ "mime_guess",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "ganymede-exec"
+version = "0.0.1"
+dependencies = [
+ "ganymede-kernel-host",
+ "ganymede-nbformat",
+ "ganymede-protocol",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "ganymede-kernel-host"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "dirs",
+ "futures",
+ "ganymede-protocol",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zeromq",
+]
+
+[[package]]
+name = "ganymede-nbformat"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "ganymede-protocol"
+version = "0.0.1"
+dependencies = [
+ "bytes",
+ "chrono",
+ "hex",
+ "hmac",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
+name = "ganymede-server"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "clap",
+ "futures",
+ "ganymede-api",
+ "ganymede-contents",
+ "ganymede-kernel-host",
+ "ganymede-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "toml",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -767,143 +904,6 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
-
-[[package]]
-name = "jcore-api"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "chrono",
- "jcore-kernel-host",
- "jcore-protocol",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "jcore-cli"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "clap",
- "jcore-exec",
- "jcore-kernel-host",
- "jcore-nbformat",
- "jcore-protocol",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "jcore-contents"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "base64",
- "chrono",
- "jcore-nbformat",
- "mime_guess",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "jcore-exec"
-version = "0.0.1"
-dependencies = [
- "jcore-kernel-host",
- "jcore-nbformat",
- "jcore-protocol",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "jcore-kernel-host"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "dirs",
- "futures",
- "jcore-protocol",
- "libc",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "uuid",
- "zeromq",
-]
-
-[[package]]
-name = "jcore-nbformat"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "jcore-protocol"
-version = "0.0.1"
-dependencies = [
- "bytes",
- "chrono",
- "hex",
- "hmac",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.21",
- "uuid",
-]
-
-[[package]]
-name = "jcore-server"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "chrono",
- "clap",
- "futures",
- "jcore-api",
- "jcore-contents",
- "jcore-kernel-host",
- "jcore-protocol",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-tungstenite 0.30.0",
- "toml",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
 
 [[package]]
 name = "js-sys"

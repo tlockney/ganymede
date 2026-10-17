@@ -7,8 +7,8 @@ for TypeScript notebooks.
 
 Named for Jupiter's largest moon, and for the cupbearer who served the
 gods on Olympus. Started as `jupyter-core-rs` in
-[tlockney/research](https://github.com/tlockney/research); the crates still
-carry the `jcore-` prefix.
+[tlockney/research](https://github.com/tlockney/research); the crates dropped
+their old `jcore-` prefix for `ganymede-`.
 
 Only the core server is Rust. The UI is pluggable and lives outside the
 core: any Jupyter frontend, a TypeScript web UI, or a native shell such as
@@ -38,25 +38,25 @@ Cargo workspace at this directory; `frontend/` is an npm package.
 
 | Crate | What it is | Tests |
 |---|---|---|
-| [`crates/jcore-protocol`](crates/jcore-protocol/) | Message envelope, typed content with unknown-field passthrough, ZMQ wire framing with HMAC, connection file, websocket v1 and legacy codecs. No I/O. | 12 |
-| [`crates/jcore-nbformat`](crates/jcore-nbformat/) | nbformat 4.5 reader and a writer byte-identical to Python `nbformat.write`. | 24 |
-| [`crates/jcore-kernel-host`](crates/jcore-kernel-host/) | Kernelspec discovery, transport seam (ZMQ and in-process), subprocess and attach provisioners, the session state machine, a fake kernel. | 9 |
-| [`crates/jcore-exec`](crates/jcore-exec/) | Headless executor: iopub messages to nbformat outputs, with `clear_output`, `display_id`, and stream merging. | 2 |
-| [`crates/jcore-cli`](crates/jcore-cli/) | `jcore kernelspec list`, `jcore run`, `jcore attach`, `jcore exec`. | |
-| [`crates/jcore-contents`](crates/jcore-contents/) | Contents seam and filesystem implementation matching `jupyter_server`'s model: atomic writes, mtime conflicts, checkpoints, configurable checkpoint dir, path safety. | 30 |
-| [`crates/jcore-api`](crates/jcore-api/) | Kernel and session managers, response models, per-client bridge with reply filtering, idle culling. No HTTP. | 6 |
-| [`crates/jcore-server`](crates/jcore-server/) | axum routes, token auth, origin check, websocket v1 and legacy framing, static assets, TOML config. | 5 |
+| [`crates/ganymede-protocol`](crates/ganymede-protocol/) | Message envelope, typed content with unknown-field passthrough, ZMQ wire framing with HMAC, connection file, websocket v1 and legacy codecs. No I/O. | 12 |
+| [`crates/ganymede-nbformat`](crates/ganymede-nbformat/) | nbformat 4.5 reader and a writer byte-identical to Python `nbformat.write`. | 24 |
+| [`crates/ganymede-kernel-host`](crates/ganymede-kernel-host/) | Kernelspec discovery, transport seam (ZMQ and in-process), subprocess and attach provisioners, the session state machine, a fake kernel. | 9 |
+| [`crates/ganymede-exec`](crates/ganymede-exec/) | Headless executor: iopub messages to nbformat outputs, with `clear_output`, `display_id`, and stream merging. | 2 |
+| [`crates/ganymede-cli`](crates/ganymede-cli/) | `ganymede kernelspec list`, `ganymede run`, `ganymede attach`, `ganymede exec`. | |
+| [`crates/ganymede-contents`](crates/ganymede-contents/) | Contents seam and filesystem implementation matching `jupyter_server`'s model: atomic writes, mtime conflicts, checkpoints, configurable checkpoint dir, path safety. | 30 |
+| [`crates/ganymede-api`](crates/ganymede-api/) | Kernel and session managers, response models, per-client bridge with reply filtering, idle culling. No HTTP. | 6 |
+| [`crates/ganymede-server`](crates/ganymede-server/) | axum routes, token auth, origin check, websocket v1 and legacy framing, static assets, TOML config. | 5 |
 | [`frontend/`](frontend/) | Protocol types, websocket codecs, `ServerConnection` with injectable `fetch` and `WebSocket`, REST client, `KernelConnection`, renderer registry, ANSI and stream handling, widget manager interfaces. | 45 |
 
 Try it:
 
 ```
 cargo test --workspace
-cargo run -p jcore-cli -- run --kernel fake "hello"
-cargo run -p jcore-cli -- kernelspec list
-cargo run -p jcore-cli -- run --kernel python3 "print(1+1)"   # any installed kernelspec
-cargo run -p jcore-cli -- exec notebook.ipynb -o out.ipynb
-cargo run -p jcore-server -- --root-dir . --port 8888      # then point JupyterLab or VS Code at the printed URL
+cargo run -p ganymede-cli -- run --kernel fake "hello"
+cargo run -p ganymede-cli -- kernelspec list
+cargo run -p ganymede-cli -- run --kernel python3 "print(1+1)"   # any installed kernelspec
+cargo run -p ganymede-cli -- exec notebook.ipynb -o out.ipynb
+cargo run -p ganymede-server -- --root-dir . --port 8888      # then point JupyterLab or VS Code at the printed URL
 cd frontend && npm install && npm test
 ```
 
