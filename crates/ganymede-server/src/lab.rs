@@ -718,16 +718,29 @@ pub fn find_extensions(dirs: &[PathBuf]) -> Vec<FederatedExtension> {
 
 // ----- installed bundles ------------------------------------------------
 
+/// Ganymede's data directory: `$GANYMEDE_DATA_DIR`, else `ganymede` under
+/// the platform's local data dir (`$XDG_DATA_HOME` or `~/.local/share` on
+/// Linux, `~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on
+/// Windows).
+pub fn data_dir() -> Option<PathBuf> {
+    match std::env::var_os("GANYMEDE_DATA_DIR") {
+        Some(d) if !d.is_empty() => Some(PathBuf::from(d)),
+        _ => dirs::data_local_dir().map(|d| d.join("ganymede")),
+    }
+}
+
 /// Where `ganymede lab install` keeps JupyterLab bundles, one directory per
 /// version holding `static/`, `schemas/`, `themes/`, and `LICENSE`:
-/// `$GANYMEDE_DATA_DIR/lab`, else `ganymede/lab` under the platform's local
-/// data dir (`$XDG_DATA_HOME` or `~/.local/share` on Linux,
-/// `~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on Windows).
+/// `lab` under [`data_dir`].
 pub fn installs_dir() -> Option<PathBuf> {
-    match std::env::var_os("GANYMEDE_DATA_DIR") {
-        Some(d) if !d.is_empty() => Some(PathBuf::from(d).join("lab")),
-        _ => dirs::data_local_dir().map(|d| d.join("ganymede").join("lab")),
-    }
+    data_dir().map(|d| d.join("lab"))
+}
+
+/// Where `ganymede lab extension install` puts prebuilt extensions, laid
+/// out as a Jupyter `share/jupyter/labextensions` directory:
+/// `labextensions` under [`data_dir`]. `ganymede serve` always looks here.
+pub fn extensions_dir() -> Option<PathBuf> {
+    data_dir().map(|d| d.join("labextensions"))
 }
 
 /// A JupyterLab bundle installed under [`installs_dir`].

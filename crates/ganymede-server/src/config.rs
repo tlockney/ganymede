@@ -24,7 +24,8 @@ pub struct Config {
     /// Which installed JupyterLab to serve when `static_dir` is unset.
     pub lab_version: Option<String>,
     /// Extra directories of prebuilt JupyterLab extensions, searched before
-    /// `labextensions` in the Jupyter data dirs.
+    /// those from `ganymede lab extension install` and `labextensions` in
+    /// the Jupyter data dirs.
     pub labextensions_paths: Vec<PathBuf>,
     /// Where frontend state is stored: `nbconfig/`, `lab/user-settings/`,
     /// `lab/workspaces/`. Defaults to `JUPYTER_CONFIG_DIR` or `~/.jupyter`.

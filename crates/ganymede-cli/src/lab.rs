@@ -5,7 +5,10 @@
 //! PyPI publishes, and unpacked here. Nothing is executed: only
 //! `<name>.data/data/share/jupyter/lab/{static,schemas,themes}` and the
 //! license are kept. `ganymede serve` finds the result through
-//! [`ganymede_server::lab::installs_dir`].
+//! [`ganymede_server::lab::installs_dir`]. Prebuilt extensions come from
+//! wheels the same way; see [`extension`].
+
+mod extension;
 
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
@@ -36,6 +39,15 @@ pub enum LabCmd {
         /// Reinstall if this version is already installed.
         #[arg(long)]
         force: bool,
+        /// Skip the extensions installed with JupyterLab by default:
+        /// `jupyterlab_widgets` and `anywidget`, for widgets.
+        #[arg(long)]
+        no_default_extensions: bool,
+    },
+    /// Install, list, and remove prebuilt JupyterLab extensions.
+    Extension {
+        #[command(subcommand)]
+        cmd: extension::ExtensionCmd,
     },
     /// List installed versions, newest first. `ganymede serve` uses the
     /// first unless told otherwise.
@@ -50,10 +62,18 @@ pub enum LabCmd {
 pub fn run(cmd: LabCmd) -> Result<ExitCode> {
     let root = installs_dir().context("no data directory; set GANYMEDE_DATA_DIR")?;
     match cmd {
-        LabCmd::Install { version, force } => {
+        LabCmd::Install {
+            version,
+            force,
+            no_default_extensions,
+        } => {
             let dir = install(&root, &version, force)?;
+            if !no_default_extensions {
+                extension::install_defaults()?;
+            }
             println!("{}", dir.display());
         }
+        LabCmd::Extension { cmd } => return extension::run(cmd),
         LabCmd::List => {
             let all = installed(&root);
             if all.is_empty() {
@@ -148,19 +168,41 @@ fn agent() -> ureq::Agent {
 
 /// The URL and SHA-256 of the version's wheel, from PyPI's JSON API.
 fn wheel_url(agent: &ureq::Agent, version: &str) -> Result<(String, String)> {
-    let api = format!("{PYPI}/jupyterlab/{version}/json");
-    let meta: serde_json::Value = match agent.get(&api).call() {
-        Ok(mut r) => r.body_mut().read_json()?,
-        Err(ureq::Error::StatusCode(404)) => bail!("JupyterLab {version} is not on PyPI"),
-        Err(e) => return Err(e).with_context(|| format!("fetching {api}")),
-    };
+    let (api, meta) = pypi_json(agent, "jupyterlab", Some(version))?
+        .with_context(|| format!("JupyterLab {version} is not on PyPI"))?;
     pick_wheel(&meta).with_context(|| format!("no wheel for JupyterLab {version} in {api}"))
 }
 
+/// PyPI's JSON for a release, the latest when `version` is `None`, and the
+/// URL it came from. `None` when PyPI has no such project or release.
+fn pypi_json(
+    agent: &ureq::Agent,
+    project: &str,
+    version: Option<&str>,
+) -> Result<Option<(String, serde_json::Value)>> {
+    let api = match version {
+        Some(v) => format!("{PYPI}/{project}/{v}/json"),
+        None => format!("{PYPI}/{project}/json"),
+    };
+    match agent.get(&api).call() {
+        Ok(mut r) => {
+            let meta = r
+                .body_mut()
+                .read_json()
+                .with_context(|| format!("reading {api}"))?;
+            Ok(Some((api, meta)))
+        }
+        Err(ureq::Error::StatusCode(404)) => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("fetching {api}")),
+    }
+}
+
+/// The release's pure wheel (`py3-none-any` or `py2.py3-none-any`): only
+/// those carry the same data files on every platform.
 fn pick_wheel(meta: &serde_json::Value) -> Option<(String, String)> {
     meta["urls"].as_array()?.iter().find_map(|u| {
         let file = u["filename"].as_str()?;
-        if u["packagetype"] != "bdist_wheel" || !file.ends_with(".whl") {
+        if u["packagetype"] != "bdist_wheel" || !is_pure_wheel(file) {
             return None;
         }
         Some((
@@ -168,6 +210,21 @@ fn pick_wheel(meta: &serde_json::Value) -> Option<(String, String)> {
             u["digests"]["sha256"].as_str()?.to_ascii_lowercase(),
         ))
     })
+}
+
+/// Whether a wheel's tags (`name-version[-build]-pytag-abi-platform.whl`)
+/// make it pure: any platform, no ABI, and a `py3` tag.
+fn is_pure_wheel(file: &str) -> bool {
+    let Some(stem) = file.strip_suffix(".whl") else {
+        return false;
+    };
+    let tags: Vec<&str> = stem.rsplitn(4, '-').collect();
+    match tags.as_slice() {
+        [platform, abi, py, _] => {
+            *platform == "any" && *abi == "none" && py.split('.').any(|t| t == "py3")
+        }
+        _ => false,
+    }
 }
 
 /// Streams `url` into `out`, returning the body's SHA-256 in hex.
@@ -341,6 +398,8 @@ mod tests {
         let meta = serde_json::json!({"urls": [
             {"packagetype": "sdist", "filename": "jupyterlab-1.0.tar.gz",
              "url": "https://x/s", "digests": {"sha256": "aa"}},
+            {"packagetype": "bdist_wheel", "filename": "jupyterlab-1.0-cp312-cp312-win_amd64.whl",
+             "url": "https://x/c", "digests": {"sha256": "cc"}},
             {"packagetype": "bdist_wheel", "filename": "jupyterlab-1.0-py3-none-any.whl",
              "url": "https://x/w", "digests": {"sha256": "BB"}},
         ]});
@@ -349,6 +408,26 @@ mod tests {
             Some(("https://x/w".to_string(), "bb".to_string()))
         );
         assert_eq!(pick_wheel(&serde_json::json!({"urls": []})), None);
+    }
+
+    #[test]
+    fn recognises_pure_wheels() {
+        for ok in [
+            "a-1.0-py3-none-any.whl",
+            "a-1.0-py2.py3-none-any.whl",
+            "a-1.0-1-py3-none-any.whl",
+        ] {
+            assert!(is_pure_wheel(ok), "{ok}");
+        }
+        for bad in [
+            "a-1.0-py2-none-any.whl",
+            "a-1.0-cp312-cp312-win_amd64.whl",
+            "a-1.0-cp312-abi3-any.whl",
+            "a-1.0.tar.gz",
+            "none-any.whl",
+        ] {
+            assert!(!is_pure_wheel(bad), "{bad}");
+        }
     }
 
     #[test]

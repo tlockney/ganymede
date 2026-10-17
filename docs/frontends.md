@@ -48,12 +48,40 @@ ganymede serve --static-dir <prefix>/share/jupyter/lab/static
 ```
 
 The page is served at `/lab`, with the `/lab/api/*` endpoints it calls.
-Prebuilt extensions are found in `labextensions` under the Jupyter data
-directories or with `--labextensions-path`.
 
 JupyterLab in a browser authenticates its websockets with the login cookie
 `jupyter_server` sets, which Ganymede doesn't set yet, so notebooks open
 but kernels can't connect. Cookie login is the next step on the roadmap.
+
+### Extensions
+
+JupyterLab loads prebuilt extensions at runtime, and packages on PyPI ship
+them inside their wheels. `ganymede lab extension` installs them the same
+way, without Python:
+
+```sh
+ganymede lab extension install jupyterlab-execute-time   # latest; or NAME==VERSION
+ganymede lab extension list
+ganymede lab extension remove jupyterlab-execute-time
+```
+
+`ganymede lab install` also installs `jupyterlab_widgets` and `anywidget`,
+so widgets (cdp-kernel's `jupyter.widget`, for one) work out of the box;
+`--no-default-extensions` skips them.
+
+Only the wheel's `share/jupyter/labextensions/` is unpacked, into
+`ganymede/labextensions/` beside the bundles, which `serve` always
+searches. Dependencies are followed only as far as the frontend needs:
+through requirements of packages classified `Framework :: Jupyter`,
+installing those classified `Framework :: Jupyter :: JupyterLab ::
+Extensions`. So `anywidget` brings `jupyterlab_widgets` by way of
+`ipywidgets`. Dependencies get their latest release; version ranges are
+not resolved, and a wheel must be `py3-none-any`. Server extensions, the
+Python half of some packages, don't run.
+
+Extensions installed some other way are found in `labextensions` under the
+Jupyter data directories or with `--labextensions-path`, which is searched
+first.
 
 ## What isn't there
 

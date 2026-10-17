@@ -622,3 +622,44 @@ data dir. `ganymede serve` without `--static-dir` serves the newest one, or
   `GANYMEDE_DATA_DIR` overrides it; the tests use that.
 - The network test (`tests/lab.rs`) runs only with `GANYMEDE_E2E_LAB=1`,
   which CI's e2e job sets on Linux and macOS; `cargo test` stays offline.
+
+## 2026-10-17, prebuilt JupyterLab extensions from wheels
+
+`ganymede lab extension install|list|remove` (#16) unpacks
+`*.data/data/share/jupyter/labextensions/**` from a package's PyPI wheel
+into `ganymede/labextensions/` under the data dir, which `serve` searches
+after `--labextensions-path` and before the Jupyter data dirs. `ganymede
+lab install` installs `jupyterlab_widgets` and `anywidget` too, unless
+`--no-default-extensions`. cdp-kernel's counter widget from its
+`docs/widgets.md` renders in JupyterLab served this way, counts clicks,
+and the kernel reads the count back (`validation/widgets.mjs`).
+
+- anywidget does not require `jupyterlab_widgets` directly: it requires
+  `ipywidgets`, which has no extension and requires `jupyterlab_widgets`.
+  So "follow only dependencies whose wheel carries an extension" stops too
+  early. The rule used: walk `requires_dist` from PyPI's JSON (no
+  downloads), without `extra` markers, descending only through packages
+  classified `Framework :: Jupyter`; download and unpack those classified
+  `Framework :: Jupyter :: JupyterLab :: Extensions`. For anywidget that
+  is about 20 JSON requests (ipython's dependencies are checked and
+  dropped) and two wheels, under a second here. A named package is always
+  downloaded and must carry an extension.
+- Dependencies get their latest release; specifiers like `~=3.0.17` are
+  not checked. Other markers (`sys_platform`, ...) are ignored, which can
+  only add a frontend package.
+- Only pure (`py3-none-any`, `py2.py3-none-any`) wheels are picked, which
+  also applies to `jupyterlab` now.
+- Each package's record is `labextensions/.packages/<name>.json` (name,
+  version, extension directories, and the package that pulled it in).
+  `find_extensions` skips it because it has no `package.json`, as it skips
+  the `.<name>-*` staging directories. Remove deletes only the named
+  package's extensions; dependencies stay.
+- An extension is a top-level directory, or two levels for `@scope/name`.
+  Reinstalling drops extensions the new version no longer ships; one that
+  another package had installed is taken over and dropped from that
+  package's record.
+- `jupyterlab_widgets` ships a settings schema under its extension's
+  `schemas/`; `/lab/api/settings` already lists it
+  (`@jupyter-widgets/jupyterlab-manager:plugin`).
+- `lab::data_dir()` is now the shared root for `lab/` and
+  `labextensions/`.
