@@ -84,7 +84,8 @@ Useful flags, each of which can also be set in a TOML file passed with
 | `--token` | The auth token. Unset generates one; an empty string disables auth. |
 | `--default-kernel` | The kernelspec frontends offer first. |
 | `--cull-idle-secs` | Shut down kernels idle this long with no clients. |
-| `--static-dir` | Serve a frontend's static files; JupyterLab's bundle is recognized. |
+| `--static-dir` | Serve a frontend's static files; JupyterLab's bundle is recognized. Default: the newest JupyterLab from `ganymede lab install`. |
+| `--lab-version` | Which installed JupyterLab to serve. |
 
 ## Embed it
 

@@ -716,6 +716,69 @@ pub fn find_extensions(dirs: &[PathBuf]) -> Vec<FederatedExtension> {
     out
 }
 
+// ----- installed bundles ------------------------------------------------
+
+/// Where `ganymede lab install` keeps JupyterLab bundles, one directory per
+/// version holding `static/`, `schemas/`, `themes/`, and `LICENSE`:
+/// `$GANYMEDE_DATA_DIR/lab`, else `ganymede/lab` under the platform's local
+/// data dir (`$XDG_DATA_HOME` or `~/.local/share` on Linux,
+/// `~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on Windows).
+pub fn installs_dir() -> Option<PathBuf> {
+    match std::env::var_os("GANYMEDE_DATA_DIR") {
+        Some(d) if !d.is_empty() => Some(PathBuf::from(d).join("lab")),
+        _ => dirs::data_local_dir().map(|d| d.join("ganymede").join("lab")),
+    }
+}
+
+/// A JupyterLab bundle installed under [`installs_dir`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Installed {
+    pub version: String,
+    /// The application directory: `static/`, `schemas/`, `themes/`.
+    pub dir: PathBuf,
+}
+
+impl Installed {
+    pub fn static_dir(&self) -> PathBuf {
+        self.dir.join("static")
+    }
+}
+
+/// Bundles under `root`, newest version first. A directory counts once its
+/// `static/index.html` exists; installs are renamed into place whole, and
+/// names starting with `.` (unfinished installs) are skipped.
+pub fn installed(root: &FsPath) -> Vec<Installed> {
+    let mut out: Vec<Installed> = read_dir_sorted(root)
+        .into_iter()
+        .filter(|d| !file_name(d).starts_with('.') && d.join("static/index.html").is_file())
+        .map(|dir| Installed {
+            version: file_name(&dir),
+            dir,
+        })
+        .collect();
+    out.sort_by(|a, b| compare_versions(&b.version, &a.version));
+    out
+}
+
+/// Orders versions such as `4.6.4`, `4.10.0`, and `4.7.0a2`: numeric
+/// components compare as numbers, and a pre-release sorts before the
+/// release it leads up to.
+pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    fn key(v: &str) -> (Vec<u64>, bool, &str) {
+        let split = v
+            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .unwrap_or(v.len());
+        let (nums, pre) = v.split_at(split);
+        let nums = nums
+            .split('.')
+            .filter(|p| !p.is_empty())
+            .map(|p| p.parse().unwrap_or(0))
+            .collect();
+        (nums, pre.is_empty(), pre)
+    }
+    key(a).cmp(&key(b))
+}
+
 /// Renders the packaged `index.html`, which is a Jinja template, with the
 /// handful of constructs it uses: `{# #}` comments, `{% set %}`,
 /// `{% block %}`, `{% if custom_css %}`, and `{{ }}` for the page config,
@@ -818,6 +881,34 @@ mod tests {
             html,
             "<head> <script id=\"jupyter-config-data\">{\"fullStaticUrl\":\"/b/static/lab\",\"x\":\"\\u003c/script\\u003e\"}</script><link href=\"/b/static/f.ico\"> <script src=\"/b/static/lab/main.js\"></script>{}</head>"
         );
+    }
+
+    #[test]
+    fn orders_versions_numerically_with_prereleases_first() {
+        let mut v = vec!["4.7.0a2", "4.10.0", "4.6.4", "4.7.0", "4.7.0rc1", "4.6.10"];
+        v.sort_by(|a, b| compare_versions(a, b));
+        assert_eq!(
+            v,
+            ["4.6.4", "4.6.10", "4.7.0a2", "4.7.0rc1", "4.7.0", "4.10.0"]
+        );
+    }
+
+    #[test]
+    fn lists_complete_installs_newest_first() {
+        let root = tempfile::tempdir().unwrap();
+        for v in ["4.6.4", "4.10.0", ".4.11.0.partial", "4.9.0"] {
+            let s = root.path().join(v).join("static");
+            std::fs::create_dir_all(&s).unwrap();
+            if v != "4.9.0" {
+                std::fs::write(s.join("index.html"), "").unwrap();
+            }
+        }
+        let found: Vec<String> = installed(root.path())
+            .into_iter()
+            .map(|i| i.version)
+            .collect();
+        assert_eq!(found, ["4.10.0", "4.6.4"]);
+        assert!(installed(&root.path().join("missing")).is_empty());
     }
 
     #[test]
