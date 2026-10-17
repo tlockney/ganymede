@@ -585,6 +585,44 @@ VS Code and whether each could run against Ganymede.
   `file://` on Linux and macOS, under sh, bash, and dash, without a
   published release.
 
+## 2026-10-17, `ganymede lab install`
+
+JupyterLab's frontend without Python (#15): `ganymede lab install
+[--version X]` downloads the `jupyterlab` wheel from PyPI, checks its
+SHA-256, and unpacks `<name>.data/data/share/jupyter/lab/{static,schemas,themes}`
+plus the dist-info `LICENSE` into `ganymede/lab/<version>/` under the local
+data dir. `ganymede serve` without `--static-dir` serves the newest one, or
+`--lab-version` / `lab_version`, and only the API when none is installed.
+
+- The default is 4.6.4 (latest 4.x on PyPI at the time). Its wheel's
+  SHA-256 is also pinned in the binary, so a changed PyPI listing for the
+  default fails the install; other versions trust PyPI's JSON
+  (`/pypi/jupyterlab/<v>/json`, the `bdist_wheel` entry of `urls`).
+- The wheel is about 17 MB and unpacks to 18 MB. Fetching on demand keeps
+  it out of the release archives; bundling would make offline installs work.
+- HTTP is `ureq` 3 (blocking, run under `spawn_blocking`) with rustls on
+  `ring` and `rustls-platform-verifier`, so there is no OpenSSL, no
+  aws-lc/cmake/nasm in the release build, and the OS trust store is used:
+  a corporate or sandbox proxy's CA installed there just works (it did
+  here, through the agent proxy, with no extra flags). ureq reads
+  `HTTPS_PROXY`/`ALL_PROXY` by default. The webpki roots compiled in by
+  ureq's `rustls` feature are unused.
+- `zip` 9 with only `deflate-flate2-zlib-rs`: wheels use stored and
+  deflate entries. `enclosed_name()` drops absolute and `..` paths.
+- Installs unpack into `.<version>-*` beside the target and are renamed
+  into place, so a bundle counts as installed once `static/index.html`
+  exists and dot-directories are ignored. `lab.rs` already derives
+  `schemas/` and `themes/` from `static/`'s parent, so the installed
+  layout needed no server changes beyond picking the directory.
+- The lookup (`lab::installs_dir`, `lab::installed`, version ordering)
+  lives in `ganymede-server`, which both binaries share; the network and
+  zip code stay in the CLI, away from the wasm-built crates.
+- `dirs::data_local_dir()` rather than `data_dir()`: the same on Linux and
+  macOS, but `%LOCALAPPDATA%` on Windows, so 18 MB doesn't roam.
+  `GANYMEDE_DATA_DIR` overrides it; the tests use that.
+- The network test (`tests/lab.rs`) runs only with `GANYMEDE_E2E_LAB=1`,
+  which CI's e2e job sets on Linux and macOS; `cargo test` stays offline.
+
 ## 2026-10-17, cookie login
 
 JupyterLab in a browser now runs notebooks against `ganymede serve`

@@ -21,7 +21,12 @@ pub struct Config {
     /// Directory of static frontend assets served at `/`. When it is
     /// JupyterLab's static bundle (`share/jupyter/lab/static`), the server
     /// serves JupyterLab at `/lab` with its `/lab/api/*` endpoints instead.
+    ///
+    /// Unset, the newest JupyterLab installed by `ganymede lab install` is
+    /// served, or `lab_version` if set; with none installed, only the API.
     pub static_dir: Option<PathBuf>,
+    /// Which installed JupyterLab to serve when `static_dir` is unset.
+    pub lab_version: Option<String>,
     /// Extra directories of prebuilt JupyterLab extensions, searched before
     /// `labextensions` in the Jupyter data dirs.
     pub labextensions_paths: Vec<PathBuf>,
@@ -50,6 +55,7 @@ impl Default for Config {
             root_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             checkpoint_dir: None,
             static_dir: None,
+            lab_version: None,
             labextensions_paths: vec![],
             config_dir: None,
             base_url: "/".into(),

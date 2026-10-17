@@ -2,6 +2,7 @@
 //! layer over `ganymede-engine` (or `ganymede-server` for `serve`).
 
 mod console;
+mod lab;
 mod render;
 
 use anyhow::{bail, Context, Result};
@@ -88,6 +89,11 @@ enum Cmd {
     Nb {
         #[command(subcommand)]
         cmd: NbCmd,
+    },
+    /// Install, list, and remove JupyterLab's frontend for `serve`.
+    Lab {
+        #[command(subcommand)]
+        cmd: lab::LabCmd,
     },
     /// Serve the Jupyter REST and websocket API (JupyterLab, VS Code, ...).
     Serve(Box<ganymede_server::serve::ServeArgs>),
@@ -314,6 +320,8 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             write_notebook(&nb, dest.as_deref())?;
             Ok(ExitCode::SUCCESS)
         }
+        // Blocking HTTP and file I/O, off the async workers.
+        Cmd::Lab { cmd } => tokio::task::spawn_blocking(move || lab::run(cmd)).await?,
         Cmd::Serve(args) => {
             let mut cfg = args.into_config()?;
             cfg.kernelspec_roots.extend(cli.kernelspec_root);
