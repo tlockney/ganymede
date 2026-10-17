@@ -104,3 +104,30 @@ What the plan adds to the server's requirements:
 Tension noted: a server-side CRDT and iCloud file sync are two writers
 of one file. For this use case, file-as-truth with the mtime check is
 enough for v1.
+
+## 2026-10-17, modules and profiles
+
+Goal restated: pluggable modules composing a Jupyter-like environment on
+iPad, desktop, or server; TypeScript kernels as the focus; Python kernels
+possible on desktop and server but never assumed. Added section 7 to
+`sketch.md`: the one rule (the host knows no language), the seams with
+their implementations, the three profiles, a crate layout, and a ranked
+definition of ecosystem compatibility.
+
+Decisions implied:
+
+- Kernel host boundary is "a stream of channel messages", with ZMQ,
+  in-process, and websocket-client transports behind one trait.
+- The REST and websocket handlers are functions over traits, not axum
+  handlers, so the iPad bridge and the HTTP server share them.
+- The widget manager is per profile: anywidget-only on iPad, the full
+  ipywidgets manager where Python kernels are expected.
+- Extension compatibility (JupyterLab, jupyter_server) is out, by design.
+
+Found two existing seams to match: `jupyter_server`'s gateway client
+(remote provisioner) and `@jupyterlab/services` `ServerConnection` with
+custom `fetch` and `WebSocket` (how JupyterLite runs without a server).
+JupyterLite is the closest precedent for the iPad profile.
+
+Test rule to adopt: the same scenarios run against cdp-kernel and
+ipykernel; no `python` string in host crates outside tests.

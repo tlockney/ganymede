@@ -11,6 +11,8 @@ API, and eventually a web presentation layer. First target kernel is
 
 Section 6 of the sketch reads the server against the
 [ts-on-ipados](../ts-on-ipados/) plan, where it is the remote tier.
+Section 7 gives the module seams, the crate layout, and which modules
+each deployment profile (server, desktop, iPad) uses.
 
 ## Status
 
@@ -32,6 +34,12 @@ Design sketch. Nothing built.
 - The server alone, with VS Code's Jupyter extension as the frontend and
   cdp-kernel as the kernel, is a complete Python-free setup before any UI
   work.
+- The same modules compose into three profiles. The iPad profile has no
+  ZMQ, subprocesses, HTTP server, or Python. The server profile has all
+  but Python, which arrives only as an installed kernelspec. Two seams to
+  match rather than invent: `jupyter_server`'s gateway client for remote
+  kernels, and `@jupyterlab/services`' `ServerConnection` for pointing a
+  TS frontend at an in-app core, as JupyterLite does.
 
 ## Next
 

@@ -392,7 +392,122 @@ Out of scope for the server: the automation surface, the on-device
 transform pipeline, and `tsc --noEmit` as a kernel op, which is kernel
 work.
 
-## 7. Prior art to read first
+## 7. Modular architecture and deployment profiles
+
+Goal, restated: one set of modules that compose into a Jupyter-like
+environment on an iPad, a desktop, or a remote server. TypeScript kernels
+are the focus. The host must fit the Jupyter ecosystem well enough that
+on a desktop or server it can also run a Python kernel, without Python
+ever being an assumption.
+
+### 7.1 The one rule
+
+The host knows no language. Every language-specific fact comes from three
+places: the kernelspec (`language`, `metadata`), `kernel_info_reply`
+(`language_info`, `supported_features`, extra fields), and MIME types on
+outputs. A grep for `python` in the host crates, outside tests and the
+conformance fixtures, should find nothing. The test suite runs the same
+scenarios against cdp-kernel and ipykernel, and both must pass.
+
+### 7.2 Seams
+
+Each seam is a trait in Rust or an interface in TypeScript. The right
+column lists the implementations needed across the three profiles.
+
+| Seam | What it abstracts | Implementations |
+|---|---|---|
+| `KernelTransport` | A stream of channel messages to and from one kernel, with channel name, header, content, buffers | ZMQ (desktop, server); in-process channel (iPad local kernel); websocket client to another host (iPad to server, or any host proxying a remote host) |
+| `Provisioner` | How a kernel comes to exist | Local subprocess from a kernelspec; attach to an existing connection file or address; in-process (the app owns the kernel); remote, which proxies to another host's REST API as `jupyter_server`'s gateway client does |
+| `KernelspecSource` | Where the list of launchable kernels comes from | Jupyter data dirs on the filesystem; extra roots from config, which is how conda and venv kernels get found without the host knowing what a venv is; an environment scanner as an optional module, as VS Code has; a static embedded list for the iPad (local kernel plus configured remotes) |
+| `Contents` | Files, directories, checkpoints | Local filesystem with atomic writes and mtime checks; Files app or iCloud container on iPad; passthrough to a remote host |
+| `Auth` | Who may call the API | None (in-app bridge); token; `tailscale serve` identity headers; later, an OIDC or Hub contract |
+| `Frontend host` | How the UI reaches the core | HTTP plus websocket (axum) on desktop and server; an in-app bridge on iPad that carries the same JSON shapes with no HTTP |
+| `Document` | The live notebook model | File-as-truth with reload on external change; `yrs` CRDT with y-websocket for live multi-client sessions |
+| `Renderer` (TS) | One MIME type to DOM | Text, ANSI streams, HTML (sanitized or iframed), images, SVG, Markdown, LaTeX, JSON, Vega, Plotly, and a widget view |
+| `WidgetManager` (TS) | The `jupyter.widget` comm target | anywidget-only, small, enough for cdp-kernel; full `@jupyter-widgets/base` plus `controls`, needed when a Python kernel with ipywidgets runs. Choose per profile, not globally |
+| `Editor` (TS) | Code editing | CodeMirror 6, mode from `language_info.codemirror_mode` |
+
+Two of these seams already exist in the ecosystem and should be matched
+rather than invented. On the server side, `jupyter_server`'s gateway
+client is the remote provisioner. On the frontend side,
+`@jupyterlab/services` takes a `ServerConnection` with overridable `fetch`
+and `WebSocket`, which is exactly how JupyterLite points JupyterLab at an
+in-browser backend with no HTTP server. The iPad profile can use the same
+trick: the TS frontend in a web view, the core in Rust behind a message
+bridge that implements `fetch` and `WebSocket`.
+
+### 7.3 Profiles
+
+| Module | Server (homelab) | Desktop | iPad |
+|---|---|---|---|
+| Transport | ZMQ | ZMQ | In-process; websocket client to server |
+| Provisioner | Subprocess, attach, remote | Subprocess, attach, remote | In-process, remote |
+| Kernelspecs | Filesystem plus config roots | Filesystem plus config roots | Embedded list |
+| Contents | Filesystem | Filesystem | Files app or iCloud container |
+| Auth | Token or tailscale headers | Loopback token | None, in-app |
+| Frontend host | HTTP, serves the TS bundle | HTTP, or Tauri with the core in-process | Web view plus bridge |
+| Document | File-as-truth; CRDT optional | File-as-truth | File-as-truth |
+| Widget manager | Full, if Python kernels are expected | Full | anywidget-only |
+| Kernels seen | cdp-kernel, python3, anything installed | Same | Local TS kernel, plus whatever the remote host lists |
+
+The iPad profile has no ZMQ, no subprocesses, no HTTP server, and no
+Python. The server profile has all of them except Python, which arrives
+only as a kernelspec someone installed. The same crates, different
+feature flags and a different binary or app shell.
+
+Crate layout that makes this true:
+
+- `protocol`: message types, serde, HMAC. No I/O.
+- `nbformat`: file format, validation, round-trip writer. No I/O.
+- `kernel-host`: `KernelTransport`, `Provisioner`, `KernelspecSource`
+  traits; the kernel session state machine (nudge, busy/idle tracking,
+  reply routing, multi-client fan-out, restart policy). Depends on
+  `protocol` only. Implementations behind feature flags: `zmq`,
+  `subprocess`, `in-process`, `remote`.
+- `contents`: trait plus filesystem implementation.
+- `document`: file-as-truth model; `crdt` feature adds `yrs`.
+- `api`: the REST and websocket handlers as functions over the traits,
+  independent of axum, so the iPad bridge and the HTTP server call the
+  same code.
+- `server`: axum binary, config, auth, static assets.
+- `ffi`: uniffi or swift-bridge surface for the app.
+
+The TS side mirrors it: `connection` (the `ServerConnection` shim),
+`renderers`, `widgets-anywidget`, `widgets-full`, `editor`, `app`.
+
+### 7.4 What "fits the Jupyter ecosystem" means, ranked
+
+In order of value per unit of work:
+
+1. **Kernel compatibility.** Protocol 5.x over ZMQ plus the kernelspec
+   convention. Every existing kernel works: cdp-kernel, ipykernel, IRkernel,
+   IJulia, evcxr, Deno, xeus. This is the core and is non-negotiable.
+2. **File compatibility.** nbformat 4.5 with faithful round-trip. Notebooks
+   interchange with git, GitHub rendering, nbviewer, nbconvert run elsewhere,
+   and every other client. Core.
+3. **Tooling conventions.** Jupyter data dirs, runtime dir and connection
+   file naming, `JUPYTER_*` environment variables. Cheap, and it means
+   `jupyter console --existing`, kernel installers, and environment tools
+   all keep working around the host.
+4. **Client compatibility.** The `jupyter_server` REST API and websocket
+   subprotocols. JupyterLab, Notebook 7, VS Code, Juno Connect, and
+   papermill-style tools connect. Medium cost; server and desktop profiles
+   only.
+5. **Output and widget compatibility.** The standard MIME types, comms,
+   the `jupyter.widget` protocol. anywidget-only is small; full ipywidgets
+   is a dependency on the standard JS manager, taken only in profiles
+   that expect Python kernels.
+6. **Debugger.** DAP over the control channel, a DAP client in the UI.
+   cdp-kernel and ipykernel both support it.
+7. **Extensions.** JupyterLab frontend extensions and `jupyter_server`
+   extensions. Not compatible, by design. State this in the README so
+   nobody expects it.
+
+Items 1 to 3 are what make "might also run Python" free: a Python kernel
+is just another kernelspec, and ipywidgets is just another widget manager
+module.
+
+## 8. Prior art to read first
 
 - `jupyter_client` messaging spec (v5.5) and JEP 91 (subshells), JEP 92
   (optional features / `supported_features`).
@@ -416,3 +531,9 @@ work.
 - Datalayer's `jupyter-react`: a React frontend that reuses
   `@jupyterlab/rendermime` and `@jupyterlab/outputarea` without the rest
   of JupyterLab. Relevant to UI option 1.
+- JupyterLite: JupyterLab in the browser with a TypeScript reimplementation
+  of the REST API in a service worker and in-browser kernels. The proof
+  that the frontend can be pointed at a non-HTTP backend through
+  `ServerConnection`, and the closest precedent for the iPad profile.
+- `jupyter_server`'s gateway client and Jupyter Kernel Gateway: the
+  remote provisioner pattern.
