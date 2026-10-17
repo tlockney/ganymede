@@ -1,8 +1,14 @@
 # Sketch: a Rust reimplementation of the Jupyter core
 
-Scope as stated: a kernel host, a presentation layer (web UI), and the essential
-protocol. This note breaks that into components, estimates each, lists the parts
-that are usually missed, and proposes an order of work.
+Scope as first stated: a kernel host, a presentation layer (web UI), and the
+essential protocol. This note breaks that into components, estimates each, lists
+the parts that are usually missed, and proposes an order of work.
+
+Clarified scope (2026-10-17): Rust is for the core server only: protocol,
+kernel host, nbformat, contents, and the API. The UI is not part of the core
+and is not Rust. It is a pluggable client of the core's public API, chosen per
+platform: an existing Jupyter frontend, a TypeScript web UI, or a native shell
+such as a Swift app on iPadOS that hosts a web view for rendering.
 
 Revised goal (2026-10-17): a Jupyter server with no Python anywhere in
 the product. The first target kernel is [cdp-kernel](https://cdp-kernel.org),
@@ -154,7 +160,10 @@ collaboration onto a non-CRDT model is a rewrite.
 
 ### 2.6 Presentation layer
 
-The UI is the open-ended part, and it is mostly not Rust.
+The UI is outside the Rust core. It is a client of the core's API (REST
+plus websocket, or the same JSON shapes over an in-app bridge), and more
+than one UI can exist. This section lists what any notebook UI needs,
+whatever it is written in.
 
 Required pieces:
 
@@ -183,21 +192,26 @@ Required pieces:
   untrusted and must be sanitized until re-executed. JupyterLab stores
   trust signatures in a local database.
 
-Technology choice:
+UI implementations, each a separate client of the same API:
 
-1. TypeScript UI, Rust server. Reuse CodeMirror, KaTeX, and optionally
-   `@jupyterlab/rendermime` and `@jupyterlab/outputarea` as libraries without
-   the rest of JupyterLab. Most pragmatic.
-2. Rust WASM UI (Leptos, Dioxus, Yew). Every output renderer, the editor,
-   math, and widgets are JS libraries, so the WASM layer becomes an interop
-   shell. Costs more than it saves.
-3. Native UI (GPUI as Zed does, egui, iced). Loses `text/html` output,
-   which breaks pandas, plotly, bokeh, altair, and ipywidgets. Fine for a
-   REPL, not for a general notebook.
-4. Tauri or similar: option 1 packaged as a desktop app with the Rust core
-   in-process, no websocket hop. Reasonable later step.
+1. Existing Jupyter frontends: VS Code, JupyterLab's static bundle, Juno
+   Connect. No UI work; the API is the contract they test.
+2. A TypeScript web UI. Reuse CodeMirror, KaTeX, and optionally
+   `@jupyterlab/rendermime` and `@jupyterlab/outputarea` as libraries
+   without the rest of JupyterLab. Runs in a browser, or inside a native
+   shell's web view.
+3. A native shell with a web view for rendering, such as a Swift app on
+   iPadOS with `WKWebView`. The shell owns navigation, files, keyboard, and
+   app lifecycle; the web view runs the renderers from option 2, since
+   `text/html` outputs, math, Vega, Plotly, and widgets are JavaScript.
+   The shell talks to the core over HTTP, or in-process through a bridge.
+4. Fully native rendering (SwiftUI, or GPUI as Zed does). Loses
+   `text/html` output, which breaks pandas, plotly, bokeh, altair, and
+   widgets. Fine for a REPL, not for a general notebook.
 
-Recommendation: option 1, with option 4 as a packaging target.
+What the core owes every UI: a documented, stable API, and nothing that
+assumes which UI is on the other end. Rust UI frameworks (Leptos, Dioxus,
+Yew, egui) are out of scope.
 
 ## 3. Where Python leaks into the Jupyter stack, and what replaces it
 
@@ -301,8 +315,9 @@ The UI is a later, separate decision.
    sessions, contents, websocket v1 bridge, token auth. Validate by
    pointing VS Code at it with cdp-kernel. Then serve JupyterLab's static
    bundle as a second validation.
-5. Minimal TS frontend: cells, CodeMirror, output renderers for text,
-   HTML, images, markdown, errors, streams.
+5. A first UI of our own, outside the core: TS renderers (text, HTML,
+   images, markdown, errors, streams) and CodeMirror, usable in a browser
+   or inside a native shell's web view.
 6. CRDT document model with `yrs` and collaborative sessions.
 7. Comms, then an anywidget-only widget manager.
 8. Debugger (DAP client in the UI), subshells, terminals, LSP, as desired.
@@ -421,7 +436,8 @@ column lists the implementations needed across the three profiles.
 | `KernelspecSource` | Where the list of launchable kernels comes from | Jupyter data dirs on the filesystem; extra roots from config, which is how conda and venv kernels get found without the host knowing what a venv is; an environment scanner as an optional module, as VS Code has; a static embedded list for the iPad (local kernel plus configured remotes) |
 | `Contents` | Files, directories, checkpoints | Local filesystem with atomic writes and mtime checks; Files app or iCloud container on iPad; passthrough to a remote host |
 | `Auth` | Who may call the API | None (in-app bridge); token; `tailscale serve` identity headers; later, an OIDC or Hub contract |
-| `Frontend host` | How the UI reaches the core | HTTP plus websocket (axum) on desktop and server; an in-app bridge on iPad that carries the same JSON shapes with no HTTP |
+| `Frontend host` | How a UI reaches the core | HTTP plus websocket (axum) on desktop and server; an in-app bridge on iPad that carries the same JSON shapes with no HTTP |
+| UI (any language) | The client the user sees | Existing Jupyter frontends; a TS web UI; a Swift shell with a web view on iPad. Not a Rust module; the core only owes it the API |
 | `Document` | The live notebook model | File-as-truth with reload on external change; `yrs` CRDT with y-websocket for live multi-client sessions |
 | `Renderer` (TS) | One MIME type to DOM | Text, ANSI streams, HTML (sanitized or iframed), images, SVG, Markdown, LaTeX, JSON, Vega, Plotly, and a widget view |
 | `WidgetManager` (TS) | The `jupyter.widget` comm target | anywidget-only, small, enough for cdp-kernel; full `@jupyter-widgets/base` plus `controls`, needed when a Python kernel with ipywidgets runs. Choose per profile, not globally |
@@ -434,7 +450,9 @@ client is the remote provisioner. On the frontend side,
 and `WebSocket`, which is exactly how JupyterLite points JupyterLab at an
 in-browser backend with no HTTP server. The iPad profile can use the same
 trick: the TS frontend in a web view, the core in Rust behind a message
-bridge that implements `fetch` and `WebSocket`.
+bridge that implements `fetch` and `WebSocket`. The shell around that web
+view is a Swift app; it can also call the core directly through the `ffi`
+crate for things the web view does not need to see.
 
 ### 7.3 Profiles
 
@@ -445,7 +463,8 @@ bridge that implements `fetch` and `WebSocket`.
 | Kernelspecs | Filesystem plus config roots | Filesystem plus config roots | Embedded list |
 | Contents | Filesystem | Filesystem | Files app or iCloud container |
 | Auth | Token or tailscale headers | Loopback token | None, in-app |
-| Frontend host | HTTP, serves the TS bundle | HTTP, or Tauri with the core in-process | Web view plus bridge |
+| Frontend host | HTTP | HTTP, or the core in-process in a native app | In-process bridge |
+| UI | Any Jupyter client; optionally serves a TS bundle | Same, or a native shell with a web view | Swift shell with `WKWebView` for rendering |
 | Document | File-as-truth; CRDT optional | File-as-truth | File-as-truth |
 | Widget manager | Full, if Python kernels are expected | Full | anywidget-only |
 | Kernels seen | cdp-kernel, python3, anything installed | Same | Local TS kernel, plus whatever the remote host lists |
@@ -472,8 +491,10 @@ Crate layout that makes this true:
 - `server`: axum binary, config, auth, static assets.
 - `ffi`: uniffi or swift-bridge surface for the app.
 
-The TS side mirrors it: `connection` (the `ServerConnection` shim),
-`renderers`, `widgets-anywidget`, `widgets-full`, `editor`, `app`.
+UIs live outside this crate list. The TS packages are shared by any UI
+that renders in a web view: `connection` (the `ServerConnection` shim),
+`renderers`, `widgets-anywidget`, `widgets-full`, `editor`. Each UI adds
+its own shell on top: a browser `app`, or a Swift app on iPad.
 
 ### 7.4 What "fits the Jupyter ecosystem" means, ranked
 

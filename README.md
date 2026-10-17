@@ -1,9 +1,14 @@
 # jupyter-core-rs
 
 A sketch of a Jupyter server in Rust with no Python anywhere in the
-product: a kernel-agnostic kernel host, the messaging protocol, the server
-API, and eventually a web presentation layer. First target kernel is
-[cdp-kernel](https://cdp-kernel.org) for TypeScript notebooks.
+product: a kernel-agnostic kernel host, the messaging protocol, and the
+server API. First target kernel is [cdp-kernel](https://cdp-kernel.org)
+for TypeScript notebooks.
+
+Only the core server is Rust. The UI is pluggable and lives outside the
+core: any Jupyter frontend, a TypeScript web UI, or a native shell such as
+a Swift app on iPadOS with a web view for rendering. The `frontend/` package
+is shared TypeScript for UIs that render in a web view, not part of the core.
 
 - [`sketch.md`](sketch.md): components, what already exists in Rust, the
   parts that are usually missed, and a suggested order of work.
@@ -54,8 +59,10 @@ cd frontend && npm install && npm test
 
 - The server half (protocol, kernel lifecycle, nbformat, REST and
   websocket server, CRDT document) is well-specified and suits Rust.
-- The frontend half does not: editor, math, output renderers, and widgets
-  are JavaScript. A TypeScript UI over a Rust server is the pragmatic shape.
+- The UI is not Rust and not part of the core. Editor, math, output
+  renderers, and widgets are JavaScript, so any UI that shows rich output
+  renders it in a web view, whether the shell around it is a browser or a
+  Swift app.
 - The runtimed crates (`jupyter-protocol`, `runtimelib`, `nbformat`)
   already cover protocol, kernel client, and file format. No Rust
   equivalent of `jupyter_server` exists.
@@ -71,7 +78,7 @@ cd frontend && npm install && npm test
   but Python, which arrives only as an installed kernelspec. Two seams to
   match rather than invent: `jupyter_server`'s gateway client for remote
   kernels, and `@jupyterlab/services`' `ServerConnection` for pointing a
-  TS frontend at an in-app core, as JupyterLite does.
+  web view at an in-app core, as JupyterLite does.
 
 ## Next
 
@@ -79,5 +86,6 @@ cd frontend && npm install && npm test
   `/lab/api/*` endpoints) and VS Code at the server.
 - Cookie login for browser frontends; CurveZMQ.
 - Run the conformance checks against cdp-kernel (needs Node 24).
-- Contents crate, document model, and an app shell for the frontend.
+- Document model. A first UI of our own, outside the core: a browser app
+  or a Swift shell with a web view.
 - CurveZMQ for the ZMQ transport; ipykernel 7 already advertises it.

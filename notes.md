@@ -21,6 +21,8 @@ Findings while writing it:
   is the actual work.
 - The frontend cannot usefully be Rust-native if `text/html` outputs and
   widgets matter. TypeScript UI over a Rust server is the pragmatic shape.
+  (Superseded by the scope clarification at the end of these notes: the
+  UI was never meant to be Rust, and is pluggable.)
 
 Open questions:
 
@@ -236,3 +238,16 @@ Things learned:
 Not done: cookie login for a browser frontend, serving JupyterLab's static
 bundle (needs `/lab/api/*`), CurveZMQ, kernel autorestart on crash,
 cdp-kernel verification.
+
+## Scope clarification: the UI is not Rust (2026-10-17)
+
+Only the core server is Rust. The UI was never meant to be, and should
+itself be pluggable: any Jupyter frontend, a TypeScript web UI, or a
+native shell, for example a Swift app on iPadOS with a web view doing the
+rendering. Earlier drafts read as if the presentation layer was part of
+the Rust project (scope line, section 2.6 weighing Rust UI frameworks,
+`frontend/` described as "the" frontend). The sketch, README, and section
+7 now treat the UI as a client of the core's API, with the TS package as
+shared rendering code for any web-view UI. No code changes: the Rust
+crates never depended on a UI.
+
