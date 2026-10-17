@@ -380,6 +380,7 @@ struct ContentsQuery {
     #[serde(rename = "type")]
     type_: Option<ContentType>,
     format: Option<Format>,
+    hash: Option<String>,
 }
 
 /// `/api/contents/a/b/checkpoints` and `/checkpoints/{id}` share the
@@ -429,6 +430,7 @@ async fn get_contents(
                         content,
                         type_hint: q.type_,
                         format: q.format,
+                        hash: q.hash.as_deref().is_some_and(|h| h != "0"),
                     },
                 )
                 .await?;

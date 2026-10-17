@@ -3,3 +3,5 @@ node_modules/
 dist/
 *.log
 validation/out/
+
+e2e/wasm-smoke/target/

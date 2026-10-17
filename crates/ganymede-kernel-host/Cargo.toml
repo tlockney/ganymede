@@ -6,6 +6,13 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = ["zmq", "subprocess"]
+# The ZeroMQ transport (TCP sockets).
+zmq = ["dep:zeromq", "tokio/net"]
+# Launching kernels as child processes from kernelspecs.
+subprocess = ["dep:libc", "tokio/process", "tokio/net"]
+
 [dependencies]
 ganymede-protocol = { path = "../ganymede-protocol" }
 serde.workspace = true
@@ -18,9 +25,15 @@ async-trait.workspace = true
 futures.workspace = true
 tracing.workspace = true
 dirs.workspace = true
-zeromq.workspace = true
-libc = "0.2"
+zeromq = { workspace = true, optional = true }
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 tempfile.workspace = true
 anyhow.workspace = true
+
+# Browser wasm has no OS randomness or clock; take both from JavaScript.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+uuid = { workspace = true, features = ["js"] }
+chrono = { workspace = true, features = ["wasmbind"] }

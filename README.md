@@ -35,6 +35,13 @@ login is next); the VS Code Jupyter extension's remote-server flow passes.
 See [`validation/`](validation/). The TypeScript frontend package has
 the protocol plumbing and renderer seams with tests, but no app shell.
 
+`ganymede-engine` is the library to embed and the `ganymede` CLI is built
+on it. The e2e suite runs cdp-kernel and ipykernel through both and
+compares against the reference: notebooks against `jupyter execute`
+(nbclient), the HTTP and websocket API against `jupyter server`. The
+engine builds for iOS, Android, and wasm, and runs a notebook inside wasm
+under WASI.
+
 ## Code
 
 Cargo workspace at this directory; `frontend/` is an npm package.
@@ -44,8 +51,9 @@ Cargo workspace at this directory; `frontend/` is an npm package.
 | [`crates/ganymede-protocol`](crates/ganymede-protocol/) | Message envelope, typed content with unknown-field passthrough, ZMQ wire framing with HMAC, connection file, websocket v1 and legacy codecs. No I/O. | 12 |
 | [`crates/ganymede-nbformat`](crates/ganymede-nbformat/) | nbformat 4.5 reader and a writer byte-identical to Python `nbformat.write`. | 24 |
 | [`crates/ganymede-kernel-host`](crates/ganymede-kernel-host/) | Kernelspec discovery, transport seam (ZMQ and in-process), subprocess and attach provisioners, the session state machine, a fake kernel. | 10 |
-| [`crates/ganymede-exec`](crates/ganymede-exec/) | Headless executor: iopub messages to nbformat outputs, with `clear_output`, `display_id`, and stream merging. | 2 |
-| [`crates/ganymede-cli`](crates/ganymede-cli/) | `ganymede kernelspec list`, `ganymede run`, `ganymede attach`, `ganymede exec`. | |
+| [`crates/ganymede-exec`](crates/ganymede-exec/) | Notebook executor with nbclient's semantics: outputs, `clear_output(wait)`, `display_id` across cells, `language_info`, timings, widget state, allowed errors and tags, timeouts. | 4 |
+| [`crates/ganymede-engine`](crates/ganymede-engine/) | The library to embed. `Engine` finds kernelspecs and starts, attaches, or adopts kernels; `Kernel` executes with streaming output and stdin, completes, inspects, interrupts, restarts, runs notebooks. Features `zmq` and `subprocess` (default) drop out for wasm. | 3 |
+| [`crates/ganymede-cli`](crates/ganymede-cli/) | The `ganymede` command: `kernelspec list/paths/install/remove`, `run`, `console`, `execute`, `kernel`, `nb clear`, `serve`, `info`. | 26 |
 | [`crates/ganymede-contents`](crates/ganymede-contents/) | Contents seam and filesystem implementation matching `jupyter_server`'s model: atomic writes, mtime conflicts, checkpoints, configurable checkpoint dir, path safety. | 30 |
 | [`crates/ganymede-api`](crates/ganymede-api/) | Kernel and session managers, response models, per-client bridge with reply filtering, idle culling. No HTTP. | 6 |
 | [`crates/ganymede-server`](crates/ganymede-server/) | axum routes, token auth, origin check, websocket v1 and legacy framing, static assets, TOML config, JupyterLab's page and `/lab/api/*`. | 13 |
@@ -54,15 +62,55 @@ Cargo workspace at this directory; `frontend/` is an npm package.
 Try it:
 
 ```
-cargo test --workspace
-cargo run -p ganymede-cli -- run --kernel fake "hello"
-cargo run -p ganymede-cli -- kernelspec list
-cargo run -p ganymede-cli -- run --kernel python3 "print(1+1)"   # any installed kernelspec
-cargo run -p ganymede-cli -- exec notebook.ipynb -o out.ipynb
-cargo run -p ganymede-server -- --root-dir . --port 8888      # then point VS Code at the printed URL
-cargo run -p ganymede-server -- --static-dir <prefix>/share/jupyter/lab/static   # JupyterLab at /lab
+cargo install --path crates/ganymede-cli         # the `ganymede` binary
+ganymede kernelspec list
+ganymede run -k cdp-node 'const x = 2; x * 21'   # any installed kernelspec
+ganymede run -k python3 -f script.py --json      # one JSON line per cell
+ganymede console -k cdp-node                     # completion, multiline, Ctrl-C interrupts
+ganymede execute notebook.ipynb -o out.ipynb     # like `jupyter execute`; --inplace, -o -
+ganymede kernel -k python3                       # standalone kernel; prints its connection file
+ganymede run --existing kernel-....json 'x'      # reuse it
+ganymede serve --root-dir . --port 8888          # point VS Code or JupyterLab at the URL
+ganymede serve --static-dir <prefix>/share/jupyter/lab/static   # JupyterLab at /lab
 cd frontend && npm install && npm test
 ```
+
+Embedding:
+
+```rust
+let engine = ganymede_engine::Engine::new();
+let kernel = engine.start("cdp-node").await?;
+let result = kernel.execute("1 + 1").await?;
+println!("{}", result.text());
+```
+
+## Testing
+
+`cargo test --workspace` runs everything with the in-process fake kernel.
+The e2e tests in `crates/ganymede-cli/tests/` also use whatever real
+kernels and Jupyter are installed, and skip what is missing:
+
+| Variable | Effect |
+|---|---|
+| `GANYMEDE_E2E_KERNELS=cdp-node,python3` | These kernels must exist; their tests fail instead of skipping. |
+| `GANYMEDE_E2E_JUPYTER=/path/to/jupyter` | The reference `jupyter` (needs `nbclient` and `jupyter_server`). Defaults to `PATH`. |
+| `GANYMEDE_E2E_REQUIRE_JUPYTER=1` | Fail instead of skipping when it is missing. |
+| `E2E_DUMP=1` | Print both server transcripts. |
+
+- `kernels.rs`: the same scenarios on every kernel, through the engine and
+  the CLI: kernel_info passthrough, results, streams, errors, stdin,
+  interrupt, restart, comms, completion, inspection, standalone kernels.
+- `parity.rs`: each notebook in [`e2e/notebooks/`](e2e/notebooks/) is
+  executed by `jupyter execute` and by `ganymede execute`, and the files
+  are compared after normalizing timestamps and ids. Mismatches are kept
+  under `$TMPDIR/ganymede-parity-*`.
+- `server.rs`: one REST and websocket scenario against `jupyter server`
+  and `ganymede serve`, compared as transcripts.
+- [`e2e/wasm-smoke/`](e2e/wasm-smoke/): the engine built for
+  `wasm32-wasip1`, running a notebook on the fake kernel under Node's WASI.
+
+CI runs the e2e job on Linux and macOS with Node 24, cdp-kernel 0.5.0,
+and ipykernel, plus a portability job for iOS, Android, and wasm.
 
 ## Findings
 
@@ -92,7 +140,10 @@ cd frontend && npm install && npm test
 ## Next
 
 - Cookie login for browser frontends, which JupyterLab's websockets need.
-- Run the conformance checks against cdp-kernel (needs Node 24).
+- A trust store, so cells come back `trusted` as from `jupyter_server`.
+- A runtime seam for the browser (timers and spawn on
+  `wasm-bindgen-futures`) and a websocket or `postMessage` transport, so
+  the engine runs in a page rather than only under WASI.
 - Document model. A first UI of our own, outside the core: a browser app
   or a Swift shell with a web view.
 - CurveZMQ for the ZMQ transport; ipykernel 7 already advertises it.

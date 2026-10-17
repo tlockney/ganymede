@@ -135,6 +135,7 @@ async fn notebook_round_trip() {
                 content: true,
                 type_hint: Some(ContentType::File),
                 format: None,
+                hash: false,
             },
         )
         .await
@@ -237,6 +238,7 @@ async fn base64_file_round_trip() {
                 content: true,
                 type_hint: None,
                 format: Some(Format::Text),
+                hash: false,
             },
         )
         .await;
@@ -251,6 +253,7 @@ async fn base64_file_round_trip() {
                 content: true,
                 type_hint: None,
                 format: Some(Format::Base64),
+                hash: false,
             },
         )
         .await
@@ -332,7 +335,9 @@ async fn directory_listing_shape() {
             "format",
             "content",
             "writable",
-            "size"
+            "size",
+            "hash",
+            "hash_algorithm"
         ]
     );
     assert_eq!(json["type"], "directory");
@@ -352,6 +357,7 @@ async fn directory_listing_shape() {
                 content: false,
                 type_hint: Some(ContentType::Directory),
                 format: None,
+                hash: false,
             },
         )
         .await;
@@ -363,6 +369,7 @@ async fn directory_listing_shape() {
                 content: false,
                 type_hint: Some(ContentType::File),
                 format: None,
+                hash: false,
             },
         )
         .await;
@@ -979,4 +986,33 @@ async fn root_must_be_a_directory() {
     fs::write(dir.path().join("f"), "").unwrap();
     assert!(FsContents::new(dir.path().join("f"), FsOptions::default()).is_err());
     assert!(FsContents::new(dir.path().join("missing"), FsOptions::default()).is_err());
+}
+
+#[tokio::test]
+async fn hash_is_null_unless_requested() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "abc").unwrap();
+    let c = ganymede_contents::FsContents::new(dir.path(), Default::default()).unwrap();
+    use ganymede_contents::Contents;
+    let m = c
+        .get("a.txt", ganymede_contents::GetOptions::default())
+        .await
+        .unwrap();
+    let v = serde_json::to_value(&m).unwrap();
+    assert!(v["hash"].is_null() && v["hash_algorithm"].is_null());
+    let m = c
+        .get(
+            "a.txt",
+            ganymede_contents::GetOptions {
+                hash: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        m.hash.as_deref(),
+        Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+    );
+    assert_eq!(m.hash_algorithm.as_deref(), Some("sha256"));
 }

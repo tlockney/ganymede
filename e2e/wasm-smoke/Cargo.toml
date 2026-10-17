@@ -1,0 +1,13 @@
+[package]
+name = "ganymede-wasm-smoke"
+version = "0.0.1"
+edition = "2021"
+publish = false
+description = "Runs a notebook on the engine with an in-process kernel, built for WASI, to prove the core needs no sockets, processes, or threads."
+
+# Not a workspace member: built only for wasm targets.
+[workspace]
+
+[dependencies]
+ganymede-engine = { path = "../../crates/ganymede-engine", default-features = false }
+tokio = { version = "1", features = ["rt", "macros", "time"] }

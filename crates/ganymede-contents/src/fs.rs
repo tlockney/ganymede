@@ -302,11 +302,18 @@ impl Inner {
             }
             let as_notebook = options.type_hint == Some(ContentType::Notebook)
                 || (options.type_hint.is_none() && r.api.name().ends_with(".ipynb"));
-            if as_notebook {
-                self.notebook_model(&r, &meta, options.content)
+            let mut model = if as_notebook {
+                self.notebook_model(&r, &meta, options.content)?
             } else {
-                self.file_model(&r, &meta, options.content, options.format)
+                self.file_model(&r, &meta, options.content, options.format)?
+            };
+            if options.hash {
+                use sha2::Digest;
+                let bytes = fs::read(&r.os).map_err(|e| io_to_error(e, &r.api))?;
+                model.hash = Some(hex::encode(sha2::Sha256::digest(&bytes)));
+                model.hash_algorithm = Some("sha256".into());
             }
+            Ok(model)
         } else {
             Err(Error::NotFound(r.api.to_string()))
         }

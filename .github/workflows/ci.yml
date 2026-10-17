@@ -16,7 +16,72 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy -p ganymede-engine --no-default-features -- -D warnings
       - run: cargo test --workspace
+
+  # The end-to-end suite with real kernels and the Jupyter reference
+  # implementation installed, so nothing in it skips: notebooks against
+  # `jupyter execute`, the server against `jupyter server`, and the same
+  # kernel scenarios on cdp-kernel and ipykernel. Python is a test oracle
+  # and a kernel here, never a dependency of the product.
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      GANYMEDE_E2E_KERNELS: cdp-node,python3
+      GANYMEDE_E2E_REQUIRE_JUPYTER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install kernels and the reference implementation
+        run: |
+          npm install -g @tlockney/cdp-kernel@0.5.0
+          cdp-kernel install --runtime node
+          python -m pip install ipykernel==7.4.0 nbclient==0.11.0 jupyter_server==2.21.1
+          python -m ipykernel install --user --name python3
+          echo "GANYMEDE_E2E_JUPYTER=$(command -v jupyter)" >> "$GITHUB_ENV"
+      - run: cargo run -q -p ganymede-cli -- kernelspec list
+      - run: cargo test -p ganymede-cli --tests
+
+  # Targets the desktop CI cannot run: the core libraries must build for
+  # iOS, Android, and wasm, and the engine must run a notebook inside wasm.
+  portability:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios, aarch64-linux-android, wasm32-unknown-unknown, wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            e2e/wasm-smoke
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Engine for iOS and Android (with ZeroMQ and subprocesses)
+        run: |
+          cargo check -p ganymede-engine -p ganymede-api -p ganymede-contents --target aarch64-apple-ios
+          cargo check -p ganymede-engine -p ganymede-api -p ganymede-contents --target aarch64-linux-android
+      - name: Core libraries for browser wasm
+        run: cargo check -p ganymede-engine --no-default-features --target wasm32-unknown-unknown
+      - name: Engine runs a notebook under WASI
+        working-directory: e2e/wasm-smoke
+        run: |
+          cargo build --release --target wasm32-wasip1
+          node run.mjs target/wasm32-wasip1/release/ganymede-wasm-smoke.wasm > out.ipynb
+          grep -q '"ONE"' out.ipynb
 
   frontend:
     runs-on: ubuntu-latest

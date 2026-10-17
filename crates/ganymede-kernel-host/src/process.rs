@@ -20,6 +20,8 @@ pub trait KernelProcess: Send + Sync {
     /// Resolves when the process exits, with its exit code if known.
     async fn wait(&self) -> Option<i32>;
     fn is_alive(&self) -> bool;
+    /// Kill without waiting, for use in `Drop`. Does nothing by default.
+    fn kill_now(&self) {}
 }
 
 pub struct LaunchedKernel {
@@ -43,6 +45,10 @@ pub struct LaunchOptions {
     pub cwd: Option<PathBuf>,
     pub env: Vec<(String, String)>,
     pub kernel_id: Option<String>,
+    /// Discard the kernel process's own stdout and stderr (not its cell
+    /// output, which travels over iopub). Otherwise both go to the host's
+    /// stderr, so a host's stdout stays free for data.
+    pub quiet: bool,
 }
 
 #[async_trait]
@@ -52,6 +58,7 @@ pub trait Provisioner: Send + Sync {
 
 // ----- subprocess --------------------------------------------------------
 
+#[cfg(feature = "subprocess")]
 /// Launches a kernel as a child process from its kernelspec.
 #[derive(Debug, Clone)]
 pub struct SubprocessProvisioner {
@@ -59,6 +66,7 @@ pub struct SubprocessProvisioner {
     pub ip: String,
 }
 
+#[cfg(feature = "subprocess")]
 impl Default for SubprocessProvisioner {
     fn default() -> Self {
         SubprocessProvisioner {
@@ -68,6 +76,7 @@ impl Default for SubprocessProvisioner {
     }
 }
 
+#[cfg(feature = "subprocess")]
 /// Five free TCP ports on `ip`. Racy by nature: the ports are released
 /// before the kernel binds them. `ipc` transport avoids this on POSIX.
 pub async fn allocate_ports(ip: &str) -> Result<[u16; 5]> {
@@ -99,11 +108,13 @@ pub fn write_connection_file(
     Ok(path)
 }
 
+#[cfg(feature = "subprocess")]
 struct ChildProcess {
     pid: u32,
     exit: watch::Receiver<Option<Option<i32>>>,
 }
 
+#[cfg(feature = "subprocess")]
 #[async_trait]
 impl KernelProcess for ChildProcess {
     fn pid(&self) -> Option<u32> {
@@ -160,8 +171,16 @@ impl KernelProcess for ChildProcess {
     fn is_alive(&self) -> bool {
         self.exit.borrow().is_none()
     }
+
+    fn kill_now(&self) {
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-(self.pid as i32), libc::SIGKILL);
+        }
+    }
 }
 
+#[cfg(feature = "subprocess")]
 #[async_trait]
 impl Provisioner for SubprocessProvisioner {
     async fn launch(&self, spec: &Kernelspec, opts: LaunchOptions) -> Result<LaunchedKernel> {
@@ -190,6 +209,12 @@ impl Provisioner for SubprocessProvisioner {
             cmd.current_dir(cwd);
         }
         cmd.stdin(std::process::Stdio::null());
+        if opts.quiet {
+            cmd.stdout(std::process::Stdio::null());
+            cmd.stderr(std::process::Stdio::null());
+        } else {
+            cmd.stdout(std::io::stderr());
+        }
         #[cfg(unix)]
         cmd.process_group(0);
         cmd.kill_on_drop(false);
@@ -278,7 +303,7 @@ pub fn read_connection_file(path: &Path) -> Result<ConnectionInfo> {
     Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "subprocess"))]
 mod tests {
     use super::*;
 
