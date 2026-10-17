@@ -31,7 +31,7 @@ aarch64), macOS (aarch64, x86_64), and Windows (x86_64), each with a
 On Linux or macOS:
 
 ```sh
-curl -fsSL https://tlockney.github.io/ganymede/install.sh | sh
+curl -fsSL https://ganymede-server.com/install.sh | sh
 ```
 
 It downloads the latest release for your platform, checks its SHA-256,
@@ -48,7 +48,7 @@ Node is there. Options go after `sh -s --`:
 | `--runtime NAME` | cdp-kernel's target runtime: `node` (default), `deno`, `bun`, `workerd`, or `celld`. |
 
 ```sh
-curl -fsSL https://tlockney.github.io/ganymede/install.sh | sh -s -- --version 0.1.0 --no-kernel
+curl -fsSL https://ganymede-server.com/install.sh | sh -s -- --version 0.1.0 --no-kernel
 ```
 
 Running it again upgrades in place. The script is

@@ -44,7 +44,7 @@ source, the install script's options, and other kernels.
 ## 1. Install Ganymede
 
 ```sh
-curl -fsSL https://tlockney.github.io/ganymede/install.sh | sh
+curl -fsSL https://ganymede-server.com/install.sh | sh
 ```
 
 The script downloads the latest release for your platform, checks its

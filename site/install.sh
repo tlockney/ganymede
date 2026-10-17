@@ -2,10 +2,10 @@
 # Install Ganymede from a GitHub release on Linux or macOS, then, when
 # Node 24+ is present, cdp-kernel for TypeScript notebooks.
 #
-#   curl -fsSL https://tlockney.github.io/ganymede/install.sh | sh
-#   curl -fsSL https://tlockney.github.io/ganymede/install.sh | sh -s -- --version 0.1.0 --no-kernel
+#   curl -fsSL https://ganymede-server.com/install.sh | sh
+#   curl -fsSL https://ganymede-server.com/install.sh | sh -s -- --version 0.1.0 --no-kernel
 #
-# The steps are the ones on https://tlockney.github.io/ganymede/docs/install.
+# The steps are the ones on https://ganymede-server.com/docs/install.
 # Everything runs inside main(), so a download cut short runs nothing.
 
 set -eu

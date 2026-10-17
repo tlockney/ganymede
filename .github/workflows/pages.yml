@@ -21,8 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # Where the site is served; config.mts derives the docs' base path
-      # from it. Change it when the repository gets a custom domain.
-      SITE_URL: https://tlockney.github.io/ganymede
+      # from it. Keep it in step with the custom domain in Pages settings.
+      SITE_URL: https://ganymede-server.com
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
