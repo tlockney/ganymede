@@ -3,6 +3,9 @@
 // (docs/widgets.md in cdp-kernel), runs it, clicks the button, and asks
 // the kernel for the count in a second cell. The frontend needs the
 // anywidget and jupyterlab_widgets extensions (`ganymede lab install`).
+// With RELOAD=1 it then saves the notebook, opens it in a fresh page, and
+// checks that the widget renders again with the clicked count, restored
+// from the running kernel. Exits non-zero when a check fails.
 //
 // Usage: node widgets.mjs <base-url> <token> <kernel-name> <out.json>
 import { chromium } from 'playwright';
@@ -77,6 +80,23 @@ try {
   const reply = cells.nth(1).locator('.jp-OutputArea-output');
   await reply.waitFor({ timeout: 60000 });
   result.kernelCount = (await reply.textContent()).trim();
+  if (process.env.RELOAD) {
+    await page.keyboard.press('Control+s');
+    await page.waitForFunction(
+      () => !document.querySelector('.jp-mod-dirty'), null, { timeout: 10000 });
+    const saved = await (await fetch(`${base}/api/contents/${name}`, { headers: auth })).json();
+    result.savedOutputs = saved.content.cells.map(c => c.outputs.flatMap(o => Object.keys(o.data ?? {})));
+    const again = await browser.newPage();
+    again.on('pageerror', e => consoleErrors.push('reload pageerror: ' + String(e).slice(0, 300)));
+    await again.goto(`${base}/lab/workspaces/${name.replace('.ipynb', '')}-reload/tree/${name}?token=${token}`);
+    const restored = again.locator('.jp-Notebook .jp-CodeCell').nth(0).locator('.jp-OutputArea-output button');
+    await restored.waitFor({ timeout: 60000 });
+    await again.waitForFunction(
+      el => el.textContent.includes('count is 3'), await restored.elementHandle(), { timeout: 10000 });
+    result.reloaded = (await restored.textContent()).trim();
+    await again.screenshot({ path: out.replace(/\.json$/, '-reloaded.png') });
+    await again.close();
+  }
 } catch (e) {
   result.error = String(e).slice(0, 500);
 }
@@ -86,3 +106,6 @@ await browser.close();
 await fetch(`${base}/api/contents/${name}`, { method: 'DELETE', headers: auth });
 fs.writeFileSync(out, JSON.stringify({ result, failed, consoleErrors }, null, 1));
 console.log(JSON.stringify(result));
+const ok = !result.error && result.afterClicks === 'count is 3' && result.kernelCount === '3' &&
+  (!process.env.RELOAD || result.reloaded === 'count is 3');
+process.exit(ok ? 0 : 1);
