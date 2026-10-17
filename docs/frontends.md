@@ -10,9 +10,11 @@ ganymede serve --root-dir ~/notebooks --port 8888
 
 ## VS Code
 
-In the Jupyter extension, choose **Select Kernel**, then **Existing
-Jupyter Server**, and paste the URL `ganymede serve` printed, token
-included. VS Code lists the kernelspecs Ganymede found; pick one.
+In the Jupyter extension, choose **Select Kernel**, then **Select Another
+Kernel…** › **Existing Jupyter Server**, and paste the URL `ganymede serve`
+printed, token included. VS Code lists the kernelspecs Ganymede found; pick
+one. The Python extension isn't needed for this;
+[Install on a workstation](workstation.md#vs-code) gives the sources.
 
 The extension's remote-server flow passes against Ganymede: listing
 kernels and sessions, starting, interrupting, and restarting a kernel,

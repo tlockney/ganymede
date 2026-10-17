@@ -1,10 +1,13 @@
 #!/bin/sh
-# A fresh workstation with no Python, set up the way docs/install.md says:
-# site/install.sh installs a ganymede binary packaged as release.yml does
-# (served over file://), cdp-kernel comes from npm, `ganymede lab install`
-# fetches JupyterLab, and `ganymede lab --no-browser` serves it. Playwright
-# then logs in with the printed URL and runs TypeScript cells with HTML,
-# JavaScript, and widget outputs, saves, and reopens them.
+# A fresh workstation with no Python, set up the way docs/install.md and
+# docs/workstation.md say: site/install.sh installs a ganymede binary
+# packaged as release.yml does (served over file://), cdp-kernel comes from
+# npm, `ganymede lab install` fetches JupyterLab, and `ganymede lab
+# --no-browser` serves it. Playwright then logs in with the printed URL and
+# runs TypeScript cells with HTML, JavaScript, and widget outputs, saves,
+# and reopens them. Last, everything is uninstalled as the page says.
+# docs/workstation.md uses only commands this script runs; change both
+# together.
 #
 # Python is hidden: PATH is a clean bin dir with only the tools below
 # linked in, and shims named python, python3, pip, pip3, and jupyter that
@@ -30,7 +33,7 @@ sampler=
 cleanup() {
 	if [ -n "${OUT_DIR:-}" ] && [ -e "$work/lab.out" ]; then
 		mkdir -p "$OUT_DIR"
-		cp "$work/lab.out" "$work/lab.err" "$OUT_DIR/" 2>/dev/null || true
+		cp "$work/lab.out" "$work/lab.err" "$work/serve.out" "$work/serve.err" "$OUT_DIR/" 2>/dev/null || true
 	fi
 	[ -z "$server" ] || kill "$server" 2>/dev/null || true
 	[ -z "$sampler" ] || kill "$sampler" 2>/dev/null || true
@@ -157,6 +160,8 @@ npm install -g @tlockney/cdp-kernel
 cdp-kernel install --runtime node
 ganymede kernelspec list | tee "$work/kernelspecs"
 grep -q '^ *cdp-node ' "$work/kernelspecs" || fail "cdp-node is not in ganymede kernelspec list"
+ganymede kernelspec paths
+ganymede info
 ganymede run -k cdp-node 'const x: number = 2; x * 21' | tee "$work/run.out"
 grep -q '42' "$work/run.out" || fail "cdp-node run"
 
@@ -165,20 +170,31 @@ ganymede lab install
 ganymede lab list
 ganymede lab extension list
 
+# Waits for a server started in the background as $server to print a URL
+# matching $2 into file $1, and sets url to it.
+wait_url() {
+	url=
+	tries=0
+	while [ $tries -lt 120 ]; do
+		tries=$((tries + 1))
+		url=$(grep -Eo "$2" "$1" | head -n 1 || true)
+		[ -n "$url" ] && break
+		kill -0 "$server" 2>/dev/null || break
+		sleep 0.5
+	done
+	cat "$1"
+}
+stop_server() {
+	kill "$server" 2>/dev/null || true
+	wait "$server" 2>/dev/null || true
+	server=
+}
+
 step "ganymede lab --no-browser"
 mkdir -p "$work/notebooks"
 (cd "$work/notebooks" && exec ganymede lab --no-browser >"$work/lab.out" 2>"$work/lab.err") &
 server=$!
-url=
-tries=0
-while [ $tries -lt 120 ]; do
-	tries=$((tries + 1))
-	url=$(grep -Eo 'http://[^ ]+/lab\?token=[^ ]+' "$work/lab.out" | head -n 1 || true)
-	[ -n "$url" ] && break
-	kill -0 "$server" 2>/dev/null || break
-	sleep 0.5
-done
-cat "$work/lab.out"
+wait_url "$work/lab.out" 'http://[^ ]+/lab\?token=[^ ]+'
 [ -n "$url" ] || fail "no URL from ganymede lab: $(cat "$work/lab.err")"
 base=${url%%/lab\?*}
 token=${url##*token=}
@@ -197,10 +213,67 @@ await jupyter.display({ "application/javascript": `document.body.dataset.probeJs
 	node trust.mjs "$base" "$token" cdp-node "$out/trust.json" || fail "HTML and JavaScript outputs after reload"
 RELOAD=1 node widgets.mjs "$base" "$token" cdp-node "$out/widgets.json" || fail "widget after reload"
 cd "$work"
+stop_server
 
-kill "$server" 2>/dev/null || true
-wait "$server" 2>/dev/null || true
-server=
+step "First notebook, run with ganymede execute"
+# The cell from docs/workstation.md's "First notebook", which the page has
+# the reader type into JupyterLab and save as first.ipynb. Here it is
+# written to first.ipynb directly and run the way the page's terminal
+# section runs it. cdp-kernel downloads date-fns from the npm registry.
+cat >"$work/notebooks/first.ipynb" <<'EOF'
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "first",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import { format } from \"npm:date-fns@4\";\n",
+    "\n",
+    "const day: string = format(new Date(2026, 0, 2), \"EEEE, MMMM d\");\n",
+    "await jupyter.display(jupyter.md`**${day}** is ${day.length} characters long.`);"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": { "name": "cdp-node", "display_name": "TypeScript (cdp-kernel, node)", "language": "typescript" }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
+EOF
+(cd "$work/notebooks" && ganymede execute first.ipynb --inplace)
+grep -q 'Friday, January 2\*\* is 17 characters' "$work/notebooks/first.ipynb" ||
+	fail "first.ipynb has no jupyter.display output from the npm: import"
+
+step "ganymede serve, with the VS Code Jupyter extension's remote-server flow"
+(cd "$work/notebooks" && exec ganymede serve >"$work/serve.out" 2>"$work/serve.err") &
+server=$!
+wait_url "$work/serve.out" 'http://[^ ]+/\?token=[^ ]+'
+[ -n "$url" ] || fail "no URL from ganymede serve: $(cat "$work/serve.err")"
+(cd "$repo/validation" && node vscode.cjs "$url" cdp-node) || fail "VS Code's flow against ganymede serve"
+stop_server
+
+step "Uninstall, as docs/workstation.md has it"
+lab_version=$(ganymede lab list | awk 'NR == 1 { print $1 }')
+[ -n "$lab_version" ] || fail "no version in ganymede lab list"
+ganymede lab remove "$lab_version"
+ganymede lab extension remove anywidget jupyterlab-widgets
+ganymede kernelspec remove cdp-node
+[ -z "$(ganymede lab list 2>/dev/null)" ] || fail "JupyterLab still installed"
+[ -z "$(ganymede lab extension list 2>/dev/null)" ] || fail "extensions still installed"
+if ganymede kernelspec list 2>/dev/null | grep -q '^ *cdp-node '; then
+	fail "cdp-node still listed"
+fi
+npm uninstall -g @tlockney/cdp-kernel
+rm ~/.local/bin/ganymede
+hash -r 2>/dev/null || true
+for tool in cdp-kernel ganymede; do
+	if command -v "$tool" >/dev/null; then fail "$tool is still on PATH"; fi
+done
+
 kill "$sampler" 2>/dev/null || true
 sampler=
 

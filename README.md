@@ -13,6 +13,8 @@ gods on Olympus.
 
 **Documentation:** [tlockney.github.io/ganymede](https://tlockney.github.io/ganymede/)
 (sources in [`docs/`](docs/)). Start with
+[Install on a workstation](docs/workstation.md), step by step from a clean
+machine with no Python or Jupyter, then
 [Getting started](docs/getting-started.md) and
 [Architecture](docs/architecture.md).
 
@@ -32,6 +34,8 @@ curl -fsSL https://tlockney.github.io/ganymede/install.sh | sh
 
 Pass options after `sh -s --`: `--version 0.1.0` pins a release,
 `--bin-dir DIR` installs elsewhere, `--no-kernel` skips cdp-kernel.
+[Install on a workstation](docs/workstation.md) walks through it, the
+kernel, and JupyterLab step by step.
 [Install](docs/install.md) has the same steps done by hand, and the
 platform notes (glibc 2.35 or newer on Linux; unnotarized macOS binaries).
 
@@ -161,7 +165,10 @@ and ipykernel, plus a portability job for iOS, Android, and wasm. Its
 with Python hidden from `PATH`
 ([`scripts/test-workstation.sh`](scripts/test-workstation.sh)): the PR's
 binary through `install.sh`, cdp-kernel from npm, `ganymede lab install`,
-and `ganymede lab` driven by Playwright, failing if any Python ran.
+`ganymede lab` driven by Playwright, `ganymede execute`, `ganymede serve`
+with the VS Code extension's requests, and the uninstall, failing if any
+Python ran. It runs the commands of
+[Install on a workstation](docs/workstation.md).
 
 ## Contributing
 

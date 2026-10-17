@@ -953,3 +953,34 @@ with a `<script>`, plus a raw `application/javascript` bundle), and
 - JupyterLab saves on Cmd+S on macOS, where Playwright's Chromium reports a
   Mac platform, so `Control+s` silently does nothing there. The scripts press
   `ControlOrMeta+s`.
+
+## 2026-10-17, the workstation install page
+
+[Install on a workstation](workstation.md) (#21) is the numbered path from
+a clean Linux or macOS machine to JupyterLab running TypeScript, for a
+reader who has never installed Jupyter. Its commands are the ones
+`scripts/test-workstation.sh` runs, and the page's source comment lists
+where the two differ and why.
+
+- To cover the page, the script gained three steps: `ganymede execute
+  first.ipynb --inplace` on the page's first-notebook cell (an `npm:`
+  import of date-fns and `jupyter.display` of `jupyter.md`; the output is
+  checked in the saved file), `ganymede serve` with `validation/vscode.cjs`
+  replaying the VS Code Jupyter extension's requests, and the uninstall
+  (`ganymede lab remove`, `lab extension remove`, `kernelspec remove`,
+  `npm uninstall -g`, `rm ~/.local/bin/ganymede`). It also runs
+  `ganymede kernelspec paths` and `ganymede info`, which the
+  troubleshooting section uses. The full script passed locally on Linux
+  x86_64 with Node 24.22 and a debug build.
+- `cdp-kernel list` and `cdp-kernel uninstall` (cdp-kernel #251) are on
+  cdp-kernel's main but not in 0.5.0 on npm, so the page gives
+  `ganymede kernelspec remove cdp-node` and mentions them as the
+  alternative for later releases. Add them to the script once released.
+- The VS Code Jupyter extension doesn't need the Python extension for an
+  existing server: its `package.json` (2026.6.1) has no
+  `extensionDependencies`, and its `extensionPack` is Keymap, Renderers,
+  Cell Tags, and Slide Show. Not checked by running VS Code.
+- `ganymede serve` doesn't fall back to another port as `lab` does; it
+  exits with `binding 127.0.0.1:8888: Address already in use`.
+- `ganymede lab install` honours `HTTPS_PROXY` through ureq; cdp-kernel's
+  `npm:` imports run `npm install`, so npm's proxy settings apply.
