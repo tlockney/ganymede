@@ -507,3 +507,21 @@ Portability:
   `Closes/Fixes/Resolves/Refs #N`. Issue templates: bug, task.
 - Install check: `ganymede run -k fake hello` and `ganymede serve` +
   `/api/status` need no kernel, so they are the README's smoke test.
+
+## 2026-10-17, releases through a PR
+
+- The first `release.sh --execute` could not push the release commit and
+  tag to `main`: Claude sessions may push only their own branch (HTTP 403
+  from the proxy), and direct pushes also skip the PR-links-issue rule.
+- Now cargo-release only bumps and commits (`tag = false`, `push = false`
+  in release.toml). The script moves that commit to `release/vX.Y.Z`,
+  resets local `main`, pushes, and with `gh` opens an issue and a PR that
+  closes it. A release can be cut by merging a PR from the GitHub app.
+- `tag-release.yml` runs on pushes to `main` that touch `Cargo.toml`. It
+  tags only when the workspace version has a CHANGELOG.md section and no
+  tag, so dependency changes and the untagged 0.0.1 are ignored.
+- A tag pushed with `GITHUB_TOKEN` triggers no workflows, but
+  `workflow_dispatch` is exempt, so tag-release runs
+  `gh workflow run release.yml --ref vX.Y.Z` (needs `actions: write`).
+  Dispatched on a tag ref, `github.ref_type` is `tag`, so release.yml's
+  version check and publish job behave as on a pushed tag.
