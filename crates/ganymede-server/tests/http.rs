@@ -77,6 +77,8 @@ fn state(root: &std::path::Path) -> AppState {
         token: Some(TOKEN.into()),
         cookie_secret: Arc::from(&b"test-secret"[..]),
         allow_origins: vec![],
+        allow_remote_access: false,
+        local_hostnames: vec!["localhost".into()],
         base_url: "/".into(),
         config_dir: root.join(".jupyter-config"),
         lab: None,
@@ -1203,5 +1205,92 @@ async fn websocket_authenticates_with_the_login_cookie() {
     assert!(
         tokio_tungstenite::connect_async(req).await.is_ok(),
         "cookie only, same origin"
+    );
+}
+
+#[tokio::test]
+async fn auth_off_still_needs_xsrf_to_change_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = lab_state(dir.path());
+    st.token = None;
+    let app = build_router(st);
+
+    // A cross-site "simple" request: text/plain, no XSRF token.
+    let post = |extra: &[(&str, &str)]| {
+        let mut r = Request::post("/api/contents")
+            .header(header::HOST, HOST)
+            .header(header::CONTENT_TYPE, "text/plain");
+        for (k, v) in extra {
+            r = r.header(*k, *v);
+        }
+        r.body(Body::from(r#"{"type": "notebook"}"#)).unwrap()
+    };
+    let (st, _, body) = send(&app, post(&[("Origin", "https://evil.example")])).await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "cross-origin: {body}");
+    let (st, _, body) = send(&app, post(&[])).await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.contains("'_xsrf' argument missing"), "{body}");
+
+    // Reads need nothing; the page hands out the cookie that writes need.
+    let (st, _, _) = send(&app, get_req("/api/contents", None)).await;
+    assert_eq!(st, StatusCode::OK);
+    let (_, h, _) = send(&app, get_req("/lab", None)).await;
+    let (_, xsrf, _) = set_cookies(&h).remove(0);
+    let cookie = format!("_xsrf={xsrf}");
+    let (st, _, body) = send(&app, post(&[("Cookie", &cookie), ("X-XSRFToken", &xsrf)])).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+}
+
+#[tokio::test]
+async fn non_local_host_is_refused_on_loopback() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    st.local_hostnames.push("notebook.test".into());
+    let app = build_router(st.clone());
+    let status = |app: axum::Router, host: &'static str| async move {
+        let req = Request::get(format!("/api/status?token={TOKEN}"))
+            .header(header::HOST, host)
+            .header(header::ORIGIN, format!("http://{host}"))
+            .body(Body::empty())
+            .unwrap();
+        send(&app, req).await.0
+    };
+    for host in [
+        "127.0.0.1:8888",
+        "127.0.0.2",
+        "localhost:8888",
+        "LOCALHOST",
+        "[::1]:8888",
+        "[::1]",
+        "notebook.test:8888",
+    ] {
+        assert_eq!(status(app.clone(), host).await, StatusCode::OK, "{host}");
+    }
+    for host in [
+        "rebind.evil.example:8888",
+        "rebind.evil.example",
+        "10.0.0.5:8888",
+        "[::2]:8888",
+        "[::1]x",
+        "localhost.evil.example",
+    ] {
+        assert_eq!(
+            status(app.clone(), host).await,
+            StatusCode::FORBIDDEN,
+            "{host}"
+        );
+    }
+    // Pages are covered too, not only the API.
+    let req = Request::get("/login")
+        .header(header::HOST, "rebind.evil.example:8888")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(send(&app, req).await.0, StatusCode::FORBIDDEN);
+
+    st.allow_remote_access = true;
+    let app = build_router(st);
+    assert_eq!(
+        status(app, "rebind.evil.example:8888").await,
+        StatusCode::OK
     );
 }

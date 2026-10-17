@@ -359,6 +359,14 @@ fn safe_method(m: &Method) -> bool {
 /// is. A token-authenticated request without a login cookie gets one.
 pub(crate) async fn api(State(state): State<AppState>, req: Request<Body>, next: Next) -> Response {
     if state.token.is_none() {
+        // As in `jupyter_server`, a request that is not token-authenticated
+        // still needs the XSRF token to change state, so other sites
+        // cannot drive a server with auth off.
+        if !safe_method(req.method()) {
+            if let Err(e) = check_xsrf(&state, req.headers(), req.uri().query(), None) {
+                return e.into_response();
+            }
+        }
         return next.run(req).await;
     }
     let headers = req.headers();
@@ -393,6 +401,57 @@ pub(crate) async fn api(State(state): State<AppState>, req: Request<Body>, next:
             resp
         }
     }
+}
+
+/// For every route: 403 when `Host` is not a loopback address or a name in
+/// `local_hostnames`, unless remote access is allowed. This is
+/// `jupyter_server`'s `check_host`, which stops DNS rebinding: a page whose
+/// name resolves to 127.0.0.1 is same-origin with itself, so only the
+/// `Host` header shows the request is not meant for this server.
+pub(crate) async fn check_host(
+    State(state): State<AppState>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    if host_allowed(&state, req.headers()) {
+        next.run(req).await
+    } else {
+        HttpError(403, "Forbidden".into()).into_response()
+    }
+}
+
+fn host_allowed(state: &AppState, headers: &HeaderMap) -> bool {
+    if state.allow_remote_access {
+        return true;
+    }
+    let Some(host) = headers.get(header::HOST) else {
+        return true;
+    };
+    let Ok(host) = host.to_str() else {
+        return false;
+    };
+    let name = match host.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((name, "")) => name,
+            Some((name, port)) if port.strip_prefix(':').is_some_and(is_port) => name,
+            _ => return false,
+        },
+        None => match host.rsplit_once(':') {
+            Some((name, port)) if is_port(port) => name,
+            _ => host,
+        },
+    };
+    match name.parse::<std::net::IpAddr>() {
+        Ok(addr) => addr.is_loopback(),
+        Err(_) => state
+            .local_hostnames
+            .iter()
+            .any(|h| h.eq_ignore_ascii_case(name)),
+    }
+}
+
+fn is_port(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// For HTML pages: unauthenticated GETs go to the login page with a

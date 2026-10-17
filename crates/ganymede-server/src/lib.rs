@@ -31,6 +31,12 @@ pub struct AppState {
     pub cookie_secret: Arc<[u8]>,
     /// Origins allowed to open websockets, beyond the request's own host.
     pub allow_origins: Vec<String>,
+    /// Skip the `Host` check. Off by default when bound to loopback, so a
+    /// DNS-rebinding page cannot reach the server through its own name.
+    pub allow_remote_access: bool,
+    /// Names, besides loopback addresses, accepted in `Host` when
+    /// `allow_remote_access` is off.
+    pub local_hostnames: Vec<String>,
     /// URL prefix the routes are nested under, with a trailing `/`.
     pub base_url: String,
     /// Jupyter config dir: `nbconfig/` for `/api/config`, and JupyterLab's
@@ -56,7 +62,11 @@ pub fn build_router(state: AppState) -> axum::Router {
         (None, None) => {}
     }
     app.layer(axum::middleware::from_fn_with_state(
-        state,
+        state.clone(),
         auth::strip_token,
+    ))
+    .layer(axum::middleware::from_fn_with_state(
+        state,
+        auth::check_host,
     ))
 }

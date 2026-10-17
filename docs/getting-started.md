@@ -115,6 +115,7 @@ Useful flags, each of which can also be set in a TOML file passed with
 | `--root-dir` | Where notebooks and files are served from. Default: the current directory. |
 | `--ip`, `--port` | Where to listen. `--port 0` picks a free port. |
 | `--token` | The auth token. Unset generates one; an empty string disables auth. |
+| `--allow-remote-access` | Accept requests addressed to any host name. Without it, a server on a loopback address only answers requests whose `Host` is a loopback address or a name in `local_hostnames` (default `localhost`). |
 | `--default-kernel` | The kernelspec frontends offer first. |
 | `--cull-idle-secs` | Shut down kernels idle this long with no clients. |
 | `--static-dir` | Serve a frontend's static files; JupyterLab's bundle is recognized. Default: the newest JupyterLab from `ganymede lab install`. |

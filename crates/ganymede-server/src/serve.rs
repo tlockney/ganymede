@@ -52,6 +52,10 @@ pub struct ServeArgs {
     pub default_kernel: Option<String>,
     #[arg(long)]
     pub cull_idle_secs: Option<u64>,
+    /// Accept requests whose `Host` is not a loopback address or a name in
+    /// `local_hostnames`. On by default when --ip is not loopback.
+    #[arg(long)]
+    pub allow_remote_access: bool,
 }
 
 impl ServeArgs {
@@ -93,6 +97,9 @@ impl ServeArgs {
         }
         if let Some(v) = cli.config_dir {
             cfg.config_dir = Some(v);
+        }
+        if cli.allow_remote_access {
+            cfg.allow_remote_access = Some(true);
         }
         cfg.kernelspec_roots.extend(cli.kernelspec_root);
         cfg.labextensions_paths.extend(cli.labextensions_path);
@@ -224,6 +231,8 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         token: token.clone(),
         cookie_secret: crate::auth::load_cookie_secret(&cookie_secret_file).into(),
         allow_origins: cfg.allow_origins.clone(),
+        allow_remote_access: cfg.allow_remote_access(),
+        local_hostnames: cfg.local_hostnames.clone(),
         base_url: base_url.clone(),
         config_dir,
         static_dir: if lab.is_some() { None } else { static_dir },

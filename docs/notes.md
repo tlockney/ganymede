@@ -1011,3 +1011,30 @@ point at it directly instead of through the redirect.
 - No `site/CNAME`: GitHub ignores a `CNAME` file in an Actions-deployed
   artifact, so it would not keep the domain set; the Pages settings are
   the only place it lives.
+
+## 2026-10-17, auth off no longer means open to every web page (#41)
+
+With `--token ""` the API middleware skipped every check, so any page in
+the user's browser could create files, trust notebooks, and start kernels
+with a cross-site `text/plain` POST (no preflight), and a DNS-rebinding
+page could read files. jupyter_server keeps two protections with auth off,
+and Ganymede now matches them:
+
+- XSRF applies to every state-changing request that did not send the
+  token, whether or not auth is on (`check_xsrf_cookie` only skips
+  token-authenticated requests). With auth off, a client that is not a
+  browser must send `_xsrf` as a cookie and an `X-XSRFToken` header, or
+  run with a token. Reads and websocket upgrades are unaffected; the
+  websocket handlers already check `Origin`.
+- `Host` must be a loopback address or a name in `local_hostnames`
+  (default `localhost`) unless `allow_remote_access` is on. It defaults to
+  on only when `ip` is not loopback, as `_default_allow_remote` does; a
+  host name for `ip` counts as loopback when every address it resolves to
+  is. The check runs on every route, pages included, and a request with no
+  `Host` passes, as tornado treats it as local.
+- A rebinding page is same-origin with itself (its `Origin` and `Host`
+  agree), so the `Origin` check cannot catch it; only `Host` shows the
+  request was meant for another name.
+- A reverse proxy in front of a loopback-bound server needs
+  `--allow-remote-access` or its public name in `local_hostnames`, unless
+  it rewrites `Host`.
