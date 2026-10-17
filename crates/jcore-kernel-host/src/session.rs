@@ -277,10 +277,15 @@ impl KernelSession {
             );
             let _ = self.request(Channel::Control, m, false, grace).await;
         }
-        if let Some(p) = &self.inner.process {
+        // Only a process we own can be waited on or killed. An attached
+        // kernel gets the request and nothing more.
+        if let Some(p) = self.inner.process.as_ref().filter(|p| p.pid().is_some()) {
             if tokio::time::timeout(grace, p.wait()).await.is_err() {
                 tracing::warn!("kernel ignored shutdown_request; killing");
-                p.kill().await?;
+                match p.kill().await {
+                    Ok(()) | Err(Error::Unsupported(_)) => {}
+                    Err(e) => return Err(e),
+                }
                 let _ = tokio::time::timeout(grace, p.wait()).await;
             }
         }

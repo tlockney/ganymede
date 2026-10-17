@@ -194,3 +194,45 @@ Not done, in the order the sketch suggests: the server crate (REST and
 websocket bridge over the session), the contents crate, the document
 model, an app shell for the frontend, cdp-kernel verification (needs
 Node 24), CurveZMQ, Windows.
+
+## 2026-10-17, server crate
+
+Added three crates. `jcore-contents` (subagent): the contents seam and a
+filesystem implementation with atomic writes, the mtime conflict check,
+checkpoints with a configurable directory outside the root, and path
+safety including symlink escapes; 30 tests. `jcore-api`: kernel and
+session managers, models, and the per-client bridge, with no HTTP; 6
+tests. `jcore-server`: axum routes, token auth, websocket channels, TOML
+config, static assets; 5 integration tests including a real websocket
+round trip against the fake kernel.
+
+Verified against ipykernel over ZMQ, through HTTP, from Node:
+
+- Our `frontend/` client: kernelspecs, start, kernel_info, execute with
+  stdout and stderr, result, error reply, shutdown.
+- `@jupyterlab/services` 7.5, the real JupyterLab client library: specs,
+  start, info, execute, complete, signal interrupt of a sleeping cell,
+  restart (it reconnects its websocket on its own), contents newUntitled,
+  save, get, list, sessions bound to the kernel, shutdown, and the server's
+  close frame when the kernel is gone.
+
+Things learned:
+
+- JupyterLab's client POSTs JSON without `Content-Type`; axum's `Json`
+  extractor answers 415. `jupyter_server` parses the body regardless. The
+  server now has a lenient extractor for every body route.
+- A client holding an `Arc` to the running kernel keeps the broadcast hub
+  alive, so "hub closed" can never signal shutdown; an explicit alive flag
+  the client selects on does.
+- `KernelSession::shutdown` must not wait on or kill a process it does
+  not own; attached kernels have no pid.
+- A kernel started with no path must run in the contents root, not the
+  server's cwd.
+- `pkill -f <pattern>` matches the shell running it. Use process names.
+- The contents crate's checkpoint layout with an external directory
+  mirrors the root's tree instead of jupyter_server's flat folder, so
+  same-named files in different directories do not collide.
+
+Not done: cookie login for a browser frontend, serving JupyterLab's static
+bundle (needs `/lab/api/*`), CurveZMQ, kernel autorestart on crash,
+cdp-kernel verification.

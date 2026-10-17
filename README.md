@@ -16,10 +16,11 @@ each deployment profile (server, desktop, iPad) uses.
 
 ## Status
 
-Code sketch. The protocol, kernel host, nbformat, and headless executor
-crates build, pass their tests, and drive ipykernel over real ZeroMQ. The
-TypeScript frontend package has the protocol plumbing and renderer seams
-with tests, but no app shell. No server crate yet.
+Code sketch. The protocol, kernel host, nbformat, executor, contents, API,
+and server crates build, pass their tests, and drive ipykernel over real
+ZeroMQ. `@jupyterlab/services` connects to the server and runs the full
+kernel, session, and contents flow. The TypeScript frontend package has
+the protocol plumbing and renderer seams with tests, but no app shell.
 
 ## Code
 
@@ -32,6 +33,9 @@ Cargo workspace at this directory; `frontend/` is an npm package.
 | [`crates/jcore-kernel-host`](crates/jcore-kernel-host/) | Kernelspec discovery, transport seam (ZMQ and in-process), subprocess and attach provisioners, the session state machine, a fake kernel. | 9 |
 | [`crates/jcore-exec`](crates/jcore-exec/) | Headless executor: iopub messages to nbformat outputs, with `clear_output`, `display_id`, and stream merging. | 2 |
 | [`crates/jcore-cli`](crates/jcore-cli/) | `jcore kernelspec list`, `jcore run`, `jcore attach`, `jcore exec`. | |
+| [`crates/jcore-contents`](crates/jcore-contents/) | Contents seam and filesystem implementation matching `jupyter_server`'s model: atomic writes, mtime conflicts, checkpoints, configurable checkpoint dir, path safety. | 30 |
+| [`crates/jcore-api`](crates/jcore-api/) | Kernel and session managers, response models, per-client bridge with reply filtering, idle culling. No HTTP. | 6 |
+| [`crates/jcore-server`](crates/jcore-server/) | axum routes, token auth, origin check, websocket v1 and legacy framing, static assets, TOML config. | 5 |
 | [`frontend/`](frontend/) | Protocol types, websocket codecs, `ServerConnection` with injectable `fetch` and `WebSocket`, REST client, `KernelConnection`, renderer registry, ANSI and stream handling, widget manager interfaces. | 45 |
 
 Try it:
@@ -42,6 +46,7 @@ cargo run -p jcore-cli -- run --kernel fake "hello"
 cargo run -p jcore-cli -- kernelspec list
 cargo run -p jcore-cli -- run --kernel python3 "print(1+1)"   # any installed kernelspec
 cargo run -p jcore-cli -- exec notebook.ipynb -o out.ipynb
+cargo run -p jcore-server -- --root-dir . --port 8888      # then point JupyterLab or VS Code at the printed URL
 cd frontend && npm install && npm test
 ```
 
@@ -70,8 +75,9 @@ cd frontend && npm install && npm test
 
 ## Next
 
-- Server crate: REST API and the websocket bridge over `KernelSession`,
-  token auth, static assets. Validate with VS Code and JupyterLab.
+- Point a real JupyterLab (static bundle via `--static-dir`, needs the
+  `/lab/api/*` endpoints) and VS Code at the server.
+- Cookie login for browser frontends; CurveZMQ.
 - Run the conformance checks against cdp-kernel (needs Node 24).
 - Contents crate, document model, and an app shell for the frontend.
 - CurveZMQ for the ZMQ transport; ipykernel 7 already advertises it.
