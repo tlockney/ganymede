@@ -359,6 +359,70 @@ async fn contents_rest_round_trip() {
 }
 
 #[tokio::test]
+async fn contents_trust_route() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    st.contents = Arc::new(
+        FsContents::new(
+            dir.path(),
+            FsOptions {
+                notary: Some(Arc::new(
+                    ganymede_contents::Notary::open(data.path()).unwrap(),
+                )),
+                ..FsOptions::default()
+            },
+        )
+        .unwrap(),
+    );
+    let app = build_router(st);
+    let nb = json!({"nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [
+        {"cell_type": "code", "id": "c", "metadata": {}, "source": "x", "execution_count": 1,
+         "outputs": [{"output_type": "display_data", "metadata": {}, "data": {"text/html": "<b>x</b>"}}]}]});
+    let (s, _) = call(
+        &app,
+        "PUT",
+        "/api/contents/a.ipynb",
+        Some(json!({"type": "notebook", "content": nb})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let trusted = |v: &Value| v["content"]["cells"][0]["metadata"]["trusted"].clone();
+    let (_, v) = call(&app, "GET", "/api/contents/a.ipynb", None, Some(TOKEN)).await;
+    assert_eq!(trusted(&v), json!(false));
+    let (s, v) = call(
+        &app,
+        "POST",
+        "/api/contents/a.ipynb/trust",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!((s, v), (StatusCode::CREATED, Value::Null));
+    let (_, v) = call(&app, "GET", "/api/contents/a.ipynb", None, Some(TOKEN)).await;
+    assert_eq!(trusted(&v), json!(true));
+    let (s, _) = call(
+        &app,
+        "GET",
+        "/api/contents/a.ipynb/trust",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::METHOD_NOT_ALLOWED);
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/api/contents/nope.ipynb/trust",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn websocket_channels_v1_execute_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let st = state(dir.path());

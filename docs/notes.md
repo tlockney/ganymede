@@ -698,6 +698,62 @@ Findings:
 - `form_urlencoded::Serializer::new` with a target that already ends in
   `?` adds a `&`; build the query separately.
 
+## 2026-10-17, notebook trust
+
+Notebooks are signed and marked `trusted` as `jupyter_server` does, so
+JupyterLab runs the HTML and JavaScript outputs of a notebook it reopens
+(issue #18). `ganymede-contents` has `trust::Notary`, `FsContents` signs on
+save and marks cells on read, the server serves `POST
+/api/contents/{path}/trust`, and `ganymede trust` replaces `jupyter trust`.
+
+- Ganymede shares Jupyter's store instead of keeping its own:
+  `notebook_secret` and `nbsignatures.db` in the Jupyter data dir
+  (`--notary-dir` / `notary_dir` moves them). A user moving from Jupyter
+  keeps their trusted notebooks, and `jupyter trust` and `ganymede trust`
+  agree; `parity.rs` checks both directions.
+- There is no mature pure-Rust SQLite (`turso_core` is a pre-release), so
+  the database goes through `rusqlite` with SQLite compiled from C. It sits
+  behind the contents crate's `sqlite` feature, which only the server
+  enables: `ganymede-contents` alone still checks for iOS and Android with
+  no C cross compiler, and the engine, which does not depend on it, still
+  builds for wasm. Without the feature signatures are kept in memory, as
+  nbformat does when `sqlite3` is missing.
+- The signature is an HMAC-SHA256 over nbformat's `yield_everything`: for
+  each object, keys in sorted order each followed by its value; strings as
+  UTF-8; everything else as Python's `str()` (`True`, `None`, `1e-05`, so
+  the writer's float repr is reused); `metadata.signature` skipped. List
+  items are concatenated with no separator, so a source split into lines
+  hashes the same as the joined string. The key is the secret file's
+  bytes, trailing newlines included. Fixtures from
+  `tests/fixtures/generate_trust.py` pin it.
+- What is hashed is the notebook as served, without `trusted`. On save
+  Ganymede hashes the notebook as it will be read back rather than the
+  client's JSON, which is what makes the save-then-reopen round trip
+  verify. jupyter_server hashes the client's dict, so a `trusted` flag on a
+  markdown cell, which nbformat drops on read, would make its own
+  signature miss.
+- The save rule is `check_cells`: a code cell is trusted when its
+  `metadata.trusted` is truthy (popped either way) or no `execute_result`
+  or `display_data` output has a key besides `output_type`,
+  `execution_count` and `metadata`. An empty `data: {}` counts as unsafe.
+  JupyterLab sets `trusted` on cells it ran, which is how "every output was
+  produced in this session" reaches the server.
+- Signatures are content-addressed, so a byte-identical copy of a trusted
+  notebook is trusted too. The JupyterLab check in
+  `validation/trust.mjs` changes the copy's metadata before saving it
+  untrusted, or the control would pass for the wrong reason.
+- nbformat does not create the data dir before writing the key, so
+  `jupyter server --NotebookNotary.data_dir=<missing dir>` answers 500 on
+  every notebook read. Ganymede creates it; the parity test creates it for
+  the reference.
+- `jupyter trust --reset` writes 1024 raw random bytes as the new key; the
+  key Ganymede generates (then and on first use) is the base64 text nbformat
+  writes on first use. Any bytes work as an HMAC key.
+- Checked with JupyterLab 4 in headless Chromium against `ganymede serve`:
+  after save and reopen in a fresh page, the HTML output's `<script>` and
+  the `application/javascript` output both run; in an edited copy saved
+  without `trusted` flags neither does.
+
 ## 2026-10-17, prebuilt JupyterLab extensions from wheels
 
 `ganymede lab extension install|list|remove` (#16) unpacks

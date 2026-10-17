@@ -1,0 +1,611 @@
+{
+ "check_cells": [
+  {
+   "after": {
+    "cells": [
+     {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": "x"
+     }
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5
+   },
+   "case": "no code cells",
+   "notebook": {
+    "cells": [
+     {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": "x"
+     }
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5
+   },
+   "trusted": true
+  },
+  {
+   "after": {
+    "cells": [
+     {
+      "cell_type": "code",
+      "metadata": {},
+      "outputs": [
+       {
+        "name": "stdout",
+        "output_type": "stream",
+        "text": "x"
+       },
+       {
+        "ename": "E",
+        "evalue": "v",
+        "output_type": "error",
+        "traceback": []
+       }
+      ]
+     }
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5
+   },
+   "case": "streams and errors only",
+   "notebook": {
+    "cells": [
+     {
+      "cell_type": "code",
+      "metadata": {},
+      "outputs": [
+       {
+        "name": "stdout",
+        "output_type": "stream",
+        "text": "x"
+       },
+       {
+        "ename": "E",
+        "evalue": "v",
+        "output_type": "error",
+        "traceback": []
+       }
+      ]
+     }
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5
+   },
+   "trusted": true
+  },
+  {
+   "after": {
+    "cells": [
+     {
+      "cell_type": "code",
+      "metadata": {},
+      "outputs": [
+       {
+        "data": {
+         "text/html": "<b>x</b>"
+        },
+        "metadata": {},
+        "output_type": "display_data"
+       }
+      ]
+     }
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5
+   },
+   "case": "rich output, untrusted",
+   "notebook": {
+    "cells": [
+     {
+      "cell_type": "code",
+      "metadata": {},
+      "outputs": [
+       {
+        "data": {
+         "text/html": "<b>x</b>"
+        },
+        "metadata": {},
+        "output_type": "display_data"
+       }
+      ]
+     }
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5
+   },
+   "trusted": false
+  },
+  {
+   "after": {
+    "cells": [
+     {
+      "cell_type": "code",
+      "metadata": {},
+      "outputs": [
+       {
+        "data": {
+         "text/html": "<b>x</b>"
+        },
+        "metadata": {},
+        "output_type": "display_data"
+       }
+      ]
+     }
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5
+   },
+   "case": "rich output, trusted flag",
+   "notebook": {
+    "cells": [
+     {
+      "cell_type": "code",
+      "metadata": {
+       "trusted": true
+      },
+      "outputs": [
+       {
+        "data": {
+         "text/html": "<b>x</b>"
+        },
+        "metadata": {},
+        "output_type": "display_data"
+       }
+      ]
+     }
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5
+   },
+   "trusted": true
+  },
+  {
+   "after": {
+    "cells": [
+     {
+      "cell_type": "code",
+      "metadata": {},
+      "outputs": [
+       {
+        "data": {},
+        "execution_count": 1,
+        "metadata": {},
+        "output_type": "execute_result"
+       }
+      ]
+     }
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5
+   },
+   "case": "rich output, trusted false",
+   "notebook": {
+    "cells": [
+     {
+      "cell_type": "code",
+      "metadata": {
+       "trusted": false
+      },
+      "outputs": [
+       {
+        "data": {},
+        "execution_count": 1,
+        "metadata": {},
+        "output_type": "execute_result"
+       }
+      ]
+     }
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5
+   },
+   "trusted": false
+  },
+  {
+   "after": {
+    "cells": [
+     {
+      "cell_type": "code",
+      "metadata": {},
+      "outputs": [
+       {
+        "execution_count": 1,
+        "metadata": {},
+        "output_type": "execute_result"
+       }
+      ]
+     }
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5
+   },
+   "case": "only safe keys",
+   "notebook": {
+    "cells": [
+     {
+      "cell_type": "code",
+      "metadata": {},
+      "outputs": [
+       {
+        "execution_count": 1,
+        "metadata": {},
+        "output_type": "execute_result"
+       }
+      ]
+     }
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5
+   },
+   "trusted": true
+  },
+  {
+   "after": {
+    "cells": [
+     {
+      "cell_type": "code",
+      "metadata": {},
+      "outputs": [
+       {
+        "data": {},
+        "output_type": "display_data"
+       }
+      ]
+     },
+     {
+      "cell_type": "code",
+      "metadata": {},
+      "outputs": [
+       {
+        "data": {},
+        "output_type": "display_data"
+       }
+      ]
+     }
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5
+   },
+   "case": "truthy trusted values",
+   "notebook": {
+    "cells": [
+     {
+      "cell_type": "code",
+      "metadata": {
+       "trusted": 1
+      },
+      "outputs": [
+       {
+        "data": {},
+        "output_type": "display_data"
+       }
+      ]
+     },
+     {
+      "cell_type": "code",
+      "metadata": {
+       "trusted": "yes"
+      },
+      "outputs": [
+       {
+        "data": {},
+        "output_type": "display_data"
+       }
+      ]
+     }
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5
+   },
+   "trusted": true
+  },
+  {
+   "after": {
+    "cells": [
+     {
+      "cell_type": "code",
+      "metadata": {},
+      "outputs": []
+     },
+     {
+      "cell_type": "code",
+      "metadata": {},
+      "outputs": [
+       {
+        "data": {},
+        "output_type": "display_data"
+       }
+      ]
+     }
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5
+   },
+   "case": "falsy trusted values",
+   "notebook": {
+    "cells": [
+     {
+      "cell_type": "code",
+      "metadata": {
+       "trusted": 0
+      },
+      "outputs": []
+     },
+     {
+      "cell_type": "code",
+      "metadata": {
+       "trusted": ""
+      },
+      "outputs": [
+       {
+        "data": {},
+        "output_type": "display_data"
+       }
+      ]
+     }
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5
+   },
+   "trusted": false
+  },
+  {
+   "after": {
+    "cells": [
+     {
+      "cell_type": "code",
+      "metadata": {},
+      "outputs": [
+       {
+        "data": {},
+        "output_type": "display_data"
+       }
+      ]
+     },
+     {
+      "cell_type": "code",
+      "metadata": {},
+      "outputs": [
+       {
+        "data": {},
+        "output_type": "display_data"
+       }
+      ]
+     },
+     {
+      "cell_type": "code",
+      "metadata": {},
+      "outputs": []
+     },
+     {
+      "cell_type": "markdown",
+      "metadata": {
+       "trusted": true
+      },
+      "source": ""
+     }
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5
+   },
+   "case": "one untrusted cell among trusted",
+   "notebook": {
+    "cells": [
+     {
+      "cell_type": "code",
+      "metadata": {
+       "trusted": true
+      },
+      "outputs": [
+       {
+        "data": {},
+        "output_type": "display_data"
+       }
+      ]
+     },
+     {
+      "cell_type": "code",
+      "metadata": {},
+      "outputs": [
+       {
+        "data": {},
+        "output_type": "display_data"
+       }
+      ]
+     },
+     {
+      "cell_type": "code",
+      "metadata": {
+       "trusted": true
+      },
+      "outputs": []
+     },
+     {
+      "cell_type": "markdown",
+      "metadata": {
+       "trusted": true
+      },
+      "source": ""
+     }
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5
+   },
+   "trusted": false
+  }
+ ],
+ "notebooks": [
+  {
+   "notebook": "signing.ipynb",
+   "signatures": {
+    "base64": "e6498c2faf0485a07330d67f83e2965cca19f78511bdcdd02f5b1e02d72ea9cf",
+    "short": "eb5e9cf0a72289bc83e28a7c4e4b3ef999275a08a8ee756a168d0f3f6474b745"
+   }
+  },
+  {
+   "notebook": "../../../ganymede-nbformat/tests/fixtures/code_outputs.ipynb",
+   "signatures": {
+    "base64": "684e36f9cb49d75a04eb92b60b39a8ab88553becd9f669167779f6ae6c736561",
+    "short": "0b106d10a078a561e4dd862a5c7585c3b51e812a9bec2b4551376e740e76ab3b"
+   }
+  },
+  {
+   "notebook": "../../../ganymede-nbformat/tests/fixtures/markdown_attachments.ipynb",
+   "signatures": {
+    "base64": "7ab06dd18a17249658f813df89da006b10701737e972ca48f9afc79e63bac83c",
+    "short": "55eebe7c774b447e8639dc46cb7951eee26ef6569f6e2de801eeed23cf0073f9"
+   }
+  },
+  {
+   "notebook": "../../../ganymede-nbformat/tests/fixtures/empty.ipynb",
+   "signatures": {
+    "base64": "be8e811ea8daa60180c80709f343437888ce9dcfbc85459a81df8a222447e228",
+    "short": "b7517c752370a38cc3bc3700bc249cd8d1a9bf48a4dfc70e7b0289b26c08b5f5"
+   }
+  }
+ ],
+ "raw": {
+  "notebook": {
+   "cells": [
+    {
+     "cell_type": "markdown",
+     "id": "md-1",
+     "metadata": {},
+     "source": [
+      "# Title\n",
+      "\n",
+      "Some *markdown*."
+     ]
+    },
+    {
+     "cell_type": "code",
+     "execution_count": 1,
+     "id": "code-1",
+     "metadata": {
+      "trusted": true
+     },
+     "outputs": [
+      {
+       "data": {
+        "text/html": [
+         "<b>hi</b>"
+        ],
+        "text/plain": [
+         "<IPython.core.display.HTML object>"
+        ]
+       },
+       "execution_count": 1,
+       "metadata": {},
+       "output_type": "execute_result"
+      },
+      {
+       "data": {
+        "application/javascript": [
+         "console.log(1);\n",
+         "console.log(2);"
+        ],
+        "application/json": {
+         "a": [
+          1,
+          2.5,
+          null,
+          true
+         ]
+        },
+        "image/svg+xml": [
+         "<svg>\n",
+         "</svg>"
+        ]
+       },
+       "metadata": {
+        "isolated": true
+       },
+       "output_type": "display_data"
+      },
+      {
+       "name": "stdout",
+       "output_type": "stream",
+       "text": [
+        "line 1\n",
+        "line 2\n"
+       ]
+      }
+     ],
+     "source": [
+      "from IPython.display import HTML\n",
+      "HTML('<b>hi</b>')"
+     ]
+    },
+    {
+     "cell_type": "code",
+     "execution_count": null,
+     "id": "code-2",
+     "metadata": {
+      "tags": [
+       "raises-exception"
+      ]
+     },
+     "outputs": [],
+     "source": [
+      "1/0"
+     ]
+    }
+   ],
+   "metadata": {
+    "Zed": "upper-case keys sort before lower-case",
+    "empty": {},
+    "flags": [
+     true,
+     false,
+     null
+    ],
+    "kernelspec": {
+     "display_name": "Python 3",
+     "language": "python",
+     "name": "python3"
+    },
+    "numbers": {
+     "big": 12345678901234567,
+     "float": 1.5,
+     "huge": 1e+16,
+     "int": 7,
+     "neg": -3,
+     "third": 0.30000000000000004,
+     "tiny": 1e-05,
+     "whole_float": 2.0
+    },
+    "signature": "sha256:0000",
+    "unicode é中": "café 😀"
+   },
+   "nbformat": 4,
+   "nbformat_minor": 5
+  },
+  "secret": "short",
+  "signature": "89304621de12bd702b641c8c22752e44cb1da7ad7023293cc5fb388c8d357325"
+ },
+ "secrets": {
+  "base64": "QUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJD\nQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJD\nQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJD\n",
+  "short": "ganymede-test-secret"
+ }
+}
