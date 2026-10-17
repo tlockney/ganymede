@@ -71,8 +71,9 @@ impl fmt::Display for Format {
 ///   With content: notebooks carry the notebook JSON object, files a string,
 ///   directories an array of child models without content.
 /// - `size` is in bytes and `null` for directories.
-/// - `hash` / `hash_algorithm` are omitted entirely when absent (they are
-///   optional in `jupyter_server` 2.11+ and this crate does not compute them).
+/// - `hash` / `hash_algorithm` are `null` unless the hash was requested
+///   (`?hash=1`), then the SHA-256 of the file's bytes, as in
+///   `jupyter_server` 2.11+. Directories never have one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContentsModel {
     pub name: String,
@@ -86,9 +87,9 @@ pub struct ContentsModel {
     pub content: Option<Value>,
     pub writable: bool,
     pub size: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub hash: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub hash_algorithm: Option<String>,
 }
 
@@ -120,6 +121,9 @@ pub struct GetOptions {
     /// `BadRequest` on non-UTF-8 bytes; `None` falls back to `base64` for
     /// them. Ignored for notebooks and directories.
     pub format: Option<Format>,
+    /// Include `hash` and `hash_algorithm` (`?hash=1`) for files and
+    /// notebooks.
+    pub hash: bool,
 }
 
 impl GetOptions {
@@ -254,7 +258,9 @@ mod tests {
                 "format",
                 "content",
                 "writable",
-                "size"
+                "size",
+                "hash",
+                "hash_algorithm"
             ]
         );
         assert_eq!(json["type"], "file");
@@ -270,7 +276,7 @@ mod tests {
             "created": "2026-10-17T00:00:00.000000Z",
             "last_modified": "2026-10-17T00:00:00.000000Z",
             "mimetype": null, "format": null, "content": null,
-            "writable": true, "size": null
+            "writable": true, "size": null, "hash": null, "hash_algorithm": null
         });
         let model: ContentsModel = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(model.kind, ContentType::Directory);

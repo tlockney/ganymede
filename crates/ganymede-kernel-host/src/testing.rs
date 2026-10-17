@@ -47,6 +47,39 @@ impl FakeKernel {
                     let req: ExecuteRequest = msg.content_as().unwrap();
                     self.execute(&msg, &req).await;
                 }
+                (Channel::Shell, "is_complete_request") => {
+                    // A trailing backslash continues the line.
+                    let code = msg.content["code"].as_str().unwrap_or_default();
+                    let status = if code.trim_end_matches('\n').ends_with('\\') {
+                        serde_json::json!({"status": "incomplete", "indent": ""})
+                    } else {
+                        serde_json::json!({"status": "complete"})
+                    };
+                    self.reply(channel, &msg, "is_complete_reply", &status)
+                        .await;
+                }
+                (Channel::Shell, "complete_request") => {
+                    let code = msg.content["code"].as_str().unwrap_or_default();
+                    let pos = msg.content["cursor_pos"].as_u64().unwrap_or(0) as usize;
+                    let word: String = code.chars().take(pos).collect();
+                    let start = word.rfind(' ').map(|i| i + 1).unwrap_or(0);
+                    let prefix = &word[start..];
+                    let matches: Vec<&str> = ["echo", "input", "raise", "sleep"]
+                        .into_iter()
+                        .filter(|w| w.starts_with(prefix))
+                        .collect();
+                    let reply = serde_json::json!({"status": "ok", "matches": matches,
+                        "cursor_start": word[..start].chars().count(), "cursor_end": pos, "metadata": {}});
+                    self.reply(channel, &msg, "complete_reply", &reply).await;
+                }
+                (Channel::Shell, "inspect_request") => {
+                    let reply = serde_json::json!({"status": "ok", "found": false, "data": {}, "metadata": {}});
+                    self.reply(channel, &msg, "inspect_reply", &reply).await;
+                }
+                (Channel::Shell, "comm_info_request") => {
+                    let reply = serde_json::json!({"status": "ok", "comms": {}});
+                    self.reply(channel, &msg, "comm_info_reply", &reply).await;
+                }
                 (Channel::Control, "interrupt_request") => {
                     self.interrupted = true;
                     self.reply(
@@ -94,6 +127,7 @@ impl FakeKernel {
 
         let code = req.code.trim();
         let mut status = ReplyStatus::Ok;
+        let mut error: Option<(&str, &str)> = None;
         if let Some(ms) = code.strip_prefix("sleep ") {
             let ms: u64 = ms.parse().unwrap_or(0);
             let deadline = tokio::time::Instant::now() + Duration::from_millis(ms);
@@ -123,6 +157,7 @@ impl FakeKernel {
             }
             if self.interrupted {
                 status = ReplyStatus::Error;
+                error = Some(("KeyboardInterrupt", ""));
                 self.iopub(
                     msg,
                     "error",
@@ -137,6 +172,7 @@ impl FakeKernel {
             }
         } else if code == "raise" {
             status = ReplyStatus::Error;
+            error = Some(("FakeError", "raised"));
             self.iopub(
                 msg,
                 "error",
@@ -210,9 +246,9 @@ impl FakeKernel {
         let reply = ExecuteReply {
             status,
             execution_count: Some(n),
-            ename: None,
-            evalue: None,
-            traceback: None,
+            ename: error.map(|e| e.0.to_string()),
+            evalue: error.map(|e| e.1.to_string()),
+            traceback: error.map(|_| vec![]),
             user_expressions: Default::default(),
             extra: Default::default(),
         };

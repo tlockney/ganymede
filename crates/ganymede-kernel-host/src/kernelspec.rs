@@ -170,7 +170,7 @@ pub fn jupyter_user_data_dir() -> Option<PathBuf> {
 pub fn jupyter_data_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(p) = std::env::var_os("JUPYTER_PATH") {
-        dirs.extend(std::env::split_paths(&p));
+        dirs.extend(std::env::split_paths(&p).filter(|d| !d.as_os_str().is_empty()));
     }
     dirs.extend(jupyter_user_data_dir());
     if cfg!(windows) {
@@ -204,6 +204,73 @@ pub fn jupyter_runtime_dir() -> PathBuf {
     jupyter_user_data_dir()
         .map(|d| d.join("runtime"))
         .unwrap_or_else(std::env::temp_dir)
+}
+
+/// Copy a kernelspec directory (one holding `kernel.json`) into
+/// `<data_dir>/kernels/<name>`, as `jupyter kernelspec install` does.
+/// `name` defaults to the source directory's name and is lowercased.
+/// Returns the installed directory.
+pub fn install(
+    source: &Path,
+    name: Option<&str>,
+    data_dir: &Path,
+    replace: bool,
+) -> Result<PathBuf> {
+    // Validates the source before anything is written.
+    Kernelspec::from_dir(source)?;
+    let name = match name {
+        Some(n) => n.to_string(),
+        None => source
+            .canonicalize()?
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    }
+    .to_ascii_lowercase();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return Err(Error::InvalidKernelspec {
+            path: source.to_path_buf(),
+            reason: format!("invalid kernelspec name {name:?}: use letters, digits, '.', '_', '-'"),
+        });
+    }
+    let dest = data_dir.join("kernels").join(&name);
+    if dest.exists() {
+        if !replace {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("{} exists; pass replace to overwrite", dest.display()),
+            )));
+        }
+        std::fs::remove_dir_all(&dest)?;
+    }
+    copy_dir(source, &dest)?;
+    Ok(dest)
+}
+
+/// Delete the named kernelspec from the first root that has it. Returns the
+/// directory removed.
+pub fn remove(source: &dyn KernelspecSource, name: &str) -> Result<PathBuf> {
+    let spec = source.get(name)?;
+    std::fs::remove_dir_all(&spec.resource_dir)?;
+    Ok(spec.resource_dir)
+}
+
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -251,5 +318,30 @@ mod tests {
         assert_eq!(py.interrupt_mode, InterruptMode::Signal);
         assert_eq!(py.env["X"], "1");
         assert!(matches!(src.get("nope"), Err(Error::NoSuchKernelspec(_))));
+    }
+
+    #[test]
+    fn install_and_remove() {
+        let src = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let spec_dir = src.path().join("My-Kernel");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("kernel.json"),
+            r#"{"argv":["k","{connection_file}"],"display_name":"K","language":"k"}"#,
+        )
+        .unwrap();
+        std::fs::write(spec_dir.join("logo-32x32.png"), b"png").unwrap();
+        let dest = install(&spec_dir, None, data.path(), false).unwrap();
+        assert!(dest.ends_with("kernels/my-kernel"));
+        assert!(dest.join("logo-32x32.png").exists());
+        assert!(install(&spec_dir, None, data.path(), false).is_err());
+        install(&spec_dir, None, data.path(), true).unwrap();
+        assert!(install(&spec_dir, Some("bad name"), data.path(), false).is_err());
+
+        let specs = FsKernelspecs::with_roots(vec![data.path().into()]);
+        assert_eq!(specs.get("my-kernel").unwrap().display_name, "K");
+        assert_eq!(remove(&specs, "MY-KERNEL").unwrap(), dest);
+        assert!(specs.list().unwrap().is_empty());
     }
 }

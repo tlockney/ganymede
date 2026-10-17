@@ -16,3 +16,8 @@ hmac.workspace = true
 sha2.workspace = true
 hex.workspace = true
 bytes.workspace = true
+
+# Browser wasm has no OS randomness or clock; take both from JavaScript.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+uuid = { workspace = true, features = ["js"] }
+chrono = { workspace = true, features = ["wasmbind"] }

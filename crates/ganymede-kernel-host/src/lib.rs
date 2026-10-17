@@ -17,17 +17,25 @@
 //!
 //! The host knows no language. Nothing here reads `language` except to
 //! report it.
+//!
+//! Features `zmq` and `subprocess` (both default) bring in sockets and
+//! child processes. Without them the crate is the session state machine,
+//! the in-process transport, and kernelspec parsing, which build for
+//! targets that have neither, such as wasm.
 
 pub mod kernelspec;
 pub mod process;
 pub mod session;
 pub mod testing;
 pub mod transport;
+#[cfg(feature = "zmq")]
 pub mod zmq;
 
 pub use ganymede_protocol as protocol;
 pub use kernelspec::{FsKernelspecs, InterruptMode, Kernelspec, KernelspecSource};
-pub use process::{attach, LaunchOptions, LaunchedKernel, Provisioner, SubprocessProvisioner};
+#[cfg(feature = "subprocess")]
+pub use process::SubprocessProvisioner;
+pub use process::{attach, LaunchOptions, LaunchedKernel, Provisioner};
 pub use session::{Execution, KernelSession};
 pub use transport::{in_process_pair, KernelSide, KernelTransport, TransportSink};
 

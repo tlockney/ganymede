@@ -22,6 +22,9 @@ pub struct KernelspecSpec {
     pub interrupt_mode: String,
     pub env: BTreeMap<String, String>,
     pub metadata: Map<String, Value>,
+    /// From `kernel.json`, `""` when absent, as `jupyter_client` 8 reports it.
+    #[serde(default)]
+    pub kernel_protocol_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

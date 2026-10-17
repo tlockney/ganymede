@@ -29,6 +29,7 @@ struct Pending {
     reply: Option<Message>,
     idle_seen: bool,
     outputs: Vec<Message>,
+    status: Vec<Message>,
     done: Option<oneshot::Sender<Execution>>,
 }
 
@@ -38,12 +39,15 @@ impl Pending {
     }
 }
 
-/// A finished request: its reply and the iopub messages it produced,
-/// excluding `status`.
+/// A finished request: its reply and the iopub messages it produced.
 #[derive(Debug, Clone)]
 pub struct Execution {
     pub reply: Message,
+    /// Every iopub message for the request except `status`, in arrival order.
     pub outputs: Vec<Message>,
+    /// The request's iopub `status` messages (`busy`, then `idle`). Their
+    /// header dates are the execution timings `nbclient` records.
+    pub status: Vec<Message>,
 }
 
 impl Execution {
@@ -67,6 +71,7 @@ struct Inner {
     process: Option<Arc<dyn KernelProcess>>,
     interrupt_mode: InterruptMode,
     kernel_info: Mutex<Option<content::KernelInfoReply>>,
+    kernel_info_json: Mutex<Option<serde_json::Value>>,
 }
 
 /// Handle to a running kernel. Cheap to clone; all clones share state.
@@ -95,6 +100,7 @@ impl KernelSession {
                 .map(|l| l.interrupt_mode)
                 .unwrap_or(InterruptMode::Message),
             kernel_info: Mutex::new(None),
+            kernel_info_json: Mutex::new(None),
         });
         tokio::spawn(route(inner.clone(), transport.incoming));
         if let Some(p) = inner.process.clone() {
@@ -126,6 +132,11 @@ impl KernelSession {
     /// The last `kernel_info_reply`, after [`KernelSession::nudge`].
     pub fn kernel_info(&self) -> Option<content::KernelInfoReply> {
         self.inner.kernel_info.lock().unwrap().clone()
+    }
+
+    /// The last `kernel_info_reply` content exactly as the kernel sent it.
+    pub fn kernel_info_json(&self) -> Option<serde_json::Value> {
+        self.inner.kernel_info_json.lock().unwrap().clone()
     }
 
     /// Every message from the kernel, on every channel. Each client gets
@@ -170,6 +181,7 @@ impl KernelSession {
                 reply: None,
                 idle_seen: false,
                 outputs: Vec::new(),
+                status: Vec::new(),
                 done: Some(tx),
             },
         );
@@ -191,7 +203,7 @@ impl KernelSession {
     /// control both answer and iopub has delivered at least one message.
     pub async fn nudge(&self, timeout: Duration) -> Result<content::KernelInfoReply> {
         let deadline = tokio::time::Instant::now() + timeout;
-        let mut shell_info: Option<content::KernelInfoReply> = None;
+        let mut shell_info: Option<(content::KernelInfoReply, serde_json::Value)> = None;
         let mut control_ok = false;
         while tokio::time::Instant::now() < deadline {
             let step = Duration::from_millis(500);
@@ -199,19 +211,24 @@ impl KernelSession {
             if shell_info.is_none() {
                 let m = self.message("kernel_info_request", &req);
                 if let Ok(exec) = self.request(Channel::Shell, m, false, step).await {
-                    shell_info = exec.reply.content_as().ok();
+                    shell_info = exec
+                        .reply
+                        .content_as()
+                        .ok()
+                        .map(|info| (info, exec.reply.content.clone()));
                 }
             }
             if !control_ok {
                 let m = self.message("kernel_info_request", &req);
                 control_ok = self.request(Channel::Control, m, false, step).await.is_ok();
             }
-            if let (Some(info), true, true) = (
+            if let (Some((info, json)), true, true) = (
                 &shell_info,
                 control_ok,
                 self.inner.iopub_seen.load(Ordering::SeqCst),
             ) {
                 *self.inner.kernel_info.lock().unwrap() = Some(info.clone());
+                *self.inner.kernel_info_json.lock().unwrap() = Some(json.clone());
                 return Ok(info.clone());
             }
             if !self.is_alive() {
@@ -341,6 +358,7 @@ async fn route(inner: Arc<Inner>, mut incoming: crate::transport::Incoming) {
                                 {
                                     p.idle_seen = true;
                                 }
+                                p.status.push(msg.clone());
                             } else {
                                 p.outputs.push(msg.clone());
                             }
@@ -357,6 +375,7 @@ async fn route(inner: Arc<Inner>, mut incoming: crate::transport::Incoming) {
                     let exec = Execution {
                         reply: p.reply.unwrap(),
                         outputs: p.outputs,
+                        status: p.status,
                     };
                     if let Some(tx) = p.done {
                         let _ = tx.send(exec);

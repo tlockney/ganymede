@@ -85,6 +85,8 @@ pub struct RunningKernel {
     pub name: String,
     pub spec: Kernelspec,
     pub started: String,
+    /// Working directory, kept so a restart runs where the first launch did.
+    cwd: Option<PathBuf>,
     session: RwLock<KernelSession>,
     launched: Mutex<Option<LaunchedKernel>>,
     hub: broadcast::Sender<(Channel, Message)>,
@@ -293,13 +295,14 @@ impl KernelManager {
             }
             None => self.config.root_dir.clone(),
         });
-        let (session, launched) = self.launch(&spec, cwd, &id).await?;
+        let (session, launched) = self.launch(&spec, cwd.clone(), &id).await?;
         let (hub, _) = broadcast::channel(4096);
         let kernel = Arc::new(RunningKernel {
             id: id.clone(),
             name: spec.name.clone(),
             spec,
             started: now_iso(),
+            cwd,
             session: RwLock::new(session.clone()),
             launched: Mutex::new(Some(launched)),
             hub,
@@ -342,6 +345,7 @@ impl KernelManager {
                     cwd,
                     env: vec![],
                     kernel_id: Some(id.to_string()),
+                    quiet: false,
                 },
             )
             .await?;
@@ -383,7 +387,7 @@ impl KernelManager {
         kernel.set_state("restarting");
         let old = kernel.session();
         let _ = old.shutdown(true, self.config.shutdown_grace).await;
-        let (session, launched) = self.launch(&kernel.spec, None, id).await?;
+        let (session, launched) = self.launch(&kernel.spec, kernel.cwd.clone(), id).await?;
         *kernel.session.write().unwrap() = session.clone();
         *kernel.launched.lock().unwrap() = Some(launched);
         kernel.pump(&session);
@@ -466,6 +470,12 @@ fn spec_model(s: &Kernelspec, base_url: &str) -> KernelspecModel {
             },
             env: s.env.clone(),
             metadata: s.metadata.clone(),
+            kernel_protocol_version: s
+                .extra
+                .get("kernel_protocol_version")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
         },
         resources: spec_resources(s, base_url),
     }

@@ -379,3 +379,77 @@ Things learned:
 Not done: Notebook 7's `/tree` and `/notebooks` pages, the terminal and
 LSP endpoints, language packs, `overrides.json` and `page_config.json` from
 the app's `settings/` dir, and a real VS Code instance.
+
+## 2026-10-17, engine, CLI, and e2e parity with Jupyter
+
+`ganymede-engine` is the one library a host embeds: `Engine` finds
+kernelspecs and starts, attaches, connects, or adopts kernels; `Kernel` is
+one running kernel (execute with a `Handler` for streamed iopub and stdin,
+complete, inspect, is_complete, comms, interrupt, restart, shutdown, run a
+notebook). The `ganymede` CLI is a thin layer over it, and `ganymede serve`
+replaces the separate server binary as the usual entry point.
+
+`ganymede-exec` now follows nbclient where its behavior is observable in
+the saved file, so `ganymede execute` and `jupyter execute` write the
+same notebook. Checked on ipykernel 7.4 and cdp-kernel 0.5 with
+nbclient 0.11 and jupyter_server 2.21:
+
+- Python notebook: byte-identical after normalizing timestamps and ids.
+- TypeScript notebook: identical except stream chunking (below).
+- REST and websocket transcripts match `jupyter server` for kernelspecs,
+  contents, sessions, execute, stdin, interrupt, and restart on both
+  kernels, after the exclusions below.
+
+nbclient details that decide the bytes:
+
+- `execution_count` counts cells executed in this run, not the kernel's
+  counter; blank cells and cells tagged `skip-execution` are untouched.
+- `metadata.execution` timestamps are the message header dates
+  reformatted to `%Y-%m-%dT%H:%M:%S.%fZ`.
+- `display_id` updates reach outputs in earlier cells; `clear_output(wait)`
+  defers to the next output.
+- `coalesce_streams` defaults to false, so `\r` survives in saved
+  output. With it on, adjacent streams merge and `\r` overwrites the line;
+  nbclient's backspace handling never runs (its loop condition is false on
+  entry), so neither does ours.
+- `jupyter execute` without `--output` or `--inplace` writes nothing, and a
+  failing run writes nothing. The old `ganymede exec` overwrote its input;
+  `execute` now matches Jupyter.
+- `language_info` from kernel_info goes into notebook metadata verbatim;
+  widget state goes into `metadata.widgets`.
+
+Findings:
+
+- cdp-kernel's stdout and stderr order within one cell is not
+  deterministic (nbclient sees the same), and stream chunk boundaries
+  depend on timing for any kernel. The parity test compares exactly first,
+  then with adjacent same-name streams merged.
+- jupyter_client replaces the installed `python3` kernelspec with
+  ipykernel's own when ipykernel is importable, so `argv` and
+  `kernel_protocol_version` differ from the file on disk. The host reads
+  only the file, by design.
+- jupyter_server marks notebook cells `metadata.trusted` from its notary.
+  Ganymede has no trust store, so JupyterLab may treat outputs as
+  untrusted. Open.
+- Contents now returns `hash` and `hash_algorithm` (null unless
+  `?hash=1`, then SHA-256), and kernelspecs carry
+  `kernel_protocol_version`, as jupyter_server 2.11+ does.
+- Restarting through the API relaunched the kernel in the server's cwd
+  instead of the notebook's directory. Fixed.
+
+Portability:
+
+- Features `zmq` and `subprocess` on kernel-host and engine gate sockets
+  and child processes. Without them the protocol, nbformat, kernel host,
+  executor, and engine build for `wasm32-unknown-unknown` (with uuid's
+  `js` and chrono's `wasmbind`) and `wasm32-wasip1/p2`.
+- `e2e/wasm-smoke` runs a notebook on the in-process kernel inside wasm
+  under Node's WASI: no sockets, processes, or threads.
+- With all features the engine, API, and contents build for
+  `aarch64-apple-ios` and `aarch64-linux-android`. The server needs a C
+  cross toolchain there (psm, via its dependencies).
+- A browser page needs more than a build: tokio's timers and `spawn` need
+  a runtime seam (`wasm-bindgen-futures` and browser timers), and a
+  kernel reaches the page over a websocket or `postMessage` transport
+  behind the existing `Transport` trait. The iPad kernel from the
+  ts-on-ipados plan is the same shape: an in-process `Transport`.
