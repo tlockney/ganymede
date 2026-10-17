@@ -184,6 +184,18 @@ pub fn jupyter_data_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// The config directory: `JUPYTER_CONFIG_DIR`, else `~/.jupyter`. Holds
+/// frontend state the server stores for clients (`nbconfig`, JupyterLab
+/// settings and workspaces), not server configuration.
+pub fn jupyter_config_dir() -> PathBuf {
+    if let Some(d) = std::env::var_os("JUPYTER_CONFIG_DIR") {
+        return PathBuf::from(d);
+    }
+    home()
+        .map(|h| h.join(".jupyter"))
+        .unwrap_or_else(|| PathBuf::from(".jupyter"))
+}
+
 /// Where connection files go: `JUPYTER_RUNTIME_DIR`, else `<user data>/runtime`.
 pub fn jupyter_runtime_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("JUPYTER_RUNTIME_DIR") {

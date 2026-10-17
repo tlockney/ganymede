@@ -59,6 +59,9 @@ pub struct KernelManagerConfig {
     pub cull_idle: Option<Duration>,
     /// Working directories for kernels are resolved under this root.
     pub root_dir: PathBuf,
+    /// URL prefix for kernelspec resource links, as `jupyter_server`
+    /// reports them. Ends with `/`.
+    pub base_url: String,
 }
 
 impl Default for KernelManagerConfig {
@@ -69,6 +72,7 @@ impl Default for KernelManagerConfig {
             shutdown_grace: Duration::from_secs(5),
             cull_idle: None,
             root_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            base_url: "/".into(),
         }
     }
 }
@@ -222,13 +226,18 @@ impl KernelManager {
             default,
             kernelspecs: specs
                 .into_iter()
-                .map(|s| (s.name.clone(), spec_model(&s)))
+                .map(|s| (s.name.clone(), spec_model(&s, &self.config.base_url)))
                 .collect(),
         })
     }
 
+    /// The directory a kernelspec's resource files (logos) live in.
+    pub fn kernelspec_resource_dir(&self, name: &str) -> Result<PathBuf> {
+        Ok(self.specs.get(name)?.resource_dir)
+    }
+
     pub fn kernelspec(&self, name: &str) -> Result<KernelspecModel> {
-        Ok(spec_model(&self.specs.get(name)?))
+        Ok(spec_model(&self.specs.get(name)?, &self.config.base_url))
     }
 
     // ----- kernels -----------------------------------------------------
@@ -444,7 +453,7 @@ impl KernelManager {
     }
 }
 
-fn spec_model(s: &Kernelspec) -> KernelspecModel {
+fn spec_model(s: &Kernelspec, base_url: &str) -> KernelspecModel {
     KernelspecModel {
         name: s.name.clone(),
         spec: KernelspecSpec {
@@ -458,8 +467,38 @@ fn spec_model(s: &Kernelspec) -> KernelspecModel {
             env: s.env.clone(),
             metadata: s.metadata.clone(),
         },
-        resources: Default::default(),
+        resources: spec_resources(s, base_url),
     }
+}
+
+/// Links to the files `jupyter_server` advertises from a kernelspec's
+/// directory: `logo-*` keyed by file stem, plus `kernel.js` and
+/// `kernel.css`. Served at `kernelspecs/{name}/{file}`.
+fn spec_resources(s: &Kernelspec, base_url: &str) -> serde_json::Map<String, serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    let Ok(entries) = std::fs::read_dir(&s.resource_dir) else {
+        return out;
+    };
+    let mut files: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    files.sort();
+    for f in files {
+        let key = if f.starts_with("logo-") {
+            f.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(&f)
+        } else if f == "kernel.js" || f == "kernel.css" {
+            &f
+        } else {
+            continue;
+        };
+        out.insert(
+            key.to_string(),
+            format!("{base_url}kernelspecs/{}/{f}", s.name).into(),
+        );
+    }
+    out
 }
 
 trait StateName {

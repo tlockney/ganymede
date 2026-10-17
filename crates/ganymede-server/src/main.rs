@@ -26,6 +26,12 @@ struct Cli {
     root_dir: Option<PathBuf>,
     #[arg(long)]
     static_dir: Option<PathBuf>,
+    /// Extra directory of prebuilt JupyterLab extensions. Repeatable.
+    #[arg(long)]
+    labextensions_path: Vec<PathBuf>,
+    /// Frontend state directory; see `config_dir` in the config file.
+    #[arg(long)]
+    config_dir: Option<PathBuf>,
     #[arg(long)]
     kernelspec_root: Vec<PathBuf>,
     #[arg(long)]
@@ -69,7 +75,11 @@ async fn main() -> Result<()> {
     if let Some(v) = cli.cull_idle_secs {
         cfg.cull_idle_secs = v;
     }
+    if let Some(v) = cli.config_dir {
+        cfg.config_dir = Some(v);
+    }
     cfg.kernelspec_roots.extend(cli.kernelspec_root);
+    cfg.labextensions_paths.extend(cli.labextensions_path);
 
     let token = match cfg.token.clone() {
         Some(t) if t.is_empty() => None,
@@ -81,6 +91,31 @@ async fn main() -> Result<()> {
         .canonicalize()
         .with_context(|| format!("root dir {}", cfg.root_dir.display()))?;
 
+    let base = cfg.base_url.trim_end_matches('/').to_string();
+    let base_url = format!("{base}/");
+    let config_dir = cfg
+        .config_dir
+        .clone()
+        .unwrap_or_else(ganymede_kernel_host::kernelspec::jupyter_config_dir);
+    let lab = cfg.static_dir.as_ref().and_then(|dir| {
+        let mut ext_dirs = cfg.labextensions_paths.clone();
+        ext_dirs.extend(
+            ganymede_kernel_host::kernelspec::jupyter_data_dirs()
+                .into_iter()
+                .map(|d| d.join("labextensions")),
+        );
+        ganymede_server::lab::Lab::detect(dir, &ext_dirs, &config_dir, &root_dir)
+    });
+    if let Some(lab) = &lab {
+        tracing::info!(
+            "serving {} {} from {} with {} prebuilt extension(s)",
+            lab.app_name,
+            lab.app_version,
+            lab.static_dir.display(),
+            lab.extensions.len()
+        );
+    }
+
     let specs = Arc::new(FsKernelspecs::discover(cfg.kernelspec_roots.clone()));
     let kernels = Arc::new(KernelManager::new(
         specs,
@@ -91,6 +126,7 @@ async fn main() -> Result<()> {
             startup_timeout: Duration::from_secs(cfg.startup_timeout_secs),
             cull_idle: (cfg.cull_idle_secs > 0).then(|| Duration::from_secs(cfg.cull_idle_secs)),
             root_dir: root_dir.clone(),
+            base_url: base_url.clone(),
             ..Default::default()
         },
     ));
@@ -108,17 +144,20 @@ async fn main() -> Result<()> {
         contents,
         token: token.clone(),
         allow_origins: cfg.allow_origins.clone(),
+        base_url: base_url.clone(),
+        config_dir,
+        lab: lab.map(Arc::new),
     };
 
+    let serves_lab = state.lab.is_some();
     let mut app = ganymede_server::build_router(state);
-    if let Some(dir) = &cfg.static_dir {
+    if let (Some(dir), false) = (&cfg.static_dir, serves_lab) {
         app = app.fallback_service(
             tower_http::services::ServeDir::new(dir).append_index_html_on_directories(true),
         );
     }
-    let base = cfg.base_url.trim_end_matches('/');
     if !base.is_empty() {
-        app = axum::Router::new().nest(base, app);
+        app = axum::Router::new().nest(&base, app);
     }
     let app = app.layer(tower_http::trace::TraceLayer::new_for_http());
 
@@ -136,8 +175,8 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind((cfg.ip.as_str(), cfg.port)).await?;
     let addr = listener.local_addr()?;
     let url = match &token {
-        Some(t) => format!("http://{addr}{base}/?token={t}"),
-        None => format!("http://{addr}{base}/"),
+        Some(t) => format!("http://{addr}{base_url}?token={t}"),
+        None => format!("http://{addr}{base_url}"),
     };
     tracing::info!("serving {} at {url}", root_dir.display());
     if token.is_none() {

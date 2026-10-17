@@ -264,3 +264,118 @@ Things learned:
 - The longer crate prefix pushes some `use` lines and signatures past
   rustfmt's width, so a rename needs `cargo fmt` before CI's
   `fmt --check` passes.
+
+## 2026-10-17, validation against JupyterLab and VS Code
+
+Pointed JupyterLab 4.6.4 and the VS Code Jupyter extension's remote-server
+flow at the server, with ipykernel 7 as the kernel (cdp-kernel needs
+Node 24; this container has 22). For JupyterLab, a real `jupyter lab`
+(jupyter_server 2.21.1) was the oracle: the same browser script ran
+against both and the request sets were diffed. Scripts are in
+[`validation/`](validation/).
+
+No real VS Code instance can run in this container. Instead,
+`validation/vscode.cjs` replays the extension's flow from its source
+(vscode-jupyter `e116e22`, `src/kernels/jupyter` and
+`src/standalone/userJupyterServer`): the same URL parsing, password probe,
+`@jupyterlab/services` settings, `Request` and `WebSocket` overrides, and
+manager calls. It passes all 13 steps against both servers.
+
+Added:
+
+- JupyterLab mode. `--static-dir` pointed at JupyterLab's `static/`
+  directory is recognised by its `index.html` and `package.json`; the
+  server then serves the page at `/lab`, `/lab/tree/*`, and
+  `/lab/workspaces/*` with a page config, the bundle at `/static/lab`,
+  `schemas/` and `themes/` from the sibling directories, and prebuilt
+  extensions found in `labextensions` under the Jupyter data dirs or
+  `--labextensions-path`. `/` redirects to `/lab`.
+- `/lab/api/settings` (JSON5 user settings under
+  `<config dir>/lab/user-settings`), `/lab/api/workspaces`,
+  `/lab/api/translations` (English only), `/lab/api/listings`,
+  `/lab/api/plugins`, `/lab/api/licenses` (JSON format only),
+  `/lab/api/themes`.
+- Core `jupyter_server` endpoints JupyterLab calls: `GET /api` (public,
+  reports the API version matched), `/api/me`, `/api/config/{section}`
+  (GET, PATCH with recursive merge, stored in `<config dir>/nbconfig`),
+  `/api/nbconvert` (empty: nbconvert is Python), `/api/events/subscribe`
+  (accepted, silent), and kernelspec `resources` with
+  `/kernelspecs/{name}/{file}`.
+- `--config-dir` for that frontend state; default `JUPYTER_CONFIG_DIR` or
+  `~/.jupyter`, the same place `jupyter_server` keeps it.
+
+Endpoints JupyterLab called, opening a notebook, running a cell, saving:
+`/lab/workspaces/{ws}/tree/{path}`, `/static/lab/*`,
+`/lab/extensions/*`, `/lab/api/settings` (plain and `?ids_only=true`),
+`/lab/api/settings/{id}`, `/lab/api/themes/{pkg}/index.css`,
+`/lab/api/translations`, `/lab/api/translations/default`,
+`/lab/api/workspaces` (GET, PUT every few seconds), `/api/me`,
+`/api/config/jupyterlabapputilsextensionannouncements`, `/api/nbconvert`,
+`/api/kernelspecs`, `/api/kernels`, `/api/sessions` (GET, POST, PATCH
+twice), `/api/contents` (root listing, `content=0&hash=0` polls, the
+notebook with `hash=1`, PUT), `/api/contents/{path}/checkpoints` (GET,
+POST), websockets `/api/events/subscribe` and
+`/api/kernels/{id}/channels?session_id=`, `/lsp/status`, and the
+kernelspec logo. Only against jupyter_server, because of its page config:
+`/api/terminals` and `/lab/api/build`. Every REST URL carries a
+cache-busting `?<timestamp>` query.
+
+VS Code's flow calls: `GET /` and `GET /tree?` without credentials (the
+password probe; 404 on `/tree?` means "no password"), `/api/kernels`,
+`/api/kernelspecs`, `/api/sessions` (GET, POST with a
+`<name>-jvsc-<uuid>.ipynb` path that never exists, DELETE),
+`/api/kernels/{id}/interrupt`, `/api/kernels/{id}/restart`, and the
+channels websocket with `Authorization` as a handshake header and
+`token` in the query. It never calls `/api`, `/api/me`, `/api/status`, or
+the contents API. It forces `Content-Type: application/json` on every
+request, GET and DELETE included, and pings the websocket every 30 s.
+
+What broke:
+
+- stdin never reached the client. A kernel sends `input_request` on its
+  stdin ROUTER to the routing identity that sent the `execute_request` on
+  shell. The host's shell and stdin DEALERs had separate random
+  identities, so the kernel addressed a peer the stdin socket was not.
+  Fixed: one identity for shell, control, and stdin, as `jupyter_client`
+  does, with a test. Neither earlier client test exercised `input()`.
+- JupyterLab's websockets get 403 without cookie login. In a browser at
+  the server's own origin, `@jupyterlab/services` sets `appendToken` to
+  false, so the events and channels websockets carry no token and rely on
+  the login cookie `jupyter_server` sets when the page is loaded with
+  `?token=`. REST calls are fine (the page config token goes in the
+  `Authorization` header). The kernelspec logo `<img>` gets 403 for the
+  same reason. With the token appended to websocket URLs by the script
+  (`WS_TOKEN=1`), JupyterLab opens a notebook, starts ipykernel, runs a
+  cell, and saves a notebook nbformat validates. This is step 3.
+- `/lsp/status` is 404, as with any jupyter_server without the
+  `jupyter-lsp` extension. JupyterLab logs it and carries on; the oracle
+  had `jupyter-lsp` installed, which lists Python language servers.
+- On restart, `@jupyterlab/services` reports `autorestarting` and
+  reconnects twice; against jupyter_server it reports `restarting` and
+  reconnects once. The restart still succeeds. Belongs with kernel
+  lifetime (step 5).
+
+Things learned:
+
+- JupyterLab's `index.html` is a Jinja template. The server renders the
+  few constructs it uses; `tojson` must escape `<`, `>`, `&`, `'` so the
+  page config cannot close its `<script>`.
+- `jupyterlab_server` returns settings `raw` as the user's JSON5 text and
+  `settings` parsed. Users write comments and trailing commas, so a JSON
+  parser is not enough.
+- The page config's `extensionManager` set to `read-only` with
+  `can_install: false` keeps the extension manager from offering PyPI
+  installs. `buildAvailable` and `terminalsAvailable` false stop the
+  `/lab/api/build` and `/api/terminals` calls.
+- `jupyter_server` serves `/static/lab`, themes, and extension assets
+  without auth; the page, `/lab/api/*`, and kernelspec resources need it;
+  `GET /api` is public.
+- Chromium does not apply Playwright's `extraHTTPHeaders` to websocket
+  handshakes, so it cannot stand in for cookie auth.
+- `@jupyterlab/services` 7.5 appends `Authorization: token` even when the
+  request already has one, giving `token t, token t`. jupyter_server
+  rejects that; VS Code's `Request` subclass blocks the second append.
+
+Not done: Notebook 7's `/tree` and `/notebooks` pages, the terminal and
+LSP endpoints, language packs, `overrides.json` and `page_config.json` from
+the app's `settings/` dir, and a real VS Code instance.

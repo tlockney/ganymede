@@ -48,13 +48,20 @@ impl ZmqTransport {
         let (in_tx, in_rx) = mpsc::channel::<(Channel, Message)>(1024);
         let mut outgoing = std::collections::HashMap::new();
         let mut tasks = Vec::new();
+        // One routing identity for shell, control, and stdin, as
+        // jupyter_client does: a kernel sends `input_request` on its stdin
+        // ROUTER to the identity that sent the `execute_request` on shell,
+        // so a stdin socket with its own identity never receives it.
+        let identity = uuid::Uuid::new_v4().simple().to_string();
 
         for (channel, endpoint) in [
             (Channel::Shell, info.shell_endpoint()),
             (Channel::Control, info.control_endpoint()),
             (Channel::Stdin, info.stdin_endpoint()),
         ] {
-            let mut socket = zeromq::DealerSocket::new();
+            let mut options = zeromq::SocketOptions::default();
+            options.peer_identity(identity.parse().map_err(zerr)?);
+            let mut socket = zeromq::DealerSocket::with_options(options);
             socket.connect(&endpoint).await.map_err(zerr)?;
             let (out_tx, out_rx) = mpsc::channel::<Message>(256);
             outgoing.insert(channel, out_tx);
@@ -188,5 +195,63 @@ impl TransportSink for ZmqTransport {
         for t in &self.tasks {
             t.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zeromq::RouterSocket;
+
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    async fn first_frame(router: &mut RouterSocket) -> Bytes {
+        let msg = tokio::time::timeout(Duration::from_secs(5), router.recv())
+            .await
+            .expect("router received nothing")
+            .unwrap();
+        msg.get(0).unwrap().clone()
+    }
+
+    /// A kernel routes `input_request` to the identity that sent the
+    /// `execute_request`, so shell and stdin must share it.
+    #[tokio::test]
+    async fn shell_and_stdin_share_a_routing_identity() {
+        let ports = [
+            free_port(),
+            free_port(),
+            free_port(),
+            free_port(),
+            free_port(),
+        ];
+        let info = ConnectionInfo::new_tcp("127.0.0.1", ports);
+        let mut shell = RouterSocket::new();
+        shell.bind(&info.shell_endpoint()).await.unwrap();
+        let mut stdin = RouterSocket::new();
+        stdin.bind(&info.stdin_endpoint()).await.unwrap();
+        let mut control = RouterSocket::new();
+        control.bind(&info.control_endpoint()).await.unwrap();
+        let mut iopub = zeromq::PubSocket::new();
+        iopub.bind(&info.iopub_endpoint()).await.unwrap();
+
+        let transport = ZmqTransport::connect(&info).await.unwrap();
+        let msg = Message::new("kernel_info_request", "s", "u", &serde_json::json!({}));
+        transport
+            .sink
+            .send(Channel::Shell, msg.clone())
+            .await
+            .unwrap();
+        transport.sink.send(Channel::Stdin, msg).await.unwrap();
+
+        let a = first_frame(&mut shell).await;
+        let b = first_frame(&mut stdin).await;
+        assert_eq!(a, b);
+        transport.sink.close().await;
     }
 }

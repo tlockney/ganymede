@@ -28,7 +28,7 @@ pub struct KernelspecSpec {
 pub struct KernelspecModel {
     pub name: String,
     pub spec: KernelspecSpec,
-    /// Logo and other resource URLs. Empty in this sketch.
+    /// Logo and other resource URLs, as `jupyter_server` reports them.
     pub resources: Map<String, Value>,
 }
 

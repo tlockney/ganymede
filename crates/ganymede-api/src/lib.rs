@@ -55,6 +55,7 @@ impl From<ganymede_kernel_host::Error> for ApiError {
 
 pub type Result<T> = std::result::Result<T, ApiError>;
 
-pub(crate) fn now_iso() -> String {
+/// Now, in the timestamp format `jupyter_server` uses.
+pub fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
 }
