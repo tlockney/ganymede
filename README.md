@@ -9,6 +9,9 @@ API, and eventually a web presentation layer. First target kernel is
   parts that are usually missed, and a suggested order of work.
 - [`notes.md`](notes.md): findings and open questions.
 
+Section 6 of the sketch reads the server against the
+[ts-on-ipados](../ts-on-ipados/) plan, where it is the remote tier.
+
 ## Status
 
 Design sketch. Nothing built.
