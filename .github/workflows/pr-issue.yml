@@ -1,0 +1,25 @@
+name: PR links an issue
+
+# Every pull request traces back to an issue: its body must say
+# "Closes #N", "Fixes #N", "Resolves #N", or "Refs #N".
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions: {}
+
+jobs:
+  linked-issue:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the PR body references an issue
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if grep -Eiq '\b(close[sd]?|fix(e[sd])?|resolve[sd]?|refs?)[[:space:]]+([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+' <<< "$BODY"; then
+            grep -Eio '\b(close[sd]?|fix(e[sd])?|resolve[sd]?|refs?)[[:space:]]+([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+' <<< "$BODY"
+          else
+            echo "::error::Link the issue this PR resolves in its description, e.g. 'Closes #12'."
+            exit 1
+          fi

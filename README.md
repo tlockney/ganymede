@@ -24,6 +24,61 @@ Section 6 of the sketch reads the server against the
 Section 7 gives the module seams, the crate layout, and which modules
 each deployment profile (server, desktop, iPad) uses.
 
+## Install
+
+Prebuilt binaries for Linux (x86_64, aarch64), macOS (Apple silicon,
+Intel), and Windows (x86_64) are on the
+[releases page](https://github.com/tlockney/ganymede/releases). On Linux or
+macOS, this downloads the latest release, checks its SHA-256, and installs
+`ganymede` into `~/.local/bin`:
+
+```sh
+VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+  https://github.com/tlockney/ganymede/releases/latest | sed 's|.*/v||')
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64)                TARGET=x86_64-unknown-linux-gnu ;;
+  Linux-aarch64 | Linux-arm64) TARGET=aarch64-unknown-linux-gnu ;;
+  Darwin-arm64)                TARGET=aarch64-apple-darwin ;;
+  Darwin-x86_64)               TARGET=x86_64-apple-darwin ;;
+  *) echo "no prebuilt binary for $(uname -sm)" >&2 ;;
+esac
+NAME=ganymede-$VERSION-$TARGET
+cd "$(mktemp -d)"
+curl -fsSLO "https://github.com/tlockney/ganymede/releases/download/v$VERSION/$NAME.tar.gz"
+curl -fsSLO "https://github.com/tlockney/ganymede/releases/download/v$VERSION/$NAME.tar.gz.sha256"
+sha256sum -c "$NAME.tar.gz.sha256" 2>/dev/null || shasum -a 256 -c "$NAME.tar.gz.sha256"
+tar -xzf "$NAME.tar.gz"
+mkdir -p ~/.local/bin && install -m 755 "$NAME/ganymede" ~/.local/bin/
+export PATH="$HOME/.local/bin:$PATH"   # if it is not on PATH already
+```
+
+Set `VERSION=0.1.0` instead of the first line to pin a release. The Linux
+binaries need glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36, or later).
+macOS does not quarantine files fetched with `curl`; after a browser
+download, run `xattr -d com.apple.quarantine ganymede` before the first
+run, since the binaries are not notarized.
+
+Quick test, no kernel or Python needed (`fake` is a built-in kernel):
+
+```sh
+ganymede --version                 # ganymede 0.1.0
+ganymede info                      # Jupyter paths in use
+ganymede run -k fake 'hello'       # prints "echo: hello" and "HELLO"
+ganymede serve --port 8888 --token test &
+curl -H 'Authorization: token test' http://127.0.0.1:8888/api/status
+kill %1
+```
+
+With a real kernel installed, for example cdp-kernel on Node or ipykernel:
+
+```sh
+npm install -g @tlockney/cdp-kernel && cdp-kernel install --runtime node
+ganymede kernelspec list
+ganymede run -k cdp-node 'const x = 2; x * 21'
+```
+
+Or build from source with `cargo install --path crates/ganymede-cli`.
+
 ## Status
 
 Code sketch. The protocol, kernel host, nbformat, executor, contents, API,
@@ -74,13 +129,6 @@ ganymede serve --root-dir . --port 8888          # point VS Code or JupyterLab a
 ganymede serve --static-dir <prefix>/share/jupyter/lab/static   # JupyterLab at /lab
 cd frontend && npm install && npm test
 ```
-
-Releases: pushing a tag `vX.Y.Z` that matches the workspace version in
-`Cargo.toml` runs [`release.yml`](.github/workflows/release.yml), which
-builds `ganymede` for Linux (x86_64, aarch64), macOS (aarch64, x86_64), and
-Windows (x86_64) and attaches `ganymede-X.Y.Z-<target>.tar.gz` (`.zip` on
-Windows), a `.sha256` per archive, and `SHA256SUMS` to a GitHub Release.
-Tags with a `-` suffix are marked prerelease.
 
 Embedding:
 
@@ -143,6 +191,34 @@ and ipykernel, plus a portability job for iOS, Android, and wasm.
   match rather than invent: `jupyter_server`'s gateway client for remote
   kernels, and `@jupyterlab/services`' `ServerConnection` for pointing a
   web view at an in-app core, as JupyterLite does.
+
+## Contributing
+
+Work is tracked in [GitHub issues](https://github.com/tlockney/ganymede/issues):
+each task and each bug found gets an issue before work starts, and every
+pull request links the issue it resolves (`Closes #N`), which CI checks.
+
+Releases are cut from an up-to-date `main` with
+[`scripts/release.sh`](scripts/release.sh), which wraps
+[cargo-release](https://github.com/crate-ci/cargo-release) and
+[git-cliff](https://git-cliff.org)
+(`cargo install --locked cargo-release git-cliff`):
+
+```sh
+scripts/release.sh minor            # dry run: version bump and changelog preview
+scripts/release.sh minor --execute  # bump, CHANGELOG.md, commit, tag vX.Y.Z, push
+```
+
+The level is `patch`, `minor`, `major`, or an explicit version such as
+`0.2.0-rc.1`. All crates share the workspace version, so the tag, the
+crates, and `ganymede --version` agree. [`CHANGELOG.md`](CHANGELOG.md)
+lists the pull requests merged into each release, from the merge commits.
+The tag runs [`release.yml`](.github/workflows/release.yml), which builds
+the five targets above, checks each native binary reports the tagged
+version, and publishes a GitHub Release with `ganymede-X.Y.Z-<target>.tar.gz`
+(`.zip` on Windows), a `.sha256` per archive, `SHA256SUMS`, and that
+version's changelog section as notes. Versions with a `-` suffix are
+marked prerelease.
 
 ## Next
 
