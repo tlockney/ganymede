@@ -31,6 +31,13 @@ test oracle and a kernel, never a dependency of the product.
   green, and appends what it learned to the
   [development log](notes.md) (`docs/notes.md`).
 
+## Releases
+
+`scripts/release.sh <level>` bumps the workspace version, writes
+`CHANGELOG.md`, tags `vX.Y.Z`, and pushes; the tag runs the release
+workflow. It is a dry run without `--execute`. The
+[README](../README.md#contributing) has the details.
+
 ## This site
 
 The landing page is plain HTML and CSS in `site/`. These docs are
