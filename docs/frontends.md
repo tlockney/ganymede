@@ -21,8 +21,27 @@ stdin, and running cells.
 ## JupyterLab
 
 Ganymede serves JupyterLab's own static bundle, so no `jupyter lab`
-process is needed, only its files. Point `--static-dir` at the bundle of an
-installed JupyterLab:
+process is needed, only its files. `ganymede lab install` downloads them
+from PyPI's `jupyterlab` wheel (no Python involved) and checks its SHA-256;
+`ganymede serve` then serves the newest installed version:
+
+```sh
+ganymede lab install                    # JupyterLab 4.6.4; --version picks another
+ganymede lab list
+ganymede serve                          # JupyterLab at /lab
+ganymede serve --lab-version 4.6.4      # a specific installed version
+ganymede lab remove 4.6.4
+```
+
+Bundles live in `ganymede/lab/<version>/` under the local data directory:
+`~/.local/share` (or `$XDG_DATA_HOME`) on Linux, `~/Library/Application
+Support` on macOS, `%LOCALAPPDATA%` on Windows, or `$GANYMEDE_DATA_DIR/lab`
+when that is set. Each holds JupyterLab's `static/`, `schemas/`, `themes/`,
+and its BSD-3-Clause `LICENSE`. The download honours `HTTPS_PROXY` and the
+system's trusted certificates. With nothing installed, `serve` serves only
+the API.
+
+The bundle of a JupyterLab installed some other way works too:
 
 ```sh
 ganymede serve --static-dir <prefix>/share/jupyter/lab/static
