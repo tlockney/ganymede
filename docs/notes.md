@@ -950,3 +950,6 @@ with a `<script>`, plus a raw `application/javascript` bundle), and
   workstation.
 - On macOS the script relies on `/usr/bin/shasum` (a Perl script with
   an absolute shebang) and BSD `ps`.
+- JupyterLab saves on Cmd+S on macOS, where Playwright's Chromium reports a
+  Mac platform, so `Control+s` silently does nothing there. The scripts press
+  `ControlOrMeta+s`.

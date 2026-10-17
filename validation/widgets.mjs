@@ -81,7 +81,7 @@ try {
   await reply.waitFor({ timeout: 60000 });
   result.kernelCount = (await reply.textContent()).trim();
   if (process.env.RELOAD) {
-    await page.keyboard.press('Control+s');
+    await page.keyboard.press('ControlOrMeta+s');
     await page.waitForFunction(
       () => !document.querySelector('.jp-mod-dirty'), null, { timeout: 10000 });
     const saved = await (await fetch(`${base}/api/contents/${name}`, { headers: auth })).json();
