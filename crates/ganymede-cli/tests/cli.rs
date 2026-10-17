@@ -308,3 +308,54 @@ fn serve_answers_the_api() {
 extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
 }
+
+#[test]
+fn trust_signs_once_and_reset_forgets() {
+    let data = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let nb = dir.path().join("a.ipynb");
+    std::fs::write(
+        &nb,
+        r#"{"nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [
+            {"cell_type": "code", "id": "c", "metadata": {}, "source": "x", "execution_count": 1,
+             "outputs": [{"output_type": "display_data", "metadata": {}, "data": {"text/html": "<b>x</b>"}}]}]}"#,
+    )
+    .unwrap();
+    let trust = |args: &[&str]| {
+        let mut c = ganymede(&["trust"]);
+        c.args(args).env("JUPYTER_DATA_DIR", data.path());
+        c
+    };
+    let nb_arg = nb.to_str().unwrap();
+
+    let out = run_ok(trust(&[nb_arg]));
+    assert_eq!(stdout(&out), format!("Signing notebook: {nb_arg}\n"));
+    assert!(data.path().join("notebook_secret").is_file());
+    assert!(data.path().join("nbsignatures.db").is_file());
+    let out = run_ok(trust(&[nb_arg]));
+    assert_eq!(stdout(&out), format!("Notebook already signed: {nb_arg}\n"));
+
+    // From stdin.
+    let mut c = trust(&[]);
+    c.stdin(std::fs::File::open(&nb).unwrap());
+    assert_eq!(stdout(&run_ok(c)), "Notebook already signed: <stdin>\n");
+
+    let out = trust(&["missing.ipynb"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("Notebook missing: missing.ipynb"));
+
+    let out = run_ok(trust(&["--reset"]));
+    assert!(stdout(&out).contains("Removing trusted signature cache"));
+    assert!(stdout(&out).contains("Generating new notebook key"));
+    let out = run_ok(trust(&[nb_arg]));
+    assert_eq!(stdout(&out), format!("Signing notebook: {nb_arg}\n"));
+
+    // --notary-dir overrides the data dir.
+    let other = tempfile::tempdir().unwrap();
+    let out = run_ok(trust(&[
+        "--notary-dir",
+        other.path().to_str().unwrap(),
+        nb_arg,
+    ]));
+    assert_eq!(stdout(&out), format!("Signing notebook: {nb_arg}\n"));
+}

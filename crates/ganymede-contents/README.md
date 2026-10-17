@@ -29,12 +29,26 @@ are the source of truth ([the iPad use case](../../docs/ipados.md)).
     client's copy wins.
   - `checkpoint_dir` moves checkpoints outside the root (iCloud-synced roots
     should not sync them), mirroring the root's directory layout underneath.
+  - `notary` turns on notebook trust: code cells are served with
+    `metadata.trusted`, notebooks are signed on save when every code cell is
+    trusted, and `Contents::trust` signs one unconditionally.
+- `trust::Notary`: nbformat's `NotebookNotary`. HMAC-SHA256 over the
+  notebook computed exactly as nbformat does (sorted keys, scalars as
+  nbformat's `str()`, `metadata.signature` skipped), keyed with
+  `notebook_secret` (created mode 0600 if missing), with signatures in
+  Jupyter's `nbsignatures.db`. `Notary::open(data_dir)` shares both files
+  with Jupyter. The SQLite store needs the `sqlite` feature (SQLite built
+  from C by `rusqlite`, which the server enables); without it signatures
+  are kept in memory, so the crate still checks for iOS and Android
+  without a C cross compiler.
 
 Tests: `cargo test -p ganymede-contents`. They cover notebook, text and base64
 round trips (notebook bytes checked against `Notebook::to_file_string()`),
 listing shape, untitled and copy naming, rename, delete, traversal and
 symlink rejection, hidden paths, conflict detection, checkpoints in both
-layouts, and read-only mode.
+layouts, and read-only mode. `tests/trust.rs` checks signatures and
+`check_cells` against fixtures from Python nbformat
+(`tests/fixtures/generate_trust.py`) and the trust rules end to end.
 
 ## Where it departs from jupyter_server, on purpose
 
@@ -47,8 +61,13 @@ layouts, and read-only mode.
   inserts; decoding accepts either.
 - Non-empty directories are refused with 400, which is `jupyter_server`'s
   behaviour with `delete_to_trash` off; there is no trash here.
+- The signature recorded on save is computed over the notebook as it will
+  be read back, not over the client's JSON as sent. The two hash the same
+  unless the client sends fields nbformat drops on read (`trusted` on a
+  markdown cell), where jupyter_server's own signature would not match on
+  reopen.
 - Not implemented: `hash`/`hash_algorithm` (omitted from the JSON), chunked
-  uploads (`chunk`), notebook signing/trust, `pre_save`/`post_save` hooks,
+  uploads (`chunk`), `pre_save`/`post_save` hooks,
   `nbformat` validation messages on read.
 
 ## What to try next

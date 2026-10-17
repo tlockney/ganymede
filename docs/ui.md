@@ -29,8 +29,11 @@ Required pieces:
 - Kernel picker, status bar, restart/interrupt controls.
 - File browser, open/save, autosave, "dirty" tracking, checkpoints.
 - Trust model: HTML/JS outputs in a notebook you did not execute are
-  untrusted and must be sanitized until re-executed. JupyterLab stores
-  trust signatures in a local database.
+  untrusted and must be sanitized until re-executed. The server keeps the
+  signatures (Jupyter's `nbsignatures.db`) and marks code cells
+  `metadata.trusted` when it serves a notebook; a UI sends `trusted: true`
+  on cells whose output it produced, and `POST /api/contents/{path}/trust`
+  trusts a notebook on request.
 
 UI implementations, each a separate client of the same API:
 
