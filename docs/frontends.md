@@ -51,9 +51,11 @@ The page is served at `/lab`, with the `/lab/api/*` endpoints it calls.
 Prebuilt extensions are found in `labextensions` under the Jupyter data
 directories or with `--labextensions-path`.
 
-JupyterLab in a browser authenticates its websockets with the login cookie
-`jupyter_server` sets, which Ganymede doesn't set yet, so notebooks open
-but kernels can't connect. Cookie login is the next step on the roadmap.
+Open the URL `ganymede serve` printed. The token in it becomes a login
+cookie, and the browser is redirected to the same page without it; the
+cookie is what JupyterLab's websockets authenticate with. Without the
+token, the page sends you to `/login`, which asks for it. `/logout` ends
+the login.
 
 ## What isn't there
 

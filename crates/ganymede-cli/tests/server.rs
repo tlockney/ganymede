@@ -4,7 +4,9 @@
 //! step records what a client can observe (status codes, model keys and
 //! values, the iopub messages each request produced, reply contents); the
 //! two transcripts must be equal once timestamps and random ids are
-//! normalized.
+//! normalized. That includes logging in the way a browser does: the login
+//! cookie a token sets, `/login` and `/logout`, the `_xsrf` check, and a
+//! websocket authenticated by the cookie alone.
 
 mod common;
 
@@ -14,6 +16,7 @@ use serde_json::{json, Value};
 use std::io::BufRead;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 const TOKEN: &str = "e2e-token";
@@ -99,6 +102,7 @@ fn start_ganymede() -> Server {
         .arg(state.path())
         .arg("--notary-dir")
         .arg(state.path().join("notary"))
+        .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -173,6 +177,65 @@ impl Client {
         let status = resp.status().as_u16();
         let text = resp.text().await.unwrap();
         (status, serde_json::from_str(&text).unwrap_or(Value::Null))
+    }
+
+    /// A request with only the given headers: no token unless they carry
+    /// one, and no redirects followed.
+    async fn raw(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Option<(&str, String)>,
+    ) -> (u16, reqwest::header::HeaderMap, String) {
+        let mut r = self.http.request(method, format!("{}{path}", self.base));
+        for (k, v) in headers {
+            r = r.header(*k, *v);
+        }
+        if let Some((content_type, b)) = body {
+            r = r.header("Content-Type", content_type).body(b);
+        }
+        let resp = r.send().await.unwrap();
+        let status = resp.status().as_u16();
+        let headers = resp.headers().clone();
+        (status, headers, resp.text().await.unwrap())
+    }
+
+    /// `username-<host>`, the login cookie's name for this server.
+    fn login_name(&self) -> String {
+        let host = self.base.split("://").nth(1).unwrap().trim_end_matches('/');
+        format!("username-{host}")
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect()
+    }
+
+    /// What a browser learns from each `Set-Cookie`: the name, whether the
+    /// value is empty (a cleared cookie), and the attributes. Expiry dates
+    /// differ run to run, and Ganymede adds `SameSite=Lax`, which
+    /// jupyter_server does not send; both are left out.
+    fn set_cookies(&self, h: &reqwest::header::HeaderMap) -> Value {
+        let login = self.login_name();
+        let mut out: Vec<Value> = h
+            .get_all("set-cookie")
+            .iter()
+            .map(|v| {
+                let mut parts = v.to_str().unwrap().split(';').map(str::trim);
+                let (name, value) = parts.next().unwrap().split_once('=').unwrap();
+                let mut attrs: Vec<String> = parts
+                    .map(|a| a.to_ascii_lowercase())
+                    .filter(|a| !a.starts_with("expires=") && !a.starts_with("samesite="))
+                    .collect();
+                attrs.sort();
+                json!({
+                    "name": if name == login { "<login>" } else { name },
+                    "cleared": value.trim_matches('"').is_empty(),
+                    "attrs": attrs,
+                })
+            })
+            .collect();
+        out.sort_by_key(|v| v["name"].to_string());
+        json!(out)
     }
 
     async fn wait_ready(&self) {
@@ -284,9 +347,162 @@ async fn exchange(ws: &mut Ws, msg: Value, answer: Option<&str>) -> Value {
     json!({"iopub": iopub, "stdin": stdin, "reply": reply})
 }
 
+/// `name=value` of the `Set-Cookie` called `name`, to send back.
+fn cookie(h: &reqwest::header::HeaderMap, name: &str) -> String {
+    h.get_all("set-cookie")
+        .iter()
+        .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_string())
+        .find(|nv| nv.starts_with(&format!("{name}=")))
+        .unwrap_or_else(|| panic!("no {name} cookie in {h:?}"))
+}
+
+fn message(body: &str) -> Value {
+    serde_json::from_str::<Value>(body).unwrap_or(Value::Null)["message"].clone()
+}
+
+/// Logging in as a browser does. Returns the login and `_xsrf` cookies.
+async fn browser_login(cl: &mut Client) -> String {
+    use reqwest::Method as M;
+    let (s, _, body) = cl.raw(M::GET, "api/status", &[], None).await;
+    cl.record(
+        "no credentials",
+        json!({"status": s, "message": message(&body)}),
+    );
+    let (s, h, _) = cl
+        .raw(M::GET, &format!("api/status?token={TOKEN}"), &[], None)
+        .await;
+    cl.record(
+        "token sets login cookie",
+        json!({"status": s, "cookies": cl.set_cookies(&h)}),
+    );
+    let login = cookie(&h, &cl.login_name());
+    let (s, h, _) = cl
+        .raw(M::GET, "api/kernelspecs", &[("Cookie", &login)], None)
+        .await;
+    cl.record(
+        "cookie alone",
+        json!({"status": s, "cookies": cl.set_cookies(&h)}),
+    );
+    let (s, h, _) = cl
+        .raw(
+            M::GET,
+            "api/status",
+            &[("Cookie", &format!("{}=forged", cl.login_name()))],
+            None,
+        )
+        .await;
+    cl.record(
+        "forged cookie",
+        json!({"status": s, "cookies": cl.set_cookies(&h)}),
+    );
+
+    // The login page sets `_xsrf`; the form posts it back with the token.
+    let (s, h, _) = cl
+        .raw(M::GET, "login?next=%2Fapi%2Fstatus", &[], None)
+        .await;
+    cl.record(
+        "login page",
+        json!({"status": s, "cookies": cl.set_cookies(&h)}),
+    );
+    let xsrf = cookie(&h, "_xsrf");
+    let xsrf_value = xsrf.split_once('=').unwrap().1.to_string();
+    let form = |password: &str, with_xsrf: bool| {
+        let mut f = form_pair("password", password);
+        if with_xsrf {
+            f = format!("{f}&{}", form_pair("_xsrf", &xsrf_value));
+        }
+        Some(("application/x-www-form-urlencoded", f))
+    };
+    for (step, password, with_xsrf) in [
+        ("login without _xsrf", TOKEN, false),
+        ("login with a wrong token", "wrong", true),
+    ] {
+        let (s, h, _) = cl
+            .raw(
+                M::POST,
+                "login?next=%2Fapi%2Fstatus",
+                &[("Cookie", &xsrf)],
+                form(password, with_xsrf),
+            )
+            .await;
+        cl.record(step, json!({"status": s, "cookies": cl.set_cookies(&h)}));
+    }
+    let (s, h, _) = cl
+        .raw(
+            M::POST,
+            "login?next=%2Fapi%2Fstatus",
+            &[("Cookie", &xsrf)],
+            form(TOKEN, true),
+        )
+        .await;
+    cl.record(
+        "login",
+        json!({"status": s, "location": h.get("location").map(|l| l.to_str().unwrap()), "cookies": cl.set_cookies(&h)}),
+    );
+
+    // A cookie-authenticated change needs the `_xsrf` cookie echoed in a
+    // header; the token alone needs nothing.
+    let both = format!("{login}; {xsrf}");
+    let new_file = || Some(("application/json", json!({"type": "file"}).to_string()));
+    let (s, _, body) = cl
+        .raw(M::POST, "api/contents", &[("Cookie", &both)], new_file())
+        .await;
+    cl.record(
+        "cookie POST without _xsrf",
+        json!({"status": s, "message": message(&body)}),
+    );
+    let (s, _, body) = cl
+        .raw(
+            M::POST,
+            "api/contents",
+            &[("Cookie", &both), ("X-XSRFToken", "2|00|00|0")],
+            new_file(),
+        )
+        .await;
+    cl.record(
+        "cookie POST with a wrong _xsrf",
+        json!({"status": s, "message": message(&body)}),
+    );
+    let (s, _, body) = cl
+        .raw(
+            M::POST,
+            "api/contents",
+            &[("Cookie", &both), ("X-XSRFToken", &xsrf_value)],
+            new_file(),
+        )
+        .await;
+    cl.record("cookie POST with _xsrf", json!({"status": s}));
+    let path = serde_json::from_str::<Value>(&body).unwrap()["path"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, _) = cl
+        .call(M::DELETE, &format!("api/contents/{path}"), None)
+        .await;
+    cl.record("token DELETE", json!({"status": s}));
+    login
+}
+
+fn form_pair(k: &str, v: &str) -> String {
+    let enc = |s: &str| {
+        s.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect::<String>()
+    };
+    format!("{}={}", enc(k), enc(v))
+}
+
 async fn scenario(base: &str, c: &Code) -> Vec<(String, Value)> {
     let mut cl = Client {
-        http: reqwest::Client::new(),
+        http: reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap(),
         base: base.to_string(),
         transcript: vec![],
     };
@@ -305,6 +521,7 @@ async fn scenario(base: &str, c: &Code) -> Vec<(String, Value)> {
         "kernelspecs",
         json!({"status": s, "keys": keys(&v), "spec": spec_json, "name": spec["name"], "resources": keys(&spec["resources"])}),
     );
+    let login = browser_login(&mut cl).await;
 
     let nb = json!({"nbformat": 4, "nbformat_minor": 5, "metadata": {"kernelspec": {"name": c.kernel, "display_name": c.kernel}}, "cells": [
         {"cell_type": "code", "id": "c1", "metadata": {}, "source": c.answer, "outputs": [], "execution_count": null}
@@ -373,11 +590,18 @@ async fn scenario(base: &str, c: &Code) -> Vec<(String, Value)> {
     let kid = session["kernel"]["id"].as_str().unwrap().to_string();
     let sid = session["id"].as_str().unwrap().to_string();
 
-    let ws_url = format!(
-        "{}api/kernels/{kid}/channels?session_id=e2e-session&token={TOKEN}",
+    // The first websocket authenticates as JupyterLab's does in a browser,
+    // with the login cookie and no token.
+    let mut ws_req = format!(
+        "{}api/kernels/{kid}/channels?session_id=e2e-session",
         base.replacen("http://", "ws://", 1)
-    );
-    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url).await.unwrap();
+    )
+    .into_client_request()
+    .unwrap();
+    ws_req
+        .headers_mut()
+        .insert("Cookie", login.parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_req).await.unwrap();
 
     let info = exchange(
         &mut ws,
@@ -496,6 +720,14 @@ async fn scenario(base: &str, c: &Code) -> Vec<(String, Value)> {
         .call(M::DELETE, "api/contents/scenario.ipynb", None)
         .await;
     cl.record("contents delete", json!({"status": s}));
+
+    let (s, h, _) = cl
+        .raw(reqwest::Method::GET, "logout", &[("Cookie", &login)], None)
+        .await;
+    cl.record(
+        "logout",
+        json!({"status": s, "cookies": cl.set_cookies(&h)}),
+    );
 
     cl.transcript
 }

@@ -3,8 +3,9 @@
 // saves, and records every request the page makes.
 //
 // Usage: node jupyterlab.mjs <base-url> <token> <kernel-name> <out.json>
-// Env: CODE (cell source), EXPECT (text the output must contain),
-//      WS_TOKEN=1 appends the token to websocket URLs (see notes.md).
+// Env: CODE (cell source), EXPECT (text the output must contain).
+// The page is opened with `?token=`, which the server turns into a login
+// cookie; the websockets authenticate with that cookie, as in a browser.
 import { chromium } from 'playwright';
 import fs from 'node:fs';
 
@@ -28,20 +29,6 @@ const log = [];
 const consoleErrors = [];
 const browser = await chromium.launch();
 const page = await browser.newPage();
-if (process.env.WS_TOKEN) {
-  // JupyterLab in a same-origin browser sends no token on websockets and
-  // relies on the login cookie; this stands in for cookie login.
-  await page.addInitScript(t => {
-    const WS = window.WebSocket;
-    window.WebSocket = function (url, protocols) {
-      const u = new URL(url, location.href);
-      u.searchParams.set('token', t);
-      return new WS(u.toString(), protocols);
-    };
-    Object.assign(window.WebSocket, WS);
-    window.WebSocket.prototype = WS.prototype;
-  }, token);
-}
 const origin = new URL(base).origin;
 const clean = u => { const x = new URL(u); x.searchParams.delete('token'); return x.pathname + x.search; };
 page.on('response', r => { if (r.url().startsWith(origin)) log.push({ method: r.request().method(), path: clean(r.url()), status: r.status() }); });

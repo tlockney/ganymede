@@ -10,6 +10,10 @@ pub struct Config {
     pub port: u16,
     /// Empty string disables auth. Unset generates a random token.
     pub token: Option<String>,
+    /// Key for signing login cookies, created on first start so browsers
+    /// stay logged in across restarts. Defaults to `jupyter_cookie_secret`
+    /// in the Jupyter runtime dir, the file `jupyter_server` uses.
+    pub cookie_secret_file: Option<PathBuf>,
     /// Contents root. Defaults to the current directory.
     pub root_dir: PathBuf,
     /// Checkpoints outside the root, for synced folders.
@@ -52,6 +56,7 @@ impl Default for Config {
             ip: "127.0.0.1".into(),
             port: 8888,
             token: None,
+            cookie_secret_file: None,
             root_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             checkpoint_dir: None,
             notary_dir: None,

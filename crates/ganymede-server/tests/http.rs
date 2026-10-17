@@ -75,10 +75,12 @@ fn state(root: &std::path::Path) -> AppState {
         kernels,
         contents: Arc::new(FsContents::new(root, FsOptions::default()).unwrap()),
         token: Some(TOKEN.into()),
+        cookie_secret: Arc::from(&b"test-secret"[..]),
         allow_origins: vec![],
         base_url: "/".into(),
         config_dir: root.join(".jupyter-config"),
         lab: None,
+        static_dir: None,
     }
 }
 
@@ -701,9 +703,21 @@ fn lab_state(root: &std::path::Path) -> AppState {
 }
 
 async fn get_text(app: &axum::Router, path: &str) -> (StatusCode, String) {
+    get_text_with(app, path, &[]).await
+}
+
+async fn get_text_with(
+    app: &axum::Router,
+    path: &str,
+    headers: &[(header::HeaderName, &str)],
+) -> (StatusCode, String) {
+    let mut req = Request::get(path);
+    for (k, v) in headers {
+        req = req.header(k, *v);
+    }
     let resp = app
         .clone()
-        .oneshot(Request::get(path).body(Body::empty()).unwrap())
+        .oneshot(req.body(Body::empty()).unwrap())
         .await
         .unwrap();
     let status = resp.status();
@@ -725,8 +739,12 @@ async fn lab_page_carries_page_config_and_assets_are_public() {
         .unwrap();
     assert_eq!(resp.headers()[header::LOCATION], "/lab");
 
-    assert_eq!(get_text(&app, "/lab").await.0, StatusCode::FORBIDDEN);
-    let (st, html) = get_text(&app, &format!("/lab/tree/a/b.ipynb?token={TOKEN}")).await;
+    let (st, html) = get_text_with(
+        &app,
+        "/lab/tree/a/b.ipynb",
+        &[(header::AUTHORIZATION, &format!("token {TOKEN}"))],
+    )
+    .await;
     assert_eq!(st, StatusCode::OK);
     assert!(
         html.contains("<script src=\"/static/lab/main.js\">"),
@@ -750,7 +768,12 @@ async fn lab_page_carries_page_config_and_assets_are_public() {
         cfg["federated_extensions"],
         json!([{"name": "my_ext", "load": "static/remoteEntry.abc.js", "entrypoints": null, "extension": "./extension"}])
     );
-    let (_, html) = get_text(&app, &format!("/lab/workspaces/w1?token={TOKEN}")).await;
+    let (_, html) = get_text_with(
+        &app,
+        "/lab/workspaces/w1",
+        &[(header::AUTHORIZATION, &format!("token {TOKEN}"))],
+    )
+    .await;
     assert!(html.contains("\"workspace\":\"w1\""));
 
     assert_eq!(
@@ -899,5 +922,286 @@ async fn lab_workspaces_translations_and_listings() {
     assert_eq!(
         lic,
         json!({"bundles": {"@jupyterlab/application-top": {"packages": [{"name": "x"}]}}})
+    );
+}
+
+async fn send(app: &axum::Router, req: Request<Body>) -> (StatusCode, header::HeaderMap, String) {
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let (parts, body) = resp.into_parts();
+    let bytes = axum::body::to_bytes(body, 1 << 20).await.unwrap();
+    (
+        parts.status,
+        parts.headers,
+        String::from_utf8_lossy(&bytes).into_owned(),
+    )
+}
+
+/// `name=value` of each `Set-Cookie`, and the whole header by name.
+fn set_cookies(h: &header::HeaderMap) -> Vec<(String, String, String)> {
+    h.get_all(header::SET_COOKIE)
+        .iter()
+        .map(|v| {
+            let v = v.to_str().unwrap();
+            let (nv, _) = v.split_once(';').unwrap_or((v, ""));
+            let (n, val) = nv.split_once('=').unwrap();
+            (n.to_string(), val.to_string(), v.to_string())
+        })
+        .collect()
+}
+
+const HOST: &str = "127.0.0.1:8888";
+const LOGIN: &str = "username-127-0-0-1-8888";
+
+fn get_req(path: &str, cookie: Option<&str>) -> Request<Body> {
+    let mut r = Request::get(path).header(header::HOST, HOST);
+    if let Some(c) = cookie {
+        r = r.header(header::COOKIE, c);
+    }
+    r.body(Body::empty()).unwrap()
+}
+
+#[tokio::test]
+async fn token_in_a_page_url_becomes_a_login_cookie() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(lab_state(dir.path()));
+
+    let (st, h, _) = send(&app, get_req("/lab", None)).await;
+    assert_eq!(st, StatusCode::FOUND);
+    assert_eq!(h[header::LOCATION], "/login?next=%2Flab");
+
+    let (st, h, _) = send(
+        &app,
+        get_req(&format!("/lab/tree/a.ipynb?token={TOKEN}&reset"), None),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FOUND);
+    assert_eq!(h[header::LOCATION], "/lab/tree/a.ipynb?reset=");
+    let cookies = set_cookies(&h);
+    assert_eq!(cookies.len(), 1);
+    let (name, value, full) = &cookies[0];
+    assert_eq!(name, LOGIN);
+    assert!(value.starts_with("2|1:0|"), "{full}");
+    assert!(full.contains("; HttpOnly; Path=/; SameSite=Lax"), "{full}");
+    let login = format!("{name}={value}");
+
+    // A wrong token is not stripped; the page sends it to the login form.
+    let (st, h, _) = send(&app, get_req("/lab?token=wrong", None)).await;
+    assert_eq!(st, StatusCode::FOUND);
+    assert_eq!(h[header::LOCATION], "/login?next=%2Flab%3Ftoken%3Dwrong");
+
+    // The page with the cookie, which also gets an _xsrf cookie.
+    let (st, h, html) = send(&app, get_req("/lab", Some(&login))).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(html.contains("jupyter-config-data"));
+    let cookies = set_cookies(&h);
+    assert_eq!(cookies[0].0, "_xsrf");
+    assert!(!cookies[0].2.contains("HttpOnly"));
+
+    // `/` keeps redirecting to the app, after taking the token.
+    let (_, h, _) = send(&app, get_req(&format!("/?token={TOKEN}"), None)).await;
+    assert_eq!(h[header::LOCATION], "/");
+    assert_eq!(set_cookies(&h)[0].0, LOGIN);
+
+    // API URLs keep the token and only gain a cookie.
+    let (st, h, _) = send(&app, get_req(&format!("/api/status?token={TOKEN}"), None)).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(set_cookies(&h)[0].0, LOGIN);
+    let (st, h, _) = send(
+        &app,
+        get_req(&format!("/api/status?token={TOKEN}"), Some(&login)),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(set_cookies(&h).is_empty(), "already logged in");
+}
+
+#[tokio::test]
+async fn cookie_auth_needs_xsrf_for_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(lab_state(dir.path()));
+    let (_, h, _) = send(&app, get_req(&format!("/api/status?token={TOKEN}"), None)).await;
+    let (n, v, _) = set_cookies(&h).remove(0);
+    let login = format!("{n}={v}");
+    let (_, h, _) = send(&app, get_req("/lab", Some(&login))).await;
+    let (_, xsrf, _) = set_cookies(&h).remove(0);
+    let both = format!("{login}; _xsrf={xsrf}");
+
+    let (st, h, _) = send(&app, get_req("/api/kernelspecs", Some(&login))).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(set_cookies(&h).is_empty());
+
+    let post = |cookie: &str, extra: Option<(&str, &str)>| {
+        let mut r = Request::post("/api/contents")
+            .header(header::HOST, HOST)
+            .header(header::COOKIE, cookie);
+        if let Some((k, v)) = extra {
+            r = r.header(k, v);
+        }
+        r.body(Body::from(r#"{"type": "file"}"#)).unwrap()
+    };
+    let (st, _, body) = send(&app, post(&both, None)).await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert!(
+        body.contains("'_xsrf' argument missing from POST"),
+        "{body}"
+    );
+    let (st, _, body) = send(&app, post(&both, Some(("X-XSRFToken", "not-the-token")))).await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert!(body.contains("XSRF cookie does not match"), "{body}");
+    let (st, _, _) = send(&app, post(&login, Some(("X-XSRFToken", &xsrf)))).await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "no _xsrf cookie");
+    let (st, _, _) = send(&app, post(&both, Some(("X-XSRFToken", &xsrf)))).await;
+    assert_eq!(st, StatusCode::CREATED);
+    let (st, _, _) = send(&app, post(&both, Some(("Origin", "http://evil.example")))).await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "cross-origin");
+    let mut cross = get_req("/api/status", Some(&login));
+    cross
+        .headers_mut()
+        .insert("Origin", "http://evil.example".parse().unwrap());
+    assert_eq!(send(&app, cross).await.0, StatusCode::NOT_FOUND);
+
+    // The token needs no XSRF token.
+    let (st, _) = call(
+        &app,
+        "POST",
+        "/api/contents",
+        Some(json!({"type": "file"})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED);
+
+    // A forged login cookie is refused and cleared.
+    let (st, h, _) = send(
+        &app,
+        get_req("/api/status", Some(&format!("{LOGIN}=2|1:0|x"))),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    let (n, v, _) = set_cookies(&h).remove(0);
+    assert_eq!((n.as_str(), v.as_str()), (LOGIN, "\"\""));
+}
+
+#[tokio::test]
+async fn login_form_and_logout() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(lab_state(dir.path()));
+
+    let (st, h, html) = send(&app, get_req("/login?next=%2Flab%2Ftree", None)).await;
+    assert_eq!(st, StatusCode::OK);
+    let (_, xsrf, _) = set_cookies(&h).remove(0);
+    assert!(
+        html.contains(&format!("name=\"_xsrf\" value=\"{xsrf}\"")),
+        "{html}"
+    );
+    assert!(
+        html.contains("action=\"/login?next=%2Flab%2Ftree\""),
+        "{html}"
+    );
+
+    let form = |cookie: &str, body: String| {
+        Request::post("/login?next=%2Flab%2Ftree")
+            .header(header::HOST, HOST)
+            .header(header::COOKIE, cookie)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    let xsrf_cookie = format!("_xsrf={xsrf}");
+    let enc = |s: &str| form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
+    let (st, h, _) = send(&app, form(&xsrf_cookie, format!("password={TOKEN}"))).await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "no _xsrf field");
+    assert!(set_cookies(&h).is_empty());
+    let (st, _, html) = send(
+        &app,
+        form(&xsrf_cookie, format!("password=bad&_xsrf={}", enc(&xsrf))),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    assert!(html.contains("Invalid credentials"));
+    let (st, h, _) = send(
+        &app,
+        form(
+            &xsrf_cookie,
+            format!("password={TOKEN}&_xsrf={}", enc(&xsrf)),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FOUND);
+    assert_eq!(h[header::LOCATION], "/lab/tree");
+    let (n, v, _) = set_cookies(&h).remove(0);
+    assert_eq!(n, LOGIN);
+    let login = format!("{n}={v}");
+
+    // Logged in, the form sends the browser on; never off this server.
+    let (st, h, _) = send(&app, get_req("/login?next=%2Flab", Some(&login))).await;
+    assert_eq!(
+        (st, &h[header::LOCATION]),
+        (StatusCode::FOUND, &"/lab".parse().unwrap())
+    );
+    for evil in ["http://evil.example/", "//evil.example/", "/\\evil.example"] {
+        let (_, h, _) = send(
+            &app,
+            get_req(&format!("/login?next={}", enc(evil)), Some(&login)),
+        )
+        .await;
+        assert_eq!(h[header::LOCATION], "/", "{evil}");
+    }
+
+    let (st, h, html) = send(&app, get_req("/logout", Some(&login))).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(html.contains("Successfully logged out."));
+    let (n, v, full) = set_cookies(&h).remove(0);
+    assert_eq!((n.as_str(), v.as_str()), (LOGIN, "\"\""));
+    assert!(full.contains("Path=/"));
+}
+
+#[tokio::test]
+async fn login_redirects_keep_the_base_url() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = lab_state(dir.path());
+    st.base_url = "/b/".into();
+    let app = axum::Router::new().nest("/b", build_router(st));
+    let (_, h, _) = send(&app, get_req("/b/lab/tree/x?a=1", None)).await;
+    assert_eq!(
+        h[header::LOCATION],
+        "/b/login?next=%2Fb%2Flab%2Ftree%2Fx%3Fa%3D1"
+    );
+    let (_, h, _) = send(&app, get_req(&format!("/b/lab?token={TOKEN}"), None)).await;
+    assert_eq!(h[header::LOCATION], "/b/lab");
+    assert!(set_cookies(&h)[0].2.contains("Path=/b/"));
+}
+
+#[tokio::test]
+async fn websocket_authenticates_with_the_login_cookie() {
+    let dir = tempfile::tempdir().unwrap();
+    let st = state(dir.path());
+    let kernels = st.kernels.clone();
+    let app = build_router(st);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let served = app.clone();
+    tokio::spawn(async move { axum::serve(listener, served).await.unwrap() });
+    let k = kernels.start(Some("fake"), None).await.unwrap();
+
+    let mut req = Request::get(format!("/api/status?token={TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    req.headers_mut()
+        .insert(header::HOST, addr.to_string().parse().unwrap());
+    let (_, h, _) = send(&app, req).await;
+    let (n, v, _) = set_cookies(&h).remove(0);
+
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = format!("ws://{addr}/api/kernels/{}/channels", k.id)
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("Cookie", format!("{n}={v}").parse().unwrap());
+    req.headers_mut()
+        .insert("Origin", format!("http://{addr}").parse().unwrap());
+    assert!(
+        tokio_tungstenite::connect_async(req).await.is_ok(),
+        "cookie only, same origin"
     );
 }
