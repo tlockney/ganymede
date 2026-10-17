@@ -156,7 +156,12 @@ kernels and Jupyter are installed, and skip what is missing:
   `wasm32-wasip1`, running a notebook on the fake kernel under Node's WASI.
 
 CI runs the e2e job on Linux and macOS with Node 24, cdp-kernel 0.5.0,
-and ipykernel, plus a portability job for iOS, Android, and wasm.
+and ipykernel, plus a portability job for iOS, Android, and wasm. Its
+`workstation` job follows [Install](docs/install.md) on Linux and macOS
+with Python hidden from `PATH`
+([`scripts/test-workstation.sh`](scripts/test-workstation.sh)): the PR's
+binary through `install.sh`, cdp-kernel from npm, `ganymede lab install`,
+and `ganymede lab` driven by Playwright, failing if any Python ran.
 
 ## Contributing
 
