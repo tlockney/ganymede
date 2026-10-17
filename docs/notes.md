@@ -984,3 +984,30 @@ where the two differ and why.
   exits with `binding 127.0.0.1:8888: Address already in use`.
 - `ganymede lab install` honours `HTTPS_PROXY` through ureq; cdp-kernel's
   `npm:` imports run `npm install`, so npm's proxy settings apply.
+
+## 2026-10-17, docs unstyled on the custom domain
+
+Pages got the custom domain `ganymede-server.com`, and
+`tlockney.github.io/ganymede/` now redirects there. The docs were still
+built with `SITE_URL=https://tlockney.github.io/ganymede`, so VitePress
+wrote every asset and link under `/ganymede/docs/`, which 404s on the
+custom domain: the docs rendered without styles. The landing page uses
+relative paths and kept working. `SITE_URL` (pages.yml, and the default
+in `config.mts`) is now the custom domain, and the install-script URLs
+point at it directly instead of through the redirect.
+
+- A project page (`<user>.github.io/<repo>/`) and a custom domain serve
+  the same files at different path prefixes. Anything with an absolute
+  base path has to be rebuilt when the domain changes; relative paths
+  survive it.
+- With an Actions deployment the custom domain lives only in the Pages
+  settings, not in a `CNAME` file in the repository, so nothing in the
+  build sees a change there.
+- The deploy job now fetches the landing page, `install.sh`, a docs page,
+  and the stylesheet that page links from `SITE_URL` after each deploy,
+  so a base path that doesn't match the domain fails the deploy instead
+  of shipping unstyled docs. Run against the old deploy, the stylesheet
+  check 404s, as it should.
+- No `site/CNAME`: GitHub ignores a `CNAME` file in an Actions-deployed
+  artifact, so it would not keep the domain set; the Pages settings are
+  the only place it lives.

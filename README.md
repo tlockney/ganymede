@@ -11,7 +11,7 @@ kernel, Python's included, works once its kernelspec is installed.
 Named for Jupiter's largest moon, and for the cupbearer who served the
 gods on Olympus.
 
-**Documentation:** [tlockney.github.io/ganymede](https://tlockney.github.io/ganymede/)
+**Documentation:** [ganymede-server.com](https://ganymede-server.com/)
 (sources in [`docs/`](docs/)). Start with
 [Install on a workstation](docs/workstation.md), step by step from a clean
 machine with no Python or Jupyter, then
@@ -29,7 +29,7 @@ installed, installs [cdp-kernel](https://cdp-kernel.org) for TypeScript
 notebooks:
 
 ```sh
-curl -fsSL https://tlockney.github.io/ganymede/install.sh | sh
+curl -fsSL https://ganymede-server.com/install.sh | sh
 ```
 
 Pass options after `sh -s --`: `--version 0.1.0` pins a release,

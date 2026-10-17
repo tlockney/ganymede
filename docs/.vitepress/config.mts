@@ -8,9 +8,10 @@ import { defineConfig } from "vitepress";
 import { groups } from "./levels.ts";
 
 const repo = "https://github.com/tlockney/ganymede";
-// Where the site is served. GitHub Pages' project URL until the repository
-// has a custom domain; set SITE_URL in pages.yml when it does.
-const site = (process.env.SITE_URL ?? "https://tlockney.github.io/ganymede").replace(/\/$/, "");
+// Where the site is served: the custom domain set in the repository's Pages
+// settings. Its path becomes the docs' base, so it must match the domain
+// Pages serves from, or every asset 404s and the docs render unstyled.
+const site = (process.env.SITE_URL ?? "https://ganymede-server.com").replace(/\/$/, "");
 const base = `${new URL(site).pathname.replace(/\/$/, "")}/docs/`;
 const docsDir = path.resolve(import.meta.dirname, "..");
 const repoDir = path.resolve(docsDir, "..");
