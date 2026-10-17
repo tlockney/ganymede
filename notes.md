@@ -453,3 +453,31 @@ Portability:
   kernel reaches the page over a websocket or `postMessage` transport
   behind the existing `Transport` trait. The iPad kernel from the
   ts-on-ipados plan is the same shape: an in-process `Transport`.
+
+## 2026-10-17, release workflow
+
+`.github/workflows/release.yml` packages the `ganymede` binary.
+
+- Trigger: a pushed `v*` tag publishes; pull requests touching the
+  workflow and manual runs build and package without publishing, so the
+  packaging is exercised before a tag exists.
+- The tag must equal `v` + `[workspace.package] version`, and each native
+  build checks `ganymede --version` prints that version. Bump the version
+  first, then tag. A prerelease tag (`v0.1.0-rc.1`) needs the same string
+  in `Cargo.toml`.
+- Targets build natively on their own runners, no cross toolchains:
+  Linux on `ubuntu-22.04` and `ubuntu-22.04-arm` (older glibc than
+  `ubuntu-latest`, so the binary runs on more distributions), macOS
+  aarch64 on `macos-latest`, macOS x86_64 cross-compiled on the same
+  arm64 runner with Apple's toolchain (not run, Rosetta is not
+  guaranteed), Windows x86_64 MSVC. psm's C code needs only the runner's
+  compiler.
+- Linux binaries are glibc, not musl. Nothing in the dependency tree
+  needs OpenSSL (reqwest with rustls is dev-only), so a musl build is
+  possible later if a fully static binary is wanted.
+- Archives hold `ganymede[.exe]` and README.md in a
+  `ganymede-<version>-<target>/` directory. The release job concatenates
+  the per-archive `.sha256` files into `SHA256SUMS` and verifies them
+  before `gh release create --generate-notes`.
+- No code signing or notarization yet: macOS Gatekeeper quarantines a
+  downloaded binary (`xattr -d com.apple.quarantine ganymede`).
