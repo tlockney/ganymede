@@ -26,7 +26,7 @@ pub use types::{
     ExecuteResultOutput, MarkdownCell, MimeBundle, Notebook, Output, RawCell, StreamOutput,
     NBFORMAT, NBFORMAT_MINOR,
 };
-pub use writer::write_file;
+pub use writer::{python_float_repr, write_file};
 
 /// Errors from reading or writing notebooks.
 #[derive(Debug, thiserror::Error)]

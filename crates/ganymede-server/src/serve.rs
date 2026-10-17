@@ -5,7 +5,7 @@ use crate::config::Config;
 use crate::AppState;
 use anyhow::{Context, Result};
 use ganymede_api::{KernelManager, KernelManagerConfig, SessionManager, ZmqTransportFactory};
-use ganymede_contents::{FsContents, FsOptions};
+use ganymede_contents::{FsContents, FsOptions, Notary};
 use ganymede_kernel_host::{FsKernelspecs, SubprocessProvisioner};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,6 +27,10 @@ pub struct ServeArgs {
     pub token: Option<String>,
     #[arg(long)]
     pub root_dir: Option<PathBuf>,
+    /// Directory with the notebook-signing key and trusted signatures;
+    /// see `notary_dir` in the config file.
+    #[arg(long)]
+    pub notary_dir: Option<PathBuf>,
     #[arg(long)]
     pub static_dir: Option<PathBuf>,
     /// Extra directory of prebuilt JupyterLab extensions. Repeatable.
@@ -65,6 +69,9 @@ impl ServeArgs {
         if let Some(v) = cli.root_dir {
             cfg.root_dir = v;
         }
+        if let Some(v) = cli.notary_dir {
+            cfg.notary_dir = Some(v);
+        }
         if let Some(v) = cli.static_dir {
             cfg.static_dir = Some(v);
         }
@@ -82,6 +89,20 @@ impl ServeArgs {
 
         Ok(cfg)
     }
+}
+
+/// The notary for `dir`, else for the Jupyter data dir. When neither can
+/// hold a key, notebooks are signed for this process only.
+pub fn notary(dir: Option<PathBuf>) -> Notary {
+    let dir = dir.or_else(ganymede_kernel_host::kernelspec::jupyter_user_data_dir);
+    let opened = match &dir {
+        Some(d) => Notary::open(d).map_err(|e| format!("{}: {e}", d.display())),
+        None => Err("no Jupyter data dir".to_string()),
+    };
+    opened.unwrap_or_else(|e| {
+        tracing::warn!("notebook trust is per-process: {e}");
+        Notary::ephemeral().expect("the OS provides random bytes")
+    })
 }
 
 /// Serve until Ctrl-C, then shut down every kernel. Prints the URL, with
@@ -141,6 +162,7 @@ pub async fn run(cfg: Config) -> Result<()> {
         &root_dir,
         FsOptions {
             checkpoint_dir: cfg.checkpoint_dir.clone(),
+            notary: Some(Arc::new(notary(cfg.notary_dir.clone()))),
             ..Default::default()
         },
     )?);

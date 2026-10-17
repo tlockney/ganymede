@@ -12,7 +12,9 @@ Flags: `--config file.toml`, `--ip`, `--port`, `--token` (empty disables
 auth), `--root-dir`, `--static-dir` (frontend assets served at `/`, or
 JupyterLab at `/lab` when it is JupyterLab's `share/jupyter/lab/static`),
 `--labextensions-path` (repeatable), `--config-dir` (frontend state;
-default `JUPYTER_CONFIG_DIR` or `~/.jupyter`), `--kernelspec-root`
+default `JUPYTER_CONFIG_DIR` or `~/.jupyter`), `--notary-dir`
+(`notebook_secret` and `nbsignatures.db`; default the Jupyter data dir,
+shared with Jupyter), `--kernelspec-root`
 (repeatable; a data dir containing `kernels/`), `--default-kernel`,
 `--cull-idle-secs`.
 `config.rs` lists the TOML keys, including `checkpoint_dir` for synced
@@ -22,7 +24,7 @@ Routes: `/api` (public), `/api/status`, `/api/me`, `/api/config/{section}`,
 `/api/nbconvert`, `/api/events/subscribe`, `/api/kernelspecs[/{name}]`,
 `/kernelspecs/{name}/{file}`, `/api/kernels` with `interrupt`, `restart`,
 and the `channels` websocket, `/api/sessions`, `/api/contents/{path}` with
-checkpoints. In JupyterLab mode (`lab.rs`): the page, `/static/lab`,
+checkpoints and `trust`. In JupyterLab mode (`lab.rs`): the page, `/static/lab`,
 `/lab/extensions/{name}`, and `/lab/api/` `settings`, `workspaces`,
 `translations`, `themes`, `listings`, `plugins`, `licenses`. The websocket speaks
 `v1.kernel.websocket.jupyter.org` when offered and legacy JSON otherwise.

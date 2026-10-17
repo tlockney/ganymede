@@ -16,6 +16,7 @@ use serde_json::Value;
 
 use crate::model::{Checkpoint, ContentType, ContentsModel, Format, GetOptions, SaveRequest};
 use crate::paths::ApiPath;
+use crate::trust::{self, Notary};
 use crate::{Contents, Error, Result};
 
 /// The one checkpoint id `jupyter_server`'s `FileCheckpoints` uses.
@@ -53,6 +54,12 @@ pub struct FsOptions {
     pub allow_hidden: bool,
     /// Refuse every mutation with `Forbidden` and report `writable: false`.
     pub read_only: bool,
+    /// Notebook trust. With a notary, notebooks are served with
+    /// `metadata.trusted` on every code cell and signed on save when all
+    /// their code cells are trusted, as `jupyter_server` does (see
+    /// [`crate::trust`]). `None` serves notebooks as they are on disk and
+    /// refuses [`Contents::trust`].
+    pub notary: Option<Arc<Notary>>,
 }
 
 /// [`Contents`] over a directory on the local filesystem.
@@ -168,6 +175,11 @@ impl Contents for FsContents {
     async fn delete_checkpoint(&self, path: &str, checkpoint_id: &str) -> Result<()> {
         let (path, id) = (path.to_owned(), checkpoint_id.to_owned());
         self.run(move |i| i.delete_checkpoint(&path, &id)).await
+    }
+
+    async fn trust(&self, path: &str) -> Result<()> {
+        let path = path.to_owned();
+        self.run(move |i| i.trust(&path)).await
     }
 }
 
@@ -421,7 +433,16 @@ impl Inner {
             .map_err(|e| Error::BadRequest(format!("Unreadable Notebook: {} {e}", r.api)))?;
         // `nbformat.read` output, as jupyter_server serves it: multi-line
         // sources rejoined into strings, transient metadata stripped.
-        model.content = Some(serde_json::to_value(&notebook)?);
+        let mut content = serde_json::to_value(&notebook)?;
+        if let Some(notary) = &self.options.notary {
+            // jupyter_server's mark_trusted_cells.
+            let trusted = notary.check_signature(&content);
+            if !trusted {
+                tracing::debug!("Notebook {} is not trusted", r.api);
+            }
+            trust::mark_cells(&mut content, trusted);
+        }
+        model.content = Some(content);
         model.format = Some(Format::Json);
         Ok(model)
     }
@@ -440,10 +461,22 @@ impl Inner {
                 if let Some(ts) = &request.last_modified {
                     self.check_conflict(&r, ts)?;
                 }
+                let mut sign = None;
                 let bytes = match request.kind {
                     ContentType::Notebook => {
+                        let mut content = content;
+                        // jupyter_server's check_and_sign: trusted when every
+                        // code cell is, judged on the client's `trusted` flags.
+                        let trusted =
+                            self.options.notary.is_some() && trust::check_cells(&mut content);
                         let notebook = Notebook::from_value(content)
                             .map_err(|e| Error::BadRequest(format!("Invalid notebook: {e}")))?;
+                        if self.options.notary.is_some() && !trusted {
+                            tracing::debug!("Notebook {} is not trusted", r.api);
+                        }
+                        if trusted {
+                            sign = Some(serde_json::to_value(&notebook)?);
+                        }
                         notebook.to_file_string().into_bytes()
                     }
                     _ => file_bytes(&r.api, request.format, content)?,
@@ -452,6 +485,9 @@ impl Inner {
                     return Err(Error::BadRequest(format!("{} is a directory", r.api)));
                 }
                 self.atomic_write(&r.os, &r.api, &bytes)?;
+                if let Some(nb) = sign {
+                    self.sign(&r.api, &nb);
+                }
             }
         }
         self.get_without_content(&r.api)
@@ -623,7 +659,48 @@ impl Inner {
         };
         let bytes = fs::read(&from.os).map_err(|e| io_to_error(e, &from.api))?;
         self.atomic_write(&dest.os, &dest.api, &bytes)?;
+        if let Some(notary) = &self.options.notary {
+            // jupyter_server copies through get and save, so the copy is
+            // signed if the source was trusted or would be on save. The
+            // bytes are the same, so is the signature.
+            if dest.api.name().ends_with(".ipynb") {
+                if let Ok(notebook) = Notebook::from_slice(&bytes) {
+                    let nb = serde_json::to_value(&notebook)?;
+                    if notary.check_signature(&nb) || trust::check_cells(&mut nb.clone()) {
+                        self.sign(&dest.api, &nb);
+                    }
+                }
+            }
+        }
         self.get_without_content(&dest.api)
+    }
+
+    /// Record the signature of `nb`, the notebook as served. A store error
+    /// does not fail the save; the notebook is just not trusted next time.
+    fn sign(&self, api: &ApiPath, nb: &Value) {
+        if let Some(notary) = &self.options.notary {
+            if let Err(e) = notary.sign(nb) {
+                tracing::warn!(path = %api, error = %e, "could not sign notebook");
+            }
+        }
+    }
+
+    /// `jupyter_server`'s `trust_notebook`: sign the notebook as it is on
+    /// disk, whatever its outputs.
+    fn trust(&self, path: &str) -> Result<()> {
+        let Some(notary) = &self.options.notary else {
+            return Err(Error::BadRequest("notebook trust is not enabled".into()));
+        };
+        let r = self.resolve_for_read(path)?;
+        let meta = self.stat(&r)?;
+        if !meta.is_file() || !r.api.name().ends_with(".ipynb") {
+            return Err(Error::BadRequest(format!("{} is not a notebook", r.api)));
+        }
+        let bytes = fs::read(&r.os).map_err(|e| io_to_error(e, &r.api))?;
+        let notebook = Notebook::from_slice(&bytes)
+            .map_err(|e| Error::BadRequest(format!("Unreadable Notebook: {} {e}", r.api)))?;
+        tracing::info!("Trusting notebook {}", r.api);
+        notary.sign(&serde_json::to_value(&notebook)?)
     }
 }
 

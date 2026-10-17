@@ -10,6 +10,9 @@ npm install
 #   ganymede-server --static-dir <prefix>/share/jupyter/lab/static \
 #     --labextensions-path <prefix>/share/jupyter/labextensions --token tok
 node jupyterlab.mjs http://127.0.0.1:8888 tok <kernel> out/lab.json
+# Notebook trust: HTML and JavaScript outputs run again when a saved
+# notebook is reopened, and not in a copy no client vouched for.
+WS_TOKEN=1 node trust.mjs http://127.0.0.1:8888 tok python3 out/trust.json
 # The VS Code Jupyter extension's remote-server flow, replayed with the
 # same @jupyterlab/services settings, Request, and WebSocket overrides.
 CODE='print(6*7)' STDIN_CODE='print(input())' SLEEP_CODE='import time; time.sleep(30)' \

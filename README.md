@@ -80,6 +80,7 @@ ganymede run -k cdp-node 'const x = 2; x * 21'   # any installed kernelspec
 ganymede run -k python3 -f script.py --json      # one JSON line per cell
 ganymede console -k cdp-node                     # completion, multiline, Ctrl-C interrupts
 ganymede execute notebook.ipynb -o out.ipynb     # like `jupyter execute`; --inplace, -o -
+ganymede trust notebook.ipynb                    # like `jupyter trust`; shares Jupyter's signatures
 ganymede kernel -k python3                       # standalone kernel; prints its connection file
 ganymede run --existing kernel-....json 'x'      # reuse it
 ganymede serve --root-dir . --port 8888          # point VS Code or JupyterLab at the URL
@@ -127,10 +128,10 @@ UIs that render in a web view, `docs/` and `site/` are the website, and
 | [`crates/ganymede-kernel-host`](crates/ganymede-kernel-host/) | Kernelspec discovery, transport seam (ZMQ and in-process), subprocess and attach provisioners, the session state machine, a fake kernel. | 10 |
 | [`crates/ganymede-exec`](crates/ganymede-exec/) | Notebook executor with nbclient's semantics: outputs, `clear_output(wait)`, `display_id` across cells, `language_info`, timings, widget state, allowed errors and tags, timeouts. | 4 |
 | [`crates/ganymede-engine`](crates/ganymede-engine/) | The library to embed. `Engine` finds kernelspecs and starts, attaches, or adopts kernels; `Kernel` executes with streaming output and stdin, completes, inspects, interrupts, restarts, runs notebooks. Features `zmq` and `subprocess` (default) drop out for wasm. | 3 |
-| [`crates/ganymede-cli`](crates/ganymede-cli/) | The `ganymede` command: `kernelspec list/paths/install/remove`, `run`, `console`, `execute`, `kernel`, `nb clear`, `serve`, `info`. | 26 |
-| [`crates/ganymede-contents`](crates/ganymede-contents/) | Contents seam and filesystem implementation matching `jupyter_server`'s model: atomic writes, mtime conflicts, checkpoints, configurable checkpoint dir, path safety. | 30 |
+| [`crates/ganymede-cli`](crates/ganymede-cli/) | The `ganymede` command: `kernelspec list/paths/install/remove`, `run`, `console`, `execute`, `kernel`, `nb clear`, `trust`, `serve`, `info`. | 28 |
+| [`crates/ganymede-contents`](crates/ganymede-contents/) | Contents seam and filesystem implementation matching `jupyter_server`'s model: atomic writes, mtime conflicts, checkpoints, configurable checkpoint dir, path safety, notebook trust with Jupyter's signing key and `nbsignatures.db`. | 52 |
 | [`crates/ganymede-api`](crates/ganymede-api/) | Kernel and session managers, response models, per-client bridge with reply filtering, idle culling. No HTTP. | 6 |
-| [`crates/ganymede-server`](crates/ganymede-server/) | axum routes, token auth, origin check, websocket v1 and legacy framing, static assets, TOML config, JupyterLab's page and `/lab/api/*`. | 13 |
+| [`crates/ganymede-server`](crates/ganymede-server/) | axum routes, token auth, origin check, websocket v1 and legacy framing, static assets, TOML config, JupyterLab's page and `/lab/api/*`, notebook trust. | 14 |
 | [`frontend/`](frontend/) | Protocol types, websocket codecs, `ServerConnection` with injectable `fetch` and `WebSocket`, REST client, `KernelConnection`, renderer registry, ANSI and stream handling, widget manager interfaces. | 45 |
 
 ## Testing
@@ -152,9 +153,11 @@ kernels and Jupyter are installed, and skip what is missing:
 - `parity.rs`: each notebook in [`e2e/notebooks/`](e2e/notebooks/) is
   executed by `jupyter execute` and by `ganymede execute`, and the files
   are compared after normalizing timestamps and ids. Mismatches are kept
-  under `$TMPDIR/ganymede-parity-*`.
+  under `$TMPDIR/ganymede-parity-*`. Also checks that `ganymede trust` and
+  `jupyter trust` share one signature store.
 - `server.rs`: one REST and websocket scenario against `jupyter server`
-  and `ganymede serve`, compared as transcripts.
+  and `ganymede serve`, compared as transcripts, including which cells come
+  back `trusted` after each kind of save and after `POST .../trust`.
 - [`e2e/wasm-smoke/`](e2e/wasm-smoke/): the engine built for
   `wasm32-wasip1`, running a notebook on the fake kernel under Node's WASI.
 
