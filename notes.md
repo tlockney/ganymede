@@ -78,7 +78,7 @@ Open questions, updated:
 
 ## 2026-10-17, ts-on-ipados as a use case
 
-The [ts-on-ipados](../ts-on-ipados/) plan is one intended use: this
+The [ts-on-ipados](https://github.com/tlockney/research/tree/main/ts-on-ipados) plan is one intended use: this
 server is its remote tier on the Mac mini over the tailnet. Read the
 design note sections 04, 05, 09 and the review sections 3, 4, 6, 7.
 Added section 6 to `sketch.md`.

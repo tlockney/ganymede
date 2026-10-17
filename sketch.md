@@ -329,7 +329,7 @@ open-ended.
 
 ## 6. Use case: ts-on-ipados
 
-The [ts-on-ipados](../ts-on-ipados/) design puts an iPad client in front
+The [ts-on-ipados](https://github.com/tlockney/research/tree/main/ts-on-ipados) design puts an iPad client in front
 of kernels on the homelab over the tailnet, with a local in-process kernel
 later. Its review established that remote clients speak the server's REST
 API and websocket, never ZMTP, and that iCloud Drive, not SMB, is the file
