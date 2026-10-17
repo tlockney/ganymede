@@ -1003,3 +1003,11 @@ point at it directly instead of through the redirect.
 - With an Actions deployment the custom domain lives only in the Pages
   settings, not in a `CNAME` file in the repository, so nothing in the
   build sees a change there.
+- The deploy job now fetches the landing page, `install.sh`, a docs page,
+  and the stylesheet that page links from `SITE_URL` after each deploy,
+  so a base path that doesn't match the domain fails the deploy instead
+  of shipping unstyled docs. Run against the old deploy, the stylesheet
+  check 404s, as it should.
+- No `site/CNAME`: GitHub ignores a `CNAME` file in an Actions-deployed
+  artifact, so it would not keep the domain set; the Pages settings are
+  the only place it lives.

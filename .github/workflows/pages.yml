@@ -13,16 +13,18 @@ permissions:
 concurrency:
   group: pages-${{ github.ref }}
   cancel-in-progress: true
+env:
+  # Where the site is served; config.mts derives the docs' base path from
+  # it. Keep it in step with the custom domain in the Pages settings (an
+  # Actions deployment ignores a CNAME file, so the settings are the only
+  # place the domain lives).
+  SITE_URL: https://ganymede-server.com
 jobs:
   # The landing page is plain HTML and CSS in site/, served at /. The docs
   # are Markdown in docs/, built by VitePress into /docs/
   # (docs/.vitepress/config.mts). The design is cdp-kernel.org's.
   build:
     runs-on: ubuntu-latest
-    env:
-      # Where the site is served; config.mts derives the docs' base path
-      # from it. Keep it in step with the custom domain in Pages settings.
-      SITE_URL: https://ganymede-server.com
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -57,3 +59,15 @@ jobs:
       - uses: actions/configure-pages@v5
       - id: deployment
         uses: actions/deploy-pages@v4
+      # Fetch the deployed site from SITE_URL: the landing page, a docs page,
+      # the docs stylesheet that page links, and the install script. A base
+      # path that doesn't match the domain makes the stylesheet 404.
+      - name: smoke test
+        run: |
+          check() { curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o /dev/null "$1" && echo "ok $1"; }
+          check "$SITE_URL/"
+          check "$SITE_URL/install.sh"
+          page=$(curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors "$SITE_URL/docs/install")
+          css=$(printf '%s' "$page" | grep -o '/[^"]*/assets/style\.[^"]*\.css' | head -n 1)
+          test -n "$css" || { echo "no stylesheet in $SITE_URL/docs/install"; exit 1; }
+          check "$SITE_URL$css"
