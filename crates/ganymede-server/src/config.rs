@@ -14,8 +14,16 @@ pub struct Config {
     pub root_dir: PathBuf,
     /// Checkpoints outside the root, for synced folders.
     pub checkpoint_dir: Option<PathBuf>,
-    /// Directory of static frontend assets served at `/`.
+    /// Directory of static frontend assets served at `/`. When it is
+    /// JupyterLab's static bundle (`share/jupyter/lab/static`), the server
+    /// serves JupyterLab at `/lab` with its `/lab/api/*` endpoints instead.
     pub static_dir: Option<PathBuf>,
+    /// Extra directories of prebuilt JupyterLab extensions, searched before
+    /// `labextensions` in the Jupyter data dirs.
+    pub labextensions_paths: Vec<PathBuf>,
+    /// Where frontend state is stored: `nbconfig/`, `lab/user-settings/`,
+    /// `lab/workspaces/`. Defaults to `JUPYTER_CONFIG_DIR` or `~/.jupyter`.
+    pub config_dir: Option<PathBuf>,
     /// Prefix for a reverse proxy, e.g. `/jupyter`.
     pub base_url: String,
     /// Extra kernelspec roots searched before the Jupyter data dirs.
@@ -37,6 +45,8 @@ impl Default for Config {
             root_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             checkpoint_dir: None,
             static_dir: None,
+            labextensions_paths: vec![],
+            config_dir: None,
             base_url: "/".into(),
             kernelspec_roots: vec![],
             default_kernel: None,

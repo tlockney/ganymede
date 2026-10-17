@@ -62,9 +62,18 @@ where
     }
 }
 
+/// The `jupyter_server` version whose REST API this server matches.
+/// Reported by `GET /api`, which clients use to check what they talk to.
+pub const JUPYTER_SERVER_VERSION: &str = "2.21.1";
+
 pub fn router(state: AppState) -> Router {
     let api = Router::new()
         .route("/api/status", get(status))
+        .route("/api/me", get(me))
+        .route("/api/config/{section}", get(get_config).patch(patch_config))
+        .route("/api/nbconvert", get(nbconvert))
+        .route("/api/events/subscribe", get(crate::ws::events))
+        .route("/kernelspecs/{name}/{*file}", get(kernelspec_resource))
         .route("/api/kernelspecs", get(kernelspecs))
         .route("/api/kernelspecs/{name}", get(kernelspec))
         .route("/api/kernels", get(list_kernels).post(start_kernel))
@@ -89,7 +98,8 @@ pub fn router(state: AppState) -> Router {
                 .delete(delete_contents)
                 .post(post_contents),
         )
-        .route_layer(middleware::from_fn_with_state(state.clone(), auth));
+        .route_layer(middleware::from_fn_with_state(state.clone(), auth))
+        .route("/api", get(api_version));
     api.with_state(state)
 }
 
@@ -97,7 +107,7 @@ pub fn router(state: AppState) -> Router {
 
 /// `Authorization: token <t>` or `?token=<t>`. Browsers cannot set headers
 /// on a websocket upgrade, so the query form matters there.
-async fn auth(
+pub(crate) async fn auth(
     State(state): State<AppState>,
     req: Request<axum::body::Body>,
     next: Next,
@@ -135,6 +145,96 @@ fn serde_urlencoded_token(query: &str) -> Option<String> {
     })
 }
 
+// ----- status, identity, config ---------------------------------------------
+
+async fn api_version() -> Json<Value> {
+    Json(json!({ "version": JUPYTER_SERVER_VERSION }))
+}
+
+/// One identity for whoever holds the token. `jupyter_server` invents an
+/// anonymous name per browser; this server has no users to tell apart.
+async fn me() -> Json<Value> {
+    Json(json!({
+        "identity": {
+            "username": "anonymous",
+            "name": "Anonymous",
+            "display_name": "Anonymous",
+            "initials": "A",
+            "avatar_url": null,
+            "color": null,
+        },
+        "permissions": {},
+    }))
+}
+
+/// Frontend config sections, stored as `nbconfig/{section}.json` in the
+/// Jupyter config dir, as `jupyter_server` does.
+fn config_path(s: &AppState, section: &str) -> HttpResult<std::path::PathBuf> {
+    if section.is_empty()
+        || !section
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        || section.starts_with('.')
+    {
+        return Err(HttpError(400, format!("bad config section {section:?}")));
+    }
+    Ok(s.config_dir
+        .join("nbconfig")
+        .join(format!("{section}.json")))
+}
+
+fn read_config(path: &std::path::Path) -> Value {
+    std::fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_else(|| json!({}))
+}
+
+async fn get_config(
+    State(s): State<AppState>,
+    Path(section): Path<String>,
+) -> HttpResult<Json<Value>> {
+    Ok(Json(read_config(&config_path(&s, &section)?)))
+}
+
+/// Recursive merge; `null` deletes a key.
+async fn patch_config(
+    State(s): State<AppState>,
+    Path(section): Path<String>,
+    LenientJson(update): LenientJson<Value>,
+) -> HttpResult<Json<Value>> {
+    let path = config_path(&s, &section)?;
+    let mut current = read_config(&path);
+    merge(&mut current, update);
+    let io = |e: std::io::Error| HttpError(500, format!("writing {}: {e}", path.display()));
+    std::fs::create_dir_all(path.parent().unwrap()).map_err(io)?;
+    std::fs::write(&path, serde_json::to_vec_pretty(&current).unwrap()).map_err(io)?;
+    Ok(Json(current))
+}
+
+fn merge(target: &mut Value, update: Value) {
+    let (Value::Object(t), Value::Object(u)) = (&mut *target, &update) else {
+        if !update.is_null() {
+            *target = update;
+        }
+        return;
+    };
+    for (k, v) in u.clone() {
+        if v.is_null() {
+            t.remove(&k);
+        } else if v.is_object() && t.get(&k).map(Value::is_object).unwrap_or(false) {
+            merge(t.get_mut(&k).unwrap(), v);
+        } else {
+            t.insert(k, v);
+        }
+    }
+}
+
+/// Export formats. nbconvert is Python, so there are none.
+async fn nbconvert() -> Json<Value> {
+    Json(json!({}))
+}
+
 // ----- status, kernelspecs --------------------------------------------------
 
 async fn status(State(s): State<AppState>) -> Json<StatusModel> {
@@ -157,6 +257,35 @@ async fn kernelspec(
     Path(name): Path<String>,
 ) -> HttpResult<Json<ganymede_api::KernelspecModel>> {
     Ok(Json(s.kernels.kernelspec(&name)?))
+}
+
+/// `kernelspecs/{name}/{file}`: logos and other files from the
+/// kernelspec's directory.
+async fn kernelspec_resource(
+    State(s): State<AppState>,
+    Path((name, file)): Path<(String, String)>,
+) -> HttpResult<Response> {
+    if file
+        .split('/')
+        .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+        || file.contains('\\')
+    {
+        return Err(HttpError(404, "not found".into()));
+    }
+    let dir = s.kernels.kernelspec_resource_dir(&name)?;
+    let path = dir.join(&file);
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| HttpError(404, format!("no resource {file} in kernelspec {name}")))?;
+    let mime = match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "js" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" => "application/json",
+        _ => "application/octet-stream",
+    };
+    Ok(([(header::CONTENT_TYPE, mime)], bytes).into_response())
 }
 
 // ----- kernels ----------------------------------------------------------------

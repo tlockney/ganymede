@@ -9,20 +9,29 @@ cargo run -p ganymede-server -- --root-dir ~/notebooks --port 8888
 ```
 
 Flags: `--config file.toml`, `--ip`, `--port`, `--token` (empty disables
-auth), `--root-dir`, `--static-dir` (frontend assets served at `/`),
-`--kernelspec-root` (repeatable), `--default-kernel`, `--cull-idle-secs`.
+auth), `--root-dir`, `--static-dir` (frontend assets served at `/`, or
+JupyterLab at `/lab` when it is JupyterLab's `share/jupyter/lab/static`),
+`--labextensions-path` (repeatable), `--config-dir` (frontend state;
+default `JUPYTER_CONFIG_DIR` or `~/.jupyter`), `--kernelspec-root`
+(repeatable; a data dir containing `kernels/`), `--default-kernel`,
+`--cull-idle-secs`.
 `config.rs` lists the TOML keys, including `checkpoint_dir` for synced
 roots, `base_url` for a reverse proxy, and `allow_origins` for websockets.
 
-Routes: `/api/status`, `/api/kernelspecs[/{name}]`, `/api/kernels` with
-`interrupt`, `restart`, and the `channels` websocket, `/api/sessions`,
-`/api/contents/{path}` with checkpoints. The websocket speaks
+Routes: `/api` (public), `/api/status`, `/api/me`, `/api/config/{section}`,
+`/api/nbconvert`, `/api/events/subscribe`, `/api/kernelspecs[/{name}]`,
+`/kernelspecs/{name}/{file}`, `/api/kernels` with `interrupt`, `restart`,
+and the `channels` websocket, `/api/sessions`, `/api/contents/{path}` with
+checkpoints. In JupyterLab mode (`lab.rs`): the page, `/static/lab`,
+`/lab/extensions/{name}`, and `/lab/api/` `settings`, `workspaces`,
+`translations`, `themes`, `listings`, `plugins`, `licenses`. The websocket speaks
 `v1.kernel.websocket.jupyter.org` when offered and legacy JSON otherwise.
 
 Auth is `Authorization: token <t>` or `?token=<t>`. Websocket upgrades
 also check `Origin` against the request host and `allow_origins`. There is
 no cookie login yet, so a browser frontend needs the token in every
-request; VS Code and `@jupyterlab/services` do that already.
+request. VS Code and `@jupyterlab/services` in Node do that; JupyterLab in
+a browser does not send it on websockets.
 
 Verified with `@jupyterlab/services` 7.5 in Node against ipykernel: specs,
 start, execute, complete, interrupt, restart, contents, sessions, shutdown.

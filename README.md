@@ -29,7 +29,10 @@ each deployment profile (server, desktop, iPad) uses.
 Code sketch. The protocol, kernel host, nbformat, executor, contents, API,
 and server crates build, pass their tests, and drive ipykernel over real
 ZeroMQ. `@jupyterlab/services` connects to the server and runs the full
-kernel, session, and contents flow. The TypeScript frontend package has
+kernel, session, and contents flow. JupyterLab 4's own bundle is served
+with `--static-dir` and runs notebooks once websockets authenticate (cookie
+login is next); the VS Code Jupyter extension's remote-server flow passes.
+See [`validation/`](validation/). The TypeScript frontend package has
 the protocol plumbing and renderer seams with tests, but no app shell.
 
 ## Code
@@ -40,12 +43,12 @@ Cargo workspace at this directory; `frontend/` is an npm package.
 |---|---|---|
 | [`crates/ganymede-protocol`](crates/ganymede-protocol/) | Message envelope, typed content with unknown-field passthrough, ZMQ wire framing with HMAC, connection file, websocket v1 and legacy codecs. No I/O. | 12 |
 | [`crates/ganymede-nbformat`](crates/ganymede-nbformat/) | nbformat 4.5 reader and a writer byte-identical to Python `nbformat.write`. | 24 |
-| [`crates/ganymede-kernel-host`](crates/ganymede-kernel-host/) | Kernelspec discovery, transport seam (ZMQ and in-process), subprocess and attach provisioners, the session state machine, a fake kernel. | 9 |
+| [`crates/ganymede-kernel-host`](crates/ganymede-kernel-host/) | Kernelspec discovery, transport seam (ZMQ and in-process), subprocess and attach provisioners, the session state machine, a fake kernel. | 10 |
 | [`crates/ganymede-exec`](crates/ganymede-exec/) | Headless executor: iopub messages to nbformat outputs, with `clear_output`, `display_id`, and stream merging. | 2 |
 | [`crates/ganymede-cli`](crates/ganymede-cli/) | `ganymede kernelspec list`, `ganymede run`, `ganymede attach`, `ganymede exec`. | |
 | [`crates/ganymede-contents`](crates/ganymede-contents/) | Contents seam and filesystem implementation matching `jupyter_server`'s model: atomic writes, mtime conflicts, checkpoints, configurable checkpoint dir, path safety. | 30 |
 | [`crates/ganymede-api`](crates/ganymede-api/) | Kernel and session managers, response models, per-client bridge with reply filtering, idle culling. No HTTP. | 6 |
-| [`crates/ganymede-server`](crates/ganymede-server/) | axum routes, token auth, origin check, websocket v1 and legacy framing, static assets, TOML config. | 5 |
+| [`crates/ganymede-server`](crates/ganymede-server/) | axum routes, token auth, origin check, websocket v1 and legacy framing, static assets, TOML config, JupyterLab's page and `/lab/api/*`. | 13 |
 | [`frontend/`](frontend/) | Protocol types, websocket codecs, `ServerConnection` with injectable `fetch` and `WebSocket`, REST client, `KernelConnection`, renderer registry, ANSI and stream handling, widget manager interfaces. | 45 |
 
 Try it:
@@ -56,7 +59,8 @@ cargo run -p ganymede-cli -- run --kernel fake "hello"
 cargo run -p ganymede-cli -- kernelspec list
 cargo run -p ganymede-cli -- run --kernel python3 "print(1+1)"   # any installed kernelspec
 cargo run -p ganymede-cli -- exec notebook.ipynb -o out.ipynb
-cargo run -p ganymede-server -- --root-dir . --port 8888      # then point JupyterLab or VS Code at the printed URL
+cargo run -p ganymede-server -- --root-dir . --port 8888      # then point VS Code at the printed URL
+cargo run -p ganymede-server -- --static-dir <prefix>/share/jupyter/lab/static   # JupyterLab at /lab
 cd frontend && npm install && npm test
 ```
 
@@ -87,9 +91,7 @@ cd frontend && npm install && npm test
 
 ## Next
 
-- Point a real JupyterLab (static bundle via `--static-dir`, needs the
-  `/lab/api/*` endpoints) and VS Code at the server.
-- Cookie login for browser frontends; CurveZMQ.
+- Cookie login for browser frontends, which JupyterLab's websockets need.
 - Run the conformance checks against cdp-kernel (needs Node 24).
 - Document model. A first UI of our own, outside the core: a browser app
   or a Swift shell with a web view.

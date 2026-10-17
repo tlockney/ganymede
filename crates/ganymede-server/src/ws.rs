@@ -83,3 +83,23 @@ async fn run(mut socket: WebSocket, mut client: ClientConnection) {
     }
     tracing::debug!(kernel = client.kernel_id(), "websocket closed");
 }
+
+/// `/api/events/subscribe`: `jupyter_events`' stream of server events.
+/// JupyterLab keeps one open. This server emits no events, so the socket
+/// stays quiet until the client closes it.
+pub async fn events(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
+    if !origin_allowed(&state, &headers) {
+        return HttpError(403, "origin not allowed".into()).into_response();
+    }
+    ws.on_upgrade(|mut socket| async move {
+        while let Some(Ok(msg)) = socket.recv().await {
+            if matches!(msg, WsMessage::Close(_)) {
+                break;
+            }
+        }
+    })
+}
