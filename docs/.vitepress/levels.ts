@@ -59,6 +59,7 @@ export function groups(): Group[] {
       items: [
         { text: "Roadmap", link: "/roadmap" },
         { text: "Prior art", link: "/prior-art" },
+        { text: "Other Jupyter clients", link: "/clients" },
       ],
     },
     {
