@@ -1,9 +1,11 @@
 # cargo-release configuration; run it through scripts/release.sh.
 # All crates share the workspace version, released together as one tag.
+# cargo-release only bumps and commits: the release commit reaches main
+# through a PR, and tag-release.yml tags the merge.
 allow-branch = ["main"]
 shared-version = true
 consolidate-commits = true
 publish = false
-tag-name = "v{{version}}"
-tag-message = "Release {{version}}"
+tag = false
+push = false
 pre-release-commit-message = "Release {{version}}"

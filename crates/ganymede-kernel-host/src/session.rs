@@ -208,7 +208,10 @@ impl KernelSession {
         while tokio::time::Instant::now() < deadline {
             let step = Duration::from_millis(500);
             let req = content::KernelInfoRequest::default();
-            if shell_info.is_none() {
+            // Every request makes the kernel publish status on iopub, so
+            // keep asking until the subscription has caught one: the SUB
+            // socket can connect after shell and control have answered.
+            if shell_info.is_none() || !self.inner.iopub_seen.load(Ordering::SeqCst) {
                 let m = self.message("kernel_info_request", &req);
                 if let Ok(exec) = self.request(Channel::Shell, m, false, step).await {
                     shell_info = exec

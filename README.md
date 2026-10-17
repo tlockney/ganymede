@@ -162,27 +162,30 @@ and appends what it learned to the [development log](docs/notes.md). The
 [Development](docs/development.md) page has the rules and how to build the
 docs.
 
-Releases are cut from an up-to-date `main` with
-[`scripts/release.sh`](scripts/release.sh), which wraps
-[cargo-release](https://github.com/crate-ci/cargo-release) and
+Releases go through a PR like any other change.
+[`scripts/release.sh`](scripts/release.sh), run from an up-to-date `main`,
+wraps [cargo-release](https://github.com/crate-ci/cargo-release) and
 [git-cliff](https://git-cliff.org)
 (`cargo install --locked cargo-release git-cliff`):
 
 ```sh
 scripts/release.sh minor            # dry run: version bump and changelog preview
-scripts/release.sh minor --execute  # bump, CHANGELOG.md, commit, tag vX.Y.Z, push
+scripts/release.sh minor --execute  # commit on release/vX.Y.Z, push, open issue + PR
 ```
 
 The level is `patch`, `minor`, `major`, or an explicit version such as
 `0.2.0-rc.1`. All crates share the workspace version, so the tag, the
 crates, and `ganymede --version` agree. [`CHANGELOG.md`](CHANGELOG.md)
 lists the pull requests merged into each release, from the merge commits.
-The tag runs [`release.yml`](.github/workflows/release.yml), which builds
-the five targets above, checks each native binary reports the tagged
-version, and publishes a GitHub Release with `ganymede-X.Y.Z-<target>.tar.gz`
-(`.zip` on Windows), a `.sha256` per archive, `SHA256SUMS`, and that
-version's changelog section as notes. Versions with a `-` suffix are
-marked prerelease.
+Merging the release PR runs
+[`tag-release.yml`](.github/workflows/tag-release.yml), which tags the merge
+commit `vX.Y.Z` and starts [`release.yml`](.github/workflows/release.yml).
+That builds the five targets above, checks each native binary reports the
+tagged version, and publishes a GitHub Release with
+`ganymede-X.Y.Z-<target>.tar.gz` (`.zip` on Windows), a `.sha256` per
+archive, `SHA256SUMS`, and that version's changelog section as notes.
+Versions with a `-` suffix are marked prerelease. Pushing a `v*` tag by hand
+also starts `release.yml`.
 
 ## License
 

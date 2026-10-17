@@ -134,6 +134,10 @@ fn start_jupyter(jupyter: &std::path::Path) -> Server {
             &format!("--ServerApp.port={port}"),
             "--ServerApp.port_retries=0",
             &format!("--IdentityProvider.token={TOKEN}"),
+            // Delete for good, as ganymede does. On a fresh home, two
+            // servers trashing at once race to create ~/.local/share/Trash
+            // (send2trash checks, then makedirs) and one answers 400.
+            "--FileContentsManager.delete_to_trash=False",
         ])
         .arg(format!("--ServerApp.root_dir={}", root.path().display()))
         .arg(format!(
