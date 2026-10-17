@@ -45,10 +45,9 @@
       <pre data-panel="cargo"><code><span class="c"># Rust toolchain</span>
 cargo install --git https://github.com/tlockney/ganymede ganymede-cli
 ganymede kernelspec list</code></pre>
-      <pre data-panel="release" hidden><code><span class="c"># Linux, macOS, Windows binaries</span>
-<span class="c"># github.com/tlockney/ganymede/releases</span>
-tar xzf ganymede-&lt;version&gt;-&lt;target&gt;.tar.gz
-ganymede-&lt;version&gt;-&lt;target&gt;/ganymede --version</code></pre>
+      <pre data-panel="release" hidden><code><span class="c"># Linux, macOS: latest release, plus cdp-kernel if Node 24+ is installed</span>
+curl -fsSL https://tlockney.github.io/ganymede/install.sh | sh
+ganymede kernelspec list</code></pre>
     </div>
     <div class="cta">
       <a class="btn primary" href="docs/getting-started">Get started</a>
