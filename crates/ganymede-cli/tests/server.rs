@@ -134,6 +134,10 @@ fn start_jupyter(jupyter: &std::path::Path) -> Server {
             &format!("--ServerApp.port={port}"),
             "--ServerApp.port_retries=0",
             &format!("--IdentityProvider.token={TOKEN}"),
+            // Ganymede deletes outright. Trashing goes through the user's
+            // shared trash, where the concurrent scenarios' same-named
+            // files collide and send2trash fails with a 400.
+            "--FileContentsManager.delete_to_trash=False",
         ])
         .arg(format!("--ServerApp.root_dir={}", root.path().display()))
         .arg(format!(
