@@ -1,7 +1,8 @@
 # Getting started
 
 This page assumes `ganymede` is [installed](install.md) along with at
-least one kernel. The examples use `cdp-node` from cdp-kernel; substitute
+least one kernel; [Install on a workstation](workstation.md) sets up both,
+and JupyterLab, step by step. The examples use `cdp-node` from cdp-kernel; substitute
 any name `ganymede kernelspec list` shows. With no kernel installed,
 `-k fake` uses a built-in in-process kernel for trying things out.
 

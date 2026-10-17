@@ -33,6 +33,7 @@ export function groups(): Group[] {
       level: "intro",
       items: [
         { text: "Overview", link: "/" },
+        { text: "Install on a workstation", link: "/workstation" },
         { text: "Install", link: "/install" },
         { text: "Getting started", link: "/getting-started" },
       ],

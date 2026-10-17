@@ -4,6 +4,10 @@ Ganymede is one binary, `ganymede`. It needs no Python, and no Jupyter
 install: kernels come from kernelspecs, which each kernel's own installer
 writes.
 
+For a first install, [Install on a workstation](workstation.md) has the
+whole path from a clean Linux or macOS machine to JupyterLab, as numbered
+steps. This page is the reference for each piece.
+
 ## From source
 
 With a Rust toolchain ([rustup](https://rustup.rs)):

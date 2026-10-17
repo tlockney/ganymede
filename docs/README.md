@@ -12,6 +12,9 @@ more installed kernelspec, not something the server needs.
 
 ## Where to start
 
+- [Install on a workstation](workstation.md): numbered steps from a clean
+  Linux or macOS machine to JupyterLab running TypeScript notebooks, with
+  no Python or Jupyter.
 - [Install](install.md): the `ganymede` binary from source or a release.
 - [Getting started](getting-started.md): run code, execute notebooks, and
   serve the API.
