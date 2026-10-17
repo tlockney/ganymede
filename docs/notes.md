@@ -1,11 +1,22 @@
-# Notes
+# Development log
+
+Findings from each step, newest last: what was built, what was checked
+against the reference implementations, what broke, and what was learned.
+Each change appends an entry here.
+
+The design started as a single `sketch.md`, split on 2026-10-17 into
+[Architecture](architecture.md), [Replacing Python](python-free.md),
+[Protocol and kernel host](protocol.md), [User interfaces](ui.md),
+[The iPad use case](ipados.md), [Roadmap](roadmap.md), and
+[Prior art](prior-art.md). Older entries refer to the sketch by section
+number, and entries before the rename use the old `jcore-` crate names.
 
 ## 2026-10-17
 
 Starting point: question of what a Rust reimplementation of the Jupyter
 core (kernel host, web UI, protocol) would take and what is easy to miss.
 
-Wrote [`sketch.md`](sketch.md): components, what already exists in Rust,
+Wrote `sketch.md`: components, what already exists in Rust,
 commonly missed pieces, and an order of work.
 
 Findings while writing it:
@@ -272,7 +283,7 @@ flow at the server, with ipykernel 7 as the kernel (cdp-kernel needs
 Node 24; this container has 22). For JupyterLab, a real `jupyter lab`
 (jupyter_server 2.21.1) was the oracle: the same browser script ran
 against both and the request sets were diffed. Scripts are in
-[`validation/`](validation/).
+[`validation/`](../validation/).
 
 No real VS Code instance can run in this container. Instead,
 `validation/vscode.cjs` replays the extension's flow from its source
@@ -507,3 +518,31 @@ Portability:
   `Closes/Fixes/Resolves/Refs #N`. Issue templates: bug, task.
 - Install check: `ganymede run -k fake hello` and `ganymede serve` +
   `/api/status` need no kernel, so they are the README's smoke test.
+
+## 2026-10-17, project site and docs
+
+A landing page in `site/` and VitePress docs in `docs/`, both in
+cdp-kernel.org's design, built by `.github/workflows/pages.yml` on pull
+requests (so a dead link fails the PR) and deployed to GitHub Pages from
+`main`. `sketch.md` was split into docs pages and this log moved from
+`notes.md` to `docs/notes.md`; the README was rewritten around what exists.
+
+- The site is served at `https://tlockney.github.io/ganymede/` until there
+  is a custom domain, so paths are not at the root. `SITE_URL` in
+  pages.yml sets it, and `config.mts` derives the docs' base (`/ganymede/docs/`)
+  from it. The landing page uses only relative links, so it works under any
+  prefix.
+- The repository has no root `package.json`; the docs carry their own
+  (`docs/package.json`, VitePress only). VitePress skips `node_modules`
+  inside its source directory, so it can live in `docs/`.
+- VitePress fails the build on links to `.md` files it doesn't publish.
+  Links from docs to repository files (`../README.md`, `../validation/`)
+  are rewritten to GitHub URLs in `config.mts`, as cdp-kernel does.
+- The copied stylesheet's two-column grid used `1fr` columns, whose
+  minimum is the content's width, so a long code line widened the page on
+  phones. `minmax(0, 1fr)` fixes it; cdp-kernel.org has the same issue.
+- The architecture diagrams are hand-written SVG in the same style as
+  cdp-kernel's, with a `prefers-color-scheme` block for dark mode. Inside
+  an `<img>` they follow the system setting, not the docs' theme switch.
+- GitHub Pages must be enabled with "GitHub Actions" as the source before
+  the first deploy.

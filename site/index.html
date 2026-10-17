@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ganymede: a Jupyter server with no Python</title>
+<meta name="description" content="A Jupyter server in Rust with no Python in the product. It runs any installed kernel and serves the jupyter_server API to JupyterLab and VS Code.">
+<link rel="stylesheet" href="style.css">
+<script>
+  // Use the light/dark choice made with the docs' switch, if there is one.
+  try {
+    const mode = localStorage.getItem("vitepress-theme-appearance");
+    if (mode === "light" || mode === "dark") document.documentElement.dataset.theme = mode;
+  } catch {}
+</script>
+</head>
+<body>
+<header class="top">
+  <div class="wrap nav">
+    <a class="brand" href="./">ganymede</a>
+    <nav>
+      <a href="#start">Start</a>
+      <a href="#features">Features</a>
+      <a href="#clients">Clients</a>
+      <a href="docs/">Docs</a>
+      <a href="https://github.com/tlockney/ganymede">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Jupyter server · Rust · no Python</p>
+    <h1>The Jupyter server, without the Python.</h1>
+    <p class="lede">Ganymede runs your kernels and serves the same API as
+      <code>jupyter_server</code>, so JupyterLab and VS Code connect to it unchanged. It is
+      one Rust binary, or a library to embed, and it needs no Python environment to run a
+      TypeScript notebook, or any other.</p>
+    <div class="install">
+      <div class="tabs" role="tablist">
+        <button role="tab" aria-selected="true" data-tab="cargo">cargo</button>
+        <button role="tab" aria-selected="false" data-tab="release">Release</button>
+      </div>
+      <pre data-panel="cargo"><code><span class="c"># Rust toolchain</span>
+cargo install --git https://github.com/tlockney/ganymede ganymede-cli
+ganymede kernelspec list</code></pre>
+      <pre data-panel="release" hidden><code><span class="c"># Linux, macOS, Windows binaries</span>
+<span class="c"># github.com/tlockney/ganymede/releases</span>
+tar xzf ganymede-&lt;version&gt;-&lt;target&gt;.tar.gz
+ganymede-&lt;version&gt;-&lt;target&gt;/ganymede --version</code></pre>
+    </div>
+    <div class="cta">
+      <a class="btn primary" href="docs/getting-started">Get started</a>
+      <a class="btn" href="https://github.com/tlockney/ganymede">View on GitHub</a>
+    </div>
+  </div>
+</section>
+
+<section class="example">
+  <div class="wrap two">
+    <div>
+      <h2>Serve, then connect</h2>
+      <p><code>ganymede serve</code> prints a URL with its token. Paste it into VS Code's
+        <em>Existing Jupyter Server</em>, or open JupyterLab's own bundle from it, and pick any
+        kernel you have installed: <code>cdp-node</code> for TypeScript, <code>python3</code>
+        if ipykernel is there.</p>
+      <p>No server at all for scripts and CI: <code>ganymede run</code> sends code to a
+        kernel and prints the output, and <code>ganymede execute</code> writes the same
+        notebook <code>jupyter execute</code> would.</p>
+    </div>
+    <figure class="nb">
+      <div class="nb-code"><span class="nb-lang">sh</span>
+      <pre><code><span class="k">$</span> ganymede serve --root-dir ~/notebooks
+http://127.0.0.1:8888/?token=<span class="s">4f9c…</span>
+
+<span class="k">$</span> ganymede run -k cdp-node <span class="s">'const x = 2; x * 21'</span>
+42
+
+<span class="k">$</span> ganymede execute report.ipynb --inplace</code></pre></div>
+      <figcaption>One binary covers <code>jupyter server</code>, <code>jupyter execute</code>,
+        <code>jupyter kernel</code>, and <code>jupyter kernelspec</code>.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="start" class="alt">
+  <div class="wrap">
+    <h2>Where to start</h2>
+    <p class="sub">The docs are grouped by how much you already know.</p>
+    <div class="grid paths">
+      <a class="path" href="docs/getting-started">
+        <span class="lvl intro">Introductory</span>
+        <h3>Getting started</h3>
+        <p>Install, find your kernels, run code, execute notebooks, and serve the API.</p>
+      </a>
+      <a class="path" href="docs/frontends">
+        <span class="lvl guide">Guide</span>
+        <h3>JupyterLab and VS Code</h3>
+        <p>Point an existing Jupyter frontend at Ganymede, and what works so far.</p>
+      </a>
+      <a class="path" href="docs/architecture">
+        <span class="lvl adv">Advanced</span>
+        <h3>Architecture</h3>
+        <p>The Jupyter stack, where Ganymede sits in it, and how its crates fit together.</p>
+      </a>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <h2>Features</h2>
+    <div class="grid">
+      <article>
+        <h3>No Python in the product</h3>
+        <p>The server, kernel host, notebook format, and executor are Rust. Python appears
+          only as a kernel someone installed.</p>
+      </article>
+      <article>
+        <h3>Any kernel</h3>
+        <p>Kernels come from the standard kernelspecs in the Jupyter data directories. The
+          host knows no language; the same tests run on cdp-kernel and ipykernel.</p>
+      </article>
+      <article>
+        <h3>Existing frontends</h3>
+        <p>The <code>jupyter_server</code> REST and websocket API, both websocket framings,
+          and JupyterLab's <code>/lab/api/*</code> endpoints.</p>
+      </article>
+      <article>
+        <h3>Parity with <code>jupyter execute</code></h3>
+        <p>Notebooks come out as nbclient writes them, and saves are byte-identical to
+          Python's <code>nbformat</code>, so git sees no churn.</p>
+      </article>
+      <article>
+        <h3>Embeddable</h3>
+        <p><code>ganymede-engine</code> is a library: start kernels, execute with streaming
+          output, run notebooks. It builds for iOS, Android, and wasm.</p>
+      </article>
+      <article>
+        <h3>Files as the source of truth</h3>
+        <p>Atomic writes, modification-time conflict checks, and checkpoints outside the
+          notebook folder, so synced folders such as iCloud Drive stay intact.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section id="clients">
+  <div class="wrap">
+    <h2>Where it fits</h2>
+    <p class="sub">Ganymede takes <code>jupyter_server</code>'s place and keeps both of its
+      interfaces: the API above it and the kernels below.</p>
+    <img class="diagram" src="images/architecture/ganymede.svg" width="860" height="456"
+      alt="Frontends (JupyterLab, Notebook 7, VS Code, and UIs of Ganymede's own) call the same REST and websocket API on the Rust core, which launches the same kernelspecs (cdp-kernel, ipykernel, any other) over ZeroMQ.">
+    <table class="rt">
+      <thead><tr><th>Client</th><th>How it connects</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>VS Code</td><td>The Jupyter extension's <em>Existing Jupyter Server</em>, with the URL and token.</td><td>Works</td></tr>
+        <tr><td>@jupyterlab/services</td><td>JupyterLab's client library: kernels, sessions, contents, interrupt, restart.</td><td>Works</td></tr>
+        <tr><td>JupyterLab</td><td>Its static bundle served by Ganymede at <code>/lab</code>.</td><td>Needs cookie login</td></tr>
+        <tr><td>Own UI</td><td>A Swift shell with a web view on iPadOS and macOS, the core in-process.</td><td>Planned</td></tr>
+      </tbody>
+    </table>
+    <p class="more"><a href="docs/frontends">Connecting a frontend</a> ·
+      <a href="docs/roadmap">Roadmap</a></p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap two">
+    <div>
+      <h2>Why</h2>
+      <p>Nothing in the Jupyter protocols requires Python, but the server does: running a
+        TypeScript notebook means installing a Python environment first. That rules out
+        places Python can't easily go, such as an iPad app. Ganymede keeps the protocols and
+        the ecosystem and drops the dependency.</p>
+      <p><a href="docs/architecture">Architecture</a> ·
+        <a href="docs/python-free">Replacing Python</a></p>
+    </div>
+    <div class="note">
+      <h3>Status</h3>
+      <p>Early software. An end-to-end suite compares it against <code>jupyter execute</code>
+        and <code>jupyter server</code> on cdp-kernel and ipykernel, on Linux and macOS.
+        Windows builds but is not tested end to end.</p>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>MIT license. TypeScript notebooks run on
+      <a href="https://cdp-kernel.org">cdp-kernel</a>.
+      <a href="docs/">Docs</a> ·
+      <a href="https://github.com/tlockney/ganymede/releases">Releases</a> ·
+      <a href="https://github.com/tlockney/ganymede">GitHub</a></p>
+  </div>
+</footer>
+
+<script>
+  for (const btn of document.querySelectorAll("[data-tab]")) {
+    btn.addEventListener("click", () => {
+      for (const b of document.querySelectorAll("[data-tab]")) b.setAttribute("aria-selected", String(b === btn));
+      for (const p of document.querySelectorAll("[data-panel]")) p.hidden = p.dataset.panel !== btn.dataset.tab;
+    });
+  }
+</script>
+</body>
+</html>

@@ -1,9 +1,9 @@
 # ganymede-contents
 
-The contents seam of Ganymede (sketch 7.2): the `/api/contents`
+The contents seam of Ganymede ([seams](../../docs/architecture.md#seams)): the `/api/contents`
 model as `jupyter_server` defines it, a `Contents` trait, and `FsContents`,
 a local-filesystem implementation. No Python, no caching; the files on disk
-are the source of truth (sketch 6).
+are the source of truth ([the iPad use case](../../docs/ipados.md)).
 
 ## What it does
 

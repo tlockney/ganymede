@@ -2,7 +2,7 @@
 
 Scripts that drive real Jupyter clients against a running server. They
 need a kernel and a browser, so they are not part of CI. Results and what
-broke are recorded in [`../notes.md`](../notes.md).
+broke are recorded in [`../docs/notes.md`](../docs/notes.md).
 
 ```
 npm install

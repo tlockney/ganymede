@@ -1,7 +1,7 @@
 /**
  * Ganymede frontend: public surface.
  *
- * Layout mirrors the Rust crates (sketch.md 7.3):
+ * Layout mirrors the Rust crates (docs/architecture.md, Deployment profiles):
  *   protocol/    message types and websocket codecs (no I/O)
  *   connection/  ServerConnection shim, REST client, KernelConnection
  *   renderers/   MIME renderer registry, ANSI, stream buffering, basic renderers
