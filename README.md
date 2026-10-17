@@ -75,6 +75,13 @@ ganymede serve --static-dir <prefix>/share/jupyter/lab/static   # JupyterLab at 
 cd frontend && npm install && npm test
 ```
 
+Releases: pushing a tag `vX.Y.Z` that matches the workspace version in
+`Cargo.toml` runs [`release.yml`](.github/workflows/release.yml), which
+builds `ganymede` for Linux (x86_64, aarch64), macOS (aarch64, x86_64), and
+Windows (x86_64) and attaches `ganymede-X.Y.Z-<target>.tar.gz` (`.zip` on
+Windows), a `.sha256` per archive, and `SHA256SUMS` to a GitHub Release.
+Tags with a `-` suffix are marked prerelease.
+
 Embedding:
 
 ```rust

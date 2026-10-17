@@ -1,0 +1,125 @@
+name: Release
+
+# Pushing a `v*` tag builds the `ganymede` binary for each target, packages
+# it with SHA-256 checksums, and publishes a GitHub Release. Pull requests
+# that touch this file, and manual runs, build and package without
+# publishing.
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths: [.github/workflows/release.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Read the workspace version; a tag must match it
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          test -n "$version"
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match workspace version $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest, cross: true }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    env:
+      NAME: ganymede-${{ needs.version.outputs.version }}-${{ matrix.target }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked -p ganymede-cli --target ${{ matrix.target }}
+      - name: Check the binary reports the release version
+        if: ${{ !matrix.cross }}
+        run: |
+          out=$(target/${{ matrix.target }}/release/ganymede --version)
+          echo "$out"
+          [[ "$out" == "ganymede ${{ needs.version.outputs.version }}" ]]
+      - name: Package
+        run: |
+          exe=ganymede
+          [[ "${{ matrix.target }}" == *windows* ]] && exe=ganymede.exe
+          mkdir -p "dist/$NAME"
+          cp "target/${{ matrix.target }}/release/$exe" README.md "dist/$NAME/"
+          cd dist
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            archive="$NAME.zip"
+            7z a -tzip "$archive" "$NAME" > /dev/null
+          else
+            archive="$NAME.tar.gz"
+            tar -czf "$archive" "$NAME"
+          fi
+          if command -v sha256sum > /dev/null; then
+            sha256sum "$archive" > "$archive.sha256"
+          else
+            shasum -a 256 "$archive" > "$archive.sha256"
+          fi
+          cat "$archive.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.NAME }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Combine checksums
+        working-directory: dist
+        run: |
+          cat *.sha256 > SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          flags=()
+          [[ "$TAG" == *-* ]] && flags+=(--prerelease)
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --generate-notes \
+            --verify-tag \
+            "${flags[@]}"
