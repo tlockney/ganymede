@@ -4,10 +4,10 @@
 //! `jupyter_server`'s `/api/contents` field for field, so an HTTP layer can
 //! serialize it straight to JupyterLab, VS Code or any other client of that
 //! API. [`Contents`] is the trait those clients are served from;
-//! [`FsContents`] is the local-filesystem implementation (sketch section 7.2:
-//! "local filesystem with atomic writes and mtime checks").
+//! [`FsContents`] is the local-filesystem implementation (the seams in
+//! docs/architecture.md: "local filesystem with atomic writes and mtime checks").
 //!
-//! Design points, all from the iPad use case in sketch section 6, where the
+//! Design points, all from the iPad use case in docs/ipados.md, where the
 //! notebook root lives in iCloud Drive and other writers touch the same files:
 //!
 //! - Files are the source of truth. Nothing is cached; every call reads the
