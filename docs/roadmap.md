@@ -14,7 +14,8 @@ pull request with a GitHub issue, and records what it learned in the
   `jupyter execute` and `jupyter server`.
 - **Existing frontends.** The VS Code Jupyter extension's remote-server
   flow passes. JupyterLab's own bundle is served at `/lab` with its
-  `/lab/api/*` endpoints.
+  `/lab/api/*` endpoints and runs notebooks in a browser, with cookie
+  login as `jupyter_server` does it.
 - **Portability.** The engine builds for iOS, Android, and wasm, and runs
   a notebook inside wasm under WASI.
 - **Releases.** A `vX.Y.Z` tag builds and publishes binaries for Linux,
@@ -22,21 +23,19 @@ pull request with a GitHub issue, and records what it learned in the
 
 ## Next
 
-1. **Cookie login** for browser frontends, so JupyterLab's websockets
-   authenticate.
-2. **cdp-kernel conformance** on Node 24: launch, execute, interrupt,
+1. **cdp-kernel conformance** on Node 24: launch, execute, interrupt,
    restart, comms, and stdin, the same scenarios as ipykernel, with
    kernelspec metadata and `kernel_info_reply` extras passed through
    untouched.
-3. **Kernel lifetime** for the iPad: kernels survive client disconnects,
+2. **Kernel lifetime** for the iPad: kernels survive client disconnects,
    clients reattach by kernel id, and idle culling is configurable.
-4. **Document model.** The file is the source of truth and is reloaded
+3. **Document model.** The file is the source of truth and is reloaded
    when it changes on disk (iCloud). A `yrs` CRDT layer is optional and
    later.
-5. **A first UI of our own**, outside the core: a Swift shell with a web
+4. **A first UI of our own**, outside the core: a Swift shell with a web
    view for iPadOS and macOS, running a TypeScript notebook app, with the
    Rust core embedded in the same process.
-6. **CurveZMQ** for the ZeroMQ transport. ipykernel 7 already advertises
+5. **CurveZMQ** for the ZeroMQ transport. ipykernel 7 already advertises
    it.
 
 ## Open

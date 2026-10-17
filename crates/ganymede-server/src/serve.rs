@@ -157,24 +157,23 @@ pub async fn run(cfg: Config) -> Result<()> {
             ..Default::default()
         },
     )?);
+    let cookie_secret_file = cfg.cookie_secret_file.clone().unwrap_or_else(|| {
+        ganymede_kernel_host::kernelspec::jupyter_runtime_dir().join("jupyter_cookie_secret")
+    });
     let state = AppState {
         kernels: kernels.clone(),
         sessions,
         contents,
         token: token.clone(),
+        cookie_secret: crate::auth::load_cookie_secret(&cookie_secret_file).into(),
         allow_origins: cfg.allow_origins.clone(),
         base_url: base_url.clone(),
         config_dir,
+        static_dir: if lab.is_some() { None } else { static_dir },
         lab: lab.map(Arc::new),
     };
 
-    let serves_lab = state.lab.is_some();
     let mut app = crate::build_router(state);
-    if let (Some(dir), false) = (&static_dir, serves_lab) {
-        app = app.fallback_service(
-            tower_http::services::ServeDir::new(dir).append_index_html_on_directories(true),
-        );
-    }
     if !base.is_empty() {
         app = axum::Router::new().nest(&base, app);
     }
