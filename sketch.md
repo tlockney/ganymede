@@ -4,11 +4,14 @@ Scope as stated: a kernel host, a presentation layer (web UI), and the essential
 protocol. This note breaks that into components, estimates each, lists the parts
 that are usually missed, and proposes an order of work.
 
-Working assumption: the point of reimplementing the *host* rather than the
-*kernel* is to keep using existing kernels (ipykernel, IRkernel, evcxr, xeus,
-Ark, Deno). That decision fixes several things below: ZeroMQ is mandatory,
-the wire format is fixed, and kernelspec discovery has to match
-`jupyter_client` conventions.
+Revised goal (2026-10-17): a Jupyter server with no Python anywhere in
+the product. The first target kernel is [cdp-kernel](https://cdp-kernel.org),
+a TypeScript/JavaScript kernel on Node or Deno that speaks ZMTP over TCP.
+That fixes several things below: ZeroMQ is mandatory, the wire format is
+fixed, kernelspec discovery has to match the Jupyter data-dir conventions
+cdp-kernel installs into, and every place `jupyter_server` assumes Python
+or ipykernel must be replaced rather than ported. ipykernel stays useful as
+a conformance oracle during development; it is not a dependency.
 
 ## 1. What Jupyter actually is
 
@@ -196,7 +199,58 @@ Technology choice:
 
 Recommendation: option 1, with option 4 as a packaging target.
 
-## 3. What is usually missed
+## 3. Where Python leaks into the Jupyter stack, and what replaces it
+
+The messaging protocol, the websocket framing, the REST API, and nbformat
+are language-neutral. Python shows up around them. Each item below is a
+place the reference stack assumes Python; the right column is what a
+Python-free server does instead.
+
+| Python assumption in the reference stack | Replacement |
+|---|---|
+| `jupyter --paths`, `sys.prefix/share/jupyter` as a kernelspec search root | Search only the platform dirs: `$JUPYTER_PATH`, `$JUPYTER_DATA_DIR/kernels`, `~/Library/Jupyter/kernels` (macOS), `${XDG_DATA_HOME:-~/.local/share}/jupyter/kernels` (Linux), `/usr/local/share/jupyter/kernels`, `/usr/share/jupyter/kernels`. cdp-kernel writes to exactly these. |
+| `jupyter kernelspec list/install/remove` is a Python CLI | Ship the same subcommands in the server binary. cdp-kernel's uninstall docs currently point at the Python CLI; this closes that gap. |
+| Default kernel name is `python3` (`MappingKernelManager.default_kernel_name`, nbformat defaults, sessions API fallback) | No default. A session request without a kernel name is an error, or the default is a config value with no built-in value. |
+| Kernel provisioners are Python classes loaded by entry point | A Rust trait with a local-subprocess implementation. A remote implementation is the natural second one, which matches the ts-on-ipados plan of kernels on the homelab. |
+| Windows interrupt via a named event in an env var set by `jupyter_client` for ipykernel | Support `interrupt_mode: signal` and `interrupt_mode: message` only. cdp-kernel interrupts over CDP internally; check its generated `kernel.json` for which mode it declares. Windows is out of scope until cdp-kernel supports it. |
+| `ipc` transport for connection files | cdp-kernel uses `node:net` TCP only. Default to `tcp`; keep `ipc` as an option for kernels that support it. |
+| Widgets mean ipywidgets: Python model classes plus `@jupyter-widgets/controls` | Widgets mean the comm protocol plus the `jupyter.widget` state-sync protocol plus anywidget's `_esm`/`_css` loading. cdp-kernel is anywidget-only. The frontend needs a widget manager that implements that subset without the ipywidgets controls library. This is much smaller than full ipywidgets support. |
+| Trust signatures in `nbsignatures.db` via Python's sqlite and a secret file | Own trust store: HMAC over the notebook with a per-user key, stored in the server's data dir. Same model, no shared file format needed. |
+| nbconvert endpoints (`/nbconvert/*`) and export menus | Drop. Export is a separate tool if wanted. |
+| Server extensions via Python entry points, traitlets config, `jupyter_server_config.py` | Drop. One config file (TOML) for the server. No extension system in v1. |
+| JupyterHub single-user contract | Drop for v1. It is an auth handshake plus env vars and can be added later without touching the core. |
+| Terminals via `terminado` | `portable-pty`. |
+| Language-specific UI behaviour: `%matplotlib`, `pip` magics, Python tracebacks | None. The only source of language information is `kernel_info_reply.language_info`; the editor mode comes from `codemirror_mode`, which cdp-kernel reports as TypeScript. Traceback rendering is ANSI text, not a Python format. |
+| Optional protocol messages treated as required (`history`, `is_complete`, `inspect`) | Treat every message beyond `kernel_info`, `execute`, `shutdown`, `interrupt`, and `status` as optional. Read `supported_features` when present. Time out and degrade rather than hang. |
+
+What cdp-kernel needs from the server, from its docs:
+
+- A connection file and the five TCP ports, HMAC-SHA256 signing, and
+  the usual startup nudge.
+- The server's environment passed through to the kernel process, plus the
+  kernelspec `env` block. cdp-kernel documents that the kernel inherits the
+  server's environment.
+- Control-channel passthrough for `debug_request` on Node and Deno
+  targets. The UI needs a DAP client to use it; JupyterLab's debugger
+  extension is the reference.
+- stdin channel for `prompt()` and `confirm()`.
+- Comm routing with binary buffers for anywidget state.
+
+Frontends that work against a Python-free server today, before any UI is
+written:
+
+- VS Code's Jupyter extension connects to a remote server over the REST
+  API and websocket. With cdp-kernel this is a fully Python-free setup.
+- JupyterLab's built frontend is static JS. Serving it needs the
+  `/lab/api/*` endpoints (settings, workspaces, translations, listings)
+  and a page config. Jupyverse, a Python ASGI reimplementation of
+  `jupyter_server`, documents this endpoint set and is the closest prior
+  art for a from-scratch server.
+
+The validation path is therefore: server plus cdp-kernel plus VS Code.
+The UI is a later, separate decision.
+
+## 4. What is usually missed
 
 - **Widgets.** Comms are cheap: route `comm_*` messages and buffers. Widgets
   are not: they need a browser-side widget manager, model state sync, and
@@ -234,27 +288,31 @@ Recommendation: option 1, with option 4 as a packaging target.
 - **nbformat round-trip fidelity** (indentation, key order) so saves do
   not churn git history.
 
-## 4. Suggested order of work
+## 5. Suggested order of work
 
-1. Protocol crate plus connection files. Launch ipykernel from a CLI, run
-   `1+1`, print the result. Conformance-test against ipykernel, evcxr, and
-   Deno.
+1. Protocol crate plus connection files. Launch cdp-kernel from a CLI,
+   run one cell, print the result. Conformance-test against cdp-kernel's
+   own suite where possible, and against ipykernel and evcxr as oracles.
 2. nbformat crate (or adopt `nbformat`) with round-trip tests against
    real notebooks.
 3. Headless executor: `run notebook.ipynb --out`. This is nbclient and
    gives a usable tool at milestone 3.
-4. Server: kernels, sessions, contents, kernelspecs, websocket v1 bridge,
-   token auth. Validate by pointing JupyterLab or VS Code at it.
+4. Server: kernelspecs (with `list/install/remove` subcommands), kernels,
+   sessions, contents, websocket v1 bridge, token auth. Validate by
+   pointing VS Code at it with cdp-kernel. Then serve JupyterLab's static
+   bundle as a second validation.
 5. Minimal TS frontend: cells, CodeMirror, output renderers for text,
    HTML, images, markdown, errors, streams.
 6. CRDT document model with `yrs` and collaborative sessions.
-7. Comms, then widgets via an embedded widget manager.
-8. Debugger, subshells, terminals, LSP, as desired.
+7. Comms, then an anywidget-only widget manager.
+8. Debugger (DAP client in the UI), subshells, terminals, LSP, as desired.
 
 Steps 1 to 4 are well-specified Rust work, roughly 15k to 25k lines for
-a solid implementation. Step 5 onward is where effort becomes open-ended.
+a solid implementation. Step 4 alone is a usable product with VS Code or
+JupyterLab as the frontend. Step 5 onward is where effort becomes
+open-ended.
 
-## 5. Prior art to read first
+## 6. Prior art to read first
 
 - `jupyter_client` messaging spec (v5.5) and JEP 91 (subshells), JEP 92
   (optional features / `supported_features`).
@@ -267,3 +325,14 @@ a solid implementation. Step 5 onward is where effort becomes open-ended.
 - `evcxr_jupyter`: Rust kernel, useful as a test target.
 - `nbclient` for execution semantics, `jupyter_ydoc` for the CRDT shape.
 - xeus (C++) for a non-Python view of the kernel protocol.
+- cdp-kernel docs: architecture, runtimes, known gaps, and the widgets
+  and comms guide. The generated `kernel.json` is the first thing to read.
+- Jupyverse (David Brochart): a from-scratch `jupyter_server` replacement
+  in Python. Useful for the exact endpoint list JupyterLab's frontend
+  needs, including `/lab/api/*`.
+- VS Code Jupyter extension: the remote-server client, for what a
+  non-JupyterLab frontend actually calls.
+- anywidget: the widget protocol subset to support instead of ipywidgets.
+- Datalayer's `jupyter-react`: a React frontend that reuses
+  `@jupyterlab/rendermime` and `@jupyterlab/outputarea` without the rest
+  of JupyterLab. Relevant to UI option 1.
