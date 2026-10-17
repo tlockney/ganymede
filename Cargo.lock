@@ -753,7 +753,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-api"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -770,7 +770,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-cli"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -794,7 +794,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-contents"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -816,7 +816,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-engine"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "ganymede-exec",
@@ -833,7 +833,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-exec"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -848,7 +848,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-kernel-host"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -870,7 +870,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-nbformat"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -880,7 +880,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-protocol"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -895,7 +895,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-server"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
