@@ -352,7 +352,7 @@ async fn contents_rest_round_trip() {
     );
     assert_eq!(
         call(&app, "GET", "/api/contents/../etc", None, t).await.0,
-        StatusCode::FORBIDDEN
+        StatusCode::NOT_FOUND
     );
     assert_eq!(
         call(&app, "GET", "/api/contents/missing.txt", None, t)
@@ -1572,7 +1572,8 @@ async fn errors_name_api_paths_not_os_paths() {
         Some(TOKEN),
     )
     .await;
-    assert_eq!(s, StatusCode::FORBIDDEN);
+    // 404 like jupyter_server's "is outside root contents directory".
+    assert_eq!(s, StatusCode::NOT_FOUND);
     let message = body["message"].as_str().unwrap();
     assert!(message.contains("link/secret.txt"), "{message}");
     assert!(

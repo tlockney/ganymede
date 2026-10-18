@@ -33,7 +33,7 @@ pub(crate) struct ApiPath {
 impl ApiPath {
     /// Parse and validate client input.
     ///
-    /// Rejected with [`Error::Forbidden`]: backslashes anywhere, a leading
+    /// Rejected with [`Error::OutsideRoot`]: backslashes anywhere, a leading
     /// slash (absolute path), and any `..` component. Rejected with
     /// [`Error::BadRequest`]: NUL bytes. Empty and `.` components are dropped.
     pub fn parse(path: &str) -> Result<Self> {
@@ -41,12 +41,12 @@ impl ApiPath {
             return Err(Error::BadRequest("path contains a NUL byte".into()));
         }
         if path.contains('\\') {
-            return Err(Error::Forbidden(format!(
+            return Err(Error::OutsideRoot(format!(
                 "backslashes are not allowed in paths: {path:?}"
             )));
         }
         if path.starts_with('/') {
-            return Err(Error::Forbidden(format!(
+            return Err(Error::OutsideRoot(format!(
                 "absolute paths are not allowed: {path:?}"
             )));
         }
@@ -55,7 +55,7 @@ impl ApiPath {
             match component {
                 "" | "." => continue,
                 ".." => {
-                    return Err(Error::Forbidden(format!(
+                    return Err(Error::OutsideRoot(format!(
                         "path escapes the contents root: {path:?}"
                     )))
                 }
@@ -171,8 +171,8 @@ mod tests {
     fn parse_rejects_escapes() {
         for bad in ["../x", "a/../../x", "a/..", "/etc/passwd", "a\\b", "..\\x"] {
             assert!(
-                matches!(ApiPath::parse(bad), Err(Error::Forbidden(_))),
-                "{bad:?} should be forbidden"
+                matches!(ApiPath::parse(bad), Err(Error::OutsideRoot(_))),
+                "{bad:?} should be outside the root"
             );
         }
         assert!(matches!(ApiPath::parse("a\0b"), Err(Error::BadRequest(_))));
