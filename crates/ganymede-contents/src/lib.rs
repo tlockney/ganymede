@@ -32,7 +32,7 @@ use async_trait::async_trait;
 
 pub use fs::{FsContents, FsOptions, CHECKPOINT_ID, DEFAULT_CHECKPOINT_DIR};
 pub use model::{Checkpoint, ContentType, ContentsModel, Format, GetOptions, SaveRequest};
-pub use paths::normalize_api_path;
+pub use paths::{kernel_cwd, normalize_api_path};
 pub use trust::Notary;
 
 /// Errors from a [`Contents`] implementation. [`Error::status`] gives the
