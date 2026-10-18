@@ -198,13 +198,15 @@ lists the pull requests merged into each release, from the merge commits.
 Merging the release PR runs
 [`tag-release.yml`](.github/workflows/tag-release.yml), which tags the merge
 commit `vX.Y.Z` and starts [`release.yml`](.github/workflows/release.yml).
-That builds the five targets above, checks each native binary reports the
-tagged version, and publishes a GitHub Release with
+That builds the five targets above, checks each binary reports the
+tagged version (x86_64 macOS under Rosetta), and publishes a GitHub Release with
 `ganymede-X.Y.Z-<target>.tar.gz` (`.zip` on Windows; each holds the binary,
 `README.md`, `LICENSE`, and `THIRD-PARTY-NOTICES`), a `.sha256` per
-archive, `SHA256SUMS`, and that version's changelog section as notes.
+archive, `SHA256SUMS`, a build provenance attestation per archive, and
+that version's changelog section as notes.
 Versions with a `-` suffix are marked prerelease. Pushing a `v*` tag by hand
-also starts `release.yml`.
+also starts `release.yml`. When a release fails partway,
+[Releasing](docs/releasing.md) has the recovery steps.
 
 ## License
 

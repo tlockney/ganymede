@@ -2,15 +2,16 @@ name: Release
 
 # scripts/release.sh pushes a `v*` tag, which builds the `ganymede` binary
 # for each target, packages it with SHA-256 checksums, and publishes a
-# GitHub Release whose notes are the version's CHANGELOG.md section. Pull
-# requests that touch the release tooling, and manual runs, build and
-# package without publishing.
+# GitHub Release whose notes are the version's CHANGELOG.md section, with
+# a build provenance attestation per archive. Pull requests that touch the
+# release tooling, and manual runs, build and package without publishing.
+# docs/releasing.md says what to do when a run fails.
 
 on:
   push:
     tags: ["v*"]
   pull_request:
-    paths: [.github/workflows/release.yml, release.toml, cliff.toml, scripts/release.sh]
+    paths: [.github/workflows/release.yml, release.toml, cliff.toml, scripts/release.sh, Cargo.toml]
   workflow_dispatch:
 
 permissions:
@@ -85,6 +86,17 @@ jobs:
           out=$("target/$TARGET/release/ganymede" --version)
           echo "$out"
           [[ "$out" == "ganymede $VERSION" ]]
+      # x86_64 macOS is cross-built on the arm64 runner; run it under
+      # Rosetta so it is checked like the native ones.
+      - name: Check the x86_64 macOS binary under Rosetta
+        if: ${{ matrix.target == 'x86_64-apple-darwin' }}
+        run: |
+          if ! arch -x86_64 /usr/bin/true 2> /dev/null; then
+            softwareupdate --install-rosetta --agree-to-license
+          fi
+          out=$(arch -x86_64 "target/$TARGET/release/ganymede" --version)
+          echo "$out"
+          [[ "$out" == "ganymede $VERSION" ]]
       - name: Package
         run: |
           exe=ganymede
@@ -121,6 +133,10 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      # Build provenance: an OIDC token to sign with, and the right to
+      # store the attestation.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -134,6 +150,15 @@ jobs:
         run: |
           cat ./*.sha256 > SHA256SUMS
           sha256sum -c SHA256SUMS
+      # A signed SLSA provenance statement per archive: this repository,
+      # workflow, tag, and commit built it. The checksums only catch a
+      # damaged download; `gh attestation verify <archive> --repo
+      # tlockney/ganymede` checks this (docs/install.md).
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
       - name: Take the release notes from CHANGELOG.md
         env:
           VERSION: ${{ needs.version.outputs.version }}
