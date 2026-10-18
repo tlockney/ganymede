@@ -10,7 +10,10 @@ use crate::Result;
 use ganymede_kernel_host::protocol::ConnectionInfo;
 #[cfg(feature = "zmq")]
 use ganymede_kernel_host::{
-    attach, process::read_connection_file, zmq::ZmqTransport, LaunchOptions,
+    attach,
+    process::{find_connection_file, read_connection_file},
+    zmq::ZmqTransport,
+    LaunchOptions,
 };
 use ganymede_kernel_host::{
     FsKernelspecs, KernelSession, KernelTransport, Kernelspec, KernelspecSource, LaunchedKernel,
@@ -108,10 +111,17 @@ impl Engine {
 
     /// Use a running kernel by its connection file, as
     /// `jupyter console --existing` does. The engine does not own it:
-    /// shutting down asks it to exit, and restart is unsupported.
+    /// shutting down asks it to exit, and restart is unsupported. A bare
+    /// name that is not a file here is looked up in the Jupyter runtime
+    /// dir, and an empty path picks the newest kernel there (see
+    /// [`find_connection_file`]).
     #[cfg(feature = "zmq")]
     pub async fn attach(&self, connection_file: &Path) -> Result<Kernel> {
-        let info = read_connection_file(connection_file)?;
+        let path = find_connection_file(
+            connection_file,
+            &ganymede_kernel_host::kernelspec::jupyter_runtime_dir(),
+        )?;
+        let info = read_connection_file(&path)?;
         self.connect(info).await
     }
 

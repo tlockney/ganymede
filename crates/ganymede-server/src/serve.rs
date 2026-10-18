@@ -52,6 +52,20 @@ pub struct ServeArgs {
     pub default_kernel: Option<String>,
     #[arg(long)]
     pub cull_idle_secs: Option<u64>,
+    /// Prefix for a reverse proxy, e.g. `/jupyter`.
+    #[arg(long)]
+    pub base_url: Option<String>,
+    /// Keep checkpoints here instead of `.ipynb_checkpoints` in the root.
+    #[arg(long)]
+    pub checkpoint_dir: Option<PathBuf>,
+    /// Key file for signing login cookies; see `cookie_secret_file` in the
+    /// config file.
+    #[arg(long)]
+    pub cookie_secret_file: Option<PathBuf>,
+    /// An origin allowed to make requests besides the server's own.
+    /// Repeatable.
+    #[arg(long, value_name = "ORIGIN")]
+    pub allow_origin: Vec<String>,
     /// Accept requests whose `Host` is not a loopback address or a name in
     /// `local_hostnames`. On by default when --ip is not loopback.
     #[arg(long)]
@@ -65,7 +79,8 @@ impl ServeArgs {
         let mut cfg = match &cli.config {
             Some(p) => Config::from_toml(
                 &std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?,
-            )?,
+            )
+            .with_context(|| format!("config file {}", p.display()))?,
             None => Config::default(),
         };
         if let Some(v) = cli.ip {
@@ -98,6 +113,16 @@ impl ServeArgs {
         if let Some(v) = cli.config_dir {
             cfg.config_dir = Some(v);
         }
+        if let Some(v) = cli.base_url {
+            cfg.base_url = v;
+        }
+        if let Some(v) = cli.checkpoint_dir {
+            cfg.checkpoint_dir = Some(v);
+        }
+        if let Some(v) = cli.cookie_secret_file {
+            cfg.cookie_secret_file = Some(v);
+        }
+        cfg.allow_origins.extend(cli.allow_origin);
         if cli.allow_remote_access {
             cfg.allow_remote_access = Some(true);
         }
@@ -206,6 +231,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         KernelManagerConfig {
             default_kernel: cfg.default_kernel.clone(),
             startup_timeout: Duration::from_secs(cfg.startup_timeout_secs),
+            quiet: cfg.quiet,
             cull_idle: (cfg.cull_idle_secs > 0).then(|| Duration::from_secs(cfg.cull_idle_secs)),
             root_dir: root_dir.clone(),
             base_url: base_url.clone(),
@@ -338,5 +364,82 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ServeArgs;
+    use std::path::PathBuf;
+
+    fn config_file(text: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ganymede.toml");
+        std::fs::write(&path, text).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn no_file_and_no_flags_is_the_default() {
+        let cfg = ServeArgs::default().into_config().unwrap();
+        assert_eq!((cfg.ip.as_str(), cfg.port), ("127.0.0.1", 8888));
+        assert_eq!(cfg.token, None);
+    }
+
+    #[test]
+    fn flags_override_the_file_and_lists_extend_it() {
+        let (_dir, path) = config_file(
+            "port = 9000\ntoken = \"file\"\nbase_url = \"/a/\"\ncull_idle_secs = 30\n\
+             allow_origins = [\"https://a\"]\nkernelspec_roots = [\"/k1\"]\n",
+        );
+        let cfg = ServeArgs {
+            config: Some(path),
+            port: Some(0),
+            token: Some(String::new()),
+            base_url: Some("/b/".into()),
+            checkpoint_dir: Some("/cp".into()),
+            cookie_secret_file: Some("/secret".into()),
+            allow_origin: vec!["https://b".into()],
+            kernelspec_root: vec!["/k2".into()],
+            allow_remote_access: true,
+            ..Default::default()
+        }
+        .into_config()
+        .unwrap();
+        assert_eq!(cfg.port, 0);
+        assert_eq!(cfg.token.as_deref(), Some(""));
+        assert_eq!(cfg.base_url, "/b/");
+        assert_eq!(cfg.cull_idle_secs, 30);
+        assert_eq!(cfg.checkpoint_dir, Some("/cp".into()));
+        assert_eq!(cfg.cookie_secret_file, Some("/secret".into()));
+        assert_eq!(cfg.allow_origins, ["https://a", "https://b"]);
+        assert_eq!(
+            cfg.kernelspec_roots,
+            [PathBuf::from("/k1"), PathBuf::from("/k2")]
+        );
+        assert_eq!(cfg.allow_remote_access, Some(true));
+    }
+
+    #[test]
+    fn unknown_keys_in_the_file_fail() {
+        let (_dir, path) = config_file("port = 0\ntokn = \"x\"\n");
+        let err = ServeArgs {
+            config: Some(path),
+            ..Default::default()
+        }
+        .into_config()
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("tokn"), "{err:#}");
+    }
+
+    #[test]
+    fn a_missing_file_fails() {
+        let err = ServeArgs {
+            config: Some("/nonexistent/ganymede.toml".into()),
+            ..Default::default()
+        }
+        .into_config()
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("reading"), "{err:#}");
     }
 }

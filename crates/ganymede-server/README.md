@@ -16,9 +16,10 @@ default `JUPYTER_CONFIG_DIR` or `~/.jupyter`), `--notary-dir`
 (`notebook_secret` and `nbsignatures.db`; default the Jupyter data dir,
 shared with Jupyter), `--kernelspec-root`
 (repeatable; a data dir containing `kernels/`), `--default-kernel`,
-`--cull-idle-secs`.
-`config.rs` lists the TOML keys, including `checkpoint_dir` for synced
-roots, `base_url` for a reverse proxy, and `allow_origins` for websockets.
+`--cull-idle-secs`, `--checkpoint-dir` (for synced roots), `--base-url`
+(for a reverse proxy), `--allow-origin` (repeatable), and
+`--cookie-secret-file`. `config.rs` lists the TOML keys; an unknown key is
+an error.
 
 Routes: `/api` (public), `/api/status`, `/api/me`, `/api/config/{section}`,
 `/api/nbconvert`, `/api/events/subscribe`, `/login`, `/logout`, `/api/kernelspecs[/{name}]`,

@@ -758,6 +758,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "futures",
+ "ganymede-contents",
  "ganymede-kernel-host",
  "ganymede-protocol",
  "serde",
