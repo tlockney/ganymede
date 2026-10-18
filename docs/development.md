@@ -76,7 +76,11 @@ npm run build    # into docs/.vitepress/dist
 ```
 
 The `pages` workflow builds both on every pull request that touches them,
-so a broken page or dead link fails the PR, and deploys them to GitHub
-Pages from `main`. The design is cdp-kernel.org's; keep
+so a broken page or dead link fails the PR. It deploys them to GitHub
+Pages from the latest release tag, not from `main`, so the docs and
+`install.sh` describe the version users install: the release workflow
+starts the deploy once a release is published. To publish a docs fix
+between releases, run the `pages` workflow by hand with that commit as
+`ref`. The design is cdp-kernel.org's; keep
 `site/style.css` and `docs/.vitepress/theme/custom.css` in step with each
 other.
