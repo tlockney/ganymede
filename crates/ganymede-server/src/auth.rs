@@ -170,7 +170,27 @@ fn header_value(s: String) -> HeaderValue {
     HeaderValue::from_str(&s).expect("cookie is visible ASCII")
 }
 
-/// The login cookie: HttpOnly, SameSite=Lax, scoped to `base_url`.
+/// Whether the client reached the server over HTTPS. This server only
+/// speaks plain HTTP, so that means through a TLS-terminating proxy, which
+/// is believed only with `trust_xheaders` (tornado's `xheaders`).
+fn is_https(state: &AppState, headers: &HeaderMap) -> bool {
+    if !state.trust_xheaders {
+        return false;
+    }
+    let scheme = headers
+        .get("x-scheme")
+        .or_else(|| headers.get("x-forwarded-proto"))
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    // A chain of proxies appends; the last one is the nearest.
+    scheme
+        .rsplit(',')
+        .next()
+        .is_some_and(|s| s.trim().eq_ignore_ascii_case("https"))
+}
+
+/// The login cookie: HttpOnly, SameSite=Lax, scoped to `base_url`, and
+/// `Secure` when the request came over HTTPS, as in `jupyter_server`.
 /// `jupyter_server` sends no SameSite attribute; Lax keeps the cookie off
 /// cross-site subrequests, which the XSRF check otherwise has to catch.
 fn login_cookie(state: &AppState, headers: &HeaderMap) -> HeaderValue {
@@ -184,8 +204,13 @@ fn login_cookie(state: &AppState, headers: &HeaderMap) -> HeaderValue {
         "avatar_url": null,
     });
     let value = sign(&state.cookie_secret, &name, &user.to_string(), now());
+    let secure = if is_https(state, headers) {
+        "; Secure"
+    } else {
+        ""
+    };
     header_value(format!(
-        "{name}={value}; expires={}; HttpOnly; Path={}; SameSite=Lax",
+        "{name}={value}; expires={}; HttpOnly; Path={}; SameSite=Lax{secure}",
         expires(COOKIE_DAYS),
         state.base_url
     ))
@@ -297,10 +322,7 @@ fn check_xsrf(
     let sent = decode_xsrf(&sent)
         .ok_or_else(|| HttpError(403, "'_xsrf' argument has invalid format".into()))?;
     let expected = request_cookie(headers, "_xsrf").and_then(|c| decode_xsrf(&c));
-    let matches = expected.is_some_and(|e| {
-        e.len() == sent.len() && e.iter().zip(&sent).fold(0, |acc, (a, b)| acc | (a ^ b)) == 0
-    });
-    if matches {
+    if expected.is_some_and(|e| constant_time_eq(&e, &sent)) {
         Ok(())
     } else {
         Err(HttpError(
@@ -308,6 +330,17 @@ fn check_xsrf(
             "XSRF cookie does not match POST argument".into(),
         ))
     }
+}
+
+/// Compares secrets without stopping at the first difference, so response
+/// timing does not reveal how much of a guess was right.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Whether `sent` is the server's token.
+fn token_matches(expected: &str, sent: Option<&str>) -> bool {
+    sent.is_some_and(|s| constant_time_eq(s.as_bytes(), expected.as_bytes()))
 }
 
 // ----- identifying a request ------------------------------------------------------
@@ -323,6 +356,23 @@ fn query_param(query: Option<&str>, name: &str) -> Option<String> {
     form_urlencoded::parse(query?.as_bytes())
         .find(|(k, _)| k == name)
         .map(|(_, v)| v.into_owned())
+}
+
+/// `uri` with the value of any `token` query parameter replaced by
+/// `[secret]`, so request logs do not leak it (`jupyter_server`'s
+/// `_scrub_uri`).
+pub(crate) fn scrub_uri(uri: &axum::http::Uri) -> String {
+    let Some(query) = uri.query() else {
+        return uri.to_string();
+    };
+    let scrubbed: Vec<String> = query
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            Some(("token", _)) => "token=[secret]".to_string(),
+            _ => pair.to_string(),
+        })
+        .collect();
+    format!("{}?{}", uri.path(), scrubbed.join("&"))
 }
 
 /// `?token=`, else `Authorization: token <t>` (or `bearer`).
@@ -341,7 +391,7 @@ fn sent_token(headers: &HeaderMap, query: Option<&str>) -> Option<String> {
 /// when neither authenticates. Only meaningful when auth is on.
 pub fn identify(state: &AppState, headers: &HeaderMap, query: Option<&str>) -> Option<Via> {
     let expected = state.token.as_deref()?;
-    if sent_token(headers, query).as_deref() == Some(expected) {
+    if token_matches(expected, sent_token(headers, query).as_deref()) {
         return Some(Via::Token);
     }
     has_login_cookie(state, headers).then_some(Via::Cookie)
@@ -490,7 +540,7 @@ pub(crate) async fn strip_token(
     if api
         || !matches!(*req.method(), Method::GET | Method::HEAD)
         || req.headers().contains_key(header::UPGRADE)
-        || query_param(req.uri().query(), "token").as_deref() != Some(expected)
+        || !token_matches(expected, query_param(req.uri().query(), "token").as_deref())
     {
         return next.run(req).await;
     }
@@ -602,7 +652,7 @@ async fn login(
     if let Err(e) = check_xsrf(&state, &headers, None, form._xsrf.as_deref()) {
         return (StatusCode::from_u16(e.0).unwrap(), e.1).into_response();
     }
-    if form.password.as_deref() != Some(token) {
+    if !token_matches(token, form.password.as_deref()) {
         return render_login(
             &state,
             &headers,
@@ -684,6 +734,26 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_logs_hide_the_token() {
+        let scrub = |u: &str| scrub_uri(&u.parse().unwrap());
+        assert_eq!(
+            scrub("/api/kernels?token=abc&x=1"),
+            "/api/kernels?token=[secret]&x=1"
+        );
+        assert_eq!(scrub("/lab?a=b&token=abc"), "/lab?a=b&token=[secret]");
+        assert_eq!(scrub("/lab?tokens=abc"), "/lab?tokens=abc");
+        assert_eq!(scrub("/api/status"), "/api/status");
+    }
+
+    #[test]
+    fn token_compare() {
+        assert!(token_matches("abc", Some("abc")));
+        assert!(!token_matches("abc", Some("abd")));
+        assert!(!token_matches("abc", Some("ab")));
+        assert!(!token_matches("abc", None));
+    }
 
     #[test]
     fn signed_values_round_trip_and_reject_tampering() {

@@ -234,7 +234,13 @@ impl Inner {
     /// exists) and check it is under the root. A dangling symlink is
     /// rejected too: writing through it would create a file at its target.
     fn check_inside_root(&self, os: &Path) -> Result<()> {
-        let escape = || Error::Forbidden(format!("{} is outside the contents root", os.display()));
+        // Name the API path, not the OS path: clients should not learn
+        // where the root is on disk.
+        let escape = || {
+            let api = os.strip_prefix(&self.root).unwrap_or(Path::new(""));
+            let api = api.to_string_lossy().replace('\\', "/");
+            Error::Forbidden(format!("{api} is outside the contents root"))
+        };
         let mut p = os;
         loop {
             match fs::symlink_metadata(p) {
