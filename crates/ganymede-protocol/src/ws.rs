@@ -149,6 +149,9 @@ pub mod legacy {
             Ok(u32::from_be_bytes(b.try_into().unwrap()) as usize)
         };
         let nbufs = read_u32(0)?;
+        if nbufs == 0 {
+            return Err(Error::Malformed("legacy binary frame has no buffers"));
+        }
         let offsets: Vec<usize> = (0..nbufs)
             .map(|i| read_u32(4 * (i + 1)))
             .collect::<Result<_>>()?;
@@ -255,5 +258,60 @@ mod tests {
         assert_eq!(u32::from_be_bytes(b[..4].try_into().unwrap()), 3);
         let (ch, back) = legacy::decode_binary(&b).unwrap();
         assert_eq!((ch, back), (Channel::Shell, m));
+    }
+
+    #[test]
+    fn v1_rejects_malformed_frames() {
+        let good = v1::encode(Channel::Shell, &sample()).unwrap();
+        let le = |v: u64| v.to_le_bytes();
+        let mut few = good.clone();
+        few[..8].copy_from_slice(&le(5));
+        let mut huge = good.clone();
+        huge[..8].copy_from_slice(&le(u64::MAX));
+        // Offsets out of order: the channel ends before it starts.
+        let mut backwards = good.clone();
+        backwards[16..24].copy_from_slice(&le(0));
+        let mut past_end = good.clone();
+        past_end[64..72].copy_from_slice(&le(good.len() as u64 + 1));
+        for (name, frame) in [
+            ("empty", &[][..]),
+            ("short count", &[1, 2, 3][..]),
+            ("zero offsets", &le(0)[..]),
+            ("too few offsets", &few[..]),
+            ("count past the frame", &huge[..]),
+            ("truncated", &good[..good.len() / 2]),
+            ("overlapping offsets", &backwards[..]),
+            ("offset past the end", &past_end[..]),
+        ] {
+            assert!(v1::decode(frame).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn legacy_binary_rejects_malformed_frames() {
+        let legacy::Frame::Binary(good) = legacy::encode(Channel::Shell, &sample()).unwrap() else {
+            panic!("expected binary")
+        };
+        let be = |v: u32| v.to_be_bytes();
+        let mut huge = good.clone();
+        huge[..4].copy_from_slice(&be(u32::MAX));
+        // Buffer one starts after buffer two. The JSON part then runs into
+        // the buffers, so this fails as JSON rather than as an offset.
+        let mut overlapping = good.clone();
+        let second = u32::from_be_bytes(good[12..16].try_into().unwrap());
+        overlapping[8..12].copy_from_slice(&be(second + 1));
+        let mut past_end = good.clone();
+        past_end[4..8].copy_from_slice(&be(good.len() as u32 + 1));
+        for (name, frame) in [
+            ("empty", &[][..]),
+            ("short count", &[0, 0][..]),
+            ("zero buffers", &be(0)[..]),
+            ("count past the frame", &huge[..]),
+            ("truncated offsets", &good[..8]),
+            ("overlapping offsets", &overlapping[..]),
+            ("offset past the end", &past_end[..]),
+        ] {
+            assert!(legacy::decode_binary(frame).is_err(), "{name}");
+        }
     }
 }
