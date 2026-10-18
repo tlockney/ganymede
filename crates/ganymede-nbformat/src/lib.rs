@@ -16,14 +16,16 @@
 //!   notebook saved by this crate produces no spurious git diff against one
 //!   saved by Jupyter.
 //!
-//! The crate does no I/O beyond the `read_file`/`write_file` conveniences,
-//! which use `std::fs` only.
+//! The crate does no I/O beyond the `read_file`/`write_file` conveniences
+//! and [`atomic_write`], which `write_file` uses.
 
+mod atomic;
 mod multiline;
 mod reader;
 mod types;
 mod writer;
 
+pub use atomic::atomic_write;
 pub use multiline::{splitlines, MultilineString};
 pub use reader::read_file;
 pub use types::{

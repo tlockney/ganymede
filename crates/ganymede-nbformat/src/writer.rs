@@ -294,11 +294,11 @@ impl Notebook {
 
     /// Write the notebook to a file, replacing any existing contents.
     ///
-    /// The bytes are the same as `nbformat.write(nb, path)` produces. This is
-    /// a plain write; callers that need atomic replacement should write to a
-    /// temporary file and rename it.
+    /// The bytes are the same as `nbformat.write(nb, path)` produces. The
+    /// write is atomic (see [`crate::atomic_write`]): an interrupted write
+    /// leaves the old file in place, and a symlink's target is replaced.
     pub fn write_file(&self, path: impl AsRef<Path>) -> Result<()> {
-        std::fs::write(path, self.to_file_string())?;
+        crate::atomic_write(path, self.to_file_string().as_bytes())?;
         Ok(())
     }
 }
