@@ -25,6 +25,8 @@ pub struct ServeArgs {
     /// Append the log to this file instead of writing it to stderr.
     #[arg(long, value_name = "FILE")]
     pub log_file: Option<PathBuf>,
+    /// Address to listen on. Default 127.0.0.1; a non-loopback address
+    /// also turns on --allow-remote-access.
     #[arg(long)]
     pub ip: Option<String>,
     /// 0 picks a free port; the URL printed on stdout has it.
@@ -33,6 +35,8 @@ pub struct ServeArgs {
     /// Auth token. Pass an empty string to disable auth.
     #[arg(long)]
     pub token: Option<String>,
+    /// Directory served as the contents root. Default: the current
+    /// directory.
     #[arg(long)]
     pub root_dir: Option<PathBuf>,
     /// Directory with the notebook-signing key and trusted signatures;
@@ -54,11 +58,16 @@ pub struct ServeArgs {
     /// Frontend state directory; see `config_dir` in the config file.
     #[arg(long)]
     pub config_dir: Option<PathBuf>,
-    #[arg(long)]
+    /// Extra kernelspec roots (directories holding `kernels/`), searched
+    /// before the Jupyter data dirs. Repeatable.
+    #[arg(long, value_name = "DIR")]
     pub kernelspec_root: Vec<PathBuf>,
-    #[arg(long)]
+    /// Kernelspec reported as the default, which new notebooks start.
+    #[arg(long, value_name = "NAME")]
     pub default_kernel: Option<String>,
-    #[arg(long)]
+    /// Shut down kernels idle this many seconds with no clients
+    /// connected. 0 (the default) never does.
+    #[arg(long, value_name = "SECS")]
     pub cull_idle_secs: Option<u64>,
     /// Prefix for a reverse proxy, e.g. `/jupyter`.
     #[arg(long)]

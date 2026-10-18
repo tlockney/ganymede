@@ -36,7 +36,7 @@ pub const DEFAULTS: &[&str] = &["jupyterlab_widgets", "anywidget"];
 
 /// Under [`extensions_dir`]: one JSON record per installed package, naming
 /// the extension directories it put there.
-const RECORDS: &str = ".packages";
+pub const RECORDS: &str = ".packages";
 const FRAMEWORK: &str = "Framework :: Jupyter";
 const EXTENSIONS: &str = "Framework :: Jupyter :: JupyterLab :: Extensions";
 
@@ -65,15 +65,73 @@ pub enum ExtensionCmd {
         no_deps: bool,
     },
     /// List installed packages and their extensions.
-    List,
+    List {
+        /// Print a JSON array of `{"name", "version", "extensions",
+        /// "required_by"}` objects instead.
+        #[arg(long)]
+        json: bool,
+    },
     /// Remove packages' extensions. Dependencies installed with them stay.
     Remove {
+        /// Package names, as `ganymede lab extension list` shows them.
         #[arg(required = true)]
         packages: Vec<String>,
     },
+    /// Stop JupyterLab loading extensions or plugins, as `jupyter
+    /// labextension disable` does: recorded in
+    /// `labconfig/page_config.json` under the Jupyter config dir, which
+    /// `ganymede serve` reads on each page load. Any extension can be
+    /// disabled, however it was installed.
+    Disable {
+        /// Extension names (`@scope/name`) or plugin IDs (`name:plugin`).
+        #[arg(required = true)]
+        names: Vec<String>,
+        #[command(flatten)]
+        config: ConfigDir,
+    },
+    /// Undo `disable`.
+    Enable {
+        /// Extension names or plugin IDs.
+        #[arg(required = true)]
+        names: Vec<String>,
+        #[command(flatten)]
+        config: ConfigDir,
+    },
+}
+
+#[derive(clap::Args)]
+pub struct ConfigDir {
+    /// The config dir `ganymede serve --config-dir` uses, if not the
+    /// Jupyter config dir.
+    #[arg(long, value_name = "DIR")]
+    config_dir: Option<PathBuf>,
+}
+
+impl ConfigDir {
+    fn page_config(&self) -> PathBuf {
+        let dir = self
+            .config_dir
+            .clone()
+            .unwrap_or_else(ganymede_engine::host::kernelspec::jupyter_config_dir);
+        ganymede_server::lab::page_config_file(&dir)
+    }
+}
+
+/// The directory extensions are installed in, if there is a data dir.
+pub fn dir() -> Option<PathBuf> {
+    extensions_dir()
 }
 
 pub fn run(cmd: ExtensionCmd) -> Result<ExitCode> {
+    let cmd = match cmd {
+        ExtensionCmd::Disable { names, config } => {
+            return set_disabled(&config.page_config(), &names, true)
+        }
+        ExtensionCmd::Enable { names, config } => {
+            return set_disabled(&config.page_config(), &names, false)
+        }
+        cmd => cmd,
+    };
     let root = root()?;
     match cmd {
         ExtensionCmd::Install {
@@ -81,7 +139,21 @@ pub fn run(cmd: ExtensionCmd) -> Result<ExitCode> {
             force,
             no_deps,
         } => install(&root, &packages, force, no_deps)?,
-        ExtensionCmd::List => {
+        ExtensionCmd::List { json: true } => {
+            let all: Vec<Value> = records(&root)
+                .into_iter()
+                .map(|r| {
+                    json!({
+                        "name": r.name,
+                        "version": r.version,
+                        "extensions": r.extensions,
+                        "required_by": r.required_by,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&all)?);
+        }
+        ExtensionCmd::List { json: false } => {
             let all = records(&root);
             if all.is_empty() {
                 eprintln!(
@@ -117,7 +189,50 @@ pub fn run(cmd: ExtensionCmd) -> Result<ExitCode> {
                 eprintln!("removed {} ({})", rec.name, rec.extensions.join(", "));
             }
         }
+        ExtensionCmd::Disable { .. } | ExtensionCmd::Enable { .. } => unreachable!(),
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Sets `disabledExtensions.<name>` in `page_config.json` to `disabled`
+/// for each name, keeping the file's other keys, as `jupyter labextension
+/// disable` and `enable` do.
+fn set_disabled(path: &Path, names: &[String], disabled: bool) -> Result<ExitCode> {
+    let mut config = match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
+            .with_context(|| format!("reading {}", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let Some(obj) = config.as_object_mut() else {
+        bail!("{} is not a JSON object", path.display());
+    };
+    let entry = obj.entry("disabledExtensions").or_insert_with(|| json!({}));
+    // An older JupyterLab wrote a list.
+    if let Value::Array(list) = entry {
+        let map = list
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|n| (n.to_string(), Value::Bool(true)))
+            .collect();
+        *entry = Value::Object(map);
+    }
+    let Some(map) = entry.as_object_mut() else {
+        bail!("disabledExtensions in {} is not an object", path.display());
+    };
+    for n in names {
+        map.insert(n.clone(), Value::Bool(disabled));
+        eprintln!(
+            "{} {n} in {}",
+            if disabled { "disabled" } else { "enabled" },
+            path.display()
+        );
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(&config)?)
+        .with_context(|| format!("writing {}", path.display()))?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -811,6 +926,32 @@ mod tests {
             "jupyterlab-widgets"
         );
         assert_eq!(normalize("a._-b").unwrap(), "a-b");
+    }
+
+    #[test]
+    fn disable_and_enable_keep_other_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = ganymede_server::lab::page_config_file(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"other": 1, "disabledExtensions": ["old"]}"#).unwrap();
+        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        set_disabled(&path, &names(&["@a/b", "c:plugin"]), true).unwrap();
+        assert_eq!(
+            ganymede_server::lab::disabled_extensions(&path),
+            ["@a/b", "c:plugin", "old"]
+        );
+        set_disabled(&path, &names(&["@a/b"]), false).unwrap();
+        assert_eq!(
+            ganymede_server::lab::disabled_extensions(&path),
+            ["c:plugin", "old"]
+        );
+        let v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(v["other"], 1);
+        assert_eq!(v["disabledExtensions"]["@a/b"], false);
+
+        let fresh = ganymede_server::lab::page_config_file(&dir.path().join("new"));
+        set_disabled(&fresh, &names(&["x"]), true).unwrap();
+        assert_eq!(ganymede_server::lab::disabled_extensions(&fresh), ["x"]);
     }
 
     #[test]

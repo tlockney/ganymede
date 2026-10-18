@@ -127,19 +127,32 @@ enum Cmd {
     /// Start a kernel and keep it running until Ctrl-C, for other clients
     /// to attach to by its connection file (`jupyter kernel`).
     Kernel {
+        /// Kernelspec name, as `ganymede kernelspec list` shows it.
         #[arg(long, short)]
         kernel: String,
         /// Working directory for the kernel.
         #[arg(long)]
         cwd: Option<PathBuf>,
     },
-    /// Run code on a kernel that is already running (`run --existing`).
-    #[command(hide = true)]
+    /// Run code on a kernel that is already running: `run --existing
+    /// CONNECTION_FILE CODE...`, but waiting at most 60 seconds per cell
+    /// by default. The kernel keeps running afterwards.
     Attach {
+        /// The kernel's connection file, such as the path `ganymede kernel`
+        /// printed.
         connection_file: PathBuf,
+        /// Code to run; one cell per argument. With none, stdin is one cell.
         code: Vec<String>,
+        /// Seconds to wait for each cell. 0 waits forever.
         #[arg(long, default_value_t = 60)]
         timeout: u64,
+    },
+    /// Print a shell completion script, for example
+    /// `ganymede completions bash > ~/.local/share/bash-completion/completions/ganymede`
+    /// or `ganymede completions zsh > ~/.zfunc/_ganymede`.
+    Completions {
+        /// The shell to complete for.
+        shell: clap_complete::Shell,
     },
     /// Notebook file utilities that need no kernel.
     Nb {
@@ -153,6 +166,7 @@ enum Cmd {
     /// dir), so the server and Jupyter render its outputs unsanitized. With
     /// no NOTEBOOK, one is read from stdin.
     Trust {
+        /// Notebooks to sign. With none, one is read from stdin.
         notebooks: Vec<PathBuf>,
         /// Delete the trusted signatures and generate a new key. Every
         /// notebook becomes untrusted.
@@ -197,6 +211,7 @@ enum KernelspecCmd {
     Paths,
     /// Install a kernelspec directory (one holding `kernel.json`).
     Install {
+        /// Directory holding `kernel.json` (and any logos or resources).
         source: PathBuf,
         /// Name to install as. Defaults to the directory's name.
         #[arg(long)]
@@ -210,6 +225,7 @@ enum KernelspecCmd {
     },
     /// Remove kernelspecs by name.
     Remove {
+        /// Kernelspec names, as `ganymede kernelspec list` shows them.
         #[arg(required = true)]
         names: Vec<String>,
     },
@@ -219,6 +235,7 @@ enum KernelspecCmd {
 enum NbCmd {
     /// Remove outputs, execution counts, and execution timings.
     Clear {
+        /// The notebook to clear. Overwritten unless --output is given.
         notebook: PathBuf,
         #[command(flatten)]
         dest: Dest,
@@ -268,8 +285,9 @@ struct RunArgs {
     /// Seconds to wait for each cell. 0 waits forever.
     #[arg(long, default_value_t = 0)]
     timeout: u64,
-    /// Interrupt each cell after this many milliseconds.
-    #[arg(long, hide = true)]
+    /// Interrupt each cell after this many milliseconds, to check how a
+    /// kernel handles an interrupt.
+    #[arg(long, value_name = "MS")]
     interrupt_after_ms: Option<u64>,
     /// Keep running cells after one fails.
     #[arg(long)]
@@ -278,6 +296,7 @@ struct RunArgs {
 
 #[derive(Args)]
 struct ExecuteArgs {
+    /// Notebooks to execute, each on its own kernel, in order.
     #[arg(required = true)]
     notebooks: Vec<PathBuf>,
     #[command(flatten)]
@@ -433,6 +452,16 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             clear_outputs(&mut nb);
             let dest = dest.resolve(&notebook).unwrap_or(Some(notebook.clone()));
             write_notebook(&nb, dest.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Completions { shell } => {
+            use clap::CommandFactory;
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "ganymede",
+                &mut std::io::stdout(),
+            );
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Trust {
