@@ -105,6 +105,33 @@ impl ApiPath {
     }
 }
 
+/// The working directory for a kernel started for `path`, an API path
+/// under `root` (`jupyter_server`'s `cwd_for_path`): the nearest existing
+/// directory at or above `path` that is inside the root, or the root
+/// itself. Input that does not validate as an API path (`..`, absolute,
+/// backslashes) and directories that resolve outside the root through a
+/// symlink also give the root, so a client can never choose a directory
+/// outside it.
+pub fn kernel_cwd(root: &Path, path: &str) -> PathBuf {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let Ok(api) = ApiPath::parse(&normalize_api_path(path)) else {
+        return root;
+    };
+    let mut os = api.os_path(&root);
+    while os != root {
+        if os.is_dir() {
+            match os.canonicalize() {
+                Ok(c) if c.starts_with(&root) => return os,
+                _ => return root,
+            }
+        }
+        if !os.pop() {
+            break;
+        }
+    }
+    root
+}
+
 impl fmt::Display for ApiPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.components.join("/"))
@@ -149,6 +176,39 @@ mod tests {
             );
         }
         assert!(matches!(ApiPath::parse("a\0b"), Err(Error::BadRequest(_))));
+    }
+
+    #[test]
+    fn kernel_cwd_stays_inside_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("nb/sub")).unwrap();
+        std::fs::write(root.join("nb/x.ipynb"), "{}").unwrap();
+
+        assert_eq!(kernel_cwd(&root, "nb/x.ipynb"), root.join("nb"));
+        assert_eq!(kernel_cwd(&root, "/nb/sub"), root.join("nb/sub"));
+        assert_eq!(kernel_cwd(&root, "nb/missing/x.ipynb"), root.join("nb"));
+        for p in [
+            "",
+            "x.ipynb",
+            "no/such/dir/x.ipynb",
+            "../../etc/x.ipynb",
+            "nb/../../x.ipynb",
+            "/etc/x.ipynb",
+            "..\\x.ipynb",
+        ] {
+            assert_eq!(kernel_cwd(&root, p), root, "{p:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kernel_cwd_rejects_symlink_out_of_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("link")).unwrap();
+        assert_eq!(kernel_cwd(&root, "link/x.ipynb"), root);
     }
 
     #[test]
