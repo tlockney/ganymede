@@ -297,6 +297,7 @@ impl Inner {
             size: (kind != ContentType::Directory).then_some(meta.len()),
             hash: None,
             hash_algorithm: None,
+            message: None,
         }
     }
 
@@ -455,7 +456,7 @@ impl Inner {
         let Some(bytes) = content else {
             return Ok(model);
         };
-        let notebook = Notebook::from_slice(&bytes)
+        let (notebook, report) = Notebook::from_slice_with_report(&bytes)
             .map_err(|e| Error::BadRequest(format!("Unreadable Notebook: {} {e}", r.api)))?;
         // `nbformat.read` output, as jupyter_server serves it: multi-line
         // sources rejoined into strings, transient metadata stripped.
@@ -470,6 +471,7 @@ impl Inner {
         }
         model.content = Some(content);
         model.format = Some(Format::Json);
+        model.message = report.validation_message();
         Ok(model)
     }
 }
@@ -478,8 +480,10 @@ impl Inner {
 impl Inner {
     fn save(&self, path: &str, request: SaveRequest) -> Result<ContentsModel> {
         let r = self.resolve_for_write(path)?;
-        self.with_save_lock(&r.os, || self.save_locked(&r, request))?;
-        self.get_without_content(&r.api)
+        let message = self.with_save_lock(&r.os, || self.save_locked(&r, request))?;
+        let mut model = self.get_without_content(&r.api)?;
+        model.message = message;
+        Ok(model)
     }
 
     /// Run `f` holding the save lock of `os`. Entries are dropped once no
@@ -507,10 +511,12 @@ impl Inner {
         result
     }
 
-    fn save_locked(&self, r: &Resolved, request: SaveRequest) -> Result<()> {
+    /// Returns the validation message of a notebook that broke the schema.
+    fn save_locked(&self, r: &Resolved, request: SaveRequest) -> Result<Option<String>> {
         if let Some(chunk) = request.chunk {
-            return self.save_chunk(r, chunk, request);
+            return self.save_chunk(r, chunk, request).map(|()| None);
         }
+        let mut message = None;
         match request.kind {
             ContentType::Directory => self.save_directory(r)?,
             ContentType::Notebook | ContentType::File => {
@@ -528,8 +534,9 @@ impl Inner {
                         // code cell is, judged on the client's `trusted` flags.
                         let trusted =
                             self.options.notary.is_some() && trust::check_cells(&mut content);
-                        let notebook = Notebook::from_value(content)
+                        let (notebook, report) = Notebook::from_value_with_report(content)
                             .map_err(|e| Error::BadRequest(format!("Invalid notebook: {e}")))?;
+                        message = report.validation_message();
                         if self.options.notary.is_some() && !trusted {
                             tracing::debug!("Notebook {} is not trusted", r.api);
                         }
@@ -557,7 +564,7 @@ impl Inner {
                 }
             }
         }
-        Ok(())
+        Ok(message)
     }
 
     /// One piece of a chunked upload, as jupyter_server's

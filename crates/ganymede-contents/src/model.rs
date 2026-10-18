@@ -74,6 +74,10 @@ impl fmt::Display for Format {
 /// - `hash` / `hash_algorithm` are `null` unless the hash was requested
 ///   (`?hash=1`), then the SHA-256 of the file's bytes, as in
 ///   `jupyter_server` 2.11+. Directories never have one.
+/// - `message` is only present on a notebook that broke the nbformat
+///   schema, read with content or saved: `"Notebook validation failed:
+///   ..."`, saying what the lenient reader repaired, as jupyter_server's
+///   `validate_notebook_model` adds it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContentsModel {
     pub name: String,
@@ -91,6 +95,8 @@ pub struct ContentsModel {
     pub hash: Option<String>,
     #[serde(default)]
     pub hash_algorithm: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 impl ContentsModel {
@@ -256,6 +262,7 @@ mod tests {
             size: Some(2),
             hash: None,
             hash_algorithm: None,
+            message: None,
         };
         let json = serde_json::to_value(&model).unwrap();
         let keys: Vec<&str> = json
@@ -285,6 +292,13 @@ mod tests {
         assert_eq!(json["format"], "text");
         let back: ContentsModel = serde_json::from_value(json).unwrap();
         assert_eq!(back, model);
+
+        let invalid = ContentsModel {
+            message: Some("Notebook validation failed: x".into()),
+            ..model
+        };
+        let json = serde_json::to_value(&invalid).unwrap();
+        assert_eq!(json["message"], "Notebook validation failed: x");
     }
 
     #[test]

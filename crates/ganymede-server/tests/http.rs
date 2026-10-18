@@ -1404,6 +1404,24 @@ fn api_req(method: &str, path: &str, body: Option<Value>) -> Request<Body> {
     }
 }
 
+/// Python's `json` accepts a lone surrogate escape, so JupyterLab can send
+/// one in a notebook; it is saved as U+FFFD instead of failing with 400.
+#[tokio::test]
+async fn put_body_with_a_lone_surrogate_saves() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(state(dir.path()));
+    let body = r#"{"type": "notebook", "format": "json", "content": {"nbformat": 4,
+        "nbformat_minor": 5, "metadata": {}, "cells": [{"cell_type": "markdown",
+        "id": "m", "metadata": {}, "source": "lone \ud800 here"}]}}"#;
+    let mut req = api_req("PUT", "/api/contents/s.ipynb", None);
+    *req.body_mut() = Body::from(body);
+    let (s, _, text) = send(&app, req).await;
+    assert_eq!(s, StatusCode::CREATED, "{text}");
+    let (_, v) = call(&app, "GET", "/api/contents/s.ipynb", None, Some(TOKEN)).await;
+    assert_eq!(v["content"]["cells"][0]["source"], "lone \u{fffd} here");
+    assert!(v.get("message").is_none(), "{v}");
+}
+
 #[tokio::test]
 async fn creates_answer_201_with_a_location() {
     let dir = tempfile::tempdir().unwrap();

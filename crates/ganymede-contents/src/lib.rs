@@ -35,6 +35,10 @@ pub use model::{Checkpoint, ContentType, ContentsModel, Format, GetOptions, Save
 pub use paths::{kernel_cwd, normalize_api_path};
 pub use trust::Notary;
 
+/// Parse a request body as Python's `json` would: a lone surrogate escape,
+/// which a notebook may carry, reads as U+FFFD instead of failing.
+pub use ganymede_nbformat::from_json_slice;
+
 /// Errors from a [`Contents`] implementation. [`Error::status`] gives the
 /// HTTP status `jupyter_server` would answer with, so the HTTP layer needs no
 /// knowledge of the variants.
