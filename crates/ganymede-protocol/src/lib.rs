@@ -31,6 +31,8 @@ pub enum Error {
     Malformed(&'static str),
     #[error("bad signature")]
     BadSignature,
+    #[error("duplicate signature: a replayed message")]
+    DuplicateSignature,
     #[error("unsupported signature scheme: {0}")]
     UnsupportedScheme(String),
     #[error("unknown channel: {0}")]

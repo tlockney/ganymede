@@ -3,6 +3,7 @@ name = "ganymede-api"
 description = "The server API as plain functions over the kernel host: kernel and session managers, response models, the websocket bridge. No HTTP framework, so an in-app bridge and the HTTP server share it."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

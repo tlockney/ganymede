@@ -17,8 +17,9 @@
 # Usage: scripts/test-workstation.sh <ganymede-binary>
 # Needs: Node 24+ (and npm) on PATH, and validation/node_modules with
 # Playwright's Chromium installed (cd validation && npm ci && npx
-# playwright install chromium). Downloads cdp-kernel from npm and
-# JupyterLab from PyPI. HOME is a new directory, so nothing outside the
+# playwright install chromium). Downloads cdp-kernel from npm (version
+# CDP_KERNEL_VERSION, which CI pins; latest without it) and JupyterLab
+# from PyPI. HOME is a new directory, so nothing outside the
 # work dir changes; KEEP=1 keeps it.
 
 set -eu
@@ -155,8 +156,8 @@ ganymede --version
 ganymede run -k fake 'hello' | tee "$work/fake.out"
 grep -q 'HELLO' "$work/fake.out" || fail "fake kernel"
 
-step "A kernel: Node $(node --version), cdp-kernel from npm"
-npm install -g @tlockney/cdp-kernel
+step "A kernel: Node $(node --version), cdp-kernel ${CDP_KERNEL_VERSION:-latest} from npm"
+npm install -g "@tlockney/cdp-kernel@${CDP_KERNEL_VERSION:-latest}"
 cdp-kernel install --runtime node
 ganymede kernelspec list | tee "$work/kernelspecs"
 grep -q '^ *cdp-node ' "$work/kernelspecs" || fail "cdp-node is not in ganymede kernelspec list"

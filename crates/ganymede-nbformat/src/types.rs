@@ -7,7 +7,8 @@
 //! lenient: `null` where an object, array or string belongs reads as empty,
 //! missing output fields take defaults, an `execution_count` that is not a
 //! non-negative integer reads as integral or `None`, and an output that still
-//! does not fit the schema is kept verbatim as [`Output::Unknown`].
+//! does not fit the schema is kept verbatim as [`Output::Unknown`] (a cell as
+//! [`Cell::Unknown`]).
 
 use std::collections::BTreeMap;
 
@@ -85,12 +86,16 @@ impl Default for Notebook {
 }
 
 /// A notebook cell, tagged on disk by `cell_type`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "cell_type", rename_all = "lowercase")]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Cell {
     Code(CodeCell),
     Markdown(MarkdownCell),
     Raw(RawCell),
+    /// A cell this crate cannot type: an unknown `cell_type` (such as
+    /// nbformat 3's `heading`), or a known one whose fields do not fit the
+    /// schema even leniently. Kept as read and written back unchanged, as
+    /// Python nbformat does.
+    Unknown(Value),
 }
 
 impl Cell {
@@ -99,40 +104,89 @@ impl Cell {
             Cell::Code(c) => c.id.as_deref(),
             Cell::Markdown(c) => c.id.as_deref(),
             Cell::Raw(c) => c.id.as_deref(),
+            Cell::Unknown(v) => v.get("id").and_then(Value::as_str),
         }
     }
 
-    pub fn source(&self) -> &MultilineString {
+    /// The cell's source; `None` for an [`Cell::Unknown`] cell.
+    pub fn source(&self) -> Option<&MultilineString> {
         match self {
-            Cell::Code(c) => &c.source,
-            Cell::Markdown(c) => &c.source,
-            Cell::Raw(c) => &c.source,
+            Cell::Code(c) => Some(&c.source),
+            Cell::Markdown(c) => Some(&c.source),
+            Cell::Raw(c) => Some(&c.source),
+            Cell::Unknown(_) => None,
         }
     }
 
-    pub fn metadata(&self) -> &Map<String, Value> {
+    /// The cell's metadata; for an [`Cell::Unknown`] cell, its `metadata`
+    /// if that is an object.
+    pub fn metadata(&self) -> Option<&Map<String, Value>> {
         match self {
-            Cell::Code(c) => &c.metadata,
-            Cell::Markdown(c) => &c.metadata,
-            Cell::Raw(c) => &c.metadata,
+            Cell::Code(c) => Some(&c.metadata),
+            Cell::Markdown(c) => Some(&c.metadata),
+            Cell::Raw(c) => Some(&c.metadata),
+            Cell::Unknown(v) => v.get("metadata").and_then(Value::as_object),
         }
     }
 
-    pub fn metadata_mut(&mut self) -> &mut Map<String, Value> {
+    /// Mutable access to the cell's metadata, as [`Cell::metadata`].
+    pub fn metadata_mut(&mut self) -> Option<&mut Map<String, Value>> {
         match self {
-            Cell::Code(c) => &mut c.metadata,
-            Cell::Markdown(c) => &mut c.metadata,
-            Cell::Raw(c) => &mut c.metadata,
+            Cell::Code(c) => Some(&mut c.metadata),
+            Cell::Markdown(c) => Some(&mut c.metadata),
+            Cell::Raw(c) => Some(&mut c.metadata),
+            Cell::Unknown(v) => v.get_mut("metadata").and_then(Value::as_object_mut),
         }
     }
 
-    /// The `cell_type` tag as written on disk.
-    pub fn cell_type(&self) -> &'static str {
+    /// The `cell_type` tag as written on disk, if there is one.
+    pub fn cell_type(&self) -> Option<&str> {
         match self {
-            Cell::Code(_) => "code",
-            Cell::Markdown(_) => "markdown",
-            Cell::Raw(_) => "raw",
+            Cell::Code(_) => Some("code"),
+            Cell::Markdown(_) => Some("markdown"),
+            Cell::Raw(_) => Some("raw"),
+            Cell::Unknown(v) => v.get("cell_type").and_then(Value::as_str),
         }
+    }
+}
+
+/// The typed cells, as serde derives their tagged form.
+#[derive(Serialize)]
+#[serde(tag = "cell_type", rename_all = "lowercase")]
+enum TypedCellRef<'a> {
+    Code(&'a CodeCell),
+    Markdown(&'a MarkdownCell),
+    Raw(&'a RawCell),
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "cell_type", rename_all = "lowercase")]
+enum TypedCell {
+    Code(CodeCell),
+    Markdown(MarkdownCell),
+    Raw(RawCell),
+}
+
+impl Serialize for Cell {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Cell::Code(c) => TypedCellRef::Code(c).serialize(serializer),
+            Cell::Markdown(c) => TypedCellRef::Markdown(c).serialize(serializer),
+            Cell::Raw(c) => TypedCellRef::Raw(c).serialize(serializer),
+            Cell::Unknown(v) => v.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Cell {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        Ok(match TypedCell::deserialize(&value) {
+            Ok(TypedCell::Code(c)) => Cell::Code(c),
+            Ok(TypedCell::Markdown(c)) => Cell::Markdown(c),
+            Ok(TypedCell::Raw(c)) => Cell::Raw(c),
+            Err(_) => Cell::Unknown(value),
+        })
     }
 }
 
@@ -490,9 +544,24 @@ mod tests {
     }
 
     #[test]
-    fn unknown_cell_type_is_an_error() {
-        assert!(
-            serde_json::from_value::<Cell>(json!({"cell_type": "heading", "source": ""})).is_err()
-        );
+    fn unknown_cells_are_kept_verbatim() {
+        for raw in [
+            json!({"cell_type": "heading", "level": 1, "source": ["a\n", "b"], "metadata": {"k": 1}}),
+            json!({"cell_type": "code", "source": 5}),
+            json!({"no_cell_type": true}),
+            json!(42),
+        ] {
+            let cell: Cell = serde_json::from_value(raw.clone()).unwrap();
+            assert_eq!(cell, Cell::Unknown(raw.clone()));
+            assert_eq!(serde_json::to_value(&cell).unwrap(), raw);
+        }
+        let heading: Cell = serde_json::from_value(
+            json!({"cell_type": "heading", "id": "h", "metadata": {"k": 1}}),
+        )
+        .unwrap();
+        assert_eq!(heading.cell_type(), Some("heading"));
+        assert_eq!(heading.id(), Some("h"));
+        assert_eq!(heading.metadata().unwrap()["k"], 1);
+        assert_eq!(heading.source(), None);
     }
 }

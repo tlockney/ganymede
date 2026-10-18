@@ -37,6 +37,8 @@ type HttpResult<T> = std::result::Result<T, HttpError>;
 /// A JSON body parsed regardless of `Content-Type`, as `jupyter_server`
 /// does. JupyterLab's client omits the header on some requests, which
 /// axum's `Json` extractor rejects with 415. An empty body is `T::default()`.
+/// Like Python's `json`, a lone surrogate escape is accepted (as U+FFFD), so
+/// a notebook carrying one can be saved.
 pub struct LenientJson<T>(pub T);
 
 impl<S, T> axum::extract::FromRequest<S> for LenientJson<T>
@@ -56,7 +58,7 @@ where
         if bytes.iter().all(|b| b.is_ascii_whitespace()) {
             return Ok(LenientJson(T::default()));
         }
-        serde_json::from_slice(&bytes)
+        ganymede_contents::from_json_slice(&bytes)
             .map(LenientJson)
             .map_err(|e| HttpError(400, format!("invalid JSON body: {e}")))
     }

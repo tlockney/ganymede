@@ -307,7 +307,9 @@ impl Kernel {
         let mut sub = session.subscribe();
         let request = session.request(Channel::Shell, msg, true, opts.timeout.unwrap_or(FOREVER));
         tokio::pin!(request);
-        let mut streamed = 0usize;
+        // By msg_id, not by count: after a lag the broadcast skips some
+        // messages, and the reply's record fills in exactly those.
+        let mut streamed = std::collections::HashSet::new();
         let exec = loop {
             tokio::select! {
                 biased;
@@ -315,7 +317,7 @@ impl Kernel {
                     Ok((ch, m)) if m.parent_id() == Some(id.as_str()) => match ch {
                         Channel::IoPub if m.msg_type() != "status" => {
                             handler.on_iopub(&m);
-                            streamed += 1;
+                            streamed.insert(m.header.msg_id.clone());
                         }
                         Channel::Stdin if m.msg_type() == "input_request" => {
                             let prompt = m.content["prompt"].as_str().unwrap_or_default();
@@ -325,8 +327,10 @@ impl Kernel {
                         }
                         _ => {}
                     },
-                    Ok(_) | Err(RecvError::Lagged(_)) => {}
-                    Err(RecvError::Closed) => {}
+                    Ok(_) | Err(RecvError::Closed) => {}
+                    Err(RecvError::Lagged(n)) => tracing::warn!(
+                        "output handler fell {n} messages behind; the rest arrives with the reply"
+                    ),
                 },
                 r = &mut request => match r {
                     // Stop the cell rather than leave the kernel busy; on a
@@ -343,8 +347,10 @@ impl Kernel {
         };
         // The reply can win the race against the last broadcasts; the
         // execution's own record has everything, in order.
-        for m in exec.outputs.iter().skip(streamed) {
-            handler.on_iopub(m);
+        for m in exec.outputs.iter() {
+            if !streamed.contains(&m.header.msg_id) {
+                handler.on_iopub(m);
+            }
         }
         let reply: content::ExecuteReply = exec.reply.content_as()?;
         Ok(ExecuteResult {

@@ -1,0 +1,27 @@
+# Weekly version bumps, grouped so each ecosystem opens one pull request a
+# week at most. Security updates come as soon as an advisory is published,
+# whatever this schedule says. Actions are pinned by commit SHA with the
+# version in a comment; Dependabot updates both.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directories: ["/", "/e2e/wasm-smoke"]
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directories: ["/docs", "/frontend", "/validation"]
+    schedule:
+      interval: weekly
+    groups:
+      npm:
+        patterns: ["*"]
