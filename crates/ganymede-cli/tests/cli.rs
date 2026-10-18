@@ -296,111 +296,6 @@ fn execute_needs_a_kernel_name() {
 }
 
 #[test]
-fn info_json() {
-    let out = run_ok(ganymede(&["info", "--json"]));
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
-    assert!(v["data_dirs"].is_array());
-}
-
-#[test]
-fn serve_answers_the_api() {
-    let root = tempfile::tempdir().unwrap();
-    std::fs::write(root.path().join("hello.txt"), "hi").unwrap();
-    let mut child = ganymede(&["serve", "--port", "0", "--token", "secret", "--root-dir"])
-        .arg(root.path())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut line = String::new();
-    std::io::BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut line)
-        .unwrap();
-    assert!(line.contains("?token=secret"), "{line}");
-    let base = line.trim().split('?').next().unwrap().to_string();
-
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        let http = reqwest::Client::new();
-        let r = http
-            .get(format!("{base}api/contents/hello.txt"))
-            .header("Authorization", "token secret")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(r.status(), 200);
-        let v: serde_json::Value = r.json().await.unwrap();
-        assert_eq!(v["content"], "hi");
-        let r = http
-            .get(format!("{base}api/contents/hello.txt"))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(r.status(), 403);
-    });
-    unsafe {
-        kill(child.id() as i32, 15);
-    }
-    assert!(child.wait().unwrap().success(), "clean exit on SIGTERM");
-}
-
-extern "C" {
-    fn kill(pid: i32, sig: i32) -> i32;
-}
-
-#[test]
-fn trust_signs_once_and_reset_forgets() {
-    let data = tempfile::tempdir().unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let nb = dir.path().join("a.ipynb");
-    std::fs::write(
-        &nb,
-        r#"{"nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [
-            {"cell_type": "code", "id": "c", "metadata": {}, "source": "x", "execution_count": 1,
-             "outputs": [{"output_type": "display_data", "metadata": {}, "data": {"text/html": "<b>x</b>"}}]}]}"#,
-    )
-    .unwrap();
-    let trust = |args: &[&str]| {
-        let mut c = ganymede(&["trust"]);
-        c.args(args).env("JUPYTER_DATA_DIR", data.path());
-        c
-    };
-    let nb_arg = nb.to_str().unwrap();
-
-    let out = run_ok(trust(&[nb_arg]));
-    assert_eq!(stdout(&out), format!("Signing notebook: {nb_arg}\n"));
-    assert!(data.path().join("notebook_secret").is_file());
-    assert!(data.path().join("nbsignatures.db").is_file());
-    let out = run_ok(trust(&[nb_arg]));
-    assert_eq!(stdout(&out), format!("Notebook already signed: {nb_arg}\n"));
-
-    // From stdin.
-    let mut c = trust(&[]);
-    c.stdin(std::fs::File::open(&nb).unwrap());
-    assert_eq!(stdout(&run_ok(c)), "Notebook already signed: <stdin>\n");
-
-    let out = trust(&["missing.ipynb"]).output().unwrap();
-    assert_eq!(out.status.code(), Some(1));
-    assert!(stderr(&out).contains("Notebook missing: missing.ipynb"));
-
-    let out = run_ok(trust(&["--reset"]));
-    assert!(stdout(&out).contains("Removing trusted signature cache"));
-    assert!(stdout(&out).contains("Generating new notebook key"));
-    let out = run_ok(trust(&[nb_arg]));
-    assert_eq!(stdout(&out), format!("Signing notebook: {nb_arg}\n"));
-
-    // --notary-dir overrides the data dir.
-    let other = tempfile::tempdir().unwrap();
-    let out = run_ok(trust(&[
-        "--notary-dir",
-        other.path().to_str().unwrap(),
-        nb_arg,
-    ]));
-    assert_eq!(stdout(&out), format!("Signing notebook: {nb_arg}\n"));
-}
-
-#[test]
 fn run_with_empty_stdin_is_a_usage_error() {
     for input in ["", "  \n"] {
         let mut child = ganymede(&["run", "-k", "fake"])
@@ -517,4 +412,109 @@ fn kernelspec_remove_takes_force_flags() {
         .env_remove("XDG_DATA_HOME");
     run_ok(c);
     assert!(!data.path().join("kernels/k").exists());
+}
+
+#[test]
+fn info_json() {
+    let out = run_ok(ganymede(&["info", "--json"]));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+    assert!(v["data_dirs"].is_array());
+}
+
+#[test]
+fn serve_answers_the_api() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("hello.txt"), "hi").unwrap();
+    let mut child = ganymede(&["serve", "--port", "0", "--token", "secret", "--root-dir"])
+        .arg(root.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert!(line.contains("?token=secret"), "{line}");
+    let base = line.trim().split('?').next().unwrap().to_string();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let http = reqwest::Client::new();
+        let r = http
+            .get(format!("{base}api/contents/hello.txt"))
+            .header("Authorization", "token secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let v: serde_json::Value = r.json().await.unwrap();
+        assert_eq!(v["content"], "hi");
+        let r = http
+            .get(format!("{base}api/contents/hello.txt"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 403);
+    });
+    unsafe {
+        kill(child.id() as i32, 15);
+    }
+    assert!(child.wait().unwrap().success(), "clean exit on SIGTERM");
+}
+
+extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+
+#[test]
+fn trust_signs_once_and_reset_forgets() {
+    let data = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let nb = dir.path().join("a.ipynb");
+    std::fs::write(
+        &nb,
+        r#"{"nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [
+            {"cell_type": "code", "id": "c", "metadata": {}, "source": "x", "execution_count": 1,
+             "outputs": [{"output_type": "display_data", "metadata": {}, "data": {"text/html": "<b>x</b>"}}]}]}"#,
+    )
+    .unwrap();
+    let trust = |args: &[&str]| {
+        let mut c = ganymede(&["trust"]);
+        c.args(args).env("JUPYTER_DATA_DIR", data.path());
+        c
+    };
+    let nb_arg = nb.to_str().unwrap();
+
+    let out = run_ok(trust(&[nb_arg]));
+    assert_eq!(stdout(&out), format!("Signing notebook: {nb_arg}\n"));
+    assert!(data.path().join("notebook_secret").is_file());
+    assert!(data.path().join("nbsignatures.db").is_file());
+    let out = run_ok(trust(&[nb_arg]));
+    assert_eq!(stdout(&out), format!("Notebook already signed: {nb_arg}\n"));
+
+    // From stdin.
+    let mut c = trust(&[]);
+    c.stdin(std::fs::File::open(&nb).unwrap());
+    assert_eq!(stdout(&run_ok(c)), "Notebook already signed: <stdin>\n");
+
+    let out = trust(&["missing.ipynb"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("Notebook missing: missing.ipynb"));
+
+    let out = run_ok(trust(&["--reset"]));
+    assert!(stdout(&out).contains("Removing trusted signature cache"));
+    assert!(stdout(&out).contains("Generating new notebook key"));
+    let out = run_ok(trust(&[nb_arg]));
+    assert_eq!(stdout(&out), format!("Signing notebook: {nb_arg}\n"));
+
+    // --notary-dir overrides the data dir.
+    let other = tempfile::tempdir().unwrap();
+    let out = run_ok(trust(&[
+        "--notary-dir",
+        other.path().to_str().unwrap(),
+        nb_arg,
+    ]));
+    assert_eq!(stdout(&out), format!("Signing notebook: {nb_arg}\n"));
 }
