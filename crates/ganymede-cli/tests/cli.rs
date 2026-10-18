@@ -345,8 +345,10 @@ fn info_json() {
     assert!(text.contains("(4.6.4)"), "{text}");
     assert!(text.contains("  @s/e 1.0.0"), "{text}");
 
-    let long = stdout(&run_ok(ganymede(&["--version"])));
-    assert!(long.contains("target:"), "{long}");
+    assert!(text.contains("build "), "{text}");
+    // Scripts parse `--version`; it stays one line.
+    let version = stdout(&run_ok(ganymede(&["--version"])));
+    assert_eq!(version, format!("ganymede {}\n", env!("CARGO_PKG_VERSION")));
 }
 
 #[test]

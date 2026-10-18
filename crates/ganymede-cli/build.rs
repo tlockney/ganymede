@@ -1,4 +1,4 @@
-//! Build details for `ganymede --version` and `ganymede info`: the target
+//! Build details for `ganymede info`: the target
 //! triple, the profile, and the git commit when built from a checkout.
 
 use std::process::Command;

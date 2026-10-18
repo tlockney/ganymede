@@ -42,7 +42,7 @@ platform notes (glibc 2.35 or newer on Linux; unnotarized macOS binaries).
 Quick test, no kernel or Python needed (`fake` is a built-in kernel):
 
 ```sh
-ganymede --version                 # version, commit, and target
+ganymede --version                 # ganymede 0.1.0
 ganymede info                      # versions and every directory in use
 ganymede run -k fake 'hello'       # prints "echo: hello" and "HELLO"
 ganymede serve --port 8888 --token test &

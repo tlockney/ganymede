@@ -24,7 +24,6 @@ use std::time::Duration;
 #[command(
     name = "ganymede",
     version,
-    long_version = info::LONG_VERSION,
     about = "Language-agnostic Jupyter engine: kernels, notebooks, and a server",
     after_help = "The kernel name `fake` is a built-in in-process kernel for trying things out."
 )]

@@ -1,4 +1,4 @@
-//! `ganymede info` and the long `--version`: versions, build details, and
+//! `ganymede info`: versions, build details, and
 //! every directory Ganymede reads or writes.
 
 use anyhow::Result;
@@ -8,17 +8,6 @@ use ganymede_server::lab::{data_dir, extensions_dir, find_extensions, installed,
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-
-/// `--version` (not `-V`) with build details, for bug reports.
-pub const LONG_VERSION: &str = concat!(
-    env!("CARGO_PKG_VERSION"),
-    "\ncommit:  ",
-    env!("GANYMEDE_BUILD_COMMIT"),
-    "\ntarget:  ",
-    env!("GANYMEDE_BUILD_TARGET"),
-    "\nprofile: ",
-    env!("GANYMEDE_BUILD_PROFILE"),
-);
 
 /// Everything `info` reports, as its `--json` object. Keys only get added.
 pub fn collect(engine: &Engine, extra_roots: &[PathBuf]) -> Result<Value> {
