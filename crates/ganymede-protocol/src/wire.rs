@@ -125,7 +125,7 @@ pub fn decode(signer: &Signer, frames: &[Bytes]) -> Result<WireMessage> {
     }
     let header: Header = serde_json::from_slice(header)?;
     let parent_header = crate::ws::parse_parent(parent)?;
-    let metadata = serde_json::from_slice(metadata)?;
+    let metadata = crate::message::parse_metadata(metadata)?;
     let content = serde_json::from_slice(content)?;
     Ok(WireMessage {
         identities: frames[..delim].to_vec(),
@@ -212,6 +212,24 @@ mod tests {
         let frames = encode(&u, &[], &m).unwrap();
         assert_eq!(frames[1].len(), 0);
         assert!(decode(&u, &frames).is_ok());
+    }
+
+    #[test]
+    fn decodes_sparse_header_and_null_metadata() {
+        // What a nonconforming kernel might send: no username/date/version,
+        // `null` metadata.
+        let s = Signer::new("hmac-sha256", b"k").unwrap();
+        let header: &[u8] = br#"{"msg_id":"r1","session":"s","msg_type":"kernel_info_reply"}"#;
+        let parent: &[u8] = br#"{"msg_id":"q1","session":"s","msg_type":"kernel_info_request"}"#;
+        let sig = s.sign([header, parent, b"null", b"{}"]);
+        let frames: Vec<Bytes> = [DELIMITER, sig.as_bytes(), header, parent, b"null", b"{}"]
+            .into_iter()
+            .map(Bytes::copy_from_slice)
+            .collect();
+        let w = decode(&s, &frames).unwrap();
+        assert_eq!(w.message.header.version, "");
+        assert_eq!(w.message.parent_id(), Some("q1"));
+        assert!(w.message.metadata.is_empty());
     }
 
     #[test]
