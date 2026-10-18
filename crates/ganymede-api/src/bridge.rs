@@ -57,7 +57,19 @@ impl ClientConnection {
     pub async fn recv(&mut self) -> Option<(Channel, Message)> {
         loop {
             if !*self.alive.borrow() {
-                return None;
+                // Deliver what the hub already holds, such as the
+                // `status: dead` announced just before the kernel closed.
+                loop {
+                    match self.rx.try_recv() {
+                        Ok((channel, msg)) => {
+                            if self.wants(channel, &msg) {
+                                return Some((channel, msg));
+                            }
+                        }
+                        Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                        Err(_) => return None,
+                    }
+                }
             }
             let got = tokio::select! {
                 got = self.rx.recv() => got,

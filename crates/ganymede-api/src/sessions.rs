@@ -79,8 +79,11 @@ impl SessionManager {
         })
     }
 
+    /// Sessions whose kernel died are dropped here, as `jupyter_server`
+    /// does ("Kernel culled or died unexpectedly").
     pub fn list(&self) -> Vec<SessionModel> {
-        let sessions = self.sessions.read().unwrap();
+        let mut sessions = self.sessions.write().unwrap();
+        sessions.retain(|_, s| self.kernels.get(&s.kernel_id).is_ok());
         let mut v: Vec<_> = sessions
             .values()
             .filter_map(|s| self.model(s).ok())
@@ -207,6 +210,8 @@ mod tests {
         attach, in_process_pair, KernelTransport, Kernelspec, LaunchOptions, LaunchedKernel,
         Provisioner,
     };
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
     use std::time::Duration;
 
     struct FakeProvisioner;
@@ -224,7 +229,21 @@ mod tests {
         }
     }
 
-    struct FakeTransports;
+    /// What the next launches do. Once the script runs out, kernels start.
+    #[derive(Clone, Copy)]
+    enum Launch {
+        /// The transport fails to connect.
+        Fail,
+        /// The kernel exits before it answers, as the loser of a port
+        /// collision does.
+        Die,
+    }
+
+    #[derive(Default)]
+    struct FakeTransports {
+        script: Mutex<VecDeque<Launch>>,
+    }
+
     #[async_trait]
     impl TransportFactory for FakeTransports {
         async fn connect(
@@ -232,7 +251,13 @@ mod tests {
             _launched: &LaunchedKernel,
         ) -> ganymede_kernel_host::Result<KernelTransport> {
             let (host, side) = in_process_pair(256);
-            FakeKernel::spawn(side, ReplyOrder::ReplyThenIdle);
+            match self.script.lock().unwrap().pop_front() {
+                None => {
+                    FakeKernel::spawn(side, ReplyOrder::ReplyThenIdle);
+                }
+                Some(Launch::Die) => drop(side),
+                Some(Launch::Fail) => return Err(ganymede_kernel_host::Error::TransportClosed),
+            }
             Ok(host)
         }
     }
@@ -255,19 +280,25 @@ mod tests {
     }
 
     pub(crate) fn manager(cull: Option<Duration>) -> Arc<KernelManager> {
-        Arc::new(KernelManager::new(
+        scripted(cull).0
+    }
+
+    fn scripted(cull: Option<Duration>) -> (Arc<KernelManager>, Arc<FakeTransports>) {
+        let transports = Arc::new(FakeTransports::default());
+        let m = Arc::new(KernelManager::new(
             Arc::new(StaticKernelspecs(vec![
                 fake_spec("fake"),
                 fake_spec("other"),
             ])),
             Arc::new(FakeProvisioner),
-            Arc::new(FakeTransports),
+            transports.clone(),
             KernelManagerConfig {
                 startup_timeout: Duration::from_secs(5),
                 cull_idle: cull,
                 ..Default::default()
             },
-        ))
+        ));
+        (m, transports)
     }
 
     #[tokio::test]
@@ -446,5 +477,192 @@ mod tests {
         sm.delete(&s.id).await.unwrap();
         assert!(m.list().is_empty());
         assert_eq!(sm.get(&s.id).unwrap_err().status, 404);
+    }
+
+    async fn until_none(c: &mut crate::bridge::ClientConnection) -> Vec<(Channel, Message)> {
+        let mut got = vec![];
+        while let Some(m) = tokio::time::timeout(Duration::from_secs(2), c.recv())
+            .await
+            .expect("client closes")
+        {
+            got.push(m);
+        }
+        got
+    }
+
+    #[tokio::test]
+    async fn shut_down_kernels_are_freed() {
+        let m = manager(None);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let weak = Arc::downgrade(&m.get(&k.id).unwrap());
+        m.restart(&k.id).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        m.shutdown(&k.id).await.unwrap();
+        until_none(&mut c).await;
+        drop(c);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(weak.upgrade().is_none(), "RunningKernel leaked");
+    }
+
+    #[tokio::test]
+    async fn kernel_that_dies_is_reported_dead_and_removed() {
+        let m = manager(None);
+        let sm = SessionManager::new(m.clone());
+        let s = sm
+            .create(SessionCreate {
+                path: "nb.ipynb".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let id = s.kernel.id;
+        let weak = Arc::downgrade(&m.get(&id).unwrap());
+        let mut c = m.connect_client(&id).unwrap();
+        c.send(
+            Channel::Shell,
+            Message::new("execute_request", "sess", "u", &ExecuteRequest::new("die")),
+        )
+        .await
+        .unwrap();
+        let got = until_none(&mut c).await;
+        let last = got.last().expect("status: dead").1.clone();
+        assert_eq!(
+            (last.msg_type(), last.content["execution_state"].as_str()),
+            ("status", Some("dead"))
+        );
+        assert!(m.list().is_empty());
+        assert_eq!(m.get(&id).unwrap_err().status, 404);
+        assert!(sm.list().is_empty(), "its session goes too");
+        drop(c);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(weak.upgrade().is_none(), "RunningKernel leaked");
+    }
+
+    #[tokio::test]
+    async fn control_and_kernel_info_statuses_do_not_change_execution_state() {
+        let m = manager(None);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        c.send(
+            Channel::Shell,
+            Message::new(
+                "execute_request",
+                "sess",
+                "u",
+                &ExecuteRequest::new("sleep 2000"),
+            ),
+        )
+        .await
+        .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while m.model(&k.id).unwrap().execution_state != "busy" {
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // The fake answers kernel_info on control while a cell runs, with
+        // busy and idle statuses of its own.
+        let info = Message::new("kernel_info_request", "sess", "u", &serde_json::json!({}));
+        let info_id = info.header.msg_id.clone();
+        c.send(Channel::Control, info).await.unwrap();
+        loop {
+            let (ch, msg) = c.recv().await.unwrap();
+            if ch == Channel::IoPub
+                && msg.msg_type() == "status"
+                && msg.parent_id() == Some(info_id.as_str())
+                && msg.content["execution_state"] == "idle"
+            {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(m.model(&k.id).unwrap().execution_state, "busy");
+        m.shutdown(&k.id).await.unwrap();
+    }
+
+    fn statuses(got: &[(Channel, Message)]) -> Vec<String> {
+        got.iter()
+            .filter(|(ch, m)| *ch == Channel::IoPub && m.msg_type() == "status")
+            .map(|(_, m)| m.content["execution_state"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn start_launches_again_when_a_kernel_dies_while_starting() {
+        let (m, t) = scripted(None);
+        t.script.lock().unwrap().extend([Launch::Die, Launch::Die]);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        assert_eq!(k.execution_state, "idle");
+        assert_eq!(m.list().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn start_gives_up_after_three_launches() {
+        let (m, t) = scripted(None);
+        t.script.lock().unwrap().extend([Launch::Die; 3]);
+        assert!(m.start(Some("fake"), None).await.is_err());
+        assert!(m.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_restart_reports_dead_and_removes_the_kernel() {
+        let (m, t) = scripted(None);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let weak = Arc::downgrade(&m.get(&k.id).unwrap());
+        let mut c = m.connect_client(&k.id).unwrap();
+        t.script.lock().unwrap().push_back(Launch::Fail);
+        assert!(m.restart(&k.id).await.is_err());
+        let states = statuses(&until_none(&mut c).await);
+        assert_eq!(
+            states.first().map(String::as_str),
+            Some("restarting"),
+            "{states:?}"
+        );
+        assert_eq!(
+            states.last().map(String::as_str),
+            Some("dead"),
+            "{states:?}"
+        );
+        assert!(m.list().is_empty());
+        drop(c);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(weak.upgrade().is_none(), "RunningKernel leaked");
+    }
+
+    #[tokio::test]
+    async fn restart_that_never_answers_reports_dead() {
+        let (m, t) = scripted(None);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        t.script.lock().unwrap().extend([Launch::Die; 3]);
+        assert!(m.restart(&k.id).await.is_err());
+        let states = statuses(&until_none(&mut c).await);
+        assert_eq!(
+            states.last().map(String::as_str),
+            Some("dead"),
+            "{states:?}"
+        );
+        assert!(m.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn restart_racing_shutdown_leaves_nothing_running() {
+        let m = manager(None);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let weak = Arc::downgrade(&m.get(&k.id).unwrap());
+        // The shutdown waits for the restart, then stops the new kernel.
+        let (restart, shutdown) = tokio::join!(m.restart(&k.id), m.shutdown(&k.id));
+        assert!(restart.is_ok() && shutdown.is_ok());
+        assert!(m.list().is_empty());
+
+        // A restart that waited for a shutdown finds the kernel gone.
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let weak2 = Arc::downgrade(&m.get(&k.id).unwrap());
+        let (shutdown, restart) = tokio::join!(m.shutdown(&k.id), m.restart(&k.id));
+        assert!(shutdown.is_ok());
+        assert_eq!(restart.unwrap_err().status, 404);
+        assert!(m.list().is_empty());
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(weak.upgrade().is_none() && weak2.upgrade().is_none());
     }
 }
