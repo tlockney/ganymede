@@ -478,6 +478,11 @@ fn input_without_stdin_and_interrupt_while_prompting() {
             let mut sub = s.subscribe();
             let mut req = ganymede_engine::protocol::content::ExecuteRequest::new(l.input);
             req.allow_stdin = true;
+            // An error with stop_on_error makes ipykernel abort the shell
+            // requests that reach it before its "stop aborting" marker,
+            // which the next cell can beat on a loaded machine (#137).
+            // Queue aborts are stop_on_error_aborts_queued_cells' subject.
+            req.stop_on_error = false;
             let m = s.message("execute_request", &req);
             let id = m.header.msg_id.clone();
             s.send(Channel::Shell, m).await.unwrap();
