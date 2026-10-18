@@ -5,6 +5,9 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+# The oldest Rust that builds the workspace; ci.yml's `msrv` job checks it.
+# Raise it on purpose, when a dependency or the code needs a newer one.
+rust-version = "1.95"
 license = "MIT"
 publish = false
 

@@ -3,6 +3,7 @@ name = "ganymede-contents"
 description = "Contents seam of the server: the jupyter_server /api/contents model, a Contents trait, a filesystem implementation with atomic writes, mtime conflict checks and a relocatable checkpoint directory, and notebook trust (signing)."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

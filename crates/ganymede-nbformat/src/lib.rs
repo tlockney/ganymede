@@ -14,10 +14,10 @@
 //!   Transient metadata is
 //!   stripped, and for nbformat 4.5 missing or duplicate cell ids are
 //!   repaired (on write too), as Python nbformat does.
-//! - Writing ([`Notebook::to_string`], [`Notebook::to_file_string`],
-//!   [`write_file`]) reproduces Python nbformat's output byte for byte, so a
-//!   notebook saved by this crate produces no spurious git diff against one
-//!   saved by Jupyter.
+//! - Writing ([`Notebook::to_string`](ToString::to_string),
+//!   [`Notebook::to_file_string`], [`write_file`]) reproduces Python
+//!   nbformat's output byte for byte, so a notebook saved by this crate
+//!   produces no spurious git diff against one saved by Jupyter.
 //!
 //! The crate does no I/O beyond the `read_file`/`write_file` conveniences
 //! and [`atomic_write`], which `write_file` uses.
