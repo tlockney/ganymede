@@ -49,6 +49,12 @@ pub struct Config {
     pub cull_idle_secs: u64,
     pub startup_timeout_secs: u64,
     pub allow_origins: Vec<String>,
+    /// Accept any `Host` header. Unset, it is on unless `ip` is a loopback
+    /// address, as in `jupyter_server`.
+    pub allow_remote_access: Option<bool>,
+    /// Host names accepted besides loopback addresses while
+    /// `allow_remote_access` is off.
+    pub local_hostnames: Vec<String>,
 }
 
 impl Default for Config {
@@ -71,6 +77,8 @@ impl Default for Config {
             cull_idle_secs: 0,
             startup_timeout_secs: 60,
             allow_origins: vec![],
+            allow_remote_access: None,
+            local_hostnames: vec!["localhost".into()],
         }
     }
 }
@@ -78,5 +86,46 @@ impl Default for Config {
 impl Config {
     pub fn from_toml(text: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(text)
+    }
+
+    /// `allow_remote_access`, or whether `ip` listens beyond loopback:
+    /// `jupyter_server`'s default.
+    pub fn allow_remote_access(&self) -> bool {
+        if let Some(v) = self.allow_remote_access {
+            return v;
+        }
+        if self.ip.is_empty() {
+            return true;
+        }
+        if let Ok(addr) = self.ip.parse::<std::net::IpAddr>() {
+            return !addr.is_loopback();
+        }
+        use std::net::ToSocketAddrs;
+        match (self.ip.as_str(), self.port).to_socket_addrs() {
+            Ok(addrs) => addrs.into_iter().any(|a| !a.ip().is_loopback()),
+            Err(_) => true,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn remote_access_defaults_to_whether_ip_is_loopback() {
+        let with_ip = |ip: &str| Config {
+            ip: ip.into(),
+            ..Config::default()
+        };
+        assert!(!with_ip("127.0.0.1").allow_remote_access());
+        assert!(!with_ip("::1").allow_remote_access());
+        assert!(!with_ip("localhost").allow_remote_access());
+        assert!(with_ip("0.0.0.0").allow_remote_access());
+        assert!(with_ip("").allow_remote_access());
+        assert!(with_ip("192.168.1.10").allow_remote_access());
+        let mut cfg = with_ip("0.0.0.0");
+        cfg.allow_remote_access = Some(false);
+        assert!(!cfg.allow_remote_access());
     }
 }
