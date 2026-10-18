@@ -315,7 +315,7 @@ impl Provisioner for SubprocessProvisioner {
         cmd.process_group(0);
         cmd.kill_on_drop(false);
 
-        let mut child = cmd.spawn().map_err(|e| {
+        let mut child = spawn_tied_to_host(cmd).await.map_err(|e| {
             let _ = std::fs::remove_file(&connection_file);
             Error::Io(std::io::Error::new(
                 e.kind(),
@@ -337,6 +337,15 @@ impl Provisioner for SubprocessProvisioner {
             let status = child.wait().await.ok();
             let code = status.and_then(|s| s.code());
             tracing::info!(pid, ?code, "kernel exited");
+            // Whatever the kernel left in its process group (a background
+            // job, a worker it forgot) goes with it, as `jupyter_client`'s
+            // `killpg` does on shutdown. Safe so soon after the reap: a
+            // group id is not reused as a pid while the group has members,
+            // and with none left this finds nothing.
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
             let _ = exit_tx.send(Some(code));
         });
 
@@ -379,6 +388,91 @@ async fn prefix_lines(
 fn write_stderr(line: &[u8]) {
     use std::io::Write;
     let _ = std::io::stderr().lock().write_all(line);
+}
+
+/// Spawn the kernel so it dies with the host, where the OS allows it.
+///
+/// On Linux the child asks for `SIGKILL` when its parent goes
+/// (`PR_SET_PDEATHSIG`), so a host killed with SIGKILL, or one that
+/// panics past its cleanup, does not orphan its kernels. Linux sends that
+/// signal when the *thread* that forked the child exits, not the process,
+/// and a tokio worker or blocking-pool thread can retire while the kernel
+/// should live. So every kernel is forked from one dedicated thread that
+/// lives as long as the process. Elsewhere this is a plain spawn: kernels
+/// that honour `JPY_PARENT_PID` (ipykernel does) still exit on their own.
+#[cfg(feature = "subprocess")]
+async fn spawn_tied_to_host(
+    #[allow(unused_mut)] mut cmd: tokio::process::Command,
+) -> std::io::Result<tokio::process::Child> {
+    #[cfg(target_os = "linux")]
+    {
+        let parent = std::process::id();
+        // SAFETY: `prctl`, `getppid` and `raise` are async-signal-safe and
+        // the closure allocates nothing.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // The host died between fork and prctl: no signal will come.
+                if libc::getppid() as u32 != parent {
+                    libc::raise(libc::SIGKILL);
+                }
+                Ok(())
+            });
+        }
+        spawner::spawn(cmd).await
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        cmd.spawn()
+    }
+}
+
+#[cfg(all(feature = "subprocess", target_os = "linux"))]
+mod spawner {
+    use std::sync::mpsc;
+    use std::sync::OnceLock;
+    use tokio::sync::oneshot;
+
+    type Job = (
+        tokio::process::Command,
+        tokio::runtime::Handle,
+        oneshot::Sender<std::io::Result<tokio::process::Child>>,
+    );
+
+    /// The spawner thread's queue. The sender lives in a static, so the
+    /// thread's `recv` loop never ends and the thread never exits.
+    static JOBS: OnceLock<mpsc::Sender<Job>> = OnceLock::new();
+
+    fn jobs() -> &'static mpsc::Sender<Job> {
+        JOBS.get_or_init(|| {
+            let (tx, rx) = mpsc::channel::<Job>();
+            std::thread::Builder::new()
+                .name("ganymede-kernel-spawner".into())
+                .spawn(move || {
+                    for (mut cmd, handle, reply) in rx {
+                        // The child's exit is watched by the caller's
+                        // runtime, so register it there.
+                        let _guard = handle.enter();
+                        let _ = reply.send(cmd.spawn());
+                    }
+                })
+                .expect("spawning the kernel spawner thread");
+            tx
+        })
+    }
+
+    pub(super) async fn spawn(
+        cmd: tokio::process::Command,
+    ) -> std::io::Result<tokio::process::Child> {
+        let (tx, rx) = oneshot::channel();
+        let gone = || std::io::Error::other("kernel spawner thread is gone");
+        jobs()
+            .send((cmd, tokio::runtime::Handle::current(), tx))
+            .map_err(|_| gone())?;
+        rx.await.map_err(|_| gone())?
+    }
 }
 
 // ----- attach --------------------------------------------------------------
@@ -598,6 +692,149 @@ mod tests {
         ));
         k.process.terminate().await.unwrap();
         k.process.kill().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    fn sh_spec(script: &str) -> Kernelspec {
+        let mut spec: Kernelspec = serde_json::from_value(serde_json::json!({
+            "argv": ["sh", "-c", script],
+            "display_name": "",
+            "language": "",
+        }))
+        .unwrap();
+        spec.name = "sh".into();
+        spec
+    }
+
+    #[cfg(unix)]
+    async fn launch_sh(runtime_dir: &Path, script: &str) -> LaunchedKernel {
+        let prov = SubprocessProvisioner {
+            runtime_dir: runtime_dir.into(),
+            ip: "127.0.0.1".into(),
+        };
+        let opts = LaunchOptions {
+            quiet: true,
+            ..Default::default()
+        };
+        prov.launch(&sh_spec(script), opts).await.unwrap()
+    }
+
+    /// Alive and not a zombie waiting for a reaper.
+    #[cfg(unix)]
+    fn pid_running(pid: i32) -> bool {
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return false;
+        }
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => !stat
+                .rsplit_once(')')
+                .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z')),
+            Err(_) => !cfg!(target_os = "linux"),
+        }
+    }
+
+    #[cfg(unix)]
+    fn read_pid(path: &Path) -> i32 {
+        for _ in 0..100 {
+            if let Some(pid) = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|s| s.trim().parse().ok())
+            {
+                return pid;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!("no pid in {}", path.display());
+    }
+
+    #[cfg(unix)]
+    async fn until_gone(pid: i32) -> bool {
+        for _ in 0..100 {
+            if !pid_running(pid) {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn processes_left_in_the_group_die_with_the_kernel() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("bg.pid");
+        // A background job stays in the kernel's group; the kernel exits.
+        let script = format!("sleep 30 & echo $! > '{}'; exit 0", file.display());
+        let k = launch_sh(dir.path(), &script).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), k.process.wait())
+            .await
+            .unwrap();
+        let bg = read_pid(&file);
+        assert!(
+            until_gone(bg).await,
+            "background job {bg} outlived the kernel"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn kernel_outlives_the_thread_that_launched_it() {
+        // Launch from a thread that then exits, as a tokio worker can.
+        let dir = tempfile::tempdir().unwrap();
+        let rt_dir = dir.path().to_path_buf();
+        let pid = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let k = rt.block_on(launch_sh(&rt_dir, "exec sleep 30"));
+            let pid = k.process.pid().unwrap() as i32;
+            std::mem::forget(k);
+            pid
+        })
+        .join()
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(pid_running(pid), "kernel died with its launching thread");
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+
+    /// Run by [`kernel_dies_with_its_host`] in a child test process: launch
+    /// a kernel, report its pid, then wait to be killed.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "helper process for kernel_dies_with_its_host"]
+    async fn host_helper() {
+        let Some(out) = std::env::var_os("GANYMEDE_TEST_HOST_PID_FILE") else {
+            return;
+        };
+        let out = PathBuf::from(out);
+        let k = launch_sh(out.parent().unwrap(), "exec sleep 30").await;
+        std::fs::write(&out, k.process.pid().unwrap().to_string()).unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn kernel_dies_with_its_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("kernel.pid");
+        let mut host = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "process::tests::host_helper", "--ignored"])
+            .env("GANYMEDE_TEST_HOST_PID_FILE", &file)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let kernel = read_pid(&file);
+        assert!(pid_running(kernel));
+        host.kill().unwrap();
+        host.wait().unwrap();
+        assert!(
+            until_gone(kernel).await,
+            "kernel {kernel} outlived its host"
+        );
     }
 
     #[test]
