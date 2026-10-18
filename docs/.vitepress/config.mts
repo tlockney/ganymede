@@ -66,6 +66,10 @@ export default defineConfig({
     },
   },
   themeConfig: {
+    // The title and Home go to the landing page at the site's root, outside
+    // the docs' base. target keeps VitePress's router from handling the
+    // click as a docs route.
+    logoLink: { link: `${site}/`, target: "_self" },
     nav: [
       { text: "Home", link: `${site}/`, target: "_self", noIcon: true },
       { text: "Get started", link: "/getting-started" },
