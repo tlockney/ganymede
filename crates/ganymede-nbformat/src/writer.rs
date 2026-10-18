@@ -14,7 +14,7 @@ use serde_json::ser::{Formatter, PrettyFormatter};
 use serde_json::{Map, Value};
 
 use crate::multiline::splitlines;
-use crate::reader::strip_transient;
+use crate::reader::{normalize_cell_ids, strip_transient};
 use crate::types::{is_split_mime, Notebook};
 use crate::Result;
 
@@ -256,10 +256,12 @@ fn dumps(value: &Value) -> String {
 
 impl Notebook {
     /// The notebook as a JSON tree in on-disk form: transient metadata
-    /// stripped, multi-line text split into arrays of lines, keys sorted.
+    /// stripped, missing or duplicate cell ids repaired (nbformat 4.5 and
+    /// later), multi-line text split into arrays of lines, keys sorted.
     pub fn to_disk_value(&self) -> Value {
         let mut value = serde_json::to_value(self).expect("Notebook serializes to a JSON object");
         strip_transient(&mut value);
+        normalize_cell_ids(&mut value);
         split_lines(&mut value);
         sort_keys(&mut value);
         value

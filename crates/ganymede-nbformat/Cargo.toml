@@ -10,6 +10,11 @@ publish.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
+
+# Browser wasm has no OS randomness; take it from JavaScript.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
 tempfile.workspace = true

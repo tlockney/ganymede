@@ -4,8 +4,13 @@
 //!   (minor 5). Unknown fields are kept in `extra` maps so nothing is lost on
 //!   a round trip.
 //! - Reading ([`Notebook::from_str`], [`Notebook::from_reader`],
-//!   [`read_file`]) is lenient: multi-line text may be a string or an array of
-//!   strings, and transient metadata is stripped as Python nbformat does.
+//!   [`read_file`]) is lenient, like Python nbformat, which only logs
+//!   validation errors: multi-line text may be a string or an array of
+//!   strings, `null`s and missing output fields read as empty or default,
+//!   outputs that still do not fit are kept verbatim as [`Output::Unknown`],
+//!   and lone surrogate escapes read as U+FFFD. Transient metadata is
+//!   stripped, and for nbformat 4.5 missing or duplicate cell ids are
+//!   repaired (on write too), as Python nbformat does.
 //! - Writing ([`Notebook::to_string`], [`Notebook::to_file_string`],
 //!   [`write_file`]) reproduces Python nbformat's output byte for byte, so a
 //!   notebook saved by this crate produces no spurious git diff against one
