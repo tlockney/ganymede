@@ -157,6 +157,27 @@ fn run_stops_on_sigterm_and_sighup() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn second_ctrl_c_stops_a_cell_that_ignores_interrupts() {
+    let child = ganymede(&["run", "-k", "fake", "hang 30000"])
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let start = std::time::Instant::now();
+    for _ in 0..2 {
+        unsafe {
+            kill(child.id() as i32, 2);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(130), "{}", stderr(&out));
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    assert!(stderr(&out).contains("Ctrl-C again to stop"));
+}
+
 #[test]
 fn existing_searches_the_runtime_dir_and_errors_print_once() {
     let rt = tempfile::tempdir().unwrap();

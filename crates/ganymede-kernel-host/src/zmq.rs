@@ -7,7 +7,7 @@ use crate::transport::{Incoming, KernelTransport, TransportSink};
 use crate::{Error, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
-use ganymede_protocol::wire::{self, Signer};
+use ganymede_protocol::wire::{self, DigestHistory, Signer};
 use ganymede_protocol::{Channel, ConnectionInfo, Message};
 use std::sync::Arc;
 use std::time::Duration;
@@ -48,6 +48,7 @@ impl ZmqTransport {
     /// out, under its timeout.
     pub async fn connect(info: &ConnectionInfo) -> Result<KernelTransport> {
         let signer = info.signer()?;
+        let history = Arc::new(DigestHistory::default());
         let (in_tx, in_rx) = mpsc::channel::<(Channel, Message)>(1024);
         let mut outgoing = std::collections::HashMap::new();
         let mut tasks = Vec::new();
@@ -92,6 +93,7 @@ impl ZmqTransport {
                 },
                 identity.clone(),
                 signer.clone(),
+                history.clone(),
                 out_rx,
                 in_tx.clone(),
             )));
@@ -101,6 +103,7 @@ impl ZmqTransport {
             info.iopub_endpoint(),
             iopub_ready,
             signer.clone(),
+            history,
             in_tx.clone(),
         )));
 
@@ -215,6 +218,7 @@ async fn dealer_loop(
     }: Endpoint,
     identity: PeerIdentity,
     signer: Signer,
+    history: Arc<DigestHistory>,
     mut out_rx: mpsc::Receiver<Message>,
     in_tx: mpsc::Sender<(Channel, Message)>,
 ) {
@@ -250,7 +254,7 @@ async fn dealer_loop(
                 match got {
                     Ok(zmsg) => {
                         let frames: Vec<Bytes> = zmsg.into_vec();
-                        match wire::decode(&signer, &frames) {
+                        match wire::decode_once(&signer, &history, &frames) {
                             Ok(w) => {
                                 if in_tx.send((channel, w.message)).await.is_err() { break }
                             }
@@ -269,6 +273,7 @@ async fn sub_loop(
     endpoint: String,
     ready: watch::Sender<bool>,
     signer: Signer,
+    history: Arc<DigestHistory>,
     in_tx: mpsc::Sender<(Channel, Message)>,
 ) {
     let mut socket = connect_sub(&endpoint).await;
@@ -281,7 +286,7 @@ async fn sub_loop(
         match socket.recv().await {
             Ok(zmsg) => {
                 let frames: Vec<Bytes> = zmsg.into_vec();
-                match wire::decode(&signer, &frames) {
+                match wire::decode_once(&signer, &history, &frames) {
                     Ok(w) => {
                         if in_tx.send((Channel::IoPub, w.message)).await.is_err() {
                             break;
