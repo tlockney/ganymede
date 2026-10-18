@@ -110,6 +110,8 @@ fn cors(allow_origins: Vec<String>) -> tower_http::cors::CorsLayer {
             header::ACCEPT,
             header::CONTENT_TYPE,
             header::AUTHORIZATION,
+            header::IF_MATCH,
             HeaderName::from_static("x-xsrftoken"),
         ])
+        .expose_headers([header::ETAG])
 }

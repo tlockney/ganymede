@@ -1683,3 +1683,94 @@ async fn login_next_with_control_characters_stays_on_the_server() {
     let (_, h, _) = send(&app, get_req("/login?next=%2Flab%2Ftree%2Fa.ipynb", None)).await;
     assert_eq!(h[header::LOCATION], "/lab/tree/a.ipynb");
 }
+
+/// A request with extra headers; returns status, headers and JSON body.
+async fn call_with(
+    app: &axum::Router,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    headers: &[(header::HeaderName, &str)],
+) -> (StatusCode, axum::http::HeaderMap, Value) {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::AUTHORIZATION, format!("token {TOKEN}"))
+        .header(header::CONTENT_TYPE, "application/json");
+    for (name, value) in headers {
+        req = req.header(name, *value);
+    }
+    let body = body.map_or_else(Body::empty, |b| Body::from(b.to_string()));
+    let resp = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+    let (status, headers) = (resp.status(), resp.headers().clone());
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, headers, value)
+}
+
+#[tokio::test]
+async fn contents_etag_and_if_match() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(state(dir.path()));
+    let text = |s: &str| Some(json!({"type": "file", "format": "text", "content": s}));
+    let etag = |h: &axum::http::HeaderMap| h[header::ETAG].to_str().unwrap().to_string();
+
+    // If-Match on a missing file fails and creates nothing.
+    let (st, _, _) = call_with(
+        &app,
+        "PUT",
+        "/api/contents/a.txt",
+        text("v1"),
+        &[(header::IF_MATCH, "*")],
+    )
+    .await;
+    assert_eq!(st, StatusCode::PRECONDITION_FAILED);
+    assert!(!dir.path().join("a.txt").exists());
+
+    // Saves and content GETs carry the sha256 as ETag; the body keeps
+    // jupyter_server's null hash unless ?hash=1.
+    let (st, h, saved) = call_with(&app, "PUT", "/api/contents/a.txt", text("v1"), &[]).await;
+    assert_eq!(st, StatusCode::CREATED);
+    let sha_v1 = "\"3bfc269594ef649228e9a74bab00f042efc91d5acc6fbee31a382e80d42388fe\"";
+    assert_eq!(etag(&h), sha_v1);
+    assert!(saved["hash"].is_null() && saved["hash_algorithm"].is_null());
+    let (_, h, got) = call_with(&app, "GET", "/api/contents/a.txt", None, &[]).await;
+    assert_eq!(etag(&h), sha_v1);
+    assert!(got["hash"].is_null());
+    let (_, h, _) = call_with(&app, "GET", "/api/contents/a.txt?content=0", None, &[]).await;
+    assert!(h.get(header::ETAG).is_none());
+    let (_, _, got) = call_with(&app, "GET", "/api/contents/a.txt?hash=1", None, &[]).await;
+    assert_eq!(format!("\"{}\"", got["hash"].as_str().unwrap()), sha_v1);
+
+    // A matching tag (in a list, beside a weak one) saves.
+    let (st, h, _) = call_with(
+        &app,
+        "PUT",
+        "/api/contents/a.txt",
+        text("v2"),
+        &[(header::IF_MATCH, &format!("W/\"x\", {sha_v1}"))],
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let tag_v2 = etag(&h);
+
+    // Someone else writes; the old tag no longer matches.
+    std::fs::write(dir.path().join("a.txt"), "external").unwrap();
+    for stale in [tag_v2.clone(), format!("W/{tag_v2}")] {
+        let (st, _, err) = call_with(
+            &app,
+            "PUT",
+            "/api/contents/a.txt",
+            text("v3"),
+            &[(header::IF_MATCH, &stale)],
+        )
+        .await;
+        assert_eq!(st, StatusCode::PRECONDITION_FAILED, "{err}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "external"
+    );
+}

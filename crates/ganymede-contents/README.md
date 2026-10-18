@@ -15,7 +15,7 @@ are the source of truth ([the iPad use case](../../docs/ipados.md)).
 - `Contents`: `get`, `save`, `delete`, `rename`, `new_untitled`, `copy`, and
   the four checkpoint calls, all `async`.
 - `Error` with `status()` returning the HTTP status `jupyter_server` would
-  send (404, 403, 409, 400, 500), so the HTTP layer maps errors blindly.
+  send (404, 403, 409, 412, 400, 500), so the HTTP layer maps errors blindly.
 - `FsContents::new(root, FsOptions { checkpoint_dir, allow_hidden, read_only })`:
   - Path safety: `..`, absolute paths and backslashes are `Forbidden` before
     any I/O; so is anything a symlink makes resolve outside the canonical
@@ -29,6 +29,11 @@ are the source of truth ([the iPad use case](../../docs/ipados.md)).
     client's copy wins. This is an opt-in extension: `jupyter_server` has
     no such check. The check and the write of one save run under a
     per-path lock.
+  - Exact variant: `SaveRequest.if_match` (from an HTTP `If-Match`
+    header) is a 412 `PreconditionFailed` unless the file exists and, for
+    `IfMatch::Hashes`, its sha256 is listed. File and notebook saves
+    return the sha256 of what they wrote in `hash`, which the server
+    sends as the `ETag`. Also opt-in, also under the per-path lock.
   - The first save of a notebook creates its checkpoint, as
     `jupyter_server` does, so a bad first edit can be reverted.
   - `new_untitled` and `copy` claim the new name with an exclusive create,

@@ -15,7 +15,9 @@ use chrono::{DateTime, TimeDelta, Utc};
 use ganymede_nbformat::Notebook;
 use serde_json::Value;
 
-use crate::model::{Checkpoint, ContentType, ContentsModel, Format, GetOptions, SaveRequest};
+use crate::model::{
+    Checkpoint, ContentType, ContentsModel, Format, GetOptions, IfMatch, SaveRequest,
+};
 use crate::paths::ApiPath;
 use crate::trust::{self, Notary};
 use crate::{Contents, Error, Result};
@@ -338,10 +340,7 @@ impl Inner {
                 None
             };
             let hash = match (&bytes, options.hash) {
-                (Some(bytes), true) => {
-                    use sha2::Digest;
-                    Some(hex::encode(sha2::Sha256::digest(bytes)))
-                }
+                (Some(bytes), true) => Some(sha256_hex(bytes)),
                 _ => None,
             };
             let content = bytes.filter(|_| options.content);
@@ -480,9 +479,13 @@ impl Inner {
 impl Inner {
     fn save(&self, path: &str, request: SaveRequest) -> Result<ContentsModel> {
         let r = self.resolve_for_write(path)?;
-        let message = self.with_save_lock(&r.os, || self.save_locked(&r, request))?;
+        let (message, hash) = self.with_save_lock(&r.os, || self.save_locked(&r, request))?;
         let mut model = self.get_without_content(&r.api)?;
         model.message = message;
+        if let Some(hash) = hash {
+            model.hash = Some(hash);
+            model.hash_algorithm = Some("sha256".into());
+        }
         Ok(model)
     }
 
@@ -511,12 +514,24 @@ impl Inner {
         result
     }
 
-    /// Returns the validation message of a notebook that broke the schema.
-    fn save_locked(&self, r: &Resolved, request: SaveRequest) -> Result<Option<String>> {
+    /// Returns the validation message of a notebook that broke the schema
+    /// and the sha256 of the bytes written for a file or notebook.
+    fn save_locked(
+        &self,
+        r: &Resolved,
+        request: SaveRequest,
+    ) -> Result<(Option<String>, Option<String>)> {
+        if let Some(cond) = &request.if_match {
+            // Later chunks append to the upload in progress.
+            if request.chunk.is_none_or(|c| c == 1) {
+                check_precondition(r, cond)?;
+            }
+        }
         if let Some(chunk) = request.chunk {
-            return self.save_chunk(r, chunk, request).map(|()| None);
+            return self.save_chunk(r, chunk, request).map(|()| (None, None));
         }
         let mut message = None;
+        let mut hash = None;
         match request.kind {
             ContentType::Directory => self.save_directory(r)?,
             ContentType::Notebook | ContentType::File => {
@@ -551,6 +566,7 @@ impl Inner {
                     return Err(Error::BadRequest(format!("{} is a directory", r.api)));
                 }
                 self.atomic_write(&r.os, &r.api, &bytes)?;
+                hash = Some(sha256_hex(&bytes));
                 if let Some(nb) = sign {
                     self.sign(&r.api, &nb);
                 }
@@ -564,7 +580,7 @@ impl Inner {
                 }
             }
         }
-        Ok(message)
+        Ok((message, hash))
     }
 
     /// One piece of a chunked upload, as jupyter_server's
@@ -938,6 +954,35 @@ impl Inner {
                 tracing::warn!(from = %from, to = %to, error = %e, "could not move checkpoint");
             }
         }
+    }
+}
+
+/// Lowercase hex sha256, the `hash` jupyter_server reports for `?hash=1`.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(bytes))
+}
+
+/// The `If-Match` check of a save: [`IfMatch::Any`] needs the path to
+/// exist, [`IfMatch::Hashes`] a file whose sha256 is listed.
+fn check_precondition(r: &Resolved, cond: &IfMatch) -> Result<()> {
+    let failed = |why: &str| Err(Error::PreconditionFailed(format!("{}: {why}", r.api)));
+    let meta = match fs::metadata(&r.os) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return failed("does not exist"),
+        Err(e) => return Err(Error::Io(e)),
+    };
+    let IfMatch::Hashes(tags) = cond else {
+        return Ok(());
+    };
+    if !meta.is_file() {
+        return failed("is not a file");
+    }
+    let current = sha256_hex(&fs::read(&r.os).map_err(|e| io_to_error(e, &r.api))?);
+    if tags.contains(&current) {
+        Ok(())
+    } else {
+        failed(&format!("content changed, sha256 is now {current}"))
     }
 }
 

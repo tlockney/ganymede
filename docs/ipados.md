@@ -38,8 +38,11 @@ Ganymede replaces the Python one there, which means:
   checkpoint directory configurable to a path outside the synced folder. `jupyter_server` has
   no change check on PUT (JupyterLab compares timestamps itself before
   saving); Ganymede adds an opt-in one: a PUT whose body carries
-  `last_modified` gets 409 if the file on disk is newer. Clients that
-  omit it, such as VS Code, save unconditionally.
+  `last_modified` gets 409 if the file on disk is newer by more than
+  500 ms. For an exact check, a content `GET` and every `PUT` carry the
+  file's sha256 as `ETag`, and a `PUT` with `If-Match` gets 412 unless the
+  file still has that hash. Clients that send neither, such as VS Code and
+  JupyterLab, save unconditionally.
 - Runs as a daemon: launchd on the Mac mini, one config file, logs to a
   file.
 

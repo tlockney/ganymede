@@ -16,6 +16,8 @@
 //!   the target. A sync client never sees a half-written notebook.
 //! - External-change detection: a [`SaveRequest::last_modified`] older than
 //!   the file's current mtime by more than 500 ms is a [`Error::Conflict`].
+//!   [`SaveRequest::if_match`] is the exact variant: the file's sha256 must
+//!   match, or the save is an [`Error::PreconditionFailed`].
 //! - The checkpoint directory can be moved outside the root, so checkpoints
 //!   are not synced along with the notebooks.
 //!
@@ -31,7 +33,7 @@ pub mod trust;
 use async_trait::async_trait;
 
 pub use fs::{FsContents, FsOptions, CHECKPOINT_ID, DEFAULT_CHECKPOINT_DIR};
-pub use model::{Checkpoint, ContentType, ContentsModel, Format, GetOptions, SaveRequest};
+pub use model::{Checkpoint, ContentType, ContentsModel, Format, GetOptions, IfMatch, SaveRequest};
 pub use paths::{kernel_cwd, normalize_api_path};
 pub use trust::Notary;
 
@@ -60,6 +62,10 @@ pub enum Error {
     /// client's copy was taken.
     #[error("conflict: {0}")]
     Conflict(String),
+    /// The save's [`SaveRequest::if_match`] precondition did not hold: the
+    /// file is missing or its content is not the one the client named.
+    #[error("precondition failed: {0}")]
+    PreconditionFailed(String),
     /// The request is malformed for the target: bad content, bad format,
     /// wrong type for a path, a non-empty directory, a hidden path on write.
     #[error("bad request: {0}")]
@@ -85,6 +91,7 @@ impl Error {
             Error::NotFound(_) | Error::OutsideRoot(_) => 404,
             Error::Forbidden(_) => 403,
             Error::Conflict(_) => 409,
+            Error::PreconditionFailed(_) => 412,
             Error::BadRequest(_) => 400,
             Error::Io(e) => match e.kind() {
                 ErrorKind::NotFound => 404,
@@ -118,8 +125,11 @@ pub trait Contents: Send + Sync {
 
     /// Create or overwrite; `PUT /api/contents/{path}`.
     ///
-    /// Returns the saved model without content. See [`SaveRequest`] for the
-    /// conflict check driven by `last_modified`.
+    /// Returns the saved model without content. For a file or notebook
+    /// save other than a chunk, `hash` and `hash_algorithm` are set to the
+    /// sha256 of the bytes written, the value a later [`IfMatch`] names.
+    /// See [`SaveRequest`] for the conflict checks driven by
+    /// `last_modified` and `if_match`.
     async fn save(&self, path: &str, request: SaveRequest) -> Result<ContentsModel>;
 
     /// Delete a file, notebook or empty directory, and its checkpoints;
@@ -189,6 +199,7 @@ mod tests {
         assert_eq!(Error::Forbidden("x".into()).status(), 403);
         assert_eq!(Error::OutsideRoot("x".into()).status(), 404);
         assert_eq!(Error::Conflict("x".into()).status(), 409);
+        assert_eq!(Error::PreconditionFailed("x".into()).status(), 412);
         assert_eq!(Error::BadRequest("x".into()).status(), 400);
         assert_eq!(Error::Io(std::io::Error::other("x")).status(), 500);
         assert_eq!(
