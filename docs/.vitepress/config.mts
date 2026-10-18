@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitepress";
 import { groups } from "./levels.ts";
+import { notesPlugin, withEntries } from "./notes.ts";
 
 const repo = "https://github.com/tlockney/ganymede";
 // Where the site is served: the custom domain set in the repository's Pages
@@ -34,6 +35,8 @@ export default defineConfig({
   base,
   cleanUrls: true,
   rewrites: { "README.md": "index.md" },
+  // Log entries are not pages of their own; notes.ts puts them on notes.md.
+  srcExclude: ["notes/**"],
   sitemap: { hostname: `${site}/docs/` },
   markdown: {
     config(md) {
@@ -48,8 +51,9 @@ export default defineConfig({
     },
   },
   // Swap in a theme component that folds the "On this page" outline; see
-  // theme/OutlineItem.vue.
+  // theme/OutlineItem.vue. notesPlugin builds the development log page.
   vite: {
+    plugins: [notesPlugin(docsDir)],
     resolve: {
       alias: [
         {
@@ -70,7 +74,12 @@ export default defineConfig({
     // Groups start folded; VitePress opens the one holding the current page.
     sidebar: groups().map(({ text, items }) => ({ text, items, collapsed: true })),
     outline: [2, 3],
-    search: { provider: "local" },
+    search: {
+      provider: "local",
+      options: {
+        _render: (src, env, md) => md.render(env.relativePath === "notes.md" ? withEntries(src, docsDir) : src, env),
+      },
+    },
     editLink: { pattern: `${repo}/edit/main/docs/:path`, text: "Edit this page on GitHub" },
     socialLinks: [{ icon: "github", link: repo }],
     footer: { message: "MIT license." },
