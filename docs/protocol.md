@@ -1,8 +1,10 @@
 # Protocol and kernel host
 
 What a Jupyter server has to get right, component by component: the
-requirements Ganymede was built against. For how the crates are arranged,
-see [Architecture](architecture.md).
+requirements Ganymede was built against. Most are met; where Ganymede
+does something different or doesn't do it yet, the item says so ("Not
+yet", "Ganymede"). The [roadmap](roadmap.md) tracks what is planned. For
+how the crates are arranged, see [Architecture](architecture.md).
 
 ## Protocol crate
 
@@ -12,8 +14,11 @@ see [Architecture](architecture.md).
   empty-key case (no signing) must be supported.
 - Header: `msg_id`, `session`, `username`, `date` (ISO 8601), `msg_type`,
   `version` ("5.5"), optional `subshell_id` (5.5).
-- Typed `content` for every message type, with unknown fields preserved
-  (`serde_json::Value` passthrough) because kernels add extras.
+- Typed `content`, with unknown fields preserved (`serde_json::Value`
+  passthrough) because kernels add extras. Ganymede types the messages it
+  reads or builds (execute, complete, inspect, is_complete, kernel_info,
+  shutdown, interrupt, the iopub outputs, stdin, comms); the rest (debug,
+  history, subshells) pass through as JSON.
 - Five channels: shell (DEALER), control (DEALER), iopub (SUB; XPUB on the
   kernel side as of 5.5), stdin (DEALER), heartbeat (REQ).
 - Connection file: JSON with ip, transport (`tcp` or `ipc`), five ports, key,
@@ -23,7 +28,9 @@ see [Architecture](architecture.md).
   comm_info, kernel_info, shutdown, interrupt, debug (DAP), stream,
   display_data, update_display_data, execute_input, execute_result, error,
   status, clear_output, comm_open/msg/close, input_request/reply, and the
-  5.5 subshell messages (create/delete/list) plus `iopub_welcome`.
+  5.5 subshell messages (create/delete/list) plus `iopub_welcome`. Ganymede
+  carries `subshell_id` in the header and passes subshell messages
+  through; it neither sends nor needs `iopub_welcome` yet.
 
 ZMQ options: the pure-Rust `zeromq` crate (used by `runtimelib` and Deno's
 built-in kernel) or `zmq` bindings to libzmq. Pure Rust avoids a C
@@ -41,27 +48,34 @@ A long-running process that owns the ZMQ sockets for every kernel and
 multiplexes clients onto them. Responsibilities:
 
 - Kernelspec discovery: `kernel.json` under the Jupyter data dirs
-  (`JUPYTER_PATH`, `~/.local/share/jupyter/kernels`, `<sys.prefix>/share/jupyter/kernels`,
+  (`JUPYTER_PATH`, `~/.local/share/jupyter/kernels`,
   `/usr/share/jupyter/kernels`, macOS `~/Library/Jupyter`, Windows `%APPDATA%`).
+  `jupyter_client` also searches `<sys.prefix>/share/jupyter/kernels`, the
+  Python environment it runs in. Ganymede has no Python environment, so it
+  doesn't; `--kernelspec-root` adds a conda or venv prefix by hand.
   Fields: `argv` with `{connection_file}` substitution, `env`, `display_name`,
   `language`, `interrupt_mode`, `metadata`.
 - Port allocation: bind to find free ports, release, pass to kernel. Racy by
   design; `ipc` transport sidesteps it on POSIX.
 - Launch: subprocess with env, cwd, process group (POSIX) or job object
-  (Windows) so interrupt and kill reach children.
+  (Windows) so interrupt and kill reach children. Not yet on Windows:
+  there is no job object, and the Windows build is untested.
 - Startup handshake: send `kernel_info_request` on shell and control
   repeatedly until both reply. This "nudge" exists because PUB/SUB has a
   slow-joiner problem: iopub messages sent before the subscriber connects
   are lost, including the initial `starting` status. Don't skip it.
 - Heartbeat: REQ/REP ping on an interval; missing replies mean the kernel
-  is hung or dead.
+  is hung or dead. Ganymede pings only kernels it attached to (`run
+  --existing`, `Engine::connect`); for a kernel it launched, the process
+  exiting is the signal.
 - Interrupt: `SIGINT` to the process group when `interrupt_mode` is
   `signal`; `interrupt_request` on control when it is `message`. Windows
   has no SIGINT for this; ipykernel uses a named event via an env var.
 - Shutdown: `shutdown_request` on control, wait, then SIGTERM, then
   SIGKILL. Remove the connection file.
 - Autorestart: poll the process; restart on unexpected exit, bounded
-  retries, with a `restarting` status broadcast to clients.
+  retries, with a `restarting` status broadcast to clients. Not yet:
+  Ganymede reports the kernel `dead` and removes it.
 - Multi-client: many websocket clients per kernel. iopub is broadcast;
   shell replies are routed back to the client whose `session` sent the
   request. `execute_input` on iopub is how other clients see executions.
@@ -83,7 +97,7 @@ nbclient, papermill, Quarto), the REST surface must match `jupyter_server`:
 - `/api/kernelspecs`, `/api/kernels` (list, start, get, delete, interrupt,
   restart), `/api/sessions` (notebook path to kernel mapping),
   `/api/contents` (get, put, patch, delete, checkpoints), `/api/status`,
-  `/api/terminals` (optional).
+  `/api/terminals` (optional; Ganymede has none).
 - `/api/kernels/{id}/channels` websocket. Two subprotocols: the default
   (JSON with a `channel` key, binary buffers in a separate frame layout)
   and `v1.kernel.websocket.jupyter.org` (single binary frame with offset
@@ -93,10 +107,13 @@ nbclient, papermill, Quarto), the REST surface must match `jupyter_server`:
   non-GET, origin check on websocket upgrade, CORS. The server executes
   arbitrary code by design, so this is not optional even on localhost.
 - `base_url` prefix support for reverse proxies and JupyterHub.
-- Static asset serving for the UI (embed with `rust-embed`).
+- Static asset serving for the UI. Ganymede serves JupyterLab's bundle
+  from disk, as `ganymede lab install` unpacks it, rather than embedding
+  one.
 
-Stack: tokio, axum, tokio-tungstenite, serde, hmac/sha2, uuid, chrono,
-portable-pty (terminals), notify (file watching).
+Stack: tokio, axum, tokio-tungstenite, serde, hmac/sha2, uuid, chrono.
+Terminals (portable-pty) and file watching (notify) would add to it;
+neither is built.
 
 ## Notebook format
 
@@ -111,6 +128,9 @@ portable-pty (terminals), notify (file watching).
   `indent=1`, `sort_keys=True`, trailing newline. Match it exactly or
   every save produces a diff.
 - Validate against the JSON schema; accept v3 and upgrade on load.
+  Ganymede reads leniently and reports schema problems the way
+  `jupyter_server` does (`message` in the contents model); v3 is not read
+  yet.
 - `ganymede-nbformat` matches Python's writer byte for byte.
 
 ## Document model and collaboration

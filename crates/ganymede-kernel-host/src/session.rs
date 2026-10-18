@@ -765,6 +765,154 @@ mod tests {
         assert!(!s.is_alive());
     }
 
+    #[tokio::test]
+    async fn exit_mid_cell_after_output_fails_the_request() {
+        let (s, _) = boot(ReplyOrder::ReplyThenIdle).await;
+        let mut sub = s.subscribe();
+        let r = s
+            .execute(content::ExecuteRequest::new("exit"), Duration::from_secs(5))
+            .await;
+        assert!(matches!(r, Err(Error::KernelDied)), "{:?}", r.err());
+        // What it printed before vanishing still reached subscribers.
+        let mut texts = Vec::new();
+        while let Ok((_, m)) = sub.try_recv() {
+            if m.msg_type() == "stream" {
+                texts.push(m.content["text"].clone());
+            }
+        }
+        assert_eq!(texts, ["partial\n"]);
+        assert!(!s.is_alive());
+    }
+
+    #[tokio::test]
+    async fn displays_updates_and_clears_are_collected_in_order() {
+        let (s, _) = boot(ReplyOrder::IdleThenReply).await;
+        let e = s
+            .execute(
+                content::ExecuteRequest::new("display"),
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        let types: Vec<_> = e.outputs.iter().map(|m| m.msg_type()).collect();
+        assert_eq!(
+            types,
+            [
+                "execute_input",
+                "display_data",
+                "update_display_data",
+                "clear_output",
+                "stream"
+            ]
+        );
+        assert_eq!(e.outputs[2].content["transient"]["display_id"], "d1");
+    }
+
+    #[tokio::test]
+    async fn queued_executes_are_aborted_after_an_error() {
+        let (s, _) = boot(ReplyOrder::ReplyThenIdle).await;
+        let req =
+            |code: &str| s.execute(content::ExecuteRequest::new(code), Duration::from_secs(5));
+        let (a, b, c) = tokio::join!(req("raise"), req("after"), req("later"));
+        let status = |e: &Execution| e.reply.content["status"].clone();
+        assert_eq!(status(&a.unwrap()), "error");
+        assert_eq!(status(&b.unwrap()), "aborted");
+        assert_eq!(status(&c.unwrap()), "aborted");
+        // Without stop_on_error the next cell runs.
+        let mut raise = content::ExecuteRequest::new("raise");
+        raise.stop_on_error = false;
+        let (a, b) = tokio::join!(s.execute(raise, Duration::from_secs(5)), req("after"));
+        assert_eq!(status(&a.unwrap()), "error");
+        assert_eq!(status(&b.unwrap()), "ok");
+        assert_eq!(s.execution_state(), ExecutionState::Idle);
+    }
+
+    #[tokio::test]
+    async fn comms_echo_binary_buffers_and_unknown_targets_close() {
+        let (s, _) = boot(ReplyOrder::ReplyThenIdle).await;
+        let mut sub = s.subscribe();
+        let send = |msg_type: &str, content: serde_json::Value| {
+            let m = s.message(msg_type, &content);
+            s.send(Channel::Shell, m)
+        };
+        async fn next(
+            sub: &mut broadcast::Receiver<(Channel, Message)>,
+            msg_type: &str,
+        ) -> Message {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let (_, m) = sub.recv().await.unwrap();
+                    if m.msg_type() == msg_type {
+                        return m;
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("no {msg_type}"))
+        }
+
+        send(
+            "comm_open",
+            serde_json::json!({"comm_id": "nobody", "target_name": "nobody", "data": {}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            next(&mut sub, "comm_close").await.content["comm_id"],
+            "nobody"
+        );
+
+        send(
+            "comm_open",
+            serde_json::json!({"comm_id": "c1", "target_name": "echo", "data": {}}),
+        )
+        .await
+        .unwrap();
+        let bytes: Vec<u8> = (0..=255).collect();
+        let m = s
+            .message(
+                "comm_msg",
+                &serde_json::json!({"comm_id": "c1", "data": {"x": 1}}),
+            )
+            .with_buffers(vec![bytes.clone().into(), Vec::new().into()]);
+        s.send(Channel::Shell, m).await.unwrap();
+        let echo = next(&mut sub, "comm_msg").await;
+        assert_eq!(echo.content["data"], serde_json::json!({"x": 1}));
+        assert_eq!(echo.buffers.len(), 2);
+        assert_eq!(echo.buffers[0].as_ref(), &bytes[..]);
+        assert!(echo.buffers[1].is_empty());
+
+        let info = |target: Option<&str>| {
+            let c = match target {
+                Some(t) => serde_json::json!({ "target_name": t }),
+                None => serde_json::json!({}),
+            };
+            let m = s.message("comm_info_request", &c);
+            s.request(Channel::Shell, m, false, Duration::from_secs(5))
+        };
+        let comms = info(None).await.unwrap().reply.content["comms"].clone();
+        assert_eq!(comms, serde_json::json!({"c1": {"target_name": "echo"}}));
+        let comms = info(Some("other")).await.unwrap().reply.content["comms"].clone();
+        assert_eq!(comms, serde_json::json!({}));
+        send(
+            "comm_close",
+            serde_json::json!({"comm_id": "c1", "data": {}}),
+        )
+        .await
+        .unwrap();
+        let comms = info(None).await.unwrap().reply.content["comms"].clone();
+        assert_eq!(comms, serde_json::json!({}));
+
+        // A kernel-side open reaches subscribers.
+        s.execute(content::ExecuteRequest::new("comm"), Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(
+            next(&mut sub, "comm_open").await.content["target_name"],
+            "fake.target"
+        );
+    }
+
     /// A transport whose kernel answers heartbeats while `beating` is true
     /// and never closes its incoming channel, like a ZMQ SUB socket waiting
     /// on a dead kernel.

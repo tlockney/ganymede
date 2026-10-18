@@ -2,8 +2,11 @@
 
 TypeScript side of Ganymede: the module seams and the protocol
 plumbing described in [`docs/ui.md`](../docs/ui.md) and the seams in
-[`docs/architecture.md`](../docs/architecture.md). No editor, no widget
-implementation, no UI framework yet. The layout mirrors the Rust crates.
+[`docs/architecture.md`](../docs/architecture.md), for a UI of Ganymede's
+own (step 2 of the [roadmap](../docs/roadmap.md)). It is not used by the
+server today: `ganymede lab` serves JupyterLab, whose own widget manager
+renders widgets. Here there is still no editor, no widget implementation,
+and no UI framework. The layout mirrors the Rust crates.
 
 ## Run
 
@@ -14,7 +17,7 @@ npm test        # tsc, then node --test over dist/**/*.test.js
 npm run check   # tsc --noEmit
 ```
 
-Node 22+. The only dependency is `typescript` (dev). Node's built-in test
+Node 22 or later; CI runs it on Node 24. The only dependency is `typescript` (dev). Node's built-in test
 runner is used; `src/node-shims.d.ts` declares the few `node:test` /
 `node:assert` shapes the tests need so `@types/node` is not required.
 

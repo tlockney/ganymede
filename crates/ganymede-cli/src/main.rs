@@ -54,6 +54,18 @@ impl Cli {
         matches!(self.cmd, Cmd::Serve(_) | Cmd::Lab { cmd: None, .. })
     }
 
+    /// The server flags, for `serve` and `lab`: `--log-level` and
+    /// `--log-file` apply before the server starts.
+    fn serve_args(&self) -> Option<&ganymede_server::serve::ServeArgs> {
+        match &self.cmd {
+            Cmd::Serve(a) => Some(a),
+            Cmd::Lab {
+                cmd: None, start, ..
+            } => Some(&start.serve),
+            _ => None,
+        }
+    }
+
     /// The default log filter when `RUST_LOG` is unset.
     fn log_filter(&self) -> &'static str {
         match (self.serves(), self.verbose) {
@@ -115,19 +127,32 @@ enum Cmd {
     /// Start a kernel and keep it running until Ctrl-C, for other clients
     /// to attach to by its connection file (`jupyter kernel`).
     Kernel {
+        /// Kernelspec name, as `ganymede kernelspec list` shows it.
         #[arg(long, short)]
         kernel: String,
         /// Working directory for the kernel.
         #[arg(long)]
         cwd: Option<PathBuf>,
     },
-    /// Run code on a kernel that is already running (`run --existing`).
-    #[command(hide = true)]
+    /// Run code on a kernel that is already running: `run --existing
+    /// CONNECTION_FILE CODE...`, but waiting at most 60 seconds per cell
+    /// by default. The kernel keeps running afterwards.
     Attach {
+        /// The kernel's connection file, such as the path `ganymede kernel`
+        /// printed.
         connection_file: PathBuf,
+        /// Code to run; one cell per argument. With none, stdin is one cell.
         code: Vec<String>,
+        /// Seconds to wait for each cell. 0 waits forever.
         #[arg(long, default_value_t = 60)]
         timeout: u64,
+    },
+    /// Print a shell completion script, for example
+    /// `ganymede completions bash > ~/.local/share/bash-completion/completions/ganymede`
+    /// or `ganymede completions zsh > ~/.zfunc/_ganymede`.
+    Completions {
+        /// The shell to complete for.
+        shell: clap_complete::Shell,
     },
     /// Notebook file utilities that need no kernel.
     Nb {
@@ -141,6 +166,7 @@ enum Cmd {
     /// dir), so the server and Jupyter render its outputs unsanitized. With
     /// no NOTEBOOK, one is read from stdin.
     Trust {
+        /// Notebooks to sign. With none, one is read from stdin.
         notebooks: Vec<PathBuf>,
         /// Delete the trusted signatures and generate a new key. Every
         /// notebook becomes untrusted.
@@ -185,6 +211,7 @@ enum KernelspecCmd {
     Paths,
     /// Install a kernelspec directory (one holding `kernel.json`).
     Install {
+        /// Directory holding `kernel.json` (and any logos or resources).
         source: PathBuf,
         /// Name to install as. Defaults to the directory's name.
         #[arg(long)]
@@ -198,6 +225,7 @@ enum KernelspecCmd {
     },
     /// Remove kernelspecs by name.
     Remove {
+        /// Kernelspec names, as `ganymede kernelspec list` shows them.
         #[arg(required = true)]
         names: Vec<String>,
     },
@@ -207,6 +235,7 @@ enum KernelspecCmd {
 enum NbCmd {
     /// Remove outputs, execution counts, and execution timings.
     Clear {
+        /// The notebook to clear. Overwritten unless --output is given.
         notebook: PathBuf,
         #[command(flatten)]
         dest: Dest,
@@ -256,8 +285,9 @@ struct RunArgs {
     /// Seconds to wait for each cell. 0 waits forever.
     #[arg(long, default_value_t = 0)]
     timeout: u64,
-    /// Interrupt each cell after this many milliseconds.
-    #[arg(long, hide = true)]
+    /// Interrupt each cell after this many milliseconds, to check how a
+    /// kernel handles an interrupt.
+    #[arg(long, value_name = "MS")]
     interrupt_after_ms: Option<u64>,
     /// Keep running cells after one fails.
     #[arg(long)]
@@ -266,6 +296,7 @@ struct RunArgs {
 
 #[derive(Args)]
 struct ExecuteArgs {
+    /// Notebooks to execute, each on its own kernel, in order.
     #[arg(required = true)]
     notebooks: Vec<PathBuf>,
     #[command(flatten)]
@@ -332,13 +363,10 @@ impl Dest {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| cli.log_filter().into()),
-        )
-        .with_writer(std::io::stderr)
-        .init();
+    if let Err(e) = ganymede_server::serve::init_logging(cli.log_filter(), cli.serve_args()) {
+        eprintln!("ganymede: {}", error_chain(&e));
+        return ExitCode::FAILURE;
+    }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -424,6 +452,16 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             clear_outputs(&mut nb);
             let dest = dest.resolve(&notebook).unwrap_or(Some(notebook.clone()));
             write_notebook(&nb, dest.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Completions { shell } => {
+            use clap::CommandFactory;
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "ganymede",
+                &mut std::io::stdout(),
+            );
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Trust {
@@ -1037,5 +1075,19 @@ mod tests {
         assert!(parse(&["kernelspec", "list"])
             .log_filter()
             .starts_with("warn"));
+    }
+
+    #[test]
+    fn log_level_and_file_reach_serve_and_lab() {
+        let cli = parse(&["serve", "--log-level", "WARNING", "--log-file", "/l"]);
+        let args = cli.serve_args().unwrap();
+        assert_eq!(args.log_level, Some(tracing::Level::WARN));
+        assert_eq!(args.log_file, Some(PathBuf::from("/l")));
+        let cli = parse(&["lab", "--log-level", "debug"]);
+        assert_eq!(
+            cli.serve_args().unwrap().log_level,
+            Some(tracing::Level::DEBUG)
+        );
+        assert!(parse(&["lab", "list"]).serve_args().is_none());
     }
 }

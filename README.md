@@ -113,18 +113,18 @@ Cargo workspace at this directory. `frontend/` is shared TypeScript for
 UIs that render in a web view, `docs/` and `site/` are the website, and
 `validation/` holds scripts that drive real JupyterLab and VS Code clients.
 
-| Crate | What it is | Tests |
-|---|---|---|
-| [`crates/ganymede-protocol`](crates/ganymede-protocol/) | Message envelope, typed content with unknown-field passthrough, ZMQ wire framing with HMAC, connection file, websocket v1 and legacy codecs. No I/O. | 12 |
-| [`crates/ganymede-nbformat`](crates/ganymede-nbformat/) | nbformat 4.5 reader and a writer byte-identical to Python `nbformat.write`. | 24 |
-| [`crates/ganymede-kernel-host`](crates/ganymede-kernel-host/) | Kernelspec discovery, transport seam (ZMQ and in-process), subprocess and attach provisioners, the session state machine, a fake kernel. | 10 |
-| [`crates/ganymede-exec`](crates/ganymede-exec/) | Notebook executor with nbclient's semantics: outputs, `clear_output(wait)`, `display_id` across cells, `language_info`, timings, widget state, allowed errors and tags, timeouts. | 4 |
-| [`crates/ganymede-engine`](crates/ganymede-engine/) | The library to embed. `Engine` finds kernelspecs and starts, attaches, or adopts kernels; `Kernel` executes with streaming output and stdin, completes, inspects, interrupts, restarts, runs notebooks. Features `zmq` and `subprocess` (default) drop out for wasm. | 3 |
-| [`crates/ganymede-cli`](crates/ganymede-cli/) | The `ganymede` command: `kernelspec list/paths/install/remove`, `run`, `console`, `execute`, `kernel`, `nb clear`, `trust`, `lab`, `lab install/list/remove`, `lab extension install/list/remove`, `serve`, `info`. | 41 |
-| [`crates/ganymede-contents`](crates/ganymede-contents/) | Contents seam and filesystem implementation matching `jupyter_server`'s model: atomic writes, mtime conflicts, checkpoints, configurable checkpoint dir, path safety, notebook trust with Jupyter's signing key and `nbsignatures.db`. | 52 |
-| [`crates/ganymede-api`](crates/ganymede-api/) | Kernel and session managers, response models, per-client bridge with reply filtering, idle culling. No HTTP. | 6 |
-| [`crates/ganymede-server`](crates/ganymede-server/) | axum routes, token auth, origin check, websocket v1 and legacy framing, static assets, TOML config, JupyterLab's page and `/lab/api/*`, installed JupyterLab bundles, notebook trust. | 16 |
-| [`frontend/`](frontend/) | Protocol types, websocket codecs, `ServerConnection` with injectable `fetch` and `WebSocket`, REST client, `KernelConnection`, renderer registry, ANSI and stream handling, widget manager interfaces. | 45 |
+| Crate | What it is |
+|---|---|
+| [`crates/ganymede-protocol`](crates/ganymede-protocol/) | Message envelope, typed content with unknown-field passthrough, ZMQ wire framing with HMAC, connection file, websocket v1 and legacy codecs. No I/O. |
+| [`crates/ganymede-nbformat`](crates/ganymede-nbformat/) | nbformat 4.5 reader as lenient as Python's, with its validation report, and a writer byte-identical to Python `nbformat.write`. |
+| [`crates/ganymede-kernel-host`](crates/ganymede-kernel-host/) | Kernelspec discovery, transport seam (ZMQ and in-process), subprocess and attach provisioners, the session state machine, a fake kernel. |
+| [`crates/ganymede-exec`](crates/ganymede-exec/) | Notebook executor with nbclient's semantics: outputs, `clear_output(wait)`, `display_id` across cells, `language_info`, timings, widget state, allowed errors and tags, timeouts. |
+| [`crates/ganymede-engine`](crates/ganymede-engine/) | The library to embed. `Engine` finds kernelspecs and starts, attaches, or adopts kernels; `Kernel` executes with streaming output and stdin, completes, inspects, interrupts, restarts, runs notebooks. Features `zmq` and `subprocess` (default) drop out for wasm. |
+| [`crates/ganymede-cli`](crates/ganymede-cli/) | The `ganymede` command: `kernelspec list/paths/install/remove`, `run`, `console`, `execute`, `kernel`, `nb clear`, `trust`, `lab`, `lab install/list/remove`, `lab extension install/list/remove`, `serve`, `info`. |
+| [`crates/ganymede-contents`](crates/ganymede-contents/) | Contents seam and filesystem implementation matching `jupyter_server`'s model: atomic writes, mtime conflicts, checkpoints, configurable checkpoint dir, path safety, notebook trust with Jupyter's signing key and `nbsignatures.db`. |
+| [`crates/ganymede-api`](crates/ganymede-api/) | Kernel and session managers, response models, per-client bridge with reply filtering, idle culling. No HTTP. |
+| [`crates/ganymede-server`](crates/ganymede-server/) | axum routes, token auth, origin check, websocket v1 and legacy framing, static assets, TOML config, JupyterLab's page and `/lab/api/*`, installed JupyterLab bundles, notebook trust. |
+| [`frontend/`](frontend/) | Protocol types, websocket codecs, `ServerConnection` with injectable `fetch` and `WebSocket`, REST client, `KernelConnection`, renderer registry, ANSI and stream handling, widget manager interfaces. |
 
 ## Testing
 
@@ -198,13 +198,15 @@ lists the pull requests merged into each release, from the merge commits.
 Merging the release PR runs
 [`tag-release.yml`](.github/workflows/tag-release.yml), which tags the merge
 commit `vX.Y.Z` and starts [`release.yml`](.github/workflows/release.yml).
-That builds the five targets above, checks each native binary reports the
-tagged version, and publishes a GitHub Release with
+That builds the five targets above, checks each binary reports the
+tagged version (x86_64 macOS under Rosetta), and publishes a GitHub Release with
 `ganymede-X.Y.Z-<target>.tar.gz` (`.zip` on Windows; each holds the binary,
 `README.md`, `LICENSE`, and `THIRD-PARTY-NOTICES`), a `.sha256` per
-archive, `SHA256SUMS`, and that version's changelog section as notes.
+archive, `SHA256SUMS`, a build provenance attestation per archive, and
+that version's changelog section as notes.
 Versions with a `-` suffix are marked prerelease. Pushing a `v*` tag by hand
-also starts `release.yml`.
+also starts `release.yml`. When a release fails partway,
+[Releasing](docs/releasing.md) has the recovery steps.
 
 ## License
 
