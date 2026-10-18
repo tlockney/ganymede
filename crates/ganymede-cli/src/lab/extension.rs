@@ -41,7 +41,8 @@ pub enum ExtensionCmd {
     Install {
         #[arg(required = true, value_name = "PACKAGE[==VERSION]")]
         packages: Vec<String>,
-        /// Reinstall the named packages if they are already installed.
+        /// Reinstall the named packages if they are already installed, and
+        /// let them replace extensions another package installed.
         #[arg(long)]
         force: bool,
     },
@@ -178,6 +179,7 @@ fn install(root: &Path, specs: &[String], force: bool) -> Result<()> {
                 &api,
                 &meta,
                 want.required_by.as_deref(),
+                force,
             )?;
             if !installed && named {
                 bail!("{name} has no prebuilt JupyterLab extension in its wheel");
@@ -197,7 +199,9 @@ fn install(root: &Path, specs: &[String], force: bool) -> Result<()> {
 }
 
 /// Downloads the release's wheel, checks it, and moves its extensions
-/// into `root`. False if the wheel has none.
+/// into `root`. False if the wheel has none. Fails, unless `force`, when
+/// that would replace an extension another package installed.
+#[allow(clippy::too_many_arguments)]
 fn install_wheel(
     agent: &ureq::Agent,
     root: &Path,
@@ -206,6 +210,7 @@ fn install_wheel(
     api: &str,
     meta: &Value,
     required_by: Option<&str>,
+    force: bool,
 ) -> Result<bool> {
     let version = meta["info"]["version"].as_str().unwrap_or_default();
     let (url, sha256) =
@@ -228,13 +233,18 @@ fn install_wheel(
     }
 
     // A reinstall drops what the old version had and the new one doesn't;
-    // an extension another package had installed now belongs to this one.
+    // an extension another package had installed now belongs to this one,
+    // if `force` says so.
+    let others: Vec<Record> = records(root).into_iter().filter(|r| r.key != key).collect();
+    if !force {
+        check_replacements(name, &others, &extensions)?;
+    }
     if let Some(old) = record(root, key) {
         for ext in old.extensions.iter().filter(|e| !extensions.contains(*e)) {
             remove_extension(root, ext)?;
         }
     }
-    for mut other in records(root).into_iter().filter(|r| r.key != key) {
+    for mut other in others {
         let before = other.extensions.len();
         other.extensions.retain(|e| !extensions.contains(e));
         if other.extensions.len() != before {
@@ -266,8 +276,22 @@ fn install_wheel(
     Ok(true)
 }
 
+/// Fails if any of `others` installed one of `extensions`.
+fn check_replacements(name: &str, others: &[Record], extensions: &BTreeSet<String>) -> Result<()> {
+    for other in others {
+        if let Some(ext) = other.extensions.iter().find(|e| extensions.contains(*e)) {
+            bail!(
+                "{name} would replace {ext}, installed by {}; --force replaces it",
+                other.name
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Unpacks `*.data/data/share/jupyter/labextensions/**` from a wheel into
 /// `dest` and returns the extension names found: `name` or `@scope/name`.
+/// Fails on a name [`valid_extension`] rejects.
 pub fn extract(wheel: impl Read + Seek, dest: &Path) -> Result<BTreeSet<String>> {
     let mut zip = zip::ZipArchive::new(wheel).context("reading the wheel")?;
     let mut names = BTreeSet::new();
@@ -296,7 +320,11 @@ pub fn extract(wheel: impl Read + Seek, dest: &Path) -> Result<BTreeSet<String>>
         if rest.len() <= depth {
             continue;
         }
-        names.insert(rest[..depth].join("/"));
+        let name = rest[..depth].join("/");
+        if !valid_extension(&name) {
+            bail!("the wheel has an extension with an invalid name: {name:?}");
+        }
+        names.insert(name);
         let out = dest.join(rest.iter().collect::<PathBuf>());
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent)?;
@@ -309,8 +337,27 @@ pub fn extract(wheel: impl Read + Seek, dest: &Path) -> Result<BTreeSet<String>>
     Ok(names)
 }
 
+/// An npm package name, `name` or `@scope/name`, safe to join to the root:
+/// each part non-empty, of `[A-Za-z0-9._~-]`, not starting with `.` or `_`.
+/// That rules out `.`, `..`, and [`RECORDS`].
+fn valid_extension(ext: &str) -> bool {
+    let part = |p: &str| {
+        !p.is_empty()
+            && !p.starts_with(['.', '_'])
+            && p.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '~' | '-'))
+    };
+    match ext.split_once('/') {
+        Some((scope, name)) => scope.strip_prefix('@').is_some_and(part) && part(name),
+        None => part(ext),
+    }
+}
+
 /// Removes `root/<ext>`, and its `@scope` directory once empty.
 fn remove_extension(root: &Path, ext: &str) -> Result<()> {
+    if !valid_extension(ext) {
+        bail!("refusing to remove {ext:?}: not an extension name");
+    }
     let dir = root.join(ext);
     if dir.exists() {
         std::fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
@@ -395,16 +442,23 @@ struct Record {
 }
 
 impl Record {
+    /// None for a record naming anything [`valid_extension`] rejects, so a
+    /// forged record cannot point a removal outside the root.
     fn from_json(key: &str, v: &Value) -> Option<Record> {
+        let extensions = v["extensions"]
+            .as_array()?
+            .iter()
+            .map(|e| {
+                e.as_str()
+                    .filter(|e| valid_extension(e))
+                    .map(str::to_string)
+            })
+            .collect::<Option<Vec<_>>>()?;
         Some(Record {
             key: key.to_string(),
             name: v["name"].as_str()?.to_string(),
             version: v["version"].as_str()?.to_string(),
-            extensions: v["extensions"]
-                .as_array()?
-                .iter()
-                .filter_map(|e| Some(e.as_str()?.to_string()))
-                .collect(),
+            extensions,
             required_by: v["required_by"].as_str().map(str::to_string),
         })
     }
@@ -498,6 +552,154 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let names = extract(Cursor::new(wheel(&["w/__init__.py"])), dir.path()).unwrap();
         assert!(names.is_empty());
+    }
+
+    #[test]
+    fn hostile_extension_names_are_refused() {
+        let ext = "w-1.0.data/data/share/jupyter/labextensions";
+        for bad in [
+            ".packages/foo.json",
+            ".packages/evil/package.json",
+            "_x/package.json",
+            "@scope/.hidden/package.json",
+            "@.packages/x/package.json",
+            "a b/package.json",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let bytes = wheel(&[&format!("{ext}/{bad}")]);
+            assert!(extract(Cursor::new(bytes), dir.path()).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn escaping_entries_are_skipped_and_symlinks_are_not_created() {
+        let ext = "w-1.0.data/data/share/jupyter/labextensions";
+        let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for f in [
+            format!("{ext}/a/../../../../../escape.json"),
+            format!("/{ext}/abs/package.json"),
+            format!("{ext}/a/package.json"),
+        ] {
+            w.start_file(f, SimpleFileOptions::default()).unwrap();
+            w.write_all(b"{}").unwrap();
+        }
+        w.add_symlink(
+            format!("{ext}/a/link"),
+            "/etc/passwd",
+            SimpleFileOptions::default(),
+        )
+        .unwrap();
+        let bytes = w.finish().unwrap().into_inner();
+        let parent = tempfile::tempdir().unwrap();
+        let dest = parent.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let names = extract(Cursor::new(bytes), &dest).unwrap();
+        // A leading `/` is dropped, so the absolute entry stays in `dest`.
+        assert_eq!(names.into_iter().collect::<Vec<_>>(), ["a", "abs"]);
+        assert!(dest.join("a/package.json").is_file());
+        let link = std::fs::symlink_metadata(dest.join("a/link")).unwrap();
+        assert!(!link.file_type().is_symlink());
+        let mut found = Vec::new();
+        for e in walk(parent.path()) {
+            found.push(e.strip_prefix(parent.path()).unwrap().to_path_buf());
+        }
+        found.sort();
+        assert_eq!(
+            found,
+            [
+                PathBuf::from("dest/a/link"),
+                PathBuf::from("dest/a/package.json"),
+                PathBuf::from("dest/abs/package.json"),
+            ]
+        );
+    }
+
+    fn walk(dir: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                out.extend(walk(&p));
+            } else {
+                out.push(p);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn validates_extension_names() {
+        for ok in [
+            "anywidget",
+            "@jupyter-widgets/jupyterlab-manager",
+            "A.b~c_d-1",
+        ] {
+            assert!(valid_extension(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            ".",
+            "..",
+            ".packages",
+            "_x",
+            "@",
+            "@/x",
+            "@s/",
+            "x/y",
+            "@s/x/y",
+            "../x",
+            "@s/..",
+            "/x",
+            "a b",
+            "a\\b",
+        ] {
+            assert!(!valid_extension(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn forged_records_are_ignored_and_not_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        std::fs::create_dir_all(root.join(RECORDS)).unwrap();
+        for (key, ext) in [
+            ("a", ".."),
+            ("b", "../../home"),
+            ("c", ".packages"),
+            ("d", "/etc"),
+        ] {
+            std::fs::write(
+                record_path(root, key),
+                json!({"name": key, "version": "1", "extensions": ["ok", ext]}).to_string(),
+            )
+            .unwrap();
+            assert!(record(root, key).is_none(), "{ext}");
+        }
+        assert!(records(root).is_empty());
+        assert!(remove_extension(root, "..").is_err());
+        assert!(remove_extension(root, ".packages").is_err());
+        assert!(root.join(RECORDS).is_dir());
+    }
+
+    #[test]
+    fn replacing_another_packages_extension_needs_force() {
+        let other = Record {
+            key: "jupyterlab-widgets".into(),
+            name: "jupyterlab_widgets".into(),
+            version: "3.0.17".into(),
+            extensions: vec!["@jupyter-widgets/jupyterlab-manager".into()],
+            required_by: None,
+        };
+        let mine: BTreeSet<String> = ["@jupyter-widgets/jupyterlab-manager".to_string()].into();
+        let err = check_replacements("evil", std::slice::from_ref(&other), &mine)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("jupyterlab_widgets") && err.contains("--force"),
+            "{err}"
+        );
+        let theirs: BTreeSet<String> = ["evil".to_string()].into();
+        check_replacements("evil", &[other], &theirs).unwrap();
     }
 
     #[test]

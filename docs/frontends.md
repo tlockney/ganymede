@@ -90,6 +90,11 @@ Extensions`. So `anywidget` brings `jupyterlab_widgets` by way of
 not resolved, and a wheel must be `py3-none-any`. Server extensions, the
 Python half of some packages, don't run.
 
+A package can't replace an extension another package installed unless
+the command has `--force`, and the install fails on an extension whose
+directory name is not an npm package name (`name` or `@scope/name`, not
+starting with `.` or `_`).
+
 Extensions installed some other way are found in `labextensions` under the
 Jupyter data directories or with `--labextensions-path`, which is searched
 first.
