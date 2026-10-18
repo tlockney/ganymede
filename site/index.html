@@ -4,7 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ganymede: a Jupyter server with no Python</title>
-<meta name="description" content="A Jupyter server in Rust with no Python in the product. It runs any installed kernel and serves the jupyter_server API to JupyterLab and VS Code.">
+<meta name="description" content="A Jupyter server in Rust with no Python runtime. It runs any installed kernel and serves the jupyter_server API to JupyterLab and VS Code.">
+<link rel="canonical" href="https://ganymede-server.com/">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Ganymede">
+<meta property="og:title" content="Ganymede: a Jupyter server with no Python">
+<meta property="og:description" content="A Jupyter server in Rust. It runs any installed kernel and serves the jupyter_server API to JupyterLab and VS Code, with no Python runtime.">
+<meta property="og:url" content="https://ganymede-server.com/">
+<meta property="og:image" content="https://ganymede-server.com/images/jupyterlab.png">
+<meta property="og:image:alt" content="JupyterLab running a TypeScript notebook on Ganymede.">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="stylesheet" href="style.css">
 <script>
   // Use the light/dark choice made with the docs' switch, if there is one.
@@ -21,6 +31,7 @@
     <nav>
       <a href="#start">Start</a>
       <a href="#features">Features</a>
+      <a href="https://cdp-kernel.org">cdp-kernel</a>
       <a href="#clients">Clients</a>
       <a href="docs/">Docs</a>
       <a href="https://github.com/tlockney/ganymede">GitHub</a>
@@ -37,22 +48,38 @@
       <code>jupyter_server</code>, so JupyterLab and VS Code connect to it unchanged. It is
       one Rust binary, or a library to embed, and it needs no Python environment to run a
       TypeScript notebook, or any other.</p>
+    <p class="lede who">For people who want Jupyter where a Python environment is a burden or
+      impossible: TypeScript notebooks on <a href="https://cdp-kernel.org">cdp-kernel</a>,
+      CI jobs that run notebooks, and apps that embed a notebook server.</p>
     <div class="install">
       <div class="tabs" role="tablist">
-        <button role="tab" aria-selected="true" data-tab="cargo">cargo</button>
-        <button role="tab" aria-selected="false" data-tab="release">Release</button>
+        <button role="tab" aria-selected="true" data-tab="release">Install script</button>
+        <button role="tab" aria-selected="false" data-tab="cargo">cargo</button>
       </div>
-      <pre data-panel="cargo"><code><span class="c"># Rust toolchain</span>
-cargo install --git https://github.com/tlockney/ganymede ganymede-cli
-ganymede kernelspec list</code></pre>
-      <pre data-panel="release" hidden><code><span class="c"># Linux, macOS: latest release, plus cdp-kernel if Node 24+ is installed</span>
+      <pre data-panel="release"><code><span class="c"># Linux, macOS: latest release, plus cdp-kernel if Node 24+ is installed</span>
 curl -fsSL https://ganymede-server.com/install.sh | sh
 ganymede kernelspec list</code></pre>
+      <pre data-panel="cargo" hidden><code><span class="c"># Rust toolchain</span>
+cargo install --git https://github.com/tlockney/ganymede ganymede-cli
+ganymede kernelspec list</code></pre>
     </div>
+    <p class="platforms">Linux and macOS are tested end to end. Windows binaries are built
+      but not tested. <a href="docs/install">Other ways to install</a></p>
     <div class="cta">
       <a class="btn primary" href="docs/getting-started">Get started</a>
       <a class="btn" href="https://github.com/tlockney/ganymede">View on GitHub</a>
     </div>
+  </div>
+</section>
+
+<section class="screenshot">
+  <div class="wrap">
+    <figure class="shot">
+      <img src="images/jupyterlab.png" width="1280" height="800" loading="lazy"
+        alt="JupyterLab in a browser, served by ganymede lab, with a TypeScript notebook on the cdp-node kernel showing cell output.">
+      <figcaption>JupyterLab from <code>ganymede lab</code>, running a TypeScript notebook on
+        cdp-kernel.</figcaption>
+    </figure>
   </div>
 </section>
 
@@ -112,9 +139,12 @@ http://127.0.0.1:8888/?token=<span class="s">4f9c…</span>
     <h2>Features</h2>
     <div class="grid">
       <article>
-        <h3>No Python in the product</h3>
-        <p>The server, kernel host, notebook format, and executor are Rust. Python appears
-          only as a kernel someone installed.</p>
+        <h3>No Python runtime</h3>
+        <p>The server, kernel host, notebook format, and executor are Rust, with no Python
+          dependency. Python appears only as a kernel someone installed, as the reference
+          CI compares against, and as the format the notebook writer matches.
+          <code>ganymede lab install</code> unpacks JupyterLab's JavaScript from its PyPI
+          wheel without running Python. <a href="docs/python-free">Details</a></p>
       </article>
       <article>
         <h3>Any kernel</h3>
@@ -157,7 +187,7 @@ http://127.0.0.1:8888/?token=<span class="s">4f9c…</span>
       <tbody>
         <tr><td>VS Code</td><td>The Jupyter extension's <em>Existing Jupyter Server</em>, with the URL and token.</td><td>Works</td></tr>
         <tr><td>@jupyterlab/services</td><td>JupyterLab's client library: kernels, sessions, contents, interrupt, restart.</td><td>Works</td></tr>
-        <tr><td>JupyterLab</td><td>Its static bundle served by Ganymede at <code>/lab</code>.</td><td>Needs cookie login</td></tr>
+        <tr><td>JupyterLab</td><td>Its static bundle served by Ganymede at <code>/lab</code>, from <code>ganymede lab</code>.</td><td>Works</td></tr>
         <tr><td>Own UI</td><td>A Swift shell with a web view on iPadOS and macOS, the core in-process.</td><td>Planned</td></tr>
       </tbody>
     </table>
@@ -181,7 +211,7 @@ http://127.0.0.1:8888/?token=<span class="s">4f9c…</span>
       <h3>Status</h3>
       <p>Early software. An end-to-end suite compares it against <code>jupyter execute</code>
         and <code>jupyter server</code> on cdp-kernel and ipykernel, on Linux and macOS.
-        Windows builds but is not tested end to end.</p>
+        Windows builds but is not tested end to end. <a href="docs/known-gaps">Known gaps</a></p>
     </div>
   </div>
 </section>
@@ -192,6 +222,8 @@ http://127.0.0.1:8888/?token=<span class="s">4f9c…</span>
     <p>MIT license. TypeScript notebooks run on
       <a href="https://cdp-kernel.org">cdp-kernel</a>.
       <a href="docs/">Docs</a> ·
+      <a href="docs/security">Security</a> ·
+      <a href="docs/changelog">Changelog</a> ·
       <a href="https://github.com/tlockney/ganymede/releases">Releases</a> ·
       <a href="https://github.com/tlockney/ganymede">GitHub</a></p>
   </div>

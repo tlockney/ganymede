@@ -86,6 +86,7 @@ h3 { font-size: 1.05rem; margin: 0 0 0.4rem; }
 
 .wrap { max-width: 1040px; margin: 0 auto; padding: 0 16px; }
 section { padding: 64px 0; }
+section.screenshot { padding-top: 0; }
 section.alt { background: var(--bg-alt); border-block: 1px solid var(--line); }
 
 .top { border-bottom: 1px solid var(--line); }
@@ -99,6 +100,7 @@ section.alt { background: var(--bg-alt); border-block: 1px solid var(--line); }
 .eyebrow { font-family: var(--mono); font-size: 0.85rem; color: var(--accent); margin: 0 0 12px; }
 .hero h1 { font-size: clamp(2rem, 5vw, 3.2rem); margin: 0 0 16px; max-width: 18ch; }
 .lede { font-size: 1.15rem; color: var(--fg-soft); max-width: 60ch; margin: 0 0 28px; }
+.lede.who { font-size: 1rem; margin-top: -16px; }
 
 pre {
   margin: 0;
@@ -127,6 +129,8 @@ pre code { font-size: inherit; }
   cursor: pointer;
 }
 .tabs button[aria-selected="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+
+.platforms { font-size: 0.9rem; color: var(--fg-soft); margin: 10px 0 0; }
 
 .cta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 24px; }
 .btn {
@@ -199,3 +203,7 @@ footer { border-top: 1px solid var(--line); padding: 28px 0; color: var(--fg-sof
   .nav nav { gap: 14px; }
   .nav nav a[href^="#"] { display: none; }
 }
+
+.shot { margin: 0; }
+.shot img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; }
+.shot figcaption { font-size: 0.9rem; color: var(--fg-soft); margin-top: 8px; }

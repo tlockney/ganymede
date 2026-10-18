@@ -41,7 +41,10 @@ export function groups(): Group[] {
     {
       text: "Guides",
       level: "guide",
-      items: [{ text: "JupyterLab and VS Code", link: "/frontends" }],
+      items: [
+        { text: "JupyterLab and VS Code", link: "/frontends" },
+        { text: "Known gaps", link: "/known-gaps" },
+      ],
     },
     {
       text: "Design",
@@ -60,6 +63,7 @@ export function groups(): Group[] {
       items: [
         { text: "Security", link: "/security" },
         { text: "Roadmap", link: "/roadmap" },
+        { text: "Changelog", link: "/changelog" },
         { text: "Prior art", link: "/prior-art" },
         { text: "Other Jupyter clients", link: "/clients" },
       ],
