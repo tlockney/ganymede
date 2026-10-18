@@ -565,17 +565,17 @@ async fn path_traversal_rejected() {
     for bad in ["../x", "a/../../x", "/etc/passwd", "a\\b", "..\\x"] {
         assert_eq!(
             status(&c.get(bad, GetOptions::default()).await),
-            403,
+            404,
             "{bad}"
         );
         assert_eq!(
             status(&c.save(bad, SaveRequest::text("x")).await),
-            403,
+            404,
             "{bad}"
         );
-        assert_eq!(status(&c.delete(bad).await), 403, "{bad}");
-        assert_eq!(status(&c.rename("x", bad).await), 403, "{bad}");
-        assert_eq!(status(&c.list_checkpoints(bad).await), 403, "{bad}");
+        assert_eq!(status(&c.delete(bad).await), 404, "{bad}");
+        assert_eq!(status(&c.rename("x", bad).await), 404, "{bad}");
+        assert_eq!(status(&c.list_checkpoints(bad).await), 404, "{bad}");
     }
     // Nothing was created in the root's parent.
     assert!(!dir.path().parent().unwrap().join("x").exists());
@@ -602,22 +602,22 @@ async fn symlink_escaping_root_rejected() {
     )
     .unwrap();
 
-    assert_eq!(status(&c.get("esc", GetOptions::with_content()).await), 403);
+    assert_eq!(status(&c.get("esc", GetOptions::with_content()).await), 404);
     assert_eq!(
         status(&c.get("esc/secret.txt", GetOptions::with_content()).await),
-        403
+        404
     );
     assert_eq!(
         status(&c.get("link.txt", GetOptions::with_content()).await),
-        403
+        404
     );
     assert_eq!(
         status(&c.save("esc/new.txt", SaveRequest::text("x")).await),
-        403
+        404
     );
     assert_eq!(
         status(&c.save("dangling.txt", SaveRequest::text("x")).await),
-        403
+        404
     );
     assert!(!outside.path().join("new.txt").exists());
     assert!(!outside.path().join("nothing.txt").exists());

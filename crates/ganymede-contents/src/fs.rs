@@ -249,7 +249,7 @@ impl Inner {
         let escape = || {
             let api = os.strip_prefix(&self.root).unwrap_or(Path::new(""));
             let api = api.to_string_lossy().replace('\\', "/");
-            Error::Forbidden(format!("{api} is outside the contents root"))
+            Error::OutsideRoot(format!("{api} is outside the contents root"))
         };
         let mut p = os;
         loop {

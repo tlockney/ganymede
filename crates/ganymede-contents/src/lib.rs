@@ -43,7 +43,13 @@ pub enum Error {
     /// The path does not exist (or is hidden and `allow_hidden` is off).
     #[error("no such file or directory: {0}")]
     NotFound(String),
-    /// The path escapes the root, the root is read-only, or the OS refused.
+    /// The path escapes the root: a `..` component, an absolute path, a
+    /// backslash, or a symlink that resolves outside it. 404, as
+    /// `jupyter_server` answers "is outside root contents directory".
+    #[error("{0}")]
+    OutsideRoot(String),
+    /// The root is read-only, the operation targets the root itself, or the
+    /// OS refused.
     #[error("forbidden: {0}")]
     Forbidden(String),
     /// The target already exists, or the file changed on disk after the
@@ -72,7 +78,7 @@ impl Error {
     pub fn status(&self) -> u16 {
         use std::io::ErrorKind;
         match self {
-            Error::NotFound(_) => 404,
+            Error::NotFound(_) | Error::OutsideRoot(_) => 404,
             Error::Forbidden(_) => 403,
             Error::Conflict(_) => 409,
             Error::BadRequest(_) => 400,
@@ -94,7 +100,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// `ContentsManager` exposes them.
 ///
 /// Every `path` argument is an API path (see the crate docs). Implementations
-/// must reject paths that escape their root with [`Error::Forbidden`].
+/// must reject paths that escape their root with [`Error::OutsideRoot`].
 #[async_trait]
 pub trait Contents: Send + Sync {
     /// Model of a file, notebook or directory; `GET /api/contents/{path}`.
@@ -177,6 +183,7 @@ mod tests {
     fn status_codes_match_jupyter_server() {
         assert_eq!(Error::NotFound("x".into()).status(), 404);
         assert_eq!(Error::Forbidden("x".into()).status(), 403);
+        assert_eq!(Error::OutsideRoot("x".into()).status(), 404);
         assert_eq!(Error::Conflict("x".into()).status(), 409);
         assert_eq!(Error::BadRequest("x".into()).status(), 400);
         assert_eq!(Error::Io(std::io::Error::other("x")).status(), 500);
