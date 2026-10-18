@@ -145,8 +145,11 @@ layer (planned) for things the web view does not need to see.
 
 Every language-specific fact comes from the kernel: its kernelspec
 (`language`, `metadata`), its `kernel_info_reply` (`language_info`, extra
-fields), and the MIME types on its outputs. A grep for `python` in the host
-crates, outside tests, finds nothing. The test suite runs the same
+fields), and the MIME types on its outputs. No code in the host crates depends on
+a kernel's language; outside tests, `python` appears there only where
+Python's output defines a file format (nbformat's float layout, the
+trust signature), in PyPI's names (where `ganymede lab install` gets
+JupyterLab), and in comments. The test suite runs the same
 scenarios against cdp-kernel and ipykernel, and both must pass.
 
 ### Running a cell

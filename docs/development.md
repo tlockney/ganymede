@@ -45,9 +45,13 @@ skipped in its run summary.
 
 ## Rules
 
-- The host knows no language. A grep for `python` in the host crates
-  outside tests finds nothing; Python kernels arrive only as installed
-  kernelspecs.
+- The host knows no language. No code depends on a kernel's language or
+  branches on it, and Python kernels arrive only as installed
+  kernelspecs. Outside tests, `python` appears in the host crates only
+  where a file format is defined by Python's output (nbformat's float
+  layout, the trust signature's scalar format), in PyPI's names
+  (`ganymede lab install` fetches JupyterLab's wheels from there), and
+  in comments that say what Python does.
 - The REST and websocket API is a compatibility target, not a design
   space: match `jupyter_server`.
 - Each change is a pull request that references a GitHub issue, with CI
