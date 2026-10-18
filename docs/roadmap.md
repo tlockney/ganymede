@@ -72,6 +72,7 @@ pull request with a GitHub issue, and records what it learned in the
 
 ## Not planned
 
-JupyterLab and `jupyter_server` extensions, nbconvert export, and the
+JupyterLab server extensions and `jupyter_server` extensions (prebuilt
+JupyterLab frontend extensions do work), nbconvert export, and the
 JupyterHub single-user contract. See [Replacing Python](python-free.md)
 for why.

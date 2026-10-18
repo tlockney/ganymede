@@ -1,0 +1,51 @@
+# Known gaps
+
+What Ganymede doesn't do yet, or won't do, in one place. Each item links
+to the page with the details. The [roadmap](roadmap.md) says what comes
+next, and the troubleshooting step of [Install on a workstation](workstation.md)
+covers problems with the install itself.
+
+## Platforms
+
+- **Windows** binaries are built and released but not tested end to end.
+  Signal interrupts and killing a kernel process are not implemented
+  there, so `interrupt_mode: signal` kernels can't be interrupted and a
+  kernel may outlive its shutdown.
+- **Linux** binaries need glibc 2.35 or newer. There is no musl build for
+  Alpine; [install from source](install.md#from-source) there.
+- **macOS** binaries are not signed or notarized. A browser download is
+  quarantined; [Install](install.md) has the `xattr` fix.
+
+## Frontends
+
+- JupyterLab **server extensions**, which are Python, don't run. Prebuilt
+  frontend extensions do; see [JupyterLab and VS Code](frontends.md#extensions).
+- No **terminals** and no language server endpoints (`/lsp/*`).
+- `/api/nbconvert` reports no exporters: there is no export to HTML, PDF,
+  or other formats.
+- No JupyterHub single-user mode.
+
+## Kernels
+
+- A kernel that crashes is reported and removed, not restarted
+  automatically as `jupyter_server`'s restarter does.
+- Kernels are found only in the platform Jupyter directories and
+  `$JUPYTER_PATH`, not under a Python `sys.prefix`. For a kernel installed
+  into a conda or virtual environment, add its prefix with
+  `--kernelspec-root`; see [Protocol and kernel host](protocol.md).
+- There is no default kernel unless `--default-kernel` sets one.
+- Conformance tests don't yet cover debugger messages, malformed stdin
+  frames, or kernel death and parallel starts through `serve`.
+
+## Notebooks
+
+- nbformat 3 notebooks can't be read.
+- A notebook changed on disk while it is open is not reloaded into the
+  frontend; that is the document model on the [roadmap](roadmap.md).
+
+## Embedding
+
+- `ganymede-engine` builds for iOS, Android, and wasm (WASI), but there is
+  no runtime seam for running it in a browser page yet.
+- The ZeroMQ transport has no CurveZMQ encryption; see
+  [Security](security.md) for exposing a server beyond your machine.

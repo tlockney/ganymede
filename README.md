@@ -1,6 +1,10 @@
 # Ganymede
 
-A Jupyter server in Rust, with no Python anywhere in the product.
+[![CI](https://github.com/tlockney/ganymede/actions/workflows/ci.yml/badge.svg)](https://github.com/tlockney/ganymede/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/tlockney/ganymede)](https://github.com/tlockney/ganymede/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+A Jupyter server in Rust, with no Python runtime and no Python dependency.
 Ganymede launches kernels from installed kernelspecs, speaks the Jupyter
 messaging protocol to them, reads and writes notebooks, and serves the
 same REST and websocket API as `jupyter_server`, so JupyterLab and VS Code
@@ -17,6 +21,31 @@ gods on Olympus.
 machine with no Python or Jupyter, then
 [Getting started](docs/getting-started.md) and
 [Architecture](docs/architecture.md).
+
+![JupyterLab running a TypeScript notebook on Ganymede](docs/images/jupyterlab.png)
+
+## Features
+
+- The `jupyter_server` REST and websocket API, so JupyterLab and VS Code
+  connect unchanged. `ganymede lab` serves JupyterLab itself.
+- Any installed kernel: cdp-kernel for TypeScript, ipykernel, or any other
+  kernelspec. The host has no language-specific code.
+- `ganymede run` and `ganymede execute` for scripts and CI, with output
+  matching `jupyter execute`.
+- Notebook saves that match Python's `nbformat` byte for byte, atomic
+  writes, and checkpoints outside the notebook folder.
+- One binary with a random token, loopback-only by default; see
+  [Security](docs/security.md).
+- `ganymede-engine`, a library for embedding, which builds for iOS,
+  Android, and wasm.
+
+## Quick start
+
+```sh
+curl -fsSL https://ganymede-server.com/install.sh | sh   # ganymede, plus cdp-kernel if Node 24+ is there
+ganymede lab install                                     # JupyterLab's frontend, from PyPI, without Python
+ganymede lab                                             # opens JupyterLab in the browser
+```
 
 ## Install
 
@@ -100,11 +129,18 @@ Ganymede against `jupyter execute` and `jupyter server` on cdp-kernel and
 ipykernel. The VS Code Jupyter extension's remote-server flow passes, and
 JupyterLab's own bundle, served at `/lab`, runs notebooks in a browser. The
 engine builds for iOS, Android, and wasm. See the
-[roadmap](docs/roadmap.md).
+[roadmap](docs/roadmap.md) and [known gaps](docs/known-gaps.md).
+
+"No Python" means no Python runtime and no Python dependency. Python shows
+up in three places, none of them a dependency: `ganymede lab install`
+unpacks JupyterLab's JavaScript from its PyPI wheel without running
+Python; CI runs `jupyter execute`, `jupyter server`, and ipykernel as the
+reference Ganymede is compared against; and the notebook writer matches
+the bytes Python's `nbformat` writes, so files don't churn in git.
 
 Only the core is Rust. UIs are clients of its API and live outside it:
 existing Jupyter frontends, a TypeScript web UI, or a native shell such as
-a Swift app with a web view. JupyterLab and `jupyter_server` extensions
+a Swift app with a web view. JupyterLab server extensions and `jupyter_server` extensions
 are not supported, by design.
 
 ## Repository

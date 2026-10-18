@@ -38,6 +38,8 @@ export default defineConfig({
   // Log entries are not pages of their own; notes.ts puts them on notes.md.
   srcExclude: ["notes/**"],
   sitemap: { hostname: `${site}/docs/` },
+  // The landing page's icon, from site/, served at the site's root.
+  head: [["link", { rel: "icon", href: `${new URL(site).pathname.replace(/\/$/, "")}/favicon.svg`, type: "image/svg+xml" }]],
   markdown: {
     config(md) {
       const render = md.renderer.rules.link_open ?? ((tokens, i, opts, _env, self) => self.renderToken(tokens, i, opts));
@@ -71,8 +73,9 @@ export default defineConfig({
       { text: "Design", link: "/architecture" },
       { text: "Roadmap", link: "/roadmap" },
     ],
-    // Groups start folded; VitePress opens the one holding the current page.
-    sidebar: groups().map(({ text, items }) => ({ text, items, collapsed: true })),
+    // Groups start open, so every page shows without a click, except the
+    // contributors' group, which most readers don't need.
+    sidebar: groups().map(({ text, level, items }) => ({ text, items, collapsed: level === "contributor" })),
     outline: [2, 3],
     search: {
       provider: "local",
