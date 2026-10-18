@@ -63,12 +63,12 @@ fn unsplit_input_is_written_as_nbformat_would() {
     // Transient metadata was stripped on read.
     assert!(!nb.metadata.contains_key("orig_nbformat"));
     assert!(!nb.metadata.contains_key("signature"));
-    assert!(!nb.cells[0].metadata().contains_key("trusted"));
+    assert!(!nb.cells[0].metadata().unwrap().contains_key("trusted"));
     assert_eq!(
-        nb.cells[0].source().as_str(),
+        nb.cells[0].source().unwrap().as_str(),
         "# Title\n\nParagraph one.\nParagraph two.\n"
     );
-    assert_eq!(nb.cells[2].source().as_str(), "raw\r\ntext\r");
+    assert_eq!(nb.cells[2].source().unwrap().as_str(), "raw\r\ntext\r");
 }
 
 #[test]

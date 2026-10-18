@@ -139,6 +139,67 @@ pub fn decode(signer: &Signer, frames: &[Bytes]) -> Result<WireMessage> {
     })
 }
 
+/// Signatures already accepted on one connection, as `jupyter_client`'s
+/// `Session.digest_history`: a signed message seen twice is a replay. Up
+/// to `size` signatures are kept; past that a tenth of them, picked
+/// arbitrarily, are forgotten, as there. Share one across a connection's
+/// channels, as one `Session` is.
+#[derive(Debug)]
+pub struct DigestHistory {
+    seen: std::sync::Mutex<std::collections::HashSet<Bytes>>,
+    size: usize,
+}
+
+impl Default for DigestHistory {
+    fn default() -> Self {
+        // `jupyter_client`'s `digest_history_size`.
+        DigestHistory::new(1 << 16)
+    }
+}
+
+impl DigestHistory {
+    pub fn new(size: usize) -> Self {
+        DigestHistory {
+            seen: Default::default(),
+            size: size.max(1),
+        }
+    }
+
+    /// Record `signature`; `false` if it was already there.
+    fn insert(&self, signature: &Bytes) -> bool {
+        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        if !seen.insert(signature.clone()) {
+            return false;
+        }
+        if seen.len() > self.size {
+            // `HashSet` iterates in a per-process random order.
+            let cull: Vec<Bytes> = seen.iter().take(self.size.div_ceil(10)).cloned().collect();
+            for s in cull {
+                seen.remove(&s);
+            }
+        }
+        true
+    }
+}
+
+/// [`decode`], refusing a signed message whose signature `history` has
+/// already seen with [`Error::DuplicateSignature`]. Unsigned connections
+/// have no signatures to compare and are not checked.
+pub fn decode_once(
+    signer: &Signer,
+    history: &DigestHistory,
+    frames: &[Bytes],
+) -> Result<WireMessage> {
+    let w = decode(signer, frames)?;
+    if signer.key.is_some() {
+        let delim = frames.len() - 6 - w.message.buffers.len();
+        if !history.insert(&frames[delim + 1]) {
+            return Err(Error::DuplicateSignature);
+        }
+    }
+    Ok(w)
+}
+
 /// The iopub topic frame a kernel publishes under. Hosts subscribe to
 /// everything, so this only matters for a host that implements the kernel
 /// side (an in-process kernel, for example).
@@ -230,6 +291,39 @@ mod tests {
         assert_eq!(w.message.header.version, "");
         assert_eq!(w.message.parent_id(), Some("q1"));
         assert!(w.message.metadata.is_empty());
+    }
+
+    #[test]
+    fn replayed_messages_are_refused() {
+        let s = Signer::new("hmac-sha256", b"k").unwrap();
+        let history = DigestHistory::new(20);
+        let m = Message::new("status", "s", "u", &serde_json::json!({}))
+            .with_buffers(vec![Bytes::from_static(b"buf")]);
+        let ids = vec![Bytes::from_static(b"topic")];
+        let frames = encode(&s, &ids, &m).unwrap();
+        assert_eq!(decode_once(&s, &history, &frames).unwrap().message, m);
+        assert!(matches!(
+            decode_once(&s, &history, &frames),
+            Err(Error::DuplicateSignature)
+        ));
+        // A forged copy fails on its signature and is not remembered.
+        let mut bad = encode(&s, &[], &m).unwrap();
+        bad[1] = Bytes::from_static(b"00");
+        assert!(matches!(
+            decode_once(&s, &history, &bad),
+            Err(Error::BadSignature)
+        ));
+        // Fresh messages keep coming past the size; the history stays bounded.
+        for i in 0..100 {
+            let m = Message::new("status", "s", "u", &serde_json::json!({ "i": i }));
+            decode_once(&s, &history, &encode(&s, &[], &m).unwrap()).unwrap();
+        }
+        assert!(history.seen.lock().unwrap().len() <= 20);
+        // Unsigned: nothing to compare.
+        let u = Signer::unsigned();
+        let frames = encode(&u, &[], &m).unwrap();
+        decode_once(&u, &history, &frames).unwrap();
+        decode_once(&u, &history, &frames).unwrap();
     }
 
     #[test]

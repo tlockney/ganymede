@@ -68,7 +68,7 @@ fn lenient_fixture_reads_like_nbformat() {
     assert_ne!(ids[0], ids[2]);
 
     // `source: null` reads as empty.
-    assert_eq!(nb.cells[0].source().as_str(), "");
+    assert_eq!(nb.cells[0].source().unwrap().as_str(), "");
 
     let Cell::Code(first) = &nb.cells[1] else {
         panic!()
@@ -103,7 +103,7 @@ fn lenient_fixture_reads_like_nbformat() {
     // Lone surrogates become U+FFFD; a valid pair and an escaped backslash
     // are untouched.
     assert_eq!(
-        nb.cells[4].source().as_str(),
+        nb.cells[4].source().unwrap().as_str(),
         "lone \u{fffd} and \u{fffd}, pair 🚀, literal \\ud800"
     );
 }
@@ -254,4 +254,88 @@ fn minor_4_cell_ids_are_left_alone() {
     let value = nb.to_disk_value();
     assert!(value["cells"][0].get("id").is_none());
     assert_eq!(value["cells"][2]["id"], "x");
+}
+
+/// Cells of an unknown type, or whose fields do not fit even leniently,
+/// are kept as raw JSON and written back exactly as `nbformat.write` wrote
+/// them.
+#[test]
+fn invalid_cells_roundtrip_is_byte_identical() {
+    let original = read_fixture("invalid_cells.ipynb");
+    let (nb, report) = Notebook::from_slice_with_report(original.as_bytes()).unwrap();
+    let written = nb.to_file_string();
+    assert!(
+        written == original,
+        "--- nbformat\n{original}\n--- rust\n{written}"
+    );
+    let Cell::Unknown(heading) = &nb.cells[0] else {
+        panic!("{:?}", nb.cells[0])
+    };
+    assert_eq!(heading["level"], 2);
+    assert_eq!(nb.cells[0].cell_type(), Some("heading"));
+    assert!(matches!(&nb.cells[1], Cell::Unknown(v) if v["source"] == 5));
+    assert!(matches!(&nb.cells[2], Cell::Markdown(m) if m.source == "still\nfine"));
+
+    let issues: Vec<String> = report.issues.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        issues,
+        [
+            "'heading' is not a known cell_type (on instance['cells'][0])",
+            "5 is not of type 'string' or 'array' (on instance['cells'][1]['source'])",
+        ]
+    );
+}
+
+/// What the lenient reader repaired is reported, for jupyter_server's
+/// validation `message`; a valid notebook reports nothing.
+#[test]
+fn read_report_lists_repairs() {
+    let (_, report) =
+        Notebook::from_slice_with_report(read_fixture("lenient.ipynb").as_bytes()).unwrap();
+    let issues: Vec<String> = report.issues.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        issues,
+        [
+            "lone surrogate escapes were read as U+FFFD",
+            "None is not of type 'string' or 'array' (on instance['cells'][0]['source'])",
+            "1.0 is not of type 'integer' or 'null' (on instance['cells'][1]['execution_count'])",
+            "'name' is a required property (on instance['cells'][1]['outputs'][0])",
+            "'ename' is a required property (on instance['cells'][1]['outputs'][1])",
+            "'evalue' is a required property (on instance['cells'][1]['outputs'][1])",
+            "-1 is less than the minimum of 0 \
+             (on instance['cells'][1]['outputs'][2]['execution_count'])",
+            "None is not of type 'object' (on instance['cells'][1]['outputs'][2]['metadata'])",
+            "-1 is less than the minimum of 0 (on instance['cells'][2]['execution_count'])",
+        ]
+    );
+    let message = report.validation_message().unwrap();
+    assert!(
+        message.starts_with("Notebook validation failed: lone surrogate escapes"),
+        "{message}"
+    );
+    assert_eq!(message.lines().count(), issues.len());
+
+    for name in [
+        "code_outputs.ipynb",
+        "markdown_attachments.ipynb",
+        "empty.ipynb",
+    ] {
+        let (_, report) = Notebook::from_slice_with_report(read_fixture(name).as_bytes()).unwrap();
+        assert!(report.is_empty(), "{name}: {report:?}");
+        assert_eq!(report.validation_message(), None);
+    }
+    // Missing ids are repaired without a report, as nbformat does.
+    let (_, report) = Notebook::from_value_with_report(json!({
+        "nbformat": 4, "nbformat_minor": 5, "metadata": {},
+        "cells": [{"cell_type": "markdown", "metadata": {}, "source": ""}],
+    }))
+    .unwrap();
+    assert!(report.is_empty(), "{report:?}");
+}
+
+#[test]
+fn json_bodies_read_lone_surrogates() {
+    let v: Value = ganymede_nbformat::from_json_slice(br#"{"s": "a\ud800b"}"#).unwrap();
+    assert_eq!(v["s"], "a\u{fffd}b");
+    assert!(ganymede_nbformat::from_json_slice::<Value>(br#"{"s": "\ud800",}"#).is_err());
 }
