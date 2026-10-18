@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use ganymede_api::{KernelManager, KernelManagerConfig, SessionManager, ZmqTransportFactory};
 use ganymede_contents::{FsContents, FsOptions, Notary};
 use ganymede_kernel_host::{FsKernelspecs, SubprocessProvisioner};
+use std::future::IntoFuture;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -385,6 +386,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         });
     }
 
+    let stop = stop_signals()?;
     let listener = bind(&cfg.ip, cfg.port, startup.port_retries).await?;
     let addr = listener.local_addr()?;
     let page = if startup.require_lab { "lab" } else { "" };
@@ -401,15 +403,49 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         f(&url);
     }
 
-    let shutdown = async {
-        shutdown_signal().await;
-        tracing::info!("shutting down kernels");
-    };
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
-        .await?;
+    serve_until(listener, app, stop, DRAIN_TIMEOUT).await?;
     kernels.shutdown_all().await;
     Ok(())
+}
+
+/// How long open requests get to finish after the first stop signal.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Serves `app` until the first message on `stop`, then lets open requests
+/// finish until `drain` passes or a second message arrives. axum's
+/// graceful shutdown alone waits for every connection without limit, so
+/// one unfinished request kept Ctrl-C from stopping the server (#125).
+async fn serve_until(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+    mut stop: tokio::sync::mpsc::Receiver<()>,
+    drain: Duration,
+) -> std::io::Result<()> {
+    let stopping = Arc::new(tokio::sync::Notify::new());
+    let server = axum::serve(listener, app)
+        .with_graceful_shutdown({
+            let stopping = stopping.clone();
+            async move { stopping.notified().await }
+        })
+        .into_future();
+    tokio::pin!(server);
+    tokio::select! {
+        r = &mut server => return r,
+        Some(()) = stop.recv() => {}
+    }
+    tracing::info!("shutting down kernels");
+    stopping.notify_one();
+    tokio::select! {
+        r = server => r,
+        () = tokio::time::sleep(drain) => {
+            tracing::info!("closing connections still open after {drain:?}");
+            Ok(())
+        }
+        Some(()) = stop.recv() => {
+            tracing::info!("stopping without waiting for open connections");
+            Ok(())
+        }
+    }
 }
 
 /// A listener on `port`, or on the first free one of the `retries` after
@@ -451,28 +487,46 @@ fn installed_lab(version: Option<&str>) -> Result<Option<PathBuf>> {
     }
 }
 
-/// Ctrl-C, or SIGTERM where there is one, so a service manager's stop
-/// also shuts kernels down.
-async fn shutdown_signal() {
+/// A message per Ctrl-C, or SIGTERM where there is one, so a service
+/// manager's stop also shuts kernels down. The handlers are installed
+/// once, before serving, so no signal falls between them.
+fn stop_signals() -> Result<tokio::sync::mpsc::Receiver<()>> {
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
-        let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = term.recv() => {}
-        }
+        let mut int = signal(SignalKind::interrupt()).context("SIGINT handler")?;
+        let mut term = signal(SignalKind::terminate()).context("SIGTERM handler")?;
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    Some(()) = int.recv() => {}
+                    Some(()) = term.recv() => {}
+                    else => break,
+                }
+                if tx.send(()).await.is_err() {
+                    break;
+                }
+            }
+        });
     }
     #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
-    }
+    tokio::spawn(async move {
+        while tokio::signal::ctrl_c().await.is_ok() {
+            if tx.send(()).await.is_err() {
+                break;
+            }
+        }
+    });
+    Ok(rx)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ServeArgs;
+    use super::{serve_until, ServeArgs};
     use std::path::PathBuf;
+    use std::time::Duration;
+    use tokio::io::AsyncWriteExt;
 
     fn config_file(text: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -588,5 +642,74 @@ mod tests {
         .into_config()
         .unwrap_err();
         assert!(format!("{err:#}").contains("reading"), "{err:#}");
+    }
+
+    /// A server with one connection stuck mid-request, and the sender of
+    /// its stop signals.
+    async fn stuck_server(
+        drain: Duration,
+    ) -> (
+        tokio::task::JoinHandle<std::io::Result<()>>,
+        tokio::sync::mpsc::Sender<()>,
+        tokio::net::TcpStream,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new().route("/", axum::routing::get(|| async { "ok" }));
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let server = tokio::spawn(serve_until(listener, app, rx, drain));
+        let mut conn = tokio::net::TcpStream::connect(addr).await.unwrap();
+        // Headers without the blank line that ends them.
+        conn.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n")
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        (server, tx, conn)
+    }
+
+    #[tokio::test]
+    async fn an_unfinished_request_does_not_hold_shutdown_past_the_drain() {
+        let (server, tx, _conn) = stuck_server(Duration::from_millis(200)).await;
+        tx.send(()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server stopped after the drain")
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_second_signal_stops_without_waiting() {
+        let (server, tx, _conn) = stuck_server(Duration::from_secs(3600)).await;
+        tx.send(()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!server.is_finished(), "still draining");
+        tx.send(()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server stopped on the second signal")
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn idle_connections_close_at_once() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let server = tokio::spawn(serve_until(
+            listener,
+            axum::Router::new(),
+            rx,
+            Duration::from_secs(3600),
+        ));
+        let _conn = tokio::net::TcpStream::connect(addr).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        tx.send(()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("graceful shutdown closed the idle connection")
+            .unwrap()
+            .unwrap();
     }
 }

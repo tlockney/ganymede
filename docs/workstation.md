@@ -136,7 +136,8 @@ opens it in your browser (`--no-browser` only prints it). The token is a
 new random string each start; opening the URL with it logs the browser in
 with a cookie, so the page keeps working after the token leaves the
 address bar. If you open `/lab` without it, the page asks for the token.
-The server listens on `127.0.0.1` only. Ctrl-C stops it.
+The server listens on `127.0.0.1` only. Ctrl-C stops it: open requests
+get 3 seconds to finish, and a second Ctrl-C stops it at once.
 
 ## 6. Your first notebook
 
