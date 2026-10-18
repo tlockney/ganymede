@@ -2,11 +2,17 @@
 //!
 //! Every struct carries an `extra` map captured with `#[serde(flatten)]`, so
 //! fields this crate does not know about survive a read/write round trip.
+//!
+//! Like Python nbformat, which only logs validation errors, deserializing is
+//! lenient: `null` where an object, array or string belongs reads as empty,
+//! missing output fields take defaults, an `execution_count` that is not a
+//! non-negative integer reads as integral or `None`, and an output that still
+//! does not fit the schema is kept verbatim as [`Output::Unknown`].
 
 use std::collections::BTreeMap;
 
 use serde::de::Deserializer;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 
 use crate::multiline::MultilineString;
@@ -16,14 +22,43 @@ pub const NBFORMAT: u32 = 4;
 /// The nbformat minor version new notebooks are created with.
 pub const NBFORMAT_MINOR: u32 = 5;
 
+/// Deserialize `null` as the type's default (empty map, list or string).
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+/// Read an `execution_count` leniently.
+///
+/// The schema allows a non-negative integer or `null`. An integral float
+/// such as `1.0` reads as that integer; anything else (`-1`, `1.5`, a
+/// string) reads as `None`, so it is written back as `null`.
+fn lenient_execution_count<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
+    let value = Value::deserialize(deserializer)?;
+    let Value::Number(n) = value else {
+        return Ok(None);
+    };
+    if let Some(n) = n.as_u64() {
+        return Ok(Some(n));
+    }
+    Ok(n.as_f64()
+        .filter(|f| f.fract() == 0.0 && *f >= 0.0 && *f < u64::MAX as f64)
+        .map(|f| f as u64))
+}
+
 /// A notebook document (nbformat 4.x).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Notebook {
     pub nbformat: u32,
     pub nbformat_minor: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub metadata: Map<String, Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub cells: Vec<Cell>,
     /// Fields not covered by the schema, preserved verbatim.
     #[serde(flatten)]
@@ -106,14 +141,14 @@ impl Cell {
 pub struct CodeCell {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub metadata: Map<String, Value>,
     #[serde(default)]
     pub source: MultilineString,
     /// Always written, as `null` when the cell has not run.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_execution_count")]
     pub execution_count: Option<u64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub outputs: Vec<Output>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -124,7 +159,7 @@ pub struct CodeCell {
 pub struct MarkdownCell {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub metadata: Map<String, Value>,
     #[serde(default)]
     pub source: MultilineString,
@@ -139,7 +174,7 @@ pub struct MarkdownCell {
 pub struct RawCell {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub metadata: Map<String, Value>,
     #[serde(default)]
     pub source: MultilineString,
@@ -153,19 +188,81 @@ pub struct RawCell {
 pub type Attachments = BTreeMap<String, MimeBundle>;
 
 /// A cell output, tagged on disk by `output_type`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "output_type", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Output {
+    Stream(StreamOutput),
+    DisplayData(DisplayDataOutput),
+    ExecuteResult(ExecuteResultOutput),
+    Error(ErrorOutput),
+    /// An output this crate cannot type: an unknown `output_type`, or a
+    /// known one whose fields do not fit the schema even leniently. Kept as
+    /// read and written back unchanged, as Python nbformat does.
+    Unknown(Value),
+}
+
+impl Output {
+    /// The `output_type` tag, if there is one.
+    pub fn output_type(&self) -> Option<&str> {
+        match self {
+            Output::Stream(_) => Some("stream"),
+            Output::DisplayData(_) => Some("display_data"),
+            Output::ExecuteResult(_) => Some("execute_result"),
+            Output::Error(_) => Some("error"),
+            Output::Unknown(v) => v.get("output_type").and_then(Value::as_str),
+        }
+    }
+}
+
+/// The typed outputs, as serde derives their tagged form.
+#[derive(Serialize)]
+#[serde(tag = "output_type", rename_all = "snake_case")]
+enum TypedOutputRef<'a> {
+    Stream(&'a StreamOutput),
+    DisplayData(&'a DisplayDataOutput),
+    ExecuteResult(&'a ExecuteResultOutput),
+    Error(&'a ErrorOutput),
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "output_type", rename_all = "snake_case")]
+enum TypedOutput {
     Stream(StreamOutput),
     DisplayData(DisplayDataOutput),
     ExecuteResult(ExecuteResultOutput),
     Error(ErrorOutput),
 }
 
+impl Serialize for Output {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Output::Stream(o) => TypedOutputRef::Stream(o).serialize(serializer),
+            Output::DisplayData(o) => TypedOutputRef::DisplayData(o).serialize(serializer),
+            Output::ExecuteResult(o) => TypedOutputRef::ExecuteResult(o).serialize(serializer),
+            Output::Error(o) => TypedOutputRef::Error(o).serialize(serializer),
+            Output::Unknown(v) => v.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Output {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        Ok(match TypedOutput::deserialize(&value) {
+            Ok(TypedOutput::Stream(o)) => Output::Stream(o),
+            Ok(TypedOutput::DisplayData(o)) => Output::DisplayData(o),
+            Ok(TypedOutput::ExecuteResult(o)) => Output::ExecuteResult(o),
+            Ok(TypedOutput::Error(o)) => Output::Error(o),
+            Err(_) => Output::Unknown(value),
+        })
+    }
+}
+
 /// A `stream` output (stdout or stderr text).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct StreamOutput {
-    /// `"stdout"` or `"stderr"`.
+    /// `"stdout"` or `"stderr"`. A stream without one reads as `"stdout"`,
+    /// nbformat's `new_output` default.
+    #[serde(default = "default_stream_name")]
     pub name: String,
     #[serde(default)]
     pub text: MultilineString,
@@ -173,12 +270,16 @@ pub struct StreamOutput {
     pub extra: Map<String, Value>,
 }
 
+fn default_stream_name() -> String {
+    "stdout".to_owned()
+}
+
 /// A `display_data` output.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct DisplayDataOutput {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub data: MimeBundle,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub metadata: Map<String, Value>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -187,11 +288,11 @@ pub struct DisplayDataOutput {
 /// An `execute_result` output.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ExecuteResultOutput {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_execution_count")]
     pub execution_count: Option<u64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub data: MimeBundle,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub metadata: Map<String, Value>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -200,10 +301,14 @@ pub struct ExecuteResultOutput {
 /// An `error` output.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ErrorOutput {
+    /// Empty when missing on disk.
+    #[serde(default)]
     pub ename: String,
+    /// Empty when missing on disk.
+    #[serde(default)]
     pub evalue: String,
     /// Lines of the traceback, usually with ANSI escapes. Not split further.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub traceback: Vec<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
