@@ -25,3 +25,7 @@ updates:
     groups:
       npm:
         patterns: ["*"]
+    ignore:
+      # node-fetch 3 is ESM-only; validation/vscode.cjs needs require().
+      - dependency-name: node-fetch
+        update-types: ["version-update:semver-major"]
