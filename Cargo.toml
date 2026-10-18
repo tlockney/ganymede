@@ -36,3 +36,11 @@ tower-http = { version = "0.6", features = ["fs", "trace", "cors"] }
 tower = "0.5"
 tokio-tungstenite = "0.30"
 toml = "0.9"
+
+# What release.yml ships. Measured on x86_64 Linux (0.1.0): the binary
+# goes from 19.8 MB to 12.8 MB, and a clean build stays at about 2.5
+# minutes.
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1

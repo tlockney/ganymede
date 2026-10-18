@@ -68,6 +68,7 @@ export function groups(): Group[] {
       level: "contributor",
       items: [
         { text: "Development", link: "/development" },
+        { text: "Releasing", link: "/releasing" },
         { text: "Development log", link: "/notes" },
       ],
     },

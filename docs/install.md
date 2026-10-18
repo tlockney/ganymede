@@ -23,7 +23,8 @@ From a checkout, `cargo install --path crates/ganymede-cli` does the same.
 
 Releases attach a prebuilt archive per platform: Linux (x86_64,
 aarch64), macOS (aarch64, x86_64), and Windows (x86_64), each with a
-`.sha256` beside it and `SHA256SUMS` for all of them. Get one from the
+`.sha256` beside it, `SHA256SUMS` for all of them, and a build
+provenance attestation ([Verify a download](#verify-a-download)). Get one from the
 [releases page](https://github.com/tlockney/ganymede/releases).
 
 ### Install script
@@ -80,11 +81,44 @@ mkdir -p ~/.local/bin && install -m 755 "$NAME/ganymede" ~/.local/bin/
 export PATH="$HOME/.local/bin:$PATH"   # if it is not on PATH already
 ```
 
-Set `VERSION=0.1.0` instead of the first line to pin a release. The Linux
-binaries need glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36, or later).
-macOS does not quarantine files fetched with `curl`; after a browser
-download, run `xattr -d com.apple.quarantine ganymede` before the first
-run, since the binaries are not notarized.
+Set `VERSION=0.1.0` instead of the first line to pin a release.
+
+### Verify a download
+
+The `.sha256` files catch a damaged or truncated download. They come
+from the same place as the archive, so they cannot show that the
+archive is the one this repository built. Each release archive also
+carries a signed build provenance attestation, made by the release
+workflow from the tagged commit. With the [GitHub CLI](https://cli.github.com):
+
+```sh
+gh attestation verify "$NAME.tar.gz" --repo tlockney/ganymede
+```
+
+It succeeds only for an archive built by `tlockney/ganymede`'s own
+release workflow, and prints the tag and commit it was built from.
+
+### Platform notes
+
+- **Linux** binaries are built against glibc and need 2.35 or newer
+  (Ubuntu 22.04, Debian 12, Fedora 36, or later). On a musl system such
+  as Alpine, or an older glibc, the binary fails to start with a bare
+  `not found` (the missing piece is the glibc loader, not `ganymede`).
+  There is no musl build yet; install [from source](#from-source)
+  instead.
+- **macOS** binaries are not signed or notarized. `curl`, and so the
+  install script, doesn't mark files as quarantined, and they run as is.
+  An archive downloaded with a browser is quarantined, and Gatekeeper
+  refuses to open the binary ("cannot be opened because the developer
+  cannot be verified"). Verify the download as above, then clear the
+  flag before the first run:
+
+  ```sh
+  xattr -d com.apple.quarantine ganymede
+  ```
+
+  Or, after the first refusal, allow it under System Settings, Privacy &
+  Security.
 
 To check the install without a kernel, use the built-in `fake` kernel:
 
