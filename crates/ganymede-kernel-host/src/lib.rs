@@ -36,7 +36,7 @@ pub use kernelspec::{FsKernelspecs, InterruptMode, Kernelspec, KernelspecSource}
 #[cfg(feature = "subprocess")]
 pub use process::SubprocessProvisioner;
 pub use process::{attach, LaunchOptions, LaunchedKernel, Provisioner};
-pub use session::{Execution, KernelSession};
+pub use session::{Execution, Heartbeat, KernelSession};
 pub use transport::{in_process_pair, KernelSide, KernelTransport, TransportSink};
 
 #[derive(Debug, thiserror::Error)]

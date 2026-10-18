@@ -299,6 +299,16 @@ async fn sub_loop(
     let _ = socket.close().await;
 }
 
+/// A transport dropped without `close`, such as a session whose kernel
+/// died, must not leave its socket tasks reconnecting for ever.
+impl Drop for ZmqTransport {
+    fn drop(&mut self) {
+        for t in &self.tasks {
+            t.abort();
+        }
+    }
+}
+
 #[async_trait]
 impl TransportSink for ZmqTransport {
     async fn send(&self, channel: Channel, msg: Message) -> Result<()> {
