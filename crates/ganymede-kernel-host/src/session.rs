@@ -29,6 +29,11 @@ use tokio::sync::{broadcast, oneshot, watch};
 struct Pending {
     want_idle: bool,
     reply: Option<Message>,
+    /// A copy of the reply the kernel broadcast on iopub. ipykernel
+    /// publishes its `shutdown_reply` there too, and can exit without the
+    /// one on the request's own socket ever leaving the process; see
+    /// [`Inner::mark_dead`].
+    broadcast_reply: Option<Message>,
     idle_seen: bool,
     outputs: Vec<Message>,
     status: Vec<Message>,
@@ -238,6 +243,7 @@ impl KernelSession {
             Pending {
                 want_idle,
                 reply: None,
+                broadcast_reply: None,
                 idle_seen: false,
                 outputs: Vec::new(),
                 status: Vec::new(),
@@ -470,8 +476,20 @@ impl Inner {
 
     fn mark_dead(&self) {
         if self.alive.send_replace(false) {
-            // Dropping the senders fails every waiting request.
-            self.pending.lock().unwrap().clear();
+            // A request whose reply never came but whose copy was broadcast
+            // on iopub gets that copy: ipykernel 7 hands a reply on shell to
+            // a thread that it can stop before the reply is written, while
+            // the iopub copy of a `shutdown_reply` is sent. Dropping the
+            // senders fails every other waiting request.
+            for (_, p) in self.pending.lock().unwrap().drain() {
+                if let (Some(reply), Some(tx)) = (p.broadcast_reply, p.done) {
+                    let _ = tx.send(Execution {
+                        reply,
+                        outputs: p.outputs,
+                        status: p.status,
+                    });
+                }
+            }
             // Stop the transport's tasks so `route` sees its channel close
             // and a ZMQ SUB socket stops reconnecting to a dead kernel.
             if let Ok(rt) = tokio::runtime::Handle::try_current() {
@@ -545,6 +563,9 @@ async fn route(inner: Arc<Inner>, mut incoming: crate::transport::Incoming) {
                                 }
                                 p.status.push(msg.clone());
                             } else {
+                                if msg.msg_type() == "shutdown_reply" {
+                                    p.broadcast_reply = Some(msg.clone());
+                                }
                                 p.outputs.push(msg.clone());
                             }
                         }
@@ -943,6 +964,45 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(2), s.dead())
             .await
             .unwrap();
+    }
+
+    /// ipykernel 7 can exit with its `shutdown_reply` on shell never
+    /// written, but the copy it broadcasts on iopub goes out. That copy
+    /// answers the request.
+    #[tokio::test]
+    async fn a_shutdown_reply_seen_only_on_iopub_answers_the_request() {
+        let (host, mut kernel) = in_process_pair(8);
+        let process = Arc::new(FakeProcess {
+            calls: Mutex::new(Vec::new()),
+            exits_on: "",
+            exit: watch::channel(false).0,
+        });
+        let launched = LaunchedKernel {
+            connection: ganymede_protocol::ConnectionInfo::new_tcp("127.0.0.1", [1, 2, 3, 4, 5]),
+            connection_file: None,
+            process: process.clone(),
+            interrupt_mode: InterruptMode::Signal,
+        };
+        let s = KernelSession::start(host, Some(&launched));
+        let p = process.clone();
+        tokio::spawn(async move {
+            let (_, req) = kernel.incoming.recv().await.unwrap();
+            let content = serde_json::json!({"status": "ok", "restart": false});
+            let copy = Message::reply_to(&req, "shutdown_reply", &content);
+            let _ = kernel.outgoing.send((Channel::IoPub, copy)).await;
+            // The reply on shell is lost and the process exits.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            p.exit.send_replace(true);
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        let m = s.message("shutdown_request", &serde_json::json!({"restart": false}));
+        let exec = s
+            .request(Channel::Shell, m, false, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(exec.reply.msg_type(), "shutdown_reply");
+        assert_eq!(exec.reply.content["status"], "ok");
+        assert!(!s.is_alive());
     }
 
     #[tokio::test]
