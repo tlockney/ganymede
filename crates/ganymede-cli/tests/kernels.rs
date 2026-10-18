@@ -41,6 +41,22 @@ struct Lang {
     complete_match: &'static str,
     incomplete: &'static str,
     inspect: &'static str,
+    /// Asks for input with `allow_stdin: false`; prints `no_stdin_says`.
+    no_stdin: &'static str,
+    no_stdin_says: &'static str,
+    /// Ends the language runtime mid-cell. cdp-kernel relaunches its
+    /// runtime for the next cell; for ipykernel the runtime is the kernel.
+    exit: &'static str,
+    exit_kills_kernel: bool,
+    /// Registers comm target `closer`, which records the data of the
+    /// frontend's `comm_close`; `read_closed` prints it as JSON.
+    closer_target: &'static str,
+    read_closed: &'static str,
+    /// Registers comm target `boom`, whose handler throws `kaboom`.
+    boom_target: &'static str,
+    /// Prints `before`, displays markdown `one` with display id `d1`,
+    /// updates it to `two`, prints `after`.
+    display_update: &'static str,
 }
 
 const LANGS: &[Lang] = &[
@@ -57,13 +73,21 @@ const LANGS: &[Lang] = &[
         set_state: "var kept = 'state'",
         read_state: "kept",
         undefined: "ReferenceError",
-        echo_target: "jupyter.comm.registerTarget('echo', (comm) => comm.onMsg((m) => comm.send(m.data)))",
+        echo_target: "jupyter.comm.registerTarget('echo', (comm) => comm.onMsg((m) => comm.send(m.data, { buffers: m.buffers })))",
         cwd: "console.log(process.cwd())",
         complete_setup: "const zebrafish = 1",
         complete_prefix: "zebraf",
         complete_match: "zebrafish",
         incomplete: "function f() {",
         inspect: "Math",
+        no_stdin: "console.log(prompt('x') === null)",
+        no_stdin_says: "true",
+        exit: "process.exit(0)",
+        exit_kills_kernel: false,
+        closer_target: "globalThis.closedWith = null; jupyter.comm.registerTarget('closer', (comm) => comm.onClose((m) => { closedWith = m.data; }))",
+        read_closed: "console.log(JSON.stringify(closedWith))",
+        boom_target: "jupyter.comm.registerTarget('boom', () => { throw new Error('kaboom'); })",
+        display_update: "console.log('before');\nawait jupyter.display(jupyter.md`one`, { display_id: 'd1' });\nawait jupyter.display(jupyter.md`two`, { display_id: 'd1', update: true });\nconsole.log('after')",
     },
     Lang {
         kernel: "python3",
@@ -78,13 +102,21 @@ const LANGS: &[Lang] = &[
         set_state: "kept = 'state'",
         read_state: "kept",
         undefined: "NameError",
-        echo_target: "def _echo(comm, msg):\n    comm.on_msg(lambda m: comm.send(m['content']['data']))\nget_ipython().kernel.comm_manager.register_target('echo', _echo)",
+        echo_target: "def _echo(comm, msg):\n    comm.on_msg(lambda m: comm.send(m['content']['data'], buffers=m['buffers']))\nget_ipython().kernel.comm_manager.register_target('echo', _echo)",
         cwd: "import os; print(os.getcwd())",
         complete_setup: "zebrafish = 1",
         complete_prefix: "zebraf",
         complete_match: "zebrafish",
         incomplete: "for i in range(3):",
         inspect: "len",
+        no_stdin: "try:\n    input('x')\nexcept Exception as e:\n    print(type(e).__name__)",
+        no_stdin_says: "StdinNotImplementedError",
+        exit: "import os; os._exit(0)",
+        exit_kills_kernel: true,
+        closer_target: "import json\nclosed_with = None\ndef _closer(comm, msg):\n    def _closed(m):\n        global closed_with\n        closed_with = m['content']['data']\n    comm.on_close(_closed)\nget_ipython().kernel.comm_manager.register_target('closer', _closer)",
+        read_closed: "print(json.dumps(closed_with))",
+        boom_target: "def _boom(comm, msg):\n    raise RuntimeError('kaboom')\nget_ipython().kernel.comm_manager.register_target('boom', _boom)",
+        display_update: "from IPython.display import display, Markdown\nprint('before')\nh = display(Markdown('one'), display_id='d1')\nh.update(Markdown('two'))\nprint('after')",
     },
 ];
 
@@ -279,7 +311,12 @@ fn comms_round_trip() {
             let mut sub = k.session().subscribe();
             let id = "0123456789abcdef0123456789abcdef";
             k.comm_open(id, "echo", json!({})).await.unwrap();
-            k.comm_msg(id, json!({"ping": 1})).await.unwrap();
+            // Binary buffers ride along, as a widget's do.
+            let s = k.session();
+            let m = s
+                .message("comm_msg", &json!({"comm_id": id, "data": {"ping": 1}}))
+                .with_buffers(vec![vec![0u8, 1, 0xff].into()]);
+            s.send(Channel::Shell, m).await.unwrap();
             let echoed = tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
                     let (ch, m) = sub.recv().await.unwrap();
@@ -287,13 +324,15 @@ fn comms_round_trip() {
                         && m.msg_type() == "comm_msg"
                         && m.content["comm_id"] == id
                     {
-                        return m.content["data"].clone();
+                        return m;
                     }
                 }
             })
             .await
             .expect("no echo");
-            assert_eq!(echoed, json!({"ping": 1}), "{}", l.kernel);
+            assert_eq!(echoed.content["data"], json!({"ping": 1}), "{}", l.kernel);
+            let bufs: Vec<&[u8]> = echoed.buffers.iter().map(|b| b.as_ref()).collect();
+            assert_eq!(bufs, [&[0u8, 1, 0xff][..]], "{}", l.kernel);
             k.comm_close(id, json!({})).await.unwrap();
             k.shutdown().await.unwrap();
         });
@@ -337,6 +376,390 @@ fn complete_inspect_and_is_complete() {
                 l.kernel
             );
             k.shutdown().await.unwrap();
+        });
+    }
+}
+
+/// Send `msg` on shell and collect the iopub messages it causes, except
+/// statuses, until the kernel is idle again. For messages that get no
+/// reply, such as `comm_open`.
+async fn shell_outputs(
+    k: &Kernel,
+    msg: ganymede_engine::protocol::Message,
+) -> Vec<ganymede_engine::protocol::Message> {
+    let s = k.session();
+    let id = msg.header.msg_id.clone();
+    let mut sub = s.subscribe();
+    s.send(Channel::Shell, msg).await.unwrap();
+    let mut out = Vec::new();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let (ch, m) = sub.recv().await.unwrap();
+            if ch != Channel::IoPub || m.parent_id() != Some(id.as_str()) {
+                continue;
+            }
+            if m.msg_type() == "status" {
+                if m.content["execution_state"] == "idle" {
+                    return;
+                }
+            } else {
+                out.push(m);
+            }
+        }
+    })
+    .await
+    .expect("no idle after the message");
+    out
+}
+
+/// Send executes back to back, as Run All does, and return each reply's
+/// status in order.
+async fn queued(k: &Kernel, cells: &[(&str, bool)]) -> Vec<String> {
+    let s = k.session();
+    let mut sub = s.subscribe();
+    let mut ids = Vec::new();
+    for (code, stop_on_error) in cells {
+        let mut req = ganymede_engine::protocol::content::ExecuteRequest::new(*code);
+        req.stop_on_error = *stop_on_error;
+        let m = s.message("execute_request", &req);
+        ids.push(m.header.msg_id.clone());
+        s.send(Channel::Shell, m).await.unwrap();
+    }
+    let mut got = std::collections::HashMap::new();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while got.len() < ids.len() {
+            let (ch, m) = sub.recv().await.unwrap();
+            if ch == Channel::Shell && m.msg_type() == "execute_reply" {
+                if let Some(p) = m.parent_id().filter(|p| ids.iter().any(|i| i == p)) {
+                    got.insert(
+                        p.to_string(),
+                        m.content["status"].as_str().unwrap().to_string(),
+                    );
+                }
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("replies so far: {got:?}"));
+    ids.iter().map(|i| got[i].clone()).collect()
+}
+
+#[test]
+fn stop_on_error_aborts_queued_cells() {
+    for l in langs() {
+        rt().block_on(async {
+            let k = engine().start(l.kernel).await.unwrap();
+            let statuses = queued(
+                &k,
+                &[(l.raise, true), (l.set_state, true), (l.answer, true)],
+            )
+            .await;
+            assert_eq!(statuses, ["error", "aborted", "aborted"], "{}", l.kernel);
+            // The aborted cell never ran.
+            let r = k.execute(l.read_state).await.unwrap();
+            assert_eq!(r.error().map(|e| e.0), Some(l.undefined), "{}", l.kernel);
+            let statuses = queued(&k, &[(l.raise, false), (l.answer, true)]).await;
+            assert_eq!(statuses, ["error", "ok"], "{}", l.kernel);
+            k.shutdown().await.unwrap();
+        });
+    }
+}
+
+#[test]
+fn input_without_stdin_and_interrupt_while_prompting() {
+    for l in langs() {
+        rt().block_on(async {
+            let k = engine().start(l.kernel).await.unwrap();
+            let r = k.execute(l.no_stdin).await.unwrap();
+            assert_eq!(plain(&r).trim(), l.no_stdin_says, "{}", l.kernel);
+
+            assert!(k.execute(l.set_state).await.unwrap().is_ok());
+            let s = k.session();
+            let mut sub = s.subscribe();
+            let mut req = ganymede_engine::protocol::content::ExecuteRequest::new(l.input);
+            req.allow_stdin = true;
+            let m = s.message("execute_request", &req);
+            let id = m.header.msg_id.clone();
+            s.send(Channel::Shell, m).await.unwrap();
+            let reply = tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    let (ch, m) = sub.recv().await.unwrap();
+                    if m.parent_id() != Some(id.as_str()) {
+                        continue;
+                    }
+                    match (ch, m.msg_type()) {
+                        (Channel::Stdin, "input_request") => k.interrupt().await.unwrap(),
+                        (Channel::Shell, "execute_reply") => return m,
+                        _ => {}
+                    }
+                }
+            })
+            .await
+            .expect("no execute_reply after interrupting a prompt");
+            assert_eq!(
+                reply.content["status"], "error",
+                "{}: {}",
+                l.kernel, reply.content
+            );
+            // The next prompt is answered by its own reply; state is kept.
+            let mut h = Answer(vec![]);
+            let opts = ExecuteOptions {
+                allow_stdin: true,
+                ..Default::default()
+            };
+            let r = k.execute_with(l.input, &opts, &mut h).await.unwrap();
+            assert_eq!(plain(&r), "hi Ada\n", "{}", l.kernel);
+            let r = k.execute(l.read_state).await.unwrap();
+            assert!(plain(&r).contains("state"), "{}: {}", l.kernel, plain(&r));
+            k.shutdown().await.unwrap();
+        });
+    }
+}
+
+#[test]
+fn runtime_exit_mid_cell() {
+    for l in langs() {
+        rt().block_on(async {
+            let k = engine().start(l.kernel).await.unwrap();
+            assert!(k.execute(l.set_state).await.unwrap().is_ok());
+            let r = tokio::time::timeout(Duration::from_secs(20), k.execute(l.exit))
+                .await
+                .expect("no answer after the runtime exited");
+            if l.exit_kills_kernel {
+                // The process is the runtime: the session sees it die.
+                assert!(r.is_err(), "{}", l.kernel);
+                for _ in 0..100 {
+                    if !k.is_alive() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                assert!(!k.is_alive(), "{}", l.kernel);
+                return;
+            }
+            assert!(!r.unwrap().is_ok(), "{}", l.kernel);
+            // The next cell runs in a fresh runtime.
+            let r = k.execute(l.read_state).await.unwrap();
+            assert_eq!(r.error().map(|e| e.0), Some(l.undefined), "{}", l.kernel);
+            let r = k.execute(l.answer).await.unwrap();
+            assert_eq!(plain(&r).trim(), "42", "{}", l.kernel);
+            k.shutdown().await.unwrap();
+        });
+    }
+}
+
+#[test]
+fn interrupt_and_shutdown_requests_on_shell() {
+    for l in langs() {
+        rt().block_on(async {
+            let k = engine().start(l.kernel).await.unwrap();
+            // ipykernel handles it on shell too, by SIGINT to its own process
+            // group, which interrupts that very handler: no reply.
+            if l.language != "python" {
+                let r = k.shell("interrupt_request", &json!({})).await.unwrap();
+                assert_eq!(r["status"], "ok", "{}: {r}", l.kernel);
+            }
+            let r = k
+                .shell("shutdown_request", &json!({"restart": false}))
+                .await
+                .unwrap();
+            assert_eq!(r["status"], "ok", "{}: {r}", l.kernel);
+            for _ in 0..100 {
+                if !k.is_alive() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(!k.is_alive(), "{}: still running", l.kernel);
+        });
+    }
+}
+
+#[test]
+fn silent_execute_publishes_only_status() {
+    for l in langs() {
+        rt().block_on(async {
+            let k = engine().start(l.kernel).await.unwrap();
+            let opts = ExecuteOptions {
+                silent: true,
+                store_history: false,
+                ..Default::default()
+            };
+            let r = k
+                .execute_with(l.answer, &opts, &mut ganymede_engine::NoHandler)
+                .await
+                .unwrap();
+            assert!(r.is_ok(), "{}", l.kernel);
+            let types: Vec<_> = r.messages.iter().map(|m| m.msg_type()).collect();
+            assert!(types.is_empty(), "{}: {types:?}", l.kernel);
+            k.shutdown().await.unwrap();
+        });
+    }
+}
+
+#[test]
+fn comm_edge_cases() {
+    for l in langs() {
+        rt().block_on(async {
+            let k = engine().start(l.kernel).await.unwrap();
+            let s = k.session();
+            let open = |id: &str, target: &str| {
+                s.message(
+                    "comm_open",
+                    &json!({"comm_id": id, "target_name": target, "data": {}}),
+                )
+            };
+
+            // An unknown target: the kernel closes the comm.
+            let out = shell_outputs(&k, open("nobody-1", "nobody")).await;
+            assert!(
+                out.iter()
+                    .any(|m| m.msg_type() == "comm_close" && m.content["comm_id"] == "nobody-1"),
+                "{}: {:?}",
+                l.kernel,
+                out.iter().map(|m| m.msg_type()).collect::<Vec<_>>()
+            );
+
+            // A handler that throws leaves the kernel working.
+            assert!(k.execute(l.boom_target).await.unwrap().is_ok());
+            let out = shell_outputs(&k, open("boom-1", "boom")).await;
+            if l.language == "typescript" {
+                let stderr: String = out
+                    .iter()
+                    .filter(|m| m.msg_type() == "stream")
+                    .filter_map(|m| m.content["text"].as_str())
+                    .collect();
+                assert!(stderr.contains("kaboom"), "{}: {stderr:?}", l.kernel);
+            }
+            let r = k.execute(l.answer).await.unwrap();
+            assert_eq!(plain(&r).trim(), "42", "{}", l.kernel);
+
+            // The frontend closes a comm: the kernel's handler gets the data
+            // and the comm is gone.
+            assert!(k.execute(l.closer_target).await.unwrap().is_ok());
+            shell_outputs(&k, open("closer-1", "closer")).await;
+            let comms = k.comm_info(None).await.unwrap();
+            assert!(comms.get("closer-1").is_some(), "{}: {comms}", l.kernel);
+            let close = s.message(
+                "comm_close",
+                &json!({"comm_id": "closer-1", "data": {"why": "frontend"}}),
+            );
+            shell_outputs(&k, close).await;
+            let r = k.execute(l.read_closed).await.unwrap();
+            let v: Value = serde_json::from_str(plain(&r).trim()).unwrap();
+            assert_eq!(v, json!({"why": "frontend"}), "{}", l.kernel);
+            let comms = k.comm_info(None).await.unwrap();
+            assert!(comms.get("closer-1").is_none(), "{}: {comms}", l.kernel);
+            k.shutdown().await.unwrap();
+        });
+    }
+}
+
+#[test]
+fn history_tail_and_search() {
+    for l in langs() {
+        rt().block_on(async {
+            let k = engine().start(l.kernel).await.unwrap();
+            k.execute("'first entry'").await.unwrap();
+            k.execute("'second entry'").await.unwrap();
+            let inputs = |r: &Value| -> Vec<String> {
+                r["history"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{}: {r}", l.kernel))
+                    .iter()
+                    .map(|e| e[2].as_str().unwrap().to_string())
+                    .collect()
+            };
+            let r = k
+                .shell(
+                    "history_request",
+                    &json!({"hist_access_type": "tail", "n": 2, "raw": true, "output": false}),
+                )
+                .await
+                .unwrap();
+            assert_eq!(inputs(&r), ["'first entry'", "'second entry'"], "{}", l.kernel);
+            let r = k
+                .shell(
+                    "history_request",
+                    &json!({"hist_access_type": "search", "pattern": "'second*", "raw": true, "output": false, "unique": true}),
+                )
+                .await
+                .unwrap();
+            assert!(inputs(&r).contains(&"'second entry'".to_string()), "{}: {r}", l.kernel);
+            assert!(!inputs(&r).contains(&"'first entry'".to_string()), "{}: {r}", l.kernel);
+            k.shutdown().await.unwrap();
+        });
+    }
+}
+
+#[test]
+fn display_and_update_in_order() {
+    for l in langs() {
+        rt().block_on(async {
+            let k = engine().start(l.kernel).await.unwrap();
+            let r = k.execute(l.display_update).await.unwrap();
+            assert!(r.is_ok(), "{}: {:?}", l.kernel, r.error());
+            let seen: Vec<(String, String)> = r
+                .messages
+                .iter()
+                .filter(|m| m.msg_type() != "execute_input")
+                .map(|m| {
+                    let what = match m.msg_type() {
+                        "stream" => m.content["text"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .trim()
+                            .to_string(),
+                        _ => m.content["data"]["text/markdown"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                    };
+                    (m.msg_type().to_string(), what)
+                })
+                .collect();
+            let want: Vec<(String, String)> = [
+                ("stream", "before"),
+                ("display_data", "one"),
+                ("update_display_data", "two"),
+                ("stream", "after"),
+            ]
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+            assert_eq!(seen, want, "{}", l.kernel);
+            let update = r
+                .messages
+                .iter()
+                .find(|m| m.msg_type() == "update_display_data")
+                .unwrap();
+            assert_eq!(update.content["transient"], json!({"display_id": "d1"}));
+            k.shutdown().await.unwrap();
+        });
+    }
+}
+
+#[test]
+fn parallel_starts() {
+    for l in langs() {
+        rt().block_on(async {
+            let e = Arc::new(engine());
+            let starts = (0..4).map(|_| {
+                let e = e.clone();
+                tokio::spawn(async move { e.start(l.kernel).await })
+            });
+            let kernels: Vec<Kernel> = futures::future::join_all(starts)
+                .await
+                .into_iter()
+                .map(|r| r.unwrap().unwrap_or_else(|e| panic!("{}: {e}", l.kernel)))
+                .collect();
+            for k in &kernels {
+                let r = k.execute(l.answer).await.unwrap();
+                assert_eq!(plain(&r).trim(), "42", "{}", l.kernel);
+            }
+            for k in kernels {
+                k.shutdown().await.unwrap();
+            }
         });
     }
 }

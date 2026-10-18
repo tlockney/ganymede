@@ -5,6 +5,9 @@
 use crate::transport::KernelSide;
 use ganymede_protocol::content::*;
 use ganymede_protocol::{Channel, Message};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -21,21 +24,90 @@ pub struct FakeKernel {
     order: ReplyOrder,
     execution_count: u64,
     interrupted: bool,
+    /// Shell answers nothing before this, as cdp-kernel's serial shell
+    /// loop waits for its runtime; requests queue up meanwhile.
+    shell_ready_at: Option<tokio::time::Instant>,
+    /// `kernel_info_request`s received on shell.
+    shell_kernel_infos: Arc<AtomicUsize>,
 }
 
 impl FakeKernel {
     pub fn spawn(side: KernelSide, order: ReplyOrder) -> tokio::task::JoinHandle<()> {
+        Self::new(side, order, None).0.start()
+    }
+
+    /// A kernel whose shell channel answers nothing for `delay` after it
+    /// starts, then answers what queued, in order. Control answers at
+    /// once. The counter is the number of `kernel_info_request`s shell
+    /// received.
+    pub fn spawn_slow_shell(
+        side: KernelSide,
+        order: ReplyOrder,
+        delay: Duration,
+    ) -> (tokio::task::JoinHandle<()>, Arc<AtomicUsize>) {
+        let (k, count) = Self::new(side, order, Some(delay));
+        (k.start(), count)
+    }
+
+    fn new(
+        side: KernelSide,
+        order: ReplyOrder,
+        delay: Option<Duration>,
+    ) -> (Self, Arc<AtomicUsize>) {
+        let count = Arc::new(AtomicUsize::new(0));
         let k = FakeKernel {
             side,
             order,
             execution_count: 0,
             interrupted: false,
+            shell_ready_at: delay.map(|d| tokio::time::Instant::now() + d),
+            shell_kernel_infos: count.clone(),
         };
-        tokio::spawn(k.run())
+        (k, count)
+    }
+
+    fn start(self) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(self.run())
+    }
+
+    /// The next message to handle: shell messages held back until the
+    /// shell is ready, then everything as it comes.
+    async fn next(&mut self, held: &mut VecDeque<Message>) -> Option<(Channel, Message)> {
+        loop {
+            let ready_at = self.shell_ready_at;
+            if ready_at.is_none_or(|t| tokio::time::Instant::now() >= t) {
+                self.shell_ready_at = None;
+                if let Some(m) = held.pop_front() {
+                    return Some((Channel::Shell, m));
+                }
+                let got = self.side.incoming.recv().await?;
+                self.count(&got);
+                return Some(got);
+            }
+            let ready = tokio::time::sleep_until(ready_at.unwrap());
+            tokio::select! {
+                got = self.side.incoming.recv() => {
+                    let got = got?;
+                    self.count(&got);
+                    match got {
+                        (Channel::Shell, m) => held.push_back(m),
+                        other => return Some(other),
+                    }
+                }
+                _ = ready => {}
+            }
+        }
+    }
+
+    fn count(&self, (channel, m): &(Channel, Message)) {
+        if *channel == Channel::Shell && m.msg_type() == "kernel_info_request" {
+            self.shell_kernel_infos.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     async fn run(mut self) {
-        while let Some((channel, msg)) = self.side.incoming.recv().await {
+        let mut held = VecDeque::new();
+        while let Some((channel, msg)) = self.next(&mut held).await {
             match (channel, msg.msg_type()) {
                 (Channel::Shell | Channel::Control, "kernel_info_request") => {
                     self.status(&msg, ExecutionState::Busy).await;
