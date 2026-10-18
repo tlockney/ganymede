@@ -105,6 +105,7 @@ ganymede lab install                             # JupyterLab's frontend, from P
 ganymede lab                                     # ... then JupyterLab here, opened in the browser
 ganymede serve                                   # or the same server, without the browser, at /lab
 ganymede lab extension install <package>         # a prebuilt extension from its PyPI wheel
+ganymede ui install && ganymede ui               # Ganymede's own notebook app, from GitHub
 ganymede serve --static-dir <prefix>/share/jupyter/lab/static   # or one installed elsewhere
 ```
 

@@ -114,7 +114,7 @@ impl Index {
 /// HTTPS only, with the platform's trust store, so a proxy's CA installed
 /// there is trusted, and `HTTPS_PROXY`/`ALL_PROXY` from the environment.
 /// Timeouts keep a stalled server from hanging the install.
-fn agent() -> ureq::Agent {
+pub(crate) fn agent() -> ureq::Agent {
     use ureq::tls::{RootCerts, TlsConfig};
     let config = ureq::Agent::config_builder()
         .tls_config(
@@ -134,7 +134,7 @@ fn agent() -> ureq::Agent {
 }
 
 /// The lowercase host of an `https://` URL.
-fn https_host(url: &str) -> Result<String> {
+pub(crate) fn https_host(url: &str) -> Result<String> {
     let uri: ureq::http::Uri = url
         .parse()
         .with_context(|| format!("invalid URL {url:?}"))?;

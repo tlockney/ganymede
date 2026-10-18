@@ -10,7 +10,7 @@
 //! wheels the same way; see [`extension`].
 
 mod extension;
-mod pypi;
+pub(crate) mod pypi;
 
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
@@ -167,7 +167,7 @@ fn clean(dir: &Path) -> Result<usize> {
 }
 
 /// `root/<version>`, refusing anything that is not a plain directory name.
-fn version_dir(root: &Path, version: &str) -> Result<PathBuf> {
+pub(crate) fn version_dir(root: &Path, version: &str) -> Result<PathBuf> {
     let ok = !version.is_empty()
         && !version.starts_with('.')
         && version
@@ -220,7 +220,7 @@ fn install(root: &Path, version: &str, force: bool) -> Result<PathBuf> {
 
 /// Moves `staging` to `dest`. An existing `dest` is first renamed aside
 /// and restored if the move fails, so an install is never left half gone.
-fn replace_dir(root: &Path, staging: tempfile::TempDir, dest: &Path) -> Result<()> {
+pub(crate) fn replace_dir(root: &Path, staging: tempfile::TempDir, dest: &Path) -> Result<()> {
     // Dropped last, removing the old install from inside it.
     let aside = tempfile::Builder::new().prefix(".old-").tempdir_in(root)?;
     let old = aside.path().join("old");
