@@ -74,7 +74,7 @@ pub mod v1 {
             .parse()?;
         let header = serde_json::from_slice(slice(1)?)?;
         let parent_header = parse_parent(slice(2)?)?;
-        let metadata = serde_json::from_slice(slice(3)?)?;
+        let metadata = crate::message::parse_metadata(slice(3)?)?;
         let content = serde_json::from_slice(slice(4)?)?;
         let buffers = (5..n - 1)
             .map(|i| slice(i).map(Bytes::copy_from_slice))

@@ -58,6 +58,8 @@ pub struct KernelManagerConfig {
     pub default_kernel: Option<String>,
     pub startup_timeout: Duration,
     pub shutdown_grace: Duration,
+    /// Discard kernel processes' own stdout and stderr.
+    pub quiet: bool,
     /// Shut down kernels idle this long with no connected clients.
     pub cull_idle: Option<Duration>,
     /// Working directories for kernels are resolved under this root.
@@ -73,6 +75,7 @@ impl Default for KernelManagerConfig {
             default_kernel: None,
             startup_timeout: Duration::from_secs(60),
             shutdown_grace: Duration::from_secs(5),
+            quiet: false,
             cull_idle: None,
             root_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             base_url: "/".into(),
@@ -328,8 +331,9 @@ impl KernelManager {
         Ok(self.get(id)?.model())
     }
 
-    /// Launch a kernel. `path` is the notebook's API path; its directory
-    /// becomes the kernel's working directory.
+    /// Launch a kernel. `path` is the API path of the directory to run it
+    /// in, as `POST /api/kernels` takes it; a session passes its notebook's
+    /// directory.
     pub async fn start(&self, name: Option<&str>, path: Option<&str>) -> Result<KernelModel> {
         let name = match name {
             Some(n) => n.to_string(),
@@ -342,16 +346,12 @@ impl KernelManager {
         }
         let spec = self.specs.get(&name)?;
         let id = uuid::Uuid::new_v4().to_string();
-        // The kernel runs in the notebook's directory, or the contents root
-        // when no path is given, as it does under jupyter_server.
+        // The kernel runs in the notebook's directory, or the nearest
+        // existing directory above it, or the contents root, as it does
+        // under jupyter_server. A path that would leave the root gives
+        // the root.
         let cwd = Some(match path {
-            Some(p) => {
-                let p = p.trim_start_matches('/');
-                let dir = std::path::Path::new(p)
-                    .parent()
-                    .unwrap_or(std::path::Path::new(""));
-                self.config.root_dir.join(dir)
-            }
+            Some(p) => ganymede_contents::kernel_cwd(&self.config.root_dir, p),
             None => self.config.root_dir.clone(),
         });
         let (session, launched) = self.launch(&spec, cwd.clone(), &id).await?;
@@ -471,7 +471,7 @@ impl KernelManager {
                     cwd,
                     env: vec![],
                     kernel_id: Some(id.to_string()),
-                    quiet: false,
+                    quiet: self.config.quiet,
                 },
             )
             .await?;

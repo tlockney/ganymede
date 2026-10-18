@@ -4,8 +4,8 @@
 //! port when 8888 is taken.
 
 use anyhow::Result;
+use ganymede_server::config::Config;
 use ganymede_server::serve::{OnListening, ServeArgs, Startup};
-use std::path::PathBuf;
 
 /// Ports tried after the first, as `jupyter_server`'s default
 /// `port_retries`.
@@ -20,10 +20,9 @@ pub struct StartArgs {
     pub serve: ServeArgs,
 }
 
-pub async fn run(args: StartArgs, kernelspec_roots: Vec<PathBuf>) -> Result<()> {
-    let mut cfg = args.serve.into_config()?;
-    cfg.kernelspec_roots.extend(kernelspec_roots);
-    let on_listening: Option<OnListening> = if args.no_browser {
+/// Serve `cfg`, built from the [`StartArgs`]' `serve` flags.
+pub async fn run(cfg: Config, no_browser: bool) -> Result<()> {
+    let on_listening: Option<OnListening> = if no_browser {
         None
     } else {
         Some(Box::new(|url: &str| open_browser(url)))

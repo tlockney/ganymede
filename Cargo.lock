@@ -757,6 +757,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "ganymede-contents",
  "ganymede-kernel-host",
  "ganymede-protocol",
  "serde",

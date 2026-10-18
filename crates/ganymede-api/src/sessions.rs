@@ -123,7 +123,7 @@ impl SessionManager {
             }
             None => {
                 self.kernels
-                    .start(req.kernel.name.as_deref(), Some(&req.path))
+                    .start(req.kernel.name.as_deref(), Some(kernel_path(&req.path)))
                     .await?
                     .id
             }
@@ -165,7 +165,12 @@ impl SessionManager {
                     self.kernels.get(&id)?;
                     id
                 }
-                (None, Some(name)) => self.kernels.start(Some(&name), Some(&s.path)).await?.id,
+                (None, Some(name)) => {
+                    self.kernels
+                        .start(Some(&name), Some(kernel_path(&s.path)))
+                        .await?
+                        .id
+                }
                 (None, None) => s.kernel_id.clone(),
             };
             if new_id != s.kernel_id {
@@ -195,6 +200,14 @@ impl SessionManager {
 
 fn basename(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_string()
+}
+
+/// The directory a session's kernel starts in: the notebook's parent
+/// (`jupyter_server`'s `get_kernel_path`).
+fn kernel_path(path: &str) -> &str {
+    path.trim_end_matches('/')
+        .rsplit_once('/')
+        .map_or("", |(dir, _)| dir)
 }
 
 #[cfg(test)]
@@ -277,6 +290,68 @@ mod tests {
                 .clone(),
             extra: Default::default(),
         }
+    }
+
+    /// Records the working directory each launch asks for.
+    #[derive(Default)]
+    struct CwdProvisioner(Mutex<Vec<Option<std::path::PathBuf>>>);
+    #[async_trait]
+    impl Provisioner for CwdProvisioner {
+        async fn launch(
+            &self,
+            spec: &Kernelspec,
+            opts: LaunchOptions,
+        ) -> ganymede_kernel_host::Result<LaunchedKernel> {
+            self.0.lock().unwrap().push(opts.cwd.clone());
+            FakeProvisioner.launch(spec, opts).await
+        }
+    }
+
+    #[tokio::test]
+    async fn kernel_cwd_is_confined_to_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("nb")).unwrap();
+        let provisioner = Arc::new(CwdProvisioner::default());
+        let m = KernelManager::new(
+            Arc::new(StaticKernelspecs(vec![fake_spec("fake")])),
+            provisioner.clone(),
+            Arc::new(FakeTransports::default()),
+            KernelManagerConfig {
+                startup_timeout: Duration::from_secs(5),
+                root_dir: root.clone(),
+                ..Default::default()
+            },
+        );
+        for path in [
+            None,
+            Some("nb"),
+            Some("/nb/"),
+            Some("../../etc"),
+            Some("no/such/dir"),
+        ] {
+            m.start(None, path).await.unwrap();
+        }
+        let r = root.clone();
+        let nb = root.join("nb");
+        assert_eq!(
+            *provisioner.0.lock().unwrap(),
+            [
+                Some(r.clone()),
+                Some(nb.clone()),
+                Some(nb),
+                Some(r.clone()),
+                Some(r),
+            ]
+        );
+    }
+
+    #[test]
+    fn session_kernel_path_is_the_notebook_directory() {
+        assert_eq!(kernel_path("nb/x.ipynb"), "nb");
+        assert_eq!(kernel_path("a/b/x.ipynb"), "a/b");
+        assert_eq!(kernel_path("x.ipynb"), "");
+        assert_eq!(kernel_path("../../etc/x.ipynb"), "../../etc");
     }
 
     pub(crate) fn manager(cull: Option<Duration>) -> Arc<KernelManager> {

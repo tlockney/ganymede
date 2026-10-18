@@ -139,6 +139,27 @@ fn run_interrupt() {
 }
 
 #[test]
+fn existing_searches_the_runtime_dir_and_errors_print_once() {
+    let rt = tempfile::tempdir().unwrap();
+    let out = ganymede(&["run", "--existing", "kernel-nosuch.json", "x"])
+        .env("JUPYTER_RUNTIME_DIR", rt.path())
+        .current_dir(rt.path().parent().unwrap())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    assert!(err.contains("here or in"), "{err}");
+    assert!(err.contains(&rt.path().display().to_string()), "{err}");
+
+    let out = ganymede(&["execute", "-k", "fake", "nosuch.ipynb"])
+        .current_dir(rt.path())
+        .output()
+        .unwrap();
+    let err = stderr(&out);
+    assert_eq!(err.matches("(os error 2)").count(), 1, "{err}");
+}
+
+#[test]
 fn verbose_reports_kernel_and_status() {
     let out = run_ok(ganymede(&["run", "-v", "-k", "fake", "x"]));
     let err = stderr(&out);

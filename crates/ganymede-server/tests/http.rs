@@ -588,6 +588,19 @@ async fn server_info_identity_and_config() {
     assert_eq!(c, json!({"a": {"b": 1}}));
     let (_, c) = call(&app, "GET", "/api/config/notebook", None, t).await;
     assert_eq!(c, json!({"a": {"b": 1}}), "persisted");
+    // Concurrent PATCHes are serialized: none loses another's key.
+    let patches = (0..16).map(|i| {
+        call(
+            &app,
+            "PATCH",
+            "/api/config/many",
+            Some(json!({ format!("k{i}"): i })),
+            t,
+        )
+    });
+    futures::future::join_all(patches).await;
+    let (_, c) = call(&app, "GET", "/api/config/many", None, t).await;
+    assert_eq!(c.as_object().unwrap().len(), 16, "{c}");
     assert_eq!(
         call(&app, "GET", "/api/config/..%2Fescape", None, t)
             .await
