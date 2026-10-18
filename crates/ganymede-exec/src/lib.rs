@@ -54,8 +54,9 @@ const FOREVER: Duration = Duration::from_secs(10 * 365 * 24 * 3600);
 
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// Per cell. `None` waits forever. Cell metadata `execution.timeout`
-    /// (seconds) overrides it, as in `nbclient`.
+    /// Per cell. `None` waits forever. A cell's own
+    /// `metadata.execution.timeout` (seconds) overrides it; that key is
+    /// Ganymede's, `nbclient` has no per-cell timeout.
     pub timeout: Option<Duration>,
     pub allow_errors: bool,
     /// Error names (`ename`) that do not stop execution.
@@ -237,13 +238,14 @@ impl NotebookRun {
         };
         let allows_errors = !self.opts.force_raise_errors
             && (self.opts.allow_errors || has_tag(&cell.metadata, "raises-exception"));
+        // Read before the timings replace `metadata.execution`.
+        let timeout = cell_timeout(cell).or(self.opts.timeout);
         if self.opts.record_timing {
             cell.metadata.insert("execution".into(), json!({}));
         }
         let mut req = ExecuteRequest::new(cell.source.as_str().to_string());
         req.allow_stdin = false;
         req.stop_on_error = !allows_errors;
-        let timeout = cell_timeout(cell).or(self.opts.timeout);
         cell.outputs.clear();
         self.executed += 1;
         let execution_count = self.executed;
@@ -878,5 +880,24 @@ mod tests {
             panic!()
         };
         assert_eq!(c.execution_count, Some(3));
+    }
+
+    #[tokio::test]
+    async fn a_cells_own_timeout_applies_with_timings_on() {
+        let (host, side) = in_process_pair(64);
+        FakeKernel::spawn(side, ReplyOrder::IdleThenReply);
+        let s = KernelSession::start(host, None);
+        s.nudge(Duration::from_secs(5)).await.unwrap();
+
+        let mut nb: Notebook = Notebook::from_str(r##"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[
+            {"cell_type":"code","id":"a","source":"sleep 5000","metadata":{"execution":{"timeout":0.2}},"outputs":[],"execution_count":null}
+        ]}"##).unwrap();
+        let opts = Options::default();
+        assert!(opts.record_timing);
+        let err = execute_notebook(&s, &mut nb, &opts).await.unwrap_err();
+        assert!(
+            matches!(err, Error::CellTimeout { index: 0, timeout } if timeout == Duration::from_millis(200)),
+            "{err:?}"
+        );
     }
 }

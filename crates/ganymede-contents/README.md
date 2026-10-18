@@ -73,12 +73,11 @@ layouts, and read-only mode. `tests/trust.rs` checks signatures and
   markdown cell), where jupyter_server's own signature would not match on
   reopen.
 - Not implemented: `hash`/`hash_algorithm` (omitted from the JSON),
-  `pre_save`/`post_save` hooks,
-  `nbformat` validation messages on read.
+  `pre_save`/`post_save` hooks. The `message` with validation problems is
+  `ganymede-nbformat`'s report, not jsonschema's wording.
 
 ## What to try next
 
-- An HTTP layer in `ganymede-server` mapping these calls to the axum routes.
 - A file watcher (`notify`) emitting change events for the document seam.
 - An iCloud-aware implementation that defers reads of files still
   downloading, if the Files-app profile needs it.
