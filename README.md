@@ -105,9 +105,12 @@ ganymede lab install                             # JupyterLab's frontend, from P
 ganymede lab                                     # ... then JupyterLab here, opened in the browser
 ganymede serve                                   # or the same server, without the browser, at /lab
 ganymede lab extension install <package>         # a prebuilt extension from its PyPI wheel
-ganymede ui install && ganymede ui               # Ganymede's own notebook app (HEAD only, unreleased)
+ganymede ui install && ganymede ui               # Ganymede's own notebook app (unreleased: HEAD only)
 ganymede serve --static-dir <prefix>/share/jupyter/lab/static   # or one installed elsewhere
 ```
+
+> [!NOTE]
+> **Unreleased.** `ganymede ui` is available only from a build of `main` (HEAD), not in the latest release.
 
 `-k fake` is a built-in in-process kernel for trying things out without
 installing one.
