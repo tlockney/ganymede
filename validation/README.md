@@ -5,7 +5,8 @@ need a kernel and a browser. CI's `workstation` job runs `login.mjs`,
 `trust.mjs`, and `widgets.mjs` on cdp-kernel through
 [`../scripts/test-workstation.sh`](../scripts/test-workstation.sh); the
 rest are run by hand. Results and what broke are recorded in
-[`../docs/notes.md`](../docs/notes.md).
+the [development log](../docs/notes.md), one file per entry in
+[`../docs/notes/`](../docs/notes/).
 
 ```
 npm install
