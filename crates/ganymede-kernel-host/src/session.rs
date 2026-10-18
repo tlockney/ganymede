@@ -244,18 +244,25 @@ impl KernelSession {
                 done: Some(tx),
             },
         );
-        if let Err(e) = self.inner.sink.send(channel, msg).await {
-            self.inner.pending.lock().unwrap().remove(&id);
-            return Err(e);
-        }
+        // Removes the entry however this future ends: an error, a timeout,
+        // or being dropped by a cancelled caller. Otherwise `route` would
+        // keep collecting the request's iopub output until the kernel dies.
+        let _guard = PendingGuard {
+            inner: &self.inner,
+            id,
+        };
+        self.inner.sink.send(channel, msg).await?;
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(exec)) => Ok(exec),
             Ok(Err(_)) => Err(Error::KernelDied),
-            Err(_) => {
-                self.inner.pending.lock().unwrap().remove(&id);
-                Err(Error::Timeout("reply"))
-            }
+            Err(_) => Err(Error::Timeout("reply")),
         }
+    }
+
+    /// Number of requests waiting for a reply.
+    #[cfg(test)]
+    fn pending_len(&self) -> usize {
+        self.inner.pending.lock().unwrap().len()
     }
 
     /// The startup handshake. Returns the kernel's info once shell and
@@ -328,6 +335,7 @@ impl KernelSession {
 
     /// Interrupt per the kernelspec's `interrupt_mode`.
     pub async fn interrupt(&self) -> Result<()> {
+        self.ensure_alive()?;
         match (self.inner.interrupt_mode, &self.inner.process) {
             (InterruptMode::Signal, Some(p)) => match p.interrupt().await {
                 Err(Error::Unsupported(_)) => self.interrupt_by_message().await,
@@ -346,7 +354,10 @@ impl KernelSession {
             .map(|_| ())
     }
 
-    /// Ask the kernel to exit; escalate to a kill if it does not.
+    /// Ask the kernel to exit; escalate if it does not. As in
+    /// `jupyter_client`'s `finish_shutdown`: a `shutdown_request` (its
+    /// reply awaited up to `grace`), then up to `grace / 2` for the process
+    /// to exit, then SIGTERM and another `grace / 2`, then SIGKILL.
     pub async fn shutdown(&self, restart: bool, grace: Duration) -> Result<()> {
         if self.is_alive() {
             let m = self.message(
@@ -361,8 +372,18 @@ impl KernelSession {
         // Only a process we own can be waited on or killed. An attached
         // kernel gets the request and nothing more.
         if let Some(p) = self.inner.process.as_ref().filter(|p| p.pid().is_some()) {
-            if tokio::time::timeout(grace, p.wait()).await.is_err() {
-                tracing::warn!("kernel ignored shutdown_request; killing");
+            let half = grace / 2;
+            let mut exited = tokio::time::timeout(half, p.wait()).await.is_ok();
+            if !exited {
+                tracing::warn!("kernel ignored shutdown_request; terminating");
+                match p.terminate().await {
+                    Ok(()) => exited = tokio::time::timeout(half, p.wait()).await.is_ok(),
+                    Err(Error::Unsupported(_)) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            if !exited {
+                tracing::warn!("kernel still running; killing");
                 match p.kill().await {
                     Ok(()) | Err(Error::Unsupported(_)) => {}
                     Err(e) => return Err(e),
@@ -386,6 +407,17 @@ impl KernelSession {
         } else {
             Err(Error::KernelDied)
         }
+    }
+}
+
+struct PendingGuard<'a> {
+    inner: &'a Inner,
+    id: String,
+}
+
+impl Drop for PendingGuard<'_> {
+    fn drop(&mut self) {
+        self.inner.pending.lock().unwrap().remove(&self.id);
     }
 }
 
@@ -715,6 +747,114 @@ mod tests {
         period: Duration::from_millis(20),
         misses: 3,
     };
+
+    #[tokio::test]
+    async fn cancelled_and_timed_out_requests_leave_no_pending_entry() {
+        let (s, _, _) = silent_session(true, FAST);
+        let s2 = s.clone();
+        let task = tokio::spawn(async move {
+            let m = s2.message("kernel_info_request", &serde_json::json!({}));
+            s2.request(Channel::Shell, m, false, Duration::from_secs(60))
+                .await
+        });
+        while s.pending_len() == 0 {
+            tokio::task::yield_now().await;
+        }
+        task.abort();
+        let _ = task.await;
+        assert_eq!(s.pending_len(), 0);
+
+        let m = s.message("kernel_info_request", &serde_json::json!({}));
+        let r = s
+            .request(Channel::Shell, m, false, Duration::from_millis(10))
+            .await;
+        assert!(matches!(r, Err(Error::Timeout(_))));
+        assert_eq!(s.pending_len(), 0);
+    }
+
+    /// A process that records signals and exits on the first one listed in
+    /// `exits_on`.
+    struct FakeProcess {
+        calls: Mutex<Vec<&'static str>>,
+        exits_on: &'static str,
+        exit: watch::Sender<bool>,
+    }
+
+    impl FakeProcess {
+        fn record(&self, call: &'static str) {
+            self.calls.lock().unwrap().push(call);
+            if call == self.exits_on {
+                self.exit.send_replace(true);
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl KernelProcess for FakeProcess {
+        fn pid(&self) -> Option<u32> {
+            Some(1)
+        }
+        async fn interrupt(&self) -> Result<()> {
+            self.record("interrupt");
+            Ok(())
+        }
+        async fn terminate(&self) -> Result<()> {
+            self.record("terminate");
+            Ok(())
+        }
+        async fn kill(&self) -> Result<()> {
+            self.record("kill");
+            Ok(())
+        }
+        async fn wait(&self) -> Option<i32> {
+            let _ = self.exit.subscribe().wait_for(|e| *e).await;
+            Some(0)
+        }
+        fn is_alive(&self) -> bool {
+            !*self.exit.borrow()
+        }
+    }
+
+    /// A session over a silent transport (no replies) with a fake process.
+    fn session_with_process(exits_on: &'static str) -> (KernelSession, Arc<FakeProcess>) {
+        let (tx, incoming) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(async move { tx.closed().await });
+        let transport = KernelTransport {
+            sink: Arc::new(SilentSink {
+                beating: Arc::new(AtomicBool::new(true)),
+                closed: Arc::new(AtomicBool::new(false)),
+            }),
+            incoming,
+        };
+        let process = Arc::new(FakeProcess {
+            calls: Mutex::new(Vec::new()),
+            exits_on,
+            exit: watch::channel(false).0,
+        });
+        let launched = LaunchedKernel {
+            connection: ganymede_protocol::ConnectionInfo::new_tcp("127.0.0.1", [1, 2, 3, 4, 5]),
+            connection_file: None,
+            process: process.clone(),
+            interrupt_mode: InterruptMode::Signal,
+        };
+        (KernelSession::start(transport, Some(&launched)), process)
+    }
+
+    #[tokio::test]
+    async fn shutdown_sends_sigterm_before_sigkill() {
+        let grace = Duration::from_millis(100);
+        let (s, p) = session_with_process("terminate");
+        s.shutdown(false, grace).await.unwrap();
+        assert_eq!(*p.calls.lock().unwrap(), vec!["terminate"]);
+
+        let (s, p) = session_with_process("kill");
+        s.shutdown(false, grace).await.unwrap();
+        assert_eq!(*p.calls.lock().unwrap(), vec!["terminate", "kill"]);
+
+        // A dead kernel is not signalled.
+        assert!(matches!(s.interrupt().await, Err(Error::KernelDied)));
+        assert_eq!(p.calls.lock().unwrap().len(), 2);
+    }
 
     #[tokio::test]
     async fn missed_heartbeats_mark_an_attached_kernel_dead() {

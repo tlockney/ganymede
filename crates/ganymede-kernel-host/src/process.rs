@@ -16,6 +16,12 @@ pub trait KernelProcess: Send + Sync {
     /// cannot be signalled; the session then falls back to the control
     /// channel if the kernelspec allows.
     async fn interrupt(&self) -> Result<()>;
+    /// Ask the process to exit (SIGTERM on Unix), the step between a
+    /// `shutdown_request` and [`KernelProcess::kill`]. `Err(Unsupported)`
+    /// by default; the session then goes straight to `kill`.
+    async fn terminate(&self) -> Result<()> {
+        Err(Error::Unsupported("terminate"))
+    }
     async fn kill(&self) -> Result<()>;
     /// Resolves when the process exits, with its exit code if known.
     async fn wait(&self) -> Option<i32>;
@@ -183,11 +189,7 @@ impl KernelProcess for ChildProcess {
         {
             // The kernel is its own process group leader; signal the group so
             // children it spawned get it too.
-            let rc = unsafe { libc::kill(-(self.pid as i32), libc::SIGINT) };
-            if rc != 0 {
-                return Err(std::io::Error::last_os_error().into());
-            }
-            Ok(())
+            self.signal_group(libc::SIGINT)
         }
         #[cfg(not(unix))]
         {
@@ -195,17 +197,27 @@ impl KernelProcess for ChildProcess {
         }
     }
 
+    async fn terminate(&self) -> Result<()> {
+        #[cfg(unix)]
+        {
+            match self.signal_group(libc::SIGTERM) {
+                Err(Error::KernelDied) => Ok(()),
+                other => other,
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Err(Error::Unsupported("terminate on this platform"))
+        }
+    }
+
     async fn kill(&self) -> Result<()> {
         #[cfg(unix)]
         {
-            let rc = unsafe { libc::kill(-(self.pid as i32), libc::SIGKILL) };
-            if rc != 0 {
-                let e = std::io::Error::last_os_error();
-                if e.raw_os_error() != Some(libc::ESRCH) {
-                    return Err(e.into());
-                }
+            match self.signal_group(libc::SIGKILL) {
+                Err(Error::KernelDied) => Ok(()),
+                other => other,
             }
-            Ok(())
         }
         #[cfg(not(unix))]
         {
@@ -231,9 +243,30 @@ impl KernelProcess for ChildProcess {
 
     fn kill_now(&self) {
         #[cfg(unix)]
-        unsafe {
-            libc::kill(-(self.pid as i32), libc::SIGKILL);
+        let _ = self.signal_group(libc::SIGKILL);
+    }
+}
+
+#[cfg(all(feature = "subprocess", unix))]
+impl ChildProcess {
+    /// Signal the kernel's process group, unless the kernel has already
+    /// been reaped: its pid, and so the group id, may then belong to an
+    /// unrelated process. `Err(KernelDied)` in that case. A narrow race
+    /// remains between this check and the signal; the waiter task reaps
+    /// as soon as the child exits.
+    fn signal_group(&self, sig: libc::c_int) -> Result<()> {
+        if !self.is_alive() {
+            return Err(Error::KernelDied);
         }
+        let rc = unsafe { libc::kill(-(self.pid as i32), sig) };
+        if rc != 0 {
+            let e = std::io::Error::last_os_error();
+            if e.raw_os_error() == Some(libc::ESRCH) {
+                return Err(Error::KernelDied);
+            }
+            return Err(e.into());
+        }
+        Ok(())
     }
 }
 
@@ -416,6 +449,42 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&target).unwrap(), "untouched");
             assert!(!std::fs::symlink_metadata(&planted).unwrap().is_symlink());
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reaped_kernel_is_not_signalled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec: Kernelspec =
+            serde_json::from_str(r#"{"argv":["sleep","30"],"display_name":"","language":""}"#)
+                .unwrap();
+        spec.name = "sleep".into();
+        let prov = SubprocessProvisioner {
+            runtime_dir: dir.path().into(),
+            ip: "127.0.0.1".into(),
+        };
+        let k = prov
+            .launch(
+                &spec,
+                LaunchOptions {
+                    quiet: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(k.process.is_alive());
+        k.process.terminate().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), k.process.wait())
+            .await
+            .unwrap();
+        assert!(!k.process.is_alive());
+        assert!(matches!(
+            k.process.interrupt().await,
+            Err(Error::KernelDied)
+        ));
+        k.process.terminate().await.unwrap();
+        k.process.kill().await.unwrap();
     }
 
     #[test]

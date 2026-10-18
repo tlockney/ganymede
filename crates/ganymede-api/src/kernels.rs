@@ -565,11 +565,11 @@ impl KernelManager {
         culled
     }
 
+    /// Shut every kernel down at once, so N hung kernels take one grace
+    /// period, not N, against a service manager's stop timeout.
     pub async fn shutdown_all(&self) {
         let ids: Vec<String> = self.kernels.read().unwrap().keys().cloned().collect();
-        for id in ids {
-            let _ = self.shutdown(&id).await;
-        }
+        futures::future::join_all(ids.iter().map(|id| self.shutdown(id))).await;
     }
 
     pub fn connections(&self) -> usize {
