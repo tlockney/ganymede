@@ -26,7 +26,13 @@ are the source of truth ([the iPad use case](../../docs/ipados.md)).
     existing file preserved.
   - External-change detection: a `SaveRequest.last_modified` older than the
     file's mtime by more than 500 ms is a 409 `Conflict`. Without it the
-    client's copy wins.
+    client's copy wins. This is an opt-in extension: `jupyter_server` has
+    no such check. The check and the write of one save run under a
+    per-path lock.
+  - The first save of a notebook creates its checkpoint, as
+    `jupyter_server` does, so a bad first edit can be reverted.
+  - `new_untitled` and `copy` claim the new name with an exclusive create,
+    so a file made in between is not replaced.
   - `checkpoint_dir` moves checkpoints outside the root (iCloud-synced roots
     should not sync them), mirroring the root's directory layout underneath.
   - `notary` turns on notebook trust: code cells are served with
