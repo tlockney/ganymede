@@ -175,7 +175,8 @@ Python ran. It runs the commands of
 Work is tracked in [GitHub issues](https://github.com/tlockney/ganymede/issues):
 each task and each bug found gets an issue before work starts, and every
 pull request links the issue it resolves (`Closes #N`), which CI checks,
-and appends what it learned to the [development log](docs/notes.md). The
+and adds what it learned to the [development log](docs/notes.md) as a new
+file in [`docs/notes/`](docs/notes/), so open PRs don't conflict there. The
 [Development](docs/development.md) page has the rules and how to build the
 docs.
 
