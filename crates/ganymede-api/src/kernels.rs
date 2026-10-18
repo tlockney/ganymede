@@ -472,6 +472,8 @@ impl KernelManager {
                     env: vec![],
                     kernel_id: Some(id.to_string()),
                     quiet: self.config.quiet,
+                    // A server runs many kernels on one stderr.
+                    prefix_output: true,
                 },
             )
             .await?;

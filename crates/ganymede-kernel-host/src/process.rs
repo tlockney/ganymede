@@ -55,6 +55,9 @@ pub struct LaunchOptions {
     /// output, which travels over iopub). Otherwise both go to the host's
     /// stderr, so a host's stdout stays free for data.
     pub quiet: bool,
+    /// Without `quiet`, start each line of that output with
+    /// `[kernel <first 8 of kernel_id>] `, for a host running many kernels.
+    pub prefix_output: bool,
 }
 
 #[async_trait]
@@ -302,6 +305,9 @@ impl Provisioner for SubprocessProvisioner {
         if opts.quiet {
             cmd.stdout(std::process::Stdio::null());
             cmd.stderr(std::process::Stdio::null());
+        } else if opts.prefix_output {
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
         } else {
             cmd.stdout(std::io::stderr());
         }
@@ -317,7 +323,14 @@ impl Provisioner for SubprocessProvisioner {
             ))
         })?;
         let pid = child.id().ok_or(Error::KernelDied)?;
-        tracing::info!(kernel = %spec.name, pid, "launched kernel");
+        tracing::info!(kernel = %spec.name, kernel_id, pid, "launched kernel");
+        let prefix = format!("[kernel {}] ", kernel_id.get(..8).unwrap_or(&kernel_id));
+        if let Some(out) = child.stdout.take() {
+            tokio::spawn(prefix_lines(out, prefix.clone(), write_stderr));
+        }
+        if let Some(err) = child.stderr.take() {
+            tokio::spawn(prefix_lines(err, prefix, write_stderr));
+        }
 
         let (exit_tx, exit_rx) = watch::channel(None);
         tokio::spawn(async move {
@@ -334,6 +347,38 @@ impl Provisioner for SubprocessProvisioner {
             interrupt_mode: spec.interrupt_mode,
         })
     }
+}
+
+/// Pass `r` to `out` line by line, each line after `prefix` and ending in
+/// a newline. The launcher's `out` writes one line at a time to stderr.
+#[cfg(feature = "subprocess")]
+async fn prefix_lines(
+    r: impl tokio::io::AsyncRead + Unpin,
+    prefix: String,
+    mut out: impl FnMut(&[u8]),
+) {
+    use tokio::io::AsyncBufReadExt;
+    let mut r = tokio::io::BufReader::new(r);
+    let mut line = prefix.into_bytes();
+    let start = line.len();
+    loop {
+        line.truncate(start);
+        match r.read_until(b'\n', &mut line).await {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {
+                if !line.ends_with(b"\n") {
+                    line.push(b'\n');
+                }
+                out(&line);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "subprocess")]
+fn write_stderr(line: &[u8]) {
+    use std::io::Write;
+    let _ = std::io::stderr().lock().write_all(line);
 }
 
 // ----- attach --------------------------------------------------------------
@@ -446,6 +491,24 @@ pub fn read_connection_file(path: &Path) -> Result<ConnectionInfo> {
 #[cfg(all(test, feature = "subprocess"))]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn kernel_output_lines_get_the_prefix() {
+        let mut got = Vec::new();
+        super::prefix_lines(&b"one\ntwo\n\nlast"[..], "[kernel ab] ".into(), |l| {
+            got.push(String::from_utf8_lossy(l).into_owned())
+        })
+        .await;
+        assert_eq!(
+            got,
+            [
+                "[kernel ab] one\n",
+                "[kernel ab] two\n",
+                "[kernel ab] \n",
+                "[kernel ab] last\n"
+            ]
+        );
+    }
 
     #[tokio::test]
     async fn ports_are_distinct_and_connection_file_is_private() {
