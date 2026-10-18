@@ -161,6 +161,8 @@ fn interactive(kernel: Arc<Kernel>, handle: Handle) -> Result<()> {
                 _ => {
                     execute(&kernel, &handle, &line, true);
                     n += 1;
+                    // Saved as it goes, so a killed console keeps it.
+                    save_history(&mut rl, history.as_deref());
                 }
             },
             Err(ReadlineError::Interrupted) => continue,
@@ -168,13 +170,17 @@ fn interactive(kernel: Arc<Kernel>, handle: Handle) -> Result<()> {
             Err(e) => return Err(e.into()),
         }
     }
-    if let Some(h) = &history {
+    save_history(&mut rl, history.as_deref());
+    Ok(())
+}
+
+fn save_history(rl: &mut Editor<KernelHelper, DefaultHistory>, path: Option<&std::path::Path>) {
+    if let Some(h) = path {
         if let Some(dir) = h.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
         let _ = rl.save_history(h);
     }
-    Ok(())
 }
 
 struct KernelHelper {

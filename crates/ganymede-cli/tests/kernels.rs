@@ -556,13 +556,16 @@ fn interrupt_and_shutdown_requests_on_shell() {
             // ipykernel handles it on shell too, by SIGINT to its own process
             // group, which interrupts that very handler: no reply.
             if l.language != "python" {
-                let r = k.shell("interrupt_request", &json!({})).await.unwrap();
+                let r = k
+                    .shell("interrupt_request", &json!({}))
+                    .await
+                    .unwrap_or_else(|e| panic!("{}: interrupt_request on shell: {e}", l.kernel));
                 assert_eq!(r["status"], "ok", "{}: {r}", l.kernel);
             }
             let r = k
                 .shell("shutdown_request", &json!({"restart": false}))
                 .await
-                .unwrap();
+                .unwrap_or_else(|e| panic!("{}: shutdown_request on shell: {e}", l.kernel));
             assert_eq!(r["status"], "ok", "{}: {r}", l.kernel);
             for _ in 0..100 {
                 if !k.is_alive() {

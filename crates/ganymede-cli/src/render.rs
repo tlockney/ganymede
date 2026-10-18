@@ -64,14 +64,45 @@ impl Handler for Terminal {
         tokio::task::block_in_place(|| {
             eprint!("{prompt}");
             let _ = std::io::stderr().flush();
-            if password {
-                tracing::debug!("password input is echoed: no terminal control here");
-            }
+            let _echo = password.then(NoEcho::new).flatten();
             let mut line = String::new();
-            std::io::stdin().read_line(&mut line).ok()?;
+            let r = std::io::stdin().read_line(&mut line);
+            if _echo.is_some() {
+                eprintln!();
+            }
+            // End of input is an empty reply, as `jupyter console` sends.
+            r.ok()?;
             Some(line.trim_end_matches(['\n', '\r']).to_string())
         })
     }
+}
+
+/// Turns off terminal echo for a password until dropped, with `stty`,
+/// when stdin is a terminal. `None` where that is not possible, and the
+/// password is echoed.
+struct NoEcho;
+
+impl NoEcho {
+    fn new() -> Option<NoEcho> {
+        if !cfg!(unix) || !std::io::stdin().is_terminal() {
+            return None;
+        }
+        stty("-echo").then_some(NoEcho)
+    }
+}
+
+impl Drop for NoEcho {
+    fn drop(&mut self) {
+        stty("echo");
+    }
+}
+
+fn stty(arg: &str) -> bool {
+    std::process::Command::new("stty")
+        .arg(arg)
+        .stdin(std::process::Stdio::inherit())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 fn print_bundle(data: &serde_json::Value) {
