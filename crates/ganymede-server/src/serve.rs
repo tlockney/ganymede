@@ -233,6 +233,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         allow_origins: cfg.allow_origins.clone(),
         allow_remote_access: cfg.allow_remote_access(),
         local_hostnames: cfg.local_hostnames.clone(),
+        max_body_size: usize::try_from(cfg.max_body_size).unwrap_or(usize::MAX),
         base_url: base_url.clone(),
         config_dir,
         static_dir: if lab.is_some() { None } else { static_dir },
