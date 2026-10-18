@@ -339,7 +339,9 @@ impl KernelSession {
 
     async fn interrupt_by_message(&self) -> Result<()> {
         let m = self.message("interrupt_request", &content::InterruptRequest::default());
-        self.request(Channel::Control, m, false, Duration::from_secs(5))
+        // cdp-kernel waits up to 5 s for its target to stop before it
+        // replies, so allow more than that.
+        self.request(Channel::Control, m, false, Duration::from_secs(10))
             .await
             .map(|_| ())
     }

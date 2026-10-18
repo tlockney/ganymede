@@ -6,8 +6,8 @@ use crate::{
 use async_trait::async_trait;
 use ganymede_kernel_host::protocol::{Channel, Message};
 use ganymede_kernel_host::{
-    zmq::ZmqTransport, KernelSession, KernelTransport, Kernelspec, KernelspecSource, LaunchOptions,
-    LaunchedKernel, Provisioner,
+    zmq::ZmqTransport, Error as HostError, KernelSession, KernelTransport, Kernelspec,
+    KernelspecSource, LaunchOptions, LaunchedKernel, Provisioner,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -15,6 +15,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 use tokio::sync::{broadcast, watch};
+
+/// Launches tried before a kernel that never answers counts as failed.
+const START_ATTEMPTS: u32 = 3;
 
 /// How a launched kernel gets its transport. ZMQ in the server; an
 /// in-process pair in an app or a test.
@@ -94,9 +97,11 @@ pub struct RunningKernel {
     /// `Arc` to this struct, so the hub alone can never close; they watch
     /// this instead.
     alive: watch::Sender<bool>,
-    /// Set while a restart replaces the session, so the old session's
-    /// death is not reported as the kernel's.
-    restarting: AtomicBool,
+    /// Set while a start or restart replaces the session, so the death of
+    /// a session being replaced is not reported as the kernel's.
+    booting: AtomicBool,
+    /// Held across start, restart, and shutdown, so they do not interleave.
+    lifecycle: tokio::sync::Mutex<()>,
     last_activity: Mutex<String>,
     execution_state: Mutex<String>,
     connections: AtomicUsize,
@@ -205,14 +210,19 @@ impl RunningKernel {
         let _ = self.hub.send((channel, msg));
     }
 
-    /// The session died. Unless the manager shut it down or a restart
-    /// replaced it, the kernel died on its own: drop it from the map, tell
-    /// clients `status: dead`, and close them, as `jupyter_server` does
-    /// when a kernel dies and is not restarted.
+    /// The session died. Unless the manager shut it down or a start or
+    /// restart is replacing it, the kernel died on its own.
     fn session_died(self: &Arc<Self>, session_id: &str, kernels: &KernelMap) {
-        if self.restarting.load(Ordering::SeqCst) || self.session().session_id() != session_id {
+        if self.booting.load(Ordering::SeqCst) || self.session().session_id() != session_id {
             return;
         }
+        self.remove_dead(kernels);
+    }
+
+    /// Drop a dead kernel from the map, tell clients `status: dead`, and
+    /// close them, as `jupyter_server` does when a kernel dies and is not
+    /// restarted.
+    fn remove_dead(self: &Arc<Self>, kernels: &KernelMap) {
         {
             let mut map = kernels.write().unwrap();
             match map.get(&self.id) {
@@ -356,11 +366,13 @@ impl KernelManager {
             launched: Mutex::new(Some(launched)),
             hub,
             alive: watch::channel(true).0,
-            restarting: AtomicBool::new(false),
+            booting: AtomicBool::new(true),
+            lifecycle: tokio::sync::Mutex::new(()),
             last_activity: Mutex::new(now_iso()),
             execution_state: Mutex::new("starting".into()),
             connections: AtomicUsize::new(0),
         });
+        let _guard = kernel.lifecycle.lock().await;
         kernel.pump(&session, Arc::downgrade(&self.kernels));
         self.kernels
             .write()
@@ -368,16 +380,80 @@ impl KernelManager {
             .insert(id.clone(), kernel.clone());
         // The nudge runs after insertion so clients can connect while the
         // kernel starts, as they do against jupyter_server.
-        match session.nudge(self.config.startup_timeout).await {
-            Ok(_) => {
-                kernel.set_state(session.execution_state_name());
-                Ok(kernel.model())
+        self.boot(&kernel).await?;
+        Ok(kernel.model())
+    }
+
+    /// Wait for the kernel's new session to answer, and launch it again on
+    /// fresh ports when it dies or never answers: ports are free when
+    /// picked but belong to whichever process binds them first, so two
+    /// kernels launched at once can be given the same one. The engine's
+    /// `Relaunch::start` does the same. Runs with `booting` set, under the
+    /// lifecycle lock. On failure the kernel is reported dead and removed.
+    async fn boot(&self, kernel: &Arc<RunningKernel>) -> Result<()> {
+        let mut attempt = 1;
+        let result = loop {
+            let session = kernel.session();
+            let e = match session.nudge(self.config.startup_timeout).await {
+                Ok(_) => break Ok(()),
+                Err(e) => e,
+            };
+            let _ = session.shutdown(false, Duration::from_millis(200)).await;
+            kernel.launched.lock().unwrap().take();
+            let retry = matches!(e, HostError::KernelDied | HostError::Timeout(_));
+            if !retry || attempt == START_ATTEMPTS {
+                break Err(e.into());
+            }
+            tracing::warn!(kernel = %kernel.id, "kernel failed to start ({e}); launching again");
+            attempt += 1;
+            if let Err(e) = self.relaunch(kernel).await {
+                break Err(e);
+            }
+        };
+        kernel.booting.store(false, Ordering::SeqCst);
+        match result {
+            Ok(()) => {
+                let session = kernel.session();
+                // The kernel answered, so it is idle unless a client's
+                // request has made it busy since: the statuses for the
+                // startup `kernel_info_request` are not tracked.
+                {
+                    let mut state = kernel.execution_state.lock().unwrap();
+                    if matches!(state.as_str(), "starting" | "restarting") {
+                        *state = "idle".into();
+                    }
+                }
+                // A death while `booting` was set was not reported.
+                if !session.is_alive() {
+                    kernel.remove_dead(&self.kernels);
+                }
+                Ok(())
             }
             Err(e) => {
-                tracing::error!(kernel = %id, "kernel failed to start: {e}");
-                let _ = self.shutdown(&id).await;
-                Err(e.into())
+                tracing::error!(kernel = %kernel.id, "kernel failed to start: {e}");
+                kernel.remove_dead(&self.kernels);
+                Err(e)
             }
+        }
+    }
+
+    /// Launch a new session for `kernel` and pump it into the hub.
+    async fn relaunch(&self, kernel: &Arc<RunningKernel>) -> Result<()> {
+        let (session, launched) = self
+            .launch(&kernel.spec, kernel.cwd.clone(), &kernel.id)
+            .await?;
+        *kernel.session.write().unwrap() = session.clone();
+        *kernel.launched.lock().unwrap() = Some(launched);
+        kernel.pump(&session, Arc::downgrade(&self.kernels));
+        Ok(())
+    }
+
+    /// 404 when `kernel` has left the map, as it can while a caller waits
+    /// for its lifecycle lock.
+    fn ensure_listed(&self, kernel: &Arc<RunningKernel>) -> Result<()> {
+        match self.kernels.read().unwrap().get(&kernel.id) {
+            Some(k) if Arc::ptr_eq(k, kernel) => Ok(()),
+            _ => Err(ApiError::not_found(format!("kernel {}", kernel.id))),
         }
     }
 
@@ -405,18 +481,18 @@ impl KernelManager {
     }
 
     pub async fn shutdown(&self, id: &str) -> Result<()> {
-        let kernel = self
-            .kernels
-            .write()
-            .unwrap()
-            .remove(id)
-            .ok_or_else(|| ApiError::not_found(format!("kernel {id}")))?;
-        let session = kernel.session();
-        session.shutdown(false, self.config.shutdown_grace).await?;
+        let kernel = self.get(id)?;
+        let _guard = kernel.lifecycle.lock().await;
+        self.ensure_listed(&kernel)?;
+        self.kernels.write().unwrap().remove(id);
+        let result = kernel
+            .session()
+            .shutdown(false, self.config.shutdown_grace)
+            .await;
         kernel.set_state("dead");
         kernel.alive.send_replace(false);
         kernel.launched.lock().unwrap().take();
-        Ok(())
+        Ok(result?)
     }
 
     pub async fn interrupt(&self, id: &str) -> Result<()> {
@@ -428,27 +504,30 @@ impl KernelManager {
 
     /// Same id, same hub, new process. Clients see `status: restarting`
     /// as they do from `jupyter_server`.
+    /// On failure the kernel is reported dead and removed.
     pub async fn restart(&self, id: &str) -> Result<KernelModel> {
         let kernel = self.get(id)?;
+        let _guard = kernel.lifecycle.lock().await;
+        self.ensure_listed(&kernel)?;
+        kernel.booting.store(true, Ordering::SeqCst);
         kernel.announce(
             "status",
             serde_json::json!({"execution_state": "restarting"}),
         );
         kernel.set_state("restarting");
-        kernel.restarting.store(true, Ordering::SeqCst);
         let old = kernel.session();
         let _ = old.shutdown(true, self.config.shutdown_grace).await;
         // The new kernel reuses the id, so its connection file has the same
         // path. Dropping the old launch removes that file; do it before the
         // new kernel can read it, not after.
         kernel.launched.lock().unwrap().take();
-        let (session, launched) = self.launch(&kernel.spec, kernel.cwd.clone(), id).await?;
-        *kernel.session.write().unwrap() = session.clone();
-        *kernel.launched.lock().unwrap() = Some(launched);
-        kernel.restarting.store(false, Ordering::SeqCst);
-        kernel.pump(&session, Arc::downgrade(&self.kernels));
-        session.nudge(self.config.startup_timeout).await?;
-        kernel.set_state(session.execution_state_name());
+        if let Err(e) = self.relaunch(&kernel).await {
+            tracing::error!(kernel = %id, "kernel failed to restart: {e}");
+            kernel.booting.store(false, Ordering::SeqCst);
+            kernel.remove_dead(&self.kernels);
+            return Err(e);
+        }
+        self.boot(&kernel).await?;
         kernel.touch();
         Ok(kernel.model())
     }
@@ -594,19 +673,4 @@ fn tracks_state(status: &Message) -> bool {
         .map(|h| h.msg_type.as_str())
         .unwrap_or_default();
     !UNTRACKED.contains(&parent_type)
-}
-
-trait StateName {
-    fn execution_state_name(&self) -> &'static str;
-}
-
-impl StateName for KernelSession {
-    fn execution_state_name(&self) -> &'static str {
-        use ganymede_kernel_host::protocol::content::ExecutionState::*;
-        match self.execution_state() {
-            Starting => "starting",
-            Busy => "busy",
-            Idle => "idle",
-        }
-    }
 }
