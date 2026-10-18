@@ -1039,6 +1039,22 @@ and Ganymede now matches them:
   `--allow-remote-access` or its public name in `local_hostnames`, unless
   it rewrites `Host`.
 
+## 2026-10-18, request body limit (#42)
+
+axum caps every body extractor at 2 MB (`DefaultBodyLimit`) unless a
+layer says otherwise, and a notebook is saved in one `PUT`, so a notebook
+with one large image output could not be saved. The rejection's status was
+also thrown away: `LenientJson` mapped every body error to 400.
+
+- The limit is now `max_body_size` in the config file, 512 MiB by default
+  as in `jupyter_server` (`ServerApp.max_body_size`), applied to every
+  route in `build_router`.
+- Body rejections keep their own status, so an oversized body gets 413
+  instead of 400.
+- `DefaultBodyLimit` only affects extractors that read the body
+  (`Bytes`, `Json`, `Form`, `LenientJson`); it does not limit websocket
+  frames, which have their own caps in `WebSocketUpgrade`.
+
 ## 2026-10-18, numbers round-trip on save (#72)
 
 The workspace `serde_json` had only `preserve_order`. Its default float

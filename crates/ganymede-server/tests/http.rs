@@ -79,6 +79,7 @@ fn state(root: &std::path::Path) -> AppState {
         allow_origins: vec![],
         allow_remote_access: false,
         local_hostnames: vec!["localhost".into()],
+        max_body_size: 512 * 1024 * 1024,
         base_url: "/".into(),
         config_dir: root.join(".jupyter-config"),
         lab: None,
@@ -1293,4 +1294,54 @@ async fn non_local_host_is_refused_on_loopback() {
         status(app, "rebind.evil.example:8888").await,
         StatusCode::OK
     );
+}
+
+#[tokio::test]
+async fn notebooks_over_two_megabytes_save_and_the_limit_gives_413() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    let app = build_router(st.clone());
+    // One 3 MB image output, past axum's 2 MB default.
+    let png = "A".repeat(3 << 20);
+    let nb = json!({
+        "type": "notebook",
+        "content": {
+            "nbformat": 4, "nbformat_minor": 5, "metadata": {},
+            "cells": [{
+                "cell_type": "code", "id": "big", "metadata": {},
+                "execution_count": 1, "source": "plot()",
+                "outputs": [{
+                    "output_type": "display_data", "metadata": {},
+                    "data": {"image/png": png}
+                }]
+            }]
+        }
+    });
+    let (status, body) = call(
+        &app,
+        "PUT",
+        "/api/contents/big.ipynb",
+        Some(nb.clone()),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(
+        std::fs::metadata(dir.path().join("big.ipynb"))
+            .unwrap()
+            .len()
+            > 3 << 20
+    );
+
+    st.max_body_size = 1 << 20;
+    let app = build_router(st);
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/api/contents/big.ipynb",
+        Some(nb),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
 }

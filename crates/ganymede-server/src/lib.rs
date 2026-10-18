@@ -37,6 +37,8 @@ pub struct AppState {
     /// Names, besides loopback addresses, accepted in `Host` when
     /// `allow_remote_access` is off.
     pub local_hostnames: Vec<String>,
+    /// Largest request body accepted, in bytes; larger ones get 413.
+    pub max_body_size: usize,
     /// URL prefix the routes are nested under, with a trailing `/`.
     pub base_url: String,
     /// Jupyter config dir: `nbconfig/` for `/api/config`, and JupyterLab's
@@ -65,6 +67,7 @@ pub fn build_router(state: AppState) -> axum::Router {
         state.clone(),
         auth::strip_token,
     ))
+    .layer(axum::extract::DefaultBodyLimit::max(state.max_body_size))
     .layer(axum::middleware::from_fn_with_state(
         state,
         auth::check_host,
