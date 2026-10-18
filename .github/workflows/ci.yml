@@ -18,6 +18,11 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo clippy -p ganymede-engine --no-default-features -- -D warnings
       - run: cargo test --workspace
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - name: Dependency licenses are all accepted in about.toml
+        run: cargo about generate --locked --fail -m crates/ganymede-cli/Cargo.toml about.hbs -o /dev/null
 
   # The end-to-end suite with real kernels and the Jupyter reference
   # implementation installed, so nothing in it skips: notebooks against
