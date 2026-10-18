@@ -6,6 +6,7 @@ mod info;
 mod lab;
 mod lab_start;
 mod render;
+mod ui;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -54,7 +55,10 @@ impl Cli {
     /// Whether this runs a server, which logs at info level by default as
     /// the `ganymede-server` binary does.
     fn serves(&self) -> bool {
-        matches!(self.cmd, Cmd::Serve(_) | Cmd::Lab { cmd: None, .. })
+        matches!(
+            self.cmd,
+            Cmd::Serve(_) | Cmd::Lab { cmd: None, .. } | Cmd::Ui { cmd: None, .. }
+        )
     }
 
     /// The server flags, for `serve` and `lab`: `--log-level` and
@@ -63,6 +67,9 @@ impl Cli {
         match &self.cmd {
             Cmd::Serve(a) => Some(a),
             Cmd::Lab {
+                cmd: None, start, ..
+            }
+            | Cmd::Ui {
                 cmd: None, start, ..
             } => Some(&start.serve),
             _ => None,
@@ -186,6 +193,16 @@ enum Cmd {
     Lab {
         #[command(subcommand)]
         cmd: Option<lab::LabCmd>,
+        #[command(flatten)]
+        start: Box<lab_start::StartArgs>,
+    },
+    /// Serve ganymede-ui, Ganymede's own notebook app, in the current
+    /// directory and open it in the browser; or install, list, and remove
+    /// it.
+    #[command(args_conflicts_with_subcommands = true)]
+    Ui {
+        #[command(subcommand)]
+        cmd: Option<ui::UiCmd>,
         #[command(flatten)]
         start: Box<lab_start::StartArgs>,
     },
@@ -504,7 +521,18 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
         Cmd::Lab { cmd: None, start } => {
             let lab_start::StartArgs { no_browser, serve } = *start;
             let cfg = server_config(serve, &cli.kernelspec_root, cli.startup_timeout, cli.quiet)?;
-            lab_start::run(cfg, no_browser).await?;
+            lab_start::run(cfg, no_browser, true).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Ui { cmd: Some(cmd), .. } => tokio::task::spawn_blocking(move || ui::run(cmd)).await?,
+        Cmd::Ui { cmd: None, start } => {
+            let lab_start::StartArgs { no_browser, serve } = *start;
+            let mut cfg =
+                server_config(serve, &cli.kernelspec_root, cli.startup_timeout, cli.quiet)?;
+            if cfg.static_dir.is_none() {
+                cfg.static_dir = Some(ui::newest()?);
+            }
+            lab_start::run(cfg, no_browser, false).await?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Serve(args) => {

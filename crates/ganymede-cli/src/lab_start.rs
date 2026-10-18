@@ -1,7 +1,8 @@
-//! `ganymede lab` with no subcommand: `ganymede serve` for one person at a
-//! workstation, as `jupyter lab` is. It requires an installed JupyterLab,
-//! prints the URL of `/lab`, opens it in the browser, and moves to the next
-//! port when 8888 is taken.
+//! `ganymede lab` and `ganymede ui` with no subcommand: `ganymede serve`
+//! for one person at a workstation, as `jupyter lab` is. `lab` requires an
+//! installed JupyterLab and prints the URL of `/lab`; `ui` serves
+//! ganymede-ui at `/`. Both open the URL in the browser and move to the
+//! next port when 8888 is taken.
 
 use anyhow::Result;
 use ganymede_server::config::Config;
@@ -20,8 +21,9 @@ pub struct StartArgs {
     pub serve: ServeArgs,
 }
 
-/// Serve `cfg`, built from the [`StartArgs`]' `serve` flags.
-pub async fn run(cfg: Config, no_browser: bool) -> Result<()> {
+/// Serve `cfg`, built from the [`StartArgs`]' `serve` flags; `lab`
+/// requires JupyterLab and points the URL at it.
+pub async fn run(cfg: Config, no_browser: bool, lab: bool) -> Result<()> {
     let on_listening: Option<OnListening> = if no_browser {
         None
     } else {
@@ -29,7 +31,7 @@ pub async fn run(cfg: Config, no_browser: bool) -> Result<()> {
     };
     let startup = Startup {
         port_retries: PORT_RETRIES,
-        require_lab: true,
+        require_lab: lab,
         on_listening,
     };
     ganymede_server::serve::run_with(cfg, startup).await
