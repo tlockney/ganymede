@@ -72,6 +72,9 @@ pub struct Lab {
     pub user_settings_dir: PathBuf,
     /// `lab/workspaces` under the Jupyter config dir.
     pub workspaces_dir: PathBuf,
+    /// `labconfig/page_config.json` under the Jupyter config dir, read on
+    /// each page load for `disabledExtensions`.
+    pub page_config_file: PathBuf,
     /// Absolute contents root, reported as `serverRoot`.
     pub server_root: PathBuf,
 }
@@ -112,6 +115,7 @@ impl Lab {
             extensions: find_extensions(labextension_dirs),
             user_settings_dir: config_dir.join("lab").join("user-settings"),
             workspaces_dir: config_dir.join("lab").join("workspaces"),
+            page_config_file: page_config_file(config_dir),
             server_root: server_root.to_path_buf(),
         })
     }
@@ -155,7 +159,7 @@ impl Lab {
             "copyAbsolutePath": false,
             "delete_to_trash": false,
             "devMode": false,
-            "disabledExtensions": [],
+            "disabledExtensions": disabled_extensions(&self.page_config_file),
             "exposeAppInBrowser": false,
             "extensionManager": {"name": "read-only", "can_install": false, "install_path": null},
             "federated_extensions": federated,
@@ -758,6 +762,37 @@ pub fn find_extensions(dirs: &[PathBuf]) -> Vec<FederatedExtension> {
     out
 }
 
+/// Where `jupyter labextension disable` and `ganymede lab extension
+/// disable` record disabled extensions, under a Jupyter config dir.
+pub fn page_config_file(config_dir: &FsPath) -> PathBuf {
+    config_dir.join("labconfig").join("page_config.json")
+}
+
+/// The extensions and plugins `page_config.json` disables, sorted:
+/// `disabledExtensions` as JupyterLab 4 writes it, `{"name": true}`, or as
+/// a list, as older versions did.
+pub fn disabled_extensions(page_config: &FsPath) -> Vec<String> {
+    let mut out: Vec<String> = match read_json(page_config)
+        .as_ref()
+        .and_then(|v| v.get("disabledExtensions"))
+    {
+        Some(Value::Object(m)) => m
+            .iter()
+            .filter(|(_, v)| v.as_bool() == Some(true))
+            .map(|(k, _)| k.clone())
+            .collect(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    };
+    out.sort();
+    out.dedup();
+    out
+}
+
 // ----- installed bundles ------------------------------------------------
 
 /// Ganymede's data directory: `$GANYMEDE_DATA_DIR`, else `ganymede` under
@@ -923,6 +958,22 @@ pub(crate) fn html_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_disabled_extensions_in_both_shapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = page_config_file(dir.path());
+        assert!(disabled_extensions(&f).is_empty());
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(
+            &f,
+            r#"{"disabledExtensions": {"b": true, "a:plugin": true, "c": false}}"#,
+        )
+        .unwrap();
+        assert_eq!(disabled_extensions(&f), ["a:plugin", "b"]);
+        std::fs::write(&f, r#"{"disabledExtensions": ["x", "x", "w"]}"#).unwrap();
+        assert_eq!(disabled_extensions(&f), ["w", "x"]);
+    }
 
     #[test]
     fn renders_the_packaged_template_constructs() {

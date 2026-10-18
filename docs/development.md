@@ -45,9 +45,13 @@ skipped in its run summary.
 
 ## Rules
 
-- The host knows no language. A grep for `python` in the host crates
-  outside tests finds nothing; Python kernels arrive only as installed
-  kernelspecs.
+- The host knows no language. No code depends on a kernel's language or
+  branches on it, and Python kernels arrive only as installed
+  kernelspecs. Outside tests, `python` appears in the host crates only
+  where a file format is defined by Python's output (nbformat's float
+  layout, the trust signature's scalar format), in PyPI's names
+  (`ganymede lab install` fetches JupyterLab's wheels from there), and
+  in comments that say what Python does.
 - The REST and websocket API is a compatibility target, not a design
   space: match `jupyter_server`.
 - Each change is a pull request that references a GitHub issue, with CI
@@ -61,8 +65,8 @@ skipped in its run summary.
 `scripts/release.sh <level>` bumps the workspace version, writes
 `CHANGELOG.md`, commits on `release/vX.Y.Z`, and opens an issue and a PR
 for it. Merging the PR tags `vX.Y.Z`, which runs the release workflow. It
-is a dry run without `--execute`. The
-[README](../README.md#contributing) has the details.
+is a dry run without `--execute`. [Releasing](releasing.md) has the
+whole path, and what to do when a release fails partway.
 
 ## This site
 
@@ -76,7 +80,11 @@ npm run build    # into docs/.vitepress/dist
 ```
 
 The `pages` workflow builds both on every pull request that touches them,
-so a broken page or dead link fails the PR, and deploys them to GitHub
-Pages from `main`. The design is cdp-kernel.org's; keep
+so a broken page or dead link fails the PR. It deploys them to GitHub
+Pages from the latest release tag, not from `main`, so the docs and
+`install.sh` describe the version users install: the release workflow
+starts the deploy once a release is published. To publish a docs fix
+between releases, run the `pages` workflow by hand with that commit as
+`ref`. The design is cdp-kernel.org's; keep
 `site/style.css` and `docs/.vitepress/theme/custom.css` in step with each
 other.

@@ -13,7 +13,11 @@ types, a lenient reader, and a writer whose output is identical to Python
   `extra: serde_json::Map` captured with `#[serde(flatten)]`, so fields this
   crate does not model survive a round trip.
 - Reading: `Notebook::from_str` / `from_slice` / `from_reader` / `from_value`
-  and `read_file`. `source`, stream `text` and text-like MIME values may be a
+  and `read_file`. As lenient as Python's `nbformat.read`: an output or
+  cell that doesn't fit the schema is kept verbatim (`Output::Unknown`,
+  `Cell::Unknown`) and written back unchanged, bad fields read as their
+  defaults, and `from_slice_with_report` / `from_value_with_report` also
+  return what was wrong, worded like `jsonschema`. `source`, stream `text` and text-like MIME values may be a
   string or an array of strings (joined on read, as nbformat's `rejoin_lines`
   does). Transient metadata (`orig_nbformat`, `orig_nbformat_minor`,
   `signature`, cell `trusted`) is stripped, as nbformat's `strip_transient`
@@ -50,13 +54,16 @@ reproduces, in order, what `nbformat.v4.nbjson.JSONWriter.writes` and
    default (`0.00001`, `1e16`).
 4. A trailing newline, added by `nbformat.write`.
 
-Known gaps, all outside the schema or outside what JSON can carry: integers
-beyond 64 bits are parsed as floats by serde_json where Python keeps them
-exact; `NaN` / `Infinity` literals, which Python's `json` accepts and emits,
-are rejected as invalid JSON; and Python's `validate()` (called by
-`nbformat.write`) silently assigns ids to cells that lack them or have
-duplicates in 4.5+ notebooks, which this crate does not do, so such a
-notebook is written with the ids it had.
+Numbers keep their source text (serde_json's `arbitrary_precision`), so
+integers of any size round-trip exactly, as Python's `int` does, and
+floats parse correctly rounded. For 4.5+ notebooks, missing or duplicate
+cell ids are filled in on read and on write, as Python's `validate()`
+does.
+
+Known gaps, outside what JSON can carry: `NaN` / `Infinity` literals,
+which Python's `json` accepts and emits, are rejected as invalid JSON, and
+a float too large for `f64` keeps its text where Python writes
+`Infinity`.
 
 ## Tests and fixtures
 

@@ -468,3 +468,90 @@ fn trust_signs_once_and_reset_forgets() {
     ]));
     assert_eq!(stdout(&out), format!("Signing notebook: {nb_arg}\n"));
 }
+
+#[test]
+fn completions_for_each_shell() {
+    for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
+        let out = stdout(&run_ok(ganymede(&["completions", shell])));
+        assert!(out.contains("ganymede"), "{shell}: {out}");
+        assert!(out.contains("kernelspec"), "{shell}");
+    }
+    assert!(!ganymede(&["completions", "tcsh"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+}
+
+#[test]
+fn attach_and_interrupt_are_documented() {
+    let help = stdout(&run_ok(ganymede(&["--help"])));
+    assert!(help.contains("attach"), "{help}");
+    assert!(help.contains("completions"), "{help}");
+    let help = stdout(&run_ok(ganymede(&["run", "--help"])));
+    assert!(help.contains("--interrupt-after-ms"), "{help}");
+}
+
+#[test]
+fn lab_list_clean_uninstall_and_extension_toggles() {
+    let data = tempfile::tempdir().unwrap();
+    let config = tempfile::tempdir().unwrap();
+    let lab = |args: &[&str]| {
+        let mut c = ganymede(args);
+        c.env("GANYMEDE_DATA_DIR", data.path())
+            .env("JUPYTER_CONFIG_DIR", config.path());
+        c
+    };
+    let json = |args: &[&str]| -> serde_json::Value {
+        serde_json::from_slice(&run_ok(lab(args)).stdout).unwrap()
+    };
+    assert_eq!(json(&["lab", "list", "--json"]), serde_json::json!([]));
+    assert_eq!(
+        json(&["lab", "extension", "list", "--json"]),
+        serde_json::json!([])
+    );
+
+    let d = data.path();
+    std::fs::create_dir_all(d.join("lab/4.6.4/static")).unwrap();
+    std::fs::write(d.join("lab/4.6.4/static/index.html"), "").unwrap();
+    std::fs::create_dir_all(d.join("lab/.4.7.0-abc")).unwrap();
+    std::fs::write(d.join("lab/.download-1"), "").unwrap();
+    std::fs::create_dir_all(d.join("labextensions/.packages")).unwrap();
+    std::fs::write(
+        d.join("labextensions/.packages/w.json"),
+        r#"{"name":"w","version":"1.0","extensions":["w"],"required_by":null}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(d.join("labextensions/w")).unwrap();
+    std::fs::write(d.join("labextensions/.download-2"), "").unwrap();
+
+    let v = json(&["lab", "list", "--json"]);
+    assert_eq!(v[0]["version"], "4.6.4");
+    let v = json(&["lab", "extension", "list", "--json"]);
+    assert_eq!(v[0]["name"], "w");
+    assert_eq!(v[0]["extensions"], serde_json::json!(["w"]));
+
+    let out = run_ok(lab(&["lab", "clean"]));
+    assert!(
+        stderr(&out).contains("removed 3 leftover"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(d.join("lab/4.6.4").is_dir() && d.join("labextensions/.packages/w.json").is_file());
+    assert!(!d.join("lab/.download-1").exists() && !d.join("lab/.4.7.0-abc").exists());
+
+    run_ok(lab(&["lab", "extension", "disable", "w", "x:plugin"]));
+    run_ok(lab(&["lab", "extension", "enable", "x:plugin"]));
+    let page: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(config.path().join("labconfig/page_config.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        page["disabledExtensions"],
+        serde_json::json!({"w": true, "x:plugin": false})
+    );
+
+    run_ok(lab(&["lab", "uninstall"]));
+    assert!(!d.join("lab").exists() && !d.join("labextensions").exists());
+    assert_eq!(json(&["lab", "list", "--json"]), serde_json::json!([]));
+}
