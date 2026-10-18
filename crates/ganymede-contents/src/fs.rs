@@ -560,41 +560,15 @@ impl Inner {
         Ok(())
     }
 
-    /// Write `bytes` to `target` atomically: a temp file in the same
-    /// directory, fsync, rename over the target. The mode of an existing
-    /// target is preserved; a new file gets `0666 & !umask` like `creat(2)`.
+    /// Write `bytes` to `target` atomically with the shared
+    /// [`ganymede_nbformat::atomic_write`]: temp file, fsync, rename. The
+    /// mode of an existing target is kept, and a symlink (already checked to
+    /// stay inside the root) has its target replaced, not the link.
     fn atomic_write(&self, target: &Path, api: &ApiPath, bytes: &[u8]) -> Result<()> {
-        let dir = target
-            .parent()
-            .ok_or_else(|| Error::Forbidden("cannot write the contents root".into()))?;
-        let existing_permissions = fs::metadata(target)
-            .ok()
-            .filter(Metadata::is_file)
-            .map(|m| m.permissions());
-
-        let prefix = format!(".~{}-", api.name());
-        let mut builder = tempfile::Builder::new();
-        builder.prefix(&prefix).suffix(".tmp");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            builder.permissions(fs::Permissions::from_mode(0o666));
+        if target == self.root {
+            return Err(Error::Forbidden("cannot write the contents root".into()));
         }
-        let mut tmp = builder
-            .tempfile_in(dir)
-            .map_err(|e| io_to_error(e, &api.parent()))?;
-        tmp.write_all(bytes)?;
-        tmp.as_file().sync_all()?;
-        if let Some(permissions) = existing_permissions {
-            tmp.as_file().set_permissions(permissions)?;
-        }
-        tmp.persist(target).map_err(|e| Error::Io(e.error))?;
-        // Make the rename durable too. Not every filesystem allows fsync on
-        // a directory handle, so a failure here is not an error.
-        if let Ok(dir_handle) = fs::File::open(dir) {
-            let _ = dir_handle.sync_all();
-        }
-        Ok(())
+        ganymede_nbformat::atomic_write(target, bytes).map_err(|e| io_to_error(e, &api.parent()))
     }
 
     fn delete(&self, path: &str) -> Result<()> {
