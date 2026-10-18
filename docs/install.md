@@ -38,8 +38,10 @@ curl -fsSL https://ganymede-server.com/install.sh | sh
 It downloads the latest release for your platform, checks its SHA-256,
 and installs `ganymede` into `~/.local/bin`. If Node 24 or later is
 installed, it then installs cdp-kernel and its `cdp-node` kernelspec, as
-in [A kernel](#a-kernel); otherwise it prints the commands to run once
-Node is there. Options go after `sh -s --`:
+in [A kernel](#a-kernel), and prints the cdp-kernel version; otherwise
+it prints the commands to run once Node is there. If the cdp-kernel step
+fails, the script says so and still exits 0, since `ganymede` is
+installed. Options go after `sh -s --`:
 
 | Option | Effect |
 | --- | --- |
@@ -104,6 +106,7 @@ release workflow, and prints the tag and commit it was built from.
   (Ubuntu 22.04, Debian 12, Fedora 36, or later). On a musl system such
   as Alpine, or an older glibc, the binary fails to start with a bare
   `not found` (the missing piece is the glibc loader, not `ganymede`).
+  The install script checks for this and stops before downloading.
   There is no musl build yet; install [from source](#from-source)
   instead.
 - **macOS** binaries are not signed or notarized. `curl`, and so the

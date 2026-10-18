@@ -62,10 +62,31 @@ latest_version() {
 	esac
 }
 
+# The Linux builds link glibc 2.35 (ubuntu-22.04). On musl or an older
+# glibc they fail with a bare "not found", so refuse up front.
+check_libc() {
+	from_source="Install from source instead:
+  cargo install --git $REPO ganymede-cli"
+	if glibc=$(getconf GNU_LIBC_VERSION 2>/dev/null); then
+		v=${glibc#glibc }
+		g_major=${v%%.*}
+		g_minor=${v#*.}
+		g_minor=${g_minor%%.*}
+		case $g_major$g_minor in
+		*[!0-9]* | '') return 0 ;; # unparsable; let it try
+		esac
+		if [ "$g_major" -lt 2 ] || { [ "$g_major" -eq 2 ] && [ "$g_minor" -lt 35 ]; }; then
+			err "the prebuilt binary needs glibc 2.35 or newer; this system has $v. $from_source"
+		fi
+	elif (ldd --version 2>&1 || true) | grep -qi musl || ls /lib/ld-musl-* >/dev/null 2>&1; then
+		err "this system uses musl libc (Alpine or similar); the prebuilt binary needs glibc 2.35 or newer. $from_source"
+	fi
+}
+
 target() {
 	case "$(uname -s)-$(uname -m)" in
-	Linux-x86_64 | Linux-amd64) echo x86_64-unknown-linux-gnu ;;
-	Linux-aarch64 | Linux-arm64) echo aarch64-unknown-linux-gnu ;;
+	Linux-x86_64 | Linux-amd64) check_libc && echo x86_64-unknown-linux-gnu ;;
+	Linux-aarch64 | Linux-arm64) check_libc && echo aarch64-unknown-linux-gnu ;;
 	Darwin-arm64 | Darwin-aarch64) echo aarch64-apple-darwin ;;
 	Darwin-x86_64)
 		# Rosetta reports x86_64 under a translated shell; the native
@@ -115,7 +136,15 @@ install_kernel() { # runtime
 		say "then: cdp-kernel install --runtime $1"
 		return 0
 	fi
-	cdp-kernel install --runtime "$1"
+	# ganymede is already in place, so a failure here is reported but
+	# doesn't fail the install.
+	if ! cdp-kernel install --runtime "$1"; then
+		say ""
+		say "cdp-kernel install failed (see above). Ganymede itself is installed;"
+		say "fix the error, then run: cdp-kernel install --runtime $1"
+		return 0
+	fi
+	say "Installed cdp-kernel $(cdp-kernel version 2>/dev/null || echo '(version unknown)')"
 }
 
 main() {
