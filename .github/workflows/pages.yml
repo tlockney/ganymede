@@ -1,10 +1,13 @@
 name: pages
-# The site deploys what the latest release ships, not main: install.sh
-# installs the latest release, so docs from main would describe commands
-# users can't install yet. release.yml dispatches this workflow with the
-# new tag once the release is published; a manual run deploys the latest
-# release, or the given ref (to publish a docs fix between releases).
+# The site deploys from main on every merge that touches it. Docs for a
+# feature the latest release doesn't have say so (CLAUDE.md), since
+# install.sh installs the latest release. release.yml also dispatches this
+# workflow after publishing a release; a manual run deploys main, or the
+# given ref.
 on:
+  push:
+    branches: [main]
+    paths: [site/**, docs/**, .github/workflows/pages.yml]
   # Builds without deploying, so a broken docs page or dead link fails the PR
   # rather than the deploy.
   pull_request:
@@ -12,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Tag or commit to deploy (default: the latest release)"
+        description: "Branch, tag, or commit to deploy (default: main)"
         required: false
         default: ""
 permissions:
@@ -38,13 +41,8 @@ jobs:
         id: ref
         if: github.event_name != 'pull_request'
         env:
-          GH_TOKEN: ${{ github.token }}
-          REF: ${{ inputs.ref }}
+          REF: ${{ inputs.ref || github.sha }}
         run: |
-          if [ -z "$REF" ]; then
-            REF=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
-          fi
-          test -n "$REF"
           echo "Deploying $REF"
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
