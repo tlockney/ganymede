@@ -176,6 +176,7 @@ impl ExecuteResult {
                     push_line(&mut s, d.data.get_str("text/plain").unwrap_or_default())
                 }
                 Output::Error(e) => push_line(&mut s, &format!("{}: {}", e.ename, e.evalue)),
+                Output::Unknown(_) => {}
             }
         }
         s

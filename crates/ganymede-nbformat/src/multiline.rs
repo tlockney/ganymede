@@ -42,8 +42,9 @@ pub fn splitlines(s: &str) -> Vec<String> {
 /// of line fragments. In memory it is always the joined string.
 ///
 /// Deserializing accepts both forms (an array is concatenated, exactly like
-/// nbformat's `rejoin_lines`). Serializing produces a plain string; the
-/// notebook writer is what splits it back into lines.
+/// nbformat's `rejoin_lines`), and reads `null` as the empty string.
+/// Serializing produces a plain string; the notebook writer is what splits it
+/// back into lines.
 #[derive(Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MultilineString(String);
 
@@ -154,7 +155,7 @@ impl<'de> Deserialize<'de> for MultilineString {
             type Value = MultilineString;
 
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("a string or an array of strings")
+                f.write_str("a string, an array of strings, or null")
             }
 
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
@@ -163,6 +164,16 @@ impl<'de> Deserialize<'de> for MultilineString {
 
             fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
                 Ok(MultilineString(v))
+            }
+
+            /// `null` reads as empty: nbformat keeps an invalid `source:
+            /// null`, and treating it as "" keeps the notebook usable.
+            fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+                Ok(MultilineString::default())
+            }
+
+            fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+                Ok(MultilineString::default())
             }
 
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
@@ -232,7 +243,8 @@ mod tests {
         assert_eq!(c, "");
         assert!(serde_json::from_str::<MultilineString>("42").is_err());
         assert!(serde_json::from_str::<MultilineString>(r#"["a", 1]"#).is_err());
-        assert!(serde_json::from_str::<MultilineString>("null").is_err());
+        let d: MultilineString = serde_json::from_str("null").unwrap();
+        assert_eq!(d, "");
     }
 
     #[test]

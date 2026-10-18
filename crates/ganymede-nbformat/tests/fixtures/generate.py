@@ -328,10 +328,92 @@ def unsplit_source() -> dict:
     }
 
 
+def invalid_outputs() -> nbformat.NotebookNode:
+    """Outputs that break the schema. nbformat logs a validation error on
+    write but writes them as they are, and Ganymede must too (#73)."""
+    return nbformat.from_dict({
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {},
+        "cells": [
+            {
+                "cell_type": "code",
+                "id": "outputs",
+                "metadata": {},
+                "execution_count": 1,
+                "source": "show()",
+                "outputs": [
+                    {"output_type": "future_output", "payload": {"b": 1, "a": [1, 2]}},
+                    {"output_type": "stream", "name": 5, "text": "invalid name\n"},
+                    {"output_type": "display_data", "data": {"text/plain": "x\ny"}, "metadata": "not a map"},
+                    {"output_type": "error", "ename": "E", "evalue": "v", "traceback": "not a list"},
+                    {"output_type": "stream", "name": "stdout", "text": "valid\n"},
+                ],
+            },
+        ],
+    })
+
+
+def lenient() -> dict:
+    """A notebook nbformat reads (with logged validation errors) that a strict
+    typed reader would reject (#73). Written as plain JSON with
+    `ensure_ascii=True`, so the lone surrogate becomes a `\\ud800` escape;
+    `nbformat.write` could not write it to UTF-8 at all."""
+    return {
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {},
+        "cells": [
+            {
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": None,
+            },
+            {
+                "cell_type": "code",
+                "id": "dup",
+                "metadata": {},
+                "execution_count": 1.0,
+                "source": "print(1)",
+                "outputs": [
+                    {"output_type": "stream", "text": "no name\n"},
+                    {"output_type": "error", "traceback": []},
+                    {"output_type": "execute_result", "execution_count": -1, "data": {"text/plain": "1"}, "metadata": None},
+                ],
+            },
+            {
+                "cell_type": "code",
+                "id": "dup",
+                "metadata": {},
+                "execution_count": -1,
+                "source": ["x = ", "1"],
+                "outputs": [],
+            },
+            {
+                "cell_type": "code",
+                "id": "plain",
+                "metadata": {},
+                "execution_count": None,
+                "source": "",
+                "outputs": [],
+            },
+            {
+                "cell_type": "markdown",
+                "id": "surrogates",
+                "metadata": {},
+                # A lone high surrogate, a lone low one, a valid pair (🚀), and
+                # an escaped backslash followed by text that looks like an escape.
+                "source": "lone \ud800 and \udc00, pair \U0001f680, literal \\ud800",
+            },
+        ],
+    }
+
+
 NBFORMAT_WRITTEN = {
     "code_outputs.ipynb": code_outputs,
     "markdown_attachments.ipynb": markdown_attachments,
     "empty.ipynb": empty,
+    "invalid_outputs.ipynb": invalid_outputs,
 }
 
 
@@ -350,6 +432,11 @@ def main() -> None:
     nb = nbformat.read(HERE / "unsplit_source.ipynb", as_version=nbformat.NO_CONVERT)
     nbformat.write(nb, HERE / "unsplit_source.expected.ipynb")
     print("wrote unsplit_source.expected.ipynb")
+
+    with (HERE / "lenient.ipynb").open("w", encoding="utf8") as f:
+        json.dump(lenient(), f, indent=1, ensure_ascii=True)
+        f.write("\n")
+    print("wrote lenient.ipynb")
 
 
 if __name__ == "__main__":
