@@ -19,7 +19,7 @@ updates:
       actions:
         patterns: ["*"]
   - package-ecosystem: npm
-    directories: ["/docs", "/frontend", "/validation"]
+    directories: ["/docs", "/validation"]
     schedule:
       interval: weekly
     groups:

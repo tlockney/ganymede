@@ -51,7 +51,9 @@ pull request with a GitHub issue, and records what it learned in the
    later.
 2. **A first UI of our own**, outside the core: a Swift shell with a web
    view for iPadOS and macOS, running a TypeScript notebook app, with the
-   Rust core embedded in the same process.
+   Rust core embedded in the same process. The TypeScript app is
+   [ganymede-ui](https://github.com/tlockney/ganymede-ui), a prototype that
+   runs in a browser and installs as a PWA.
 3. **CurveZMQ** for the ZeroMQ transport. ipykernel 7 already advertises
    it.
 

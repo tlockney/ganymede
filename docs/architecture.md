@@ -105,8 +105,10 @@ Lower crates know nothing of the ones above them.
 | `ganymede-server` | api, contents | The HTTP and websocket server. |
 | `ganymede-cli` | engine, server | The `ganymede` binary. |
 
-Outside the Rust core, `frontend/` holds shared TypeScript for UIs that
-render in a web view: protocol types, websocket codecs, a
+Outside the Rust core, and outside this repository, the TypeScript for UIs
+that render in a web view lives in
+[tlockney/ganymede-ui](https://github.com/tlockney/ganymede-ui): its
+`packages/client` has protocol types, websocket codecs, a
 `ServerConnection` with injectable `fetch` and `WebSocket`, a REST client,
 and renderer and widget seams.
 

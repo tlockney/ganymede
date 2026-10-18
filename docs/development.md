@@ -1,7 +1,7 @@
 # Development
 
-Ganymede is a Cargo workspace; `frontend/` is a separate npm package with
-the shared TypeScript for web-view UIs, and `docs/` is this site.
+Ganymede is a Cargo workspace, and `docs/` is this site. The TypeScript for
+web-view UIs is in [tlockney/ganymede-ui](https://github.com/tlockney/ganymede-ui).
 
 ## Build and test
 
@@ -10,7 +10,6 @@ cargo build --workspace
 cargo test --workspace                 # uses an in-process fake kernel
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cd frontend && npm install && npm test
 ```
 
 The end-to-end tests in `crates/ganymede-cli/tests/` also use whatever real
