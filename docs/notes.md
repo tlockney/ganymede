@@ -1039,6 +1039,40 @@ and Ganymede now matches them:
   `--allow-remote-access` or its public name in `local_hostnames`, unless
   it rewrites `Host`.
 
+## 2026-10-18, request body limit (#42)
+
+axum caps every body extractor at 2 MB (`DefaultBodyLimit`) unless a
+layer says otherwise, and a notebook is saved in one `PUT`, so a notebook
+with one large image output could not be saved. The rejection's status was
+also thrown away: `LenientJson` mapped every body error to 400.
+
+- The limit is now `max_body_size` in the config file, 512 MiB by default
+  as in `jupyter_server` (`ServerApp.max_body_size`), applied to every
+  route in `build_router`.
+- Body rejections keep their own status, so an oversized body gets 413
+  instead of 400.
+- `DefaultBodyLimit` only affects extractors that read the body
+  (`Bytes`, `Json`, `Form`, `LenientJson`); it does not limit websocket
+  frames, which have their own caps in `WebSocketUpgrade`.
+
+## 2026-10-18, websocket decoders and hostile frames (#48)
+
+`legacy::decode_binary` indexed `offsets[0]` without checking the count,
+so a 4-byte binary frame of zeros on a legacy (no subprotocol) kernel
+websocket panicked the connection task. It now returns `Malformed`, and
+the server logs the frame and keeps the socket open, as it does for any
+undecodable frame.
+
+- Both decoders now have negative tests: empty and short frames, a zero
+  or too-small count, a count past the frame, truncation, overlapping
+  offsets, and an offset past the end. A decoder may fail with `Json`
+  rather than `Malformed` when bad offsets still leave a parsable range
+  (overlapping legacy offsets make the JSON part run into the buffers);
+  the tests only require an error, never a panic.
+- An attacker-sized count (`u64::MAX`) does not allocate: the offset
+  table is collected through `Result`, whose size hint starts at 0, and
+  the first read past the frame stops it.
+
 ## 2026-10-18, kernel records freed, deaths reported, restart failures (#43, #44, #45)
 
 Every kernel the API ever started stayed in memory: the task pumping a

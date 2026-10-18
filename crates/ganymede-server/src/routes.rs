@@ -52,7 +52,7 @@ where
     ) -> Result<Self, Self::Rejection> {
         let bytes = axum::body::Bytes::from_request(req, state)
             .await
-            .map_err(|e| HttpError(400, e.to_string()))?;
+            .map_err(|e| HttpError(e.status().as_u16(), e.body_text()))?;
         if bytes.iter().all(|b| b.is_ascii_whitespace()) {
             return Ok(LenientJson(T::default()));
         }
