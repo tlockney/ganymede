@@ -20,6 +20,14 @@ handler, a frontend `comm_close`, binary buffers echoed through a comm,
 history tail and search, display then update in order with prints
 around them, and four kernels started at once.
 
+The shell `shutdown_request` scenario failed on macOS with `KernelDied`:
+the kernel replies and exits, and the session saw the exit and failed
+every waiting request before the reply had come through the sockets.
+Now, when the process exits, requests still waiting get up to 500 ms for
+their replies before the session is marked dead. A `jupyter_client`
+client reads the reply off the socket whether the process has gone or
+not. A unit test has the process exit 50 ms before its reply.
+
 Learned: ipykernel answers `interrupt_request` on shell by sending
 SIGINT to its own process group, which interrupts that handler, so no
 reply comes; that check runs on cdp-kernel only.

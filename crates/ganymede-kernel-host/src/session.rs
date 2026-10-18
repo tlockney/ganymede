@@ -141,13 +141,13 @@ impl KernelSession {
             let weak = Arc::downgrade(&inner);
             let mut alive = inner.alive.subscribe();
             tokio::spawn(async move {
-                tokio::select! {
-                    _ = p.wait() => {
-                        if let Some(inner) = weak.upgrade() {
-                            inner.mark_dead();
-                        }
-                    }
-                    _ = alive.wait_for(|a| !*a) => {}
+                let exited = tokio::select! {
+                    _ = p.wait() => true,
+                    _ = alive.wait_for(|a| !*a) => false,
+                };
+                if let Some(inner) = weak.upgrade().filter(|_| exited) {
+                    inner.linger_for_last_replies().await;
+                    inner.mark_dead();
                 }
             });
         }
@@ -455,6 +455,19 @@ impl Drop for PendingGuard<'_> {
 }
 
 impl Inner {
+    /// After the process exits, give requests still waiting up to
+    /// [`EXIT_LINGER`] to get their replies: a kernel that answers and
+    /// then exits (a `shutdown_request` on shell, a cell that ends the
+    /// process) sent them before exiting, but they can still be on their
+    /// way through the sockets when the exit is seen. A `jupyter_client`
+    /// client reads them off the socket regardless.
+    async fn linger_for_last_replies(&self) {
+        let deadline = tokio::time::Instant::now() + EXIT_LINGER;
+        while !self.pending.lock().unwrap().is_empty() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     fn mark_dead(&self) {
         if self.alive.send_replace(false) {
             // Dropping the senders fails every waiting request.
@@ -468,6 +481,9 @@ impl Inner {
         }
     }
 }
+
+/// How long requests may still get replies after the kernel exits.
+const EXIT_LINGER: Duration = Duration::from_millis(500);
 
 /// Heartbeat a kernel with no process to wait on, and mark it dead after
 /// `hb.misses` missed beats in a row.
@@ -889,6 +905,44 @@ mod tests {
             interrupt_mode: InterruptMode::Signal,
         };
         (KernelSession::start(transport, Some(&launched)), process)
+    }
+
+    #[tokio::test]
+    async fn a_reply_sent_just_before_exit_still_arrives() {
+        let (host, mut kernel) = in_process_pair(8);
+        let process = Arc::new(FakeProcess {
+            calls: Mutex::new(Vec::new()),
+            exits_on: "",
+            exit: watch::channel(false).0,
+        });
+        let launched = LaunchedKernel {
+            connection: ganymede_protocol::ConnectionInfo::new_tcp("127.0.0.1", [1, 2, 3, 4, 5]),
+            connection_file: None,
+            process: process.clone(),
+            interrupt_mode: InterruptMode::Signal,
+        };
+        let s = KernelSession::start(host, Some(&launched));
+        let p = process.clone();
+        tokio::spawn(async move {
+            let (ch, req) = kernel.incoming.recv().await.unwrap();
+            // The process is seen to exit before its reply comes through.
+            p.exit.send_replace(true);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let reply =
+                Message::reply_to(&req, "shutdown_reply", &serde_json::json!({"status": "ok"}));
+            let _ = kernel.outgoing.send((ch, reply)).await;
+            // Keep the kernel side open.
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        let m = s.message("shutdown_request", &serde_json::json!({"restart": false}));
+        let exec = s
+            .request(Channel::Shell, m, false, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(exec.reply.msg_type(), "shutdown_reply");
+        tokio::time::timeout(Duration::from_secs(2), s.dead())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
