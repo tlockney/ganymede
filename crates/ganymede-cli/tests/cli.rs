@@ -399,3 +399,122 @@ fn trust_signs_once_and_reset_forgets() {
     ]));
     assert_eq!(stdout(&out), format!("Signing notebook: {nb_arg}\n"));
 }
+
+#[test]
+fn run_with_empty_stdin_is_a_usage_error() {
+    for input in ["", "  \n"] {
+        let mut child = ganymede(&["run", "-k", "fake"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{input:?}");
+        assert!(stderr(&out).contains("no code"), "{}", stderr(&out));
+    }
+}
+
+#[test]
+fn run_json_marks_a_cell_that_could_not_finish() {
+    let out = ganymede(&[
+        "run",
+        "--json",
+        "--timeout",
+        "1",
+        "-k",
+        "fake",
+        "x",
+        "sleep 5000",
+        "y",
+    ])
+    .output()
+    .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let lines: Vec<serde_json::Value> = stdout(&out)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2, "{}", stdout(&out));
+    assert_eq!(lines[0]["status"], "ok");
+    assert_eq!(lines[1]["cell"], 1);
+    assert_eq!(lines[1]["status"], "incomplete");
+    assert!(
+        lines[1]["error"].as_str().unwrap().starts_with("cell 1"),
+        "{}",
+        lines[1]
+    );
+}
+
+#[test]
+fn execute_reports_every_notebook_it_cannot_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = dir.path().join("good.ipynb");
+    let bare = dir.path().join("bare.ipynb");
+    let nb = r#"{"nbformat":4,"nbformat_minor":5,"metadata":{"kernelspec":{"name":"fake","display_name":"F"}},"cells":[]}"#;
+    std::fs::write(&good, nb).unwrap();
+    std::fs::write(
+        &bare,
+        r#"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[]}"#,
+    )
+    .unwrap();
+    let out = ganymede(&["execute"])
+        .arg(dir.path().join("missing.ipynb"))
+        .arg(&bare)
+        .arg(&good)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
+    assert!(err.contains("missing.ipynb"), "{err}");
+    assert!(err.contains("--kernel"), "{err}");
+    assert!(
+        err.contains("executing") && err.contains("good.ipynb"),
+        "{err}"
+    );
+    assert!(err.contains("0 cells executed"), "{err}");
+}
+
+#[test]
+fn accepts_jupyter_execute_flag_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let nb = dir.path().join("n.ipynb");
+    std::fs::write(
+        &nb,
+        r#"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[]}"#,
+    )
+    .unwrap();
+    run_ok(
+        ganymede(&[
+            "execute",
+            "--kernel_name",
+            "fake",
+            "--startup_timeout",
+            "5",
+            "--skip-cells-with-tag",
+            "skip",
+            "--allow-error-names",
+            "E",
+        ])
+        .arg(&nb),
+    );
+}
+
+#[test]
+fn kernelspec_remove_takes_force_flags() {
+    let data = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(data.path().join("kernels/k")).unwrap();
+    std::fs::write(data.path().join("kernels/k/kernel.json"), FAKE_SPEC).unwrap();
+    let mut c = ganymede(&["kernelspec", "remove", "-y", "k"]);
+    c.env("JUPYTER_DATA_DIR", data.path())
+        .env("JUPYTER_PATH", "")
+        .env_remove("XDG_DATA_HOME");
+    run_ok(c);
+    assert!(!data.path().join("kernels/k").exists());
+}

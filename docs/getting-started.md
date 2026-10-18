@@ -30,7 +30,18 @@ echo 'console.log("hi")' | ganymede run -k cdp-node
 ganymede run -k cdp-node --json 'x'            # one JSON line per cell
 ```
 
-It exits 1 if a cell fails, so it works in scripts and CI.
+It exits 1 if a cell fails, so it works in scripts and CI. With `--json`,
+a cell that could not finish (it timed out, or the kernel died) still gets
+a line, with `"status": "incomplete"` and an `error`, so a script can tell
+where it stopped. Input requests get an empty reply under `--json` and when
+the code comes from stdin; empty stdin is an error.
+
+| Exit status | Meaning |
+| --- | --- |
+| 0 | Success |
+| 1 | A cell failed, a kernel timed out or died, or a file or download failed (as `jupyter execute`) |
+| 2 | Usage error: an unknown flag, a missing argument, no code to run |
+| 128+N | Stopped by signal N: 130 for Ctrl-C, 143 for SIGTERM, 129 for SIGHUP |
 
 `ganymede console -k cdp-node` is an interactive console with completion,
 multiline input, and Ctrl-C to interrupt.
@@ -49,6 +60,11 @@ ganymede execute notebook.ipynb --inplace
 
 The kernel comes from the notebook's metadata unless you pass `-k`.
 Execution stops at the first error unless you pass `--allow-errors`.
+With several notebooks, each one that fails, can't be read, or whose
+kernel won't start is reported and the rest still run; the exit status is
+1 if any failed. `jupyter execute`'s flag names `--kernel_name`,
+`--startup_timeout`, `--skip-cells-with-tag` and `--allow-error-names` work
+too.
 `ganymede nb clear notebook.ipynb --inplace` removes outputs without a
 kernel.
 

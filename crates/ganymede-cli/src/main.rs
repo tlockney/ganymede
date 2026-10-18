@@ -24,7 +24,10 @@ use std::time::Duration;
     name = "ganymede",
     version,
     about = "Language-agnostic Jupyter engine: kernels, notebooks, and a server",
-    after_help = "The kernel name `fake` is a built-in in-process kernel for trying things out."
+    after_help = "The kernel name `fake` is a built-in in-process kernel for trying things out.\n\n\
+Exit status: 0 on success; 1 when a cell fails, a kernel dies or times out, or a file or \
+download fails (as `jupyter execute`); 2 for a usage error; 128+N after signal N \
+(130 Ctrl-C, 143 SIGTERM, 129 SIGHUP)."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -42,7 +45,7 @@ struct Cli {
     verbose: bool,
     /// Seconds a new kernel has to answer. Default 60, or for `serve` and
     /// `lab`, `startup_timeout_secs` from the config file.
-    #[arg(long, global = true, value_name = "SECS")]
+    #[arg(long, global = true, value_name = "SECS", alias = "startup_timeout")]
     startup_timeout: Option<u64>,
 }
 
@@ -195,6 +198,9 @@ enum KernelspecCmd {
     Remove {
         #[arg(required = true)]
         names: Vec<String>,
+        /// Do not ask first. Without a terminal on stdin nothing is asked.
+        #[arg(long, short = 'f', visible_short_alias = 'y')]
+        force: bool,
     },
 }
 
@@ -245,7 +251,9 @@ struct RunArgs {
     #[arg(long, short)]
     file: Vec<PathBuf>,
     /// Print one JSON object per cell (status, count, nbformat outputs)
-    /// instead of rendering output.
+    /// instead of rendering output. A cell that could not finish (a
+    /// timeout, a dead kernel) gets `"status": "incomplete"` and an
+    /// `error`. The kernel's input requests get an empty reply.
     #[arg(long)]
     json: bool,
     /// Seconds to wait for each cell. 0 waits forever.
@@ -267,13 +275,13 @@ struct ExecuteArgs {
     dest: Dest,
     /// Kernelspec name. Defaults to each notebook's
     /// `metadata.kernelspec.name`.
-    #[arg(long, short)]
+    #[arg(long, short, alias = "kernel_name")]
     kernel: Option<String>,
     /// Record errors and keep going.
     #[arg(long)]
     allow_errors: bool,
     /// Error names that do not stop execution. Repeatable.
-    #[arg(long, value_name = "ENAME")]
+    #[arg(long, value_name = "ENAME", alias = "allow-error-names")]
     allow_error_name: Vec<String>,
     /// Stop on every error, overriding the allowances and
     /// `raises-exception` tags.
@@ -283,7 +291,11 @@ struct ExecuteArgs {
     #[arg(long, default_value_t = 0)]
     timeout: u64,
     /// Cells with this tag are skipped.
-    #[arg(long, default_value = "skip-execution")]
+    #[arg(
+        long,
+        default_value = "skip-execution",
+        aliases = ["skip-cells-with-tag", "skip_cells_with_tag"]
+    )]
     skip_tag: String,
     /// Merge each cell's streams and resolve carriage returns.
     #[arg(long)]
@@ -342,10 +354,26 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(e) => {
             eprintln!("ganymede: {}", error_chain(&e));
-            ExitCode::FAILURE
+            if e.is::<Usage>() {
+                ExitCode::from(2)
+            } else {
+                ExitCode::FAILURE
+            }
         }
     }
 }
+
+/// A usage error found after parsing, which exits 2 as clap's own do.
+#[derive(Debug)]
+struct Usage(String);
+
+impl std::fmt::Display for Usage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Usage {}
 
 /// The error and its causes joined by `: `, skipping a cause whose text
 /// its parent already includes (many errors print their source in their
@@ -591,7 +619,10 @@ async fn run(engine: &Engine, args: RunArgs, verbose: bool) -> Result<ExitCode> 
     let stdin_is_code = cells.is_empty();
     if stdin_is_code {
         let mut code = String::new();
-        std::io::Read::read_to_string(&mut std::io::stdin(), &mut code)?;
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut code).context("reading stdin")?;
+        if code.trim().is_empty() {
+            return Err(Usage("no code: pass CODE or --file, or pipe code on stdin".into()).into());
+        }
         cells.push(code);
     }
     let mut stop = StopSignals::new()?;
@@ -647,7 +678,24 @@ async fn run_cells(
             kernel.execute_with(code, opts, &mut term).await
         };
         drop(interrupter);
-        let r = r.with_context(|| format!("cell {i}"))?;
+        let r = match r {
+            Ok(r) => r,
+            Err(e) => {
+                let e = anyhow::Error::from(e).context(format!("cell {i}"));
+                if args.json {
+                    // So a consumer can tell "stopped here" from "ended".
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "cell": i,
+                            "status": "incomplete",
+                            "error": error_chain(&e),
+                        })
+                    );
+                }
+                return Err(e);
+            }
+        };
         if args.json {
             println!("{}", render::json_line(i, &r));
         }
@@ -688,17 +736,32 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
     };
     let mut stop = StopSignals::new()?;
     let mut status = ExitCode::SUCCESS;
+    // Like a failing notebook, one that can't be read or started is
+    // reported and the rest still run; the exit status says so.
     for path in &args.notebooks {
-        let mut nb = ganymede_engine::nbformat::read_file(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let mut nb = match ganymede_engine::nbformat::read_file(path)
+            .with_context(|| format!("reading {}", path.display()))
+        {
+            Ok(nb) => nb,
+            Err(e) => {
+                eprintln!("ganymede: {}", error_chain(&e));
+                status = ExitCode::FAILURE;
+                continue;
+            }
+        };
         let name = match &args.kernel {
             Some(k) => k.clone(),
-            None => ganymede_engine::notebook_kernel_name(&nb).with_context(|| {
-                format!(
-                    "{} has no metadata.kernelspec.name; pass --kernel",
-                    path.display()
-                )
-            })?,
+            None => match ganymede_engine::notebook_kernel_name(&nb) {
+                Some(n) => n,
+                None => {
+                    eprintln!(
+                        "ganymede: {} has no metadata.kernelspec.name; pass --kernel",
+                        path.display()
+                    );
+                    status = ExitCode::FAILURE;
+                    continue;
+                }
+            },
         };
         let cwd = path
             .parent()
@@ -710,7 +773,14 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
             cwd,
         };
         eprintln!("executing {}", path.display());
-        let kernel = Arc::new(open(engine, &target, verbose).await?);
+        let kernel = match open(engine, &target, verbose).await {
+            Ok(k) => Arc::new(k),
+            Err(e) => {
+                eprintln!("  {}", error_chain(&e));
+                status = ExitCode::FAILURE;
+                continue;
+            }
+        };
         let _guard = interrupt_on_ctrl_c(&kernel);
         let mut on_event = |e: ganymede_engine::exec::Event<'_>| {
             if let (true, ganymede_engine::exec::Event::CellFinished { index, cell, ok }) =
@@ -928,7 +998,20 @@ fn kernelspec(engine: &Engine, extra_roots: &[PathBuf], cmd: KernelspecCmd) -> R
             let dest = ks::install(&source, name.as_deref(), &data_dir, replace)?;
             println!("{}", dest.display());
         }
-        KernelspecCmd::Remove { names } => {
+        KernelspecCmd::Remove { names, force } => {
+            if !force && std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                eprintln!("Kernel specs to remove:");
+                for n in &names {
+                    eprintln!("  {n}");
+                }
+                eprint!("Remove {} kernel specs [y/N]: ", names.len());
+                let mut answer = String::new();
+                std::io::stdin().read_line(&mut answer)?;
+                if !answer.trim().eq_ignore_ascii_case("y") {
+                    eprintln!("not removed");
+                    return Ok(ExitCode::FAILURE);
+                }
+            }
             for n in names {
                 let dir = ks::remove(engine.kernelspec_source().as_ref(), &n)?;
                 eprintln!("removed {n} from {}", dir.display());
