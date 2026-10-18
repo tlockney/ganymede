@@ -76,7 +76,12 @@ to it by that file:
 ```sh
 ganymede kernel -k cdp-node
 ganymede run --existing kernel-<id>.json 'x'
+ganymede attach kernel-<id>.json 'x'      # the same, waiting at most 60 s per cell
 ```
+
+`ganymede run --existing` with no file attaches to the newest kernel in
+the Jupyter runtime dir. A kernel that was attached to keeps running when
+the command ends.
 
 ## Start JupyterLab
 
@@ -94,6 +99,35 @@ prints it. The token in the URL logs the browser in. Port 8888 is tried
 first, then each next port while it is taken, up to 50 more. It takes
 `serve`'s flags below, and fails, naming `ganymede lab install`, when no
 JupyterLab is installed.
+
+```sh
+ganymede lab list                          # installed versions; --json too
+ganymede lab remove 4.6.4
+ganymede lab install --no-default-extensions   # without the widget extensions
+ganymede lab extension install jupyterlab-execute-time
+ganymede lab extension list                # --json too
+ganymede lab extension disable jupyterlab-execute-time   # and `enable`
+ganymede lab extension remove jupyterlab-execute-time
+ganymede lab clean                         # leftovers of interrupted installs
+ganymede lab uninstall                     # every version and extension
+```
+
+Everything `lab install` adds lives in Ganymede's data dir,
+`$GANYMEDE_DATA_DIR` when set; `ganymede info` prints where. `disable`
+writes `labconfig/page_config.json` in the Jupyter config dir, as
+`jupyter labextension disable` does, and the next page load picks it up.
+See [JupyterLab and VS Code](frontends.md#extensions) for how extensions
+are found and installed.
+
+## Shell completions
+
+```sh
+ganymede completions bash > ~/.local/share/bash-completion/completions/ganymede
+ganymede completions zsh > ~/.zfunc/_ganymede    # with ~/.zfunc on fpath
+ganymede completions fish > ~/.config/fish/completions/ganymede.fish
+```
+
+`powershell` and `elvish` work too.
 
 ## Serve the Jupyter API
 

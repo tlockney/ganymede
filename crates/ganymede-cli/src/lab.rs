@@ -51,12 +51,23 @@ pub enum LabCmd {
     },
     /// List installed versions, newest first. `ganymede serve` uses the
     /// first unless told otherwise.
-    List,
+    List {
+        /// Print a JSON array of `{"version", "dir"}` objects instead.
+        #[arg(long)]
+        json: bool,
+    },
     /// Remove installed versions.
     Remove {
+        /// Versions, as `ganymede lab list` shows them.
         #[arg(required = true)]
         versions: Vec<String>,
     },
+    /// Delete what interrupted installs left behind: partial downloads and
+    /// unpacked staging directories.
+    Clean,
+    /// Remove every installed JupyterLab version and extension, and the
+    /// records of them, leaving nothing of `ganymede lab install` behind.
+    Uninstall,
 }
 
 pub fn run(cmd: LabCmd) -> Result<ExitCode> {
@@ -74,7 +85,14 @@ pub fn run(cmd: LabCmd) -> Result<ExitCode> {
             println!("{}", dir.display());
         }
         LabCmd::Extension { cmd } => return extension::run(cmd),
-        LabCmd::List => {
+        LabCmd::List { json: true } => {
+            let all: Vec<_> = installed(&root)
+                .into_iter()
+                .map(|i| serde_json::json!({ "version": i.version, "dir": i.dir }))
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&all)?);
+        }
+        LabCmd::List { json: false } => {
             let all = installed(&root);
             if all.is_empty() {
                 eprintln!(
@@ -98,8 +116,51 @@ pub fn run(cmd: LabCmd) -> Result<ExitCode> {
                 eprintln!("removed JupyterLab {v} from {}", dir.display());
             }
         }
+        LabCmd::Clean => {
+            let mut n = 0;
+            for dir in [Some(root.clone()), extension::dir()].into_iter().flatten() {
+                n += clean(&dir)?;
+            }
+            eprintln!("removed {n} leftover files and directories");
+        }
+        LabCmd::Uninstall => {
+            for dir in [Some(root.clone()), extension::dir()].into_iter().flatten() {
+                if dir.exists() {
+                    std::fs::remove_dir_all(&dir)
+                        .with_context(|| format!("removing {}", dir.display()))?;
+                    eprintln!("removed {}", dir.display());
+                }
+            }
+        }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Removes the dot-named entries in `dir` that installs create and rename
+/// away on success (`.download-*`, `.<version>-*`, `.<package>-*`), but
+/// not the extension records. Returns how many were removed.
+fn clean(dir: &Path) -> Result<usize> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(0);
+    };
+    let mut n = 0;
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with('.') || name == extension::RECORDS {
+            continue;
+        }
+        let path = e.path();
+        let r = if e.file_type().is_ok_and(|t| t.is_dir()) {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        r.with_context(|| format!("removing {}", path.display()))?;
+        eprintln!("removed {}", path.display());
+        n += 1;
+    }
+    Ok(n)
 }
 
 /// `root/<version>`, refusing anything that is not a plain directory name.
@@ -428,6 +489,31 @@ mod tests {
         ] {
             assert!(!is_pure_wheel(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn clean_removes_leftovers_and_keeps_installs() {
+        let root = tempfile::tempdir().unwrap();
+        let r = root.path();
+        for d in [
+            "4.6.4/static",
+            ".4.6.4-abc/static",
+            ".packages",
+            "anywidget",
+        ] {
+            std::fs::create_dir_all(r.join(d)).unwrap();
+        }
+        std::fs::write(r.join(".download-xyz"), "partial").unwrap();
+        std::fs::write(r.join(".packages/anywidget.json"), "{}").unwrap();
+        assert_eq!(clean(r).unwrap(), 2);
+        let mut left: Vec<String> = std::fs::read_dir(r)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, [".packages", "4.6.4", "anywidget"]);
+        assert_eq!(clean(&r.join("missing")).unwrap(), 0);
     }
 
     #[test]
