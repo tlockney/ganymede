@@ -135,6 +135,11 @@ Useful flags, each of which can also be set in a TOML file passed with
 `--log-file` appends the log to a file instead of stderr. Kernels' own
 output lines start with `[kernel <first 8 of its id>]`.
 
+The server runs code for anyone who holds its token. It listens on
+loopback only unless `--ip` says otherwise. [Security](security.md)
+covers what `--ip 0.0.0.0` and `--token ""` expose, and how to reach a
+server from other machines safely.
+
 ## Embed it
 
 The CLI is built on `ganymede-engine`, which an application can use

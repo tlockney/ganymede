@@ -58,6 +58,7 @@ export function groups(): Group[] {
       text: "Reference",
       level: "reference",
       items: [
+        { text: "Security", link: "/security" },
         { text: "Roadmap", link: "/roadmap" },
         { text: "Prior art", link: "/prior-art" },
         { text: "Other Jupyter clients", link: "/clients" },
