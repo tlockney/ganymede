@@ -1117,3 +1117,21 @@ async fn new_untitled_and_copy_skip_a_name_taken_on_disk() {
         "src"
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn save_through_symlink_keeps_the_link() {
+    use std::os::unix::fs::symlink;
+    let (dir, c) = setup();
+    c.save("real.txt", SaveRequest::text("v1")).await.unwrap();
+    symlink("real.txt", dir.path().join("alias.txt")).unwrap();
+    c.save("alias.txt", SaveRequest::text("v2")).await.unwrap();
+    assert!(fs::symlink_metadata(dir.path().join("alias.txt"))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("real.txt")).unwrap(),
+        "v2"
+    );
+}
