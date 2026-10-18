@@ -130,6 +130,11 @@ Useful flags, each of which can also be set in a TOML file passed with
 `serve` and `lab` log at info level on stderr; `-v` raises it to debug, and
 `RUST_LOG` overrides both.
 
+The server runs code for anyone who holds its token. It listens on
+loopback only unless `--ip` says otherwise. [Security](security.md)
+covers what `--ip 0.0.0.0` and `--token ""` expose, and how to reach a
+server from other machines safely.
+
 ## Embed it
 
 The CLI is built on `ganymede-engine`, which an application can use
