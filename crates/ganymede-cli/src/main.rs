@@ -2,6 +2,7 @@
 //! layer over `ganymede-engine` (or `ganymede-server` for `serve`).
 
 mod console;
+mod info;
 mod lab;
 mod lab_start;
 mod render;
@@ -23,6 +24,7 @@ use std::time::Duration;
 #[command(
     name = "ganymede",
     version,
+    long_version = info::LONG_VERSION,
     about = "Language-agnostic Jupyter engine: kernels, notebooks, and a server",
     after_help = "The kernel name `fake` is a built-in in-process kernel for trying things out."
 )]
@@ -161,8 +163,12 @@ enum Cmd {
     },
     /// Serve the Jupyter REST and websocket API (JupyterLab, VS Code, ...).
     Serve(Box<ganymede_server::serve::ServeArgs>),
-    /// Show versions and the directories in use.
+    /// Show versions, build details, and every directory Ganymede uses:
+    /// Jupyter's runtime, config, and data dirs, Ganymede's data dir with
+    /// its JupyterLab installs and extensions, kernelspec roots, and where
+    /// notebook trust and console history are kept.
     Info {
+        /// Print one JSON object instead.
         #[arg(long)]
         json: bool,
     },
@@ -441,7 +447,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             ganymede_server::serve::run(cfg).await?;
             Ok(ExitCode::SUCCESS)
         }
-        Cmd::Info { json } => info(&engine, json),
+        Cmd::Info { json } => info::run(&engine, &cli.kernelspec_root, json),
     }
 }
 
@@ -869,7 +875,7 @@ fn clear_outputs(nb: &mut Notebook) {
     }
 }
 
-// ----- kernelspecs and info ------------------------------------------------
+// ----- kernelspecs ------------------------------------------------
 
 fn kernelspec(engine: &Engine, extra_roots: &[PathBuf], cmd: KernelspecCmd) -> Result<ExitCode> {
     match cmd {
@@ -934,35 +940,6 @@ fn kernelspec(engine: &Engine, extra_roots: &[PathBuf], cmd: KernelspecCmd) -> R
                 eprintln!("removed {n} from {}", dir.display());
             }
         }
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-fn info(engine: &Engine, json: bool) -> Result<ExitCode> {
-    let specs: Vec<String> = engine.kernelspecs()?.into_iter().map(|s| s.name).collect();
-    let v = serde_json::json!({
-        "version": env!("CARGO_PKG_VERSION"),
-        "protocol_version": ganymede_engine::protocol::PROTOCOL_VERSION,
-        "data_dirs": ks::jupyter_data_dirs(),
-        "runtime_dir": ks::jupyter_runtime_dir(),
-        "config_dir": ks::jupyter_config_dir(),
-        "kernelspecs": specs,
-    });
-    if json {
-        println!("{}", serde_json::to_string_pretty(&v)?);
-    } else {
-        println!("ganymede {}", v["version"].as_str().unwrap_or_default());
-        println!(
-            "protocol    {}",
-            v["protocol_version"].as_str().unwrap_or_default()
-        );
-        println!("runtime dir {}", ks::jupyter_runtime_dir().display());
-        println!("config dir  {}", ks::jupyter_config_dir().display());
-        println!("data dirs:");
-        for d in ks::jupyter_data_dirs() {
-            println!("  {}", d.display());
-        }
-        println!("kernelspecs: {}", specs.join(", "));
     }
     Ok(ExitCode::SUCCESS)
 }
