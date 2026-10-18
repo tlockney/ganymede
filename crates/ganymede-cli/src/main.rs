@@ -375,8 +375,17 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
         Cmd::Kernelspec { cmd } => kernelspec(&engine, &cli.kernelspec_root, cmd),
         Cmd::Run(args) => run(&engine, args, verbose).await,
         Cmd::Console { target } => {
+            let mut stop = StopSignals::new()?;
             let kernel = Arc::new(open(&engine, &target, verbose).await?);
-            let r = console::run(kernel.clone()).await;
+            let r = tokio::select! {
+                r = console::run(kernel.clone()) => r,
+                sig = stop.recv() => {
+                    stop_kernel(&kernel, &target).await;
+                    // The line editor holds a blocking thread on stdin,
+                    // which would keep the runtime from shutting down.
+                    std::process::exit(128 + sig);
+                }
+            };
             close(&kernel, &target).await?;
             r.map(|()| ExitCode::SUCCESS)
         }
@@ -500,6 +509,73 @@ fn interrupt_on_ctrl_c(kernel: &Arc<Kernel>) -> AbortOnDrop {
     }))
 }
 
+/// SIGTERM and SIGHUP, for commands that hold a kernel. The kernel runs
+/// in its own process group, so a terminal hangup or `timeout(1)` reaches
+/// only us; without a handler it would outlive us. Registered before the
+/// kernel starts so no signal falls between handlers.
+struct StopSignals {
+    #[cfg(unix)]
+    term: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    hup: tokio::signal::unix::Signal,
+}
+
+impl StopSignals {
+    fn new() -> Result<Self> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            Ok(StopSignals {
+                term: signal(SignalKind::terminate()).context("SIGTERM handler")?,
+                hup: signal(SignalKind::hangup()).context("SIGHUP handler")?,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(StopSignals {})
+        }
+    }
+
+    /// Resolves with the signal number. Never on other platforms.
+    async fn recv(&mut self) -> i32 {
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                _ = self.term.recv() => libc_sig::TERM,
+                _ = self.hup.recv() => libc_sig::HUP,
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            std::future::pending().await
+        }
+    }
+}
+
+#[cfg(unix)]
+mod libc_sig {
+    pub const TERM: i32 = 15;
+    pub const HUP: i32 = 1;
+}
+
+/// On a stop signal: shut down a kernel we launched; interrupt an attached
+/// one so it is not left busy with our cell.
+async fn stop_kernel(kernel: &Kernel, t: &Target) {
+    eprintln!("ganymede: stopping kernel");
+    let r = if t.existing.is_some() {
+        kernel.interrupt().await
+    } else {
+        kernel.shutdown().await
+    };
+    if let Err(e) = r {
+        eprintln!("ganymede: {e}");
+    }
+}
+
+fn exit_on_signal(sig: i32) -> ExitCode {
+    ExitCode::from((128 + sig) as u8)
+}
+
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
@@ -518,6 +594,7 @@ async fn run(engine: &Engine, args: RunArgs, verbose: bool) -> Result<ExitCode> 
         std::io::Read::read_to_string(&mut std::io::stdin(), &mut code)?;
         cells.push(code);
     }
+    let mut stop = StopSignals::new()?;
     let kernel = Arc::new(open(engine, &args.target, verbose).await?);
     let _guard = interrupt_on_ctrl_c(&kernel);
     let opts = ExecuteOptions {
@@ -527,8 +604,30 @@ async fn run(engine: &Engine, args: RunArgs, verbose: bool) -> Result<ExitCode> 
         timeout: (args.timeout > 0).then(|| Duration::from_secs(args.timeout)),
         ..Default::default()
     };
+    let r = tokio::select! {
+        r = run_cells(&kernel, &args, &cells, &opts, verbose) => r,
+        sig = stop.recv() => {
+            stop_kernel(&kernel, &args.target).await;
+            return Ok(exit_on_signal(sig));
+        }
+    };
+    close(&kernel, &args.target).await?;
+    Ok(if r? {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+/// Run each cell; `Ok(true)` when a cell failed.
+async fn run_cells(
+    kernel: &Arc<Kernel>,
+    args: &RunArgs,
+    cells: &[String],
+    opts: &ExecuteOptions,
+    verbose: bool,
+) -> Result<bool> {
     let mut failed = false;
-    let mut outcome = Ok(());
     for (i, code) in cells.iter().enumerate() {
         let interrupter = args.interrupt_after_ms.map(|ms| {
             let k = kernel.clone();
@@ -539,22 +638,16 @@ async fn run(engine: &Engine, args: RunArgs, verbose: bool) -> Result<ExitCode> 
         });
         let r = if args.json {
             kernel
-                .execute_with(code, &opts, &mut ganymede_engine::NoHandler)
+                .execute_with(code, opts, &mut ganymede_engine::NoHandler)
                 .await
         } else {
             let mut term = Terminal {
                 stdin_allowed: opts.allow_stdin,
             };
-            kernel.execute_with(code, &opts, &mut term).await
+            kernel.execute_with(code, opts, &mut term).await
         };
         drop(interrupter);
-        let r = match r {
-            Ok(r) => r,
-            Err(e) => {
-                outcome = Err(anyhow::Error::from(e).context(format!("cell {i}")));
-                break;
-            }
-        };
+        let r = r.with_context(|| format!("cell {i}"))?;
         if args.json {
             println!("{}", render::json_line(i, &r));
         }
@@ -572,13 +665,7 @@ async fn run(engine: &Engine, args: RunArgs, verbose: bool) -> Result<ExitCode> 
             }
         }
     }
-    close(&kernel, &args.target).await?;
-    outcome?;
-    Ok(if failed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    })
+    Ok(failed)
 }
 
 async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<ExitCode> {
@@ -599,6 +686,7 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
         record_timing: !args.no_timing,
         store_widget_state: !args.no_widget_state,
     };
+    let mut stop = StopSignals::new()?;
     let mut status = ExitCode::SUCCESS;
     for path in &args.notebooks {
         let mut nb = ganymede_engine::nbformat::read_file(path)
@@ -624,19 +712,24 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
         eprintln!("executing {}", path.display());
         let kernel = Arc::new(open(engine, &target, verbose).await?);
         let _guard = interrupt_on_ctrl_c(&kernel);
-        let result = kernel
-            .run_notebook_with(&mut nb, &opts, &mut |e| {
-                if let (true, ganymede_engine::exec::Event::CellFinished { index, cell, ok }) =
-                    (verbose, e)
-                {
-                    eprintln!(
-                        "  cell {index} [{}] {}",
-                        cell.execution_count.unwrap_or_default(),
-                        if ok { "ok" } else { "error" }
-                    );
-                }
-            })
-            .await;
+        let mut on_event = |e: ganymede_engine::exec::Event<'_>| {
+            if let (true, ganymede_engine::exec::Event::CellFinished { index, cell, ok }) =
+                (verbose, e)
+            {
+                eprintln!(
+                    "  cell {index} [{}] {}",
+                    cell.execution_count.unwrap_or_default(),
+                    if ok { "ok" } else { "error" }
+                );
+            }
+        };
+        let result = tokio::select! {
+            r = kernel.run_notebook_with(&mut nb, &opts, &mut on_event) => r,
+            sig = stop.recv() => {
+                stop_kernel(&kernel, &target).await;
+                return Ok(exit_on_signal(sig));
+            }
+        };
         close(&kernel, &target).await?;
         // Like nbclient, a failed run is not saved: the notebook would
         // look executed when it was not.
