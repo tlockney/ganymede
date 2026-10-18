@@ -496,18 +496,31 @@ async fn close(kernel: &Kernel, t: &Target) -> Result<()> {
     Ok(())
 }
 
-/// Interrupt the kernel on Ctrl-C until the returned guard is dropped.
-fn interrupt_on_ctrl_c(kernel: &Arc<Kernel>) -> AbortOnDrop {
+/// Interrupt the kernel on Ctrl-C until the returned guard is dropped. A
+/// second Ctrl-C within [`ESCALATE_WINDOW`] goes to `stop` as SIGINT, so
+/// a kernel that ignores interrupts can still be stopped, as with
+/// `jupyter console`.
+fn interrupt_on_ctrl_c(kernel: &Arc<Kernel>, stop: &StopSignals) -> AbortOnDrop {
     let k = kernel.clone();
+    let escalate = stop.escalate.clone();
     AbortOnDrop(tokio::spawn(async move {
+        let mut last: Option<tokio::time::Instant> = None;
         while tokio::signal::ctrl_c().await.is_ok() {
-            eprintln!("interrupting");
+            let now = tokio::time::Instant::now();
+            if last.is_some_and(|t| now - t < ESCALATE_WINDOW) {
+                let _ = escalate.send(libc_sig::INT).await;
+                return;
+            }
+            last = Some(now);
+            eprintln!("interrupting (Ctrl-C again to stop)");
             if let Err(e) = k.interrupt().await {
                 eprintln!("interrupt failed: {e}");
             }
         }
     }))
 }
+
+const ESCALATE_WINDOW: Duration = Duration::from_secs(2);
 
 /// SIGTERM and SIGHUP, for commands that hold a kernel. The kernel runs
 /// in its own process group, so a terminal hangup or `timeout(1)` reaches
@@ -518,43 +531,58 @@ struct StopSignals {
     term: tokio::signal::unix::Signal,
     #[cfg(unix)]
     hup: tokio::signal::unix::Signal,
+    /// A repeated Ctrl-C, from [`interrupt_on_ctrl_c`].
+    escalate: tokio::sync::mpsc::Sender<i32>,
+    escalated: tokio::sync::mpsc::Receiver<i32>,
 }
 
 impl StopSignals {
     fn new() -> Result<Self> {
+        let (escalate, escalated) = tokio::sync::mpsc::channel(1);
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
             Ok(StopSignals {
                 term: signal(SignalKind::terminate()).context("SIGTERM handler")?,
                 hup: signal(SignalKind::hangup()).context("SIGHUP handler")?,
+                escalate,
+                escalated,
             })
         }
         #[cfg(not(unix))]
         {
-            Ok(StopSignals {})
+            Ok(StopSignals {
+                escalate,
+                escalated,
+            })
         }
     }
 
-    /// Resolves with the signal number. Never on other platforms.
+    /// Resolves with the signal number.
     async fn recv(&mut self) -> i32 {
         #[cfg(unix)]
         {
             tokio::select! {
                 _ = self.term.recv() => libc_sig::TERM,
                 _ = self.hup.recv() => libc_sig::HUP,
+                Some(sig) = self.escalated.recv() => sig,
             }
         }
         #[cfg(not(unix))]
         {
-            std::future::pending().await
+            match self.escalated.recv().await {
+                Some(sig) => sig,
+                None => std::future::pending().await,
+            }
         }
     }
 }
 
-#[cfg(unix)]
 mod libc_sig {
+    pub const INT: i32 = 2;
+    #[cfg(unix)]
     pub const TERM: i32 = 15;
+    #[cfg(unix)]
     pub const HUP: i32 = 1;
 }
 
@@ -596,7 +624,7 @@ async fn run(engine: &Engine, args: RunArgs, verbose: bool) -> Result<ExitCode> 
     }
     let mut stop = StopSignals::new()?;
     let kernel = Arc::new(open(engine, &args.target, verbose).await?);
-    let _guard = interrupt_on_ctrl_c(&kernel);
+    let _guard = interrupt_on_ctrl_c(&kernel, &stop);
     let opts = ExecuteOptions {
         // Input comes from the terminal only when stdin is not the code.
         allow_stdin: !stdin_is_code && !args.json,
@@ -711,7 +739,7 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
         };
         eprintln!("executing {}", path.display());
         let kernel = Arc::new(open(engine, &target, verbose).await?);
-        let _guard = interrupt_on_ctrl_c(&kernel);
+        let _guard = interrupt_on_ctrl_c(&kernel, &stop);
         let mut on_event = |e: ganymede_engine::exec::Event<'_>| {
             if let (true, ganymede_engine::exec::Event::CellFinished { index, cell, ok }) =
                 (verbose, e)
