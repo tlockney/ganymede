@@ -142,7 +142,9 @@ It prints the URL, with its token, as the only line on stdout. The
 [JupyterLab and VS Code](frontends.md) guide covers connecting a frontend.
 
 Useful flags, each of which can also be set in a TOML file passed with
-`--config` (an unknown key in the file is an error):
+`--config` (an unknown key in the file is an error). Without `--config`,
+`ganymede.toml` in the Jupyter config dir (`$JUPYTER_CONFIG_DIR`, else
+`~/.jupyter`) is read if it exists:
 
 | Flag | Effect |
 |---|---|
@@ -162,7 +164,10 @@ Useful flags, each of which can also be set in a TOML file passed with
 | `-q`, `--quiet` | Discard kernels' own stdout and stderr (`quiet`). Cell output is unaffected. |
 
 `serve` and `lab` log at info level on stderr; `-v` raises it to debug, and
-`RUST_LOG` overrides both.
+`RUST_LOG` overrides both. `--log-level` (`debug`, `info`, `warn`,
+`error`, or Jupyter's `WARNING` and `CRITICAL`) overrides all three, and
+`--log-file` appends the log to a file instead of stderr. Kernels' own
+output lines start with `[kernel <first 8 of its id>]`.
 
 ## Embed it
 

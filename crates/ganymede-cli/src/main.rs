@@ -54,6 +54,18 @@ impl Cli {
         matches!(self.cmd, Cmd::Serve(_) | Cmd::Lab { cmd: None, .. })
     }
 
+    /// The server flags, for `serve` and `lab`: `--log-level` and
+    /// `--log-file` apply before the server starts.
+    fn serve_args(&self) -> Option<&ganymede_server::serve::ServeArgs> {
+        match &self.cmd {
+            Cmd::Serve(a) => Some(a),
+            Cmd::Lab {
+                cmd: None, start, ..
+            } => Some(&start.serve),
+            _ => None,
+        }
+    }
+
     /// The default log filter when `RUST_LOG` is unset.
     fn log_filter(&self) -> &'static str {
         match (self.serves(), self.verbose) {
@@ -351,13 +363,10 @@ impl Dest {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| cli.log_filter().into()),
-        )
-        .with_writer(std::io::stderr)
-        .init();
+    if let Err(e) = ganymede_server::serve::init_logging(cli.log_filter(), cli.serve_args()) {
+        eprintln!("ganymede: {}", error_chain(&e));
+        return ExitCode::FAILURE;
+    }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -1066,5 +1075,19 @@ mod tests {
         assert!(parse(&["kernelspec", "list"])
             .log_filter()
             .starts_with("warn"));
+    }
+
+    #[test]
+    fn log_level_and_file_reach_serve_and_lab() {
+        let cli = parse(&["serve", "--log-level", "WARNING", "--log-file", "/l"]);
+        let args = cli.serve_args().unwrap();
+        assert_eq!(args.log_level, Some(tracing::Level::WARN));
+        assert_eq!(args.log_file, Some(PathBuf::from("/l")));
+        let cli = parse(&["lab", "--log-level", "debug"]);
+        assert_eq!(
+            cli.serve_args().unwrap().log_level,
+            Some(tracing::Level::DEBUG)
+        );
+        assert!(parse(&["lab", "list"]).serve_args().is_none());
     }
 }
