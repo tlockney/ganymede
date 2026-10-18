@@ -2,7 +2,7 @@
 
 What Ganymede doesn't do yet, or won't do, in one place. Each item links
 to the page with the details. The [roadmap](roadmap.md) says what comes
-next, and the troubleshooting step of [Install on a workstation](workstation.md)
+next, and the troubleshooting step of [Install](install.md)
 covers problems with the install itself.
 
 ## Platforms
@@ -14,7 +14,8 @@ covers problems with the install itself.
 - **Linux** binaries need glibc 2.35 or newer. There is no musl build for
   Alpine; [install from source](install.md#from-source) there.
 - **macOS** binaries are not signed or notarized. A browser download is
-  quarantined; [Install](install.md) has the `xattr` fix.
+  quarantined; [Install](install.md#macos-blocks-the-binary) has the
+  `xattr` fix.
 
 ## Frontends
 
