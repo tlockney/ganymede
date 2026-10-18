@@ -33,10 +33,13 @@ Ganymede replaces the Python one there, which means:
   pile up.
 - Files are the source of truth, not server memory. With the notebook
   root in iCloud Drive, the iPad writes files underneath the server. The
-  contents API needs external-change detection (mtime check on PUT, as
-  `jupyter_server` does), atomic writes (temp file plus rename, so iCloud
-  never syncs a half-written notebook), and a checkpoint directory
-  configurable to a path outside the synced folder.
+  contents API needs external-change detection, atomic writes (temp file
+  plus rename, so iCloud never syncs a half-written notebook), and a
+  checkpoint directory configurable to a path outside the synced folder. `jupyter_server` has
+  no change check on PUT (JupyterLab compares timestamps itself before
+  saving); Ganymede adds an opt-in one: a PUT whose body carries
+  `last_modified` gets 409 if the file on disk is newer. Clients that
+  omit it, such as VS Code, save unconditionally.
 - Runs as a daemon: launchd on the Mac mini, one config file, logs to a
   file.
 

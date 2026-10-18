@@ -803,7 +803,8 @@ async fn checkpoints_create_list_restore_delete() {
         .await
         .unwrap();
 
-    assert_eq!(c.list_checkpoints("d/n.ipynb").await.unwrap(), vec![]);
+    // The first notebook save makes a checkpoint, as jupyter_server does.
+    assert_eq!(c.list_checkpoints("d/n.ipynb").await.unwrap().len(), 1);
     let cp = c.create_checkpoint("d/n.ipynb").await.unwrap();
     assert_eq!(cp.id, CHECKPOINT_ID);
     assert_timestamp(&cp.last_modified);
@@ -1015,4 +1016,104 @@ async fn hash_is_null_unless_requested() {
         Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
     );
     assert_eq!(m.hash_algorithm.as_deref(), Some("sha256"));
+}
+
+#[tokio::test]
+async fn first_notebook_save_creates_a_checkpoint_only_once() {
+    let (dir, c) = setup();
+    let v1 = sample_notebook();
+    c.save("n.ipynb", SaveRequest::notebook(v1.clone()))
+        .await
+        .unwrap();
+    let cp_path = dir
+        .path()
+        .join(DEFAULT_CHECKPOINT_DIR)
+        .join("n-checkpoint.ipynb");
+    assert_eq!(fs::read_to_string(&cp_path).unwrap(), expected_file(&v1));
+
+    // Later saves leave the existing checkpoint alone.
+    let mut v2 = v1.clone();
+    v2["cells"][1]["source"] = json!("# Changed");
+    c.save("n.ipynb", SaveRequest::notebook(v2)).await.unwrap();
+    assert_eq!(fs::read_to_string(&cp_path).unwrap(), expected_file(&v1));
+    c.restore_checkpoint("n.ipynb", CHECKPOINT_ID)
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(dir.path().join("n.ipynb")).unwrap(),
+        expected_file(&v1)
+    );
+
+    // Plain files get no automatic checkpoint.
+    c.save("t.txt", SaveRequest::text("x")).await.unwrap();
+    assert_eq!(c.list_checkpoints("t.txt").await.unwrap(), vec![]);
+}
+
+#[tokio::test]
+async fn echoing_the_reported_last_modified_is_not_a_conflict() {
+    let (dir, c) = setup();
+    let m = c.save("a.txt", SaveRequest::text("v1")).await.unwrap();
+    let m = c
+        .save(
+            "a.txt",
+            SaveRequest::text("v2").with_last_modified(m.last_modified),
+        )
+        .await
+        .unwrap();
+    // An external write after that copy is a conflict.
+    let later = SystemTime::now() + Duration::from_secs(5);
+    fs::File::options()
+        .write(true)
+        .open(dir.path().join("a.txt"))
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    let r = c
+        .save(
+            "a.txt",
+            SaveRequest::text("v3").with_last_modified(m.last_modified),
+        )
+        .await;
+    assert_eq!(status(&r), 409);
+}
+
+#[tokio::test]
+async fn concurrent_saves_of_one_path_all_complete() {
+    let (dir, c) = setup();
+    let c = std::sync::Arc::new(c);
+    let tasks: Vec<_> = (0..16)
+        .map(|i| {
+            let c = c.clone();
+            tokio::spawn(async move { c.save("a.txt", SaveRequest::text(format!("v{i}"))).await })
+        })
+        .collect();
+    for t in tasks {
+        t.await.unwrap().unwrap();
+    }
+    let text = fs::read_to_string(dir.path().join("a.txt")).unwrap();
+    assert!(text.starts_with('v'), "{text}");
+    let names: Vec<_> = fs::read_dir(dir.path()).unwrap().collect();
+    assert_eq!(names.len(), 1, "no temp files left");
+}
+
+#[tokio::test]
+async fn new_untitled_and_copy_skip_a_name_taken_on_disk() {
+    let (dir, c) = setup();
+    let n = c
+        .new_untitled("", ContentType::Notebook, None)
+        .await
+        .unwrap();
+    assert_eq!(n.name, "Untitled.ipynb");
+    let n = c
+        .new_untitled("", ContentType::Notebook, None)
+        .await
+        .unwrap();
+    assert_eq!(n.name, "Untitled1.ipynb");
+    fs::write(dir.path().join("a.txt"), "src").unwrap();
+    let cp = c.copy("a.txt", None).await.unwrap();
+    assert_eq!(cp.name, "a-Copy1.txt");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a-Copy1.txt")).unwrap(),
+        "src"
+    );
 }

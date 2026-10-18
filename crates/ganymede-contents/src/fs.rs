@@ -1,9 +1,10 @@
 //! Local-filesystem [`Contents`].
 
+use std::collections::HashMap;
 use std::fs::{self, Metadata};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
@@ -26,7 +27,9 @@ pub const CHECKPOINT_ID: &str = "checkpoint";
 pub const DEFAULT_CHECKPOINT_DIR: &str = ".ipynb_checkpoints";
 
 /// How much newer than the client's `last_modified` the file on disk may be
-/// before a save is a conflict.
+/// before a save is a conflict. A client echoing the `last_modified` the
+/// server reported is within it (that value is the mtime cut to
+/// microseconds); the slack covers clients that round it to coarser units.
 const CONFLICT_WINDOW: TimeDelta = TimeDelta::milliseconds(500);
 
 /// Lenient base64 decoder for uploads: `jupyter_server` uses
@@ -77,6 +80,9 @@ struct Inner {
     /// Canonical root; everything served resolves under it.
     root: PathBuf,
     options: FsOptions,
+    /// One lock per path being saved, so the conflict check and the write
+    /// of one save are not interleaved with another save of the same path.
+    save_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
 }
 
 impl FsContents {
@@ -91,7 +97,11 @@ impl FsContents {
             )));
         }
         Ok(Self {
-            inner: Arc::new(Inner { root, options }),
+            inner: Arc::new(Inner {
+                root,
+                options,
+                save_locks: Mutex::default(),
+            }),
         })
     }
 
@@ -314,15 +324,27 @@ impl Inner {
             }
             let as_notebook = options.type_hint == Some(ContentType::Notebook)
                 || (options.type_hint.is_none() && r.api.name().ends_with(".ipynb"));
-            let mut model = if as_notebook {
-                self.notebook_model(&r, &meta, options.content)?
+            // Read once, so the hash is of the bytes the content came from.
+            let bytes = if options.content || options.hash {
+                Some(fs::read(&r.os).map_err(|e| io_to_error(e, &r.api))?)
             } else {
-                self.file_model(&r, &meta, options.content, options.format)?
+                None
             };
-            if options.hash {
-                use sha2::Digest;
-                let bytes = fs::read(&r.os).map_err(|e| io_to_error(e, &r.api))?;
-                model.hash = Some(hex::encode(sha2::Sha256::digest(&bytes)));
+            let hash = match (&bytes, options.hash) {
+                (Some(bytes), true) => {
+                    use sha2::Digest;
+                    Some(hex::encode(sha2::Sha256::digest(bytes)))
+                }
+                _ => None,
+            };
+            let content = bytes.filter(|_| options.content);
+            let mut model = if as_notebook {
+                self.notebook_model(&r, &meta, content)?
+            } else {
+                self.file_model(&r, &meta, content, options.format)?
+            };
+            if let Some(hash) = hash {
+                model.hash = Some(hash);
                 model.hash_algorithm = Some("sha256".into());
             }
             Ok(model)
@@ -385,16 +407,15 @@ impl Inner {
         &self,
         r: &Resolved,
         meta: &Metadata,
-        content: bool,
+        content: Option<Vec<u8>>,
         format: Option<Format>,
     ) -> Result<ContentsModel> {
         let mut model = self.base_model(r, meta, ContentType::File);
         let guessed = guess_mime(&r.os);
-        if !content {
+        let Some(bytes) = content else {
             model.mimetype = guessed;
             return Ok(model);
-        }
-        let bytes = fs::read(&r.os).map_err(|e| io_to_error(e, &r.api))?;
+        };
         let (value, format) = match format {
             None | Some(Format::Text) => match String::from_utf8(bytes) {
                 Ok(text) => (text, Format::Text),
@@ -422,13 +443,12 @@ impl Inner {
         &self,
         r: &Resolved,
         meta: &Metadata,
-        content: bool,
+        content: Option<Vec<u8>>,
     ) -> Result<ContentsModel> {
         let mut model = self.base_model(r, meta, ContentType::Notebook);
-        if !content {
+        let Some(bytes) = content else {
             return Ok(model);
-        }
-        let bytes = fs::read(&r.os).map_err(|e| io_to_error(e, &r.api))?;
+        };
         let notebook = Notebook::from_slice(&bytes)
             .map_err(|e| Error::BadRequest(format!("Unreadable Notebook: {} {e}", r.api)))?;
         // `nbformat.read` output, as jupyter_server serves it: multi-line
@@ -452,14 +472,44 @@ impl Inner {
 impl Inner {
     fn save(&self, path: &str, request: SaveRequest) -> Result<ContentsModel> {
         let r = self.resolve_for_write(path)?;
+        self.with_save_lock(&r.os, || self.save_locked(&r, request))?;
+        self.get_without_content(&r.api)
+    }
+
+    /// Run `f` holding the save lock of `os`. Entries are dropped once no
+    /// save of that path is running or waiting.
+    fn with_save_lock<T>(&self, os: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        let lock = {
+            let mut locks = self
+                .save_locks
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            Arc::clone(locks.entry(os.to_path_buf()).or_default())
+        };
+        let result = {
+            let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            f()
+        };
+        let mut locks = self
+            .save_locks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        // The map's reference and ours: nobody else holds or waits on it.
+        if Arc::strong_count(&lock) == 2 {
+            locks.remove(os);
+        }
+        result
+    }
+
+    fn save_locked(&self, r: &Resolved, request: SaveRequest) -> Result<()> {
         match request.kind {
-            ContentType::Directory => self.save_directory(&r)?,
+            ContentType::Directory => self.save_directory(r)?,
             ContentType::Notebook | ContentType::File => {
                 let content = request
                     .content
                     .ok_or_else(|| Error::BadRequest("No file content provided".into()))?;
                 if let Some(ts) = &request.last_modified {
-                    self.check_conflict(&r, ts)?;
+                    self.check_conflict(r, ts)?;
                 }
                 let mut sign = None;
                 let bytes = match request.kind {
@@ -488,9 +538,17 @@ impl Inner {
                 if let Some(nb) = sign {
                     self.sign(&r.api, &nb);
                 }
+                // jupyter_server: "One checkpoint should always exist for
+                // notebooks", so the first save can be reverted to.
+                if request.kind == ContentType::Notebook && !self.checkpoint_path(&r.api).is_file()
+                {
+                    if let Err(e) = self.write_checkpoint(r) {
+                        tracing::warn!(path = %r.api, error = %e, "could not create the first checkpoint");
+                    }
+                }
             }
         }
-        self.get_without_content(&r.api)
+        Ok(())
     }
 
     fn save_directory(&self, r: &Resolved) -> Result<()> {
@@ -625,13 +683,24 @@ impl Inner {
             ContentType::File => ("untitled", normalize_ext(ext), ""),
             ContentType::Directory => ("Untitled Folder", String::new(), " "),
         };
-        let name = increment_filename(&dir.os, &format!("{base}{ext}"), insert);
+        // Claim the name with an exclusive create, so a file another writer
+        // makes between picking the name and writing it is not replaced.
+        let name = if kind == ContentType::Directory {
+            reserve_filename(&dir, &format!("{base}{ext}"), insert, |p| fs::create_dir(p))?
+        } else {
+            reserve_filename(&dir, &format!("{base}{ext}"), insert, create_new_file)?
+        };
+        let path = dir.api.join(&name).to_string();
         let request = match kind {
             ContentType::Notebook => SaveRequest::notebook(serde_json::to_value(Notebook::new())?),
             ContentType::File => SaveRequest::text(""),
             ContentType::Directory => SaveRequest::directory(),
         };
-        self.save(&dir.api.join(&name).to_string(), request)
+        self.save(&path, request).inspect_err(|_| {
+            if kind != ContentType::Directory {
+                let _ = fs::remove_file(dir.os.join(&name));
+            }
+        })
     }
 
     fn copy(&self, from_path: &str, to_dir: Option<&str>) -> Result<ContentsModel> {
@@ -647,9 +716,10 @@ impl Inner {
             None => from.api.parent().to_string(),
         };
         let to = self.resolve_for_write(&to_path)?;
-        let dest = if fs::metadata(&to.os).is_ok_and(|m| m.is_dir()) {
+        let reserved = fs::metadata(&to.os).is_ok_and(|m| m.is_dir());
+        let dest = if reserved {
             let name = strip_copy_suffix(from.api.name());
-            let to_name = increment_filename(&to.os, &name, "-Copy");
+            let to_name = reserve_filename(&to, &name, "-Copy", create_new_file)?;
             Resolved {
                 os: to.os.join(&to_name),
                 api: to.api.join(&to_name),
@@ -658,7 +728,12 @@ impl Inner {
             to
         };
         let bytes = fs::read(&from.os).map_err(|e| io_to_error(e, &from.api))?;
-        self.atomic_write(&dest.os, &dest.api, &bytes)?;
+        self.atomic_write(&dest.os, &dest.api, &bytes)
+            .inspect_err(|_| {
+                if reserved {
+                    let _ = fs::remove_file(&dest.os);
+                }
+            })?;
         if let Some(notary) = &self.options.notary {
             // jupyter_server copies through get and save, so the copy is
             // signed if the source was trusted or would be on save. The
@@ -767,13 +842,19 @@ impl Inner {
                 r.api
             )));
         }
+        let cp = self.write_checkpoint(&r)?;
+        self.checkpoint_model(&cp)
+    }
+
+    /// Copy the file at `r` to its checkpoint; returns the checkpoint path.
+    fn write_checkpoint(&self, r: &Resolved) -> Result<PathBuf> {
         let cp = self.checkpoint_path(&r.api);
         if let Some(parent) = cp.parent() {
             fs::create_dir_all(parent)?;
         }
         let bytes = fs::read(&r.os).map_err(|e| io_to_error(e, &r.api))?;
         self.atomic_write(&cp, &r.api, &bytes)?;
-        self.checkpoint_model(&cp)
+        Ok(cp)
     }
 
     fn restore_checkpoint(&self, path: &str, id: &str) -> Result<()> {
@@ -936,6 +1017,33 @@ fn increment_filename(dir: &Path, filename: &str, insert: &str) -> String {
         }
         i += 1;
     }
+}
+
+/// [`increment_filename`], then claim the name with `create` (which must
+/// fail with `AlreadyExists` if the name is taken), trying the next name
+/// when another writer got there first.
+fn reserve_filename(
+    dir: &Resolved,
+    filename: &str,
+    insert: &str,
+    create: impl Fn(&Path) -> io::Result<()>,
+) -> Result<String> {
+    loop {
+        let name = increment_filename(&dir.os, filename, insert);
+        match create(&dir.os.join(&name)) {
+            Ok(()) => return Ok(name),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(io_to_error(e, &dir.api)),
+        }
+    }
+}
+
+fn create_new_file(path: &Path) -> io::Result<()> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map(drop)
 }
 
 /// `jupyter_server`'s `copy_pat = re.compile(r"\-Copy\d*\.")`, substituted

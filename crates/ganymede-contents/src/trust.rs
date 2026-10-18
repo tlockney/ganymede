@@ -566,58 +566,89 @@ pub fn generate_secret() -> Result<Vec<u8>> {
 
 /// Read the key file, or create it with a new key, readable only by its
 /// owner. The key is the file's bytes, newlines included, as nbformat uses
-/// it.
+/// it. An empty key file (left by a crash in an older version) signs
+/// nothing meaningfully, so it is replaced with a new key.
 fn read_or_create_secret(path: &Path) -> Result<Vec<u8>> {
     match fs::read(path) {
-        Ok(secret) => return Ok(secret),
+        Ok(secret) if !secret.is_empty() => return Ok(secret),
+        Ok(_) => {
+            tracing::warn!(
+                "Notebook-signing key {} is empty; replacing it",
+                path.display()
+            );
+            let secret = generate_secret()?;
+            write_secret(path, &secret)?;
+            return Ok(secret);
+        }
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(Error::Io(e)),
     }
     let secret = generate_secret()?;
-    match create_private(path) {
-        Ok(mut file) => {
+    // Write the whole key to a temp file, then link it into place without
+    // replacing, so the key file is never seen half-written.
+    match private_temp(path, &secret)?.persist_noclobber(path) {
+        Ok(_) => {
             tracing::info!("Writing notebook-signing key to {}", path.display());
-            file.write_all(&secret)?;
-            file.sync_all()?;
+            sync_parent(path);
             Ok(secret)
         }
         // Another process created it first; use theirs.
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(fs::read(path)?),
-        Err(e) => Err(Error::Io(e)),
+        Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => {
+            let theirs = fs::read(path)?;
+            if theirs.is_empty() {
+                return Err(Error::Io(io::Error::other(format!(
+                    "notebook-signing key {} is empty",
+                    path.display()
+                ))));
+            }
+            Ok(theirs)
+        }
+        Err(e) => Err(Error::Io(e.error)),
     }
 }
 
-fn create_private(path: &Path) -> io::Result<fs::File> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    options.open(path)
-}
-
-/// Replace the key with `secret`, as `jupyter trust --reset` does, mode
-/// 0600. Every existing signature stops matching.
-pub fn write_secret(path: &Path, secret: &[u8]) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
-    file.write_all(secret)?;
+/// `secret` in a mode-0600 temp file next to `path`, synced to disk.
+fn private_temp(path: &Path, secret: &[u8]) -> Result<tempfile::NamedTempFile> {
+    let dir = match path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".notebook_secret-").suffix(".tmp");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        builder.permissions(fs::Permissions::from_mode(0o600));
     }
+    let mut tmp = builder.tempfile_in(dir)?;
+    tmp.write_all(secret)?;
+    tmp.as_file().sync_all()?;
+    Ok(tmp)
+}
+
+fn sync_parent(path: &Path) {
+    if let Some(dir) = path.parent() {
+        if let Ok(handle) = fs::File::open(dir) {
+            let _ = handle.sync_all();
+        }
+    }
+}
+
+/// Replace the key with `secret`, as `jupyter trust --reset` does, mode
+/// 0600. Every existing signature stops matching. The new key goes to a
+/// temp file that is renamed over the old one, so a crash leaves one key
+/// or the other, never an empty file.
+pub fn write_secret(path: &Path, secret: &[u8]) -> Result<()> {
+    if secret.is_empty() {
+        return Err(Error::BadRequest("notebook-signing key is empty".into()));
+    }
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    private_temp(path, secret)?
+        .persist(path)
+        .map_err(|e| Error::Io(e.error))?;
+    sync_parent(path);
     Ok(())
 }
 
@@ -688,6 +719,43 @@ mod tests {
         assert_eq!(lines.len(), 18);
         assert!(lines.iter().all(|l| l.len() == 76));
         assert!(text.ends_with('\n'));
+    }
+
+    #[test]
+    fn empty_secret_file_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(SECRET_FILE);
+        fs::write(&file, b"").unwrap();
+        let a = Notary::open(dir.path()).unwrap();
+        let key = fs::read(&file).unwrap();
+        assert!(key.len() > 1000, "a new key was written");
+        let nb = json!({"cells": []});
+        let b = Notary::open(dir.path()).unwrap();
+        assert_eq!(a.compute_signature(&nb), b.compute_signature(&nb));
+        assert!(write_secret(&file, b"").is_err());
+        assert_eq!(fs::read(&file).unwrap(), key);
+    }
+
+    #[test]
+    fn write_secret_replaces_privately_without_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(SECRET_FILE);
+        fs::write(&file, b"old").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        write_secret(&file, b"new").unwrap();
+        assert_eq!(fs::read(&file).unwrap(), b"new");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let names: Vec<_> = fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(names.len(), 1);
     }
 
     #[test]
