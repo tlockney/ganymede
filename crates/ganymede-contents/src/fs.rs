@@ -452,6 +452,10 @@ impl Inner {
 impl Inner {
     fn save(&self, path: &str, request: SaveRequest) -> Result<ContentsModel> {
         let r = self.resolve_for_write(path)?;
+        if let Some(chunk) = request.chunk {
+            self.save_chunk(&r, chunk, request)?;
+            return self.get_without_content(&r.api);
+        }
         match request.kind {
             ContentType::Directory => self.save_directory(&r)?,
             ContentType::Notebook | ContentType::File => {
@@ -491,6 +495,35 @@ impl Inner {
             }
         }
         self.get_without_content(&r.api)
+    }
+
+    /// One piece of a chunked upload, as jupyter_server's
+    /// `LargeFileManager.save`: chunk 1 writes the file, any other chunk
+    /// (2, 3, ... and -1 for the last) appends to it.
+    fn save_chunk(&self, r: &Resolved, chunk: i64, request: SaveRequest) -> Result<()> {
+        if request.kind != ContentType::File {
+            return Err(Error::BadRequest(format!(
+                "File type \"{}\" is not supported for large file transfer",
+                request.kind.as_str()
+            )));
+        }
+        let content = request
+            .content
+            .ok_or_else(|| Error::BadRequest("No file content provided".into()))?;
+        let bytes = file_bytes(&r.api, request.format, content)?;
+        if r.os.is_dir() {
+            return Err(Error::BadRequest(format!("{} is a directory", r.api)));
+        }
+        if chunk == 1 {
+            return self.atomic_write(&r.os, &r.api, &bytes);
+        }
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&r.os)
+            .map_err(|e| io_to_error(e, &r.api.parent()))?;
+        file.write_all(&bytes)?;
+        Ok(())
     }
 
     fn save_directory(&self, r: &Resolved) -> Result<()> {

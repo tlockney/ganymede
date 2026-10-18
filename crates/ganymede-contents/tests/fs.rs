@@ -1016,3 +1016,37 @@ async fn hash_is_null_unless_requested() {
     );
     assert_eq!(m.hash_algorithm.as_deref(), Some("sha256"));
 }
+
+#[tokio::test]
+async fn chunked_upload_appends_and_chunk_one_truncates() {
+    let (dir, c) = setup();
+    let path = dir.path().join("up.bin");
+    // base64 chunks decode before appending.
+    c.save("up.bin", SaveRequest::base64("YWI=").with_chunk(1))
+        .await
+        .unwrap();
+    c.save("up.bin", SaveRequest::text("cd").with_chunk(2))
+        .await
+        .unwrap();
+    let model = c
+        .save("up.bin", SaveRequest::base64("ZWY=").with_chunk(-1))
+        .await
+        .unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"abcdef");
+    assert_eq!(model.size, Some(6));
+
+    // Chunk 1 starts over.
+    c.save("up.bin", SaveRequest::text("new").with_chunk(1))
+        .await
+        .unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"new");
+
+    // Only files can be chunked.
+    let r = c
+        .save(
+            "n.ipynb",
+            SaveRequest::notebook(sample_notebook()).with_chunk(1),
+        )
+        .await;
+    assert_eq!(status(&r), 400);
+}
