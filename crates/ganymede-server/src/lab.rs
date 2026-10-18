@@ -427,33 +427,39 @@ async fn list_settings(
     State(s): State<AppState>,
     Query(q): Query<SettingsQuery>,
 ) -> HttpResult<Json<Value>> {
-    let lab = lab_of(&s)?;
-    let files = lab.schema_files();
-    let ids_only = matches!(q.ids_only.as_deref(), Some("true" | "1"));
-    let settings: Vec<Value> = files
-        .iter()
-        .map(|(id, file, version)| {
-            if ids_only {
-                json!({"id": id})
-            } else {
-                lab.plugin_settings(id, file, version)
-            }
-        })
-        .collect();
-    Ok(Json(json!({ "settings": settings })))
+    crate::routes::blocking(move || {
+        let lab = lab_of(&s)?;
+        let files = lab.schema_files();
+        let ids_only = matches!(q.ids_only.as_deref(), Some("true" | "1"));
+        let settings: Vec<Value> = files
+            .iter()
+            .map(|(id, file, version)| {
+                if ids_only {
+                    json!({"id": id})
+                } else {
+                    lab.plugin_settings(id, file, version)
+                }
+            })
+            .collect();
+        Ok(Json(json!({ "settings": settings })))
+    })
+    .await
 }
 
 async fn get_settings(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> HttpResult<Json<Value>> {
-    let lab = lab_of(&s)?;
-    let (_, file, version) = lab
-        .schema_files()
-        .into_iter()
-        .find(|(i, ..)| *i == id)
-        .ok_or_else(|| HttpError(404, format!("Schema not found: {id}")))?;
-    Ok(Json(lab.plugin_settings(&id, &file, &version)))
+    crate::routes::blocking(move || {
+        let lab = lab_of(&s)?;
+        let (_, file, version) = lab
+            .schema_files()
+            .into_iter()
+            .find(|(i, ..)| *i == id)
+            .ok_or_else(|| HttpError(404, format!("Schema not found: {id}")))?;
+        Ok(Json(lab.plugin_settings(&id, &file, &version)))
+    })
+    .await
 }
 
 #[derive(Deserialize, Default)]
@@ -466,54 +472,63 @@ async fn put_settings(
     Path(id): Path<String>,
     crate::routes::LenientJson(body): crate::routes::LenientJson<RawSettings>,
 ) -> HttpResult<StatusCode> {
-    let lab = lab_of(&s)?;
-    if !lab.schema_files().iter().any(|(i, ..)| *i == id) {
-        return Err(HttpError(404, format!("Schema not found: {id}")));
-    }
-    let raw = body
-        .raw
-        .ok_or_else(|| HttpError(400, "PUT needs {\"raw\": ...}".into()))?;
-    json5::from_str::<Value>(&raw)
-        .map_err(|e| HttpError(400, format!("settings are not valid JSON5: {e}")))?;
-    let path = lab
-        .user_settings_path(&id)
-        .ok_or_else(|| HttpError(400, format!("bad settings id {id}")))?;
-    write_atomic(&path, raw.as_bytes())?;
-    Ok(StatusCode::NO_CONTENT)
+    crate::routes::blocking(move || {
+        let lab = lab_of(&s)?;
+        if !lab.schema_files().iter().any(|(i, ..)| *i == id) {
+            return Err(HttpError(404, format!("Schema not found: {id}")));
+        }
+        let raw = body
+            .raw
+            .ok_or_else(|| HttpError(400, "PUT needs {\"raw\": ...}".into()))?;
+        json5::from_str::<Value>(&raw)
+            .map_err(|e| HttpError(400, format!("settings are not valid JSON5: {e}")))?;
+        let path = lab
+            .user_settings_path(&id)
+            .ok_or_else(|| HttpError(400, format!("bad settings id {id}")))?;
+        write_atomic(&path, raw.as_bytes())?;
+        Ok(StatusCode::NO_CONTENT)
+    })
+    .await
 }
 
 // ----- workspaces -----------------------------------------------------------
 
 async fn list_workspaces(State(s): State<AppState>) -> HttpResult<Json<Value>> {
-    let lab = lab_of(&s)?;
-    let mut ids = Vec::new();
-    let mut values = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&lab.workspaces_dir) {
-        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-        paths.sort();
-        for p in paths {
-            if p.extension().and_then(|e| e.to_str()) != Some("jupyterlab-workspace") {
-                continue;
+    crate::routes::blocking(move || {
+        let lab = lab_of(&s)?;
+        let mut ids = Vec::new();
+        let mut values = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&lab.workspaces_dir) {
+            let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+            paths.sort();
+            for p in paths {
+                if p.extension().and_then(|e| e.to_str()) != Some("jupyterlab-workspace") {
+                    continue;
+                }
+                let Some(ws) = read_json(&p) else { continue };
+                let Some(id) = ws.pointer("/metadata/id").and_then(Value::as_str) else {
+                    continue;
+                };
+                ids.push(Value::from(id));
+                values.push(ws);
             }
-            let Some(ws) = read_json(&p) else { continue };
-            let Some(id) = ws.pointer("/metadata/id").and_then(Value::as_str) else {
-                continue;
-            };
-            ids.push(Value::from(id));
-            values.push(ws);
         }
-    }
-    Ok(Json(json!({"workspaces": {"ids": ids, "values": values}})))
+        Ok(Json(json!({"workspaces": {"ids": ids, "values": values}})))
+    })
+    .await
 }
 
 async fn get_workspace(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> HttpResult<Json<Value>> {
-    let lab = lab_of(&s)?;
-    Ok(Json(read_json(&lab.workspace_path(&id)).unwrap_or_else(
-        || json!({"data": {}, "metadata": {"id": id}}),
-    )))
+    crate::routes::blocking(move || {
+        let lab = lab_of(&s)?;
+        Ok(Json(read_json(&lab.workspace_path(&id)).unwrap_or_else(
+            || json!({"data": {}, "metadata": {"id": id}}),
+        )))
+    })
+    .await
 }
 
 async fn put_workspace(
@@ -521,37 +536,43 @@ async fn put_workspace(
     Path(id): Path<String>,
     crate::routes::LenientJson(body): crate::routes::LenientJson<Value>,
 ) -> HttpResult<StatusCode> {
-    let lab = lab_of(&s)?;
-    let Value::Object(mut ws) = body else {
-        return Err(HttpError(400, "workspace must be a JSON object".into()));
-    };
-    if !ws.get("data").map(Value::is_object).unwrap_or(false) {
-        return Err(HttpError(400, "workspace needs a data object".into()));
-    }
-    let meta = ws
-        .entry("metadata")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .ok_or_else(|| HttpError(400, "workspace metadata must be an object".into()))?;
-    meta.insert("id".into(), id.clone().into());
-    meta.insert("last_modified".into(), ganymede_api::now_iso().into());
-    let bytes = serde_json::to_vec(&Value::Object(ws)).unwrap();
-    write_atomic(&lab.workspace_path(&id), &bytes)?;
-    Ok(StatusCode::NO_CONTENT)
+    crate::routes::blocking(move || {
+        let lab = lab_of(&s)?;
+        let Value::Object(mut ws) = body else {
+            return Err(HttpError(400, "workspace must be a JSON object".into()));
+        };
+        if !ws.get("data").map(Value::is_object).unwrap_or(false) {
+            return Err(HttpError(400, "workspace needs a data object".into()));
+        }
+        let meta = ws
+            .entry("metadata")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| HttpError(400, "workspace metadata must be an object".into()))?;
+        meta.insert("id".into(), id.clone().into());
+        meta.insert("last_modified".into(), ganymede_api::now_iso().into());
+        let bytes = serde_json::to_vec(&Value::Object(ws)).unwrap();
+        write_atomic(&lab.workspace_path(&id), &bytes)?;
+        Ok(StatusCode::NO_CONTENT)
+    })
+    .await
 }
 
 async fn delete_workspace(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> HttpResult<StatusCode> {
-    let lab = lab_of(&s)?;
-    match std::fs::remove_file(lab.workspace_path(&id)) {
-        Ok(()) => Ok(StatusCode::NO_CONTENT),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            Err(HttpError(404, format!("workspace {id} not found")))
+    crate::routes::blocking(move || {
+        let lab = lab_of(&s)?;
+        match std::fs::remove_file(lab.workspace_path(&id)) {
+            Ok(()) => Ok(StatusCode::NO_CONTENT),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(HttpError(404, format!("workspace {id} not found")))
+            }
+            Err(e) => Err(HttpError(500, e.to_string())),
         }
-        Err(e) => Err(HttpError(500, e.to_string())),
-    }
+    })
+    .await
 }
 
 // ----- translations, listings, plugins, licenses -----------------------------
@@ -599,27 +620,30 @@ async fn licenses(
     State(s): State<AppState>,
     Query(q): Query<LicensesQuery>,
 ) -> HttpResult<Json<Value>> {
-    let lab = lab_of(&s)?;
-    if q.format.as_deref().unwrap_or("json") != "json" {
-        return Err(HttpError(400, "only format=json is supported".into()));
-    }
-    let full = matches!(q.full_text.as_deref(), Some("true" | "1"));
-    let mut packages = read_json(&lab.static_dir.join("third-party-licenses.json"))
-        .and_then(|v| v.get("packages").cloned())
-        .unwrap_or_else(|| json!([]));
-    if !full {
-        if let Some(list) = packages.as_array_mut() {
-            for p in list {
-                if let Some(o) = p.as_object_mut() {
-                    o.remove("extractedText");
+    crate::routes::blocking(move || {
+        let lab = lab_of(&s)?;
+        if q.format.as_deref().unwrap_or("json") != "json" {
+            return Err(HttpError(400, "only format=json is supported".into()));
+        }
+        let full = matches!(q.full_text.as_deref(), Some("true" | "1"));
+        let mut packages = read_json(&lab.static_dir.join("third-party-licenses.json"))
+            .and_then(|v| v.get("packages").cloned())
+            .unwrap_or_else(|| json!([]));
+        if !full {
+            if let Some(list) = packages.as_array_mut() {
+                for p in list {
+                    if let Some(o) = p.as_object_mut() {
+                        o.remove("extractedText");
+                    }
                 }
             }
         }
-    }
-    let app_pkg = read_json(&lab.static_dir.join("package.json"))
-        .and_then(|p| p.get("name").and_then(Value::as_str).map(String::from))
-        .unwrap_or_else(|| lab.app_name.clone());
-    Ok(Json(json!({"bundles": {app_pkg: {"packages": packages}}})))
+        let app_pkg = read_json(&lab.static_dir.join("package.json"))
+            .and_then(|p| p.get("name").and_then(Value::as_str).map(String::from))
+            .unwrap_or_else(|| lab.app_name.clone());
+        Ok(Json(json!({"bundles": {app_pkg: {"packages": packages}}})))
+    })
+    .await
 }
 
 // ----- helpers --------------------------------------------------------------
@@ -633,7 +657,7 @@ fn safe_segments(p: &str) -> bool {
     !p.contains('\\') && p.split('/').all(|s| !s.is_empty() && s != "." && s != "..")
 }
 
-fn write_atomic(path: &FsPath, bytes: &[u8]) -> HttpResult<()> {
+pub(crate) fn write_atomic(path: &FsPath, bytes: &[u8]) -> HttpResult<()> {
     let io = |e: std::io::Error| HttpError(500, format!("writing {}: {e}", path.display()));
     let dir = path
         .parent()

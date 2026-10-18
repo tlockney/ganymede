@@ -29,11 +29,18 @@ pub struct Kernelspec {
     #[serde(skip)]
     pub resource_dir: PathBuf,
     pub argv: Vec<String>,
+    /// Defaults to `""` when absent, as in `jupyter_client.KernelSpec`.
+    #[serde(default)]
     pub display_name: String,
+    #[serde(default)]
     pub language: String,
     #[serde(default)]
     pub interrupt_mode: InterruptMode,
-    #[serde(default)]
+    /// `jupyter_client` keeps `env` as a loose dict. Numbers and booleans
+    /// are stringified (`true`/`false`, JSON number text); other non-string
+    /// values (null, arrays, objects) are skipped with a warning rather
+    /// than failing the whole spec.
+    #[serde(default, deserialize_with = "deserialize_env")]
     pub env: BTreeMap<String, String>,
     /// Free-form. cdp-kernel puts `runtime`, `debugger`, and its version
     /// here; a capability manifest belongs here too. Passed through.
@@ -41,6 +48,34 @@ pub struct Kernelspec {
     pub metadata: Map<String, Value>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+fn deserialize_env<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<BTreeMap<String, String>, D::Error> {
+    let raw = Option::<Map<String, Value>>::deserialize(d)?.unwrap_or_default();
+    let mut env = BTreeMap::new();
+    for (k, v) in raw {
+        let v = match v {
+            Value::String(s) => s,
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            other => {
+                tracing::warn!("kernelspec env {k:?}: ignoring non-string value {other}");
+                continue;
+            }
+        };
+        env.insert(k, v);
+    }
+    Ok(env)
+}
+
+/// `jupyter_client.kernelspec._is_valid_kernel_name`: `[a-z0-9._-]+`.
+fn is_valid_kernel_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
 }
 
 impl Kernelspec {
@@ -58,9 +93,11 @@ impl Kernelspec {
                 reason: "argv is empty".into(),
             });
         }
+        // Clients see the lowercased directory name, as `_list_kernels_in`
+        // reports it.
         spec.name = dir
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
+            .map(|n| n.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_default();
         spec.resource_dir = dir.to_path_buf();
         Ok(spec)
@@ -130,6 +167,17 @@ impl KernelspecSource for FsKernelspecs {
                 .collect();
             entries.sort();
             for path in entries {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_ascii_lowercase())
+                    .unwrap_or_default();
+                if !is_valid_kernel_name(&name) {
+                    tracing::warn!(
+                        "skipping kernelspec at {}: name must match [a-z0-9._-]+",
+                        path.display()
+                    );
+                    continue;
+                }
                 match Kernelspec::from_dir(&path) {
                     Ok(spec) => {
                         if seen.insert(spec.name.to_ascii_lowercase()) {
@@ -227,11 +275,7 @@ pub fn install(
             .unwrap_or_default(),
     }
     .to_ascii_lowercase();
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-    {
+    if !is_valid_kernel_name(&name) {
         return Err(Error::InvalidKernelspec {
             path: source.to_path_buf(),
             reason: format!("invalid kernelspec name {name:?}: use letters, digits, '.', '_', '-'"),
@@ -264,7 +308,10 @@ fn copy_dir(from: &Path, to: &Path) -> Result<()> {
     for entry in std::fs::read_dir(from)? {
         let entry = entry?;
         let target = to.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
+        // `metadata` follows symlinks, so a symlinked subdirectory is
+        // copied as a directory (like `shutil.copytree`'s default copy of
+        // its contents) instead of failing in `fs::copy`.
+        if std::fs::metadata(entry.path())?.is_dir() {
             copy_dir(&entry.path(), &target)?;
         } else {
             std::fs::copy(entry.path(), target)?;
@@ -343,5 +390,77 @@ mod tests {
         assert_eq!(specs.get("my-kernel").unwrap().display_name, "K");
         assert_eq!(remove(&specs, "MY-KERNEL").unwrap(), dest);
         assert!(specs.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn argv_only_spec_is_valid_with_empty_defaults() {
+        let a = tempfile::tempdir().unwrap();
+        write_spec(a.path(), "bare", r#"{"argv":["k","{connection_file}"]}"#);
+        let spec = FsKernelspecs::with_roots(vec![a.path().into()])
+            .get("bare")
+            .unwrap();
+        assert_eq!(spec.display_name, "");
+        assert_eq!(spec.language, "");
+        assert!(spec.env.is_empty());
+    }
+
+    #[test]
+    fn env_stringifies_scalars_and_skips_other_values() {
+        let a = tempfile::tempdir().unwrap();
+        write_spec(
+            a.path(),
+            "k",
+            r#"{"argv":["k"],"env":{"S":"x","N":3,"F":1.5,"B":true,"Z":null,"L":[1],"O":{}}}"#,
+        );
+        let spec = FsKernelspecs::with_roots(vec![a.path().into()])
+            .get("k")
+            .unwrap();
+        let env: Vec<_> = spec
+            .env
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(
+            env,
+            vec![("B", "true"), ("F", "1.5"), ("N", "3"), ("S", "x")]
+        );
+
+        write_spec(a.path(), "nullenv", r#"{"argv":["k"],"env":null}"#);
+        let src = FsKernelspecs::with_roots(vec![a.path().into()]);
+        assert!(src.get("nullenv").unwrap().env.is_empty());
+    }
+
+    #[test]
+    fn names_are_lowercased_and_invalid_names_skipped() {
+        let a = tempfile::tempdir().unwrap();
+        let json = r#"{"argv":["k"]}"#;
+        write_spec(a.path(), "MyKernel", json);
+        write_spec(a.path(), "has space", json);
+        write_spec(a.path(), "ünicode", json);
+        write_spec(a.path(), "ok.v1_x-2", json);
+        let names: Vec<_> = FsKernelspecs::with_roots(vec![a.path().into()])
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(names, vec!["mykernel", "ok.v1_x-2"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_follows_symlinked_subdirectories() {
+        let src = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let shared = src.path().join("shared");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(shared.join("lib.js"), b"x").unwrap();
+        let spec_dir = src.path().join("k");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("kernel.json"), r#"{"argv":["k"]}"#).unwrap();
+        std::os::unix::fs::symlink(&shared, spec_dir.join("assets")).unwrap();
+        let dest = install(&spec_dir, None, data.path(), false).unwrap();
+        assert!(dest.join("assets").is_dir());
+        assert_eq!(std::fs::read(dest.join("assets/lib.js")).unwrap(), b"x");
     }
 }

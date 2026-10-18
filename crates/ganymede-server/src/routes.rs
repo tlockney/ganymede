@@ -151,25 +151,41 @@ fn read_config(path: &std::path::Path) -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
+/// Run blocking file I/O off the async workers.
+pub(crate) async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> HttpResult<T> + Send + 'static,
+) -> HttpResult<T> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| HttpError(500, e.to_string()))?
+}
+
 async fn get_config(
     State(s): State<AppState>,
     Path(section): Path<String>,
 ) -> HttpResult<Json<Value>> {
-    Ok(Json(read_config(&config_path(&s, &section)?)))
+    let path = config_path(&s, &section)?;
+    Ok(Json(blocking(move || Ok(read_config(&path))).await?))
 }
 
-/// Recursive merge; `null` deletes a key.
+/// Recursive merge; `null` deletes a key. PATCHes are serialized so two
+/// at once cannot lose an update, and the file is replaced atomically so
+/// a crash cannot truncate it.
 async fn patch_config(
     State(s): State<AppState>,
     Path(section): Path<String>,
     LenientJson(update): LenientJson<Value>,
 ) -> HttpResult<Json<Value>> {
+    static PATCH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let path = config_path(&s, &section)?;
-    let mut current = read_config(&path);
-    merge(&mut current, update);
-    let io = |e: std::io::Error| HttpError(500, format!("writing {}: {e}", path.display()));
-    std::fs::create_dir_all(path.parent().unwrap()).map_err(io)?;
-    std::fs::write(&path, serde_json::to_vec_pretty(&current).unwrap()).map_err(io)?;
+    let _serial = PATCH.lock().await;
+    let current = blocking(move || {
+        let mut current = read_config(&path);
+        merge(&mut current, update);
+        crate::lab::write_atomic(&path, &serde_json::to_vec_pretty(&current).unwrap())?;
+        Ok(current)
+    })
+    .await?;
     Ok(Json(current))
 }
 
@@ -210,14 +226,17 @@ async fn status(State(s): State<AppState>) -> Json<StatusModel> {
 async fn kernelspecs(
     State(s): State<AppState>,
 ) -> HttpResult<Json<ganymede_api::KernelspecsModel>> {
-    Ok(Json(s.kernels.kernelspecs()?))
+    // Reads every kernelspec directory.
+    Ok(Json(blocking(move || Ok(s.kernels.kernelspecs()?)).await?))
 }
 
 async fn kernelspec(
     State(s): State<AppState>,
     Path(name): Path<String>,
 ) -> HttpResult<Json<ganymede_api::KernelspecModel>> {
-    Ok(Json(s.kernels.kernelspec(&name)?))
+    Ok(Json(
+        blocking(move || Ok(s.kernels.kernelspec(&name)?)).await?,
+    ))
 }
 
 /// `kernelspecs/{name}/{file}`: logos and other files from the

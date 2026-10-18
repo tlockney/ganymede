@@ -1,0 +1,18 @@
+Third-party notices for Ganymede
+
+Ganymede itself is under the MIT license in LICENSE. The ganymede binary
+statically links the Rust crates below, which are distributed under the
+following licenses. SQLite, compiled in through libsqlite3-sys, is in the
+public domain. `ganymede lab install` downloads JupyterLab's frontend
+(BSD-3-Clause) from PyPI when run; it is not part of this archive.
+{{#each licenses}}
+
+--------------------------------------------------------------------------------
+
+{{{name}}} ({{{id}}}), used by:
+{{#each used_by}}
+  {{crate.name}} {{crate.version}}
+{{/each}}
+
+{{{text}}}
+{{/each}}

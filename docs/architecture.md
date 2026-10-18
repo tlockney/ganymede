@@ -101,7 +101,7 @@ Lower crates know nothing of the ones above them.
 | `ganymede-exec` | kernel-host, nbformat | Runs a notebook with nbclient's semantics. |
 | `ganymede-engine` | kernel-host, exec | The library to embed: find kernelspecs, start or attach to kernels, execute with streaming output, run notebooks. |
 | `ganymede-contents` | nbformat | The contents model over a filesystem. |
-| `ganymede-api` | kernel-host | Kernel and session managers, response models, the per-client bridge, idle culling. No HTTP. |
+| `ganymede-api` | kernel-host, contents | Kernel and session managers, response models, the per-client bridge, idle culling. No HTTP. Contents path validation confines kernel working directories to the root. |
 | `ganymede-server` | api, contents | The HTTP and websocket server. |
 | `ganymede-cli` | engine, server | The `ganymede` binary. |
 

@@ -1,10 +1,12 @@
 //! Server configuration: a TOML file, overridden by command line flags.
+//! Unknown keys are an error, so a misspelt `token` cannot start a server
+//! with a random token.
 
 use serde::Deserialize;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub ip: String,
     pub port: u16,
@@ -47,7 +49,11 @@ pub struct Config {
     pub default_kernel: Option<String>,
     /// Shut down kernels idle this long with no clients. 0 disables.
     pub cull_idle_secs: u64,
+    /// Seconds a new kernel has to answer.
     pub startup_timeout_secs: u64,
+    /// Discard kernel processes' own stdout and stderr (not cell output,
+    /// which reaches clients over iopub). Otherwise both go to stderr.
+    pub quiet: bool,
     pub allow_origins: Vec<String>,
     /// Accept any `Host` header. Unset, it is on unless `ip` is a loopback
     /// address, as in `jupyter_server`.
@@ -79,6 +85,7 @@ impl Default for Config {
             default_kernel: None,
             cull_idle_secs: 0,
             startup_timeout_secs: 60,
+            quiet: false,
             allow_origins: vec![],
             allow_remote_access: None,
             local_hostnames: vec!["localhost".into()],
@@ -115,6 +122,33 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::Config;
+
+    #[test]
+    fn toml_sets_keys_and_defaults_the_rest() {
+        let cfg = Config::from_toml(
+            "port = 0\ntoken = \"x\"\ncull_idle_secs = 30\nallow_origins = [\"https://a\"]\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.port, 0);
+        assert_eq!(cfg.token.as_deref(), Some("x"));
+        assert_eq!(cfg.cull_idle_secs, 30);
+        assert_eq!(cfg.allow_origins, ["https://a"]);
+        assert_eq!(cfg.ip, "127.0.0.1");
+        assert_eq!(cfg.startup_timeout_secs, 60);
+        assert!(!cfg.quiet);
+    }
+
+    #[test]
+    fn unknown_keys_are_rejected() {
+        let err = Config::from_toml("port = 0\ntokn = \"x\"\n").unwrap_err();
+        assert!(err.to_string().contains("tokn"), "{err}");
+        assert!(Config::from_toml("cull_idle_sec = 30").is_err());
+    }
+
+    #[test]
+    fn wrong_types_are_rejected() {
+        assert!(Config::from_toml("port = \"8888\"").is_err());
+    }
 
     #[test]
     fn remote_access_defaults_to_whether_ip_is_loopback() {
