@@ -141,13 +141,13 @@ impl KernelSession {
             let weak = Arc::downgrade(&inner);
             let mut alive = inner.alive.subscribe();
             tokio::spawn(async move {
-                tokio::select! {
-                    _ = p.wait() => {
-                        if let Some(inner) = weak.upgrade() {
-                            inner.mark_dead();
-                        }
-                    }
-                    _ = alive.wait_for(|a| !*a) => {}
+                let exited = tokio::select! {
+                    _ = p.wait() => true,
+                    _ = alive.wait_for(|a| !*a) => false,
+                };
+                if let Some(inner) = weak.upgrade().filter(|_| exited) {
+                    inner.linger_for_last_replies().await;
+                    inner.mark_dead();
                 }
             });
         }
@@ -267,29 +267,62 @@ impl KernelSession {
 
     /// The startup handshake. Returns the kernel's info once shell and
     /// control both answer and iopub has delivered at least one message.
+    ///
+    /// Each unanswered `kernel_info_request` waits longer than the last
+    /// (0.5 s, doubling to 4 s) before another is sent. A kernel that
+    /// answers on shell only once its runtime is up, on a serial loop
+    /// (cdp-kernel), otherwise collects a queue of them during a slow
+    /// start and answers each with a busy/idle pair.
     pub async fn nudge(&self, timeout: Duration) -> Result<content::KernelInfoReply> {
+        const FIRST: Duration = Duration::from_millis(500);
+        const LONGEST: Duration = Duration::from_secs(4);
         let deadline = tokio::time::Instant::now() + timeout;
         let mut shell_info: Option<(content::KernelInfoReply, serde_json::Value)> = None;
         let mut control_ok = false;
+        let (mut shell_wait, mut control_wait) = (FIRST, FIRST);
         while tokio::time::Instant::now() < deadline {
-            let step = Duration::from_millis(500);
+            let left = deadline - tokio::time::Instant::now();
             let req = content::KernelInfoRequest::default();
             // Every request makes the kernel publish status on iopub, so
             // keep asking until the subscription has caught one: the SUB
             // socket can connect after shell and control have answered.
-            if shell_info.is_none() || !self.inner.iopub_seen.load(Ordering::SeqCst) {
+            let ask_shell = shell_info.is_none() || !self.inner.iopub_seen.load(Ordering::SeqCst);
+            let shell = async {
+                if !ask_shell {
+                    return None;
+                }
                 let m = self.message("kernel_info_request", &req);
-                if let Ok(exec) = self.request(Channel::Shell, m, false, step).await {
+                Some(
+                    self.request(Channel::Shell, m, false, shell_wait.min(left))
+                        .await,
+                )
+            };
+            let control = async {
+                if control_ok {
+                    return None;
+                }
+                let m = self.message("kernel_info_request", &req);
+                Some(
+                    self.request(Channel::Control, m, false, control_wait.min(left))
+                        .await,
+                )
+            };
+            let (shell, control) = tokio::join!(shell, control);
+            match shell {
+                Some(Ok(exec)) => {
                     shell_info = exec
                         .reply
                         .content_as()
                         .ok()
                         .map(|info| (info, exec.reply.content.clone()));
                 }
+                Some(Err(_)) => shell_wait = (shell_wait * 2).min(LONGEST),
+                None => {}
             }
-            if !control_ok {
-                let m = self.message("kernel_info_request", &req);
-                control_ok = self.request(Channel::Control, m, false, step).await.is_ok();
+            match control {
+                Some(Ok(_)) => control_ok = true,
+                Some(Err(_)) => control_wait = (control_wait * 2).min(LONGEST),
+                None => {}
             }
             if let (Some((info, json)), true, true) = (
                 &shell_info,
@@ -422,6 +455,19 @@ impl Drop for PendingGuard<'_> {
 }
 
 impl Inner {
+    /// After the process exits, give requests still waiting up to
+    /// [`EXIT_LINGER`] to get their replies: a kernel that answers and
+    /// then exits (a `shutdown_request` on shell, a cell that ends the
+    /// process) sent them before exiting, but they can still be on their
+    /// way through the sockets when the exit is seen. A `jupyter_client`
+    /// client reads them off the socket regardless.
+    async fn linger_for_last_replies(&self) {
+        let deadline = tokio::time::Instant::now() + EXIT_LINGER;
+        while !self.pending.lock().unwrap().is_empty() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     fn mark_dead(&self) {
         if self.alive.send_replace(false) {
             // Dropping the senders fails every waiting request.
@@ -435,6 +481,9 @@ impl Inner {
         }
     }
 }
+
+/// How long requests may still get replies after the kernel exits.
+const EXIT_LINGER: Duration = Duration::from_millis(500);
 
 /// Heartbeat a kernel with no process to wait on, and mark it dead after
 /// `hb.misses` missed beats in a row.
@@ -556,6 +605,24 @@ mod tests {
         );
         assert!(s.kernel_info().is_some());
         assert_eq!(s.execution_state(), ExecutionState::Idle);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn nudge_backs_off_while_shell_is_slow_to_start() {
+        let (host, kernel) = in_process_pair(64);
+        let (_k, asked) = FakeKernel::spawn_slow_shell(
+            kernel,
+            ReplyOrder::ReplyThenIdle,
+            Duration::from_secs(30),
+        );
+        let s = KernelSession::start(host, None);
+        let info = s.nudge(Duration::from_secs(60)).await.unwrap();
+        assert_eq!(info.implementation, "fake");
+        // Re-sending every 500 ms queued ~50 requests; backing off to 4 s
+        // queues about ten.
+        let n = asked.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(n <= 11, "{n} kernel_info_requests queued on shell");
+        assert_eq!(s.pending_len(), 0);
     }
 
     #[tokio::test]
@@ -698,6 +765,154 @@ mod tests {
         assert!(!s.is_alive());
     }
 
+    #[tokio::test]
+    async fn exit_mid_cell_after_output_fails_the_request() {
+        let (s, _) = boot(ReplyOrder::ReplyThenIdle).await;
+        let mut sub = s.subscribe();
+        let r = s
+            .execute(content::ExecuteRequest::new("exit"), Duration::from_secs(5))
+            .await;
+        assert!(matches!(r, Err(Error::KernelDied)), "{:?}", r.err());
+        // What it printed before vanishing still reached subscribers.
+        let mut texts = Vec::new();
+        while let Ok((_, m)) = sub.try_recv() {
+            if m.msg_type() == "stream" {
+                texts.push(m.content["text"].clone());
+            }
+        }
+        assert_eq!(texts, ["partial\n"]);
+        assert!(!s.is_alive());
+    }
+
+    #[tokio::test]
+    async fn displays_updates_and_clears_are_collected_in_order() {
+        let (s, _) = boot(ReplyOrder::IdleThenReply).await;
+        let e = s
+            .execute(
+                content::ExecuteRequest::new("display"),
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        let types: Vec<_> = e.outputs.iter().map(|m| m.msg_type()).collect();
+        assert_eq!(
+            types,
+            [
+                "execute_input",
+                "display_data",
+                "update_display_data",
+                "clear_output",
+                "stream"
+            ]
+        );
+        assert_eq!(e.outputs[2].content["transient"]["display_id"], "d1");
+    }
+
+    #[tokio::test]
+    async fn queued_executes_are_aborted_after_an_error() {
+        let (s, _) = boot(ReplyOrder::ReplyThenIdle).await;
+        let req =
+            |code: &str| s.execute(content::ExecuteRequest::new(code), Duration::from_secs(5));
+        let (a, b, c) = tokio::join!(req("raise"), req("after"), req("later"));
+        let status = |e: &Execution| e.reply.content["status"].clone();
+        assert_eq!(status(&a.unwrap()), "error");
+        assert_eq!(status(&b.unwrap()), "aborted");
+        assert_eq!(status(&c.unwrap()), "aborted");
+        // Without stop_on_error the next cell runs.
+        let mut raise = content::ExecuteRequest::new("raise");
+        raise.stop_on_error = false;
+        let (a, b) = tokio::join!(s.execute(raise, Duration::from_secs(5)), req("after"));
+        assert_eq!(status(&a.unwrap()), "error");
+        assert_eq!(status(&b.unwrap()), "ok");
+        assert_eq!(s.execution_state(), ExecutionState::Idle);
+    }
+
+    #[tokio::test]
+    async fn comms_echo_binary_buffers_and_unknown_targets_close() {
+        let (s, _) = boot(ReplyOrder::ReplyThenIdle).await;
+        let mut sub = s.subscribe();
+        let send = |msg_type: &str, content: serde_json::Value| {
+            let m = s.message(msg_type, &content);
+            s.send(Channel::Shell, m)
+        };
+        async fn next(
+            sub: &mut broadcast::Receiver<(Channel, Message)>,
+            msg_type: &str,
+        ) -> Message {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let (_, m) = sub.recv().await.unwrap();
+                    if m.msg_type() == msg_type {
+                        return m;
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("no {msg_type}"))
+        }
+
+        send(
+            "comm_open",
+            serde_json::json!({"comm_id": "nobody", "target_name": "nobody", "data": {}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            next(&mut sub, "comm_close").await.content["comm_id"],
+            "nobody"
+        );
+
+        send(
+            "comm_open",
+            serde_json::json!({"comm_id": "c1", "target_name": "echo", "data": {}}),
+        )
+        .await
+        .unwrap();
+        let bytes: Vec<u8> = (0..=255).collect();
+        let m = s
+            .message(
+                "comm_msg",
+                &serde_json::json!({"comm_id": "c1", "data": {"x": 1}}),
+            )
+            .with_buffers(vec![bytes.clone().into(), Vec::new().into()]);
+        s.send(Channel::Shell, m).await.unwrap();
+        let echo = next(&mut sub, "comm_msg").await;
+        assert_eq!(echo.content["data"], serde_json::json!({"x": 1}));
+        assert_eq!(echo.buffers.len(), 2);
+        assert_eq!(echo.buffers[0].as_ref(), &bytes[..]);
+        assert!(echo.buffers[1].is_empty());
+
+        let info = |target: Option<&str>| {
+            let c = match target {
+                Some(t) => serde_json::json!({ "target_name": t }),
+                None => serde_json::json!({}),
+            };
+            let m = s.message("comm_info_request", &c);
+            s.request(Channel::Shell, m, false, Duration::from_secs(5))
+        };
+        let comms = info(None).await.unwrap().reply.content["comms"].clone();
+        assert_eq!(comms, serde_json::json!({"c1": {"target_name": "echo"}}));
+        let comms = info(Some("other")).await.unwrap().reply.content["comms"].clone();
+        assert_eq!(comms, serde_json::json!({}));
+        send(
+            "comm_close",
+            serde_json::json!({"comm_id": "c1", "data": {}}),
+        )
+        .await
+        .unwrap();
+        let comms = info(None).await.unwrap().reply.content["comms"].clone();
+        assert_eq!(comms, serde_json::json!({}));
+
+        // A kernel-side open reaches subscribers.
+        s.execute(content::ExecuteRequest::new("comm"), Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(
+            next(&mut sub, "comm_open").await.content["target_name"],
+            "fake.target"
+        );
+    }
+
     /// A transport whose kernel answers heartbeats while `beating` is true
     /// and never closes its incoming channel, like a ZMQ SUB socket waiting
     /// on a dead kernel.
@@ -838,6 +1053,44 @@ mod tests {
             interrupt_mode: InterruptMode::Signal,
         };
         (KernelSession::start(transport, Some(&launched)), process)
+    }
+
+    #[tokio::test]
+    async fn a_reply_sent_just_before_exit_still_arrives() {
+        let (host, mut kernel) = in_process_pair(8);
+        let process = Arc::new(FakeProcess {
+            calls: Mutex::new(Vec::new()),
+            exits_on: "",
+            exit: watch::channel(false).0,
+        });
+        let launched = LaunchedKernel {
+            connection: ganymede_protocol::ConnectionInfo::new_tcp("127.0.0.1", [1, 2, 3, 4, 5]),
+            connection_file: None,
+            process: process.clone(),
+            interrupt_mode: InterruptMode::Signal,
+        };
+        let s = KernelSession::start(host, Some(&launched));
+        let p = process.clone();
+        tokio::spawn(async move {
+            let (ch, req) = kernel.incoming.recv().await.unwrap();
+            // The process is seen to exit before its reply comes through.
+            p.exit.send_replace(true);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let reply =
+                Message::reply_to(&req, "shutdown_reply", &serde_json::json!({"status": "ok"}));
+            let _ = kernel.outgoing.send((ch, reply)).await;
+            // Keep the kernel side open.
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        let m = s.message("shutdown_request", &serde_json::json!({"restart": false}));
+        let exec = s
+            .request(Channel::Shell, m, false, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(exec.reply.msg_type(), "shutdown_reply");
+        tokio::time::timeout(Duration::from_secs(2), s.dead())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

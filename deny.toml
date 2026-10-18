@@ -1,0 +1,23 @@
+# cargo deny check advisories bans sources (ci.yml, the `audit` job).
+# Licenses are checked by cargo-about against about.toml, which also
+# writes the third-party notices, so that list lives in one place.
+
+[graph]
+all-features = true
+
+[advisories]
+# Every RustSec advisory against a crate in Cargo.lock fails the job,
+# unmaintained and unsound ones included. Ignore one only with a reason
+# and a link here.
+ignore = []
+
+[bans]
+# Two versions of one crate are worth knowing about but rarely worth a
+# fork: shown as warnings, not failures.
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -10,12 +10,11 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .with_writer(std::io::stderr)
-        .init();
-    let cfg = Cli::parse().serve.into_config()?;
+    let serve = Cli::parse().serve;
+    ganymede_server::serve::init_logging(
+        &ganymede_server::serve::log_filter(tracing::Level::INFO),
+        Some(&serve),
+    )?;
+    let cfg = serve.into_config()?;
     ganymede_server::serve::run(cfg).await
 }

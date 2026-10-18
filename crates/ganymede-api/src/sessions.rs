@@ -474,6 +474,107 @@ mod tests {
         );
     }
 
+    /// Messages for `c` until none arrives for 300 ms.
+    async fn drain(c: &mut crate::ClientConnection) -> Vec<(Channel, Message)> {
+        let mut got = vec![];
+        while let Ok(Some(m)) = tokio::time::timeout(Duration::from_millis(300), c.recv()).await {
+            got.push(m);
+        }
+        got
+    }
+
+    #[tokio::test]
+    async fn a_dropped_session_gets_its_buffered_output_on_reconnect() {
+        let m = manager(None);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let mut a = m.connect_client_as(&k.id, Some("tab-1")).unwrap();
+        let exec = Message::new(
+            "execute_request",
+            "tab-1",
+            "u",
+            &ExecuteRequest::new("sleep 200"),
+        );
+        a.send(Channel::Shell, exec.clone()).await.unwrap();
+        // The socket drops while the cell runs.
+        drop(a);
+        assert_eq!(m.model(&k.id).unwrap().connections, 0);
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        let mut b = m.connect_client_as(&k.id, Some("tab-1")).unwrap();
+        let got = drain(&mut b).await;
+        let types: Vec<_> = got
+            .iter()
+            .filter(|(_, msg)| msg.parent_id() == Some(exec.msg_id()))
+            .map(|(ch, msg)| (*ch, msg.msg_type().to_string()))
+            .collect();
+        assert!(
+            types.contains(&(Channel::Shell, "execute_reply".into())),
+            "{types:?}"
+        );
+        assert!(
+            types.contains(&(Channel::IoPub, "execute_input".into())),
+            "{types:?}"
+        );
+        // Replayed once: a second reconnect has nothing new.
+        drop(b);
+        let mut c = m.connect_client_as(&k.id, Some("tab-1")).unwrap();
+        assert!(drain(&mut c).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn another_session_discards_the_buffer() {
+        let m = manager(None);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let mut a = m.connect_client_as(&k.id, Some("tab-1")).unwrap();
+        a.send(
+            Channel::Shell,
+            Message::new("execute_request", "tab-1", "u", &ExecuteRequest::new("hi")),
+        )
+        .await
+        .unwrap();
+        drop(a);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut other = m.connect_client_as(&k.id, Some("tab-2")).unwrap();
+        assert!(drain(&mut other).await.is_empty());
+        drop(other);
+        let mut back = m.connect_client_as(&k.id, Some("tab-1")).unwrap();
+        assert!(
+            drain(&mut back).await.is_empty(),
+            "the buffer was discarded"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_connection_replaces_a_stale_one_with_its_session() {
+        let m = manager(None);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let mut old = m.connect_client_as(&k.id, Some("tab-1")).unwrap();
+        let _other = m.connect_client_as(&k.id, Some("tab-2")).unwrap();
+        let _new = m.connect_client_as(&k.id, Some("tab-1")).unwrap();
+        let r = tokio::time::timeout(Duration::from_secs(1), old.recv()).await;
+        assert!(matches!(r, Ok(None)));
+        assert!(old.replaced());
+        drop(old);
+        assert_eq!(m.model(&k.id).unwrap().connections, 2);
+    }
+
+    #[tokio::test]
+    async fn no_buffer_without_a_session_id_or_after_shutdown() {
+        let m = manager(None);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let a = m.connect_client(&k.id).unwrap();
+        drop(a);
+        m.restart(&k.id).await.unwrap();
+        let mut b = m.connect_client(&k.id).unwrap();
+        assert!(drain(&mut b).await.is_empty());
+        drop(b);
+
+        let a = m.connect_client_as(&k.id, Some("tab-1")).unwrap();
+        drop(a);
+        m.shutdown(&k.id).await.unwrap();
+        assert!(m.connect_client_as(&k.id, Some("tab-1")).is_err());
+    }
+
     #[tokio::test]
     async fn restart_announces_restarting_to_connected_clients() {
         let m = manager(None);

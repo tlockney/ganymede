@@ -11,7 +11,7 @@ use ganymede_kernel_host::{
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 use tokio::sync::{broadcast, watch};
@@ -83,9 +83,9 @@ impl Default for KernelManagerConfig {
     }
 }
 
-/// One kernel the manager owns. The `hub` fans every message out to
-/// clients and outlives restarts, so a client's subscription survives
-/// the session being replaced.
+/// One kernel the manager owns. `clients` queues every message for each
+/// client and outlives restarts, so a client's connection survives the
+/// session being replaced.
 pub struct RunningKernel {
     pub id: String,
     pub name: String,
@@ -95,10 +95,10 @@ pub struct RunningKernel {
     cwd: Option<PathBuf>,
     session: RwLock<KernelSession>,
     launched: Mutex<Option<LaunchedKernel>>,
-    hub: broadcast::Sender<(Channel, Message)>,
+    pub(crate) clients: Mutex<crate::bridge::Clients>,
     /// False once the manager has shut the kernel down. Clients hold an
-    /// `Arc` to this struct, so the hub alone can never close; they watch
-    /// this instead.
+    /// `Arc` to this struct, so their queues never close; they watch this
+    /// instead.
     alive: watch::Sender<bool>,
     /// Set while a start or restart replaces the session, so the death of
     /// a session being replaced is not reported as the kernel's.
@@ -107,7 +107,6 @@ pub struct RunningKernel {
     lifecycle: tokio::sync::Mutex<()>,
     last_activity: Mutex<String>,
     execution_state: Mutex<String>,
-    connections: AtomicUsize,
 }
 
 impl std::fmt::Debug for RunningKernel {
@@ -130,12 +129,8 @@ impl RunningKernel {
             name: self.name.clone(),
             last_activity: self.last_activity.lock().unwrap().clone(),
             execution_state: self.execution_state.lock().unwrap().clone(),
-            connections: self.connections.load(Ordering::SeqCst),
+            connections: self.clients.lock().unwrap().connections(),
         }
-    }
-
-    pub fn subscribe(&self) -> broadcast::Receiver<(Channel, Message)> {
-        self.hub.subscribe()
     }
 
     pub fn is_alive(&self) -> bool {
@@ -146,14 +141,6 @@ impl RunningKernel {
         self.alive.subscribe()
     }
 
-    pub(crate) fn add_connection(&self) {
-        self.connections.fetch_add(1, Ordering::SeqCst);
-    }
-
-    pub(crate) fn remove_connection(&self) {
-        self.connections.fetch_sub(1, Ordering::SeqCst);
-    }
-
     pub fn touch(&self) {
         *self.last_activity.lock().unwrap() = now_iso();
     }
@@ -162,7 +149,7 @@ impl RunningKernel {
         *self.execution_state.lock().unwrap() = state.to_string();
     }
 
-    /// Pump one session's traffic into the hub, tracking activity, until
+    /// Pump one session's traffic to the clients, tracking activity, until
     /// the session dies. The task holds neither the kernel nor the session,
     /// so a kernel that is shut down and dropped is freed.
     fn pump(self: &Arc<Self>, session: &KernelSession, kernels: Weak<KernelMap>) {
@@ -181,7 +168,7 @@ impl RunningKernel {
                 match got {
                     Ok((channel, msg)) => k.forward(channel, msg),
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(kernel = %k.id, "hub pump lagged by {n} messages")
+                        tracing::warn!(kernel = %k.id, "pump lagged by {n} messages; clients missed them")
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
@@ -210,7 +197,10 @@ impl RunningKernel {
                 self.set_state(s);
             }
         }
-        let _ = self.hub.send((channel, msg));
+        self.clients
+            .lock()
+            .unwrap()
+            .dispatch(&self.id, channel, &msg);
     }
 
     /// The session died. Unless the manager shut it down or a start or
@@ -238,13 +228,17 @@ impl RunningKernel {
         self.set_state("dead");
         self.announce("status", serde_json::json!({"execution_state": "dead"}));
         self.alive.send_replace(false);
+        self.clients.lock().unwrap().discard_parked(&self.id);
         self.launched.lock().unwrap().take();
     }
 
     /// A message the server itself injects, such as `status: restarting`.
     fn announce(&self, msg_type: &str, content: serde_json::Value) {
         let msg = Message::new(msg_type, "server", "server", &content);
-        let _ = self.hub.send((Channel::IoPub, msg));
+        self.clients
+            .lock()
+            .unwrap()
+            .dispatch(&self.id, Channel::IoPub, &msg);
     }
 }
 
@@ -355,7 +349,6 @@ impl KernelManager {
             None => self.config.root_dir.clone(),
         });
         let (session, launched) = self.launch(&spec, cwd.clone(), &id).await?;
-        let (hub, _) = broadcast::channel(4096);
         let kernel = Arc::new(RunningKernel {
             id: id.clone(),
             name: spec.name.clone(),
@@ -364,13 +357,12 @@ impl KernelManager {
             cwd,
             session: RwLock::new(session.clone()),
             launched: Mutex::new(Some(launched)),
-            hub,
+            clients: Mutex::default(),
             alive: watch::channel(true).0,
             booting: AtomicBool::new(true),
             lifecycle: tokio::sync::Mutex::new(()),
             last_activity: Mutex::new(now_iso()),
             execution_state: Mutex::new("starting".into()),
-            connections: AtomicUsize::new(0),
         });
         let _guard = kernel.lifecycle.lock().await;
         kernel.pump(&session, Arc::downgrade(&self.kernels));
@@ -437,7 +429,7 @@ impl KernelManager {
         }
     }
 
-    /// Launch a new session for `kernel` and pump it into the hub.
+    /// Launch a new session for `kernel` and pump it to the clients.
     async fn relaunch(&self, kernel: &Arc<RunningKernel>) -> Result<()> {
         let (session, launched) = self
             .launch(&kernel.spec, kernel.cwd.clone(), &kernel.id)
@@ -472,6 +464,8 @@ impl KernelManager {
                     env: vec![],
                     kernel_id: Some(id.to_string()),
                     quiet: self.config.quiet,
+                    // A server runs many kernels on one stderr.
+                    prefix_output: true,
                 },
             )
             .await?;
@@ -491,6 +485,7 @@ impl KernelManager {
             .await;
         kernel.set_state("dead");
         kernel.alive.send_replace(false);
+        kernel.clients.lock().unwrap().discard_parked(&kernel.id);
         kernel.launched.lock().unwrap().take();
         Ok(result?)
     }
@@ -502,7 +497,7 @@ impl KernelManager {
         Ok(())
     }
 
-    /// Same id, same hub, new process. Clients see `status: restarting`
+    /// Same id, same client queues, new process. Clients see `status: restarting`
     /// as they do from `jupyter_server`.
     /// On failure the kernel is reported dead and removed.
     pub async fn restart(&self, id: &str) -> Result<KernelModel> {
@@ -545,7 +540,7 @@ impl KernelManager {
             .unwrap()
             .values()
             .filter(|k| {
-                k.connections.load(Ordering::SeqCst) == 0
+                k.clients.lock().unwrap().connections() == 0
                     && k.execution_state.lock().unwrap().as_str() == "idle"
             })
             .filter(|k| {
@@ -577,7 +572,7 @@ impl KernelManager {
             .read()
             .unwrap()
             .values()
-            .map(|k| k.connections.load(Ordering::SeqCst))
+            .map(|k| k.clients.lock().unwrap().connections())
             .sum()
     }
 

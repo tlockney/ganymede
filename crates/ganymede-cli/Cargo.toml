@@ -3,6 +3,7 @@ name = "ganymede-cli"
 description = "The `ganymede` command: kernelspecs, running code, a console, executing notebooks, standalone kernels, and the server."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
@@ -20,6 +21,7 @@ ganymede-engine = { path = "../ganymede-engine" }
 ganymede-server = { path = "../ganymede-server" }
 ganymede-contents = { path = "../ganymede-contents", features = ["sqlite"] }
 clap.workspace = true
+clap_complete = "4"
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "signal"] }
 serde_json.workspace = true
 anyhow.workspace = true

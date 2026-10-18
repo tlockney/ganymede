@@ -11,10 +11,16 @@
 //! classified `Framework :: Jupyter`, and its wheel is installed only when
 //! it is classified `Framework :: Jupyter :: JupyterLab :: Extensions`.
 //! That is how `anywidget` brings `jupyterlab_widgets` through
-//! `ipywidgets`, which has no extension of its own. Dependencies are
-//! installed at their latest release; version specifiers are not resolved.
+//! `ipywidgets`, which has no extension of its own. Each dependency is
+//! installed at the newest unyanked release its specifiers allow, and an
+//! installed one is replaced only when it no longer satisfies them.
+//!
+//! An extension is JavaScript that runs in the browser on the server's
+//! origin, with the same access to files and kernels as the user; only
+//! install packages whose publishers you trust.
 
-use super::{agent, download, pick_wheel, pypi_json};
+use super::pypi::{self, Index, Spec};
+use super::Limits;
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
 use ganymede_server::lab::extensions_dir;
@@ -30,7 +36,7 @@ pub const DEFAULTS: &[&str] = &["jupyterlab_widgets", "anywidget"];
 
 /// Under [`extensions_dir`]: one JSON record per installed package, naming
 /// the extension directories it put there.
-const RECORDS: &str = ".packages";
+pub const RECORDS: &str = ".packages";
 const FRAMEWORK: &str = "Framework :: Jupyter";
 const EXTENSIONS: &str = "Framework :: Jupyter :: JupyterLab :: Extensions";
 
@@ -38,28 +44,116 @@ const EXTENSIONS: &str = "Framework :: Jupyter :: JupyterLab :: Extensions";
 pub enum ExtensionCmd {
     /// Install packages' prebuilt extensions from their PyPI wheels, with
     /// the extension packages they depend on.
+    ///
+    /// An extension runs as JavaScript on the server's origin with the
+    /// user's access to files and kernels: install only packages you
+    /// trust. The wheel's SHA-256 is checked against PyPI's listing, which
+    /// catches corruption, not a malicious release.
     Install {
-        #[arg(required = true, value_name = "PACKAGE[==VERSION]")]
+        /// A PyPI project, optionally with PEP 440 version specifiers:
+        /// `anywidget`, `anywidget==0.9.18`, `'anywidget>=0.9,<1'`,
+        /// `anywidget~=0.9.0`. Yanked releases are skipped.
+        #[arg(required = true, value_name = "PACKAGE[SPECIFIERS]")]
         packages: Vec<String>,
         /// Reinstall the named packages if they are already installed, and
         /// let them replace extensions another package installed.
         #[arg(long)]
         force: bool,
+        /// Install only the named packages, not the extensions they depend
+        /// on.
+        #[arg(long)]
+        no_deps: bool,
     },
     /// List installed packages and their extensions.
-    List,
+    List {
+        /// Print a JSON array of `{"name", "version", "extensions",
+        /// "required_by"}` objects instead.
+        #[arg(long)]
+        json: bool,
+    },
     /// Remove packages' extensions. Dependencies installed with them stay.
     Remove {
+        /// Package names, as `ganymede lab extension list` shows them.
         #[arg(required = true)]
         packages: Vec<String>,
     },
+    /// Stop JupyterLab loading extensions or plugins, as `jupyter
+    /// labextension disable` does: recorded in
+    /// `labconfig/page_config.json` under the Jupyter config dir, which
+    /// `ganymede serve` reads on each page load. Any extension can be
+    /// disabled, however it was installed.
+    Disable {
+        /// Extension names (`@scope/name`) or plugin IDs (`name:plugin`).
+        #[arg(required = true)]
+        names: Vec<String>,
+        #[command(flatten)]
+        config: ConfigDir,
+    },
+    /// Undo `disable`.
+    Enable {
+        /// Extension names or plugin IDs.
+        #[arg(required = true)]
+        names: Vec<String>,
+        #[command(flatten)]
+        config: ConfigDir,
+    },
+}
+
+#[derive(clap::Args)]
+pub struct ConfigDir {
+    /// The config dir `ganymede serve --config-dir` uses, if not the
+    /// Jupyter config dir.
+    #[arg(long, value_name = "DIR")]
+    config_dir: Option<PathBuf>,
+}
+
+impl ConfigDir {
+    fn page_config(&self) -> PathBuf {
+        let dir = self
+            .config_dir
+            .clone()
+            .unwrap_or_else(ganymede_engine::host::kernelspec::jupyter_config_dir);
+        ganymede_server::lab::page_config_file(&dir)
+    }
+}
+
+/// The directory extensions are installed in, if there is a data dir.
+pub fn dir() -> Option<PathBuf> {
+    extensions_dir()
 }
 
 pub fn run(cmd: ExtensionCmd) -> Result<ExitCode> {
+    let cmd = match cmd {
+        ExtensionCmd::Disable { names, config } => {
+            return set_disabled(&config.page_config(), &names, true)
+        }
+        ExtensionCmd::Enable { names, config } => {
+            return set_disabled(&config.page_config(), &names, false)
+        }
+        cmd => cmd,
+    };
     let root = root()?;
     match cmd {
-        ExtensionCmd::Install { packages, force } => install(&root, &packages, force)?,
-        ExtensionCmd::List => {
+        ExtensionCmd::Install {
+            packages,
+            force,
+            no_deps,
+        } => install(&root, &packages, force, no_deps)?,
+        ExtensionCmd::List { json: true } => {
+            let all: Vec<Value> = records(&root)
+                .into_iter()
+                .map(|r| {
+                    json!({
+                        "name": r.name,
+                        "version": r.version,
+                        "extensions": r.extensions,
+                        "required_by": r.required_by,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&all)?);
+        }
+        ExtensionCmd::List { json: false } => {
             let all = records(&root);
             if all.is_empty() {
                 eprintln!(
@@ -95,14 +189,57 @@ pub fn run(cmd: ExtensionCmd) -> Result<ExitCode> {
                 eprintln!("removed {} ({})", rec.name, rec.extensions.join(", "));
             }
         }
+        ExtensionCmd::Disable { .. } | ExtensionCmd::Enable { .. } => unreachable!(),
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Sets `disabledExtensions.<name>` in `page_config.json` to `disabled`
+/// for each name, keeping the file's other keys, as `jupyter labextension
+/// disable` and `enable` do.
+fn set_disabled(path: &Path, names: &[String], disabled: bool) -> Result<ExitCode> {
+    let mut config = match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
+            .with_context(|| format!("reading {}", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let Some(obj) = config.as_object_mut() else {
+        bail!("{} is not a JSON object", path.display());
+    };
+    let entry = obj.entry("disabledExtensions").or_insert_with(|| json!({}));
+    // An older JupyterLab wrote a list.
+    if let Value::Array(list) = entry {
+        let map = list
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|n| (n.to_string(), Value::Bool(true)))
+            .collect();
+        *entry = Value::Object(map);
+    }
+    let Some(map) = entry.as_object_mut() else {
+        bail!("disabledExtensions in {} is not an object", path.display());
+    };
+    for n in names {
+        map.insert(n.clone(), Value::Bool(disabled));
+        eprintln!(
+            "{} {n} in {}",
+            if disabled { "disabled" } else { "enabled" },
+            path.display()
+        );
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(&config)?)
+        .with_context(|| format!("writing {}", path.display()))?;
     Ok(ExitCode::SUCCESS)
 }
 
 /// [`DEFAULTS`], skipping those already installed.
 pub fn install_defaults() -> Result<()> {
     let specs: Vec<String> = DEFAULTS.iter().map(|s| s.to_string()).collect();
-    install(&root()?, &specs, false)
+    install(&root()?, &specs, false, false)
 }
 
 fn root() -> Result<PathBuf> {
@@ -113,21 +250,28 @@ fn root() -> Result<PathBuf> {
 /// or not, by `required_by`, which was.
 struct Want {
     name: String,
-    version: Option<String>,
+    specs: Vec<Spec>,
     required_by: Option<String>,
 }
 
-fn install(root: &Path, specs: &[String], force: bool) -> Result<()> {
+impl Want {
+    fn describe(&self) -> String {
+        let specs: Vec<String> = self.specs.iter().map(Spec::to_string).collect();
+        format!("{}{}", self.name, specs.join(","))
+    }
+}
+
+fn install(root: &Path, specs: &[String], force: bool, no_deps: bool) -> Result<()> {
     let mut queue = VecDeque::new();
     for s in specs {
-        let (name, version) = parse_spec(s)?;
+        let (name, specs) = parse_spec(s)?;
         queue.push_back(Want {
             name,
-            version,
+            specs,
             required_by: None,
         });
     }
-    let agent = agent();
+    let index = Index::from_env()?;
     let mut seen = HashSet::new();
     while let Some(want) = queue.pop_front() {
         let key = normalize(&want.name)?;
@@ -136,7 +280,8 @@ fn install(root: &Path, specs: &[String], force: bool) -> Result<()> {
         }
         let named = want.required_by.is_none();
         if let Some(r) = record(root, &key) {
-            let same = want.version.as_ref().is_none_or(|v| *v == r.version);
+            let same = pypi::Version::parse(&r.version)
+                .is_some_and(|v| want.specs.iter().all(|s| s.matches(&v)));
             if !(named && force) && same {
                 if named {
                     eprintln!(
@@ -147,12 +292,16 @@ fn install(root: &Path, specs: &[String], force: bool) -> Result<()> {
                 continue;
             }
         }
-        let Some((api, meta)) = pypi_json(&agent, &want.name, want.version.as_deref())? else {
-            match (named, &want.version) {
-                (true, Some(v)) => bail!("{} {v} is not on PyPI", want.name),
-                (true, None) => bail!("{} is not on PyPI", want.name),
-                (false, _) => continue,
+        let Some((api, meta)) = resolve(&index, &want)? else {
+            if named {
+                bail!("no release of {} on PyPI has a wheel", want.describe());
             }
+            eprintln!(
+                "skipping {}, required by {}: no matching release on PyPI",
+                want.describe(),
+                want.required_by.as_deref().unwrap_or("?")
+            );
+            continue;
         };
         let classifiers: Vec<&str> = meta["info"]["classifiers"]
             .as_array()
@@ -172,7 +321,7 @@ fn install(root: &Path, specs: &[String], force: bool) -> Result<()> {
             .to_string();
         if named || has(EXTENSIONS) {
             let installed = install_wheel(
-                &agent,
+                &index,
                 root,
                 &key,
                 &name,
@@ -185,11 +334,11 @@ fn install(root: &Path, specs: &[String], force: bool) -> Result<()> {
                 bail!("{name} has no prebuilt JupyterLab extension in its wheel");
             }
         }
-        if has(FRAMEWORK) {
-            for dep in requirements(&meta) {
+        if has(FRAMEWORK) && !no_deps {
+            for (dep, specs) in requirements(&meta) {
                 queue.push_back(Want {
                     name: dep,
-                    version: None,
+                    specs,
                     required_by: Some(want.required_by.clone().unwrap_or_else(|| name.clone())),
                 });
             }
@@ -198,12 +347,45 @@ fn install(root: &Path, specs: &[String], force: bool) -> Result<()> {
     Ok(())
 }
 
+/// PyPI's JSON for the newest release that `want` allows, with a pure
+/// wheel and not yanked. `None` when there is none. An exact `==` pin is
+/// fetched directly and refused if yanked.
+fn resolve(index: &Index, want: &Want) -> Result<Option<(String, Value)>> {
+    if let [only] = want.specs.as_slice() {
+        if let Some(v) = only.pinned() {
+            let Some((api, meta)) = index.json(&want.name, Some(v))? else {
+                return Ok(None);
+            };
+            pypi::check_not_yanked(&want.name, &meta)?;
+            return Ok(Some((api, meta)));
+        }
+    }
+    let Some((api, project)) = index.json(&want.name, None)? else {
+        return Ok(None);
+    };
+    // A mirror may leave out `releases`; then only the latest is known.
+    if project.get("releases").is_none() && want.specs.is_empty() {
+        pypi::check_not_yanked(&want.name, &project)?;
+        return Ok(Some((api, project)));
+    }
+    let Some((version, pre)) = pypi::newest_matching(&project, &want.specs) else {
+        return Ok(None);
+    };
+    if pre {
+        eprintln!("note: {version} of {} is a pre-release", want.name);
+    }
+    if project["info"]["version"].as_str() == Some(&version) {
+        return Ok(Some((api, project)));
+    }
+    index.json(&want.name, Some(&version))
+}
+
 /// Downloads the release's wheel, checks it, and moves its extensions
 /// into `root`. False if the wheel has none. Fails, unless `force`, when
 /// that would replace an extension another package installed.
 #[allow(clippy::too_many_arguments)]
 fn install_wheel(
-    agent: &ureq::Agent,
+    index: &Index,
     root: &Path,
     key: &str,
     name: &str,
@@ -213,21 +395,21 @@ fn install_wheel(
     force: bool,
 ) -> Result<bool> {
     let version = meta["info"]["version"].as_str().unwrap_or_default();
-    let (url, sha256) =
-        pick_wheel(meta).with_context(|| format!("no py3-none-any wheel for {name} in {api}"))?;
+    let wheel = pypi::pick_wheel(&meta["urls"])
+        .with_context(|| format!("no py3-none-any wheel for {name} in {api}"))?;
     std::fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
-    eprintln!("downloading {url}");
-    let mut wheel = tempfile::Builder::new()
+    eprintln!(
+        "downloading {name} {version}: {} (sha256 {})",
+        wheel.url, wheel.sha256
+    );
+    let mut file = tempfile::Builder::new()
         .prefix(".download-")
         .tempfile_in(root)?;
-    let got = download(agent, &url, wheel.as_file_mut())?;
-    if got != sha256 {
-        bail!("{url} has sha256 {got}, PyPI lists {sha256}");
-    }
+    index.download(&wheel.url, &wheel.sha256, file.as_file_mut())?;
     let staging = tempfile::Builder::new()
         .prefix(&format!(".{key}-"))
         .tempdir_in(root)?;
-    let extensions = extract(wheel.reopen()?, staging.path())?;
+    let extensions = extract(file.reopen()?, staging.path(), &Limits::default())?;
     if extensions.is_empty() {
         return Ok(false);
     }
@@ -291,9 +473,11 @@ fn check_replacements(name: &str, others: &[Record], extensions: &BTreeSet<Strin
 
 /// Unpacks `*.data/data/share/jupyter/labextensions/**` from a wheel into
 /// `dest` and returns the extension names found: `name` or `@scope/name`.
-/// Fails on a name [`valid_extension`] rejects.
-pub fn extract(wheel: impl Read + Seek, dest: &Path) -> Result<BTreeSet<String>> {
+/// Fails on a name [`valid_extension`] rejects, or past `limits`.
+pub fn extract(wheel: impl Read + Seek, dest: &Path, limits: &Limits) -> Result<BTreeSet<String>> {
     let mut zip = zip::ZipArchive::new(wheel).context("reading the wheel")?;
+    limits.check_entries(zip.len())?;
+    let mut total = 0;
     let mut names = BTreeSet::new();
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i)?;
@@ -329,10 +513,7 @@ pub fn extract(wheel: impl Read + Seek, dest: &Path) -> Result<BTreeSet<String>>
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut f =
-            std::fs::File::create(&out).with_context(|| format!("creating {}", out.display()))?;
-        std::io::copy(&mut entry, &mut f)
-            .with_context(|| format!("unpacking {}", path.display()))?;
+        limits.unpack(&mut entry, &out, &mut total)?;
     }
     Ok(names)
 }
@@ -369,41 +550,29 @@ fn remove_extension(root: &Path, ext: &str) -> Result<()> {
     Ok(())
 }
 
-/// The names of the release's requirements, without those only needed
-/// for an extra.
-fn requirements(meta: &Value) -> Vec<String> {
+/// The release's requirements with their specifiers, without those only
+/// needed for an extra.
+fn requirements(meta: &Value) -> Vec<(String, Vec<Spec>)> {
     let Some(reqs) = meta["info"]["requires_dist"].as_array() else {
         return Vec::new();
     };
     reqs.iter()
         .filter_map(Value::as_str)
-        .filter(|r| !r.split_once(';').is_some_and(|(_, m)| m.contains("extra")))
-        .map(|r| {
-            r.trim()
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-                .collect::<String>()
-        })
-        .filter(|n| !n.is_empty())
+        .filter_map(pypi::requirement)
         .collect()
 }
 
-/// `name` or `name==version`.
-fn parse_spec(spec: &str) -> Result<(String, Option<String>)> {
-    let (name, version) = match spec.split_once("==") {
-        Some((n, v)) => (n.trim(), Some(v.trim().to_string())),
-        None => (spec.trim(), None),
-    };
+/// `name` with optional PEP 440 specifiers: `name==1.0`, `name>=1,<2`.
+fn parse_spec(spec: &str) -> Result<(String, Vec<Spec>)> {
+    let spec = spec.trim();
+    let end = spec.find(['=', '!', '<', '>', '~']).unwrap_or(spec.len());
+    let name = spec[..end].trim();
     normalize(name).with_context(|| format!("{spec:?}: expected PACKAGE or PACKAGE==VERSION"))?;
-    if let Some(v) = &version {
-        let ok = !v.is_empty()
-            && v.chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '!' | '-' | '_'));
-        if !ok {
-            bail!("{spec:?}: invalid version {v:?}");
-        }
+    let specs = Spec::parse_list(&spec[end..]).with_context(|| format!("{spec:?}"))?;
+    if end < spec.len() && specs.is_empty() {
+        bail!("{spec:?}: no version after the operator");
     }
-    Ok((name.to_string(), version))
+    Ok((name.to_string(), specs))
 }
 
 /// The project name as PyPI compares names: lowercase, with runs of `-`,
@@ -532,7 +701,7 @@ mod tests {
             "w-1.0.dist-info/METADATA",
         ]);
         let dir = tempfile::tempdir().unwrap();
-        let names = extract(Cursor::new(bytes), dir.path()).unwrap();
+        let names = extract(Cursor::new(bytes), dir.path(), &Limits::default()).unwrap();
         assert_eq!(
             names.into_iter().collect::<Vec<_>>(),
             ["@jupyter-widgets/jupyterlab-manager", "anywidget"]
@@ -550,7 +719,12 @@ mod tests {
     #[test]
     fn a_wheel_without_extensions_extracts_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let names = extract(Cursor::new(wheel(&["w/__init__.py"])), dir.path()).unwrap();
+        let names = extract(
+            Cursor::new(wheel(&["w/__init__.py"])),
+            dir.path(),
+            &Limits::default(),
+        )
+        .unwrap();
         assert!(names.is_empty());
     }
 
@@ -567,7 +741,10 @@ mod tests {
         ] {
             let dir = tempfile::tempdir().unwrap();
             let bytes = wheel(&[&format!("{ext}/{bad}")]);
-            assert!(extract(Cursor::new(bytes), dir.path()).is_err(), "{bad}");
+            assert!(
+                extract(Cursor::new(bytes), dir.path(), &Limits::default()).is_err(),
+                "{bad}"
+            );
         }
     }
 
@@ -593,7 +770,7 @@ mod tests {
         let parent = tempfile::tempdir().unwrap();
         let dest = parent.path().join("dest");
         std::fs::create_dir(&dest).unwrap();
-        let names = extract(Cursor::new(bytes), &dest).unwrap();
+        let names = extract(Cursor::new(bytes), &dest, &Limits::default()).unwrap();
         // A leading `/` is dropped, so the absolute entry stays in `dest`.
         assert_eq!(names.into_iter().collect::<Vec<_>>(), ["a", "abs"]);
         assert!(dest.join("a/package.json").is_file());
@@ -712,8 +889,10 @@ mod tests {
             "watchfiles>=1.1.0; python_version < \"3.12\" and extra == \"dev\"",
             "zope.interface (>=5)",
         ]}});
+        let reqs = requirements(&meta);
+        let names: Vec<&str> = reqs.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(
-            requirements(&meta),
+            names,
             [
                 "ipywidgets",
                 "jupyterlab_widgets",
@@ -721,17 +900,25 @@ mod tests {
                 "zope.interface"
             ]
         );
+        // The specifier comes along: `~=3.0.17` allows 3.0.x only.
+        let widgets = &reqs[1].1;
+        let v = |s| pypi::Version::parse(s).unwrap();
+        assert!(widgets[0].matches(&v("3.0.20")) && !widgets[0].matches(&v("3.1.0")));
         assert!(requirements(&json!({"info": {"requires_dist": null}})).is_empty());
     }
 
     #[test]
     fn parses_specs_and_normalizes_names() {
-        assert_eq!(
-            parse_spec("anywidget==0.9.18").unwrap(),
-            ("anywidget".into(), Some("0.9.18".into()))
-        );
-        assert_eq!(parse_spec("anywidget").unwrap(), ("anywidget".into(), None));
-        for bad in ["", "a>=1", "../x", "a==", "a==1/2", "-a"] {
+        let (name, specs) = parse_spec("anywidget==0.9.18").unwrap();
+        assert_eq!(name, "anywidget");
+        assert_eq!(specs[0].pinned(), Some("0.9.18"));
+        let (name, specs) = parse_spec("anywidget").unwrap();
+        assert_eq!((name.as_str(), specs.len()), ("anywidget", 0));
+        let (name, specs) = parse_spec("any-widget >=0.9, <1").unwrap();
+        assert_eq!((name.as_str(), specs.len()), ("any-widget", 2));
+        let (_, specs) = parse_spec("anywidget~=0.9.0").unwrap();
+        assert_eq!(specs[0].to_string(), "~=0.9.0");
+        for bad in ["", "../x", "a==", "a==1/2", "-a", "a=>1", ">=1"] {
             assert!(parse_spec(bad).is_err(), "{bad}");
         }
         assert_eq!(
@@ -739,6 +926,32 @@ mod tests {
             "jupyterlab-widgets"
         );
         assert_eq!(normalize("a._-b").unwrap(), "a-b");
+    }
+
+    #[test]
+    fn disable_and_enable_keep_other_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = ganymede_server::lab::page_config_file(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"other": 1, "disabledExtensions": ["old"]}"#).unwrap();
+        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        set_disabled(&path, &names(&["@a/b", "c:plugin"]), true).unwrap();
+        assert_eq!(
+            ganymede_server::lab::disabled_extensions(&path),
+            ["@a/b", "c:plugin", "old"]
+        );
+        set_disabled(&path, &names(&["@a/b"]), false).unwrap();
+        assert_eq!(
+            ganymede_server::lab::disabled_extensions(&path),
+            ["c:plugin", "old"]
+        );
+        let v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(v["other"], 1);
+        assert_eq!(v["disabledExtensions"]["@a/b"], false);
+
+        let fresh = ganymede_server::lab::page_config_file(&dir.path().join("new"));
+        set_disabled(&fresh, &names(&["x"]), true).unwrap();
+        assert_eq!(ganymede_server::lab::disabled_extensions(&fresh), ["x"]);
     }
 
     #[test]

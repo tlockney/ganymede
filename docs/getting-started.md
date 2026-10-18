@@ -92,7 +92,12 @@ to it by that file:
 ```sh
 ganymede kernel -k cdp-node
 ganymede run --existing kernel-<id>.json 'x'
+ganymede attach kernel-<id>.json 'x'      # the same, waiting at most 60 s per cell
 ```
+
+`ganymede run --existing` with no file attaches to the newest kernel in
+the Jupyter runtime dir. A kernel that was attached to keeps running when
+the command ends.
 
 ## Start JupyterLab
 
@@ -111,6 +116,35 @@ first, then each next port while it is taken, up to 50 more. It takes
 `serve`'s flags below, and fails, naming `ganymede lab install`, when no
 JupyterLab is installed.
 
+```sh
+ganymede lab list                          # installed versions; --json too
+ganymede lab remove 4.6.4
+ganymede lab install --no-default-extensions   # without the widget extensions
+ganymede lab extension install jupyterlab-execute-time
+ganymede lab extension list                # --json too
+ganymede lab extension disable jupyterlab-execute-time   # and `enable`
+ganymede lab extension remove jupyterlab-execute-time
+ganymede lab clean                         # leftovers of interrupted installs
+ganymede lab uninstall                     # every version and extension
+```
+
+Everything `lab install` adds lives in Ganymede's data dir,
+`$GANYMEDE_DATA_DIR` when set; `ganymede info` prints where. `disable`
+writes `labconfig/page_config.json` in the Jupyter config dir, as
+`jupyter labextension disable` does, and the next page load picks it up.
+See [JupyterLab and VS Code](frontends.md#extensions) for how extensions
+are found and installed.
+
+## Shell completions
+
+```sh
+ganymede completions bash > ~/.local/share/bash-completion/completions/ganymede
+ganymede completions zsh > ~/.zfunc/_ganymede    # with ~/.zfunc on fpath
+ganymede completions fish > ~/.config/fish/completions/ganymede.fish
+```
+
+`powershell` and `elvish` work too.
+
 ## Serve the Jupyter API
 
 `ganymede serve` serves the REST and websocket API that JupyterLab, VS
@@ -124,7 +158,9 @@ It prints the URL, with its token, as the only line on stdout. The
 [JupyterLab and VS Code](frontends.md) guide covers connecting a frontend.
 
 Useful flags, each of which can also be set in a TOML file passed with
-`--config` (an unknown key in the file is an error):
+`--config` (an unknown key in the file is an error). Without `--config`,
+`ganymede.toml` in the Jupyter config dir (`$JUPYTER_CONFIG_DIR`, else
+`~/.jupyter`) is read if it exists:
 
 | Flag | Effect |
 |---|---|
@@ -144,7 +180,15 @@ Useful flags, each of which can also be set in a TOML file passed with
 | `-q`, `--quiet` | Discard kernels' own stdout and stderr (`quiet`). Cell output is unaffected. |
 
 `serve` and `lab` log at info level on stderr; `-v` raises it to debug, and
-`RUST_LOG` overrides both.
+`RUST_LOG` overrides both. `--log-level` (`debug`, `info`, `warn`,
+`error`, or Jupyter's `WARNING` and `CRITICAL`) overrides all three, and
+`--log-file` appends the log to a file instead of stderr. Kernels' own
+output lines start with `[kernel <first 8 of its id>]`.
+
+The server runs code for anyone who holds its token. It listens on
+loopback only unless `--ip` says otherwise. [Security](security.md)
+covers what `--ip 0.0.0.0` and `--token ""` expose, and how to reach a
+server from other machines safely.
 
 ## Embed it
 
