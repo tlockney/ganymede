@@ -262,7 +262,8 @@ lab_version=$(ganymede lab list | awk 'NR == 1 { print $1 }')
 [ -n "$lab_version" ] || fail "no version in ganymede lab list"
 ganymede lab remove "$lab_version"
 ganymede lab extension remove anywidget jupyterlab-widgets
-ganymede kernelspec remove cdp-node
+cdp-kernel list | grep -q '^cdp-node ' || fail "cdp-node not in cdp-kernel list"
+cdp-kernel uninstall cdp-node
 [ -z "$(ganymede lab list 2>/dev/null)" ] || fail "JupyterLab still installed"
 [ -z "$(ganymede lab extension list 2>/dev/null)" ] || fail "extensions still installed"
 if ganymede kernelspec list 2>/dev/null | grep -q '^ *cdp-node '; then

@@ -24,7 +24,7 @@ env:
   # scripts/test-workstation.sh and scripts/test-install.sh read
   # CDP_KERNEL_VERSION. Bump them together in one pull request
   # (docs/development.md). The scheduled run takes the latest releases.
-  CDP_KERNEL_VERSION: ${{ github.event_name == 'schedule' && 'latest' || '0.5.0' }}
+  CDP_KERNEL_VERSION: ${{ github.event_name == 'schedule' && 'latest' || '0.6.0' }}
   E2E_PYTHON_PACKAGES: ${{ github.event_name == 'schedule' && 'ipykernel nbclient jupyter_server' || 'ipykernel==7.4.0 nbclient==0.11.0 jupyter_server==2.21.1' }}
 
 jobs:
