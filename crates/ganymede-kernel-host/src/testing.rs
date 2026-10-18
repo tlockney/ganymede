@@ -131,7 +131,12 @@ impl FakeKernel {
         let code = req.code.trim();
         let mut status = ReplyStatus::Ok;
         let mut error: Option<(&str, &str)> = None;
-        if let Some(ms) = code.strip_prefix("sleep ") {
+        // `hang` is `sleep` for a cell that ignores interrupts.
+        let stubborn = code.starts_with("hang ");
+        if let Some(ms) = code
+            .strip_prefix("sleep ")
+            .or_else(|| code.strip_prefix("hang "))
+        {
             let ms: u64 = ms.parse().unwrap_or(0);
             let deadline = tokio::time::Instant::now() + Duration::from_millis(ms);
             self.interrupted = false;
@@ -151,8 +156,10 @@ impl FakeKernel {
                             &serde_json::json!({"status": "ok"}),
                         )
                         .await;
-                        self.interrupted = true;
-                        break;
+                        if !stubborn {
+                            self.interrupted = true;
+                            break;
+                        }
                     }
                     // A real kernel's control thread answers while a
                     // cell runs, publishing statuses of its own.

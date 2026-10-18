@@ -157,6 +157,27 @@ fn run_stops_on_sigterm_and_sighup() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn second_ctrl_c_stops_a_cell_that_ignores_interrupts() {
+    let child = ganymede(&["run", "-k", "fake", "hang 30000"])
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let start = std::time::Instant::now();
+    for _ in 0..2 {
+        unsafe {
+            kill(child.id() as i32, 2);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(130), "{}", stderr(&out));
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    assert!(stderr(&out).contains("Ctrl-C again to stop"));
+}
+
 #[test]
 fn existing_searches_the_runtime_dir_and_errors_print_once() {
     let rt = tempfile::tempdir().unwrap();
@@ -416,10 +437,58 @@ fn kernelspec_remove_takes_force_flags() {
 
 #[test]
 fn info_json() {
-    let out = run_ok(ganymede(&["info", "--json"]));
+    let data = tempfile::tempdir().unwrap();
+    let jupyter = tempfile::tempdir().unwrap();
+    // A JupyterLab install and an extension, as `lab install` lays them out.
+    let lab = data.path().join("lab/4.6.4/static");
+    std::fs::create_dir_all(&lab).unwrap();
+    std::fs::write(lab.join("index.html"), "").unwrap();
+    let ext = data.path().join("labextensions/@s/e");
+    std::fs::create_dir_all(&ext).unwrap();
+    std::fs::write(
+        ext.join("package.json"),
+        r#"{"name":"@s/e","version":"1.0.0","jupyterlab":{"_build":{"load":"x.js"}}}"#,
+    )
+    .unwrap();
+    let info = |args: &[&str]| {
+        let mut c = ganymede(args);
+        c.env("GANYMEDE_DATA_DIR", data.path())
+            .env("JUPYTER_DATA_DIR", jupyter.path())
+            .env("JUPYTER_PATH", "");
+        c
+    };
+    let out = run_ok(info(&[
+        "info",
+        "--json",
+        "--kernelspec-root",
+        "/extra-root",
+    ]));
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
     assert!(v["data_dirs"].is_array());
+    let path = |p: &std::path::Path| serde_json::json!(p);
+    assert_eq!(v["data_dir"], path(data.path()));
+    assert_eq!(v["lab_dir"], path(&data.path().join("lab")));
+    assert_eq!(v["lab_versions"], serde_json::json!(["4.6.4"]));
+    assert_eq!(
+        v["labextensions_dir"],
+        path(&data.path().join("labextensions"))
+    );
+    assert_eq!(v["extensions"][0]["name"], "@s/e");
+    assert_eq!(v["extensions"][0]["version"], "1.0.0");
+    assert_eq!(v["notary_dir"], path(jupyter.path()));
+    assert_eq!(v["kernelspec_roots"][0], "/extra-root");
+    assert_eq!(v["kernelspec_roots"][1], path(jupyter.path()));
+    assert!(v["build"]["target"].as_str().is_some_and(|t| !t.is_empty()));
+
+    let text = stdout(&run_ok(info(&["info"])));
+    assert!(text.contains("(4.6.4)"), "{text}");
+    assert!(text.contains("  @s/e 1.0.0"), "{text}");
+
+    assert!(text.contains("build "), "{text}");
+    // Scripts parse `--version`; it stays one line.
+    let version = stdout(&run_ok(ganymede(&["--version"])));
+    assert_eq!(version, format!("ganymede {}\n", env!("CARGO_PKG_VERSION")));
 }
 
 #[test]
