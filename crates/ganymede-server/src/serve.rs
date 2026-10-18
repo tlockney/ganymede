@@ -14,9 +14,17 @@ use std::time::Duration;
 /// Command line flags. Each overrides the config file's setting.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct ServeArgs {
-    /// TOML config file.
+    /// TOML config file. Default: `ganymede.toml` in the Jupyter config
+    /// dir (`$JUPYTER_CONFIG_DIR`, else `~/.jupyter`), if it exists.
     #[arg(long)]
     pub config: Option<PathBuf>,
+    /// Log level: trace, debug, info, warn or error (`WARNING` and
+    /// `CRITICAL` as in Jupyter). Overrides -v and `RUST_LOG`.
+    #[arg(long, value_name = "LEVEL", value_parser = parse_log_level)]
+    pub log_level: Option<tracing::Level>,
+    /// Append the log to this file instead of writing it to stderr.
+    #[arg(long, value_name = "FILE")]
+    pub log_file: Option<PathBuf>,
     #[arg(long)]
     pub ip: Option<String>,
     /// 0 picks a free port; the URL printed on stdout has it.
@@ -72,15 +80,37 @@ pub struct ServeArgs {
     pub allow_remote_access: bool,
 }
 
+/// The file name looked for in the Jupyter config dir when `--config` is
+/// not given.
+pub const DEFAULT_CONFIG_FILE: &str = "ganymede.toml";
+
 impl ServeArgs {
-    /// The config file, if any, with these flags applied on top.
+    /// The config file, if any, with these flags applied on top. Without
+    /// `--config`, [`DEFAULT_CONFIG_FILE`] in the Jupyter config dir is
+    /// read when it exists.
     pub fn into_config(self) -> Result<Config> {
+        let dir = ganymede_kernel_host::kernelspec::jupyter_config_dir();
+        self.into_config_from(Some(&dir))
+    }
+
+    /// [`ServeArgs::into_config`], looking for the default file in
+    /// `config_dir` (not at all when `None`).
+    pub fn into_config_from(self, config_dir: Option<&std::path::Path>) -> Result<Config> {
         let cli = self;
-        let mut cfg = match &cli.config {
-            Some(p) => Config::from_toml(
-                &std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?,
-            )
-            .with_context(|| format!("config file {}", p.display()))?,
+        let path = cli.config.clone().or_else(|| {
+            config_dir
+                .map(|d| d.join(DEFAULT_CONFIG_FILE))
+                .filter(|p| p.is_file())
+        });
+        let mut cfg = match &path {
+            Some(p) => {
+                tracing::info!("reading config from {}", p.display());
+                Config::from_toml(
+                    &std::fs::read_to_string(p)
+                        .with_context(|| format!("reading {}", p.display()))?,
+                )
+                .with_context(|| format!("config file {}", p.display()))?
+            }
             None => Config::default(),
         };
         if let Some(v) = cli.ip {
@@ -131,6 +161,57 @@ impl ServeArgs {
 
         Ok(cfg)
     }
+}
+
+/// `--log-level`: tracing's names and numbers, plus Python logging's
+/// `WARNING` and `CRITICAL`, which Jupyter's `--log-level` takes.
+fn parse_log_level(s: &str) -> std::result::Result<tracing::Level, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "warning" => Ok(tracing::Level::WARN),
+        "critical" => Ok(tracing::Level::ERROR),
+        l => l
+            .parse()
+            .map_err(|_| format!("{s:?} is not one of trace, debug, info, warn, error")),
+    }
+}
+
+/// The log filter for a server at `level`: kernel transport noise off,
+/// and HTTP internals kept at info when debugging.
+pub fn log_filter(level: tracing::Level) -> String {
+    if level >= tracing::Level::DEBUG {
+        format!("{level},zeromq=error,hyper=info,h2=info").to_lowercase()
+    } else {
+        format!("{level},zeromq=error").to_lowercase()
+    }
+}
+
+/// Install the global tracing subscriber. The filter is `--log-level`'s
+/// when given, else `RUST_LOG`, else `default_filter`; the log goes to
+/// `--log-file` (appended, no colors) when given, else stderr. `args` is
+/// `None` for commands that do not serve.
+pub fn init_logging(default_filter: &str, args: Option<&ServeArgs>) -> Result<()> {
+    use tracing_subscriber::fmt::writer::BoxMakeWriter;
+    use tracing_subscriber::EnvFilter;
+    let filter = match args.and_then(|a| a.log_level) {
+        Some(level) => EnvFilter::new(log_filter(level)),
+        None => EnvFilter::try_from_default_env().unwrap_or_else(|_| default_filter.into()),
+    };
+    let builder = tracing_subscriber::fmt().with_env_filter(filter);
+    match args.and_then(|a| a.log_file.as_ref()) {
+        Some(path) => {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .with_context(|| format!("log file {}", path.display()))?;
+            builder
+                .with_ansi(false)
+                .with_writer(BoxMakeWriter::new(std::sync::Mutex::new(file)))
+                .init();
+        }
+        None => builder.with_writer(std::io::stderr).init(),
+    }
+    Ok(())
 }
 
 /// Called with the printed URL once the port is bound.
@@ -393,7 +474,7 @@ mod tests {
 
     #[test]
     fn no_file_and_no_flags_is_the_default() {
-        let cfg = ServeArgs::default().into_config().unwrap();
+        let cfg = ServeArgs::default().into_config_from(None).unwrap();
         assert_eq!((cfg.ip.as_str(), cfg.port), ("127.0.0.1", 8888));
         assert_eq!(cfg.token, None);
     }
@@ -430,6 +511,51 @@ mod tests {
             [PathBuf::from("/k1"), PathBuf::from("/k2")]
         );
         assert_eq!(cfg.allow_remote_access, Some(true));
+    }
+
+    #[test]
+    fn the_default_file_is_read_from_the_config_dir() {
+        let (dir, _path) = config_file("port = 9001\n");
+        let cfg = ServeArgs::default()
+            .into_config_from(Some(dir.path()))
+            .unwrap();
+        assert_eq!(cfg.port, 9001);
+
+        // --config wins over the default file.
+        let (_other, path) = config_file("port = 9002\n");
+        let cfg = ServeArgs {
+            config: Some(path),
+            ..Default::default()
+        }
+        .into_config_from(Some(dir.path()))
+        .unwrap();
+        assert_eq!(cfg.port, 9002);
+
+        // No file there is the default config.
+        let empty = tempfile::tempdir().unwrap();
+        let cfg = ServeArgs::default()
+            .into_config_from(Some(empty.path()))
+            .unwrap();
+        assert_eq!(cfg.port, 8888);
+    }
+
+    #[test]
+    fn log_levels_take_jupyter_names() {
+        use tracing::Level;
+        for (s, level) in [
+            ("DEBUG", Level::DEBUG),
+            ("info", Level::INFO),
+            ("WARN", Level::WARN),
+            ("WARNING", Level::WARN),
+            ("error", Level::ERROR),
+            ("CRITICAL", Level::ERROR),
+            ("trace", Level::TRACE),
+        ] {
+            assert_eq!(super::parse_log_level(s), Ok(level), "{s}");
+        }
+        assert!(super::parse_log_level("loud").is_err());
+        assert_eq!(super::log_filter(Level::WARN), "warn,zeromq=error");
+        assert!(super::log_filter(Level::DEBUG).starts_with("debug,"));
     }
 
     #[test]
