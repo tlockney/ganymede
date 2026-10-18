@@ -55,6 +55,9 @@ pub struct Config {
     /// Host names accepted besides loopback addresses while
     /// `allow_remote_access` is off.
     pub local_hostnames: Vec<String>,
+    /// Largest request body accepted, in bytes. A notebook is saved in one
+    /// request, so this caps its size. `jupyter_server`'s default: 512 MiB.
+    pub max_body_size: u64,
 }
 
 impl Default for Config {
@@ -79,6 +82,7 @@ impl Default for Config {
             allow_origins: vec![],
             allow_remote_access: None,
             local_hostnames: vec!["localhost".into()],
+            max_body_size: 512 * 1024 * 1024,
         }
     }
 }
