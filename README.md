@@ -145,9 +145,11 @@ are not supported, by design.
 
 ## Repository
 
-Cargo workspace at this directory. `frontend/` is shared TypeScript for
-UIs that render in a web view, `docs/` and `site/` are the website, and
+Cargo workspace at this directory. `docs/` and `site/` are the website, and
 `validation/` holds scripts that drive real JupyterLab and VS Code clients.
+Ganymede's own UI, and the shared TypeScript protocol package that used to
+be `frontend/` here, live in
+[tlockney/ganymede-ui](https://github.com/tlockney/ganymede-ui).
 
 | Crate | What it is |
 |---|---|
@@ -160,7 +162,6 @@ UIs that render in a web view, `docs/` and `site/` are the website, and
 | [`crates/ganymede-contents`](crates/ganymede-contents/) | Contents seam and filesystem implementation matching `jupyter_server`'s model: atomic writes, mtime conflicts, checkpoints, configurable checkpoint dir, path safety, notebook trust with Jupyter's signing key and `nbsignatures.db`. |
 | [`crates/ganymede-api`](crates/ganymede-api/) | Kernel and session managers, response models, per-client bridge with reply filtering, idle culling. No HTTP. |
 | [`crates/ganymede-server`](crates/ganymede-server/) | axum routes, token auth, origin check, websocket v1 and legacy framing, static assets, TOML config, JupyterLab's page and `/lab/api/*`, installed JupyterLab bundles, notebook trust. |
-| [`frontend/`](frontend/) | Protocol types, websocket codecs, `ServerConnection` with injectable `fetch` and `WebSocket`, REST client, `KernelConnection`, renderer registry, ANSI and stream handling, widget manager interfaces. |
 
 ## Testing
 

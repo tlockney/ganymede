@@ -42,7 +42,9 @@ UI implementations, each a separate client of the same API:
 2. A TypeScript web UI. Reuse CodeMirror, KaTeX, and optionally
    `@jupyterlab/rendermime` and `@jupyterlab/outputarea` as libraries
    without the rest of JupyterLab. Runs in a browser, or inside a native
-   shell's web view.
+   shell's web view. [ganymede-ui](https://github.com/tlockney/ganymede-ui)
+   is a prototype of this one, built on JupyterLab's notebook through
+   datalayer/jupyter-ui.
 3. A native shell with a web view for rendering, such as a Swift app on
    iPadOS with `WKWebView`. The shell owns navigation, files, keyboard, and
    app lifecycle; the web view runs the renderers from option 2, since
