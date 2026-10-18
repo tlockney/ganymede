@@ -8,7 +8,10 @@
 //!   validation errors: multi-line text may be a string or an array of
 //!   strings, `null`s and missing output fields read as empty or default,
 //!   outputs that still do not fit are kept verbatim as [`Output::Unknown`],
-//!   and lone surrogate escapes read as U+FFFD. Transient metadata is
+//!   and lone surrogate escapes read as U+FFFD; unknown cell types are kept
+//!   verbatim as [`Cell::Unknown`]. [`Notebook::from_slice_with_report`]
+//!   says what was repaired, as jupyter_server's validation `message`.
+//!   Transient metadata is
 //!   stripped, and for nbformat 4.5 missing or duplicate cell ids are
 //!   repaired (on write too), as Python nbformat does.
 //! - Writing ([`Notebook::to_string`], [`Notebook::to_file_string`],
@@ -27,7 +30,7 @@ mod writer;
 
 pub use atomic::atomic_write;
 pub use multiline::{splitlines, MultilineString};
-pub use reader::read_file;
+pub use reader::{from_json_slice, read_file, ReadIssue, ReadReport};
 pub use types::{
     is_json_mime, is_split_mime, Attachments, Cell, CodeCell, DisplayDataOutput, ErrorOutput,
     ExecuteResultOutput, MarkdownCell, MimeBundle, Notebook, Output, RawCell, StreamOutput,

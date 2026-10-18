@@ -162,6 +162,66 @@ async fn invalid_notebooks_are_bad_requests() {
     assert_eq!(m.kind, ContentType::Notebook);
 }
 
+/// jupyter_server's `validate_notebook_model`: a notebook that broke the
+/// schema carries a `message` on GET with content and on save; a valid one
+/// has none.
+#[tokio::test]
+async fn invalid_notebooks_carry_a_validation_message() {
+    let (dir, c) = setup();
+    let valid = c
+        .save("ok.ipynb", SaveRequest::notebook(sample_notebook()))
+        .await
+        .unwrap();
+    assert_eq!(valid.message, None);
+    let got = c.get("ok.ipynb", GetOptions::with_content()).await.unwrap();
+    assert_eq!(got.message, None);
+    assert!(serde_json::to_value(&got).unwrap().get("message").is_none());
+
+    let mut nb = sample_notebook();
+    nb["cells"][0]["outputs"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("name");
+    nb["cells"].as_array_mut().unwrap().push(
+        json!({"cell_type": "heading", "id": "h", "level": 1, "metadata": {}, "source": "T"}),
+    );
+    let saved = c
+        .save("bad.ipynb", SaveRequest::notebook(nb.clone()))
+        .await
+        .unwrap();
+    let message = saved.message.unwrap();
+    assert!(
+        message.starts_with("Notebook validation failed: 'name' is a required property"),
+        "{message}"
+    );
+    assert!(
+        message.contains("'heading' is not a known cell_type"),
+        "{message}"
+    );
+
+    // The repaired stream was saved with nbformat's default name; the
+    // unknown cell as it was sent.
+    let on_disk: Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("bad.ipynb")).unwrap()).unwrap();
+    assert_eq!(on_disk["cells"][2]["cell_type"], "heading");
+    assert_eq!(on_disk["cells"][2]["level"], 1);
+
+    // Read back, the file still breaks the schema (the heading cell).
+    let got = c
+        .get("bad.ipynb", GetOptions::with_content())
+        .await
+        .unwrap();
+    let message = got.message.unwrap();
+    assert!(
+        message.starts_with("Notebook validation failed: 'heading' is not a known cell_type"),
+        "{message}"
+    );
+    assert_eq!(got.content.unwrap()["cells"][2]["level"], 1);
+    // Without content nothing is read, so there is no message.
+    let meta = c.get("bad.ipynb", GetOptions::default()).await.unwrap();
+    assert_eq!(meta.message, None);
+}
+
 #[tokio::test]
 async fn text_file_round_trip() {
     let (dir, c) = setup();
