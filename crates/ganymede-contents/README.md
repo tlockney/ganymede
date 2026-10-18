@@ -66,8 +66,8 @@ layouts, and read-only mode. `tests/trust.rs` checks signatures and
   unless the client sends fields nbformat drops on read (`trusted` on a
   markdown cell), where jupyter_server's own signature would not match on
   reopen.
-- Not implemented: `hash`/`hash_algorithm` (omitted from the JSON), chunked
-  uploads (`chunk`), `pre_save`/`post_save` hooks,
+- Not implemented: `hash`/`hash_algorithm` (omitted from the JSON),
+  `pre_save`/`post_save` hooks,
   `nbformat` validation messages on read.
 
 ## What to try next

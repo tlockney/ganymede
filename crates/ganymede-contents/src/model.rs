@@ -138,8 +138,13 @@ impl GetOptions {
 
 /// Body of `PUT /api/contents/{path}`.
 ///
-/// Unknown fields (`name`, `path`, `chunk`, ...) are ignored on
-/// deserialization.
+/// Unknown fields (`name`, `path`, ...) are ignored on deserialization.
+///
+/// Chunked uploads: JupyterLab uploads large files in pieces with `chunk`
+/// set to 1, 2, ... and -1 for the last piece. As in jupyter_server's
+/// `LargeFileManager`, chunk 1 creates or replaces the file and every other
+/// chunk appends its decoded content. Chunks are files only and skip the
+/// conflict check.
 ///
 /// Conflict detection: when `last_modified` is present it is compared with
 /// the file's current mtime, and a file that is newer by more than 500 ms
@@ -162,6 +167,9 @@ pub struct SaveRequest {
     /// RFC 3339 timestamp of the model the client is saving over; see above.
     #[serde(default)]
     pub last_modified: Option<String>,
+    /// Chunk number of a chunked upload: 1 first, -1 last; see above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk: Option<i64>,
 }
 
 impl SaveRequest {
@@ -172,6 +180,7 @@ impl SaveRequest {
             format: Some(Format::Json),
             content: Some(content),
             last_modified: None,
+            chunk: None,
         }
     }
 
@@ -182,6 +191,7 @@ impl SaveRequest {
             format: Some(Format::Text),
             content: Some(Value::String(content.into())),
             last_modified: None,
+            chunk: None,
         }
     }
 
@@ -192,6 +202,7 @@ impl SaveRequest {
             format: Some(Format::Base64),
             content: Some(Value::String(content.into())),
             last_modified: None,
+            chunk: None,
         }
     }
 
@@ -202,12 +213,19 @@ impl SaveRequest {
             format: None,
             content: None,
             last_modified: None,
+            chunk: None,
         }
     }
 
     /// Attach the client's `last_modified` for conflict detection.
     pub fn with_last_modified(mut self, last_modified: impl Into<String>) -> Self {
         self.last_modified = Some(last_modified.into());
+        self
+    }
+
+    /// Mark this save as chunk `chunk` of a chunked upload.
+    pub fn with_chunk(mut self, chunk: i64) -> Self {
+        self.chunk = Some(chunk);
         self
     }
 }
@@ -291,6 +309,6 @@ mod tests {
             "name": "x.txt", "path": "x.txt", "chunk": 1
         }))
         .unwrap();
-        assert_eq!(req, SaveRequest::text("x"));
+        assert_eq!(req, SaveRequest::text("x").with_chunk(1));
     }
 }
