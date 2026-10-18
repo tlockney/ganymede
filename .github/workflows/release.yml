@@ -133,7 +133,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
-      # Dispatch pages.yml to deploy this release's site.
+      # Dispatch pages.yml to redeploy the site.
       actions: write
       # Build provenance: an OIDC token to sign with, and the right to
       # store the attestation.
@@ -184,10 +184,10 @@ jobs:
             --notes-file "$RUNNER_TEMP/notes.md" \
             --verify-tag \
             "${flags[@]}"
-      # The site follows releases (pages.yml), so publish this release's docs
-      # and install.sh now that its binaries are downloadable.
-      - name: Deploy the site for this release
+      # Redeploy the site from main (pages.yml) now that this release's
+      # binaries are downloadable, so it carries the release's version and
+      # changelog.
+      - name: Redeploy the site
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main -f ref="$TAG"
+        run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main

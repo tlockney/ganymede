@@ -8,6 +8,14 @@ partway through.
 1. From an up-to-date `main`, `scripts/release.sh <level>` previews the
    version bump and the changelog. With `--execute` it commits them on
    `release/vX.Y.Z`, pushes, and opens an issue and a pull request.
+   Before merging it, remove the docs' "Unreleased" notes on that branch
+   ([CLAUDE.md](../CLAUDE.md#documenting-unreleased-features)): the
+   release ships everything they describe. This finds them, and the
+   script lists them in the pull request:
+
+   ```sh
+   grep -rn 'Unreleased\.' README.md docs/*.md site/index.html
+   ```
 2. Merging that pull request (with CI green; branch protection on `main`
    is what guarantees this, since `tag-release.yml` does not check CI
    itself) runs `tag-release.yml`. It sees a workspace version that has a
@@ -18,6 +26,7 @@ partway through.
    `THIRD-PARTY-NOTICES` and SHA-256 checksums, attests their build
    provenance, and publishes the GitHub Release with the changelog section
    as notes.
+   It then redeploys the site from `main`.
 
 Then check the result:
 

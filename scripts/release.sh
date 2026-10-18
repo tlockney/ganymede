@@ -45,6 +45,21 @@ git switch --quiet -c "$branch"
 git branch --force main origin/main
 git push --quiet -u origin "$branch"
 
+# Docs for features not yet released say "Unreleased." (CLAUDE.md). The
+# ones this release ships come out on $branch before it merges.
+unreleased=$(grep -rn 'Unreleased\.' README.md docs/*.md site/index.html || true)
+if [ -n "$unreleased" ]; then
+  echo "Unreleased notes; remove those this release ships on $branch:"
+  echo "$unreleased"
+  unreleased_body="
+
+Before merging, remove the \"Unreleased\" notes for features this release ships:
+
+\`\`\`
+$unreleased
+\`\`\`"
+fi
+
 if ! command -v gh > /dev/null; then
   echo "Pushed $branch. Open an issue \"Release v$version\" and a PR from $branch that closes it."
   exit 0
@@ -54,4 +69,4 @@ issue=$(gh issue create --title "Release v$version" \
 gh pr create --base main --head "$branch" --title "Release v$version" \
   --body "Closes #${issue##*/}
 
-Bumps the workspace to $version and updates CHANGELOG.md. Merging tags v$version, which publishes the release."
+Bumps the workspace to $version and updates CHANGELOG.md. Merging tags v$version, which publishes the release.${unreleased_body:-}"
