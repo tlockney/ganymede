@@ -43,6 +43,9 @@ impl FakeKernel {
                         .await;
                     self.status(&msg, ExecutionState::Idle).await;
                 }
+                // The process dying mid-session: the transport closes and
+                // nothing replies.
+                (Channel::Shell, "execute_request") if msg.content["code"] == "die" => return,
                 (Channel::Shell, "execute_request") => {
                     let req: ExecuteRequest = msg.content_as().unwrap();
                     self.execute(&msg, &req).await;
@@ -150,6 +153,14 @@ impl FakeKernel {
                         .await;
                         self.interrupted = true;
                         break;
+                    }
+                    // A real kernel's control thread answers while a
+                    // cell runs, publishing statuses of its own.
+                    Ok(Some((Channel::Control, m))) if m.msg_type() == "kernel_info_request" => {
+                        self.status(&m, ExecutionState::Busy).await;
+                        self.reply(Channel::Control, &m, "kernel_info_reply", &kernel_info())
+                            .await;
+                        self.status(&m, ExecutionState::Idle).await;
                     }
                     Ok(None) => return,
                     _ => {}
