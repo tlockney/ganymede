@@ -1055,6 +1055,24 @@ also thrown away: `LenientJson` mapped every body error to 400.
   (`Bytes`, `Json`, `Form`, `LenientJson`); it does not limit websocket
   frames, which have their own caps in `WebSocketUpgrade`.
 
+## 2026-10-18, websocket decoders and hostile frames (#48)
+
+`legacy::decode_binary` indexed `offsets[0]` without checking the count,
+so a 4-byte binary frame of zeros on a legacy (no subprotocol) kernel
+websocket panicked the connection task. It now returns `Malformed`, and
+the server logs the frame and keeps the socket open, as it does for any
+undecodable frame.
+
+- Both decoders now have negative tests: empty and short frames, a zero
+  or too-small count, a count past the frame, truncation, overlapping
+  offsets, and an offset past the end. A decoder may fail with `Json`
+  rather than `Malformed` when bad offsets still leave a parsable range
+  (overlapping legacy offsets make the JSON part run into the buffers);
+  the tests only require an error, never a panic.
+- An attacker-sized count (`u64::MAX`) does not allocate: the offset
+  table is collected through `Result`, whose size hint starts at 0, and
+  the first read past the frame stops it.
+
 ## 2026-10-18, extension names from wheels are validated (#46)
 
 `extract` took any directory under `labextensions/` in a wheel as an
