@@ -4,6 +4,7 @@
 # Usage: scripts/test-install.sh [shell]   (default sh; CI also runs bash and dash)
 # With TEST_KERNEL=1 it also installs cdp-kernel through the script, which
 # needs Node 24+ and npm (CI only; it changes the global npm packages).
+# CDP_KERNEL_VERSION pins the cdp-kernel it installs, as CI does.
 
 set -eu
 
@@ -64,7 +65,25 @@ PATH=/nonexistent:/usr/bin:/bin "$sh" "$script" --version "$version" --bin-dir "
 grep -q "npm install -g @tlockney/cdp-kernel" "$work/out" || fail "kernel hint: $(cat "$work/out")"
 
 if [ "${TEST_KERNEL:-}" = 1 ]; then
-	JUPYTER_DATA_DIR=$work/jupyter "$sh" "$script" --version "$version" --bin-dir "$work/bin6" ||
+	kernel_path=$PATH
+	if [ -n "${CDP_KERNEL_VERSION:-}" ]; then
+		# install.sh installs the latest cdp-kernel, as a user gets it. An
+		# npm in front of the real one pins it, so a cdp-kernel release
+		# can't fail this test with no change here.
+		mkdir "$work/npm-pin"
+		cat >"$work/npm-pin/npm" <<-EOF
+			#!/bin/sh
+			for a do
+				shift
+				[ "\$a" = @tlockney/cdp-kernel ] && a=@tlockney/cdp-kernel@$CDP_KERNEL_VERSION
+				set -- "\$@" "\$a"
+			done
+			exec "$(command -v npm)" "\$@"
+		EOF
+		chmod 755 "$work/npm-pin/npm"
+		kernel_path=$work/npm-pin:$PATH
+	fi
+	PATH=$kernel_path JUPYTER_DATA_DIR=$work/jupyter "$sh" "$script" --version "$version" --bin-dir "$work/bin6" ||
 		fail "install with cdp-kernel"
 	[ -f "$work/jupyter/kernels/cdp-node/kernel.json" ] || fail "no cdp-node kernelspec"
 fi

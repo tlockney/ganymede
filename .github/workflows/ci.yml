@@ -4,25 +4,106 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly, against the latest cdp-kernel and Jupyter instead of the pins
+  # below, and against any RustSec advisory published since the last run,
+  # so drift shows up here before it breaks a pull request.
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels its older run; runs on main finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # What the end-to-end jobs install, in one place: e2e here, and
+  # scripts/test-workstation.sh and scripts/test-install.sh read
+  # CDP_KERNEL_VERSION. Bump them together in one pull request
+  # (docs/development.md). The scheduled run takes the latest releases.
+  CDP_KERNEL_VERSION: ${{ github.event_name == 'schedule' && 'latest' || '0.5.0' }}
+  E2E_PYTHON_PACKAGES: ${{ github.event_name == 'schedule' && 'ipykernel nbclient jupyter_server' || 'ipykernel==7.4.0 nbclient==0.11.0 jupyter_server==2.21.1' }}
 
 jobs:
   rust:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: stable
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo clippy -p ganymede-engine --no-default-features -- -D warnings
-      - run: cargo test --workspace
-      - uses: taiki-e/install-action@v2
+      - name: cargo doc (warnings are errors)
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      # No real kernels or Jupyter here, so the end-to-end tests that need
+      # them skip; the summary lists them, and the e2e job runs them all.
+      - name: cargo test --workspace
+        run: |
+          set -o pipefail
+          cargo test --workspace -- --nocapture 2>&1 | tee "$RUNNER_TEMP/test.log"
+      - name: List skipped tests
+        if: ${{ !cancelled() }}
+        run: |
+          n=$(grep -o 'skipping: .*' "$RUNNER_TEMP/test.log" | wc -l | tr -d ' ')
+          {
+            echo "### $n tests skipped (no real kernels or Jupyter in this job; e2e runs them)"
+            echo
+            grep -o 'skipping: .*' "$RUNNER_TEMP/test.log" | sort | uniq -c | sed 's/^/    /'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=Skipped tests::$n tests skipped in this job; the e2e job runs them with nothing skipped"
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
           tool: cargo-about
       - name: Dependency licenses are all accepted in about.toml
         run: cargo about generate --locked --fail -m crates/ganymede-cli/Cargo.toml about.hbs -o /dev/null
+
+  # The oldest Rust the workspace says it supports (rust-version in
+  # Cargo.toml) still builds it.
+  msrv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: msrv
+        name: Read rust-version from Cargo.toml
+        run: |
+          v=$(sed -n '/^\[workspace.package\]/,/^\[/s/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
+          test -n "$v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo check --workspace --all-targets --locked
+
+  # RustSec advisories against Cargo.lock, duplicate crate versions (as
+  # warnings), and crate sources (deny.toml). Licenses are the rust job's
+  # cargo-about step.
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-deny
+      - run: cargo deny --locked check advisories bans sources
 
   # The end-to-end suite with real kernels and the Jupyter reference
   # implementation installed, so nothing in it skips: notebooks against
@@ -35,45 +116,72 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     env:
       GANYMEDE_E2E_KERNELS: cdp-node,python3
       GANYMEDE_E2E_REQUIRE_JUPYTER: "1"
       GANYMEDE_E2E_LAB: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
+          cache: pip
+          # The pins live in this file.
+          cache-dependency-path: .github/workflows/ci.yml
       - name: Install kernels and the reference implementation
         run: |
-          npm install -g @tlockney/cdp-kernel@0.5.0
+          npm install -g "@tlockney/cdp-kernel@$CDP_KERNEL_VERSION"
           cdp-kernel install --runtime node
-          python -m pip install ipykernel==7.4.0 nbclient==0.11.0 jupyter_server==2.21.1
+          # Word splitting is wanted: a list of requirements.
+          # shellcheck disable=SC2086
+          python -m pip install $E2E_PYTHON_PACKAGES
+          python -m pip list | grep -Ei '^(ipykernel|nbclient|jupyter.server) '
           python -m ipykernel install --user --name python3
           echo "GANYMEDE_E2E_JUPYTER=$(command -v jupyter)" >> "$GITHUB_ENV"
       - run: cargo run -q -p ganymede-cli -- kernelspec list
-      - run: cargo test -p ganymede-cli --tests
+      # The whole workspace, so the unit tests also run on macOS.
+      - name: cargo test --workspace
+        run: |
+          set -o pipefail
+          cargo test --workspace -- --nocapture 2>&1 | tee "$RUNNER_TEMP/test.log"
+      # The GANYMEDE_E2E_* variables above already make a missing kernel or
+      # Jupyter a failure; this catches any other way a test could skip.
+      - name: Nothing skipped
+        run: |
+          if grep -o 'skipping: .*' "$RUNNER_TEMP/test.log"; then
+            echo "::error title=Skipped tests::tests skipped in the job that must run them all"
+            exit 1
+          fi
 
   # Targets the desktop CI cannot run: the core libraries must build for
   # iOS, Android, and wasm, and the engine must run a notebook inside wasm.
   portability:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: stable
           targets: aarch64-apple-ios, aarch64-linux-android, wasm32-unknown-unknown, wasm32-wasip1
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             .
             e2e/wasm-smoke
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
       - name: Engine for iOS and Android (with ZeroMQ and subprocesses)
@@ -91,43 +199,51 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 22
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm test
 
   # site/install.sh against a stub release served over file://, under sh
   # (bash on macOS), bash, and dash, then once more installing cdp-kernel
-  # on Node 24.
+  # (CDP_KERNEL_VERSION) on Node 24.
   install-script:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - if: runner.os == 'Linux'
         run: shellcheck -s sh site/install.sh scripts/test-install.sh scripts/test-workstation.sh
       - run: scripts/test-install.sh sh
       - run: scripts/test-install.sh bash
       - if: runner.os == 'Linux'
         run: scripts/test-install.sh dash
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
       - run: TEST_KERNEL=1 scripts/test-install.sh sh
 
   # docs/install.md on a workstation with no Python: the PR's release
   # binary, packaged as release.yml does, installed by site/install.sh over
-  # file://; cdp-kernel from npm on Node 24; JupyterLab from
-  # `ganymede lab install`; then `ganymede lab --no-browser` driven by
+  # file://; cdp-kernel (CDP_KERNEL_VERSION) from npm on Node 24; JupyterLab
+  # from `ganymede lab install`; then `ganymede lab --no-browser` driven by
   # Playwright. scripts/test-workstation.sh hides Python from PATH and
   # fails if anything ran it.
   workstation:
@@ -136,15 +252,29 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo build --release --locked -p ganymede-cli
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-      # Test tooling only, set up before Python is hidden.
+          cache: npm
+          cache-dependency-path: validation/package-lock.json
+      # Test tooling only, set up before Python is hidden. The browser
+      # download is cached; the system libraries (--with-deps) are not.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/Library/Caches/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('validation/package-lock.json') }}
       - name: Playwright
         working-directory: validation
         run: |
@@ -155,7 +285,7 @@ jobs:
         env:
           OUT_DIR: ${{ runner.temp }}/workstation
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workstation-${{ matrix.os }}
           path: ${{ runner.temp }}/workstation

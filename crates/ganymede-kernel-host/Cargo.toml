@@ -3,6 +3,7 @@ name = "ganymede-kernel-host"
 description = "Kernel lifecycle: transports, provisioners, kernelspec discovery, and the per-kernel session state machine."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

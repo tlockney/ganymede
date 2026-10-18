@@ -3,6 +3,7 @@ name = "ganymede-exec"
 description = "Headless notebook execution: run a notebook's code cells on a kernel session and store the outputs. The nbclient of this workspace."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

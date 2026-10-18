@@ -3,6 +3,7 @@ name = "ganymede-server"
 description = "HTTP server: axum routes over ganymede-api and ganymede-contents, token and cookie auth, websocket channels, static assets."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
