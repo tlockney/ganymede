@@ -123,6 +123,12 @@ fn piped(kernel: Arc<Kernel>, handle: Handle) -> Result<()> {
     Ok(())
 }
 
+/// Where the interactive console keeps its line history.
+pub fn history_path() -> Option<std::path::PathBuf> {
+    ganymede_engine::host::kernelspec::jupyter_user_data_dir()
+        .map(|d| d.join("ganymede-console-history"))
+}
+
 fn interactive(kernel: Arc<Kernel>, handle: Handle) -> Result<()> {
     let helper = KernelHelper {
         kernel: kernel.clone(),
@@ -134,8 +140,7 @@ fn interactive(kernel: Arc<Kernel>, handle: Handle) -> Result<()> {
         .build();
     let mut rl: Editor<KernelHelper, DefaultHistory> = Editor::with_config(config)?;
     rl.set_helper(Some(helper));
-    let history = ganymede_engine::host::kernelspec::jupyter_user_data_dir()
-        .map(|d| d.join("ganymede-console-history"));
+    let history = history_path();
     if let Some(h) = &history {
         let _ = rl.load_history(h);
     }

@@ -71,7 +71,7 @@ them inside their wheels. `ganymede lab extension` installs them the same
 way, without Python:
 
 ```sh
-ganymede lab extension install jupyterlab-execute-time   # latest; or NAME==VERSION
+ganymede lab extension install jupyterlab-execute-time   # latest; or NAME==VERSION, 'NAME>=1,<2', NAME~=1.2
 ganymede lab extension list
 ganymede lab extension remove jupyterlab-execute-time
 ```
@@ -86,14 +86,44 @@ searches. Dependencies are followed only as far as the frontend needs:
 through requirements of packages classified `Framework :: Jupyter`,
 installing those classified `Framework :: Jupyter :: JupyterLab ::
 Extensions`. So `anywidget` brings `jupyterlab_widgets` by way of
-`ipywidgets`. Dependencies get their latest release; version ranges are
-not resolved, and a wheel must be `py3-none-any`. Server extensions, the
-Python half of some packages, don't run.
+`ipywidgets`. Each package gets the newest release its PEP 440
+specifiers allow (`==`, `!=`, `<`, `<=`, `>`, `>=`, `~=`, `==1.2.*`),
+from the command line or from the `Requires-Dist` of the package that
+needs it; an installed dependency is replaced only when it no longer
+satisfies them. Pre-releases are picked only when a specifier names one
+or nothing else matches, and yanked releases never are, even when pinned.
+A wheel must be `py3-none-any`. `--no-deps` installs only the named
+packages. Server extensions, the Python half of some packages, don't run.
 
 A package can't replace an extension another package installed unless
 the command has `--force`, and the install fails on an extension whose
 directory name is not an npm package name (`name` or `@scope/name`, not
 starting with `.` or `_`).
+
+### What a download trusts
+
+An extension is JavaScript that JupyterLab runs on the server's origin,
+so it can do anything you can from the browser: read and write files,
+start kernels, and run code in them. Install only packages whose
+publishers you trust. The same holds for JupyterLab itself.
+
+Downloads are HTTPS only, from `pypi.org`'s JSON API and wheels on
+`files.pythonhosted.org`. A redirect must land on one of those hosts too.
+Each wheel's SHA-256 is checked against the value PyPI lists next to its
+URL. That catches a corrupted or truncated download. It doesn't catch a
+malicious release, which would come with a matching hash; only the
+default JupyterLab version's hash is also pinned in the binary.
+`ganymede` prints each wheel's URL and SHA-256 before installing it.
+
+Downloads have timeouts and are capped at 256 MB. A wheel can unpack to
+at most 100,000 entries, 256 MB per file and 1 GB in all.
+
+To use a mirror of PyPI's JSON API, set `GANYMEDE_PYPI_URL` (for example
+`https://mirror.example/pypi`). Wheels may then come from the mirror's
+host as well. `GANYMEDE_PYPI_HOSTS` adds more allowed hosts, separated by
+commas.
+
+### Other extension directories
 
 Extensions installed some other way are found in `labextensions` under the
 Jupyter data directories or with `--labextensions-path`, which is searched

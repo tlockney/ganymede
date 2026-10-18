@@ -3,6 +3,7 @@ name = "ganymede-engine"
 description = "The library to embed: discover kernelspecs, start or attach kernels, execute code with streaming output and stdin, run notebooks. Re-exports the core crates."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

@@ -4,22 +4,33 @@
 use crate::routes::{origin_allowed, HttpError};
 use crate::AppState;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use ganymede_api::ClientConnection;
 use ganymede_protocol::ws::{legacy, v1};
 
+#[derive(serde::Deserialize)]
+pub struct ChannelsQuery {
+    /// The client's session: what buffered output is kept for across a
+    /// reconnect, as in `jupyter_server`.
+    session_id: Option<String>,
+}
+
 pub async fn channels(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(query): Query<ChannelsQuery>,
     headers: HeaderMap,
 ) -> Response {
     if !origin_allowed(&state, &headers) {
         return HttpError(403, "origin not allowed".into()).into_response();
     }
-    let client = match state.kernels.connect_client(&id) {
+    let client = match state
+        .kernels
+        .connect_client_as(&id, query.session_id.as_deref())
+    {
         Ok(c) => c,
         Err(e) => return HttpError::from(e).into_response(),
     };
@@ -57,10 +68,16 @@ async fn run(mut socket: WebSocket, mut client: ClientConnection) {
             }
             outgoing = client.recv() => {
                 let Some((channel, msg)) = outgoing else {
-                    // Kernel gone: tell the client why, as jupyter_server does.
+                    // Kernel gone, or a newer connection took this
+                    // session: tell the client why, as jupyter_server does.
+                    let (code, reason) = if client.replaced() {
+                        (1000, "replaced by a new connection for this session")
+                    } else {
+                        (1001, "kernel shut down")
+                    };
                     let _ = socket.send(WsMessage::Close(Some(axum::extract::ws::CloseFrame {
-                        code: 1001,
-                        reason: "kernel shut down".into(),
+                        code,
+                        reason: reason.into(),
                     }))).await;
                     break;
                 };

@@ -354,6 +354,22 @@ def invalid_outputs() -> nbformat.NotebookNode:
     })
 
 
+def invalid_cells() -> nbformat.NotebookNode:
+    """Cells that break the schema: an unknown cell type (nbformat 3's
+    `heading`) and a code cell whose source is not text. nbformat writes
+    them as they are, and Ganymede must too (#73)."""
+    return nbformat.from_dict({
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {},
+        "cells": [
+            {"cell_type": "heading", "id": "heading", "level": 2, "metadata": {"k": "v"}, "source": "Title\nline"},
+            {"cell_type": "code", "id": "bad-source", "metadata": {}, "execution_count": None, "source": 5, "outputs": []},
+            {"cell_type": "markdown", "id": "valid", "metadata": {}, "source": "still\nfine"},
+        ],
+    })
+
+
 def lenient() -> dict:
     """A notebook nbformat reads (with logged validation errors) that a strict
     typed reader would reject (#73). Written as plain JSON with
@@ -414,6 +430,7 @@ NBFORMAT_WRITTEN = {
     "markdown_attachments.ipynb": markdown_attachments,
     "empty.ipynb": empty,
     "invalid_outputs.ipynb": invalid_outputs,
+    "invalid_cells.ipynb": invalid_cells,
 }
 
 

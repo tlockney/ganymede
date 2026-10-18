@@ -352,7 +352,7 @@ async fn contents_rest_round_trip() {
     );
     assert_eq!(
         call(&app, "GET", "/api/contents/../etc", None, t).await.0,
-        StatusCode::FORBIDDEN
+        StatusCode::NOT_FOUND
     );
     assert_eq!(
         call(&app, "GET", "/api/contents/missing.txt", None, t)
@@ -536,6 +536,64 @@ async fn websocket_channels_v1_execute_round_trip() {
         }
     }
     assert!(closed, "server sent a close frame after shutdown");
+}
+
+/// #53: output produced while a session's websocket is down is replayed
+/// when it reconnects with the same `session_id`, as in jupyter_server.
+#[tokio::test]
+async fn websocket_reconnect_replays_buffered_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let st = state(dir.path());
+    let kernels = st.kernels.clone();
+    let app = build_router(st);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let k = kernels.start(Some("fake"), None).await.unwrap();
+
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+    let connect = || async {
+        let mut req = format!("ws://{addr}/api/kernels/{}/channels?session_id=tab", k.id)
+            .into_client_request()
+            .unwrap();
+        req.headers_mut()
+            .insert("Sec-WebSocket-Protocol", v1::SUBPROTOCOL.parse().unwrap());
+        req.headers_mut()
+            .insert("Authorization", format!("token {TOKEN}").parse().unwrap());
+        tokio_tungstenite::connect_async(req).await.unwrap().0
+    };
+
+    let mut ws = connect().await;
+    let exec = Message::new(
+        "execute_request",
+        "tab",
+        "me",
+        &ExecuteRequest::new("sleep 300"),
+    );
+    ws.send(TMsg::Binary(
+        v1::encode(Channel::Shell, &exec).unwrap().into(),
+    ))
+    .await
+    .unwrap();
+    ws.close(None).await.unwrap();
+    drop(ws);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(kernels.model(&k.id).unwrap().connections, 0);
+
+    let mut ws = connect().await;
+    let mut got_reply = false;
+    while !got_reply {
+        let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("replayed reply in time")
+            .unwrap()
+            .unwrap();
+        let TMsg::Binary(b) = frame else { continue };
+        let (channel, msg) = v1::decode(&b).unwrap();
+        got_reply = channel == Channel::Shell
+            && msg.msg_type() == "execute_reply"
+            && msg.parent_id() == Some(exec.msg_id());
+    }
 }
 
 #[tokio::test]
@@ -1404,6 +1462,24 @@ fn api_req(method: &str, path: &str, body: Option<Value>) -> Request<Body> {
     }
 }
 
+/// Python's `json` accepts a lone surrogate escape, so JupyterLab can send
+/// one in a notebook; it is saved as U+FFFD instead of failing with 400.
+#[tokio::test]
+async fn put_body_with_a_lone_surrogate_saves() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(state(dir.path()));
+    let body = r#"{"type": "notebook", "format": "json", "content": {"nbformat": 4,
+        "nbformat_minor": 5, "metadata": {}, "cells": [{"cell_type": "markdown",
+        "id": "m", "metadata": {}, "source": "lone \ud800 here"}]}}"#;
+    let mut req = api_req("PUT", "/api/contents/s.ipynb", None);
+    *req.body_mut() = Body::from(body);
+    let (s, _, text) = send(&app, req).await;
+    assert_eq!(s, StatusCode::CREATED, "{text}");
+    let (_, v) = call(&app, "GET", "/api/contents/s.ipynb", None, Some(TOKEN)).await;
+    assert_eq!(v["content"]["cells"][0]["source"], "lone \u{fffd} here");
+    assert!(v.get("message").is_none(), "{v}");
+}
+
 #[tokio::test]
 async fn creates_answer_201_with_a_location() {
     let dir = tempfile::tempdir().unwrap();
@@ -1572,7 +1648,8 @@ async fn errors_name_api_paths_not_os_paths() {
         Some(TOKEN),
     )
     .await;
-    assert_eq!(s, StatusCode::FORBIDDEN);
+    // 404 like jupyter_server's "is outside root contents directory".
+    assert_eq!(s, StatusCode::NOT_FOUND);
     let message = body["message"].as_str().unwrap();
     assert!(message.contains("link/secret.txt"), "{message}");
     assert!(

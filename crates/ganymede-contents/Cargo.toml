@@ -3,6 +3,7 @@ name = "ganymede-contents"
 description = "Contents seam of the server: the jupyter_server /api/contents model, a Contents trait, a filesystem implementation with atomic writes, mtime conflict checks and a relocatable checkpoint directory, and notebook trust (signing)."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
@@ -29,3 +30,7 @@ tracing.workspace = true
 tempfile.workspace = true
 base64 = "0.22"
 mime_guess = "2"
+
+# No-replace rename (renameat2, renamex_np) for `rename`.
+[target.'cfg(any(target_os = "linux", target_os = "android", target_os = "macos", target_os = "ios"))'.dependencies]
+libc = "0.2"

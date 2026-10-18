@@ -1,10 +1,12 @@
 //! Reading notebooks: lenient JSON parsing into [`Notebook`].
 
 use std::collections::HashSet;
+use std::fmt;
 use std::io::Read;
 use std::path::Path;
 
-use serde_json::Value;
+use serde::de::DeserializeOwned;
+use serde_json::{Map, Value};
 
 use crate::types::{Notebook, NBFORMAT};
 use crate::{Error, Result};
@@ -136,14 +138,248 @@ fn replace_lone_surrogates(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Parse JSON text, retrying with lone surrogates replaced if that is what
-/// made it fail.
-fn parse_json(bytes: &[u8]) -> Result<Value> {
+/// made it fail. The flag says whether any were replaced.
+fn parse_json<T: DeserializeOwned>(bytes: &[u8]) -> serde_json::Result<(T, bool)> {
     match serde_json::from_slice(bytes) {
-        Ok(value) => Ok(value),
+        Ok(value) => Ok((value, false)),
         Err(err) => match replace_lone_surrogates(bytes) {
-            Some(fixed) => serde_json::from_slice(&fixed).map_err(|_| err.into()),
-            None => Err(err.into()),
+            Some(fixed) => serde_json::from_slice(&fixed)
+                .map(|v| (v, true))
+                .map_err(|_| err),
+            None => Err(err),
         },
+    }
+}
+
+/// Parse JSON as Python's `json` would, as far as UTF-8 allows: a lone
+/// UTF-16 surrogate escape (`"\ud800"`), which serde_json rejects, reads as
+/// U+FFFD. For request bodies that carry a notebook, so a notebook that
+/// reads from disk can also be saved back. On any other error, the error
+/// of the first parse is returned.
+pub fn from_json_slice<T: DeserializeOwned>(bytes: &[u8]) -> serde_json::Result<T> {
+    parse_json(bytes).map(|(value, _)| value)
+}
+
+/// One way a notebook broke the nbformat v4 schema, and what the reader did
+/// about it (default, empty value, or kept as is).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadIssue {
+    /// Where, in Python's `jsonschema` notation: `['cells'][1]['outputs'][0]`;
+    /// empty for the notebook itself or the JSON text.
+    pub path: String,
+    /// What was wrong, worded like `jsonschema`'s messages.
+    pub message: String,
+}
+
+impl fmt::Display for ReadIssue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.path.is_empty() {
+            f.write_str(&self.message)
+        } else {
+            write!(f, "{} (on instance{})", self.message, self.path)
+        }
+    }
+}
+
+/// What the lenient reader repaired or defaulted while reading a notebook.
+///
+/// Empty for a notebook that fits the schema. Missing and duplicate cell
+/// ids are not reported: nbformat repairs those before validating too.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReadReport {
+    pub issues: Vec<ReadIssue>,
+}
+
+impl ReadReport {
+    /// At most this many issues are spelled out in [`Self::validation_message`].
+    const MAX_LISTED: usize = 20;
+
+    pub fn is_empty(&self) -> bool {
+        self.issues.is_empty()
+    }
+
+    /// jupyter_server's `message` for a notebook that failed validation
+    /// (`"Notebook validation failed: ..."`), or `None` when nothing was
+    /// wrong.
+    pub fn validation_message(&self) -> Option<String> {
+        if self.issues.is_empty() {
+            return None;
+        }
+        let mut lines: Vec<String> = self
+            .issues
+            .iter()
+            .take(Self::MAX_LISTED)
+            .map(ToString::to_string)
+            .collect();
+        if self.issues.len() > Self::MAX_LISTED {
+            lines.push(format!(
+                "... and {} more",
+                self.issues.len() - Self::MAX_LISTED
+            ));
+        }
+        Some(format!("Notebook validation failed: {}", lines.join("\n")))
+    }
+
+    fn push(&mut self, path: &str, message: String) {
+        self.issues.push(ReadIssue {
+            path: path.to_owned(),
+            message,
+        });
+    }
+}
+
+/// The JSON type a schema field wants.
+#[derive(Clone, Copy)]
+enum Want {
+    Object,
+    Array,
+    String,
+    /// A string or an array of strings.
+    Multiline,
+    /// An array of strings.
+    Lines,
+    /// A non-negative integer or `null`.
+    ExecutionCount,
+}
+
+/// `jsonschema`-style rendering of a value inside a message.
+fn repr(value: &Value) -> String {
+    let text = match value {
+        Value::Null => "None".to_owned(),
+        Value::Bool(true) => "True".to_owned(),
+        Value::Bool(false) => "False".to_owned(),
+        Value::String(s) => format!("'{s}'"),
+        other => other.to_string(),
+    };
+    if text.chars().count() > 60 {
+        format!("{}...", text.chars().take(60).collect::<String>())
+    } else {
+        text
+    }
+}
+
+/// Report `obj[key]` if it is missing or not what `want` says.
+fn check_field(
+    obj: &Map<String, Value>,
+    key: &str,
+    want: Want,
+    path: &str,
+    report: &mut ReadReport,
+) {
+    let Some(value) = obj.get(key) else {
+        report.push(path, format!("'{key}' is a required property"));
+        return;
+    };
+    let is_lines = |v: &Value| v.as_array().is_some_and(|a| a.iter().all(Value::is_string));
+    let (ok, type_name) = match want {
+        Want::Object => (value.is_object(), "'object'"),
+        Want::Array => (value.is_array(), "'array'"),
+        Want::String => (value.is_string(), "'string'"),
+        Want::Multiline => (value.is_string() || is_lines(value), "'string' or 'array'"),
+        Want::Lines => (is_lines(value), "'array' of 'string'"),
+        Want::ExecutionCount => {
+            if value.as_i64().is_some_and(|n| n < 0) {
+                report.push(
+                    &format!("{path}['{key}']"),
+                    format!("{} is less than the minimum of 0", repr(value)),
+                );
+                return;
+            }
+            (value.is_null() || value.is_u64(), "'integer' or 'null'")
+        }
+    };
+    if !ok {
+        report.push(
+            &format!("{path}['{key}']"),
+            format!("{} is not of type {type_name}", repr(value)),
+        );
+    }
+}
+
+/// Check an object-valued entry, reporting it when it is not an object.
+fn as_object<'a>(
+    value: &'a Value,
+    path: &str,
+    report: &mut ReadReport,
+) -> Option<&'a Map<String, Value>> {
+    let obj = value.as_object();
+    if obj.is_none() {
+        report.push(path, format!("{} is not of type 'object'", repr(value)));
+    }
+    obj
+}
+
+fn check_output(output: &Value, path: &str, report: &mut ReadReport) {
+    let Some(obj) = as_object(output, path, report) else {
+        return;
+    };
+    let fields: &[(&str, Want)] = match obj.get("output_type").and_then(Value::as_str) {
+        Some("stream") => &[("name", Want::String), ("text", Want::Multiline)],
+        Some("display_data") => &[("data", Want::Object), ("metadata", Want::Object)],
+        Some("execute_result") => &[
+            ("execution_count", Want::ExecutionCount),
+            ("data", Want::Object),
+            ("metadata", Want::Object),
+        ],
+        Some("error") => &[
+            ("ename", Want::String),
+            ("evalue", Want::String),
+            ("traceback", Want::Lines),
+        ],
+        Some(other) => {
+            report.push(path, format!("'{other}' is not a known output_type"));
+            return;
+        }
+        None => {
+            check_field(obj, "output_type", Want::String, path, report);
+            return;
+        }
+    };
+    for &(key, want) in fields {
+        check_field(obj, key, want, path, report);
+    }
+}
+
+fn check_cell(cell: &Value, path: &str, report: &mut ReadReport) {
+    let Some(obj) = as_object(cell, path, report) else {
+        return;
+    };
+    let code = match obj.get("cell_type").and_then(Value::as_str) {
+        Some("code") => true,
+        Some("markdown" | "raw") => false,
+        Some(other) => {
+            report.push(path, format!("'{other}' is not a known cell_type"));
+            return;
+        }
+        None => {
+            check_field(obj, "cell_type", Want::String, path, report);
+            return;
+        }
+    };
+    check_field(obj, "metadata", Want::Object, path, report);
+    check_field(obj, "source", Want::Multiline, path, report);
+    if !code {
+        return;
+    }
+    check_field(obj, "execution_count", Want::ExecutionCount, path, report);
+    check_field(obj, "outputs", Want::Array, path, report);
+    if let Some(Value::Array(outputs)) = obj.get("outputs") {
+        for (i, output) in outputs.iter().enumerate() {
+            check_output(output, &format!("{path}['outputs'][{i}]"), report);
+        }
+    }
+}
+
+/// The schema checks behind [`ReadReport`]: the places where the lenient
+/// reader defaults, empties or keeps verbatim what the nbformat v4 schema
+/// rejects. Run after the cell id repair, as nbformat validates after it.
+fn check_notebook(nb: &Map<String, Value>, report: &mut ReadReport) {
+    check_field(nb, "metadata", Want::Object, "", report);
+    check_field(nb, "cells", Want::Array, "", report);
+    if let Some(Value::Array(cells)) = nb.get("cells") {
+        for (i, cell) in cells.iter().enumerate() {
+            check_cell(cell, &format!("['cells'][{i}]"), report);
+        }
     }
 }
 
@@ -186,7 +422,24 @@ impl Notebook {
 
     /// Parse a notebook from JSON bytes (UTF-8).
     pub fn from_slice(bytes: &[u8]) -> Result<Self> {
-        Self::from_value(parse_json(bytes)?)
+        Ok(Self::from_slice_with_report(bytes)?.0)
+    }
+
+    /// [`Notebook::from_slice`], also returning what the lenient reader
+    /// repaired: jupyter_server's validation `message`.
+    pub fn from_slice_with_report(bytes: &[u8]) -> Result<(Self, ReadReport)> {
+        let (value, replaced) = parse_json(bytes)?;
+        let (nb, mut report) = Self::from_value_with_report(value)?;
+        if replaced {
+            report.issues.insert(
+                0,
+                ReadIssue {
+                    path: String::new(),
+                    message: "lone surrogate escapes were read as U+FFFD".to_owned(),
+                },
+            );
+        }
+        Ok((nb, report))
     }
 
     /// Parse a notebook from a reader of JSON bytes (UTF-8).
@@ -197,11 +450,21 @@ impl Notebook {
     }
 
     /// Convert an already parsed JSON value into a notebook.
-    pub fn from_value(mut value: Value) -> Result<Self> {
+    pub fn from_value(value: Value) -> Result<Self> {
+        Ok(Self::from_value_with_report(value)?.0)
+    }
+
+    /// [`Notebook::from_value`], also returning what the lenient reader
+    /// repaired.
+    pub fn from_value_with_report(mut value: Value) -> Result<(Self, ReadReport)> {
         check_version(&value)?;
         strip_transient(&mut value);
         normalize_cell_ids(&mut value);
-        Ok(serde_json::from_value(value)?)
+        let mut report = ReadReport::default();
+        if let Some(nb) = value.as_object() {
+            check_notebook(nb, &mut report);
+        }
+        Ok((serde_json::from_value(value)?, report))
     }
 
     /// Read a notebook file.
