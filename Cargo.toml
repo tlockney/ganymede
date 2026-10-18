@@ -10,7 +10,7 @@ publish = false
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip", "arbitrary_precision"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }

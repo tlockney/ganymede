@@ -1073,6 +1073,33 @@ undecodable frame.
   table is collected through `Result`, whose size hint starts at 0, and
   the first read past the frame stops it.
 
+## 2026-10-18, numbers round-trip on save (#72)
+
+The workspace `serde_json` had only `preserve_order`. Its default float
+parser is not correctly rounded, so reading a notebook and writing it back
+changed some doubles (5,389 of 20,000 random finite doubles in the new
+test), saves drifted further each pass, and integers beyond u64 became
+floats. Trust signatures hash the re-serialized numbers, so a notebook
+Jupyter signed could read back as untrusted. Both `float_roundtrip` and
+`arbitrary_precision` are on now.
+
+- `arbitrary_precision` keeps each number's source text in `Value`, so the
+  writer's `write_f64` hook no longer sees numbers from a parsed file;
+  `PythonFormatter::write_number_str` does the work instead: floats go
+  through `python_float_repr`, integers are written as read (`-0` as `0`,
+  as Python's `int` does).
+- `Number::is_f64` is true only for text with `.`, `e` or `E`, so the
+  signing code's int/float split matches Python's for big integers.
+- `float_roundtrip` still matters with `arbitrary_precision`: it governs
+  deserializing straight into typed `f64` fields.
+- `#[serde(flatten)]` structs with typed integer fields still deserialize
+  from text with `arbitrary_precision` on (checked on `ExecuteResult`);
+  older serde releases failed there.
+- A JSON number Python reads as `inf` (`1e400`) keeps its text; Python
+  would write the non-JSON `Infinity`.
+- The Python e2e notebook's `JSON` display now carries 17-digit floats,
+  which fails the nbclient parity test without the fix.
+
 ## 2026-10-18, extension names from wheels are validated (#46)
 
 `extract` took any directory under `labextensions/` in a wheel as an

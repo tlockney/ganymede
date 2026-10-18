@@ -335,3 +335,64 @@ fn write_file_and_read_file_through_the_filesystem() {
     let via_reader = Notebook::from_reader(std::fs::File::open(&path).unwrap()).unwrap();
     assert_eq!(via_reader, nb);
 }
+
+/// splitmix64, so the test needs no `rand` and always draws the same values.
+fn splitmix64(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// Every finite double survives read and write unchanged, twice (#72).
+///
+/// Python writes a float as its shortest round-tripping repr, so a notebook
+/// written by nbformat holds exactly `python_float_repr(x)`. Reading that
+/// must give back `x` bit for bit, or saves silently change plot data and
+/// trust signatures stop matching.
+#[test]
+fn random_doubles_roundtrip_exactly() {
+    let mut state = 72;
+    let values: Vec<f64> = std::iter::repeat_with(|| f64::from_bits(splitmix64(&mut state)))
+        .filter(|f| f.is_finite())
+        .take(20_000)
+        .collect();
+    let numbers = values
+        .iter()
+        .map(|f| ganymede_nbformat::python_float_repr(*f))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let text = format!(
+        r#"{{"cells": [{{"cell_type": "code", "execution_count": 1, "id": "c", "metadata": {{}}, "source": "", "outputs": [{{"output_type": "display_data", "metadata": {{}}, "data": {{"application/json": {{"y": [{numbers}]}}}}}}]}}], "metadata": {{"numbers": [{numbers}]}}, "nbformat": 4, "nbformat_minor": 5}}"#
+    );
+
+    let mut written = text;
+    for pass in 1..=2 {
+        let nb = Notebook::from_str(&written).unwrap();
+        written = nb.to_file_string();
+        let value: serde_json::Value = serde_json::from_str(&written).unwrap();
+        let read_back = |v: &serde_json::Value| -> Vec<f64> {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|n| n.as_f64().unwrap())
+                .collect()
+        };
+        let metadata = read_back(&value["metadata"]["numbers"]);
+        let output = read_back(&value["cells"][0]["outputs"][0]["data"]["application/json"]["y"]);
+        for got in [metadata, output] {
+            let changed = values
+                .iter()
+                .zip(&got)
+                .filter(|(a, b)| a.to_bits() != b.to_bits())
+                .count();
+            assert_eq!(
+                changed,
+                0,
+                "pass {pass}: {changed} of {} doubles changed",
+                values.len()
+            );
+        }
+    }
+}
