@@ -1,10 +1,19 @@
 //! A fake kernel over the in-process transport. It exists to test the
 //! session state machine and to demonstrate the in-process seam the iPad
 //! profile uses. It speaks the protocol, not any language.
+//!
+//! Cells: `sleep <ms>` (interruptible), `raise`, `input`, `die` (the
+//! process vanishes, nothing replies), `exit` (prints, then vanishes
+//! mid-cell), `display` (display, update, clear, stream), `comm` (opens
+//! a comm from the kernel side); anything else is echoed. Comms: target
+//! `echo` sends every message back with its buffers; any other target is
+//! closed at once, as ipykernel does. After an error with
+//! `stop_on_error`, queued `execute_request`s are answered `aborted`.
 
 use crate::transport::KernelSide;
 use ganymede_protocol::content::*;
 use ganymede_protocol::{Channel, Message};
+use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -21,6 +30,10 @@ pub struct FakeKernel {
     order: ReplyOrder,
     execution_count: u64,
     interrupted: bool,
+    /// Open comms: id to target name.
+    comms: HashMap<String, String>,
+    /// Messages taken off the channel early (while aborting), handled next.
+    backlog: VecDeque<(Channel, Message)>,
 }
 
 impl FakeKernel {
@@ -30,12 +43,21 @@ impl FakeKernel {
             order,
             execution_count: 0,
             interrupted: false,
+            comms: HashMap::new(),
+            backlog: VecDeque::new(),
         };
         tokio::spawn(k.run())
     }
 
+    async fn recv(&mut self) -> Option<(Channel, Message)> {
+        match self.backlog.pop_front() {
+            Some(m) => Some(m),
+            None => self.side.incoming.recv().await,
+        }
+    }
+
     async fn run(mut self) {
-        while let Some((channel, msg)) = self.side.incoming.recv().await {
+        while let Some((channel, msg)) = self.recv().await {
             match (channel, msg.msg_type()) {
                 (Channel::Shell | Channel::Control, "kernel_info_request") => {
                     self.status(&msg, ExecutionState::Busy).await;
@@ -46,9 +68,22 @@ impl FakeKernel {
                 // The process dying mid-session: the transport closes and
                 // nothing replies.
                 (Channel::Shell, "execute_request") if msg.content["code"] == "die" => return,
+                (Channel::Shell, "execute_request") if msg.content["code"] == "exit" => {
+                    self.status(&msg, ExecutionState::Busy).await;
+                    self.stream(&msg, "partial\n").await;
+                    return;
+                }
                 (Channel::Shell, "execute_request") => {
                     let req: ExecuteRequest = msg.content_as().unwrap();
-                    self.execute(&msg, &req).await;
+                    let failed = self.execute(&msg, &req).await;
+                    if failed && req.stop_on_error {
+                        self.abort_queued().await;
+                    }
+                }
+                (Channel::Shell, "comm_open" | "comm_msg" | "comm_close") => {
+                    self.status(&msg, ExecutionState::Busy).await;
+                    self.comm(&msg).await;
+                    self.status(&msg, ExecutionState::Idle).await;
                 }
                 (Channel::Shell, "is_complete_request") => {
                     // A trailing backslash continues the line.
@@ -80,7 +115,14 @@ impl FakeKernel {
                     self.reply(channel, &msg, "inspect_reply", &reply).await;
                 }
                 (Channel::Shell, "comm_info_request") => {
-                    let reply = serde_json::json!({"status": "ok", "comms": {}});
+                    let want = msg.content["target_name"].as_str();
+                    let comms: serde_json::Map<String, serde_json::Value> = self
+                        .comms
+                        .iter()
+                        .filter(|(_, t)| want.is_none_or(|w| w == t.as_str()))
+                        .map(|(id, t)| (id.clone(), serde_json::json!({ "target_name": t })))
+                        .collect();
+                    let reply = serde_json::json!({"status": "ok", "comms": comms});
                     self.reply(channel, &msg, "comm_info_reply", &reply).await;
                 }
                 (Channel::Control, "interrupt_request") => {
@@ -113,7 +155,65 @@ impl FakeKernel {
         }
     }
 
-    async fn execute(&mut self, msg: &Message, req: &ExecuteRequest) {
+    /// Answer every `execute_request` already queued with `aborted`, as a
+    /// kernel does after an error under `stop_on_error`. Anything else
+    /// queued is kept for later.
+    async fn abort_queued(&mut self) {
+        while let Ok((channel, m)) = self.side.incoming.try_recv() {
+            if channel == Channel::Shell && m.msg_type() == "execute_request" {
+                self.status(&m, ExecutionState::Busy).await;
+                let reply = serde_json::json!({"status": "aborted", "execution_count": null});
+                self.reply(Channel::Shell, &m, "execute_reply", &reply)
+                    .await;
+                self.status(&m, ExecutionState::Idle).await;
+            } else {
+                self.backlog.push_back((channel, m));
+            }
+        }
+    }
+
+    async fn comm(&mut self, msg: &Message) {
+        let id = msg.content["comm_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        match msg.msg_type() {
+            "comm_open" => {
+                let target = msg.content["target_name"].as_str().unwrap_or_default();
+                if target == "echo" {
+                    self.comms.insert(id, target.into());
+                } else {
+                    let close = serde_json::json!({"comm_id": id, "data": {}});
+                    self.iopub(msg, "comm_close", &close).await;
+                }
+            }
+            "comm_msg" if self.comms.contains_key(&id) => {
+                let echo = serde_json::json!({"comm_id": id, "data": msg.content["data"]});
+                let m = Message::reply_to(msg, "comm_msg", &echo).with_buffers(msg.buffers.clone());
+                let _ = self.side.outgoing.send((Channel::IoPub, m)).await;
+            }
+            "comm_close" => {
+                self.comms.remove(&id);
+            }
+            _ => {}
+        }
+    }
+
+    async fn stream(&self, parent: &Message, text: &str) {
+        self.iopub(
+            parent,
+            "stream",
+            &Stream {
+                name: "stdout".into(),
+                text: text.into(),
+                extra: Default::default(),
+            },
+        )
+        .await;
+    }
+
+    /// Run a cell; `true` when it failed.
+    async fn execute(&mut self, msg: &Message, req: &ExecuteRequest) -> bool {
         self.execution_count += 1;
         let n = self.execution_count;
         self.status(msg, ExecutionState::Busy).await;
@@ -162,7 +262,7 @@ impl FakeKernel {
                             .await;
                         self.status(&m, ExecutionState::Idle).await;
                     }
-                    Ok(None) => return,
+                    Ok(None) => return true,
                     _ => {}
                 }
             }
@@ -181,6 +281,29 @@ impl FakeKernel {
                 )
                 .await;
             }
+        } else if code == "display" {
+            let md = |text: &str| serde_json::json!({ "text/markdown": text });
+            let transient = serde_json::json!({ "display_id": "d1" });
+            self.iopub(
+                msg,
+                "display_data",
+                &serde_json::json!({"data": md("one"), "metadata": {}, "transient": transient}),
+            )
+            .await;
+            self.iopub(
+                msg,
+                "update_display_data",
+                &serde_json::json!({"data": md("two"), "metadata": {}, "transient": transient}),
+            )
+            .await;
+            self.iopub(msg, "clear_output", &serde_json::json!({"wait": true}))
+                .await;
+            self.stream(msg, "after\n").await;
+        } else if code == "comm" {
+            let id = uuid::Uuid::new_v4().simple().to_string();
+            self.comms.insert(id.clone(), "fake.target".into());
+            let open = serde_json::json!({"comm_id": id, "target_name": "fake.target", "data": {}});
+            self.iopub(msg, "comm_open", &open).await;
         } else if code == "raise" {
             status = ReplyStatus::Error;
             error = Some(("FakeError", "raised"));
@@ -212,7 +335,7 @@ impl FakeKernel {
                         break m.content_as::<InputReply>().unwrap().value;
                     }
                     Some(_) => {}
-                    None => return,
+                    None => return true,
                 }
             };
             self.iopub(
@@ -254,6 +377,7 @@ impl FakeKernel {
             .await;
         }
 
+        let failed = matches!(status, ReplyStatus::Error);
         let reply = ExecuteReply {
             status,
             execution_count: Some(n),
@@ -275,6 +399,7 @@ impl FakeKernel {
                     .await;
             }
         }
+        failed
     }
 
     async fn status(&self, parent: &Message, state: ExecutionState) {
