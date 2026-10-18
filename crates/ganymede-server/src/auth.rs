@@ -403,6 +403,28 @@ fn safe_method(m: &Method) -> bool {
 
 // ----- middleware ---------------------------------------------------------------
 
+/// For a generic `--static-dir` app: its HTML pages get an `_xsrf` cookie
+/// when the browser has none, as JupyterLab's page does, so an app signed
+/// in by the login cookie can pass the XSRF check on requests that change
+/// state.
+pub(crate) async fn static_page(
+    State(state): State<AppState>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let cookie = xsrf_cookie(&state, req.headers());
+    let mut resp = next.run(req).await;
+    let html = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|t| t.starts_with("text/html"));
+    if let (true, Some(c)) = (html, cookie) {
+        resp.headers_mut().append(header::SET_COOKIE, c);
+    }
+    resp
+}
+
 /// For the REST API and websockets: 403 without a token or login cookie.
 /// Requests that change state and did not send the token must pass the
 /// XSRF check, which `jupyter_server` runs before deciding who the user

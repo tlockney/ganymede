@@ -64,9 +64,11 @@ pub fn build_router(state: AppState) -> axum::Router {
     match (state.lab.clone(), &state.static_dir) {
         (Some(lab), _) => app = app.merge(lab::router(state.clone(), &lab)),
         (None, Some(dir)) => {
-            app = app.fallback_service(
-                tower_http::services::ServeDir::new(dir).append_index_html_on_directories(true),
-            )
+            let files =
+                tower_http::services::ServeDir::new(dir).append_index_html_on_directories(true);
+            app = app.fallback_service(axum::Router::new().fallback_service(files).layer(
+                axum::middleware::from_fn_with_state(state.clone(), auth::static_page),
+            ))
         }
         (None, None) => {}
     }

@@ -1122,6 +1122,49 @@ async fn token_in_a_page_url_becomes_a_login_cookie() {
     assert!(set_cookies(&h).is_empty(), "already logged in");
 }
 
+/// A generic `--static-dir` app (not JupyterLab) gets an `_xsrf` cookie
+/// with its pages, so after the token-to-cookie redirect it can still
+/// change state.
+#[tokio::test]
+async fn generic_static_dir_pages_get_xsrf() {
+    let dir = tempfile::tempdir().unwrap();
+    let site = dir.path().join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("index.html"), "<!doctype html><title>app</title>").unwrap();
+    std::fs::write(site.join("app.js"), "app").unwrap();
+    let mut st = state(dir.path());
+    st.static_dir = Some(site);
+    let app = build_router(st);
+
+    let (_, h, _) = send(&app, get_req(&format!("/?token={TOKEN}"), None)).await;
+    assert_eq!(h[header::LOCATION], "/");
+    let (n, v, _) = set_cookies(&h).remove(0);
+    let login = format!("{n}={v}");
+
+    let (st, h, html) = send(&app, get_req("/", Some(&login))).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(html.contains("<title>app</title>"));
+    let cookies = set_cookies(&h);
+    assert_eq!(cookies.len(), 1);
+    assert_eq!(cookies[0].0, "_xsrf");
+    let xsrf = cookies[0].1.clone();
+
+    let (st, h, _) = send(&app, get_req("/app.js", Some(&login))).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(set_cookies(&h).is_empty(), "not a page");
+    let both = format!("{login}; _xsrf={xsrf}");
+    let (_, h, _) = send(&app, get_req("/", Some(&both))).await;
+    assert!(set_cookies(&h).is_empty(), "already has one");
+
+    let req = Request::post("/api/contents")
+        .header(header::HOST, HOST)
+        .header(header::COOKIE, &both)
+        .header("X-XSRFToken", &xsrf)
+        .body(Body::from(r#"{"type": "file"}"#))
+        .unwrap();
+    assert_eq!(send(&app, req).await.0, StatusCode::CREATED);
+}
+
 #[tokio::test]
 async fn cookie_auth_needs_xsrf_for_changes() {
     let dir = tempfile::tempdir().unwrap();
