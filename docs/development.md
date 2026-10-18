@@ -28,8 +28,10 @@ test oracle and a kernel, never a dependency of the product.
 - The REST and websocket API is a compatibility target, not a design
   space: match `jupyter_server`.
 - Each change is a pull request that references a GitHub issue, with CI
-  green, and appends what it learned to the
-  [development log](notes.md) (`docs/notes.md`).
+  green, and adds what it learned to the
+  [development log](notes.md) as its own file,
+  `docs/notes/YYYY-MM-DD-<topic>.md`. Don't append to `docs/notes.md`:
+  one shared file makes every pair of open PRs conflict.
 
 ## Releases
 
