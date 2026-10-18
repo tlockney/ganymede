@@ -58,6 +58,12 @@ The page is served at `/lab`, with the `/lab/api/*` endpoints it calls.
 serves the API alone. `lab` also moves past a taken port, from 8888 up
 to 50 more, as `jupyter lab` does, and prints the URL of `/lab`.
 
+Any other `--static-dir` is served at `/`, behind the API: a built
+[ganymede-ui](https://github.com/tlockney/ganymede-ui) works this way.
+Its HTML pages get an `_xsrf` cookie, as JupyterLab's page does, so an app
+on the login cookie can send it back as `X-XSRFToken` on requests that
+change state.
+
 Open the URL `ganymede lab` or `ganymede serve` printed. The token in it becomes a login
 cookie, and the browser is redirected to the same page without it; the
 cookie is what JupyterLab's websockets authenticate with. Without the
