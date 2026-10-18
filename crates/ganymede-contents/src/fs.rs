@@ -679,10 +679,12 @@ impl Inner {
             return Err(Error::Forbidden("cannot rename the contents root".into()));
         }
         let meta = fs::symlink_metadata(&from.os).map_err(|e| io_to_error(e, &from.api))?;
-        if fs::symlink_metadata(&to.os).is_ok() {
-            return Err(Error::Conflict(format!("File already exists: {}", to.api)));
-        }
-        fs::rename(&from.os, &to.os).map_err(|e| io_to_error(e, &to.api.parent()))?;
+        rename_noreplace(&from.os, &to.os).map_err(|e| match e.kind() {
+            io::ErrorKind::AlreadyExists => {
+                Error::Conflict(format!("File already exists: {}", to.api))
+            }
+            _ => io_to_error(e, &to.api.parent()),
+        })?;
         self.rename_all_checkpoints(&from.api, &to.api, meta.is_dir());
         self.get_without_content(&to.api)
     }
@@ -1057,6 +1059,95 @@ fn reserve_filename(
     }
 }
 
+/// Rename `from` to `to`, failing with `AlreadyExists` when `to` exists
+/// (jupyter_server's "File already exists" 409), for files and directories.
+///
+/// Atomic where the OS offers a no-replace rename: `renameat2` with
+/// `RENAME_NOREPLACE` on Linux and Android, `renamex_np` with `RENAME_EXCL`
+/// on macOS and iOS. Elsewhere, or on a filesystem that does not support
+/// the flag, it checks and then renames, so a `to` created in between is
+/// replaced (a file) or the rename fails (a non-empty directory).
+fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    if let Some(result) = sys::rename_noreplace(from, to) {
+        return result;
+    }
+    if fs::symlink_metadata(to).is_ok() {
+        return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+    }
+    fs::rename(from, to)
+}
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios"
+))]
+mod sys {
+    use std::ffi::CString;
+    use std::io;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+
+    /// The OS's no-replace rename, or `None` when it is not available for
+    /// these paths (old kernel, filesystem without support).
+    pub(super) fn rename_noreplace(from: &Path, to: &Path) -> Option<io::Result<()>> {
+        let (Ok(from), Ok(to)) = (
+            CString::new(from.as_os_str().as_bytes()),
+            CString::new(to.as_os_str().as_bytes()),
+        ) else {
+            return Some(Err(io::Error::from(io::ErrorKind::InvalidInput)));
+        };
+        if call(&from, &to) == 0 {
+            return Some(Ok(()));
+        }
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(libc::ENOSYS | libc::EINVAL | libc::ENOTSUP) => None,
+            _ => Some(Err(err)),
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn call(from: &CString, to: &CString) -> libc::c_long {
+        // The raw syscall: the libc wrapper needs glibc 2.28.
+        // SAFETY: both paths are NUL-terminated and outlive the call.
+        unsafe {
+            libc::syscall(
+                libc::SYS_renameat2 as libc::c_long,
+                libc::AT_FDCWD,
+                from.as_ptr(),
+                libc::AT_FDCWD,
+                to.as_ptr(),
+                libc::RENAME_NOREPLACE as libc::c_uint,
+            )
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    fn call(from: &CString, to: &CString) -> libc::c_long {
+        // SAFETY: both paths are NUL-terminated and outlive the call.
+        libc::c_long::from(unsafe {
+            libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL)
+        })
+    }
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios"
+)))]
+mod sys {
+    use std::io;
+    use std::path::Path;
+
+    pub(super) fn rename_noreplace(_: &Path, _: &Path) -> Option<io::Result<()>> {
+        None
+    }
+}
+
 fn create_new_file(path: &Path) -> io::Result<()> {
     fs::OpenOptions::new()
         .write(true)
@@ -1098,6 +1189,39 @@ fn splitext(name: &str) -> (&str, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rename_noreplace_refuses_an_existing_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = |n: &str| dir.path().join(n);
+        fs::write(p("a"), "a").unwrap();
+        fs::write(p("b"), "b").unwrap();
+        fs::create_dir(p("d")).unwrap();
+        fs::create_dir(p("e")).unwrap();
+        // `fs::rename` would replace the file `b` and the empty dir `e`.
+        for (from, to) in [("a", "b"), ("d", "e"), ("a", "e"), ("d", "b")] {
+            let err = rename_noreplace(&p(from), &p(to)).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::AlreadyExists, "{from} -> {to}");
+            // On these platforms the OS refuses, not a check made before.
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            assert_eq!(
+                sys::rename_noreplace(&p(from), &p(to))
+                    .expect("supported on the test filesystem")
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::AlreadyExists
+            );
+        }
+        assert_eq!(fs::read_to_string(p("b")).unwrap(), "b");
+        assert!(p("e").is_dir() && p("d").is_dir());
+
+        rename_noreplace(&p("a"), &p("c")).unwrap();
+        rename_noreplace(&p("d"), &p("f")).unwrap();
+        assert_eq!(fs::read_to_string(p("c")).unwrap(), "a");
+        assert!(!p("a").exists() && !p("d").exists() && p("f").is_dir());
+        let missing = rename_noreplace(&p("a"), &p("g")).unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+    }
 
     #[test]
     fn copy_suffix_stripping() {
