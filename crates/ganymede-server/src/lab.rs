@@ -658,7 +658,11 @@ fn safe_segments(p: &str) -> bool {
 }
 
 pub(crate) fn write_atomic(path: &FsPath, bytes: &[u8]) -> HttpResult<()> {
-    let io = |e: std::io::Error| HttpError(500, format!("writing {}: {e}", path.display()));
+    // The OS path goes to the log only.
+    let io = |e: std::io::Error| {
+        tracing::warn!("writing {}: {e}", path.display());
+        HttpError(500, format!("cannot save: {e}"))
+    };
     let dir = path
         .parent()
         .ok_or_else(|| HttpError(500, "no parent directory".into()))?;

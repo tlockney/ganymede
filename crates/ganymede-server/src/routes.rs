@@ -112,10 +112,39 @@ async fn api_version() -> Json<Value> {
     Json(json!({ "version": JUPYTER_SERVER_VERSION }))
 }
 
+#[derive(Deserialize, Default)]
+struct MeQuery {
+    permissions: Option<String>,
+}
+
 /// One identity for whoever holds the token. `jupyter_server` invents an
 /// anonymous name per browser; this server has no users to tell apart.
-async fn me() -> Json<Value> {
-    Json(json!({
+/// `?permissions={"resource": ["action", ...]}` is answered with the
+/// actions allowed, which is all of them: the token grants everything.
+async fn me(Query(q): Query<MeQuery>) -> HttpResult<Json<Value>> {
+    let permissions = match q.permissions.as_deref() {
+        None | Some("") => json!({}),
+        Some(p) => {
+            let bad = || {
+                HttpError(
+                    400,
+                    "permissions should be a JSON dict of {\"resource\": [\"action\",]}, got "
+                        .to_string()
+                        + p,
+                )
+            };
+            let v: Value = serde_json::from_str(p).map_err(|_| bad())?;
+            let valid = v.as_object().is_some_and(|m| {
+                m.values()
+                    .all(|a| a.as_array().is_some_and(|a| a.iter().all(Value::is_string)))
+            });
+            if !valid {
+                return Err(bad());
+            }
+            v
+        }
+    };
+    Ok(Json(json!({
         "identity": {
             "username": "anonymous",
             "name": "Anonymous",
@@ -124,8 +153,8 @@ async fn me() -> Json<Value> {
             "avatar_url": null,
             "color": null,
         },
-        "permissions": {},
-    }))
+        "permissions": permissions,
+    })))
 }
 
 /// Frontend config sections, stored as `nbconfig/{section}.json` in the
@@ -282,7 +311,8 @@ async fn start_kernel(
         .kernels
         .start(req.name.as_deref(), req.path.as_deref())
         .await?;
-    Ok((StatusCode::CREATED, Json(model)).into_response())
+    let location = format!("{}api/kernels/{}", s.base_url, url_escape(&model.id));
+    Ok(created(location, model))
 }
 
 async fn get_kernel(
@@ -326,7 +356,8 @@ async fn create_session(
     LenientJson(req): LenientJson<SessionCreate>,
 ) -> HttpResult<Response> {
     let model = s.sessions.create(req).await?;
-    Ok((StatusCode::CREATED, Json(model)).into_response())
+    let location = format!("{}api/sessions/{}", s.base_url, url_escape(&model.id));
+    Ok(created(location, model))
 }
 
 async fn get_session(
@@ -438,12 +469,11 @@ async fn put_contents(
         req.ok_or_else(|| HttpError(400, "PUT needs a body with type, format, content".into()))?;
     let existed = s.contents.get(&p, GetOptions::default()).await.is_ok();
     let model = s.contents.save(&p, req).await?;
-    let status = if existed {
-        StatusCode::OK
+    if existed {
+        Ok(Json(model).into_response())
     } else {
-        StatusCode::CREATED
-    };
-    Ok((status, Json(model)).into_response())
+        Ok(created(contents_location(&s, &model.path), model))
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -508,7 +538,12 @@ async fn post_contents(
     match target(&path) {
         ContentsTarget::Checkpoints(p) => {
             let cp = s.contents.create_checkpoint(&p).await?;
-            Ok((StatusCode::CREATED, Json(cp)).into_response())
+            let location = format!(
+                "{}/checkpoints/{}",
+                contents_location(&s, &p),
+                url_escape(&cp.id)
+            );
+            Ok(created(location, cp))
         }
         ContentsTarget::Checkpoint(p, id) => {
             s.contents.restore_checkpoint(&p, &id).await?;
@@ -533,9 +568,37 @@ async fn post_contents(
                     )
                     .await?
             };
-            Ok((StatusCode::CREATED, Json(model)).into_response())
+            Ok(created(contents_location(&s, &model.path), model))
         }
     }
+}
+
+/// 201 with a `Location` header, as `jupyter_server` answers a create.
+fn created(location: String, body: impl serde::Serialize) -> Response {
+    let mut resp = (StatusCode::CREATED, Json(body)).into_response();
+    if let Ok(v) = header::HeaderValue::from_str(&location) {
+        resp.headers_mut().insert(header::LOCATION, v);
+    }
+    resp
+}
+
+/// The URL of a contents path, each segment percent-encoded.
+fn contents_location(s: &AppState, path: &str) -> String {
+    format!("{}api/contents/{}", s.base_url, url_escape(path))
+}
+
+/// `jupyter_server.utils.url_escape`: percent-encode each `/`-separated
+/// segment, as Python's `quote` does.
+fn url_escape(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for b in path.bytes() {
+        if b.is_ascii_alphanumeric() || b"/_.-~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 fn method_not_allowed() -> HttpError {
@@ -552,9 +615,14 @@ pub(crate) fn origin_allowed(state: &AppState, headers: &HeaderMap) -> bool {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     let origin_host = origin.split("://").nth(1).unwrap_or(origin);
-    origin_host == host
-        || state
-            .allow_origins
-            .iter()
-            .any(|o| o == "*" || o == origin || o == origin_host)
+    origin_host == host || origin_listed(&state.allow_origins, origin)
+}
+
+/// Whether `origin` is in `allow_origins`: `*`, the full origin, or its
+/// host and port.
+pub(crate) fn origin_listed(allow_origins: &[String], origin: &str) -> bool {
+    let origin_host = origin.split("://").nth(1).unwrap_or(origin);
+    allow_origins
+        .iter()
+        .any(|o| o == "*" || o == origin || o == origin_host)
 }

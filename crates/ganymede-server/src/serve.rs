@@ -259,6 +259,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         allow_origins: cfg.allow_origins.clone(),
         allow_remote_access: cfg.allow_remote_access(),
         local_hostnames: cfg.local_hostnames.clone(),
+        trust_xheaders: cfg.trust_xheaders,
         max_body_size: usize::try_from(cfg.max_body_size).unwrap_or(usize::MAX),
         base_url: base_url.clone(),
         config_dir,
@@ -270,7 +271,18 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     if !base.is_empty() {
         app = axum::Router::new().nest(&base, app);
     }
-    let app = app.layer(tower_http::trace::TraceLayer::new_for_http());
+    let app = app.layer(
+        tower_http::trace::TraceLayer::new_for_http().make_span_with(
+            |req: &axum::http::Request<axum::body::Body>| {
+                tracing::debug_span!(
+                    "request",
+                    method = %req.method(),
+                    uri = %crate::auth::scrub_uri(req.uri()),
+                    version = ?req.version(),
+                )
+            },
+        ),
+    );
 
     if cfg.cull_idle_secs > 0 {
         let k = kernels.clone();

@@ -29,7 +29,9 @@ pub struct AppState {
     pub token: Option<String>,
     /// Key for signing login cookies; see [`auth::load_cookie_secret`].
     pub cookie_secret: Arc<[u8]>,
-    /// Origins allowed to open websockets, beyond the request's own host.
+    /// Origins allowed besides the request's own host: for websockets,
+    /// cookie-authenticated requests, and CORS (`Access-Control-Allow-*`
+    /// headers and preflight answers).
     pub allow_origins: Vec<String>,
     /// Skip the `Host` check. Off by default when bound to loopback, so a
     /// DNS-rebinding page cannot reach the server through its own name.
@@ -37,6 +39,11 @@ pub struct AppState {
     /// Names, besides loopback addresses, accepted in `Host` when
     /// `allow_remote_access` is off.
     pub local_hostnames: Vec<String>,
+    /// Believe `X-Forwarded-Proto` (and `X-Scheme`) from a reverse proxy,
+    /// so login cookies get `Secure` behind a TLS terminator.
+    /// `jupyter_server`'s `trust_xheaders`; off by default, since any
+    /// client can send the header.
+    pub trust_xheaders: bool,
     /// Largest request body accepted, in bytes; larger ones get 413.
     pub max_body_size: usize,
     /// URL prefix the routes are nested under, with a trailing `/`.
@@ -63,13 +70,46 @@ pub fn build_router(state: AppState) -> axum::Router {
         }
         (None, None) => {}
     }
+    app = app
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::strip_token,
+        ))
+        .layer(axum::extract::DefaultBodyLimit::max(state.max_body_size));
+    if !state.allow_origins.is_empty() {
+        app = app.layer(cors(state.allow_origins.clone()));
+    }
     app.layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        auth::strip_token,
-    ))
-    .layer(axum::extract::DefaultBodyLimit::max(state.max_body_size))
-    .layer(axum::middleware::from_fn_with_state(
         state,
         auth::check_host,
     ))
+}
+
+/// CORS for `allow_origins`, as `jupyter_server` sends it: the allowed
+/// origin echoed in `Access-Control-Allow-Origin`, and preflight requests
+/// answered before auth with the methods and headers its API handlers
+/// accept.
+fn cors(allow_origins: Vec<String>) -> tower_http::cors::CorsLayer {
+    use axum::http::{header, HeaderName, Method};
+    use tower_http::cors::{AllowOrigin, CorsLayer};
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::predicate(move |origin, _| {
+            origin
+                .to_str()
+                .is_ok_and(|o| routes::origin_listed(&allow_origins, o))
+        }))
+        .allow_methods([
+            Method::GET,
+            Method::PUT,
+            Method::POST,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            header::ACCEPT,
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            HeaderName::from_static("x-xsrftoken"),
+        ])
 }

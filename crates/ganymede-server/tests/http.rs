@@ -79,6 +79,7 @@ fn state(root: &std::path::Path) -> AppState {
         allow_origins: vec![],
         allow_remote_access: false,
         local_hostnames: vec!["localhost".into()],
+        trust_xheaders: false,
         max_body_size: 512 * 1024 * 1024,
         base_url: "/".into(),
         config_dir: root.join(".jupyter-config"),
@@ -1389,6 +1390,195 @@ async fn notebooks_over_two_megabytes_save_and_the_limit_gives_413() {
     )
     .await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+fn api_req(method: &str, path: &str, body: Option<Value>) -> Request<Body> {
+    let r = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::HOST, HOST)
+        .header(header::AUTHORIZATION, format!("token {TOKEN}"));
+    match body {
+        Some(b) => r.body(Body::from(b.to_string())).unwrap(),
+        None => r.body(Body::empty()).unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn creates_answer_201_with_a_location() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    st.base_url = "/base/".into();
+    let app = build_router(st);
+
+    let (s, h, body) = send(&app, api_req("POST", "/api/kernels", Some(json!({})))).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let id = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(h[header::LOCATION], format!("/base/api/kernels/{id}"));
+
+    let session =
+        json!({"path": "a b.ipynb", "type": "notebook", "name": "", "kernel": {"name": "fake"}});
+    let (s, h, body) = send(&app, api_req("POST", "/api/sessions", Some(session))).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let id = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(h[header::LOCATION], format!("/base/api/sessions/{id}"));
+
+    let file = json!({"type": "file", "format": "text", "content": "x"});
+    let (s, h, _) = send(
+        &app,
+        api_req("PUT", "/api/contents/a%20b.txt", Some(file.clone())),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    assert_eq!(h[header::LOCATION], "/base/api/contents/a%20b.txt");
+    let (s, h, _) = send(&app, api_req("PUT", "/api/contents/a%20b.txt", Some(file))).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(h.get(header::LOCATION).is_none());
+
+    let (s, h, _) = send(
+        &app,
+        api_req("POST", "/api/contents", Some(json!({"type": "directory"}))),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    assert_eq!(h[header::LOCATION], "/base/api/contents/Untitled%20Folder");
+
+    let (s, h, _) = send(
+        &app,
+        api_req("POST", "/api/contents/a%20b.txt/checkpoints", None),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    assert_eq!(
+        h[header::LOCATION],
+        "/base/api/contents/a%20b.txt/checkpoints/checkpoint"
+    );
+}
+
+#[tokio::test]
+async fn allowed_origins_get_cors_headers_and_preflight() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    st.allow_origins = vec!["https://app.example".into()];
+    let app = build_router(st);
+
+    let preflight = |origin: &str| {
+        Request::builder()
+            .method("OPTIONS")
+            .uri("/api/kernels")
+            .header(header::HOST, HOST)
+            .header(header::ORIGIN, origin)
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+            .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "authorization")
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (s, h, _) = send(&app, preflight("https://app.example")).await;
+    assert!(s.is_success(), "{s}");
+    assert_eq!(
+        h[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+        "https://app.example"
+    );
+    assert!(h[header::ACCESS_CONTROL_ALLOW_METHODS]
+        .to_str()
+        .unwrap()
+        .contains("POST"));
+    assert!(h[header::ACCESS_CONTROL_ALLOW_HEADERS]
+        .to_str()
+        .unwrap()
+        .contains("authorization"));
+
+    let (_, h, _) = send(&app, preflight("https://evil.example")).await;
+    assert!(h.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+
+    let mut req = api_req("GET", "/api/status", None);
+    req.headers_mut()
+        .insert(header::ORIGIN, "https://app.example".parse().unwrap());
+    let (s, h, _) = send(&app, req).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        h[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+        "https://app.example"
+    );
+
+    // Without allow_origins there are no CORS headers.
+    let app = build_router(state(dir.path()));
+    let (_, h, _) = send(&app, preflight("https://app.example")).await;
+    assert!(h.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+}
+
+#[tokio::test]
+async fn login_cookie_is_secure_behind_a_trusted_https_proxy() {
+    let dir = tempfile::tempdir().unwrap();
+    let cookie_for = |trust: bool, proto: Option<&'static str>| {
+        let mut st = state(dir.path());
+        st.trust_xheaders = trust;
+        let app = build_router(st);
+        async move {
+            let mut req = api_req("GET", "/api/status", None);
+            if let Some(p) = proto {
+                req.headers_mut()
+                    .insert("x-forwarded-proto", p.parse().unwrap());
+            }
+            let (_, h, _) = send(&app, req).await;
+            set_cookies(&h)[0].2.clone()
+        }
+    };
+    assert!(cookie_for(true, Some("https")).await.ends_with("; Secure"));
+    assert!(cookie_for(true, Some("http, https"))
+        .await
+        .ends_with("; Secure"));
+    assert!(!cookie_for(true, Some("http")).await.contains("Secure"));
+    assert!(!cookie_for(true, None).await.contains("Secure"));
+    assert!(!cookie_for(false, Some("https")).await.contains("Secure"));
+}
+
+#[tokio::test]
+async fn me_answers_requested_permissions() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(state(dir.path()));
+    let t = Some(TOKEN);
+    let (s, me) = call(&app, "GET", "/api/me", None, t).await;
+    assert_eq!((s, &me["permissions"]), (StatusCode::OK, &json!({})));
+    let q = "%7B%22contents%22%3A%5B%22read%22%2C%22write%22%5D%7D";
+    let (s, me) = call(&app, "GET", &format!("/api/me?permissions={q}"), None, t).await;
+    assert_eq!(
+        (s, &me["permissions"]),
+        (StatusCode::OK, &json!({"contents": ["read", "write"]}))
+    );
+    let (s, _) = call(&app, "GET", "/api/me?permissions=%5B1%5D", None, t).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn errors_name_api_paths_not_os_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.txt"), "s").unwrap();
+    std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).unwrap();
+    let app = build_router(state(dir.path()));
+    let (s, body) = call(
+        &app,
+        "GET",
+        "/api/contents/link/secret.txt",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let message = body["message"].as_str().unwrap();
+    assert!(message.contains("link/secret.txt"), "{message}");
+    assert!(
+        !message.contains(&*dir.path().to_string_lossy()),
+        "{message}"
+    );
 }
 
 #[tokio::test]

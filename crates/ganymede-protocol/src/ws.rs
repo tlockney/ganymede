@@ -106,6 +106,9 @@ pub mod legacy {
         let mut v = serde_json::to_value(msg)?;
         v["channel"] = Value::String(channel.as_str().to_string());
         if msg.buffers.is_empty() {
+            // jupyter_server's text frames carry the message's (empty)
+            // buffer list; binary frames carry the buffers outside the JSON.
+            v["buffers"] = Value::Array(vec![]);
             return Ok(Frame::Text(serde_json::to_string(&v)?));
         }
         // jupyter_server.base.zmqhandlers.serialize_binary_message
@@ -248,6 +251,7 @@ mod tests {
             panic!("expected text")
         };
         assert!(t.contains("\"channel\":\"control\""));
+        assert!(t.contains("\"buffers\":[]"));
         let (ch, back) = legacy::decode_text(&t).unwrap();
         assert_eq!((ch, back), (Channel::Control, m));
 
@@ -256,6 +260,7 @@ mod tests {
             panic!("expected binary")
         };
         assert_eq!(u32::from_be_bytes(b[..4].try_into().unwrap()), 3);
+        assert!(!String::from_utf8_lossy(&b).contains("\"buffers\""));
         let (ch, back) = legacy::decode_binary(&b).unwrap();
         assert_eq!((ch, back), (Channel::Shell, m));
     }
