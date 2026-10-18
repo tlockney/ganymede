@@ -138,6 +138,10 @@ first.
 
 ## ganymede-ui
 
+> [!NOTE]
+> `ganymede ui` is unreleased: it is only available from HEAD (build
+> from source) until the next release after 0.3.0.
+
 [ganymede-ui](https://github.com/tlockney/ganymede-ui) is Ganymede's own
 notebook app, a static site that is a client of the same API. Install a
 release and serve it:
