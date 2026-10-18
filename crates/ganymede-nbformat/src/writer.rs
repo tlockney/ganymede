@@ -171,6 +171,29 @@ impl Formatter for PythonFormatter<'_> {
         self.write_f64(writer, f64::from(value))
     }
 
+    /// Numbers in a `Value` keep their source text (serde_json's
+    /// `arbitrary_precision`), so integers of any size are written exactly,
+    /// as Python's `int` is. Floats go through `python_float_repr`; a float
+    /// too large for `f64` keeps its text, where Python would write the
+    /// non-JSON `Infinity`.
+    fn write_number_str<W: ?Sized + Write>(
+        &mut self,
+        writer: &mut W,
+        value: &str,
+    ) -> std::io::Result<()> {
+        if value.contains(['.', 'e', 'E']) {
+            match value.parse::<f64>() {
+                Ok(f) if f.is_finite() => self.write_f64(writer, f),
+                _ => writer.write_all(value.as_bytes()),
+            }
+        } else if value == "-0" {
+            // Python reads `-0` as the int 0.
+            writer.write_all(b"0")
+        } else {
+            writer.write_all(value.as_bytes())
+        }
+    }
+
     fn begin_array<W: ?Sized + Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
         self.0.begin_array(writer)
     }
@@ -350,6 +373,17 @@ mod tests {
         assert_eq!(
             dumps(&v),
             "{\n \"a\": 1e-05,\n \"b\": [\n  1e+16,\n  0.0001\n ],\n \"c\": 7\n}"
+        );
+
+        // Text from a file is written as Python writes what `json.loads`
+        // gives: floats in repr layout, integers of any size exactly.
+        let v: Value = serde_json::from_str(
+            "[1E5, 0.00001, 1.10, 18446744073709551616, -123456789012345678901234567890, -0]",
+        )
+        .unwrap();
+        assert_eq!(
+            dumps(&v),
+            "[\n 100000.0,\n 1e-05,\n 1.1,\n 18446744073709551616,\n -123456789012345678901234567890,\n 0\n]"
         );
     }
 

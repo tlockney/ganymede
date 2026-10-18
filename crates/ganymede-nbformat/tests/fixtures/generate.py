@@ -74,6 +74,11 @@ COMMON_METADATA = {
     # Floats whose repr differs between Python and a naive shortest-float
     # printer (exponent layout), plus integers at the i64/u64 edges.
     "numbers": [1e-5, 2.5e-7, 0.0001, 1e15, 1e16, 1.5e300, -0.0, 0.1 + 0.2, 123456789.125, -1, 2**63 - 1, 2**64 - 1],
+    # 17 significant digits: a reader that is not correctly rounded parses
+    # some of these to a neighbouring double (#72).
+    "precise_floats": [123456789.12345679, 0.030000000000000002, 1.1499999999999999e300, 2.2250738585072014e-308, 5e-324, 1.7976931348623157e308, 0.1234567890123456789, 9007199254740993.0],
+    # Beyond u64: Python keeps the exact int.
+    "big_ints": [2**64, -(2**64) - 1, 10**30],
 }
 
 
@@ -125,6 +130,7 @@ def code_outputs() -> nbformat.NotebookNode:
                         # JSON mimes are stored as JSON and must NOT be split.
                         "application/json": {
                             "rows": [{"a": 1, "b": 2}, {"a": 3, "b": 4}],
+                            "y": [0.30000000000000004, 0.7071067811865476, 2.718281828459045, 1e-07],
                             "note": "multi\nline string inside json stays a string",
                         },
                         "application/vnd.dataresource+json": {

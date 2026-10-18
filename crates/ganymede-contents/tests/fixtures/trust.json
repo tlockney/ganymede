@@ -466,8 +466,8 @@
   {
    "notebook": "../../../ganymede-nbformat/tests/fixtures/code_outputs.ipynb",
    "signatures": {
-    "base64": "684e36f9cb49d75a04eb92b60b39a8ab88553becd9f669167779f6ae6c736561",
-    "short": "0b106d10a078a561e4dd862a5c7585c3b51e812a9bec2b4551376e740e76ab3b"
+    "base64": "a763bc260c2d8d594eda991b50a19ba017e820afc12a6f12c85a7cc953110ed5",
+    "short": "6dff07e25d774cc968225b5d5e790c09b6edb75268ceeecc34a9c6cbcd3e9566"
    }
   },
   {
