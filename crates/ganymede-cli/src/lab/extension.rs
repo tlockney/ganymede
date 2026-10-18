@@ -49,7 +49,7 @@ pub enum ExtensionCmd {
     /// List installed packages and their extensions.
     List {
         /// Print a JSON array of `{"name", "version", "extensions",
-        /// "required_by"}` objects instead, with the disabled extensions.
+        /// "required_by"}` objects instead.
         #[arg(long)]
         json: bool,
     },

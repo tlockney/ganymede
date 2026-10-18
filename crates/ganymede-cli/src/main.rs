@@ -134,6 +134,13 @@ enum Cmd {
         #[arg(long, default_value_t = 60)]
         timeout: u64,
     },
+    /// Print a shell completion script, for example
+    /// `ganymede completions bash > ~/.local/share/bash-completion/completions/ganymede`
+    /// or `ganymede completions zsh > ~/.zfunc/_ganymede`.
+    Completions {
+        /// The shell to complete for.
+        shell: clap_complete::Shell,
+    },
     /// Notebook file utilities that need no kernel.
     Nb {
         #[command(subcommand)]
@@ -168,13 +175,6 @@ enum Cmd {
     },
     /// Serve the Jupyter REST and websocket API (JupyterLab, VS Code, ...).
     Serve(Box<ganymede_server::serve::ServeArgs>),
-    /// Print a shell completion script, for example
-    /// `ganymede completions bash > ~/.local/share/bash-completion/completions/ganymede`
-    /// or `ganymede completions zsh > ~/.zfunc/_ganymede`.
-    Completions {
-        /// The shell to complete for.
-        shell: clap_complete::Shell,
-    },
     /// Show versions and the directories in use.
     Info {
         #[arg(long)]
@@ -440,6 +440,16 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             write_notebook(&nb, dest.as_deref())?;
             Ok(ExitCode::SUCCESS)
         }
+        Cmd::Completions { shell } => {
+            use clap::CommandFactory;
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "ganymede",
+                &mut std::io::stdout(),
+            );
+            Ok(ExitCode::SUCCESS)
+        }
         Cmd::Trust {
             notebooks,
             reset,
@@ -458,16 +468,6 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
         Cmd::Serve(args) => {
             let cfg = server_config(*args, &cli.kernelspec_root, cli.startup_timeout, cli.quiet)?;
             ganymede_server::serve::run(cfg).await?;
-            Ok(ExitCode::SUCCESS)
-        }
-        Cmd::Completions { shell } => {
-            use clap::CommandFactory;
-            clap_complete::generate(
-                shell,
-                &mut Cli::command(),
-                "ganymede",
-                &mut std::io::stdout(),
-            );
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Info { json } => info(&engine, json),
