@@ -159,6 +159,12 @@ impl GetOptions {
 /// client, an editor) made in the meantime. When it is absent the client's
 /// copy wins: the save is unconditional, which is what clients that never
 /// send it, such as VS Code, get.
+///
+/// [`SaveRequest::if_match`] is the exact form of that check, with no
+/// window: the HTTP layer fills it from an `If-Match` header, and the save
+/// fails with [`crate::Error::PreconditionFailed`] (412) unless the file's
+/// current sha256 is one of the tags. Neither check is part of
+/// jupyter_server; both are opt-in.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SaveRequest {
     #[serde(rename = "type")]
@@ -176,6 +182,20 @@ pub struct SaveRequest {
     /// Chunk number of a chunked upload: 1 first, -1 last; see above.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chunk: Option<i64>,
+    /// Precondition from an `If-Match` header; not part of the JSON body.
+    /// Checked for every save except chunks after the first.
+    #[serde(skip)]
+    pub if_match: Option<IfMatch>,
+}
+
+/// An `If-Match` precondition on a save.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IfMatch {
+    /// `If-Match: *`: the path must exist.
+    Any,
+    /// The file must exist and its sha256, lowercase hex as `hash` reports
+    /// it, must be one of these. An empty list never matches.
+    Hashes(Vec<String>),
 }
 
 impl SaveRequest {
@@ -187,6 +207,7 @@ impl SaveRequest {
             content: Some(content),
             last_modified: None,
             chunk: None,
+            if_match: None,
         }
     }
 
@@ -198,6 +219,7 @@ impl SaveRequest {
             content: Some(Value::String(content.into())),
             last_modified: None,
             chunk: None,
+            if_match: None,
         }
     }
 
@@ -209,6 +231,7 @@ impl SaveRequest {
             content: Some(Value::String(content.into())),
             last_modified: None,
             chunk: None,
+            if_match: None,
         }
     }
 
@@ -220,12 +243,19 @@ impl SaveRequest {
             content: None,
             last_modified: None,
             chunk: None,
+            if_match: None,
         }
     }
 
     /// Attach the client's `last_modified` for conflict detection.
     pub fn with_last_modified(mut self, last_modified: impl Into<String>) -> Self {
         self.last_modified = Some(last_modified.into());
+        self
+    }
+
+    /// Attach an `If-Match` precondition (see [`IfMatch`]).
+    pub fn with_if_match(mut self, if_match: IfMatch) -> Self {
+        self.if_match = Some(if_match);
         self
     }
 

@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime};
 use base64::Engine;
 use ganymede_contents::{
     ContentType, Contents, ContentsModel, Error, Format, FsContents, FsOptions, GetOptions,
-    SaveRequest, CHECKPOINT_ID, DEFAULT_CHECKPOINT_DIR,
+    IfMatch, SaveRequest, CHECKPOINT_ID, DEFAULT_CHECKPOINT_DIR,
 };
 use ganymede_nbformat::Notebook;
 use serde_json::{json, Value};
@@ -1047,6 +1047,112 @@ async fn root_must_be_a_directory() {
     fs::write(dir.path().join("f"), "").unwrap();
     assert!(FsContents::new(dir.path().join("f"), FsOptions::default()).is_err());
     assert!(FsContents::new(dir.path().join("missing"), FsOptions::default()).is_err());
+}
+
+#[tokio::test]
+async fn if_match_precondition() {
+    let (dir, c) = setup();
+    let path = dir.path().join("a.txt");
+    let tags = |h: &str| IfMatch::Hashes(vec!["0".repeat(64), h.to_string()]);
+
+    // The path must exist, for `*` and for tags alike.
+    for cond in [IfMatch::Any, tags("x")] {
+        let r = c
+            .save("a.txt", SaveRequest::text("v1").with_if_match(cond))
+            .await;
+        assert_eq!(status(&r), 412);
+        assert!(matches!(r, Err(Error::PreconditionFailed(_))));
+    }
+    assert!(!path.exists());
+
+    // A save reports the sha256 of what it wrote.
+    let m1 = c.save("a.txt", SaveRequest::text("v1")).await.unwrap();
+    let h1 = m1.hash.clone().unwrap();
+    assert_eq!(m1.hash_algorithm.as_deref(), Some("sha256"));
+    let got = c
+        .get(
+            "a.txt",
+            GetOptions {
+                hash: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(got.hash.as_deref(), Some(h1.as_str()));
+
+    // A matching tag saves and yields the next one.
+    let m2 = c
+        .save("a.txt", SaveRequest::text("v2").with_if_match(tags(&h1)))
+        .await
+        .unwrap();
+    let h2 = m2.hash.unwrap();
+    assert_ne!(h1, h2);
+
+    // An external write within the same millisecond is still caught: the
+    // mtime is set back to what the client saw.
+    let seen = fs::metadata(&path).unwrap().modified().unwrap();
+    fs::write(&path, "external").unwrap();
+    set_mtime(&path, seen);
+    let r = c
+        .save("a.txt", SaveRequest::text("v3").with_if_match(tags(&h2)))
+        .await;
+    assert_eq!(status(&r), 412);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "external");
+    c.save("a.txt", SaveRequest::text("v3").with_if_match(IfMatch::Any))
+        .await
+        .unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "v3");
+
+    // An empty list (only weak tags were sent) never matches.
+    let r = c
+        .save(
+            "a.txt",
+            SaveRequest::text("v4").with_if_match(IfMatch::Hashes(vec![])),
+        )
+        .await;
+    assert_eq!(status(&r), 412);
+
+    // A notebook's tag is the hash of the file as written.
+    let m = c
+        .save("n.ipynb", SaveRequest::notebook(sample_notebook()))
+        .await
+        .unwrap();
+    let on_disk = c
+        .get(
+            "n.ipynb",
+            GetOptions {
+                hash: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(m.hash, on_disk.hash);
+    c.save(
+        "n.ipynb",
+        SaveRequest::notebook(sample_notebook()).with_if_match(tags(&m.hash.unwrap())),
+    )
+    .await
+    .unwrap();
+
+    // Later chunks of an upload skip it; directories have no hash.
+    c.save("b.bin", SaveRequest::base64("AAAA").with_chunk(1))
+        .await
+        .unwrap();
+    c.save(
+        "b.bin",
+        SaveRequest::base64("AAAA")
+            .with_chunk(-1)
+            .with_if_match(tags("stale")),
+    )
+    .await
+    .unwrap();
+    c.save("d", SaveRequest::directory()).await.unwrap();
+    let r = c
+        .save("d", SaveRequest::directory().with_if_match(tags("x")))
+        .await;
+    assert_eq!(status(&r), 412);
 }
 
 #[tokio::test]

@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use ganymede_api::{ApiError, KernelStart, SessionCreate, SessionPatch, StatusModel};
-use ganymede_contents::{ContentType, Format, GetOptions, SaveRequest};
+use ganymede_contents::{ContentType, Format, GetOptions, IfMatch, SaveRequest};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -423,7 +423,7 @@ fn target(path: &str) -> ContentsTarget {
 async fn get_contents_root(
     state: State<AppState>,
     q: Query<ContentsQuery>,
-) -> HttpResult<Json<Value>> {
+) -> HttpResult<Response> {
     get_contents(state, Path(String::new()), q).await
 }
 
@@ -431,15 +431,17 @@ async fn get_contents(
     State(s): State<AppState>,
     Path(path): Path<String>,
     Query(q): Query<ContentsQuery>,
-) -> HttpResult<Json<Value>> {
+) -> HttpResult<Response> {
     match target(&path) {
-        ContentsTarget::Checkpoints(p) => Ok(Json(
-            serde_json::to_value(s.contents.list_checkpoints(&p).await?).unwrap(),
-        )),
+        ContentsTarget::Checkpoints(p) => {
+            Ok(Json(s.contents.list_checkpoints(&p).await?).into_response())
+        }
         ContentsTarget::Checkpoint(..) => Err(HttpError(404, "not found".into())),
         ContentsTarget::Trust(_) => Err(method_not_allowed()),
         ContentsTarget::Path(p) => {
             let content = q.content.as_deref().map(|c| c != "0").unwrap_or(true);
+            let hash = q.hash.as_deref().is_some_and(|h| h != "0");
+            // With content, hash it too, for the ETag a later If-Match names.
             let model = s
                 .contents
                 .get(
@@ -448,18 +450,62 @@ async fn get_contents(
                         content,
                         type_hint: q.type_,
                         format: q.format,
-                        hash: q.hash.as_deref().is_some_and(|h| h != "0"),
+                        hash: hash || content,
                     },
                 )
                 .await?;
-            Ok(Json(serde_json::to_value(model).unwrap()))
+            Ok(with_etag(model, hash))
         }
     }
+}
+
+/// The model as JSON with its sha256 as a strong `ETag`, which the client
+/// can send back as `If-Match` on a save (see [`if_match`]). jupyter_server
+/// has no such precondition, so `hash` stays in the body only when the
+/// client asked for it (`?hash=1`).
+fn with_etag(mut model: ganymede_contents::ContentsModel, keep_hash: bool) -> Response {
+    let etag = model
+        .hash
+        .as_deref()
+        .and_then(|h| header::HeaderValue::from_str(&format!("\"{h}\"")).ok());
+    if !keep_hash {
+        model.hash = None;
+        model.hash_algorithm = None;
+    }
+    let mut resp = Json(model).into_response();
+    if let Some(etag) = etag {
+        resp.headers_mut().insert(header::ETAG, etag);
+    }
+    resp
+}
+
+/// Parse `If-Match` (RFC 9110 13.1.1). Weak tags never match a strong
+/// comparison, so they are dropped; a header of only weak tags fails.
+fn if_match(headers: &HeaderMap) -> Option<IfMatch> {
+    let values: Vec<&str> = headers
+        .get_all(header::IF_MATCH)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .collect();
+    if values.is_empty() {
+        return None;
+    }
+    let mut tags = Vec::new();
+    for tag in values.iter().flat_map(|v| v.split(',')).map(str::trim) {
+        if tag == "*" {
+            return Some(IfMatch::Any);
+        }
+        if let Some(t) = tag.strip_prefix('"').and_then(|t| t.strip_suffix('"')) {
+            tags.push(t.to_string());
+        }
+    }
+    Some(IfMatch::Hashes(tags))
 }
 
 async fn put_contents(
     State(s): State<AppState>,
     Path(path): Path<String>,
+    headers: HeaderMap,
     LenientJson(req): LenientJson<Option<SaveRequest>>,
 ) -> HttpResult<Response> {
     let p = match target(&path) {
@@ -467,15 +513,20 @@ async fn put_contents(
         ContentsTarget::Trust(_) => return Err(method_not_allowed()),
         _ => return Err(HttpError(400, "cannot PUT a checkpoint".into())),
     };
-    let req =
+    let mut req =
         req.ok_or_else(|| HttpError(400, "PUT needs a body with type, format, content".into()))?;
+    req.if_match = if_match(&headers);
     let existed = s.contents.get(&p, GetOptions::default()).await.is_ok();
     let model = s.contents.save(&p, req).await?;
-    if existed {
-        Ok(Json(model).into_response())
-    } else {
-        Ok(created(contents_location(&s, &model.path), model))
+    let location = (!existed).then(|| contents_location(&s, &model.path));
+    let mut resp = with_etag(model, false);
+    if let Some(location) = location {
+        *resp.status_mut() = StatusCode::CREATED;
+        if let Ok(v) = header::HeaderValue::from_str(&location) {
+            resp.headers_mut().insert(header::LOCATION, v);
+        }
     }
+    Ok(resp)
 }
 
 #[derive(Deserialize, Default)]
