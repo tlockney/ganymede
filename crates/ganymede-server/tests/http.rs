@@ -1535,3 +1535,29 @@ async fn errors_name_api_paths_not_os_paths() {
         "{message}"
     );
 }
+
+#[tokio::test]
+async fn login_next_with_control_characters_stays_on_the_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = lab_state(dir.path());
+    // With auth off, /login redirects at once, as it does for a browser
+    // that is already logged in.
+    st.token = None;
+    let app = build_router(st);
+    for next in [
+        "%2F%09%2Fevil.example",
+        "%2F%0A%2Fevil.example",
+        "%2F%0D%2Fevil.example",
+        "%09%2F%2Fevil.example",
+        "%2F%20%2Fevil.example",
+        "%2F%2Fevil.example",
+        "%2F%5Cevil.example",
+        "https%3A%2F%2Fevil.example",
+    ] {
+        let (st, h, _) = send(&app, get_req(&format!("/login?next={next}"), None)).await;
+        assert_eq!(st, StatusCode::FOUND, "{next}");
+        assert_eq!(h[header::LOCATION], "/", "{next}");
+    }
+    let (_, h, _) = send(&app, get_req("/login?next=%2Flab%2Ftree%2Fa.ipynb", None)).await;
+    assert_eq!(h[header::LOCATION], "/lab/tree/a.ipynb");
+}

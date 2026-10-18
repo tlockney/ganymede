@@ -609,11 +609,15 @@ struct LoginForm {
 
 /// `next` if it is a path under `base_url`, else `base_url`. Unlike
 /// `jupyter_server`, full URLs are never followed, even to allowed origins.
+/// Browsers drop tabs and newlines from a URL before parsing it, so
+/// `/\t/evil.example` would become `//evil.example`: control characters
+/// and whitespace are refused outright (CVE-2023-39968 in jupyter_server).
 fn safe_next(state: &AppState, next: Option<&str>) -> String {
     let base = &state.base_url;
     match next {
         Some(n)
-            if !n.contains(':')
+            if !n.chars().any(|c| c.is_control() || c.is_whitespace())
+                && !n.contains(':')
                 && !n.contains('\\')
                 && !n.starts_with("//")
                 && format!("{n}/").starts_with(base.as_str()) =>
