@@ -12,27 +12,45 @@ use ganymede_kernel_host::KernelSession;
 use std::time::Duration;
 use zeromq::{Socket, SocketRecv, SocketSend, ZmqMessage};
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+/// The port a socket bound to `tcp://127.0.0.1:0` got. Binding port 0
+/// lets the OS pick, so parallel tests can never collide the way probing
+/// for a free port and binding it later can.
+fn port(e: zeromq::Endpoint) -> u16 {
+    match e {
+        zeromq::Endpoint::Tcp(_, port) => port,
+        other => panic!("not a TCP endpoint: {other}"),
+    }
 }
 
-fn connection() -> ConnectionInfo {
-    let mut info = ConnectionInfo::new_tcp(
-        "127.0.0.1",
-        [
-            free_port(),
-            free_port(),
-            free_port(),
-            free_port(),
-            free_port(),
-        ],
-    );
+const ANY: &str = "tcp://127.0.0.1:0";
+
+struct Sockets {
+    shell: zeromq::RouterSocket,
+    control: zeromq::RouterSocket,
+    stdin: zeromq::RouterSocket,
+    iopub: zeromq::PubSocket,
+    hb: zeromq::RepSocket,
+}
+
+/// The kernel's sockets, bound, and the connection info that reaches them.
+async fn bind() -> (ConnectionInfo, Sockets) {
+    let mut k = Sockets {
+        shell: zeromq::RouterSocket::new(),
+        control: zeromq::RouterSocket::new(),
+        stdin: zeromq::RouterSocket::new(),
+        iopub: zeromq::PubSocket::new(),
+        hb: zeromq::RepSocket::new(),
+    };
+    let ports = [
+        port(k.shell.bind(ANY).await.unwrap()),
+        port(k.iopub.bind(ANY).await.unwrap()),
+        port(k.stdin.bind(ANY).await.unwrap()),
+        port(k.control.bind(ANY).await.unwrap()),
+        port(k.hb.bind(ANY).await.unwrap()),
+    ];
+    let mut info = ConnectionInfo::new_tcp("127.0.0.1", ports);
     info.key = "a-secret-key".into();
-    info
+    (info, k)
 }
 
 fn zmsg(frames: Vec<Bytes>) -> ZmqMessage {
@@ -41,18 +59,15 @@ fn zmsg(frames: Vec<Bytes>) -> ZmqMessage {
 
 /// Answers `kernel_info_request` on shell and control, echoes `comm_msg`
 /// on iopub with its buffers, and echoes heartbeats.
-async fn kernel(info: ConnectionInfo) {
+async fn kernel(info: ConnectionInfo, k: Sockets) {
     let signer = info.signer().unwrap();
-    let mut shell = zeromq::RouterSocket::new();
-    shell.bind(&info.shell_endpoint()).await.unwrap();
-    let mut control = zeromq::RouterSocket::new();
-    control.bind(&info.control_endpoint()).await.unwrap();
-    let mut stdin = zeromq::RouterSocket::new();
-    stdin.bind(&info.stdin_endpoint()).await.unwrap();
-    let mut iopub = zeromq::PubSocket::new();
-    iopub.bind(&info.iopub_endpoint()).await.unwrap();
-    let mut hb = zeromq::RepSocket::new();
-    hb.bind(&info.hb_endpoint()).await.unwrap();
+    let Sockets {
+        mut shell,
+        mut control,
+        mut stdin,
+        mut iopub,
+        mut hb,
+    } = k;
     let topic = |t: &str| vec![Bytes::from(format!("kernel.test.{t}"))];
 
     loop {
@@ -111,8 +126,8 @@ async fn kernel(info: ConnectionInfo) {
 
 #[tokio::test]
 async fn nudge_heartbeat_and_binary_buffers_over_zmq() {
-    let info = connection();
-    let k = tokio::spawn(kernel(info.clone()));
+    let (info, sockets) = bind().await;
+    let k = tokio::spawn(kernel(info.clone(), sockets));
     let transport = ZmqTransport::connect(&info).await.unwrap();
     let s = KernelSession::start_with(transport, None, None);
     let ki = s.nudge(Duration::from_secs(20)).await.unwrap();
@@ -154,8 +169,8 @@ async fn nudge_heartbeat_and_binary_buffers_over_zmq() {
 
 #[tokio::test]
 async fn a_wrong_key_is_dropped_not_delivered() {
-    let info = connection();
-    let k = tokio::spawn(kernel(info.clone()));
+    let (info, sockets) = bind().await;
+    let k = tokio::spawn(kernel(info.clone(), sockets));
     let mut wrong = info.clone();
     wrong.key = "not-the-key".into();
     let transport = ZmqTransport::connect(&wrong).await.unwrap();
