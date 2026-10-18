@@ -328,7 +328,17 @@ impl Kernel {
                     Ok(_) | Err(RecvError::Lagged(_)) => {}
                     Err(RecvError::Closed) => {}
                 },
-                r = &mut request => break r?,
+                r = &mut request => match r {
+                    // Stop the cell rather than leave the kernel busy; on a
+                    // shared kernel the next client would wait behind it.
+                    Err(ganymede_kernel_host::Error::Timeout(t)) => {
+                        if let Err(e) = session.interrupt().await {
+                            tracing::warn!("interrupting a timed-out cell: {e}");
+                        }
+                        return Err(ganymede_kernel_host::Error::Timeout(t).into());
+                    }
+                    r => break r?,
+                },
             }
         };
         // The reply can win the race against the last broadcasts; the
@@ -572,5 +582,28 @@ mod tests {
         k.interrupt().await.unwrap();
         let r = run.await.unwrap().unwrap();
         assert_eq!(r.error().map(|e| e.0), Some("KeyboardInterrupt"));
+    }
+
+    #[tokio::test]
+    async fn timeout_interrupts_the_cell() {
+        let k = fake().await;
+        let opts = ExecuteOptions {
+            timeout: Some(Duration::from_millis(100)),
+            ..Default::default()
+        };
+        assert!(k
+            .execute_with("sleep 10000", &opts, &mut NoHandler)
+            .await
+            .is_err());
+        // Without the interrupt the kernel would still be sleeping.
+        let opts = ExecuteOptions {
+            timeout: Some(Duration::from_secs(2)),
+            ..Default::default()
+        };
+        let r = k
+            .execute_with("hello", &opts, &mut NoHandler)
+            .await
+            .unwrap();
+        assert!(r.is_ok());
     }
 }

@@ -138,6 +138,25 @@ fn run_interrupt() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn run_stops_on_sigterm_and_sighup() {
+    for (sig, code) in [(15, 143), (1, 129)] {
+        let mut child = ganymede(&["run", "-k", "fake", "sleep 30000"])
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        unsafe {
+            kill(child.id() as i32, sig);
+        }
+        let start = std::time::Instant::now();
+        let status = child.wait().unwrap();
+        assert_eq!(status.code(), Some(code), "signal {sig}");
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    }
+}
+
 #[test]
 fn existing_searches_the_runtime_dir_and_errors_print_once() {
     let rt = tempfile::tempdir().unwrap();
