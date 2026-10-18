@@ -58,6 +58,8 @@ pub struct KernelManagerConfig {
     pub default_kernel: Option<String>,
     pub startup_timeout: Duration,
     pub shutdown_grace: Duration,
+    /// Discard kernel processes' own stdout and stderr.
+    pub quiet: bool,
     /// Shut down kernels idle this long with no connected clients.
     pub cull_idle: Option<Duration>,
     /// Working directories for kernels are resolved under this root.
@@ -73,6 +75,7 @@ impl Default for KernelManagerConfig {
             default_kernel: None,
             startup_timeout: Duration::from_secs(60),
             shutdown_grace: Duration::from_secs(5),
+            quiet: false,
             cull_idle: None,
             root_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             base_url: "/".into(),
@@ -468,7 +471,7 @@ impl KernelManager {
                     cwd,
                     env: vec![],
                     kernel_id: Some(id.to_string()),
-                    quiet: false,
+                    quiet: self.config.quiet,
                 },
             )
             .await?;
