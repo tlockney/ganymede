@@ -28,7 +28,7 @@ async-trait.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tempfile.workspace = true
-base64 = "0.22"
+base64 = "0.23"
 mime_guess = "2"
 
 # No-replace rename (renameat2, renamex_np) for `rename`.
