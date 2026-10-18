@@ -353,12 +353,14 @@ mod tests {
     use super::*;
     use zeromq::RouterSocket;
 
-    fn free_port() -> u16 {
-        std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port()
+    /// The port a socket bound to `tcp://127.0.0.1:0` got. Letting the OS
+    /// pick on bind cannot collide with a parallel test, unlike probing for
+    /// a free port and binding it later.
+    fn port(e: zeromq::Endpoint) -> u16 {
+        match e {
+            zeromq::Endpoint::Tcp(_, port) => port,
+            other => panic!("not a TCP endpoint: {other}"),
+        }
     }
 
     async fn first_frame(router: &mut RouterSocket) -> Bytes {
@@ -373,22 +375,20 @@ mod tests {
     /// `execute_request`, so shell and stdin must share it.
     #[tokio::test]
     async fn shell_and_stdin_share_a_routing_identity() {
+        let any = "tcp://127.0.0.1:0";
+        let mut shell = RouterSocket::new();
+        let mut stdin = RouterSocket::new();
+        let mut control = RouterSocket::new();
+        let mut iopub = zeromq::PubSocket::new();
+        let mut hb = zeromq::RepSocket::new();
         let ports = [
-            free_port(),
-            free_port(),
-            free_port(),
-            free_port(),
-            free_port(),
+            port(shell.bind(any).await.unwrap()),
+            port(iopub.bind(any).await.unwrap()),
+            port(stdin.bind(any).await.unwrap()),
+            port(control.bind(any).await.unwrap()),
+            port(hb.bind(any).await.unwrap()),
         ];
         let info = ConnectionInfo::new_tcp("127.0.0.1", ports);
-        let mut shell = RouterSocket::new();
-        shell.bind(&info.shell_endpoint()).await.unwrap();
-        let mut stdin = RouterSocket::new();
-        stdin.bind(&info.stdin_endpoint()).await.unwrap();
-        let mut control = RouterSocket::new();
-        control.bind(&info.control_endpoint()).await.unwrap();
-        let mut iopub = zeromq::PubSocket::new();
-        iopub.bind(&info.iopub_endpoint()).await.unwrap();
 
         let transport = ZmqTransport::connect(&info).await.unwrap();
         let msg = Message::new("kernel_info_request", "s", "u", &serde_json::json!({}));
