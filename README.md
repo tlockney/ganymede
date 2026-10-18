@@ -17,7 +17,7 @@ gods on Olympus.
 
 **Documentation:** [ganymede-server.com](https://ganymede-server.com/)
 (sources in [`docs/`](docs/)). Start with
-[Install on a workstation](docs/workstation.md), step by step from a clean
+[Install](docs/install.md), step by step from a clean
 machine with no Python or Jupyter, then
 [Getting started](docs/getting-started.md) and
 [Architecture](docs/architecture.md).
@@ -63,10 +63,9 @@ curl -fsSL https://ganymede-server.com/install.sh | sh
 
 Pass options after `sh -s --`: `--version 0.1.0` pins a release,
 `--bin-dir DIR` installs elsewhere, `--no-kernel` skips cdp-kernel.
-[Install on a workstation](docs/workstation.md) walks through it, the
-kernel, and JupyterLab step by step.
-[Install](docs/install.md) has the same steps done by hand, and the
-platform notes (glibc 2.35 or newer on Linux; unnotarized macOS binaries).
+[Install](docs/install.md) walks through it, the kernel, and JupyterLab
+step by step, and has the same steps done by hand and the platform notes
+(glibc 2.35 or newer on Linux; unnotarized macOS binaries).
 
 Quick test, no kernel or Python needed (`fake` is a built-in kernel):
 
@@ -204,8 +203,7 @@ with Python hidden from `PATH`
 binary through `install.sh`, cdp-kernel from npm, `ganymede lab install`,
 `ganymede lab` driven by Playwright, `ganymede execute`, `ganymede serve`
 with the VS Code extension's requests, and the uninstall, failing if any
-Python ran. It runs the commands of
-[Install on a workstation](docs/workstation.md).
+Python ran.
 
 ## Contributing
 

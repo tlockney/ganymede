@@ -1,13 +1,13 @@
 #!/bin/sh
-# A fresh workstation with no Python, set up the way docs/install.md and
-# docs/workstation.md say: site/install.sh installs a ganymede binary
+# A fresh workstation with no Python, set up the way docs/install.md
+# says: site/install.sh installs a ganymede binary
 # packaged as release.yml does (served over file://), cdp-kernel comes from
 # npm, `ganymede lab install` fetches JupyterLab, and `ganymede lab
 # --no-browser` serves it. Playwright then logs in with the printed URL and
 # runs TypeScript cells with HTML, JavaScript, and widget outputs, saves,
 # and reopens them. Last, everything is uninstalled as the page says.
-# docs/workstation.md uses only commands this script runs; change both
-# together.
+# docs/install.md's numbered steps use only commands this script runs;
+# change both together.
 #
 # Python is hidden: PATH is a clean bin dir with only the tools below
 # linked in, and shims named python, python3, pip, pip3, and jupyter that
@@ -217,7 +217,7 @@ cd "$work"
 stop_server
 
 step "First notebook, run with ganymede execute"
-# The cell from docs/workstation.md's "First notebook", which the page has
+# The cell from docs/install.md's "First notebook", which the page has
 # the reader type into JupyterLab and save as first.ipynb. Here it is
 # written to first.ipynb directly and run the way the page's terminal
 # section runs it. cdp-kernel downloads date-fns from the npm registry.
@@ -257,7 +257,7 @@ wait_url "$work/serve.out" 'http://[^ ]+/\?token=[^ ]+'
 (cd "$repo/validation" && node vscode.cjs "$url" cdp-node) || fail "VS Code's flow against ganymede serve"
 stop_server
 
-step "Uninstall, as docs/workstation.md has it"
+step "Uninstall, as docs/install.md has it"
 lab_version=$(ganymede lab list | awk 'NR == 1 { print $1 }')
 [ -n "$lab_version" ] || fail "no version in ganymede lab list"
 ganymede lab remove "$lab_version"
