@@ -172,8 +172,21 @@ struct Target {
     /// Kernelspec name, or `fake`.
     #[arg(long, short, required_unless_present = "existing")]
     kernel: Option<String>,
-    /// Connection file of a running kernel instead of launching one.
-    #[arg(long, conflicts_with = "kernel", value_name = "CONNECTION_FILE")]
+    /// Connection file of a running kernel instead of launching one. A
+    /// bare name such as `kernel-<id>.json` or `<id>` is also looked for
+    /// in the Jupyter runtime dir; with no value, the newest kernel there.
+    #[arg(
+        long,
+        conflicts_with = "kernel",
+        value_name = "CONNECTION_FILE",
+        num_args = 0..=1,
+        default_missing_value = "",
+        // Allows the empty value that means "newest".
+        value_parser = clap::builder::TypedValueParser::map(
+            clap::builder::OsStringValueParser::new(),
+            PathBuf::from
+        )
+    )]
     existing: Option<PathBuf>,
     /// Working directory for a launched kernel.
     #[arg(long)]
@@ -286,10 +299,25 @@ fn main() -> ExitCode {
     match rt.block_on(dispatch(cli)) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("ganymede: {e:#}");
+            eprintln!("ganymede: {}", error_chain(&e));
             ExitCode::FAILURE
         }
     }
+}
+
+/// The error and its causes joined by `: `, skipping a cause whose text
+/// its parent already includes (many errors print their source in their
+/// own message, so `{:#}` would show it twice).
+fn error_chain(e: &anyhow::Error) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for cause in e.chain() {
+        let s = cause.to_string();
+        if parts.last().is_some_and(|prev| prev.contains(&s)) {
+            continue;
+        }
+        parts.push(s);
+    }
+    parts.join(": ")
 }
 
 async fn dispatch(cli: Cli) -> Result<ExitCode> {
@@ -369,10 +397,13 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
 
 async fn open(engine: &Engine, t: &Target, verbose: bool) -> Result<Kernel> {
     let kernel = if let Some(cf) = &t.existing {
-        engine
-            .attach(cf)
-            .await
-            .with_context(|| format!("attaching to {}", cf.display()))?
+        engine.attach(cf).await.with_context(|| {
+            if cf.as_os_str().is_empty() {
+                "attaching to the newest kernel".to_string()
+            } else {
+                format!("attaching to {}", cf.display())
+            }
+        })?
     } else {
         let name = t.kernel.as_deref().expect("clap requires a kernel");
         if name == "fake" {
