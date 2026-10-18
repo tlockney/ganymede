@@ -538,6 +538,64 @@ async fn websocket_channels_v1_execute_round_trip() {
     assert!(closed, "server sent a close frame after shutdown");
 }
 
+/// #53: output produced while a session's websocket is down is replayed
+/// when it reconnects with the same `session_id`, as in jupyter_server.
+#[tokio::test]
+async fn websocket_reconnect_replays_buffered_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let st = state(dir.path());
+    let kernels = st.kernels.clone();
+    let app = build_router(st);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let k = kernels.start(Some("fake"), None).await.unwrap();
+
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+    let connect = || async {
+        let mut req = format!("ws://{addr}/api/kernels/{}/channels?session_id=tab", k.id)
+            .into_client_request()
+            .unwrap();
+        req.headers_mut()
+            .insert("Sec-WebSocket-Protocol", v1::SUBPROTOCOL.parse().unwrap());
+        req.headers_mut()
+            .insert("Authorization", format!("token {TOKEN}").parse().unwrap());
+        tokio_tungstenite::connect_async(req).await.unwrap().0
+    };
+
+    let mut ws = connect().await;
+    let exec = Message::new(
+        "execute_request",
+        "tab",
+        "me",
+        &ExecuteRequest::new("sleep 300"),
+    );
+    ws.send(TMsg::Binary(
+        v1::encode(Channel::Shell, &exec).unwrap().into(),
+    ))
+    .await
+    .unwrap();
+    ws.close(None).await.unwrap();
+    drop(ws);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(kernels.model(&k.id).unwrap().connections, 0);
+
+    let mut ws = connect().await;
+    let mut got_reply = false;
+    while !got_reply {
+        let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("replayed reply in time")
+            .unwrap()
+            .unwrap();
+        let TMsg::Binary(b) = frame else { continue };
+        let (channel, msg) = v1::decode(&b).unwrap();
+        got_reply = channel == Channel::Shell
+            && msg.msg_type() == "execute_reply"
+            && msg.parent_id() == Some(exec.msg_id());
+    }
+}
+
 #[tokio::test]
 async fn websocket_rejects_bad_token_and_foreign_origin() {
     let dir = tempfile::tempdir().unwrap();
