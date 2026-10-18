@@ -20,9 +20,6 @@ differ:
   `ganymede lab list`.
 - Not run by CI, and why:
   - `ganymede console -k cdp-node` is interactive.
-  - `cdp-kernel uninstall` and `cdp-kernel list` are not in a cdp-kernel
-    release yet (0.5.0 lacks them); the page gives `ganymede kernelspec
-    remove`, which CI runs.
   - `ganymede lab install --version`: a second ~18 MB download per run.
     tests/lab.rs covers installing by version.
   - The by-hand download is install.md's, which this page links.
@@ -217,15 +214,15 @@ To uninstall, remove each piece:
 ganymede lab list                                             # installed versions
 ganymede lab remove 4.6.4
 ganymede lab extension remove anywidget jupyterlab-widgets
-ganymede kernelspec remove cdp-node
+cdp-kernel uninstall cdp-node
 npm uninstall -g @tlockney/cdp-kernel
 rm ~/.local/bin/ganymede
 ```
 
-cdp-kernel releases after 0.5.0 also have `cdp-kernel list` and
-`cdp-kernel uninstall cdp-node`, which remove only the kernelspecs
-cdp-kernel wrote; see its
-[uninstall docs](https://cdp-kernel.org/docs/install#uninstall).
+`cdp-kernel uninstall` (cdp-kernel 0.6.0 and later) removes only the
+kernelspecs cdp-kernel wrote, and `cdp-kernel list` shows them; see its
+[uninstall docs](https://cdp-kernel.org/docs/install#uninstall). With an
+older cdp-kernel, use `ganymede kernelspec remove cdp-node` instead.
 
 This leaves the `ganymede` data directory from step 4, now empty but for
 bookkeeping; Jupyter's `~/.jupyter` (JupyterLab settings and workspaces);
