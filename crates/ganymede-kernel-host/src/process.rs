@@ -114,21 +114,55 @@ pub async fn allocate_ports(ip: &str) -> Result<[u16; 5]> {
     Ok(ports)
 }
 
+/// Writes `kernel-<kernel_id>.json` in `dir`, readable only by this user
+/// from the moment it exists, as `jupyter_core`'s `secure_write` does: any
+/// old file is removed, then the new one is created exclusively with mode
+/// 0600, so a pre-planted file or symlink is never written through. A
+/// `dir` this call creates is made 0700, like Jupyter's runtime dir.
 pub fn write_connection_file(
     dir: &Path,
     kernel_id: &str,
     info: &ConnectionInfo,
 ) -> Result<PathBuf> {
-    std::fs::create_dir_all(dir)?;
+    if !is_file_name_token(kernel_id) {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("kernel id {kernel_id:?} is not a valid file name"),
+        )));
+    }
+    if !dir.exists() {
+        std::fs::create_dir_all(dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
     let path = dir.join(format!("kernel-{kernel_id}.json"));
     let text = serde_json::to_string_pretty(info)?;
-    std::fs::write(&path, text)?;
+    match std::fs::remove_file(&path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+        _ => {}
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
     }
+    use std::io::Write;
+    opts.open(&path)?.write_all(text.as_bytes())?;
     Ok(path)
+}
+
+/// Letters, digits, `-` and `_`: what a UUID or a session name needs, and
+/// nothing that can leave the directory or hide the file.
+fn is_file_name_token(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 #[cfg(feature = "subprocess")]
@@ -353,5 +387,55 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    #[test]
+    fn connection_file_is_created_private_and_replaces_an_old_one() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("runtime");
+        let info = ConnectionInfo::new_tcp("127.0.0.1", [1, 2, 3, 4, 5]);
+        let path = write_connection_file(&dir, "k1", &info).unwrap();
+        // A restart writes the same name again.
+        let mut again = info.clone();
+        again.shell_port = 9;
+        write_connection_file(&dir, "k1", &again).unwrap();
+        assert_eq!(read_connection_file(&path).unwrap(), again);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&dir), 0o700, "a runtime dir the host creates");
+            assert_eq!(mode(&path), 0o600);
+
+            // A planted symlink is replaced, not written through.
+            let target = root.path().join("target");
+            std::fs::write(&target, "untouched").unwrap();
+            let planted = dir.join("kernel-k2.json");
+            std::os::unix::fs::symlink(&target, &planted).unwrap();
+            write_connection_file(&dir, "k2", &info).unwrap();
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "untouched");
+            assert!(!std::fs::symlink_metadata(&planted).unwrap().is_symlink());
+        }
+    }
+
+    #[test]
+    fn kernel_ids_that_are_not_file_names_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = ConnectionInfo::new_tcp("127.0.0.1", [1, 2, 3, 4, 5]);
+        for bad in [
+            "",
+            "../x",
+            "a/b",
+            ".hidden",
+            "a\\b",
+            "a\0b",
+            &"x".repeat(129),
+        ] {
+            assert!(
+                write_connection_file(dir.path(), bad, &info).is_err(),
+                "{bad:?}"
+            );
+        }
+        write_connection_file(dir.path(), "6f1c0c2e-2b9f-4c1e-9d8b-1a2b3c4d5e6f", &info).unwrap();
     }
 }
