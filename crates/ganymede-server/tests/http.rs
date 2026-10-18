@@ -361,6 +361,38 @@ async fn contents_rest_round_trip() {
     );
 }
 
+/// JupyterLab uploads large files in chunks 1, 2, ..., -1; #52.
+#[tokio::test]
+async fn chunked_upload_appends_chunks() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(state(dir.path()));
+    let t = Some(TOKEN);
+    let mut statuses = vec![];
+    for (chunk, part) in [(1, "part1;"), (2, "part2;"), (-1, "part-1;")] {
+        let (st, model) = call(
+            &app,
+            "PUT",
+            "/api/contents/up.bin",
+            Some(json!({
+                "type": "file", "format": "text", "content": part,
+                "name": "up.bin", "path": "up.bin", "chunk": chunk
+            })),
+            t,
+        )
+        .await;
+        assert_eq!(model["path"], "up.bin", "{model}");
+        statuses.push(st);
+    }
+    assert_eq!(
+        statuses,
+        [StatusCode::CREATED, StatusCode::OK, StatusCode::OK]
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("up.bin")).unwrap(),
+        "part1;part2;part-1;"
+    );
+}
+
 #[tokio::test]
 async fn contents_trust_route() {
     let dir = tempfile::tempdir().unwrap();
@@ -587,6 +619,19 @@ async fn server_info_identity_and_config() {
     assert_eq!(c, json!({"a": {"b": 1}}));
     let (_, c) = call(&app, "GET", "/api/config/notebook", None, t).await;
     assert_eq!(c, json!({"a": {"b": 1}}), "persisted");
+    // Concurrent PATCHes are serialized: none loses another's key.
+    let patches = (0..16).map(|i| {
+        call(
+            &app,
+            "PATCH",
+            "/api/config/many",
+            Some(json!({ format!("k{i}"): i })),
+            t,
+        )
+    });
+    futures::future::join_all(patches).await;
+    let (_, c) = call(&app, "GET", "/api/config/many", None, t).await;
+    assert_eq!(c.as_object().unwrap().len(), 16, "{c}");
     assert_eq!(
         call(&app, "GET", "/api/config/..%2Fescape", None, t)
             .await

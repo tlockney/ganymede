@@ -60,6 +60,11 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - run: cargo build --release --locked -p ganymede-cli --target ${{ matrix.target }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - name: Third-party notices for this target's dependency tree
+        run: cargo about generate --locked --fail --target ${{ matrix.target }} -m crates/ganymede-cli/Cargo.toml about.hbs -o THIRD-PARTY-NOTICES
       - name: Check the binary reports the release version
         if: ${{ !matrix.cross }}
         run: |
@@ -71,7 +76,7 @@ jobs:
           exe=ganymede
           [[ "${{ matrix.target }}" == *windows* ]] && exe=ganymede.exe
           mkdir -p "dist/$NAME"
-          cp "target/${{ matrix.target }}/release/$exe" README.md "dist/$NAME/"
+          cp "target/${{ matrix.target }}/release/$exe" README.md LICENSE THIRD-PARTY-NOTICES "dist/$NAME/"
           cd dist
           if [[ "${{ matrix.target }}" == *windows* ]]; then
             archive="$NAME.zip"

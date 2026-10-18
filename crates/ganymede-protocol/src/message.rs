@@ -51,13 +51,20 @@ impl std::fmt::Display for Channel {
 
 /// Message header. `date` is kept as the string the peer sent so that
 /// nothing is lost in a round trip; [`Header::new`] produces RFC 3339.
+///
+/// `username`, `date` and `version` default to `""` when a peer leaves
+/// them out: `jupyter_client` does not require them, and rejecting such a
+/// header would drop the reply the host is waiting for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Header {
     pub msg_id: String,
     pub session: String,
+    #[serde(default)]
     pub username: String,
+    #[serde(default)]
     pub date: String,
     pub msg_type: String,
+    #[serde(default)]
     pub version: String,
     /// Protocol 5.5: present when the message targets a subshell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -98,7 +105,8 @@ pub struct Message {
         serialize_with = "serialize_parent"
     )]
     pub parent_header: Option<Header>,
-    #[serde(default)]
+    /// `null` is read as `{}`.
+    #[serde(default, deserialize_with = "deserialize_metadata")]
     pub metadata: Map<String, Value>,
     #[serde(default)]
     pub content: Value,
@@ -115,6 +123,17 @@ fn deserialize_parent<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<H
             .map(Some)
             .map_err(serde::de::Error::custom),
     }
+}
+
+fn deserialize_metadata<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Map<String, Value>, D::Error> {
+    Ok(Option::<Map<String, Value>>::deserialize(d)?.unwrap_or_default())
+}
+
+/// A metadata frame: a JSON object, with `null` read as `{}`.
+pub(crate) fn parse_metadata(b: &[u8]) -> crate::Result<Map<String, Value>> {
+    Ok(serde_json::from_slice::<Option<Map<String, Value>>>(b)?.unwrap_or_default())
 }
 
 fn serialize_parent<S: serde::Serializer>(p: &Option<Header>, s: S) -> Result<S::Ok, S::Error> {
@@ -198,5 +217,24 @@ mod tests {
         assert!(m.parent_header.is_none());
         let back = serde_json::to_value(&m).unwrap();
         assert_eq!(back["parent_header"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn header_without_username_date_version_defaults_to_empty() {
+        let j = r#"{"msg_id":"a","session":"s","msg_type":"status"}"#;
+        let h: Header = serde_json::from_str(j).unwrap();
+        assert_eq!(h.username, "");
+        assert_eq!(h.date, "");
+        assert_eq!(h.version, "");
+        assert!(serde_json::from_str::<Header>(r#"{"session":"s","msg_type":"t"}"#).is_err());
+    }
+
+    #[test]
+    fn null_metadata_is_empty() {
+        let j = r#"{"header":{"msg_id":"a","session":"s","msg_type":"t"},"parent_header":null,"metadata":null,"content":{}}"#;
+        let m: Message = serde_json::from_str(j).unwrap();
+        assert!(m.metadata.is_empty());
+        assert!(parse_metadata(b"null").unwrap().is_empty());
+        assert!(parse_metadata(b"[]").is_err());
     }
 }

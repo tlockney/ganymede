@@ -108,7 +108,7 @@ It prints the URL, with its token, as the only line on stdout. The
 [JupyterLab and VS Code](frontends.md) guide covers connecting a frontend.
 
 Useful flags, each of which can also be set in a TOML file passed with
-`--config`:
+`--config` (an unknown key in the file is an error):
 
 | Flag | Effect |
 |---|---|
@@ -121,6 +121,14 @@ Useful flags, each of which can also be set in a TOML file passed with
 | `--static-dir` | Serve a frontend's static files; JupyterLab's bundle is recognized. Default: the newest JupyterLab from `ganymede lab install`. |
 | `--lab-version` | Which installed JupyterLab to serve. |
 | `--notary-dir` | Where the notebook-signing key and trusted signatures live. Default: the Jupyter data dir. |
+| `--base-url` | A prefix for serving behind a reverse proxy, e.g. `/jupyter/`. |
+| `--checkpoint-dir` | Keep checkpoints here instead of `.ipynb_checkpoints` beside each file. |
+| `--allow-origin` | An origin, besides the server's own, allowed to use the API and websockets. Repeatable. |
+| `--startup-timeout` | Seconds a new kernel has to answer (`startup_timeout_secs`). Default 60. |
+| `-q`, `--quiet` | Discard kernels' own stdout and stderr (`quiet`). Cell output is unaffected. |
+
+`serve` and `lab` log at info level on stderr; `-v` raises it to debug, and
+`RUST_LOG` overrides both.
 
 ## Embed it
 

@@ -36,12 +36,54 @@ struct Cli {
     /// Discard kernel processes' own stdout and stderr (not cell output).
     #[arg(long, short, global = true)]
     quiet: bool,
-    /// Report kernel details and per-cell status on stderr.
+    /// Report kernel details and per-cell status on stderr. For `serve`
+    /// and `lab`, log at debug level.
     #[arg(long, short, global = true)]
     verbose: bool,
-    /// Seconds a new kernel has to answer.
-    #[arg(long, global = true, default_value_t = 60, value_name = "SECS")]
-    startup_timeout: u64,
+    /// Seconds a new kernel has to answer. Default 60, or for `serve` and
+    /// `lab`, `startup_timeout_secs` from the config file.
+    #[arg(long, global = true, value_name = "SECS")]
+    startup_timeout: Option<u64>,
+}
+
+impl Cli {
+    /// Whether this runs a server, which logs at info level by default as
+    /// the `ganymede-server` binary does.
+    fn serves(&self) -> bool {
+        matches!(self.cmd, Cmd::Serve(_) | Cmd::Lab { cmd: None, .. })
+    }
+
+    /// The default log filter when `RUST_LOG` is unset.
+    fn log_filter(&self) -> &'static str {
+        match (self.serves(), self.verbose) {
+            (true, false) => "info,zeromq=error",
+            (true, true) => "debug,zeromq=error,hyper=info,h2=info",
+            (false, _) => "warn,zeromq=error",
+        }
+    }
+}
+
+/// A server's config from its flags, with the global flags that apply
+/// to it on top: kernelspec roots, `--startup-timeout` and `-q`.
+fn server_config(
+    args: ganymede_server::serve::ServeArgs,
+    kernelspec_roots: &[PathBuf],
+    startup_timeout: Option<u64>,
+    quiet: bool,
+) -> Result<ganymede_server::config::Config> {
+    let mut cfg = args.into_config()?;
+    // `serve`'s own `--kernelspec-root` shares the global's name, so clap
+    // can hand the same roots to both.
+    for r in kernelspec_roots {
+        if !cfg.kernelspec_roots.contains(r) {
+            cfg.kernelspec_roots.push(r.clone());
+        }
+    }
+    if let Some(t) = startup_timeout {
+        cfg.startup_timeout_secs = t;
+    }
+    cfg.quiet |= quiet;
+    Ok(cfg)
 }
 
 #[derive(Subcommand)]
@@ -172,8 +214,21 @@ struct Target {
     /// Kernelspec name, or `fake`.
     #[arg(long, short, required_unless_present = "existing")]
     kernel: Option<String>,
-    /// Connection file of a running kernel instead of launching one.
-    #[arg(long, conflicts_with = "kernel", value_name = "CONNECTION_FILE")]
+    /// Connection file of a running kernel instead of launching one. A
+    /// bare name such as `kernel-<id>.json` or `<id>` is also looked for
+    /// in the Jupyter runtime dir; with no value, the newest kernel there.
+    #[arg(
+        long,
+        conflicts_with = "kernel",
+        value_name = "CONNECTION_FILE",
+        num_args = 0..=1,
+        default_missing_value = "",
+        // Allows the empty value that means "newest".
+        value_parser = clap::builder::TypedValueParser::map(
+            clap::builder::OsStringValueParser::new(),
+            PathBuf::from
+        )
+    )]
     existing: Option<PathBuf>,
     /// Working directory for a launched kernel.
     #[arg(long)]
@@ -271,14 +326,14 @@ impl Dest {
 }
 
 fn main() -> ExitCode {
+    let cli = Cli::parse();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "warn,zeromq=error".into()),
+                .unwrap_or_else(|_| cli.log_filter().into()),
         )
         .with_writer(std::io::stderr)
         .init();
-    let cli = Cli::parse();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -286,16 +341,31 @@ fn main() -> ExitCode {
     match rt.block_on(dispatch(cli)) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("ganymede: {e:#}");
+            eprintln!("ganymede: {}", error_chain(&e));
             ExitCode::FAILURE
         }
     }
 }
 
+/// The error and its causes joined by `: `, skipping a cause whose text
+/// its parent already includes (many errors print their source in their
+/// own message, so `{:#}` would show it twice).
+fn error_chain(e: &anyhow::Error) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for cause in e.chain() {
+        let s = cause.to_string();
+        if parts.last().is_some_and(|prev| prev.contains(&s)) {
+            continue;
+        }
+        parts.push(s);
+    }
+    parts.join(": ")
+}
+
 async fn dispatch(cli: Cli) -> Result<ExitCode> {
     let mut b = Engine::builder()
         .quiet(cli.quiet)
-        .startup_timeout(Duration::from_secs(cli.startup_timeout));
+        .startup_timeout(Duration::from_secs(cli.startup_timeout.unwrap_or(60)));
     for r in &cli.kernelspec_root {
         b = b.kernelspec_root(r);
     }
@@ -352,12 +422,13 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             tokio::task::spawn_blocking(move || lab::run(cmd)).await?
         }
         Cmd::Lab { cmd: None, start } => {
-            lab_start::run(*start, cli.kernelspec_root).await?;
+            let lab_start::StartArgs { no_browser, serve } = *start;
+            let cfg = server_config(serve, &cli.kernelspec_root, cli.startup_timeout, cli.quiet)?;
+            lab_start::run(cfg, no_browser).await?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Serve(args) => {
-            let mut cfg = args.into_config()?;
-            cfg.kernelspec_roots.extend(cli.kernelspec_root);
+            let cfg = server_config(*args, &cli.kernelspec_root, cli.startup_timeout, cli.quiet)?;
             ganymede_server::serve::run(cfg).await?;
             Ok(ExitCode::SUCCESS)
         }
@@ -369,10 +440,13 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
 
 async fn open(engine: &Engine, t: &Target, verbose: bool) -> Result<Kernel> {
     let kernel = if let Some(cf) = &t.existing {
-        engine
-            .attach(cf)
-            .await
-            .with_context(|| format!("attaching to {}", cf.display()))?
+        engine.attach(cf).await.with_context(|| {
+            if cf.as_os_str().is_empty() {
+                "attaching to the newest kernel".to_string()
+            } else {
+                format!("attaching to {}", cf.display())
+            }
+        })?
     } else {
         let name = t.kernel.as_deref().expect("clap requires a kernel");
         if name == "fake" {
@@ -798,4 +872,73 @@ fn info(engine: &Engine, json: bool) -> Result<ExitCode> {
         println!("kernelspecs: {}", specs.join(", "));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_parse_from(std::iter::once("ganymede").chain(args.iter().copied())).unwrap()
+    }
+
+    fn serve_config(cli: Cli) -> ganymede_server::config::Config {
+        let args = match cli.cmd {
+            Cmd::Serve(a) => *a,
+            Cmd::Lab {
+                cmd: None, start, ..
+            } => start.serve,
+            _ => panic!("not a server command"),
+        };
+        server_config(args, &cli.kernelspec_root, cli.startup_timeout, cli.quiet).unwrap()
+    }
+
+    #[test]
+    fn global_flags_reach_the_server_config() {
+        let cfg = serve_config(parse(&[
+            "serve",
+            "--startup-timeout",
+            "5",
+            "-q",
+            "--kernelspec-root",
+            "/k",
+            "--port",
+            "0",
+        ]));
+        assert_eq!(cfg.startup_timeout_secs, 5);
+        assert!(cfg.quiet);
+        assert_eq!(cfg.kernelspec_roots, [PathBuf::from("/k")]);
+        assert_eq!(cfg.port, 0);
+
+        let cfg = serve_config(parse(&[
+            "-q",
+            "--startup-timeout",
+            "7",
+            "lab",
+            "--no-browser",
+        ]));
+        assert_eq!((cfg.startup_timeout_secs, cfg.quiet), (7, true));
+    }
+
+    #[test]
+    fn unset_globals_keep_the_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("g.toml");
+        std::fs::write(&path, "startup_timeout_secs = 9\nquiet = true\n").unwrap();
+        let cfg = serve_config(parse(&["serve", "--config", path.to_str().unwrap()]));
+        assert_eq!((cfg.startup_timeout_secs, cfg.quiet), (9, true));
+        let cfg = serve_config(parse(&["serve"]));
+        assert_eq!((cfg.startup_timeout_secs, cfg.quiet), (60, false));
+    }
+
+    #[test]
+    fn servers_log_at_info_by_default() {
+        assert!(parse(&["serve"]).log_filter().starts_with("info"));
+        assert!(parse(&["lab"]).log_filter().starts_with("info"));
+        assert!(parse(&["serve", "-v"]).log_filter().starts_with("debug"));
+        assert!(parse(&["lab", "list"]).log_filter().starts_with("warn"));
+        assert!(parse(&["kernelspec", "list"])
+            .log_filter()
+            .starts_with("warn"));
+    }
 }
