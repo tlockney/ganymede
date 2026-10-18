@@ -355,6 +355,56 @@ pub fn attach(connection: ConnectionInfo) -> LaunchedKernel {
     }
 }
 
+/// Resolve a `--existing` argument as `jupyter_client.find_connection_file`
+/// does, minus its globbing: a path that exists is used as given; a bare
+/// file name is looked up in `runtime_dir`, as `<name>` and then as
+/// `kernel-<name>.json`; an empty path means the most recently modified
+/// `kernel-*.json` there.
+pub fn find_connection_file(name: &Path, runtime_dir: &Path) -> Result<PathBuf> {
+    let not_found =
+        |what: String| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, what));
+    if name.as_os_str().is_empty() {
+        let newest = std::fs::read_dir(runtime_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| {
+                let n = e.file_name();
+                let n = n.to_string_lossy();
+                n.starts_with("kernel-") && n.ends_with(".json")
+            })
+            .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+            .max();
+        return newest.map(|(_, p)| p).ok_or_else(|| {
+            not_found(format!(
+                "no kernel-*.json connection file in {}",
+                runtime_dir.display()
+            ))
+        });
+    }
+    if name.exists() {
+        return Ok(name.to_path_buf());
+    }
+    let bare = name.components().count() == 1 && name.file_name().is_some();
+    if bare {
+        let n = name.to_string_lossy();
+        for candidate in [
+            runtime_dir.join(name),
+            runtime_dir.join(format!("kernel-{n}.json")),
+        ] {
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+        return Err(not_found(format!(
+            "no connection file {} here or in {}",
+            name.display(),
+            runtime_dir.display()
+        )));
+    }
+    Err(not_found(format!("no connection file {}", name.display())))
+}
+
 /// Read a connection file written by this host or by `jupyter_client`.
 pub fn read_connection_file(path: &Path) -> Result<ConnectionInfo> {
     Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
@@ -416,6 +466,40 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&target).unwrap(), "untouched");
             assert!(!std::fs::symlink_metadata(&planted).unwrap().is_symlink());
         }
+    }
+
+    #[test]
+    fn connection_files_are_found_in_the_runtime_dir() {
+        let rt = tempfile::tempdir().unwrap();
+        let info = ConnectionInfo::new_tcp("127.0.0.1", [1, 2, 3, 4, 5]);
+        let missing = find_connection_file(Path::new(""), rt.path()).unwrap_err();
+        assert!(
+            missing.to_string().contains("no kernel-*.json"),
+            "{missing}"
+        );
+
+        let old = write_connection_file(rt.path(), "old", &info).unwrap();
+        let t = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(t)
+            .unwrap();
+        let new = write_connection_file(rt.path(), "new", &info).unwrap();
+        std::fs::write(rt.path().join("other.json"), "{}").unwrap();
+
+        let find = |n: &str| find_connection_file(Path::new(n), rt.path());
+        assert_eq!(find("").unwrap(), new);
+        assert_eq!(find("kernel-old.json").unwrap(), old);
+        assert_eq!(find("old").unwrap(), old);
+        assert_eq!(find("other.json").unwrap(), rt.path().join("other.json"));
+        // A path that exists is used as given.
+        assert_eq!(find(old.to_str().unwrap()).unwrap(), old);
+        let e = find("nope").unwrap_err();
+        assert!(e.to_string().contains("here or in"), "{e}");
+        // Only a bare name is searched for.
+        assert!(find("sub/kernel-old.json").is_err());
     }
 
     #[test]
