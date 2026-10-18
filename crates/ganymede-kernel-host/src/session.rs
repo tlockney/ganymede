@@ -11,6 +11,8 @@
 //!   is fanned out to every client.
 //! - Interrupt follows the kernelspec: a signal to the process, or an
 //!   `interrupt_request` on control.
+//! - Death: the process exiting, the transport closing, or, for a kernel
+//!   with no process handle, missed heartbeats.
 
 use crate::process::{KernelProcess, LaunchedKernel};
 use crate::transport::{KernelTransport, TransportSink};
@@ -19,7 +21,7 @@ use ganymede_protocol::content::{self, ExecutionState};
 use ganymede_protocol::{Channel, Message};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use tokio::sync::{broadcast, oneshot, watch};
 
@@ -65,13 +67,35 @@ struct Inner {
     pending: Mutex<HashMap<String, Pending>>,
     state: watch::Sender<ExecutionState>,
     iopub_seen: AtomicBool,
-    alive: AtomicBool,
+    /// Goes false once, when the kernel dies or is shut down.
+    alive: watch::Sender<bool>,
     session_id: String,
     username: String,
     process: Option<Arc<dyn KernelProcess>>,
     interrupt_mode: InterruptMode,
     kernel_info: Mutex<Option<content::KernelInfoReply>>,
     kernel_info_json: Mutex<Option<serde_json::Value>>,
+}
+
+/// How a session checks on a kernel it has no process handle for, such as
+/// an attached one: a heartbeat every `period`, and after `misses` in a row
+/// the kernel is dead. Misses count only after the first answer, so a
+/// kernel that is still starting, or has no heartbeat, is never declared
+/// dead by this.
+#[derive(Debug, Clone, Copy)]
+pub struct Heartbeat {
+    pub period: Duration,
+    pub misses: u32,
+}
+
+impl Default for Heartbeat {
+    /// jupyter_client's restarter polls every 3 s.
+    fn default() -> Self {
+        Heartbeat {
+            period: Duration::from_secs(3),
+            misses: 3,
+        }
+    }
 }
 
 /// Handle to a running kernel. Cheap to clone; all clones share state.
@@ -84,6 +108,16 @@ impl KernelSession {
     /// Drive `transport`. `launched` supplies the process handle and
     /// interrupt mode when the host owns the process.
     pub fn start(transport: KernelTransport, launched: Option<&LaunchedKernel>) -> Self {
+        Self::start_with(transport, launched, Some(Heartbeat::default()))
+    }
+
+    /// [`KernelSession::start`] with a chosen heartbeat, or none. The
+    /// heartbeat runs only when there is no process to wait on.
+    pub fn start_with(
+        transport: KernelTransport,
+        launched: Option<&LaunchedKernel>,
+        heartbeat: Option<Heartbeat>,
+    ) -> Self {
         let (clients, _) = broadcast::channel(1024);
         let (state, _) = watch::channel(ExecutionState::Starting);
         let inner = Arc::new(Inner {
@@ -92,7 +126,7 @@ impl KernelSession {
             pending: Mutex::new(HashMap::new()),
             state,
             iopub_seen: AtomicBool::new(false),
-            alive: AtomicBool::new(true),
+            alive: watch::channel(true).0,
             session_id: uuid::Uuid::new_v4().to_string(),
             username: whoami(),
             process: launched.map(|l| l.process.clone()),
@@ -104,11 +138,24 @@ impl KernelSession {
         });
         tokio::spawn(route(inner.clone(), transport.incoming));
         if let Some(p) = inner.process.clone() {
-            let inner = inner.clone();
+            let weak = Arc::downgrade(&inner);
+            let mut alive = inner.alive.subscribe();
             tokio::spawn(async move {
-                p.wait().await;
-                inner.mark_dead();
+                tokio::select! {
+                    _ = p.wait() => {
+                        if let Some(inner) = weak.upgrade() {
+                            inner.mark_dead();
+                        }
+                    }
+                    _ = alive.wait_for(|a| !*a) => {}
+                }
             });
+        }
+        // A process handle with no pid (an attached kernel) never exits,
+        // so only the heartbeat can tell that the kernel is gone.
+        let owns_process = inner.process.as_ref().is_some_and(|p| p.pid().is_some());
+        if let (false, Some(hb)) = (owns_process, heartbeat) {
+            tokio::spawn(monitor(Arc::downgrade(&inner), hb));
         }
         KernelSession { inner }
     }
@@ -118,7 +165,19 @@ impl KernelSession {
     }
 
     pub fn is_alive(&self) -> bool {
-        self.inner.alive.load(Ordering::SeqCst)
+        *self.inner.alive.borrow()
+    }
+
+    /// Changes to false once, when the kernel dies or is shut down. The
+    /// receiver does not keep the session alive.
+    pub fn watch_alive(&self) -> watch::Receiver<bool> {
+        self.inner.alive.subscribe()
+    }
+
+    /// Resolves when the kernel is dead.
+    pub async fn dead(&self) {
+        let mut rx = self.watch_alive();
+        let _ = rx.wait_for(|alive| !*alive).await;
     }
 
     pub fn execution_state(&self) -> ExecutionState {
@@ -330,9 +389,49 @@ impl KernelSession {
 
 impl Inner {
     fn mark_dead(&self) {
-        if self.alive.swap(false, Ordering::SeqCst) {
+        if self.alive.send_replace(false) {
             // Dropping the senders fails every waiting request.
             self.pending.lock().unwrap().clear();
+            // Stop the transport's tasks so `route` sees its channel close
+            // and a ZMQ SUB socket stops reconnecting to a dead kernel.
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                let sink = self.sink.clone();
+                rt.spawn(async move { sink.close().await });
+            }
+        }
+    }
+}
+
+/// Heartbeat a kernel with no process to wait on, and mark it dead after
+/// `hb.misses` missed beats in a row.
+async fn monitor(inner: Weak<Inner>, hb: Heartbeat) {
+    let Some(mut alive) = inner.upgrade().map(|i| i.alive.subscribe()) else {
+        return;
+    };
+    let mut answered = false;
+    let mut missed = 0;
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(hb.period) => {}
+            _ = alive.wait_for(|a| !*a) => return,
+        }
+        let Some(inner) = inner.upgrade() else { return };
+        // Connecting the heartbeat socket can itself hang, so bound the
+        // whole beat, not only the wait for the echo.
+        let ok = matches!(
+            tokio::time::timeout(hb.period, inner.sink.heartbeat(hb.period)).await,
+            Ok(Ok(true))
+        );
+        if ok {
+            answered = true;
+            missed = 0;
+        } else if answered {
+            missed += 1;
+            if missed >= hb.misses {
+                tracing::warn!(session = %inner.session_id, "kernel missed {missed} heartbeats; marking it dead");
+                inner.mark_dead();
+                return;
+            }
         }
     }
 }
@@ -547,5 +646,92 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
         drop(kernel);
         assert!(matches!(pending.await.unwrap(), Err(Error::KernelDied)));
+    }
+
+    #[tokio::test]
+    async fn kernel_that_dies_mid_cell_is_reported_dead() {
+        let (s, _) = boot(ReplyOrder::ReplyThenIdle).await;
+        let mut alive = s.watch_alive();
+        assert!(matches!(
+            s.execute(content::ExecuteRequest::new("die"), Duration::from_secs(5))
+                .await,
+            Err(Error::KernelDied)
+        ));
+        tokio::time::timeout(Duration::from_secs(1), s.dead())
+            .await
+            .unwrap();
+        alive.wait_for(|a| !*a).await.unwrap();
+        assert!(!s.is_alive());
+    }
+
+    /// A transport whose kernel answers heartbeats while `beating` is true
+    /// and never closes its incoming channel, like a ZMQ SUB socket waiting
+    /// on a dead kernel.
+    struct SilentSink {
+        beating: Arc<AtomicBool>,
+        closed: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl TransportSink for SilentSink {
+        async fn send(&self, _channel: Channel, _msg: Message) -> Result<()> {
+            Ok(())
+        }
+        async fn heartbeat(&self, _timeout: Duration) -> Result<bool> {
+            Ok(self.beating.load(Ordering::SeqCst))
+        }
+        async fn close(&self) {
+            self.closed.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn silent_session(
+        beating: bool,
+        hb: Heartbeat,
+    ) -> (KernelSession, Arc<AtomicBool>, Arc<AtomicBool>) {
+        let beating = Arc::new(AtomicBool::new(beating));
+        let closed = Arc::new(AtomicBool::new(false));
+        let (tx, incoming) = tokio::sync::mpsc::channel(1);
+        // Hold the sender so `route` never ends on its own.
+        tokio::spawn(async move { tx.closed().await });
+        let transport = KernelTransport {
+            sink: Arc::new(SilentSink {
+                beating: beating.clone(),
+                closed: closed.clone(),
+            }),
+            incoming,
+        };
+        let launched = crate::attach(ganymede_protocol::ConnectionInfo::new_tcp(
+            "127.0.0.1",
+            [1, 2, 3, 4, 5],
+        ));
+        let s = KernelSession::start_with(transport, Some(&launched), Some(hb));
+        (s, beating, closed)
+    }
+
+    const FAST: Heartbeat = Heartbeat {
+        period: Duration::from_millis(20),
+        misses: 3,
+    };
+
+    #[tokio::test]
+    async fn missed_heartbeats_mark_an_attached_kernel_dead() {
+        let (s, beating, closed) = silent_session(true, FAST);
+        tokio::time::sleep(FAST.period * 3).await;
+        assert!(s.is_alive());
+        beating.store(false, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(2), s.dead())
+            .await
+            .unwrap();
+        // The transport is closed so its tasks stop.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(closed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn a_kernel_that_never_answered_a_heartbeat_is_not_declared_dead() {
+        let (s, _, _) = silent_session(false, FAST);
+        tokio::time::sleep(FAST.period * 10).await;
+        assert!(s.is_alive());
     }
 }

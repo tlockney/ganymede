@@ -79,8 +79,11 @@ impl SessionManager {
         })
     }
 
+    /// Sessions whose kernel died are dropped here, as `jupyter_server`
+    /// does ("Kernel culled or died unexpectedly").
     pub fn list(&self) -> Vec<SessionModel> {
-        let sessions = self.sessions.read().unwrap();
+        let mut sessions = self.sessions.write().unwrap();
+        sessions.retain(|_, s| self.kernels.get(&s.kernel_id).is_ok());
         let mut v: Vec<_> = sessions
             .values()
             .filter_map(|s| self.model(s).ok())
@@ -446,5 +449,105 @@ mod tests {
         sm.delete(&s.id).await.unwrap();
         assert!(m.list().is_empty());
         assert_eq!(sm.get(&s.id).unwrap_err().status, 404);
+    }
+
+    async fn until_none(c: &mut crate::bridge::ClientConnection) -> Vec<(Channel, Message)> {
+        let mut got = vec![];
+        while let Some(m) = tokio::time::timeout(Duration::from_secs(2), c.recv())
+            .await
+            .expect("client closes")
+        {
+            got.push(m);
+        }
+        got
+    }
+
+    #[tokio::test]
+    async fn shut_down_kernels_are_freed() {
+        let m = manager(None);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let weak = Arc::downgrade(&m.get(&k.id).unwrap());
+        m.restart(&k.id).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        m.shutdown(&k.id).await.unwrap();
+        until_none(&mut c).await;
+        drop(c);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(weak.upgrade().is_none(), "RunningKernel leaked");
+    }
+
+    #[tokio::test]
+    async fn kernel_that_dies_is_reported_dead_and_removed() {
+        let m = manager(None);
+        let sm = SessionManager::new(m.clone());
+        let s = sm
+            .create(SessionCreate {
+                path: "nb.ipynb".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let id = s.kernel.id;
+        let weak = Arc::downgrade(&m.get(&id).unwrap());
+        let mut c = m.connect_client(&id).unwrap();
+        c.send(
+            Channel::Shell,
+            Message::new("execute_request", "sess", "u", &ExecuteRequest::new("die")),
+        )
+        .await
+        .unwrap();
+        let got = until_none(&mut c).await;
+        let last = got.last().expect("status: dead").1.clone();
+        assert_eq!(
+            (last.msg_type(), last.content["execution_state"].as_str()),
+            ("status", Some("dead"))
+        );
+        assert!(m.list().is_empty());
+        assert_eq!(m.get(&id).unwrap_err().status, 404);
+        assert!(sm.list().is_empty(), "its session goes too");
+        drop(c);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(weak.upgrade().is_none(), "RunningKernel leaked");
+    }
+
+    #[tokio::test]
+    async fn control_and_kernel_info_statuses_do_not_change_execution_state() {
+        let m = manager(None);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        c.send(
+            Channel::Shell,
+            Message::new(
+                "execute_request",
+                "sess",
+                "u",
+                &ExecuteRequest::new("sleep 2000"),
+            ),
+        )
+        .await
+        .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while m.model(&k.id).unwrap().execution_state != "busy" {
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // The fake answers kernel_info on control while a cell runs, with
+        // busy and idle statuses of its own.
+        let info = Message::new("kernel_info_request", "sess", "u", &serde_json::json!({}));
+        let info_id = info.header.msg_id.clone();
+        c.send(Channel::Control, info).await.unwrap();
+        loop {
+            let (ch, msg) = c.recv().await.unwrap();
+            if ch == Channel::IoPub
+                && msg.msg_type() == "status"
+                && msg.parent_id() == Some(info_id.as_str())
+                && msg.content["execution_state"] == "idle"
+            {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(m.model(&k.id).unwrap().execution_state, "busy");
+        m.shutdown(&k.id).await.unwrap();
     }
 }

@@ -11,8 +11,8 @@ use ganymede_kernel_host::{
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 use tokio::sync::{broadcast, watch};
 
@@ -94,6 +94,9 @@ pub struct RunningKernel {
     /// `Arc` to this struct, so the hub alone can never close; they watch
     /// this instead.
     alive: watch::Sender<bool>,
+    /// Set while a restart replaces the session, so the old session's
+    /// death is not reported as the kernel's.
+    restarting: AtomicBool,
     last_activity: Mutex<String>,
     execution_state: Mutex<String>,
     connections: AtomicUsize,
@@ -151,34 +154,78 @@ impl RunningKernel {
         *self.execution_state.lock().unwrap() = state.to_string();
     }
 
-    /// Pump one session's traffic into the hub, tracking activity.
-    fn pump(self: &Arc<Self>, session: &KernelSession) {
+    /// Pump one session's traffic into the hub, tracking activity, until
+    /// the session dies. The task holds neither the kernel nor the session,
+    /// so a kernel that is shut down and dropped is freed.
+    fn pump(self: &Arc<Self>, session: &KernelSession, kernels: Weak<KernelMap>) {
         let mut rx = session.subscribe();
-        let me = self.clone();
+        let mut alive = session.watch_alive();
+        let session_id = session.session_id().to_string();
+        let me = Arc::downgrade(self);
         tokio::spawn(async move {
             loop {
-                match rx.recv().await {
-                    Ok((channel, msg)) => {
-                        me.touch();
-                        if channel == Channel::IoPub && msg.msg_type() == "status" {
-                            if let Some(s) =
-                                msg.content.get("execution_state").and_then(|v| v.as_str())
-                            {
-                                me.set_state(s);
-                            }
-                        }
-                        let _ = me.hub.send((channel, msg));
-                    }
+                let got = tokio::select! {
+                    biased;
+                    got = rx.recv() => got,
+                    _ = alive.wait_for(|a| !*a) => break,
+                };
+                let Some(k) = me.upgrade() else { return };
+                match got {
+                    Ok((channel, msg)) => k.forward(channel, msg),
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(kernel = %me.id, "hub pump lagged by {n} messages")
+                        tracing::warn!(kernel = %k.id, "hub pump lagged by {n} messages")
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
-            if !me.session().is_alive() {
-                me.set_state("dead");
+            // What the kernel sent before it died still goes to clients.
+            loop {
+                match rx.try_recv() {
+                    Ok((channel, msg)) => match me.upgrade() {
+                        Some(k) => k.forward(channel, msg),
+                        None => return,
+                    },
+                    Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                }
+            }
+            if let (Some(k), Some(kernels)) = (me.upgrade(), kernels.upgrade()) {
+                k.session_died(&session_id, &kernels);
             }
         });
+    }
+
+    fn forward(&self, channel: Channel, msg: Message) {
+        self.touch();
+        if channel == Channel::IoPub && msg.msg_type() == "status" && tracks_state(&msg) {
+            if let Some(s) = msg.content.get("execution_state").and_then(|v| v.as_str()) {
+                self.set_state(s);
+            }
+        }
+        let _ = self.hub.send((channel, msg));
+    }
+
+    /// The session died. Unless the manager shut it down or a restart
+    /// replaced it, the kernel died on its own: drop it from the map, tell
+    /// clients `status: dead`, and close them, as `jupyter_server` does
+    /// when a kernel dies and is not restarted.
+    fn session_died(self: &Arc<Self>, session_id: &str, kernels: &KernelMap) {
+        if self.restarting.load(Ordering::SeqCst) || self.session().session_id() != session_id {
+            return;
+        }
+        {
+            let mut map = kernels.write().unwrap();
+            match map.get(&self.id) {
+                Some(k) if Arc::ptr_eq(k, self) => map.remove(&self.id),
+                // Already removed by `shutdown`, which reports it.
+                _ => return,
+            };
+        }
+        tracing::warn!(kernel = %self.id, "kernel died");
+        self.set_state("dead");
+        self.announce("status", serde_json::json!({"execution_state": "dead"}));
+        self.alive.send_replace(false);
+        self.launched.lock().unwrap().take();
     }
 
     /// A message the server itself injects, such as `status: restarting`.
@@ -188,11 +235,13 @@ impl RunningKernel {
     }
 }
 
+type KernelMap = RwLock<HashMap<String, Arc<RunningKernel>>>;
+
 pub struct KernelManager {
     specs: Arc<dyn KernelspecSource>,
     provisioner: Arc<dyn Provisioner>,
     transports: Arc<dyn TransportFactory>,
-    kernels: RwLock<HashMap<String, Arc<RunningKernel>>>,
+    kernels: Arc<KernelMap>,
     pub config: KernelManagerConfig,
     pub started: String,
 }
@@ -208,7 +257,7 @@ impl KernelManager {
             specs,
             provisioner,
             transports,
-            kernels: RwLock::new(HashMap::new()),
+            kernels: Arc::new(RwLock::new(HashMap::new())),
             config,
             started: now_iso(),
         }
@@ -307,11 +356,12 @@ impl KernelManager {
             launched: Mutex::new(Some(launched)),
             hub,
             alive: watch::channel(true).0,
+            restarting: AtomicBool::new(false),
             last_activity: Mutex::new(now_iso()),
             execution_state: Mutex::new("starting".into()),
             connections: AtomicUsize::new(0),
         });
-        kernel.pump(&session);
+        kernel.pump(&session, Arc::downgrade(&self.kernels));
         self.kernels
             .write()
             .unwrap()
@@ -385,6 +435,7 @@ impl KernelManager {
             serde_json::json!({"execution_state": "restarting"}),
         );
         kernel.set_state("restarting");
+        kernel.restarting.store(true, Ordering::SeqCst);
         let old = kernel.session();
         let _ = old.shutdown(true, self.config.shutdown_grace).await;
         // The new kernel reuses the id, so its connection file has the same
@@ -394,7 +445,8 @@ impl KernelManager {
         let (session, launched) = self.launch(&kernel.spec, kernel.cwd.clone(), id).await?;
         *kernel.session.write().unwrap() = session.clone();
         *kernel.launched.lock().unwrap() = Some(launched);
-        kernel.pump(&session);
+        kernel.restarting.store(false, Ordering::SeqCst);
+        kernel.pump(&session, Arc::downgrade(&self.kernels));
         session.nudge(self.config.startup_timeout).await?;
         kernel.set_state(session.execution_state_name());
         kernel.touch();
@@ -513,6 +565,35 @@ fn spec_resources(s: &Kernelspec, base_url: &str) -> serde_json::Map<String, ser
         );
     }
     out
+}
+
+/// Whether an iopub `status` should change the kernel's
+/// `execution_state`. Statuses for these requests do not, so an interrupt
+/// or a client's `kernel_info_request` mid-cell does not show the kernel
+/// as idle. The list is `jupyter_server`'s `untracked_message_types`.
+fn tracks_state(status: &Message) -> bool {
+    const UNTRACKED: &[&str] = &[
+        "comm_info_request",
+        "comm_info_reply",
+        "kernel_info_request",
+        "kernel_info_reply",
+        "shutdown_request",
+        "shutdown_reply",
+        "interrupt_request",
+        "interrupt_reply",
+        "debug_request",
+        "debug_reply",
+        "history_request",
+        "history_reply",
+        "usage_request",
+        "usage_reply",
+    ];
+    let parent_type = status
+        .parent_header
+        .as_ref()
+        .map(|h| h.msg_type.as_str())
+        .unwrap_or_default();
+    !UNTRACKED.contains(&parent_type)
 }
 
 trait StateName {
