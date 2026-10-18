@@ -64,6 +64,45 @@ PATH=/nonexistent:/usr/bin:/bin "$sh" "$script" --version "$version" --bin-dir "
 	fail "kernel step without node: $(cat "$work/out")"
 grep -q "npm install -g @tlockney/cdp-kernel" "$work/out" || fail "kernel hint: $(cat "$work/out")"
 
+# Stub commands in front of PATH: a cdp-kernel install that fails is
+# reported, but ganymede is installed and the script succeeds; one that
+# works prints the kernel's version.
+stub() { # dir name body
+	mkdir -p "$1"
+	printf '#!/bin/sh\n%s\n' "$3" >"$1/$2"
+	chmod 755 "$1/$2"
+}
+for d in kfail kok; do
+	stub "$work/$d" node 'echo 24'
+	stub "$work/$d" npm 'exit 0'
+done
+# shellcheck disable=SC2016 # expanded by the stub, not here
+stub "$work/kfail" cdp-kernel '[ "$1" = install ] && { echo "boom" >&2; exit 1; }; echo 1.2.3'
+stub "$work/kok" cdp-kernel 'echo 1.2.3'
+PATH=$work/kfail:$PATH "$sh" "$script" --version "$version" --bin-dir "$work/bin7" >"$work/out" 2>&1 ||
+	fail "failed kernel install failed the script: $(cat "$work/out")"
+grep -q "cdp-kernel install failed" "$work/out" || fail "kernel failure message: $(cat "$work/out")"
+[ -x "$work/bin7/ganymede" ] || fail "binary missing after a failed kernel install"
+PATH=$work/kok:$PATH "$sh" "$script" --version "$version" --bin-dir "$work/bin8" >"$work/out" 2>&1 ||
+	fail "stub kernel install: $(cat "$work/out")"
+grep -q "Installed cdp-kernel 1.2.3" "$work/out" || fail "kernel version: $(cat "$work/out")"
+
+# On Linux, musl and glibc older than 2.35 are refused before downloading.
+if [ "$(uname -s)" = Linux ]; then
+	stub "$work/oldglibc" getconf 'echo "glibc 2.31"'
+	if PATH=$work/oldglibc:$PATH "$sh" "$script" --version "$version" --bin-dir "$work/bin9" --no-kernel 2>"$work/err"; then
+		fail "installed on glibc 2.31"
+	fi
+	grep -q "needs glibc 2.35 or newer; this system has 2.31" "$work/err" || fail "old glibc message: $(cat "$work/err")"
+	stub "$work/musl" getconf 'exit 1'
+	stub "$work/musl" ldd 'echo "musl libc (x86_64)" >&2; exit 1'
+	if PATH=$work/musl:$PATH "$sh" "$script" --version "$version" --bin-dir "$work/bin10" --no-kernel 2>"$work/err"; then
+		fail "installed on musl"
+	fi
+	grep -q "uses musl libc" "$work/err" || fail "musl message: $(cat "$work/err")"
+	[ ! -e "$work/bin10/ganymede" ] || fail "installed on musl"
+fi
+
 if [ "${TEST_KERNEL:-}" = 1 ]; then
 	kernel_path=$PATH
 	if [ -n "${CDP_KERNEL_VERSION:-}" ]; then
