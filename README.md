@@ -89,7 +89,9 @@ engine builds for iOS, Android, and wasm. See the
 
 "No Python" means no Python runtime and no Python dependency;
 [Replacing Python](docs/python-free.md) says where Python still appears
-and why. UIs are clients of the API and live outside the core.
+and why, and [Switching from jupyter_server](docs/switching.md) what a
+move from Jupyter's own server keeps and loses. UIs are clients of the
+API and live outside the core.
 
 ## Repository
 

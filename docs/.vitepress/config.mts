@@ -109,7 +109,7 @@ export default defineConfig({
     logoLink: { link: `${site}/`, target: "_self" },
     nav: [
       { text: "Home", link: `${site}/`, target: "_self", noIcon: true },
-      { text: "Get started", link: "/getting-started" },
+      { text: "Get started", link: "/install" },
       { text: "Guides", link: "/frontends" },
       { text: "How it works", link: "/architecture" },
       { text: "Roadmap", link: "/roadmap" },
