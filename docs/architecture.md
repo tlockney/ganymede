@@ -112,7 +112,9 @@ that render in a web view lives in
 [tlockney/ganymede-ui](https://github.com/tlockney/ganymede-ui): its
 `packages/client` has protocol types, websocket codecs, a
 `ServerConnection` with injectable `fetch` and `WebSocket`, a REST client,
-and renderer and widget seams.
+and renderer and widget seams. How the app itself is built, including the
+Mac and iPad app around this server, is on ganymede-ui's
+[architecture](ganymede-ui/architecture.md) page.
 
 ### Seams
 

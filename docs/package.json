@@ -5,6 +5,7 @@
   "type": "module",
   "description": "The Ganymede docs site, built with VitePress.",
   "scripts": {
+    "fetch-ui": "sh scripts/fetch-ganymede-ui.sh",
     "dev": "vitepress dev",
     "build": "vitepress build",
     "preview": "vitepress preview"

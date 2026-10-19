@@ -74,9 +74,19 @@ Markdown in `docs/`, built by VitePress:
 
 ```sh
 cd docs && npm install
+npm run fetch-ui # ganymede-ui's docs, from its main branch
 npm run dev      # live preview
 npm run build    # into docs/.vitepress/dist
 ```
+
+The pages under `/docs/ganymede-ui/` are
+[tlockney/ganymede-ui](https://github.com/tlockney/ganymede-ui)'s
+`docs/*.md`, copied into `docs/ganymede-ui/` (not committed) by
+`npm run fetch-ui`; set `GANYMEDE_UI_DIR` to copy from a local checkout
+instead. Edit them in ganymede-ui. Without the copy the site builds
+without them. ganymede-ui's `docs` workflow sends a `repository_dispatch`
+(`ganymede-ui-docs`) when they change on its `main`, which rebuilds and
+deploys this site.
 
 The `pages` workflow builds both on every pull request that touches them,
 so a broken page or dead link fails the PR. It deploys them to GitHub
