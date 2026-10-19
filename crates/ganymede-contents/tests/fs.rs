@@ -1335,3 +1335,43 @@ async fn save_through_symlink_keeps_the_link() {
         "v2"
     );
 }
+
+#[tokio::test]
+async fn nbformat_3_is_upgraded_on_read_and_saved_as_4() {
+    let (dir, c) = setup();
+    let v3 = json!({
+        "metadata": {"name": "old"},
+        "nbformat": 3,
+        "nbformat_minor": 0,
+        "worksheets": [{"metadata": {}, "cells": [
+            {"cell_type": "heading", "level": 1, "metadata": {}, "source": "T"},
+            {"cell_type": "code", "input": "1", "language": "python", "metadata": {},
+             "prompt_number": 1, "outputs": [
+                {"output_type": "pyout", "prompt_number": 1, "metadata": {}, "text": "1"}
+             ]}
+        ]}]
+    });
+    fs::write(dir.path().join("old.ipynb"), v3.to_string()).unwrap();
+
+    let got = c
+        .get("old.ipynb", GetOptions::with_content())
+        .await
+        .unwrap();
+    assert_eq!(got.message, None);
+    let content = got.content.unwrap();
+    assert_eq!(content["nbformat"], 4);
+    assert_eq!(content["nbformat_minor"], 5);
+    // As jupyter_server's GET: the upgrade's marker stays in the model.
+    assert_eq!(content["metadata"]["orig_nbformat"], 3);
+    assert_eq!(content["cells"][0]["source"], "# T");
+    assert_eq!(content["cells"][1]["outputs"][0]["data"]["text/plain"], "1");
+
+    c.save("old.ipynb", SaveRequest::notebook(content))
+        .await
+        .unwrap();
+    let on_disk: Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("old.ipynb")).unwrap()).unwrap();
+    assert_eq!(on_disk["nbformat"], 4);
+    assert!(on_disk["metadata"].get("orig_nbformat").is_none());
+    assert!(on_disk.get("worksheets").is_none());
+}

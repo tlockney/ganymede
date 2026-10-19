@@ -64,7 +64,6 @@ pull request with a GitHub issue, and records what it learned in the
   removed.
 - Conformance gaps: debugger (`debug_request`) messages, malformed stdin
   frames, and kernel death and parallel starts driven through `serve`.
-- Reading nbformat 3 notebooks (upgrading them to 4).
 - A Linux build for musl (Alpine).
 - A runtime seam for the browser (timers and `spawn` on
   `wasm-bindgen-futures`) and a websocket or `postMessage` transport, so

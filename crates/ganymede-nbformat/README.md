@@ -21,8 +21,12 @@ types, a lenient reader, and a writer whose output is identical to Python
   string or an array of strings (joined on read, as nbformat's `rejoin_lines`
   does). Transient metadata (`orig_nbformat`, `orig_nbformat_minor`,
   `signature`, cell `trusted`) is stripped, as nbformat's `strip_transient`
-  does on both read and write. Only `nbformat == 4` is accepted; other
-  versions fail with `Error::UnsupportedVersion` (v3 upgrade is a TODO).
+  does on both read and write. nbformat 3 notebooks are upgraded to
+  4.5 on read, as `nbformat.reads(s, as_version=4)` does: worksheets
+  flattened, `heading` and `html` cells made markdown, v3 output types and
+  MIME aliases renamed, fresh cell ids, and `orig_nbformat` kept in the
+  metadata until written. Other versions than 3 and 4 fail with
+  `Error::UnsupportedVersion`.
 - Writing: `Notebook::to_string()` (via `Display`) equals Python
   `nbformat.writes(nb)`; `Notebook::to_file_string()`, `to_writer` and
   `write_file` equal what `nbformat.write(nb, path)` puts in the file, which is

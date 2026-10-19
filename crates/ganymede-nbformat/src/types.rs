@@ -92,7 +92,7 @@ pub enum Cell {
     Markdown(MarkdownCell),
     Raw(RawCell),
     /// A cell this crate cannot type: an unknown `cell_type` (such as
-    /// nbformat 3's `heading`), or a known one whose fields do not fit the
+    /// nbformat 3's `heading` in a file that says it is nbformat 4), or a known one whose fields do not fit the
     /// schema even leniently. Kept as read and written back unchanged, as
     /// Python nbformat does.
     Unknown(Value),
