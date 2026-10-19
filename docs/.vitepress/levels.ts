@@ -42,6 +42,7 @@ export function groups(): Group[] {
       level: "guide",
       items: [
         { text: "JupyterLab and VS Code", link: "/frontends" },
+        { text: "Ganymede's app", link: "/app" },
         { text: "Known gaps", link: "/known-gaps" },
       ],
     },

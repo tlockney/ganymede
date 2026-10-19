@@ -60,7 +60,7 @@ to 50 more, as `jupyter lab` does, and prints the URL of `/lab`.
 
 Any other `--static-dir` is served at `/`, behind the API: a built
 [ganymede-ui](https://github.com/tlockney/ganymede-ui) works this way
-(see [below](#ganymede-ui)).
+(see [Ganymede's app](app.md)).
 Its HTML pages get an `_xsrf` cookie, as JupyterLab's page does, so an app
 on the login cookie can send it back as `X-XSRFToken` on requests that
 change state.
@@ -138,32 +138,7 @@ first.
 
 ## ganymede-ui
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in the latest release.
-
-[ganymede-ui](https://github.com/tlockney/ganymede-ui) is Ganymede's own
-notebook app, a static site that is a client of the same API. Install a
-release and serve it:
-
-```sh
-ganymede ui install            # once: the default release, from GitHub
-ganymede ui                    # serves it at / and opens it in the browser
-ganymede ui list               # installed versions; --json too
-ganymede ui remove 0.1.0
-ganymede ui install --version 0.2.0
-```
-
-`ganymede ui install` downloads `ganymede-ui-X.Y.Z.zip` from the release
-on GitHub and checks its SHA-256: pinned in the binary for the default
-version, otherwise the line in that release's `SHA256SUMS`. It unpacks to
-`ui/<version>/` under Ganymede's data directory (`ganymede info` shows
-it), within the same size limits as JupyterLab. `GANYMEDE_UI_URL` points
-at a mirror laid out as `<url>/v<version>/<file>`.
-
-`ganymede ui` is `ganymede lab` for this app: `serve` with the newest
-installed version as `--static-dir`, the URL of `/` printed and opened,
-and the same port fallback and flags. The token in the URL becomes a login
-cookie, and the app connects on it.
+Ganymede's own notebook app has its own page: [Ganymede's app](app.md).
 
 ## What isn't there
 
