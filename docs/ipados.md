@@ -10,8 +10,8 @@ the plan adds the following requirements.
 Status: token auth, atomic writes with the mtime check, a configurable
 checkpoint directory, the attach provisioner, idle culling, verbatim
 metadata passthrough, and reattaching to a kernel after a disconnect
-with the missed output replayed are built. The Mac and iPad app exists,
-in ganymede-ui's [`apple/`](https://github.com/tlockney/ganymede-ui/tree/main/apple):
+with the missed output replayed are built. The Mac and iPad app exists
+([ganymede-ui architecture](ganymede-ui/architecture.md#mac-and-ipad-app)):
 it runs the server in-process through `ganymede-ffi`, and on the iPad
 kernels run in the web view or on a remote server through the gateway.
 `tailscale serve` identity headers, reloading files changed on disk, and
