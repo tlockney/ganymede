@@ -70,3 +70,7 @@
 .level-advanced { --level-fg: var(--vp-c-purple-1); --level-bg: var(--vp-c-purple-soft); }
 .level-contributor { --level-fg: var(--vp-c-yellow-1); --level-bg: var(--vp-c-yellow-soft); }
 
+
+/* Image zoom (zoom.ts): above the nav bar and sidebar. */
+.medium-zoom-overlay,
+.medium-zoom-image--opened { z-index: 100; }
