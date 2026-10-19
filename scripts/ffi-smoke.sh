@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 crate=crates/ganymede-ffi
-libs=$(cargo rustc --locked -q -p ganymede-ffi --release --crate-type staticlib -- --print native-static-libs 2>&1 |
+libs=$(cargo rustc --color never --locked -q -p ganymede-ffi --release --crate-type staticlib -- --print native-static-libs 2>&1 |
   sed -n 's/.*native-static-libs: //p' | tail -1)
 out=$(mktemp -d)
 cc -Wall -Werror -I "$crate/include" "$crate/tests/smoke.c" target/release/libganymede_ffi.a $libs -o "$out/smoke"
