@@ -4,9 +4,9 @@
 use crate::config::Config;
 use crate::AppState;
 use anyhow::{Context, Result};
-use ganymede_api::{KernelManager, KernelManagerConfig, SessionManager, ZmqTransportFactory};
+use ganymede_api::{KernelManager, KernelManagerConfig, SessionManager, TransportFactory};
 use ganymede_contents::{FsContents, FsOptions, Notary};
-use ganymede_kernel_host::{FsKernelspecs, SubprocessProvisioner};
+use ganymede_kernel_host::{FsKernelspecs, KernelspecSource, Provisioner};
 use std::future::IntoFuture;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -240,6 +240,35 @@ pub struct Startup {
     /// Stop on a message here instead of on Ctrl-C or SIGTERM, and print
     /// nothing to stdout: how an app embedding the server runs it.
     pub stop: Option<tokio::sync::mpsc::Receiver<()>>,
+    /// Where kernelspecs come from, instead of the config's kernelspec
+    /// dirs: an app listing the kernels it runs itself.
+    pub kernelspecs: Option<Arc<dyn KernelspecSource>>,
+    /// How kernels start, instead of as subprocesses.
+    pub provisioner: Option<Arc<dyn Provisioner>>,
+    /// How the server talks to kernels, instead of over ZeroMQ.
+    pub transports: Option<Arc<dyn TransportFactory>>,
+}
+
+#[cfg(feature = "subprocess")]
+fn default_provisioner() -> Result<Arc<dyn Provisioner>> {
+    Ok(Arc::new(
+        ganymede_kernel_host::SubprocessProvisioner::default(),
+    ))
+}
+
+#[cfg(not(feature = "subprocess"))]
+fn default_provisioner() -> Result<Arc<dyn Provisioner>> {
+    anyhow::bail!("no kernel provisioner: built without `subprocess` and none given")
+}
+
+#[cfg(feature = "zmq")]
+fn default_transports() -> Result<Arc<dyn TransportFactory>> {
+    Ok(Arc::new(ganymede_api::ZmqTransportFactory))
+}
+
+#[cfg(not(feature = "zmq"))]
+fn default_transports() -> Result<Arc<dyn TransportFactory>> {
+    anyhow::bail!("no kernel transport factory: built without `zmq` and none given")
 }
 
 /// The notary for `dir`, else for the Jupyter data dir. When neither can
@@ -317,11 +346,21 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         );
     }
 
-    let specs = Arc::new(FsKernelspecs::discover(cfg.kernelspec_roots.clone()));
+    let specs = startup
+        .kernelspecs
+        .unwrap_or_else(|| Arc::new(FsKernelspecs::discover(cfg.kernelspec_roots.clone())));
+    let provisioner = match startup.provisioner {
+        Some(p) => p,
+        None => default_provisioner()?,
+    };
+    let transports = match startup.transports {
+        Some(t) => t,
+        None => default_transports()?,
+    };
     let kernels = Arc::new(KernelManager::new(
         specs,
-        Arc::new(SubprocessProvisioner::default()),
-        Arc::new(ZmqTransportFactory),
+        provisioner,
+        transports,
         KernelManagerConfig {
             default_kernel: cfg.default_kernel.clone(),
             startup_timeout: Duration::from_secs(cfg.startup_timeout_secs),
