@@ -6,6 +6,16 @@ The examples use `cdp-node` from cdp-kernel; substitute
 any name `ganymede kernelspec list` shows. With no kernel installed,
 `-k fake` uses a built-in in-process kernel for trying things out.
 
+The commands fall into three groups: those that run code on a kernel
+with no server, those that start a server for frontends, and those that
+need no kernel at all.
+
+![What each ganymede command takes and gives. Commands that run code on a kernel without a server: run takes code, a file or stdin and prints output; console is interactive; execute runs notebooks and writes their outputs; kernel starts a kernel and prints its connection file, which run --existing and attach reuse. Commands that start a server for frontends: serve prints a URL with its token; lab serves JupyterLab at /lab and ui serves ganymede-ui at /, each opened in the browser. Commands with no kernel: trust signs a notebook, nb clear removes outputs, and kernelspec, lab install and info manage what is installed.](images/architecture/cli.svg)
+
+> [!NOTE]
+> **Unreleased.** `ganymede ui` is available only from a build of `main`
+> (HEAD), not in the latest release.
+
 ## Find your kernels
 
 ```sh

@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 378" width="900" height="378" role="img" aria-label="Three ways to reach Ganymede from another machine. Avoid listening on every interface with --ip 0.0.0.0: requests travel as plain HTTP, so anyone on the network can read the token. Instead forward a port over SSH to a server listening on 127.0.0.1, or put a TLS proxy such as tailscale serve, Caddy or nginx in front of a server on 127.0.0.1, with local_hostnames and trust_xheaders set. Each needs the token.">
+  <title>Three ways to reach Ganymede from another machine. Avoid listening on every interface with --ip 0.0.0.0: requests travel as plain HTTP, so anyone on the network can read the token. Instead forward a port over SSH to a server listening on 127.0.0.1, or put a TLS proxy such as tailscale serve, Caddy or nginx in front of a server on 127.0.0.1, with local_hostnames and trust_xheaders set. Each needs the token.</title>
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f6f7f9; stroke: #9aa3ad; stroke-width: 1.2; }
+    .inner { fill: #ffffff; stroke: #b8c0c8; stroke-width: 1; }
+    .acc { fill: #e8f0fe; stroke: #3b6fd8; stroke-width: 1.4; }
+    .warn { fill: #fdf0e6; stroke: #c96a1b; stroke-width: 1.4; }
+    .ok { fill: #e7f5ec; stroke: #2f8a4c; stroke-width: 1.4; }
+    .dash { stroke-dasharray: 5 4; }
+    .warnpill { fill: #c96a1b; }
+    .tw { font: 600 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #ffffff; }
+    .t { font: 600 14px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1f2328; }
+    .s { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .m { font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f2328; }
+    .l { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .ln { stroke: #6e7781; stroke-width: 1.4; fill: none; }
+    .life { stroke: #9aa3ad; stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+    .hl { stroke: #3b6fd8; stroke-width: 1.6; fill: none; }
+    .ah { fill: #6e7781; }
+    .ahb { fill: #3b6fd8; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #1b1b1f; }
+      .box { fill: #25262b; stroke: #5c6370; }
+      .inner { fill: #1b1b1f; stroke: #4a505a; }
+      .acc { fill: #1e2a44; stroke: #6b9bff; }
+      .warn { fill: #3a2a1c; stroke: #e0904a; }
+      .ok { fill: #1d3326; stroke: #5cc27e; }
+      .warnpill { fill: #e0904a; }
+      .tw { fill: #1b1b1f; }
+      .t, .m { fill: #e6e8eb; }
+      .s, .l { fill: #b6bcc4; }
+      .ln { stroke: #a0a7b0; }
+      .life { stroke: #5c6370; }
+      .hl { stroke: #6b9bff; }
+      .ah { fill: #a0a7b0; }
+      .ahb { fill: #6b9bff; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ahb" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="900" height="378" rx="8"/>
+  <rect class="box" x="20" y="20" width="860" height="100" rx="6"/>
+  <rect class="warn" x="34" y="34" width="56" height="22" rx="11"/>
+  <text class="m" x="62" y="49" text-anchor="middle">Avoid</text>
+  <text class="t" x="34" y="78">Listen on every interface</text>
+  <text class="l" x="34" y="96">--ip 0.0.0.0</text>
+  <rect class="acc" x="250" y="46" width="130" height="48" rx="4"/>
+  <text class="m" x="260" y="66">Your browser</text>
+  <text class="l" x="260" y="82">another machine</text>
+  <line class="ln dash" x1="382" y1="70" x2="548" y2="70" marker-end="url(#a)"/>
+  <text class="l" x="465" y="62" text-anchor="middle">plain HTTP: the token</text>
+  <text class="l" x="465" y="86" text-anchor="middle">readable on the network</text>
+  <rect class="inner" x="550" y="30" width="316" height="80" rx="6"/>
+  <text class="l" x="560" y="44">Workstation</text>
+  <line class="ln" x1="552" y1="70" x2="718" y2="70" marker-end="url(#a)"/>
+  <text class="l" x="636" y="64" text-anchor="middle">any interface</text>
+  <rect class="warn" x="720" y="50" width="136" height="52" rx="4"/>
+  <text class="m" x="730" y="70">ganymede serve</text>
+  <text class="l" x="730" y="87">on 0.0.0.0:8888</text>
+  <rect class="box" x="20" y="132" width="860" height="100" rx="6"/>
+  <rect class="ok" x="34" y="146" width="56" height="22" rx="11"/>
+  <text class="m" x="62" y="161" text-anchor="middle">Do</text>
+  <text class="t" x="34" y="190">Forward a port over SSH</text>
+  <text class="l" x="34" y="208">ssh -L 8888:127.0.0.1:8888</text>
+  <rect class="acc" x="250" y="158" width="130" height="48" rx="4"/>
+  <text class="m" x="260" y="178">Your browser</text>
+  <text class="l" x="260" y="194">another machine</text>
+  <line class="hl" x1="382" y1="182" x2="548" y2="182" marker-end="url(#b)"/>
+  <text class="l" x="465" y="174" text-anchor="middle">SSH: encrypted</text>
+  <rect class="inner" x="550" y="142" width="316" height="80" rx="6"/>
+  <text class="l" x="560" y="156">Workstation</text>
+  <line class="ln" x1="552" y1="182" x2="718" y2="182" marker-end="url(#a)"/>
+  <text class="l" x="636" y="176" text-anchor="middle">loopback</text>
+  <rect class="ok" x="720" y="162" width="136" height="52" rx="4"/>
+  <text class="m" x="730" y="182">ganymede serve</text>
+  <text class="l" x="730" y="199">on 127.0.0.1:8888</text>
+  <rect class="box" x="20" y="244" width="860" height="100" rx="6"/>
+  <rect class="ok" x="34" y="258" width="56" height="22" rx="11"/>
+  <text class="m" x="62" y="273" text-anchor="middle">Do</text>
+  <text class="t" x="34" y="302">A TLS proxy in front</text>
+  <text class="l" x="34" y="320">tailscale serve, Caddy, nginx</text>
+  <rect class="acc" x="250" y="270" width="130" height="48" rx="4"/>
+  <text class="m" x="260" y="290">Your browser</text>
+  <text class="l" x="260" y="306">another machine</text>
+  <line class="hl" x1="382" y1="294" x2="548" y2="294" marker-end="url(#b)"/>
+  <text class="l" x="465" y="286" text-anchor="middle">HTTPS: encrypted</text>
+  <rect class="inner" x="550" y="254" width="316" height="80" rx="6"/>
+  <text class="l" x="560" y="268">Workstation</text>
+  <rect class="ok" x="562" y="274" width="116" height="52" rx="4"/>
+  <text class="m" x="572" y="290">TLS proxy</text>
+  <text class="l" x="572" y="305">local_hostnames,</text>
+  <text class="l" x="572" y="318">trust_xheaders</text>
+  <line class="ln" x1="680" y1="300" x2="718" y2="300" marker-end="url(#a)"/>
+  <rect class="ok" x="720" y="274" width="136" height="52" rx="4"/>
+  <text class="m" x="730" y="294">ganymede serve</text>
+  <text class="l" x="730" y="311">on 127.0.0.1:8888</text>
+  <text class="s" x="34" y="362">Each needs the token. Only the first lets anyone on the network read it.</text>
+</svg>

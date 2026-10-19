@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 590" width="900" height="590" role="img" aria-label="What each ganymede command takes and gives. Commands that run code on a kernel without a server: run takes code, a file or stdin and prints output; console is interactive; execute runs notebooks and writes their outputs; kernel starts a kernel and prints its connection file, which run --existing and attach reuse. Commands that start a server for frontends: serve prints a URL with its token; lab serves JupyterLab at /lab and ui serves ganymede-ui at /, each opened in the browser. Commands with no kernel: trust signs a notebook, nb clear removes outputs, and kernelspec, lab install and info manage what is installed.">
+  <title>What each ganymede command takes and gives. Commands that run code on a kernel without a server: run takes code, a file or stdin and prints output; console is interactive; execute runs notebooks and writes their outputs; kernel starts a kernel and prints its connection file, which run --existing and attach reuse. Commands that start a server for frontends: serve prints a URL with its token; lab serves JupyterLab at /lab and ui serves ganymede-ui at /, each opened in the browser. Commands with no kernel: trust signs a notebook, nb clear removes outputs, and kernelspec, lab install and info manage what is installed.</title>
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f6f7f9; stroke: #9aa3ad; stroke-width: 1.2; }
+    .inner { fill: #ffffff; stroke: #b8c0c8; stroke-width: 1; }
+    .acc { fill: #e8f0fe; stroke: #3b6fd8; stroke-width: 1.4; }
+    .warn { fill: #fdf0e6; stroke: #c96a1b; stroke-width: 1.4; }
+    .ok { fill: #e7f5ec; stroke: #2f8a4c; stroke-width: 1.4; }
+    .dash { stroke-dasharray: 5 4; }
+    .warnpill { fill: #c96a1b; }
+    .tw { font: 600 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #ffffff; }
+    .t { font: 600 14px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1f2328; }
+    .s { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .m { font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f2328; }
+    .l { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .ln { stroke: #6e7781; stroke-width: 1.4; fill: none; }
+    .life { stroke: #9aa3ad; stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+    .hl { stroke: #3b6fd8; stroke-width: 1.6; fill: none; }
+    .ah { fill: #6e7781; }
+    .ahb { fill: #3b6fd8; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #1b1b1f; }
+      .box { fill: #25262b; stroke: #5c6370; }
+      .inner { fill: #1b1b1f; stroke: #4a505a; }
+      .acc { fill: #1e2a44; stroke: #6b9bff; }
+      .warn { fill: #3a2a1c; stroke: #e0904a; }
+      .ok { fill: #1d3326; stroke: #5cc27e; }
+      .warnpill { fill: #e0904a; }
+      .tw { fill: #1b1b1f; }
+      .t, .m { fill: #e6e8eb; }
+      .s, .l { fill: #b6bcc4; }
+      .ln { stroke: #a0a7b0; }
+      .life { stroke: #5c6370; }
+      .hl { stroke: #6b9bff; }
+      .ah { fill: #a0a7b0; }
+      .ahb { fill: #6b9bff; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ahb" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="900" height="590" rx="8"/>
+  <text class="t" x="275" y="34" text-anchor="middle">Takes</text>
+  <text class="t" x="512" y="34" text-anchor="middle">Command</text>
+  <text class="t" x="772" y="34" text-anchor="middle">Gives</text>
+  <rect class="box" x="20" y="48" width="860" height="234" rx="6"/>
+  <text class="t" x="34" y="72">Runs code on a kernel,</text>
+  <text class="t" x="34" y="90">no server</text>
+  <rect class="inner" x="190" y="62" width="170" height="30" rx="4"/>
+  <text class="l" x="200" y="81">code, a file, or stdin</text>
+  <line class="ln" x1="362" y1="77" x2="390" y2="77" marker-end="url(#a)"/>
+  <rect class="warn" x="392" y="62" width="240" height="30" rx="4"/>
+  <text class="m" x="402" y="81">ganymede run</text>
+  <line class="ln" x1="634" y1="77" x2="662" y2="77" marker-end="url(#a)"/>
+  <rect class="inner" x="664" y="62" width="216" height="30" rx="4"/>
+  <text class="l" x="674" y="81">output, or JSON lines</text>
+  <rect class="inner" x="190" y="102" width="170" height="30" rx="4"/>
+  <text class="l" x="200" y="121">what you type</text>
+  <line class="ln" x1="362" y1="117" x2="390" y2="117" marker-end="url(#a)"/>
+  <rect class="warn" x="392" y="102" width="240" height="30" rx="4"/>
+  <text class="m" x="402" y="121">ganymede console</text>
+  <line class="ln" x1="634" y1="117" x2="662" y2="117" marker-end="url(#a)"/>
+  <rect class="inner" x="664" y="102" width="216" height="30" rx="4"/>
+  <text class="l" x="674" y="121">output, interactively</text>
+  <rect class="inner" x="190" y="142" width="170" height="30" rx="4"/>
+  <text class="l" x="200" y="161">notebooks</text>
+  <line class="ln" x1="362" y1="157" x2="390" y2="157" marker-end="url(#a)"/>
+  <rect class="warn" x="392" y="142" width="240" height="30" rx="4"/>
+  <text class="m" x="402" y="161">ganymede execute</text>
+  <line class="ln" x1="634" y1="157" x2="662" y2="157" marker-end="url(#a)"/>
+  <rect class="inner" x="664" y="142" width="216" height="30" rx="4"/>
+  <text class="l" x="674" y="161">notebooks with outputs</text>
+  <rect class="inner" x="190" y="182" width="170" height="30" rx="4"/>
+  <text class="l" x="200" y="201">a kernelspec</text>
+  <line class="ln" x1="362" y1="197" x2="390" y2="197" marker-end="url(#a)"/>
+  <rect class="warn" x="392" y="182" width="240" height="30" rx="4"/>
+  <text class="m" x="402" y="201">ganymede kernel</text>
+  <line class="ln" x1="634" y1="197" x2="662" y2="197" marker-end="url(#a)"/>
+  <rect class="inner" x="664" y="182" width="216" height="30" rx="4"/>
+  <text class="l" x="674" y="201">a kernel&#x27;s connection file</text>
+  <rect class="inner" x="190" y="222" width="170" height="30" rx="4"/>
+  <text class="l" x="200" y="241">a connection file, code</text>
+  <line class="ln" x1="362" y1="237" x2="390" y2="237" marker-end="url(#a)"/>
+  <rect class="warn" x="392" y="222" width="240" height="30" rx="4"/>
+  <text class="m" x="402" y="241">run --existing, attach</text>
+  <line class="ln" x1="634" y1="237" x2="662" y2="237" marker-end="url(#a)"/>
+  <rect class="inner" x="664" y="222" width="216" height="30" rx="4"/>
+  <text class="l" x="674" y="241">output; kernel keeps running</text>
+  <rect class="box" x="20" y="292" width="860" height="154" rx="6"/>
+  <text class="t" x="34" y="316">Starts a server,</text>
+  <text class="t" x="34" y="334">for frontends</text>
+  <rect class="inner" x="190" y="306" width="170" height="30" rx="4"/>
+  <text class="l" x="200" y="325">a folder</text>
+  <line class="ln" x1="362" y1="321" x2="390" y2="321" marker-end="url(#a)"/>
+  <rect class="ok" x="392" y="306" width="240" height="30" rx="4"/>
+  <text class="m" x="402" y="325">ganymede serve</text>
+  <line class="ln" x1="634" y1="321" x2="662" y2="321" marker-end="url(#a)"/>
+  <rect class="inner" x="664" y="306" width="216" height="30" rx="4"/>
+  <text class="l" x="674" y="325">a URL and token, any client</text>
+  <rect class="inner" x="190" y="346" width="170" height="30" rx="4"/>
+  <text class="l" x="200" y="365">a folder</text>
+  <line class="ln" x1="362" y1="361" x2="390" y2="361" marker-end="url(#a)"/>
+  <rect class="ok" x="392" y="346" width="240" height="30" rx="4"/>
+  <text class="m" x="402" y="365">ganymede lab</text>
+  <line class="ln" x1="634" y1="361" x2="662" y2="361" marker-end="url(#a)"/>
+  <rect class="inner" x="664" y="346" width="216" height="30" rx="4"/>
+  <text class="l" x="674" y="365">JupyterLab at /lab, opened</text>
+  <rect class="inner" x="190" y="386" width="170" height="30" rx="4"/>
+  <text class="l" x="200" y="405">a folder</text>
+  <line class="ln" x1="362" y1="401" x2="390" y2="401" marker-end="url(#a)"/>
+  <rect class="ok" x="392" y="386" width="240" height="30" rx="4"/>
+  <text class="m" x="402" y="405">ganymede ui</text>
+  <line class="ln" x1="634" y1="401" x2="662" y2="401" marker-end="url(#a)"/>
+  <rect class="inner" x="664" y="386" width="216" height="30" rx="4"/>
+  <text class="l" x="674" y="405">ganymede-ui at /, opened</text>
+  <rect class="box" x="20" y="456" width="860" height="114" rx="6"/>
+  <text class="t" x="34" y="480">Needs no kernel</text>
+  <rect class="inner" x="190" y="470" width="170" height="30" rx="4"/>
+  <text class="l" x="200" y="489">a notebook</text>
+  <line class="ln" x1="362" y1="485" x2="390" y2="485" marker-end="url(#a)"/>
+  <rect class="box" x="392" y="470" width="240" height="30" rx="4"/>
+  <text class="m" x="402" y="489">trust, nb clear</text>
+  <line class="ln" x1="634" y1="485" x2="662" y2="485" marker-end="url(#a)"/>
+  <rect class="inner" x="664" y="470" width="216" height="30" rx="4"/>
+  <text class="l" x="674" y="489">signed, or without outputs</text>
+  <rect class="inner" x="190" y="510" width="170" height="30" rx="4"/>
+  <text class="l" x="200" y="529">names, versions</text>
+  <line class="ln" x1="362" y1="525" x2="390" y2="525" marker-end="url(#a)"/>
+  <rect class="box" x="392" y="510" width="240" height="30" rx="4"/>
+  <text class="m" x="402" y="529">kernelspec, lab install, info</text>
+  <line class="ln" x1="634" y1="525" x2="662" y2="525" marker-end="url(#a)"/>
+  <rect class="inner" x="664" y="510" width="216" height="30" rx="4"/>
+  <text class="l" x="674" y="529">what is installed</text>
+</svg>

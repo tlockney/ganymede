@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 480" width="900" height="480" role="img" aria-label="Saving a notebook. The client sends PUT /api/contents with the ETag it read as If-Match, or last_modified in the body. Ganymede reads the file on disk: if the ETag differs it answers 412, and if the file is more than 500 ms newer than last_modified it answers 409, writing nothing. Otherwise it validates the notebook, writes a temporary file and renames it over the old one, signs the notebook in the notary if every code cell is trusted, and creates the first checkpoint if there is none. It answers 200 or 201 with the model and its ETag. Further checkpoints come from POST to the checkpoints endpoint.">
+  <title>Saving a notebook. The client sends PUT /api/contents with the ETag it read as If-Match, or last_modified in the body. Ganymede reads the file on disk: if the ETag differs it answers 412, and if the file is more than 500 ms newer than last_modified it answers 409, writing nothing. Otherwise it validates the notebook, writes a temporary file and renames it over the old one, signs the notebook in the notary if every code cell is trusted, and creates the first checkpoint if there is none. It answers 200 or 201 with the model and its ETag. Further checkpoints come from POST to the checkpoints endpoint.</title>
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f6f7f9; stroke: #9aa3ad; stroke-width: 1.2; }
+    .inner { fill: #ffffff; stroke: #b8c0c8; stroke-width: 1; }
+    .acc { fill: #e8f0fe; stroke: #3b6fd8; stroke-width: 1.4; }
+    .warn { fill: #fdf0e6; stroke: #c96a1b; stroke-width: 1.4; }
+    .ok { fill: #e7f5ec; stroke: #2f8a4c; stroke-width: 1.4; }
+    .dash { stroke-dasharray: 5 4; }
+    .warnpill { fill: #c96a1b; }
+    .tw { font: 600 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #ffffff; }
+    .t { font: 600 14px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1f2328; }
+    .s { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .m { font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f2328; }
+    .l { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .ln { stroke: #6e7781; stroke-width: 1.4; fill: none; }
+    .life { stroke: #9aa3ad; stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+    .hl { stroke: #3b6fd8; stroke-width: 1.6; fill: none; }
+    .ah { fill: #6e7781; }
+    .ahb { fill: #3b6fd8; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #1b1b1f; }
+      .box { fill: #25262b; stroke: #5c6370; }
+      .inner { fill: #1b1b1f; stroke: #4a505a; }
+      .acc { fill: #1e2a44; stroke: #6b9bff; }
+      .warn { fill: #3a2a1c; stroke: #e0904a; }
+      .ok { fill: #1d3326; stroke: #5cc27e; }
+      .warnpill { fill: #e0904a; }
+      .tw { fill: #1b1b1f; }
+      .t, .m { fill: #e6e8eb; }
+      .s, .l { fill: #b6bcc4; }
+      .ln { stroke: #a0a7b0; }
+      .life { stroke: #5c6370; }
+      .hl { stroke: #6b9bff; }
+      .ah { fill: #a0a7b0; }
+      .ahb { fill: #6b9bff; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ahb" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="900" height="480" rx="8"/>
+  <rect class="acc" x="25" y="20" width="170" height="44" rx="4"/>
+  <text class="t" x="110" y="39" text-anchor="middle">Client</text>
+  <text class="l" x="110" y="55" text-anchor="middle">JupyterLab, ganymede-ui</text>
+  <line class="life" x1="110" y1="64" x2="110" y2="460"/>
+  <rect class="ok" x="295" y="20" width="170" height="44" rx="4"/>
+  <text class="t" x="380" y="39" text-anchor="middle">Ganymede</text>
+  <text class="l" x="380" y="55" text-anchor="middle">ganymede-contents</text>
+  <line class="life" x1="380" y1="64" x2="380" y2="460"/>
+  <rect class="box" x="550" y="20" width="140" height="44" rx="4"/>
+  <text class="t" x="620" y="39" text-anchor="middle">Folder</text>
+  <text class="l" x="620" y="55" text-anchor="middle">notebook, checkpoints</text>
+  <line class="life" x1="620" y1="64" x2="620" y2="460"/>
+  <rect class="box" x="730" y="20" width="140" height="44" rx="4"/>
+  <text class="t" x="800" y="39" text-anchor="middle">Notary</text>
+  <text class="l" x="800" y="55" text-anchor="middle">nbsignatures.db</text>
+  <line class="life" x1="800" y1="64" x2="800" y2="460"/>
+  <line class="ln" x1="110" y1="98" x2="378" y2="98" marker-end="url(#a)"/>
+  <text class="s" x="245.0" y="92" text-anchor="middle">PUT /api/contents/nb.ipynb</text>
+  <text class="l" x="245.0" y="114" text-anchor="middle">If-Match: the ETag it read, or</text>
+  <text class="l" x="245.0" y="128" text-anchor="middle">last_modified in the body</text>
+  <line class="ln" x1="380" y1="150" x2="618" y2="150" marker-end="url(#a)"/>
+  <text class="s" x="500.0" y="144" text-anchor="middle">read the file on disk</text>
+  <rect class="warn" x="392" y="164" width="226" height="58" rx="4"/>
+  <text class="l" x="402" y="183">ETag differs: 412 Precondition Failed</text>
+  <text class="l" x="402" y="199">file newer than last_modified</text>
+  <text class="l" x="402" y="215">by over 500 ms: 409 Conflict</text>
+  <line class="ln dash" x1="380" y1="200" x2="112" y2="200" marker-end="url(#a)"/>
+  <text class="s" x="245.0" y="194" text-anchor="middle">409 or 412: nothing written</text>
+  <rect class="inner" x="392" y="236" width="226" height="42" rx="4"/>
+  <text class="l" x="402" y="255">validate against nbformat&#x27;s schema;</text>
+  <text class="l" x="402" y="271">trusted if every code cell is</text>
+  <line class="ln" x1="380" y1="304" x2="618" y2="304" marker-end="url(#a)"/>
+  <text class="s" x="500.0" y="298" text-anchor="middle">write a temp file, rename it over</text>
+  <line class="ln" x1="380" y1="336" x2="798" y2="336" marker-end="url(#a)"/>
+  <text class="s" x="590.0" y="330" text-anchor="middle">sign it, if trusted</text>
+  <line class="ln" x1="380" y1="368" x2="618" y2="368" marker-end="url(#a)"/>
+  <text class="s" x="500.0" y="362" text-anchor="middle">first checkpoint, if none yet</text>
+  <line class="hl" x1="380" y1="404" x2="112" y2="404" marker-end="url(#b)"/>
+  <text class="s" x="245.0" y="398" text-anchor="middle">200 or 201: the model, its ETag</text>
+  <rect class="inner" x="392" y="420" width="226" height="26" rx="4"/>
+  <text class="l" x="402" y="439">more checkpoints: POST …/checkpoints</text>
+</svg>
