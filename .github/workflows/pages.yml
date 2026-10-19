@@ -71,6 +71,9 @@ jobs:
           cp -R site/. "$RUNNER_TEMP/site/"
           cp -R docs/.vitepress/dist "$RUNNER_TEMP/site/docs"
           cp -R docs/images "$RUNNER_TEMP/site/images"
+          # The landing page's diagram is the light and dark copies the docs
+          # build writes (docs/.vitepress/themed.ts).
+          test -f "$RUNNER_TEMP/site/images/themed/architecture/ganymede.dark.svg"
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: ${{ runner.temp }}/site
@@ -97,6 +100,7 @@ jobs:
           check() { curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o /dev/null "$1" && echo "ok $1"; }
           check "$SITE_URL/"
           check "$SITE_URL/install.sh"
+          check "$SITE_URL/images/themed/architecture/ganymede.light.svg"
           page=$(curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors "$SITE_URL/docs/install")
           css=$(printf '%s' "$page" | grep -o '/[^"]*/assets/style\.[^"]*\.css' | head -n 1)
           test -n "$css" || { echo "no stylesheet in $SITE_URL/docs/install"; exit 1; }

@@ -146,6 +146,13 @@ Keep the words `**Unreleased.**` as they are: the release looks for them
 and removes the notes ([Releasing](releasing.md)). A change to a feature
 that is already released needs no note.
 `site/install.sh` goes live on merge too, and must work with the latest
-release. The design is cdp-kernel.org's; keep
+release. Diagrams are SVG files in `docs/images/`, with their dark colours in a
+`@media (prefers-color-scheme: dark)` block, so they follow the OS on
+GitHub. The docs build writes a light and a dark copy of each into
+`docs/images/themed/` (not committed), and the site shows the one that
+matches its theme toggle ([`themed.ts`](.vitepress/themed.ts)); a new
+diagram needs nothing more than that block. Give each a legend for any
+colour or line style that carries meaning.
+The design is cdp-kernel.org's; keep
 `site/style.css` and `docs/.vitepress/theme/custom.css` in step with each
 other.

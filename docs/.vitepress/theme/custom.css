@@ -75,3 +75,8 @@
 /* Image zoom (zoom.ts): above the nav bar and sidebar. */
 .medium-zoom-overlay,
 .medium-zoom-image--opened { z-index: 100; }
+
+/* Diagrams come in a light and a dark copy (themed.ts); show the one that
+   matches the theme toggle. */
+html.dark .vp-doc img.only-light,
+html:not(.dark) .vp-doc img.only-dark { display: none; }
