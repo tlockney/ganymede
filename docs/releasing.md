@@ -9,8 +9,9 @@ partway through.
    version bump and the changelog. With `--execute` it commits them on
    `release/vX.Y.Z`, pushes, and opens an issue and a pull request.
    Before merging it, remove the docs' "Unreleased" notes on that branch
-   ([CLAUDE.md](../CLAUDE.md#documenting-unreleased-features)): the
-   release ships everything they describe. This finds them, and the
+   ([Development](development.md#this-site)): the release ships everything
+   they describe. Reword the text around a note if it read as unreleased;
+   a note added to `main` after the branch was cut stays. This finds them, and the
    script lists them in the pull request:
 
    ```sh

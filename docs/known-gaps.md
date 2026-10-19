@@ -49,6 +49,14 @@ covers problems with the install itself.
 - A notebook changed on disk while it is open is not reloaded into the
   frontend; that is the document model on the [roadmap](roadmap.md).
 
+## The app
+
+- The Mac and iPad app isn't signed for the App Store or released: the
+  Mac build comes from CI, and the iPad build from source; see
+  [Ganymede's app](app.md#the-mac-and-ipad-app).
+- The iPad runs only cdp-kernel's TypeScript kernel on the device; other
+  kernels need a kernel server.
+
 ## Embedding
 
 - `ganymede-engine` builds for iOS, Android, and wasm (WASI), but there is

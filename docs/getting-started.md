@@ -35,12 +35,8 @@ a line, with `"status": "incomplete"` and an `error`, so a script can tell
 where it stopped. Input requests get an empty reply under `--json` and when
 the code comes from stdin; empty stdin is an error.
 
-| Exit status | Meaning |
-| --- | --- |
-| 0 | Success |
-| 1 | A cell failed, a kernel timed out or died, or a file or download failed (as `jupyter execute`) |
-| 2 | Usage error: an unknown flag, a missing argument, no code to run |
-| 128+N | Stopped by signal N: 130 for Ctrl-C, 143 for SIGTERM, 129 for SIGHUP |
+The [exit statuses](reference.md#exit-status) are the same for every
+command.
 
 `ganymede console -k cdp-node` is an interactive console with completion,
 multiline input, and Ctrl-C to interrupt.
@@ -98,41 +94,25 @@ ganymede attach kernel-<id>.json 'x'      # the same, waiting at most 60 s per c
 the Jupyter runtime dir. A kernel that was attached to keeps running when
 the command ends.
 
-## Start JupyterLab
+## Serve notebooks to a frontend
 
 In the directory with your notebooks, as with `jupyter lab`:
 
 ```sh
 ganymede lab install     # once: JupyterLab's frontend, from PyPI, no Python
-ganymede lab
+ganymede lab             # JupyterLab, opened in the browser
+ganymede serve           # the same server for VS Code and other clients
 ```
 
-`ganymede lab` is `ganymede serve` with the installed JupyterLab. It
-prints the URL of `/lab`, with its token, and opens it in the default
-browser (`open` on macOS, `xdg-open` on Linux); `--no-browser` only
-prints it. The token in the URL logs the browser in. Port 8888 is tried
-first, then each next port while it is taken, up to 50 more. It takes
-`serve`'s flags below, and fails, naming `ganymede lab install`, when no
-JupyterLab is installed.
+`serve` prints the URL, with its token, as the only line on stdout.
+[JupyterLab and VS Code](frontends.md) covers connecting a frontend and
+installing extensions, and [Ganymede's app](app.md) its own notebook app.
+The server's flags, config file and logging are in
+[CLI and configuration](reference.md#server-flags).
 
-```sh
-ganymede lab list                          # installed versions; --json too
-ganymede lab remove 4.6.4
-ganymede lab install --no-default-extensions   # without the widget extensions
-ganymede lab extension install jupyterlab-execute-time
-ganymede lab extension list                # --json too
-ganymede lab extension disable jupyterlab-execute-time   # and `enable`
-ganymede lab extension remove jupyterlab-execute-time
-ganymede lab clean                         # leftovers of interrupted installs
-ganymede lab uninstall                     # every version and extension
-```
-
-Everything `lab install` adds lives in Ganymede's data dir,
-`$GANYMEDE_DATA_DIR` when set; `ganymede info` prints where. `disable`
-writes `labconfig/page_config.json` in the Jupyter config dir, as
-`jupyter labextension disable` does, and the next page load picks it up.
-See [JupyterLab and VS Code](frontends.md#extensions) for how extensions
-are found and installed.
+The server runs code for anyone who holds its token. It listens on
+loopback only unless `--ip` says otherwise; [Security](security.md)
+covers reaching it from other machines safely.
 
 ## Shell completions
 
@@ -143,72 +123,6 @@ ganymede completions fish > ~/.config/fish/completions/ganymede.fish
 ```
 
 `powershell` and `elvish` work too.
-
-## Serve the Jupyter API
-
-`ganymede serve` serves the REST and websocket API that JupyterLab, VS
-Code, and other Jupyter clients use:
-
-```sh
-ganymede serve --root-dir . --port 8888
-```
-
-It prints the URL, with its token, as the only line on stdout. The
-[JupyterLab and VS Code](frontends.md) guide covers connecting a frontend.
-
-Useful flags, each of which can also be set in a TOML file passed with
-`--config` (an unknown key in the file is an error). Without `--config`,
-`ganymede.toml` in the Jupyter config dir (`$JUPYTER_CONFIG_DIR`, else
-`~/.jupyter`) is read if it exists:
-
-| Flag | Effect |
-|---|---|
-| `--root-dir` | Where notebooks and files are served from. Default: the current directory. |
-| `--ip`, `--port` | Where to listen. `--port 0` picks a free port. |
-| `--token` | The auth token. Unset generates one; an empty string disables auth. |
-| `--allow-remote-access` | Accept requests addressed to any host name. Without it, a server on a loopback address only answers requests whose `Host` is a loopback address or a name in `local_hostnames` (default `localhost`). |
-| `--default-kernel` | The kernelspec frontends offer first. |
-| `--cull-idle-secs` | Shut down kernels idle this long with no clients. |
-| `--static-dir` | Serve a frontend's static files; JupyterLab's bundle is recognized. Default: the newest JupyterLab from `ganymede lab install`. |
-| `--lab-version` | Which installed JupyterLab to serve. |
-| `--notary-dir` | Where the notebook-signing key and trusted signatures live. Default: the Jupyter data dir. |
-| `--base-url` | A prefix for serving behind a reverse proxy, e.g. `/jupyter/`. |
-| `--checkpoint-dir` | Keep checkpoints here instead of `.ipynb_checkpoints` beside each file. |
-| `--allow-origin` | An origin, besides the server's own, allowed to use the API and websockets. Repeatable. |
-| `--startup-timeout` | Seconds a new kernel has to answer (`startup_timeout_secs`). Default 60. |
-| `-q`, `--quiet` | Discard kernels' own stdout and stderr (`quiet`). Cell output is unaffected. |
-
-`serve` and `lab` log at info level on stderr; `-v` raises it to debug, and
-`RUST_LOG` overrides both. `--log-level` (`debug`, `info`, `warn`,
-`error`, or Jupyter's `WARNING` and `CRITICAL`) overrides all three, and
-`--log-file` appends the log to a file instead of stderr. Kernels' own
-output lines start with `[kernel <first 8 of its id>]`.
-
-The server runs code for anyone who holds its token. It listens on
-loopback only unless `--ip` says otherwise. [Security](security.md)
-covers what `--ip 0.0.0.0` and `--token ""` expose, and how to reach a
-server from other machines safely.
-
-## Run kernels on another server
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
-`--gateway-url` runs kernels on another Jupyter or Ganymede server while
-notebooks and files stay local, as `jupyter_server --gateway-url` does:
-
-```sh
-ganymede serve --root-dir . \
-  --gateway-url https://kernels.example.org --gateway-token "$TOKEN"
-```
-
-Kernelspecs come from that server (`/api/kernelspecs`, refreshed every
-minute); starting, interrupting, restarting and shutting down a kernel go
-through its REST API, and kernel messages through its websocket. The
-flags read `JUPYTER_GATEWAY_URL` and `JUPYTER_GATEWAY_AUTH_TOKEN` when
-not given, and the config file keys are `gateway_url` and
-`gateway_token`. HTTPS is checked against the system's trust store.
 
 ## Embed it
 

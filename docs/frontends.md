@@ -26,50 +26,47 @@ Ganymede serves JupyterLab's own static bundle, so no `jupyter lab`
 process is needed, only its files. `ganymede lab install` downloads them
 from PyPI's `jupyterlab` wheel (no Python involved) and checks its SHA-256;
 `ganymede lab` then serves the newest installed version in the current
-directory and opens it in the browser, like `jupyter lab`:
+directory, like `jupyter lab`:
 
 ```sh
 ganymede lab install                    # JupyterLab 4.6.4; --version picks another
-ganymede lab list
 ganymede lab                            # JupyterLab at /lab, opened in the browser
 ganymede lab --no-browser --port 9000   # takes `serve`'s flags
-ganymede serve                          # the same at /lab, no browser, API-only if none installed
-ganymede serve --lab-version 4.6.4      # a specific installed version
+ganymede serve --lab-version 4.6.4      # the same at /lab, without the browser
+ganymede lab list                       # installed versions; --json too
 ganymede lab remove 4.6.4
+ganymede lab clean                      # leftovers of interrupted installs
+ganymede lab uninstall                  # every version and extension
 ```
+
+`ganymede lab` prints the URL of `/lab` and opens it (`open` on macOS,
+`xdg-open` on Linux). If port 8888 is taken it tries the next, up to 50
+more, as `jupyter lab` does. It fails, naming `ganymede lab install`, when
+no JupyterLab is installed; `ganymede serve` then serves only the API.
+
+The token in the URL becomes a login cookie, and the browser is
+redirected to the same page without it; the cookie is what JupyterLab's
+websockets authenticate with. Without the token, the page sends you to
+`/login`, which asks for it. `/logout` ends the login.
 
 Bundles live in `ganymede/lab/<version>/` under the local data directory:
 `~/.local/share` (or `$XDG_DATA_HOME`) on Linux, `~/Library/Application
 Support` on macOS, `%LOCALAPPDATA%` on Windows, or `$GANYMEDE_DATA_DIR/lab`
-when that is set. Each holds JupyterLab's `static/`, `schemas/`, `themes/`,
-and its BSD-3-Clause `LICENSE`. The download honours `HTTPS_PROXY` and the
-system's trusted certificates. With nothing installed, `serve` serves only
-the API.
+when that is set; `ganymede info` prints where. Each holds JupyterLab's
+`static/`, `schemas/`, `themes/`, and its BSD-3-Clause `LICENSE`. The
+download honours `HTTPS_PROXY` and the system's trusted certificates.
 
-The bundle of a JupyterLab installed some other way works too:
+The bundle of a JupyterLab installed some other way works too, served at
+`/lab` with the `/lab/api/*` endpoints it calls:
 
 ```sh
 ganymede serve --static-dir <prefix>/share/jupyter/lab/static
 ```
 
-The page is served at `/lab`, with the `/lab/api/*` endpoints it calls.
-
-`ganymede lab` fails when no JupyterLab is installed; `ganymede serve`
-serves the API alone. `lab` also moves past a taken port, from 8888 up
-to 50 more, as `jupyter lab` does, and prints the URL of `/lab`.
-
 Any other `--static-dir` is served at `/`, behind the API: a built
-[ganymede-ui](https://github.com/tlockney/ganymede-ui) works this way
-(see [Ganymede's app](app.md)).
-Its HTML pages get an `_xsrf` cookie, as JupyterLab's page does, so an app
-on the login cookie can send it back as `X-XSRFToken` on requests that
-change state.
-
-Open the URL `ganymede lab` or `ganymede serve` printed. The token in it becomes a login
-cookie, and the browser is redirected to the same page without it; the
-cookie is what JupyterLab's websockets authenticate with. Without the
-token, the page sends you to `/login`, which asks for it. `/logout` ends
-the login.
+[ganymede-ui](app.md) works this way. Its HTML pages get an `_xsrf`
+cookie, as JupyterLab's page does, so an app on the login cookie can send
+it back as `X-XSRFToken` on requests that change state.
 
 ### Extensions
 
@@ -80,8 +77,13 @@ way, without Python:
 ```sh
 ganymede lab extension install jupyterlab-execute-time   # latest; or NAME==VERSION, 'NAME>=1,<2', NAME~=1.2
 ganymede lab extension list
+ganymede lab extension disable jupyterlab-execute-time   # and `enable`
 ganymede lab extension remove jupyterlab-execute-time
 ```
+
+`disable` writes `labconfig/page_config.json` in the Jupyter config dir,
+as `jupyter labextension disable` does, and the next page load picks it
+up.
 
 `ganymede lab install` also installs `jupyterlab_widgets` and `anywidget`,
 so widgets (cdp-kernel's `jupyter.widget`, for one) work out of the box;
@@ -135,10 +137,6 @@ commas.
 Extensions installed some other way are found in `labextensions` under the
 Jupyter data directories or with `--labextensions-path`, which is searched
 first.
-
-## ganymede-ui
-
-Ganymede's own notebook app has its own page: [Ganymede's app](app.md).
 
 ## What isn't there
 

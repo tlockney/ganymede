@@ -68,5 +68,6 @@
 .level-guide { --level-fg: var(--vp-c-brand-1); --level-bg: var(--vp-c-brand-soft); }
 .level-reference { --level-fg: var(--vp-c-text-2); --level-bg: var(--vp-c-default-soft); }
 .level-advanced { --level-fg: var(--vp-c-purple-1); --level-bg: var(--vp-c-purple-soft); }
+.level-background { --level-fg: var(--vp-c-indigo-1); --level-bg: var(--vp-c-indigo-soft); }
 .level-contributor { --level-fg: var(--vp-c-yellow-1); --level-bg: var(--vp-c-yellow-soft); }
 

@@ -10,7 +10,7 @@ list what doesn't work yet.
 There are three ways to run it, and they differ in where notebooks live
 and where kernels run:
 
-![Where the pieces run: on a workstation, a frontend talks to ganymede serve, which launches kernel processes; in the Mac app, ganymede-ui in a web view talks to Ganymede inside the app, which launches the Mac's kernels or uses a kernel server; in the iPad app, Ganymede inside the app serves notebooks and cdp-kernel runs in the web view unless a kernel server is set; in a browser with no server, notebooks stay in IndexedDB and kernels run in Workers.](images/architecture/where-kernels-run.svg)
+![Where each piece runs in four setups: on a workstation, the frontend, ganymede serve and each kernel are separate processes; in the Mac app, ganymede-ui and Ganymede run inside the app and kernels are the Mac's processes; in the iPad app everything runs inside the app and the kernel runs in the page; in a browser with no server, the UI, kernels and IndexedDB storage all stay in one tab.](images/architecture/where-kernels-run.svg)
 
 | | Notebooks | Kernels |
 | --- | --- | --- |
@@ -80,7 +80,7 @@ Both apps can run kernels on another Jupyter or Ganymede server instead:
 Settings (⌘,) on the Mac, the server button on the iPad. Enter the
 server's URL and token. Notebooks stay on the device; only kernels run
 there, through Ganymede's
-[gateway](getting-started.md#run-kernels-on-another-server). To serve
+[gateway](reference.md#gateway). To serve
 kernels from a Mac on your network, see [Security](security.md) for
 reaching it safely; `ganymede serve --ip 0.0.0.0` alone sends the token
 in clear.

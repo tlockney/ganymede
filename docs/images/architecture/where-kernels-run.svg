@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 400" width="860" height="400" role="img" aria-label="Where the pieces run in four setups. On a workstation or server, JupyterLab, VS Code or ganymede-ui talk HTTP and websocket to ganymede serve, which launches kernel processes over ZeroMQ. In the Mac app, ganymede-ui in a web view talks to Ganymede running inside the app through ganymede-ffi, which launches the Mac&#x27;s kernels or uses a kernel server through the gateway. In the iPad app, Ganymede inside the app serves notebooks only, and cdp-kernel runs in a Worker in the web view, unless a kernel server is set. In any browser with no server, ganymede-ui keeps notebooks in IndexedDB and runs kernels in Workers.">
-  <title>Where the pieces run in four setups. On a workstation or server, JupyterLab, VS Code or ganymede-ui talk HTTP and websocket to ganymede serve, which launches kernel processes over ZeroMQ. In the Mac app, ganymede-ui in a web view talks to Ganymede running inside the app through ganymede-ffi, which launches the Mac&#x27;s kernels or uses a kernel server through the gateway. In the iPad app, Ganymede inside the app serves notebooks only, and cdp-kernel runs in a Worker in the web view, unless a kernel server is set. In any browser with no server, ganymede-ui keeps notebooks in IndexedDB and runs kernels in Workers.</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 612" width="920" height="612" role="img" aria-label="Where each piece runs in four setups, by role: notebook UI, Ganymede, kernels and notebooks. On a workstation or server, a frontend in a browser, ganymede serve, and each kernel are separate processes, and notebooks are the served folder. In the Mac app, ganymede-ui and Ganymede both run inside the app, and kernels are the Mac&#x27;s own processes, or a kernel server. In the iPad app, everything runs inside the app: Ganymede serves files only, and cdp-kernel runs in a Worker in the page, unless a kernel server is set. In any browser, there is no server: ganymede-ui, its kernels and its IndexedDB storage all stay in one tab.">
+  <title>Where each piece runs in four setups, by role: notebook UI, Ganymede, kernels and notebooks. On a workstation or server, a frontend in a browser, ganymede serve, and each kernel are separate processes, and notebooks are the served folder. In the Mac app, ganymede-ui and Ganymede both run inside the app, and kernels are the Mac&#x27;s own processes, or a kernel server. In the iPad app, everything runs inside the app: Ganymede serves files only, and cdp-kernel runs in a Worker in the page, unless a kernel server is set. In any browser, there is no server: ganymede-ui, its kernels and its IndexedDB storage all stay in one tab.</title>
   <style>
     .bg { fill: #ffffff; }
     .box { fill: #f6f7f9; stroke: #9aa3ad; stroke-width: 1.2; }
@@ -41,68 +41,104 @@
       <path class="ahb" d="M0,0 L10,5 L0,10 z"/>
     </marker>
   </defs>
-  <rect class="bg" x="0" y="0" width="860" height="400" rx="8"/>
-  <rect class="box" x="20" y="20" width="195" height="360" rx="6"/>
-  <text class="t" x="32" y="42">Workstation or server</text>
-  <rect class="acc" x="30" y="56" width="175" height="76" rx="4"/>
-  <text class="m" x="40" y="78">Any Jupyter frontend</text>
-  <text class="l" x="40" y="98">JupyterLab, VS Code, or</text>
-  <text class="l" x="40" y="113">ganymede-ui in a browser</text>
-  <rect class="ok" x="30" y="166" width="175" height="76" rx="4"/>
-  <text class="m" x="40" y="188">ganymede serve or lab</text>
-  <text class="l" x="40" y="208">a process, on loopback</text>
-  <rect class="inner" x="30" y="276" width="175" height="76" rx="4"/>
-  <text class="m" x="40" y="298">Kernel processes</text>
-  <text class="l" x="40" y="318">from installed kernelspecs</text>
-  <text class="l" x="40" y="333">(or a gateway&#x27;s)</text>
-  <line class="ln" x1="77" y1="134" x2="77" y2="164" marker-start="url(#a)" marker-end="url(#a)"/>
-  <text class="l" x="87" y="153">HTTP + websocket</text>
-  <line class="ln" x1="77" y1="244" x2="77" y2="274" marker-start="url(#a)" marker-end="url(#a)"/>
-  <text class="l" x="87" y="263">ZeroMQ</text>
-  <rect class="box" x="225" y="20" width="195" height="360" rx="6"/>
-  <text class="t" x="237" y="42">Mac app</text>
-  <rect class="acc" x="235" y="56" width="175" height="76" rx="4"/>
-  <text class="m" x="245" y="78">ganymede-ui</text>
-  <text class="l" x="245" y="98">in a WKWebView</text>
-  <rect class="ok" x="235" y="166" width="175" height="76" rx="4"/>
-  <text class="m" x="245" y="188">Ganymede in the app</text>
-  <text class="l" x="245" y="208">ganymede-ffi, on loopback</text>
-  <rect class="inner" x="235" y="276" width="175" height="76" rx="4"/>
-  <text class="m" x="245" y="298">Kernel processes</text>
-  <text class="l" x="245" y="318">the Mac&#x27;s kernelspecs, or a</text>
-  <text class="l" x="245" y="333">kernel server if one is set</text>
-  <line class="ln" x1="282" y1="134" x2="282" y2="164" marker-start="url(#a)" marker-end="url(#a)"/>
-  <text class="l" x="292" y="153">HTTP + websocket</text>
-  <line class="ln" x1="282" y1="244" x2="282" y2="274" marker-start="url(#a)" marker-end="url(#a)"/>
-  <text class="l" x="292" y="263">ZeroMQ, or gateway</text>
-  <rect class="box" x="430" y="20" width="195" height="360" rx="6"/>
-  <text class="t" x="442" y="42">iPad app</text>
-  <rect class="acc" x="440" y="56" width="175" height="76" rx="4"/>
-  <text class="m" x="450" y="78">ganymede-ui</text>
-  <text class="l" x="450" y="98">in a WKWebView; cdp-kernel</text>
-  <text class="l" x="450" y="113">runs in a Worker in the page</text>
-  <rect class="ok" x="440" y="166" width="175" height="76" rx="4"/>
-  <text class="m" x="450" y="188">Ganymede in the app</text>
-  <text class="l" x="450" y="208">notebooks only: iOS can&#x27;t</text>
-  <text class="l" x="450" y="223">launch kernel processes</text>
-  <rect class="inner dash" x="440" y="276" width="175" height="76" rx="4"/>
-  <text class="m" x="450" y="298">Kernel server, if set</text>
-  <text class="l" x="450" y="318">used instead of the</text>
-  <text class="l" x="450" y="333">page&#x27;s kernel</text>
-  <line class="ln" x1="487" y1="134" x2="487" y2="164" marker-start="url(#a)" marker-end="url(#a)"/>
-  <text class="l" x="497" y="153">HTTP + websocket</text>
-  <line class="ln dash" x1="487" y1="244" x2="487" y2="274" marker-start="url(#a)" marker-end="url(#a)"/>
-  <text class="l" x="497" y="263">gateway</text>
-  <rect class="box" x="635" y="20" width="195" height="360" rx="6"/>
-  <text class="t" x="647" y="42">Any browser, no server</text>
-  <rect class="acc" x="645" y="56" width="175" height="76" rx="4"/>
-  <text class="m" x="655" y="78">ganymede-ui</text>
-  <text class="l" x="655" y="98">kernels in Workers in the page:</text>
-  <text class="l" x="655" y="113">cdp-kernel or JavaScript</text>
-  <rect class="inner dash" x="645" y="166" width="175" height="76" rx="4"/>
-  <text class="m" x="655" y="188">No server</text>
-  <text class="l" x="655" y="208">notebooks in IndexedDB;</text>
-  <text class="l" x="655" y="223">nothing leaves the page</text>
-  <line class="ln" x1="692" y1="134" x2="692" y2="164" marker-start="url(#a)" marker-end="url(#a)"/>
-  <text class="l" x="702" y="153">storage</text>
+  <rect class="bg" x="0" y="0" width="920" height="612" rx="8"/>
+  <text class="t" x="295" y="36" text-anchor="middle">Notebook UI</text>
+  <text class="t" x="475" y="36" text-anchor="middle">Ganymede</text>
+  <text class="t" x="655" y="36" text-anchor="middle">Kernels</text>
+  <text class="t" x="830" y="36" text-anchor="middle">Notebooks</text>
+  <rect class="box" x="12" y="52" width="896" height="122" rx="6"/>
+  <text class="t" x="26" y="82">Workstation or server</text>
+  <text class="s" x="26" y="104">Ganymede and every kernel</text>
+  <text class="s" x="26" y="120">are separate processes.</text>
+  <rect class="acc" x="220" y="80" width="150" height="54" rx="4"/>
+  <text class="m" x="230" y="98">A frontend</text>
+  <text class="l" x="230" y="114">JupyterLab, VS Code,</text>
+  <text class="l" x="230" y="127">or ganymede-ui</text>
+  <rect class="inner" x="400" y="80" width="150" height="54" rx="4"/>
+  <text class="m" x="410" y="98">ganymede serve</text>
+  <text class="l" x="410" y="114">its own process</text>
+  <rect class="inner" x="580" y="80" width="150" height="54" rx="4"/>
+  <text class="m" x="590" y="98">Kernel processes</text>
+  <text class="l" x="590" y="114">launched from the</text>
+  <text class="l" x="590" y="127">installed kernelspecs</text>
+  <rect class="box" x="760" y="80" width="140" height="54" rx="4"/>
+  <text class="m" x="770" y="98">Folder served</text>
+  <text class="l" x="770" y="114">--root-dir</text>
+  <line class="ln" x1="372" y1="107" x2="398" y2="107" marker-start="url(#a)" marker-end="url(#a)"/>
+  <line class="ln" x1="552" y1="107" x2="578" y2="107" marker-start="url(#a)" marker-end="url(#a)"/>
+  <path class="ln" d="M475,78 V72 H830 V78" marker-end="url(#a)"/>
+  <rect class="box" x="12" y="184" width="896" height="122" rx="6"/>
+  <text class="t" x="26" y="214">Mac app</text>
+  <text class="s" x="26" y="236">Ganymede runs inside the</text>
+  <text class="s" x="26" y="252">app; kernels are the Mac&#x27;s.</text>
+  <rect class="hl dash" x="210" y="192" width="350" height="106" rx="6"/>
+  <text class="l" x="218" y="205">Inside the app</text>
+  <rect class="acc" x="220" y="212" width="150" height="54" rx="4"/>
+  <text class="m" x="230" y="230">ganymede-ui</text>
+  <text class="l" x="230" y="246">in the app&#x27;s web view</text>
+  <rect class="warn" x="400" y="212" width="150" height="54" rx="4"/>
+  <text class="m" x="410" y="230">Ganymede</text>
+  <text class="l" x="410" y="246">inside the app,</text>
+  <text class="l" x="410" y="259">via ganymede-ffi</text>
+  <rect class="inner" x="580" y="212" width="150" height="54" rx="4"/>
+  <text class="m" x="590" y="230">Kernel processes</text>
+  <text class="l" x="590" y="246">the Mac&#x27;s kernelspecs,</text>
+  <text class="l" x="590" y="259">or a kernel server</text>
+  <rect class="box" x="760" y="212" width="140" height="54" rx="4"/>
+  <text class="m" x="770" y="230">Folder you pick</text>
+  <text class="l" x="770" y="246">File › Open Folder</text>
+  <line class="ln" x1="372" y1="239" x2="398" y2="239" marker-start="url(#a)" marker-end="url(#a)"/>
+  <line class="ln" x1="552" y1="239" x2="578" y2="239" marker-start="url(#a)" marker-end="url(#a)"/>
+  <path class="ln" d="M475,210 V204 H830 V210" marker-end="url(#a)"/>
+  <rect class="box" x="12" y="316" width="896" height="122" rx="6"/>
+  <text class="t" x="26" y="346">iPad app</text>
+  <text class="s" x="26" y="368">iOS can&#x27;t launch processes,</text>
+  <text class="s" x="26" y="384">so the kernel runs in the page.</text>
+  <rect class="hl dash" x="210" y="324" width="530" height="106" rx="6"/>
+  <text class="l" x="218" y="337">Inside the app</text>
+  <rect class="acc" x="220" y="344" width="150" height="54" rx="4"/>
+  <text class="m" x="230" y="362">ganymede-ui</text>
+  <text class="l" x="230" y="378">in the app&#x27;s web view</text>
+  <rect class="warn" x="400" y="344" width="150" height="54" rx="4"/>
+  <text class="m" x="410" y="362">Ganymede</text>
+  <text class="l" x="410" y="378">inside the app;</text>
+  <text class="l" x="410" y="391">files only</text>
+  <rect class="acc" x="580" y="344" width="150" height="54" rx="4"/>
+  <text class="m" x="590" y="362">cdp-kernel</text>
+  <text class="l" x="590" y="378">in a Worker in the page,</text>
+  <text class="l" x="590" y="391">or a kernel server</text>
+  <rect class="box" x="760" y="344" width="140" height="54" rx="4"/>
+  <text class="m" x="770" y="362">Documents</text>
+  <text class="l" x="770" y="378">or iCloud Drive</text>
+  <line class="ln" x1="372" y1="371" x2="398" y2="371" marker-start="url(#a)" marker-end="url(#a)"/>
+  <path class="hl" d="M295,400 V412 H655 V400" marker-start="url(#b)" marker-end="url(#b)"/>
+  <text class="l" x="475" y="425" text-anchor="middle">kernel messages stay in the page</text>
+  <path class="ln" d="M475,342 V336 H830 V342" marker-end="url(#a)"/>
+  <rect class="box" x="12" y="448" width="896" height="122" rx="6"/>
+  <text class="t" x="26" y="478">Any browser</text>
+  <text class="s" x="26" y="500">No server: notebooks and</text>
+  <text class="s" x="26" y="516">kernels stay in the tab.</text>
+  <rect class="hl dash" x="210" y="456" width="700" height="106" rx="6"/>
+  <text class="l" x="218" y="469">Inside one browser tab</text>
+  <rect class="acc" x="220" y="476" width="150" height="54" rx="4"/>
+  <text class="m" x="230" y="494">ganymede-ui</text>
+  <text class="l" x="230" y="510">in a browser tab</text>
+  <rect class="inner dash" x="400" y="476" width="150" height="54" rx="4"/>
+  <text class="m" x="410" y="494">No server</text>
+  <rect class="acc" x="580" y="476" width="150" height="54" rx="4"/>
+  <text class="m" x="590" y="494">cdp-kernel or JS</text>
+  <text class="l" x="590" y="510">in a Worker in the page</text>
+  <rect class="acc" x="760" y="476" width="140" height="54" rx="4"/>
+  <text class="m" x="770" y="494">IndexedDB</text>
+  <text class="l" x="770" y="510">the browser&#x27;s storage</text>
+  <path class="hl" d="M295,532 V544 H655 V532" marker-start="url(#b)" marker-end="url(#b)"/>
+  <text class="l" x="475" y="557" text-anchor="middle">kernel messages stay in the page</text>
+  <rect class="acc" x="26" y="586" width="16" height="12" rx="2"/>
+  <text class="l" x="48" y="596">in a web page</text>
+  <rect class="warn" x="176" y="586" width="16" height="12" rx="2"/>
+  <text class="l" x="198" y="596">inside the app</text>
+  <rect class="inner" x="326" y="586" width="16" height="12" rx="2"/>
+  <text class="l" x="348" y="596">its own process</text>
+  <rect class="box" x="476" y="586" width="16" height="12" rx="2"/>
+  <text class="l" x="498" y="596">files and storage</text>
 </svg>

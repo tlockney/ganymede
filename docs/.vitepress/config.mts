@@ -108,13 +108,13 @@ export default defineConfig({
       { text: "Home", link: `${site}/`, target: "_self", noIcon: true },
       { text: "Get started", link: "/getting-started" },
       { text: "Guides", link: "/frontends" },
-      { text: "Design", link: "/architecture" },
+      { text: "How it works", link: "/architecture" },
       { text: "Roadmap", link: "/roadmap" },
     ],
     // Groups start open, so every page shows without a click, except the
-    // contributors' group, which most readers don't need.
+    // background and contributors' groups, which most readers don't need.
     sidebar: [
-      ...groups().map(({ text, level, items }) => ({ text, items, collapsed: level === "contributor" })),
+      ...groups().map(({ text, level, items }) => ({ text, items, collapsed: level === "background" || level === "contributor" })),
       ...(uiPages.length
         ? [{ text: "ganymede-ui", collapsed: false, items: uiPages.map((f) => ({ text: titleOf(path.join(uiDir, f)), link: `/ganymede-ui/${f.replace(/\.md$/, "")}` })) }]
         : []),
