@@ -40,35 +40,80 @@ const MAX_AGE_DAYS: i64 = 31;
 pub fn load_cookie_secret(path: &Path) -> Vec<u8> {
     let key = match std::fs::read(path) {
         Ok(k) if !k.is_empty() => k,
-        _ => {
-            let mut raw = [0u8; 32];
-            getrandom::fill(&mut raw).expect("system random source");
-            let mut key = base64::engine::general_purpose::STANDARD
-                .encode(raw)
-                .into_bytes();
-            key.push(b'\n');
-            match write_private(path, &key) {
-                Ok(()) => tracing::info!("wrote cookie secret to {}", path.display()),
-                Err(e) => tracing::warn!(
-                    "cannot write cookie secret to {}: {e}; logins will not survive a restart",
-                    path.display()
-                ),
+        read => {
+            let key = generate_key();
+            // A missing file is created without replacing, so two servers
+            // starting together agree on one key; an empty one is replaced.
+            let exclusive = read.is_err();
+            match write_private(path, &key, exclusive) {
+                Ok(None) => {
+                    tracing::info!("wrote cookie secret to {}", path.display());
+                    key
+                }
+                Ok(Some(theirs)) => theirs,
+                Err(e) => {
+                    tracing::warn!(
+                        "cannot write cookie secret to {}: {e}; logins will not survive a restart",
+                        path.display()
+                    );
+                    key
+                }
             }
-            key
         }
     };
     hmac_sha256(&key, b"").to_vec()
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+fn generate_key() -> Vec<u8> {
+    let mut raw = [0u8; 32];
+    getrandom::fill(&mut raw).expect("system random source");
+    let mut key = base64::engine::general_purpose::STANDARD
+        .encode(raw)
+        .into_bytes();
+    key.push(b'\n');
+    key
+}
+
+/// Write `bytes` to `path`, mode 0600, through a synced temp file in the
+/// same directory that is renamed into place, so the file is never seen
+/// half-written and a symlink planted at `path` is replaced, not written
+/// through. With `exclusive`, an existing file is kept: its contents are
+/// returned if another process created it first.
+fn write_private(path: &Path, bytes: &[u8], exclusive: bool) -> std::io::Result<Option<Vec<u8>>> {
+    let dir = match path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    std::fs::create_dir_all(dir)?;
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".jupyter_cookie_secret-").suffix(".tmp");
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
-    std::io::Write::write_all(&mut opts.open(path)?, bytes)
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    let mut tmp = builder.tempfile_in(dir)?;
+    std::io::Write::write_all(&mut tmp, bytes)?;
+    tmp.as_file().sync_all()?;
+    if exclusive {
+        match tmp.persist_noclobber(path) {
+            Ok(_) => {}
+            Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let theirs = std::fs::read(path)?;
+                if theirs.is_empty() {
+                    return Err(std::io::Error::other("another process left it empty"));
+                }
+                return Ok(Some(theirs));
+            }
+            Err(e) => return Err(e.error),
+        }
+    } else {
+        tmp.persist(path).map_err(|e| e.error)?;
+    }
+    if let Ok(handle) = std::fs::File::open(dir) {
+        let _ = handle.sync_all();
+    }
+    Ok(None)
 }
 
 fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
@@ -797,6 +842,61 @@ mod tests {
         );
         let tampered = s.replacen("7:1000000", "7:1000001", 1);
         assert_eq!(verify(b"secret", "username-h", &tampered, 1_000_000), None);
+    }
+
+    #[test]
+    fn cookie_secret_is_created_once_and_reused() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("runtime/jupyter_cookie_secret");
+        let first = load_cookie_secret(&file);
+        let on_disk = std::fs::read(&file).unwrap();
+        assert_eq!(on_disk.len(), 45);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        assert_eq!(load_cookie_secret(&file), first);
+        // No temp files are left behind.
+        assert_eq!(
+            std::fs::read_dir(file.parent().unwrap()).unwrap().count(),
+            1
+        );
+
+        // An empty file is replaced.
+        std::fs::write(&file, b"").unwrap();
+        let replaced = load_cookie_secret(&file);
+        assert_ne!(replaced, first);
+        assert_eq!(std::fs::read(&file).unwrap().len(), 45);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cookie_secret_is_not_written_through_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        std::fs::write(&target, b"").unwrap();
+        let file = dir.path().join("jupyter_cookie_secret");
+        std::os::unix::fs::symlink(&target, &file).unwrap();
+        load_cookie_secret(&file);
+        assert_eq!(std::fs::read(&target).unwrap(), b"");
+        assert!(!std::fs::symlink_metadata(&file).unwrap().is_symlink());
+        assert_eq!(std::fs::read(&file).unwrap().len(), 45);
+    }
+
+    #[test]
+    fn concurrent_starts_agree_on_one_cookie_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("jupyter_cookie_secret");
+        let keys: Vec<Vec<u8>> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| s.spawn(|| load_cookie_secret(&file)))
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let on_disk = hmac_sha256(&std::fs::read(&file).unwrap(), b"").to_vec();
+        assert!(keys.iter().all(|k| *k == on_disk));
     }
 
     #[test]
