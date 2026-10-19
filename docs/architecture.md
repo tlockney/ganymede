@@ -147,9 +147,9 @@ client is the remote provisioner. On the frontend side,
 and `WebSocket`, which is exactly how JupyterLite points JupyterLab at an
 in-browser backend with no HTTP server. The iPad profile can use the same
 trick: the TS frontend in a web view, the core in Rust behind a message
-bridge that implements `fetch` and `WebSocket`. The shell around that web
-view is a Swift app; it can also call the core directly through an FFI
-layer (planned) for things the web view does not need to see.
+bridge that implements `fetch` and `WebSocket`. The Mac and iPad app took
+a simpler route: `ganymede-ffi` runs the ordinary HTTP server on loopback
+inside the app, and the web view connects to it as a browser would.
 
 ### One rule: the host knows no language
 
@@ -216,8 +216,11 @@ Python. The server profile has all of them except Python, which arrives
 only as a kernelspec someone installed. The same crates, different
 feature flags and a different binary or app shell.
 
-The engine already builds for iOS, Android, and wasm; the in-process
-kernel, the in-app bridge, and the app shells are planned. See
+The engine builds for iOS, Android, and wasm. The Mac and iPad app
+exists (ganymede-ui's `apple/`): it runs the server in-process through
+`ganymede-ffi`, and on the iPad, which can't launch kernel processes,
+kernels run in the web view or on a remote server through the gateway.
+An in-process native kernel is not built yet. See
 [the iPad use case](ipados.md).
 
 ## Fitting the Jupyter ecosystem
@@ -244,8 +247,9 @@ In order of value per unit of work:
    that expect Python kernels.
 6. **Debugger.** DAP over the control channel, a DAP client in the UI.
    cdp-kernel and ipykernel both support it.
-7. **Extensions.** JupyterLab frontend extensions and `jupyter_server`
-   extensions. Not compatible, by design.
+7. **Extensions.** Prebuilt JupyterLab frontend extensions load as they
+   do in JupyterLab. Server extensions, which are Python, are not
+   compatible, by design.
 
 Items 1 to 3 are what make "might also run Python" free: a Python kernel
 is just another kernelspec, and ipywidgets is just another widget manager

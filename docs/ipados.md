@@ -8,11 +8,16 @@ sync story. Read against that plan, Ganymede is the remote tier, and
 the plan adds the following requirements.
 
 Status: token auth, atomic writes with the mtime check, a configurable
-checkpoint directory, the attach provisioner, idle culling, and verbatim
-metadata passthrough are built, and the engine builds for
-`aarch64-apple-ios`. Reattaching to a kernel after a disconnect,
-`tailscale serve` identity headers, the in-process kernel, and the app
-are not; see the [roadmap](roadmap.md).
+checkpoint directory, the attach provisioner, idle culling, verbatim
+metadata passthrough, and reattaching to a kernel after a disconnect
+with the missed output replayed are built. The Mac and iPad app exists,
+in ganymede-ui's [`apple/`](https://github.com/tlockney/ganymede-ui/tree/main/apple):
+it runs the server in-process through `ganymede-ffi`, and on the iPad
+kernels run in the web view or on a remote server through the gateway.
+`tailscale serve` identity headers, reloading files changed on disk, and
+a native in-process kernel are not built; see the [roadmap](roadmap.md).
+The rest of this page is the plan as written before the app, kept for
+its reasoning.
 
 Tier 0, remote validation. The plan runs a Jupyter server plus cdp-kernel
 on the Mac mini with Juno Connect or JupyterLab in Safari as the client.

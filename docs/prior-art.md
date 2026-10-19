@@ -25,7 +25,8 @@ What to read before working on a part of Ganymede.
 - anywidget: the widget protocol subset to support instead of ipywidgets.
 - Datalayer's `jupyter-react`: a React frontend that reuses
   `@jupyterlab/rendermime` and `@jupyterlab/outputarea` without the rest
-  of JupyterLab. Relevant to a TypeScript web UI.
+  of JupyterLab. ganymede-ui started on it, then used JupyterLab's
+  packages directly.
 - JupyterLite: JupyterLab in the browser with a TypeScript reimplementation
   of the REST API in a service worker and in-browser kernels. The proof
   that the frontend can be pointed at a non-HTTP backend through

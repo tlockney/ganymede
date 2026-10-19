@@ -43,17 +43,28 @@ pull request with a GitHub issue, and records what it learned in the
 - **Notebook trust.** Notebooks are signed on save and marked `trusted`
   on read as `jupyter_server` does, with Jupyter's key and signature
   database, and `ganymede trust` signs one by hand.
+- **A UI of our own.** [ganymede-ui](https://github.com/tlockney/ganymede-ui)
+  is a notebook app built on JupyterLab's packages, outside the core. It
+  runs in a browser against Ganymede or with kernels in the page, and in
+  a Mac and iPad app that runs the core in-process through
+  `ganymede-ffi`.
+- **Remote kernels.** `--gateway-url` runs kernels on another Jupyter or
+  Ganymede server while files stay local, which is how the iPad app gets
+  kernels it can't launch.
+- **nbformat 3.** Older notebooks are upgraded to 4.5 on read.
+
+> [!NOTE]
+> **Unreleased.** `ganymede ui`, `--gateway-url`, and reading nbformat 3
+> are available only from a build of `main` (HEAD), not in the latest
+> release.
 
 ## Next
 
 1. **Document model.** The file is the source of truth and is reloaded
    when it changes on disk (iCloud). A `yrs` CRDT layer is optional and
    later.
-2. **A first UI of our own**, outside the core: a Swift shell with a web
-   view for iPadOS and macOS, running a TypeScript notebook app, with the
-   Rust core embedded in the same process. The TypeScript app is
-   [ganymede-ui](https://github.com/tlockney/ganymede-ui), a prototype that
-   runs in a browser and installs as a PWA.
+2. **A native on-device kernel** for the iPad app: cdp-kernel running in
+   the app's process instead of the web view.
 3. **CurveZMQ** for the ZeroMQ transport. ipykernel 7 already advertises
    it.
 
@@ -65,6 +76,8 @@ pull request with a GitHub issue, and records what it learned in the
 - Conformance gaps: debugger (`debug_request`) messages, malformed stdin
   frames, and kernel death and parallel starts driven through `serve`.
 - A Linux build for musl (Alpine).
+- Distributing the Mac and iPad app. Today the Mac app is a CI artifact,
+  ad-hoc signed, and the iPad app is built from source.
 - A runtime seam for the browser (timers and `spawn` on
   `wasm-bindgen-futures`) and a websocket or `postMessage` transport, so
   the engine runs in a page and not only under WASI.
