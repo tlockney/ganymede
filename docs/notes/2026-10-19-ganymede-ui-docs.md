@@ -3,7 +3,7 @@
 ganymede-ui's docs live in its own repository, next to the code they
 describe, and this site renders them under `/docs/ganymede-ui/`.
 `npm run fetch-ui` (`docs/scripts/fetch-ganymede-ui.sh`) copies its
-`docs/*.md`, all but its dev log, from `main` with a sparse, shallow clone
+`docs/*.md`, all but its dev log, and its `docs/images/` from `main` with a sparse, shallow clone
 into `docs/ganymede-ui/`, which is ignored by git. `pages.yml` runs it
 before the build; ganymede-ui's `docs` workflow sends a
 `repository_dispatch` (`ganymede-ui-docs`) when those files change, which
