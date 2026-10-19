@@ -370,7 +370,13 @@ impl Notary {
         #[cfg(feature = "sqlite")]
         let store: Box<dyn SignatureStore> = Box::new(SqliteSignatureStore::open(&db_file));
         #[cfg(not(feature = "sqlite"))]
-        let store: Box<dyn SignatureStore> = Box::new(MemorySignatureStore::new());
+        let store: Box<dyn SignatureStore> = {
+            tracing::warn!(
+                "built without the `sqlite` feature: notebook signatures last only until \
+                 this process exits, so notebooks are untrusted after a restart"
+            );
+            Box::new(MemorySignatureStore::new())
+        };
         Ok(Self {
             secret,
             store,

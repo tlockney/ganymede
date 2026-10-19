@@ -24,6 +24,7 @@ clap.workspace = true
 clap_complete = "4"
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "signal"] }
 serde_json.workspace = true
+async-trait.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

@@ -219,8 +219,9 @@ fn execute_results_streams_and_errors() {
 }
 
 struct Answer(Vec<String>);
+#[async_trait::async_trait]
 impl Handler for Answer {
-    fn on_input(&mut self, prompt: &str, password: bool) -> Option<String> {
+    async fn on_input(&mut self, prompt: &str, password: bool) -> Option<String> {
         self.0.push(prompt.to_string());
         assert!(!password);
         Some("Ada".into())

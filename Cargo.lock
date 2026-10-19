@@ -784,6 +784,7 @@ name = "ganymede-cli"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "clap_complete",
  "futures",
@@ -832,6 +833,7 @@ name = "ganymede-engine"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "ganymede-exec",
  "ganymede-kernel-host",
  "ganymede-nbformat",

@@ -6,8 +6,8 @@ use crate::{
 use async_trait::async_trait;
 use ganymede_kernel_host::protocol::{Channel, Message};
 use ganymede_kernel_host::{
-    zmq::ZmqTransport, Error as HostError, KernelSession, KernelTransport, Kernelspec,
-    KernelspecSource, LaunchOptions, LaunchedKernel, Provisioner,
+    Error as HostError, KernelSession, KernelTransport, Kernelspec, KernelspecSource,
+    LaunchOptions, LaunchedKernel, Provisioner,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -29,15 +29,17 @@ pub trait TransportFactory: Send + Sync {
     ) -> ganymede_kernel_host::Result<KernelTransport>;
 }
 
+#[cfg(feature = "zmq")]
 pub struct ZmqTransportFactory;
 
+#[cfg(feature = "zmq")]
 #[async_trait]
 impl TransportFactory for ZmqTransportFactory {
     async fn connect(
         &self,
         launched: &LaunchedKernel,
     ) -> ganymede_kernel_host::Result<KernelTransport> {
-        ZmqTransport::connect(&launched.connection).await
+        ganymede_kernel_host::zmq::ZmqTransport::connect(&launched.connection).await
     }
 }
 
