@@ -860,6 +860,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ganymede-ffi"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "ganymede-server",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "ganymede-kernel-host"
 version = "0.3.0"
 dependencies = [

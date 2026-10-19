@@ -33,6 +33,7 @@ pub async fn run(cfg: Config, no_browser: bool, lab: bool) -> Result<()> {
         port_retries: PORT_RETRIES,
         require_lab: lab,
         on_listening,
+        ..Default::default()
     };
     ganymede_server::serve::run_with(cfg, startup).await
 }

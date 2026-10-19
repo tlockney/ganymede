@@ -237,6 +237,9 @@ pub struct Startup {
     /// and print the URL of `/lab` rather than of the root.
     pub require_lab: bool,
     pub on_listening: Option<OnListening>,
+    /// Stop on a message here instead of on Ctrl-C or SIGTERM, and print
+    /// nothing to stdout: how an app embedding the server runs it.
+    pub stop: Option<tokio::sync::mpsc::Receiver<()>>,
 }
 
 /// The notary for `dir`, else for the Jupyter data dir. When neither can
@@ -386,7 +389,11 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         });
     }
 
-    let stop = stop_signals()?;
+    let embedded = startup.stop.is_some();
+    let stop = match startup.stop {
+        Some(stop) => stop,
+        None => stop_signals()?,
+    };
     let listener = bind(&cfg.ip, cfg.port, startup.port_retries).await?;
     let addr = listener.local_addr()?;
     let page = if startup.require_lab { "lab" } else { "" };
@@ -398,7 +405,9 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     if token.is_none() {
         tracing::warn!("auth disabled: anyone who can reach this port can run code");
     }
-    println!("{url}");
+    if !embedded {
+        println!("{url}");
+    }
     if let Some(f) = startup.on_listening {
         f(&url);
     }
