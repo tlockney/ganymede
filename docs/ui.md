@@ -35,24 +35,24 @@ Required pieces:
   on cells whose output it produced, and `POST /api/contents/{path}/trust`
   trusts a notebook on request.
 
-UI implementations, each a separate client of the same API:
+The UIs, each a separate client of the same API:
 
-1. Existing Jupyter frontends: VS Code, JupyterLab's static bundle, Juno
-   Connect. No UI work; the API is the contract they test.
-2. A TypeScript web UI. Reuse CodeMirror, KaTeX, and optionally
-   `@jupyterlab/rendermime` and `@jupyterlab/outputarea` as libraries
-   without the rest of JupyterLab. Runs in a browser, or inside a native
-   shell's web view. [ganymede-ui](https://github.com/tlockney/ganymede-ui)
-   is a prototype of this one, built on JupyterLab's notebook packages; its
-   [architecture](ganymede-ui/architecture.md) page shows how.
-3. A native shell with a web view for rendering, such as a Swift app on
-   iPadOS with `WKWebView`. The shell owns navigation, files, keyboard, and
-   app lifecycle; the web view runs the renderers from option 2, since
-   `text/html` outputs, math, Vega, Plotly, and widgets are JavaScript.
-   The shell talks to the core over HTTP, or in-process through a bridge.
-4. Fully native rendering (SwiftUI, or GPUI as Zed does). Loses
-   `text/html` output, which breaks pandas, plotly, bokeh, altair, and
-   widgets. Fine for a REPL, not for a general notebook.
+1. **Existing Jupyter frontends**: JupyterLab's static bundle, VS Code,
+   and [others](clients.md). No UI work; the API is the contract they
+   test, and [JupyterLab and VS Code](frontends.md) shows how to connect
+   them.
+2. **ganymede-ui**, a TypeScript web app built on JupyterLab's notebook
+   packages used as libraries, without the rest of JupyterLab. It runs in
+   a browser, and in the Mac and iPad app: a Swift shell that owns
+   windows, files and the app lifecycle, runs Ganymede in-process, and
+   shows ganymede-ui in a `WKWebView`. Rendering stays in the web view
+   because `text/html` outputs, math, Vega, Plotly and widgets are
+   JavaScript. See [Ganymede's app](app.md) for using it and its
+   [architecture](ganymede-ui/architecture.md) for how it is built.
+3. **Fully native rendering** (SwiftUI, or GPUI as Zed does). Not
+   pursued: it loses `text/html` output, which breaks pandas, plotly,
+   bokeh, altair, and widgets. Fine for a REPL, not for a general
+   notebook.
 
 What the core owes every UI: a documented, stable API, and nothing that
 assumes which UI is on the other end. Rust UI frameworks (Leptos, Dioxus,

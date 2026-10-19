@@ -121,40 +121,33 @@ Mac and iPad app around this server, is on ganymede-ui's
 
 ### Seams
 
-Each seam is a trait in Rust or an interface in TypeScript. The right
-column lists the implementations the [profiles](#deployment-profiles)
-need, built or planned.
+Each seam is a Rust trait that the server, the engine, or an app
+embedding them can fill differently.
 
-| Seam | What it abstracts | Implementations |
-|---|---|---|
-| `KernelTransport` | A stream of channel messages to and from one kernel, with channel name, header, content, buffers | ZMQ (desktop, server); in-process channel (iPad local kernel); websocket client to another host (iPad to server, or any host proxying a remote host) |
-| `Provisioner` | How a kernel comes to exist | Local subprocess from a kernelspec; attach to an existing connection file or address; in-process (the app owns the kernel); remote, which proxies to another host's REST API as `jupyter_server`'s gateway client does |
-| `TransportFactory` | How a launched kernel gets its `KernelTransport`, paired with its provisioner | ZMQ from the kernel's connection info (subprocess and attach); the app's own for an in-process kernel, which has no connection info (`LaunchedKernel.connection` is `None`) |
-| `KernelspecSource` | Where the list of launchable kernels comes from | Jupyter data dirs on the filesystem; extra roots from config, which is how conda and venv kernels get found without the host knowing what a venv is; an environment scanner as an optional module, as VS Code has; a static embedded list for the iPad (local kernel plus configured remotes) |
-| `Contents` | Files, directories, checkpoints | Local filesystem with atomic writes and mtime checks; Files app or iCloud container on iPad; passthrough to a remote host |
-| `Auth` | Who may call the API | None (in-app bridge); token; `tailscale serve` identity headers; later, an OIDC or Hub contract |
-| `Frontend host` | How a UI reaches the core | HTTP plus websocket (axum) on desktop and server; an in-app bridge on iPad that carries the same JSON shapes with no HTTP |
-| UI (any language) | The client the user sees | Existing Jupyter frontends; a TS web UI; a Swift shell with a web view on iPad. Not a Rust module; the core only owes it the API |
-| `Document` | The live notebook model | File-as-truth with reload on external change; `yrs` CRDT with y-websocket for live multi-client sessions |
-| `Renderer` (TS) | One MIME type to DOM | Text, ANSI streams, HTML (sanitized or iframed), images, SVG, Markdown, LaTeX, JSON, Vega, Plotly, and a widget view |
-| `WidgetManager` (TS) | The `jupyter.widget` comm target | anywidget-only, small, enough for cdp-kernel; full `@jupyter-widgets/base` plus `controls`, needed when a Python kernel with ipywidgets runs. Choose per profile, not globally |
-| `Editor` (TS) | Code editing | CodeMirror 6, mode from `language_info.codemirror_mode` |
+| Seam | What it abstracts | Built | Not built |
+|---|---|---|---|
+| `KernelTransport` | A stream of channel messages to and from one kernel | ZeroMQ; an in-process channel (the fake kernel); a websocket to a gateway | |
+| `Provisioner` | How a kernel comes to exist | A subprocess from a kernelspec; attaching to a running kernel's connection file; a remote kernel through a gateway | A kernel inside the app's own process |
+| `TransportFactory` | How a launched kernel gets its transport | ZeroMQ from its connection info; the gateway's websocket | An app's own, for an in-process kernel (the seam allows it: `LaunchedKernel.connection` is `None`) |
+| `KernelspecSource` | Which kernels can be launched | The Jupyter data dirs plus `--kernelspec-root`, which is how conda and venv kernels are found without the host knowing what a venv is; a fixed list (`StaticKernelspecs`); a gateway's list | An environment scanner, as VS Code has |
+| `Contents` | Files, directories, checkpoints | The local filesystem, with atomic writes and mtime and hash checks; on the iPad, any folder the app can open | Reloading files changed on disk; passing through to a remote host |
+| Auth | Who may call the API | A token, traded for a login cookie | `tailscale serve` identity headers; OIDC or a JupyterHub contract |
+| Document | The live notebook model | The file, read and written per request | Reload on external change; a `yrs` CRDT for live multi-client sessions |
 
-The server uses kernelspec dirs, subprocesses and ZMQ for `KernelspecSource`,
-`Provisioner` and `TransportFactory` unless an app embedding it passes its
-own in `serve::Startup`. Its `subprocess` and `zmq` features can then be
-turned off.
+The server uses kernelspec dirs, subprocesses and ZMQ unless an app
+embedding it passes its own `KernelspecSource`, `Provisioner` and
+`TransportFactory` in `serve::Startup`; its `subprocess` and `zmq`
+features can then be turned off.
 
-Two of these seams already exist in the ecosystem and should be matched
-rather than invented. On the server side, `jupyter_server`'s gateway
-client is the remote provisioner. On the frontend side,
-`@jupyterlab/services` takes a `ServerConnection` with overridable `fetch`
-and `WebSocket`, which is exactly how JupyterLite points JupyterLab at an
-in-browser backend with no HTTP server. The iPad profile can use the same
-trick: the TS frontend in a web view, the core in Rust behind a message
-bridge that implements `fetch` and `WebSocket`. The Mac and iPad app took
-a simpler route: `ganymede-ffi` runs the ordinary HTTP server on loopback
-inside the app, and the web view connects to it as a browser would.
+Where the ecosystem already has a seam, Ganymede matches it rather than
+inventing one. Remote kernels use the protocol of `jupyter_server`'s
+gateway client. ganymede-ui reaches every backend through
+`@jupyterlab/services`' `ServiceManager`, the seam JupyterLite uses for
+its in-browser server; its own seams are on its
+[architecture](ganymede-ui/architecture.md) page. The apps were first
+planned around a message bridge in place of HTTP. Running the ordinary
+server on loopback inside the app, through `ganymede-ffi`, turned out
+simpler, so the web view connects as a browser would.
 
 ### One rule: the host knows no language
 
@@ -197,34 +190,34 @@ to the client that ran the cell, which answers with an `input_reply`.
 - **Idle culling.** With `--cull-idle-secs`, kernels idle that long with
   no clients are shut down.
 
-## Deployment profiles
+## Where it runs
 
-The same crates compose differently per platform:
+![Where the pieces run in four setups: a workstation or server running ganymede serve; the Mac app, with Ganymede inside it; the iPad app, where the page runs the kernel unless a kernel server is set; and a browser with no server at all.](images/architecture/where-kernels-run.svg)
 
-| Module | Server (homelab) | Desktop | iPad |
-|---|---|---|---|
-| Transport | ZMQ | ZMQ | In-process; websocket client to server |
-| Provisioner | Subprocess, attach, remote | Subprocess, attach, remote | In-process, remote |
-| Kernelspecs | Filesystem plus config roots | Filesystem plus config roots | Embedded list |
-| Contents | Filesystem | Filesystem | Files app or iCloud container |
-| Auth | Token or tailscale headers | Loopback token | None, in-app |
-| Frontend host | HTTP | HTTP, or the core in-process in a native app | In-process bridge |
-| UI | Any Jupyter client; optionally serves a TS bundle | Same, or a native shell with a web view | Swift shell with `WKWebView` for rendering |
-| Document | File-as-truth; CRDT optional | File-as-truth | File-as-truth |
-| Widget manager | Full, if Python kernels are expected | Full | anywidget-only |
-| Kernels seen | cdp-kernel, python3, anything installed | Same | Local TS kernel, plus whatever the remote host lists |
+The same crates, in four setups:
 
-The iPad profile has no ZMQ, no subprocesses, no HTTP server, and no
-Python. The server profile has all of them except Python, which arrives
-only as a kernelspec someone installed. The same crates, different
-feature flags and a different binary or app shell.
+- **Workstation or server.** `ganymede serve` or `ganymede lab` as a
+  process: kernel processes over ZeroMQ, files on disk, token auth. Any
+  Jupyter frontend connects. `--gateway-url` sends kernels to another
+  server instead.
+- **Mac app.** The server runs inside the app through `ganymede-ffi` and
+  serves ganymede-ui to a `WKWebView` on loopback. Kernels are the Mac's
+  kernelspecs, or a kernel server set in the app.
+- **iPad app.** The same app built for iOS, which doesn't let an app
+  launch processes. Ganymede serves notebooks from a folder the app can
+  open; cdp-kernel runs in a Worker in the web view, or kernels come from
+  a kernel server through the gateway.
+- **Any browser, no server.** ganymede-ui alone, with notebooks in
+  IndexedDB and kernels in Workers. Ganymede isn't involved.
 
-The engine builds for iOS, Android, and wasm. The Mac and iPad app
-exists (ganymede-ui's `apple/`): it runs the server in-process through
-`ganymede-ffi`, and on the iPad, which can't launch kernel processes,
-kernels run in the web view or on a remote server through the gateway.
-An in-process native kernel is not built yet. See
-[the iPad use case](ipados.md).
+> [!NOTE]
+> **Unreleased.** `--gateway-url` is available only from a build of
+> `main` (HEAD), not in the latest release.
+
+Python appears in none of them except as a kernelspec someone installed.
+[Ganymede's app](app.md) covers the last three from a user's side. A
+native kernel inside the iPad app's process, so it can run more than the
+web view allows, is next on the [roadmap](roadmap.md).
 
 ## Fitting the Jupyter ecosystem
 
@@ -265,5 +258,7 @@ module.
 - [Protocol and kernel host](protocol.md): what each component has to get
   right, and what is usually missed.
 - [User interfaces](ui.md): what any notebook UI needs, and the UI options.
+- [Ganymede's app](app.md): ganymede-ui in a browser and on the Mac and
+  iPad.
 - [Development log](notes.md): findings from each step, including what
   JupyterLab and VS Code call and what broke.

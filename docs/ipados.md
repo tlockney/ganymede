@@ -1,97 +1,69 @@
 # The iPad use case
 
-The [ts-on-ipados](https://github.com/tlockney/research/tree/main/ts-on-ipados) design puts an iPad client in front
-of kernels on the homelab over the tailnet, with a local in-process kernel
-later. Its review established that remote clients speak the server's REST
-API and websocket, never ZMTP, and that iCloud Drive, not SMB, is the file
-sync story. Read against that plan, Ganymede is the remote tier, and
-the plan adds the following requirements.
+The case that shaped Ganymede: TypeScript notebooks on an iPad, with no
+Python anywhere. It started as the
+[ts-on-ipados](https://github.com/tlockney/research/tree/main/ts-on-ipados)
+design: an iPad client in front of kernels on a home server over a
+tailnet, then a kernel on the iPad itself. This page says what that
+asked of Ganymede, what was built, and what is left. Using the app is
+covered in [Ganymede's app](app.md).
 
-Status: token auth, atomic writes with the mtime check, a configurable
-checkpoint directory, the attach provisioner, idle culling, verbatim
-metadata passthrough, and reattaching to a kernel after a disconnect
-with the missed output replayed are built. The Mac and iPad app exists
-([ganymede-ui architecture](ganymede-ui/architecture.md#mac-and-ipad-app)):
-it runs the server in-process through `ganymede-ffi`, and on the iPad
-kernels run in the web view or on a remote server through the gateway.
-`tailscale serve` identity headers, reloading files changed on disk, and
-a native in-process kernel are not built; see the [roadmap](roadmap.md).
-The rest of this page is the plan as written before the app, kept for
-its reasoning.
+## What was built
 
-Tier 0, remote validation. The plan runs a Jupyter server plus cdp-kernel
-on the Mac mini with Juno Connect or JupyterLab in Safari as the client.
-Ganymede replaces the Python one there, which means:
+- **The app.** One SwiftUI app for the Mac and iPad, in ganymede-ui's
+  [`apple/`](https://github.com/tlockney/ganymede-ui/tree/main/apple),
+  runs Ganymede in its own process through `ganymede-ffi` and shows
+  ganymede-ui in a web view. The plan had the web view reach the core
+  through a message bridge with no HTTP; running the ordinary server on
+  loopback inside the app was simpler and needed no second API.
+- **Kernels on the iPad.** iOS doesn't let an app launch processes, so
+  the page runs cdp-kernel's TypeScript kernel in a Worker in the web
+  view. A native kernel in the app's process is next.
+- **Remote kernels.** With a kernel server set, Ganymede in the app sends
+  kernels to it through the gateway, as `jupyter_server --gateway-url`
+  does, and notebooks stay on the iPad. The kernel server is any Jupyter
+  or Ganymede server, such as `ganymede serve` on a Mac.
+- **Kernels outlive the connection.** iPadOS suspends apps and drops their
+  websockets. A kernel keeps running, and a client that reconnects with
+  the same session gets the output it missed. Idle culling
+  (`--cull-idle-secs`) stops abandoned kernels piling up.
+- **Files as the source of truth.** Notebooks can live in iCloud Drive or
+  on a share, written underneath the server by other devices. Writes are
+  atomic (temp file, then rename), so a sync never sees half a notebook;
+  checkpoints can go outside the synced folder (`--checkpoint-dir`); and
+  a save can be made conditional on the file not having changed (`ETag`
+  and `If-Match`, or `last_modified`).
 
-- REST API fidelity. Juno Connect and JupyterLab are third-party clients
-  of the API; anything nonstandard in `/api/contents`, `/api/sessions`, or
-  the websocket subprotocols breaks them. The API is a compatibility
-  target, not a design space, until a bespoke client exists.
-- Token auth as the baseline. The review names a tokenless,
-  allow-all-origins setup as the thing not to copy. An alternative worth
-  having: when served through `tailscale serve`, trust the identity
-  headers it injects and skip tokens. Both are small.
-- Kernels survive client disconnects. The iPad suspends the app; the
-  websocket drops; the kernel must keep running and the client must
-  reattach by kernel id with iopub resumed. Idle culling with a
-  configurable timeout is the complement, so abandoned kernels do not
-  pile up.
-- Files are the source of truth, not server memory. With the notebook
-  root in iCloud Drive, the iPad writes files underneath the server. The
-  contents API needs external-change detection, atomic writes (temp file
-  plus rename, so iCloud never syncs a half-written notebook), and a
-  checkpoint directory configurable to a path outside the synced folder. `jupyter_server` has
-  no change check on PUT (JupyterLab compares timestamps itself before
-  saving); Ganymede adds an opt-in one: a PUT whose body carries
-  `last_modified` gets 409 if the file on disk is newer by more than
-  500 ms. For an exact check, a content `GET` and every `PUT` carry the
-  file's sha256 as `ETag`, and a `PUT` with `If-Match` gets 412 unless the
-  file still has that hash. Clients that send neither, such as VS Code and
-  JupyterLab, save unconditionally.
-- Runs as a daemon: launchd on the Mac mini, one config file, logs to a
-  file.
+![Where the pieces run, including the Mac and iPad app.](images/architecture/where-kernels-run.svg)
 
-Tier 1, bespoke client. The client is HTTP plus websocket in Swift. That
-makes the websocket protocol and the channel-message shape a public
-contract of Ganymede. Document it as such.
+## What is left
 
-Tier 2, local kernel. Two implications, both about packaging rather than
-features:
+- **A native on-device kernel**: cdp-kernel in the app's process, behind
+  the `Provisioner` and `TransportFactory` seams that already accept a
+  kernel with no ZeroMQ.
+- **Reloading notebooks changed on disk** (the document model,
+  [#141](https://github.com/tlockney/ganymede/issues/141)). Today a
+  change from another device shows on the next open, and a save that
+  sends the file's `ETag` or `last_modified` is refused rather than
+  overwriting it.
+- **`tailscale serve` identity**: trusting the identity headers it adds,
+  so a tailnet client needs no token.
+- **Distribution**: the app is built from source or taken from CI, not
+  signed for the App Store.
 
-- The review's point that the local kernel should speak the same
-  channel-JSON shape the websocket carries, with no ZMTP, means the
-  interesting boundary in this codebase is "a stream of channel messages
-  to and from a kernel", with ZMQ as one transport behind it. Put that
-  boundary in a library crate with no tokio-net or ZMQ dependency of its
-  own, so the iPad app can compile the protocol, nbformat, and document
-  crates for iOS (via uniffi or swift-bridge) and drive its in-process
-  kernel through the same types. Workspace shape: `protocol`, `nbformat`,
-  `document`, `kernel-host` (transport trait plus the ZMQ and in-process
-  implementations), `server` (axum binary). The server is one consumer of
-  the libraries; the app is another.
-- The plan's development loop drives the device kernel from JupyterLab on
-  the Mac through a ZMTP listener on the iPad. That needs an "attach to
-  an existing kernel" provisioner: given a connection file or ip and
-  ports, connect without launching. `jupyter console --existing` is the
-  precedent. Cheap, and it is also how a kernel inside a container or on
-  another host gets used.
+## Decisions that came out of it
 
-Capability manifests. cdp-kernel already writes `metadata` into
-`kernel.json` and JupyterLab reads `metadata.debugger` from it. The plan
-adds `metadata.capabilities` and the same object in `kernel_info_reply`.
-The server must pass kernelspec metadata and `kernel_info_reply` through
-verbatim, with no schema that strips unknown fields. Worth a test.
-
-A tension to decide early. The [document model](protocol.md#document-model-and-collaboration) could be a `yrs` CRDT.
-With iCloud as the sync story, there are two writers of the same file:
-the server and the Files app. A server-side CRDT is authoritative only
-for clients connected to it; the file on disk must still be re-read when
-it changes underneath. Either treat the file as truth and keep the CRDT
-as a live session cache that reloads on external change, or drop the
-CRDT for v1 and rely on last-writer-wins with the mtime check. For this
-use case, the second is enough; multi-client live collaboration is not
-on its roadmap.
-
-Out of scope for the server: the automation surface, the on-device
-transform pipeline, and `tsc --noEmit` as a kernel op, which is kernel
-work.
+- **Remote clients speak the REST API and websocket, never ZeroMQ.** That
+  makes `jupyter_server`'s API the one contract every client depends on,
+  which is why it is a compatibility target, not a design space.
+- **The file is the truth; a CRDT is optional and later.** With iCloud
+  there are two writers of one file: the server and the Files app. A
+  server-side CRDT would be authoritative only for clients connected to
+  it, and the file would still have to be re-read when it changes. For
+  one person on a few devices, last writer wins with a conditional save
+  is enough.
+- **Kernel metadata passes through untouched.** cdp-kernel writes
+  `metadata` into `kernel.json` and extra fields into `kernel_info_reply`
+  (JupyterLab reads `metadata.debugger`, and the plan adds
+  `metadata.capabilities`). The host has no schema that would strip them,
+  and the conformance tests check it.
