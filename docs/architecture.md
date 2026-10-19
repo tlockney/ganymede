@@ -274,7 +274,7 @@ up within a week.
 | Target | Tested against | Rule |
 | --- | --- | --- |
 | `jupyter_server` REST and websocket API | `jupyter_server` 2.21.1, run side by side in the e2e suite | A difference is a bug. |
-| Kernel protocol | 5.x; Ganymede's own messages say 5.5. ipykernel 7.4.0 and cdp-kernel 0.6.0 in the e2e suite | A difference is a bug. |
+| Kernel protocol | 5.x; Ganymede's own messages say 5.5. ipykernel 7.4.0 and cdp-kernel 0.7.1 in the e2e suite | A difference is a bug. |
 | nbformat | 4.5, against Python's `nbformat` through `jupyter execute` (nbclient 0.11.0) | Byte-for-byte saves. Version 3 is upgraded on read. |
 | JupyterLab | 4.6.4, the `ganymede lab install` default, driven in Chromium | Other 4.x releases should work and are not tested. |
 | VS Code Jupyter extension | Its remote-server requests, replayed with `@jupyterlab/services` 7.5 | VS Code itself is not run in CI. |

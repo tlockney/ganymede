@@ -52,7 +52,7 @@ These variables make the end-to-end tests strict or add to them:
 - [`e2e/wasm-smoke/`](../e2e/wasm-smoke/): the engine built for
   `wasm32-wasip1`, running a notebook on the fake kernel under Node's WASI.
 
-CI runs the e2e job on Linux and macOS with Node 24, cdp-kernel 0.6.0,
+CI runs the e2e job on Linux and macOS with Node 24, cdp-kernel 0.7.1,
 and ipykernel, plus a portability job for iOS, Android, and wasm. Its
 `workstation` job follows [Install](install.md) on Linux and macOS
 with Python hidden from `PATH`
