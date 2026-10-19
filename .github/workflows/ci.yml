@@ -191,6 +191,8 @@ jobs:
           cargo check -p ganymede-engine -p ganymede-api -p ganymede-contents --target aarch64-linux-android
       - name: API for iOS without ZeroMQ or subprocesses (the in-app profile)
         run: cargo check -p ganymede-api --no-default-features --target aarch64-apple-ios
+      - name: Engine starts and restarts an in-process kernel without ZeroMQ
+        run: cargo test -p ganymede-engine --no-default-features --test in_process
       - name: Core libraries for browser wasm
         run: cargo check -p ganymede-engine --no-default-features --target wasm32-unknown-unknown
       - name: Engine runs a notebook under WASI

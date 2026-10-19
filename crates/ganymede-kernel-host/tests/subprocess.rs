@@ -41,7 +41,9 @@ async fn launch(dir: &Path, script: &str, opts: LaunchOptions) -> LaunchedKernel
 }
 
 async fn session(k: &LaunchedKernel) -> KernelSession {
-    let transport = ZmqTransport::connect(&k.connection).await.unwrap();
+    let transport = ZmqTransport::connect(k.connection.as_ref().unwrap())
+        .await
+        .unwrap();
     KernelSession::start(transport, Some(k))
 }
 
@@ -93,7 +95,7 @@ async fn kernel_gets_its_connection_file_env_and_cwd() {
     // The kernel reads the same ports the host connects to.
     let json = &text[text.find('{').unwrap()..text.rfind('}').unwrap() + 1];
     let info: ganymede_kernel_host::protocol::ConnectionInfo = serde_json::from_str(json).unwrap();
-    assert_eq!(info, k.connection);
+    assert_eq!(Some(info), k.connection);
 
     k.process.kill().await.unwrap();
     k.process.wait().await;

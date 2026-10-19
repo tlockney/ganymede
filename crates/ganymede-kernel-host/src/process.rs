@@ -31,7 +31,10 @@ pub trait KernelProcess: Send + Sync {
 }
 
 pub struct LaunchedKernel {
-    pub connection: ConnectionInfo,
+    /// Where the kernel's ZeroMQ sockets listen. `None` for a kernel with
+    /// no sockets, such as one an app runs in-process; its
+    /// [`TransportFactory`](crate::TransportFactory) connects it another way.
+    pub connection: Option<ConnectionInfo>,
     /// Written by the provisioner and removed on drop, when applicable.
     pub connection_file: Option<PathBuf>,
     pub process: Arc<dyn KernelProcess>,
@@ -350,7 +353,7 @@ impl Provisioner for SubprocessProvisioner {
         });
 
         Ok(LaunchedKernel {
-            connection: info,
+            connection: Some(info),
             connection_file: Some(connection_file),
             process: Arc::new(ChildProcess { pid, exit: exit_rx }),
             interrupt_mode: spec.interrupt_mode,
@@ -514,13 +517,23 @@ impl KernelProcess for NoProcess {
 
 /// Use an already running kernel from its connection info.
 pub fn attach(connection: ConnectionInfo) -> LaunchedKernel {
+    let mut launched = in_process();
+    launched.connection = Some(connection);
+    launched
+}
+
+/// A kernel with no process and no sockets, such as one an app runs on
+/// its own thread: what an in-process [`Provisioner`] returns. Its
+/// [`TransportFactory`](crate::TransportFactory) supplies the transport,
+/// and interrupts go over the control channel.
+pub fn in_process() -> LaunchedKernel {
     let (tx, rx) = watch::channel(true);
     let process = NoProcess {
         alive: rx,
         _keep: tx,
     };
     LaunchedKernel {
-        connection,
+        connection: None,
         connection_file: None,
         process: Arc::new(process),
         interrupt_mode: InterruptMode::Message,
