@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 512" width="860" height="512" role="img" aria-label="Ganymede&#x27;s crates and what each uses. ganymede-ffi and ganymede-cli sit on top: the ffi uses the server; the cli uses the server and the engine. The server uses api and gateway; the engine uses exec. api uses contents and kernel-host; gateway and exec use kernel-host; exec also uses nbformat. kernel-host uses protocol, and contents uses nbformat. protocol and nbformat, at the bottom, do no I/O.">
+  <title>Ganymede&#x27;s crates and what each uses. ganymede-ffi and ganymede-cli sit on top: the ffi uses the server; the cli uses the server and the engine. The server uses api and gateway; the engine uses exec. api uses contents and kernel-host; gateway and exec use kernel-host; exec also uses nbformat. kernel-host uses protocol, and contents uses nbformat. protocol and nbformat, at the bottom, do no I/O.</title>
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f6f7f9; stroke: #9aa3ad; stroke-width: 1.2; }
+    .inner { fill: #ffffff; stroke: #b8c0c8; stroke-width: 1; }
+    .acc { fill: #e8f0fe; stroke: #3b6fd8; stroke-width: 1.4; }
+    .warn { fill: #fdf0e6; stroke: #c96a1b; stroke-width: 1.4; }
+    .ok { fill: #e7f5ec; stroke: #2f8a4c; stroke-width: 1.4; }
+    .dash { stroke-dasharray: 5 4; }
+    .t { font: 600 14px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1f2328; }
+    .s { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #57606a; }
+    .m { font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f2328; }
+    .l { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #57606a; }
+    .ln { stroke: #6e7781; stroke-width: 1.4; fill: none; }
+    .life { stroke: #9aa3ad; stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+    .hl { stroke: #3b6fd8; stroke-width: 1.6; fill: none; }
+    .ah { fill: #6e7781; }
+    .ahb { fill: #3b6fd8; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #1b1b1f; }
+      .box { fill: #25262b; stroke: #5c6370; }
+      .inner { fill: #1b1b1f; stroke: #4a505a; }
+      .acc { fill: #1e2a44; stroke: #6b9bff; }
+      .warn { fill: #3a2a1c; stroke: #e0904a; }
+      .ok { fill: #1d3326; stroke: #5cc27e; }
+      .t, .m { fill: #e6e8eb; }
+      .s, .l { fill: #a0a7b0; }
+      .ln { stroke: #a0a7b0; }
+      .life { stroke: #5c6370; }
+      .hl { stroke: #6b9bff; }
+      .ah { fill: #a0a7b0; }
+      .ahb { fill: #6b9bff; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ahb" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="860" height="512" rx="8"/>
+  <text class="t" x="36" y="34">Crates: arrows point to what a crate uses</text>
+  <text class="l" x="824" y="34" text-anchor="end">dependencies implied by another arrow are left out</text>
+  <rect class="ok" x="20" y="406" width="820" height="76" rx="6"/>
+  <text class="t" x="36" y="436">No I/O</text>
+  <text class="l" x="36" y="454">build for any target</text>
+  <line class="ln" x1="150" y1="108" x2="300" y2="148" marker-end="url(#a)"/>
+  <line class="ln" x1="450" y1="108" x2="300" y2="148" marker-end="url(#a)"/>
+  <line class="ln" x1="450" y1="108" x2="600" y2="148" marker-end="url(#a)"/>
+  <line class="ln" x1="300" y1="198" x2="200" y2="238" marker-end="url(#a)"/>
+  <line class="ln" x1="300" y1="198" x2="430" y2="238" marker-end="url(#a)"/>
+  <line class="ln" x1="600" y1="198" x2="680" y2="238" marker-end="url(#a)"/>
+  <line class="ln" x1="200" y1="288" x2="120" y2="328" marker-end="url(#a)"/>
+  <line class="ln" x1="200" y1="288" x2="430" y2="328" marker-end="url(#a)"/>
+  <line class="ln" x1="430" y1="288" x2="430" y2="328" marker-end="url(#a)"/>
+  <line class="ln" x1="680" y1="288" x2="430" y2="328" marker-end="url(#a)"/>
+  <line class="ln" x1="680" y1="288" x2="700" y2="418" marker-end="url(#a)"/>
+  <line class="ln" x1="430" y1="378" x2="430" y2="418" marker-end="url(#a)"/>
+  <path class="ln" d="M120,378 V496 H700 V470" marker-end="url(#a)"/>
+  <rect class="acc" x="60" y="60" width="180" height="48" rx="4"/>
+  <text class="m" x="70" y="80">ganymede-ffi</text>
+  <text class="l" x="70" y="96">C ABI for apps</text>
+  <rect class="acc" x="360" y="60" width="180" height="48" rx="4"/>
+  <text class="m" x="370" y="80">ganymede-cli</text>
+  <text class="l" x="370" y="96">the ganymede command</text>
+  <rect class="inner" x="210" y="150" width="180" height="48" rx="4"/>
+  <text class="m" x="220" y="170">ganymede-server</text>
+  <text class="l" x="220" y="186">HTTP, websocket, auth</text>
+  <rect class="inner" x="510" y="150" width="180" height="48" rx="4"/>
+  <text class="m" x="520" y="170">ganymede-engine</text>
+  <text class="l" x="520" y="186">library to embed</text>
+  <rect class="inner" x="110" y="240" width="180" height="48" rx="4"/>
+  <text class="m" x="120" y="260">ganymede-api</text>
+  <text class="l" x="120" y="276">kernel, session managers</text>
+  <rect class="inner" x="340" y="240" width="180" height="48" rx="4"/>
+  <text class="m" x="350" y="260">ganymede-gateway</text>
+  <text class="l" x="350" y="276">remote kernels</text>
+  <rect class="inner" x="590" y="240" width="180" height="48" rx="4"/>
+  <text class="m" x="600" y="260">ganymede-exec</text>
+  <text class="l" x="600" y="276">runs notebooks</text>
+  <rect class="inner" x="30" y="330" width="180" height="48" rx="4"/>
+  <text class="m" x="40" y="350">ganymede-contents</text>
+  <text class="l" x="40" y="366">files, checkpoints, trust</text>
+  <rect class="inner" x="340" y="330" width="180" height="48" rx="4"/>
+  <text class="m" x="350" y="350">ganymede-kernel-host</text>
+  <text class="l" x="350" y="366">kernelspecs, launch</text>
+  <rect class="inner" x="340" y="420" width="180" height="48" rx="4"/>
+  <text class="m" x="350" y="440">ganymede-protocol</text>
+  <text class="l" x="350" y="456">messages, wire, HMAC</text>
+  <rect class="inner" x="610" y="420" width="180" height="48" rx="4"/>
+  <text class="m" x="620" y="440">ganymede-nbformat</text>
+  <text class="l" x="620" y="456">read, byte-exact write</text>
+</svg>

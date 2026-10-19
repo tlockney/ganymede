@@ -52,7 +52,7 @@ environment for `jupyter_server` and `jupyter_client`.
 
 ## Where Ganymede sits
 
-![Ganymede in the same position: the same frontends, plus UIs of its own, call the same REST and websocket API on a Rust core made of the ganymede crates, which launches the same kernelspecs over ZeroMQ. Python appears only as a kernel someone installed.](images/architecture/ganymede.svg)
+![Ganymede in the same position: the same frontends, plus ganymede-ui, call the same REST and websocket API on a Rust core made of the ganymede crates, which launches the same kernelspecs over ZeroMQ, or reaches kernels on another server through a gateway. Python appears only as a kernel someone installed.](images/architecture/ganymede.svg)
 
 Ganymede takes the middle box's place and keeps both of its interfaces:
 
@@ -91,21 +91,24 @@ built on.
 ## Inside Ganymede
 
 The crates are layered so that each profile takes only what it needs.
-Lower crates know nothing of the ones above them.
+Lower crates know nothing of the ones above them, and the two at the
+bottom do no I/O, so they build for any target.
 
-| Crate | Depends on | What it is |
-|---|---|---|
-| `ganymede-protocol` | none | Message types, the ZeroMQ multipart frame layout with HMAC, connection files, the websocket codecs. No I/O. |
-| `ganymede-nbformat` | none | nbformat 4.5 reading and writing. No I/O. |
-| `ganymede-kernel-host` | protocol | Kernelspec discovery; the `KernelTransport` seam (ZeroMQ, in-process); provisioners (subprocess, attach to a running kernel); the per-kernel session state machine. |
-| `ganymede-exec` | kernel-host, nbformat | Runs a notebook with nbclient's semantics. |
-| `ganymede-engine` | kernel-host, exec | The library to embed: find kernelspecs, start or attach to kernels, execute with streaming output, run notebooks. |
-| `ganymede-contents` | nbformat | The contents model over a filesystem. |
-| `ganymede-api` | kernel-host, contents | Kernel and session managers, response models, the per-client bridge, idle culling. No HTTP. Contents path validation confines kernel working directories to the root. |
-| `ganymede-server` | api, contents, gateway | The HTTP and websocket server. |
-| `ganymede-cli` | engine, server | The `ganymede` binary. |
-| `ganymede-gateway` | kernel-host | Kernels on another Jupyter server, as `jupyter_server`'s gateway client: kernelspecs and lifecycle over its REST API, channels over its websocket. The server uses it for `gateway_url`. |
-| `ganymede-ffi` | server | A C ABI (`include/ganymede.h`) that runs the server on loopback inside an app and returns its URL. A static library; `scripts/build-xcframework.sh` packages it for the Swift shell. |
+![Ganymede's crates and what each uses: ganymede-ffi and ganymede-cli on top; the server (over api and gateway) and the engine (over exec) below them; contents and kernel-host under those; protocol and nbformat, which do no I/O, at the bottom.](images/architecture/crates.svg)
+
+| Crate | What it is |
+|---|---|
+| `ganymede-cli` | The `ganymede` binary. |
+| `ganymede-ffi` | A C ABI (`include/ganymede.h`) that runs the server on loopback inside an app and returns its URL. A static library; `scripts/build-xcframework.sh` packages it for the Mac and iPad app. |
+| `ganymede-server` | The HTTP and websocket server. |
+| `ganymede-engine` | The library to embed: find kernelspecs, start or attach to kernels, execute with streaming output, run notebooks. |
+| `ganymede-api` | Kernel and session managers, response models, the per-client bridge, idle culling. No HTTP. Contents path validation confines kernel working directories to the root. |
+| `ganymede-gateway` | Kernels on another Jupyter server, as `jupyter_server`'s gateway client: kernelspecs and lifecycle over its REST API, channels over its websocket. The server uses it for `gateway_url`. |
+| `ganymede-exec` | Runs a notebook with nbclient's semantics. |
+| `ganymede-contents` | The contents model over a filesystem. |
+| `ganymede-kernel-host` | Kernelspec discovery; the `KernelTransport` seam (ZeroMQ, in-process); provisioners (subprocess, attach to a running kernel); the per-kernel session state machine. |
+| `ganymede-protocol` | Message types, the ZeroMQ multipart frame layout with HMAC, connection files, the websocket codecs. |
+| `ganymede-nbformat` | nbformat 4.5 reading and writing. |
 
 Outside the Rust core, and outside this repository, the TypeScript for UIs
 that render in a web view lives in
@@ -166,17 +169,15 @@ scenarios against cdp-kernel and ipykernel, and both must pass.
 
 ### Running a cell
 
-1. The frontend sends an `execute_request` on the kernel's websocket.
-2. `ganymede-server` decodes the frame and hands the message to the
-   client's connection in `ganymede-api`, which notes the client's session
-   so replies find their way back.
-3. `ganymede-kernel-host` sends it on the kernel's shell socket.
-4. The kernel publishes `status: busy`, then outputs (`stream`,
-   `display_data`, `execute_result`, `error`) on iopub, which goes to every
-   connected client, then `status: idle`. Its `execute_reply` comes back on
-   shell and goes only to the client that asked.
-5. The request is complete when both the reply and the matching `idle`
-   have arrived. They come on different sockets, in either order.
+![Running a cell. Client A sends execute_request on the websocket; Ganymede notes A's session and sends it to the kernel on shell. The kernel publishes status busy, execute_input, outputs and status idle on iopub, and Ganymede passes each to every client. The execute_reply comes back on shell, before or after idle, and goes only to A. A's request is done when it has both.](images/architecture/running-a-cell.svg)
+
+Inside Ganymede, `ganymede-server` decodes the websocket frame,
+`ganymede-api` notes the client's session so replies find their way
+back, and `ganymede-kernel-host` sends the message on the kernel's shell
+socket. Every client of the kernel sees iopub, which is how a second tab
+shows the same outputs. Only the client that asked gets the reply. The
+request is complete when the reply and the matching `idle` have both
+arrived; they come on different sockets, in either order.
 
 If the cell calls `input()`, the kernel sends an `input_request` on stdin
 to the client that ran the cell, which answers with an `input_reply`.
@@ -240,9 +241,9 @@ In order of value per unit of work:
    `jupyter console --existing`, kernel installers, and environment tools
    all keep working around the host.
 4. **Client compatibility.** The `jupyter_server` REST API and websocket
-   subprotocols. JupyterLab, Notebook 7, VS Code, Juno Connect, and
-   papermill-style tools connect. Medium cost; server and desktop profiles
-   only.
+   subprotocols. JupyterLab, VS Code, and other API clients connect
+   ([Other Jupyter clients](clients.md) has which); Notebook 7's pages
+   aren't served. Medium cost; server and desktop profiles only.
 5. **Output and widget compatibility.** The standard MIME types, comms,
    the `jupyter.widget` protocol. anywidget-only is small; full ipywidgets
    is a dependency on the standard JS manager, taken only in profiles

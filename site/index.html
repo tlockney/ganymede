@@ -180,8 +180,8 @@ http://127.0.0.1:8888/?token=<span class="s">4f9c…</span>
     <h2>Where it fits</h2>
     <p class="sub">Ganymede takes <code>jupyter_server</code>'s place and keeps both of its
       interfaces: the API above it and the kernels below.</p>
-    <img class="diagram" src="images/architecture/ganymede.svg" width="860" height="456"
-      alt="Frontends (JupyterLab, Notebook 7, VS Code, and UIs of Ganymede's own) call the same REST and websocket API on the Rust core, which launches the same kernelspecs (cdp-kernel, ipykernel, any other) over ZeroMQ.">
+    <img class="diagram" src="images/architecture/ganymede.svg" width="860" height="512"
+      alt="Frontends (JupyterLab, VS Code, other clients, and ganymede-ui) call the same REST and websocket API on the Rust core, which launches the same kernelspecs (cdp-kernel, ipykernel, any other) over ZeroMQ, or uses kernels on another server through a gateway.">
     <table class="rt">
       <thead><tr><th>Client</th><th>How it connects</th><th>Status</th></tr></thead>
       <tbody>
