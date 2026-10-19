@@ -158,7 +158,7 @@ Ganymede stands on each.
 | Area | Why it matters | Ganymede |
 | --- | --- | --- |
 | Slow-joiner nudge, and completion as reply plus idle | Without either, the first cell hangs now and then | Both, as above |
-| Widgets | Comms are cheap; widgets also need the frontend's widget manager and each package's JavaScript | Comms and binary buffers are routed; `ganymede lab install` adds `jupyterlab_widgets` and `anywidget` |
+| Widgets | Comms are cheap; widgets also need the frontend's widget manager and each package's JavaScript | Comms and binary buffers are routed; `ganymede lab install` adds `jupyterlab_widgets` and [`anywidget`](https://github.com/manzt/anywidget) |
 | Binary buffers | Easy to drop in the websocket bridge | Carried in both websocket framings |
 | Large and fast output | A busy kernel can flood a slow client | Past 10,000 queued iopub messages a client's output is dropped and it is told, as `jupyter_server`'s rate limit does; replies are never dropped |
 | Several clients, reconnects | Laptops sleep and iPads suspend | Kernels outlive connections; a client that reconnects with its session gets what it missed |

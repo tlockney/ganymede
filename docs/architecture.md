@@ -250,7 +250,7 @@ In order of value per unit of work:
    ([Other Jupyter clients](clients.md) has which); Notebook 7's pages
    aren't served. Medium cost; server and desktop profiles only.
 5. **Output and widget compatibility.** The standard MIME types, comms,
-   the `jupyter.widget` protocol. anywidget-only is small; full ipywidgets
+   the `jupyter.widget` protocol. [anywidget](https://github.com/manzt/anywidget)-only is small; full ipywidgets
    is a dependency on the standard JS manager, taken only in profiles
    that expect Python kernels.
 6. **Debugger.** DAP over the control channel, a DAP client in the UI.

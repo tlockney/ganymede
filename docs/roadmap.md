@@ -33,7 +33,7 @@ pull request with a GitHub issue, and records what it learned in the
   host.
 - **JupyterLab without Python.** `ganymede lab install` fetches
   JupyterLab's prebuilt bundle from PyPI, `ganymede lab extension install`
-  the prebuilt extensions (the widget manager and anywidget by default),
+  the prebuilt extensions (the widget manager and [anywidget](https://github.com/manzt/anywidget) by default),
   and `ganymede lab` serves and opens it.
 - **Releases and install.** A `vX.Y.Z` tag builds and publishes binaries
   for Linux, macOS, and Windows (the Windows build is not tested beyond

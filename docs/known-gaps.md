@@ -27,7 +27,7 @@ covers problems with the install itself.
   or other formats.
 - No JupyterHub single-user mode.
 - **Widgets** work in JupyterLab: `ganymede lab install` adds the
-  frontends of `jupyterlab_widgets` and `anywidget`, so ipywidgets from
+  frontends of `jupyterlab_widgets` and [`anywidget`](https://github.com/manzt/anywidget), so ipywidgets from
   ipykernel and cdp-kernel's widgets both render. Widget libraries with
   their own JupyterLab extension need it installed with
   `ganymede lab extension install`.

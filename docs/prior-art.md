@@ -22,7 +22,7 @@ What to read before working on a part of Ganymede.
   needs, including `/lab/api/*`.
 - VS Code Jupyter extension: the remote-server client, for what a
   non-JupyterLab frontend actually calls.
-- anywidget: the widget protocol subset to support instead of ipywidgets.
+- [anywidget](https://github.com/manzt/anywidget): the widget protocol subset to support instead of ipywidgets.
 - Datalayer's `jupyter-react`: a React frontend that reuses
   `@jupyterlab/rendermime` and `@jupyterlab/outputarea` without the rest
   of JupyterLab. ganymede-ui started on it, then used JupyterLab's

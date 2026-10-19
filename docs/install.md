@@ -135,7 +135,7 @@ is set. The command prints the directory.
 
 It installs JupyterLab 4.6.4 by default; `--version X.Y.Z` picks another,
 and `--force` reinstalls. It also installs the frontend halves of
-`jupyterlab_widgets` and `anywidget`, so widgets (cdp-kernel's
+`jupyterlab_widgets` and [`anywidget`](https://github.com/manzt/anywidget), so widgets (cdp-kernel's
 `jupyter.widget`) work; `--no-default-extensions` skips them, and
 `ganymede lab extension install <package>` adds other prebuilt extensions
 from PyPI. [JupyterLab and VS Code](frontends.md#extensions) has the
