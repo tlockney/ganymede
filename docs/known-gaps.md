@@ -43,7 +43,6 @@ covers problems with the install itself.
   `$JUPYTER_PATH`, not under a Python `sys.prefix`. For a kernel installed
   into a conda or virtual environment, add its prefix with
   `--kernelspec-root`; see [Protocol and kernel host](protocol.md).
-- There is no default kernel unless `--default-kernel` sets one.
 - The **debugger** (`debug_request` on the control channel) is passed
   through to the kernel untouched, so JupyterLab's debugger should work as far
   as the kernel supports it, but it is untested.

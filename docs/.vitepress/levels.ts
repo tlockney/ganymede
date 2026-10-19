@@ -30,7 +30,7 @@ export interface Group {
 export function groups(): Group[] {
   return [
     {
-      text: "Start here",
+      text: "Get started",
       level: "intro",
       items: [
         { text: "Overview", link: "/" },
@@ -44,6 +44,7 @@ export function groups(): Group[] {
       items: [
         { text: "JupyterLab and VS Code", link: "/frontends" },
         { text: "Ganymede's app", link: "/app" },
+        { text: "Switching from jupyter_server", link: "/switching" },
         { text: "Security", link: "/security" },
       ],
     },
@@ -52,6 +53,7 @@ export function groups(): Group[] {
       level: "reference",
       items: [
         { text: "CLI and configuration", link: "/reference" },
+        { text: "The API by example", link: "/api" },
         { text: "Known gaps", link: "/known-gaps" },
         { text: "Roadmap", link: "/roadmap" },
         { text: "Changelog", link: "/changelog" },

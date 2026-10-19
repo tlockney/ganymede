@@ -10,7 +10,7 @@ The first target kernel is [cdp-kernel](https://cdp-kernel.org), for
 TypeScript notebooks. Python kernels still work: a Python kernel is one
 more installed kernelspec, not something the server needs.
 
-## Where to start
+## Get started
 
 - [Install](install.md): numbered steps from a clean Linux or macOS
   machine to JupyterLab running TypeScript notebooks, with no Python or

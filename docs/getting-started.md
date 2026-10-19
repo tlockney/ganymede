@@ -46,6 +46,14 @@ a line, with `"status": "incomplete"` and an `error`, so a script can tell
 where it stopped. Input requests get an empty reply under `--json` and when
 the code comes from stdin; empty stdin is an error.
 
+Each `--json` line is one cell, with the outputs as a notebook stores
+them. From `ganymede run -k fake --json hello raise`:
+
+```json
+{"cell":0,"status":"ok","execution_count":1,"outputs":[{"output_type":"stream","name":"stdout","text":"echo: hello\n"},{"output_type":"execute_result","execution_count":1,"data":{"text/plain":"HELLO"},"metadata":{}}]}
+{"cell":1,"status":"error","execution_count":2,"outputs":[{"output_type":"error","ename":"FakeError","evalue":"raised","traceback":["\u001b[31mFakeError\u001b[0m: raised"]}],"ename":"FakeError","evalue":"raised"}
+```
+
 The [exit statuses](reference.md#exit-status) are the same for every
 command.
 
@@ -73,6 +81,26 @@ kernel won't start is reported and the rest still run; the exit status is
 too.
 `ganymede nb clear notebook.ipynb --inplace` removes outputs without a
 kernel.
+
+In CI, a notebook that fails fails the job. A GitHub Actions workflow
+that runs every notebook in `notebooks/` on cdp-kernel:
+
+```yaml
+name: notebooks
+on: [push, pull_request]
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      # Installs ganymede, and cdp-kernel since Node 24 is there.
+      - run: curl -fsSL https://ganymede-server.com/install.sh | sh
+      - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ganymede execute notebooks/*.ipynb
+```
 
 ## Trust a notebook
 

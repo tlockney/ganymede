@@ -84,9 +84,25 @@ cdp-kernel install --runtime node
 ```
 
 `cdp-kernel install` writes a kernelspec named `cdp-node` into Jupyter's
-kernels directory (see [Kernel not listed](#kernel-not-listed)). cdp-kernel
-also runs notebooks on Deno, Bun, workerd, and celld, one kernelspec per
-runtime (`--runtime deno` and so on); its
+kernels directory (see [Kernel not listed](#kernel-not-listed)). A
+kernelspec is a directory with a `kernel.json` that says how to start the
+kernel; Ganymede replaces `{connection_file}` with the file it writes
+for each kernel. cdp-kernel's looks like this, with paths from your
+machine:
+
+```json
+{
+  "argv": ["/usr/local/bin/node", "/usr/local/lib/node_modules/@tlockney/cdp-kernel/dist/main.js",
+           "kernel", "--runtime", "node", "--conn", "{connection_file}"],
+  "display_name": "TypeScript (cdp-kernel, node)",
+  "language": "typescript",
+  "interrupt_mode": "message",
+  "metadata": { "runtime": "node", "denoCompat": false, "version": "0.7.0", "debugger": true }
+}
+```
+
+cdp-kernel also runs notebooks on Deno, Bun, workerd, and celld, one
+kernelspec per runtime (`--runtime deno` and so on); its
 [install docs](https://cdp-kernel.org/docs/install) cover what each needs.
 Any other Jupyter kernel works the same way, ipykernel included, once its
 kernelspec is installed.

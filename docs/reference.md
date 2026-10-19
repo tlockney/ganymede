@@ -57,7 +57,7 @@ same name in snake case, except where the last column says otherwise.
 | `--allow-origin` | An origin, besides the server's own, allowed to use the API and websockets. Repeatable. | `allow_origins` |
 | `--base-url` | A prefix for serving behind a reverse proxy, e.g. `/jupyter/`. | |
 | `--cookie-secret-file` | Key for signing login cookies. Default: `jupyter_cookie_secret` in the Jupyter runtime dir. | |
-| `--default-kernel` | The kernelspec new notebooks start. | |
+| `--default-kernel` | The kernelspec new notebooks start. Default: the first kernelspec found. | |
 | `--cull-idle-secs` | Shut down kernels idle this long with no clients. `0` (the default) never does. | |
 | `--checkpoint-dir` | Keep checkpoints here instead of `.ipynb_checkpoints` beside each file. | |
 | `--notary-dir` | Where the notebook-signing key and trusted signatures live. Default: the Jupyter data dir. | |
@@ -94,6 +94,41 @@ default_kernel = "cdp-node"
 cull_idle_secs = 3600
 allow_origins = ["https://notebooks.example.org"]
 ```
+
+Every key, with its default:
+
+```toml
+# ganymede.toml: every key, set to its default or commented out.
+# Flags given on the command line override these.
+ip = "127.0.0.1"
+port = 8888
+# token = "..."                  # unset: a new random token each start; "" turns auth off
+root_dir = "."                   # the current directory
+# checkpoint_dir = "/path"       # unset: .ipynb_checkpoints beside each file
+# notary_dir = "/path"           # unset: the Jupyter data dir
+# cookie_secret_file = "/path"   # unset: jupyter_cookie_secret in the runtime dir
+# static_dir = "/path"           # unset: the newest JupyterLab from `ganymede lab install`
+# lab_version = "4.6.4"
+labextensions_paths = []
+# config_dir = "/path"           # unset: the Jupyter config dir
+base_url = "/"
+kernelspec_roots = []
+# default_kernel = "cdp-node"    # unset: the first kernelspec found
+cull_idle_secs = 0               # 0: never
+startup_timeout_secs = 60
+quiet = false
+allow_origins = []
+# allow_remote_access = true     # unset: on when ip isn't a loopback address
+local_hostnames = ["localhost"]
+trust_xheaders = false
+max_body_size = 536870912        # 512 MiB
+# gateway_url = "https://kernels.example.org"
+# gateway_token = "..."
+```
+
+> [!NOTE]
+> **Unreleased.** `gateway_url` and `gateway_token` are read only by a
+> build of `main` (HEAD), not by the latest release.
 
 Three keys have no flag:
 
