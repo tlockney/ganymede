@@ -72,6 +72,37 @@ fn unsplit_input_is_written_as_nbformat_would() {
 }
 
 #[test]
+fn v3_is_upgraded_as_nbformat_does() {
+    let mut nb = Notebook::from_str(&read_fixture("v3.ipynb")).unwrap();
+    assert_eq!((nb.nbformat, nb.nbformat_minor), (4, 5));
+    // Kept on read, as nbformat's `reads` does; the writer strips them.
+    assert_eq!(nb.metadata["orig_nbformat"], json!(3));
+    assert_eq!(nb.metadata["orig_nbformat_minor"], json!(0));
+    assert!(!nb.metadata.contains_key("name"));
+    assert!(!nb.metadata.contains_key("signature"));
+    assert_eq!(nb.cells.len(), 8);
+
+    // Every cell gets a fresh id; give them the generator's to compare bytes.
+    for (i, cell) in nb.cells.iter_mut().enumerate() {
+        let id = match cell {
+            Cell::Code(c) => &mut c.id,
+            Cell::Markdown(c) => &mut c.id,
+            Cell::Raw(c) => &mut c.id,
+            Cell::Unknown(v) => panic!("cell {i} not upgraded: {v}"),
+        };
+        let fresh = id.as_deref().expect("cell id");
+        assert!(fresh.len() == 8 && fresh.bytes().all(|b| b.is_ascii_hexdigit()));
+        *id = Some(format!("v3-cell-{i}"));
+    }
+    let expected = read_fixture("v3.expected.ipynb");
+    let written = nb.to_file_string();
+    assert!(
+        written == expected,
+        "--- nbformat\n{expected}\n--- rust\n{written}"
+    );
+}
+
+#[test]
 fn code_outputs_model_is_what_the_generator_built() {
     let nb = Notebook::read_file(fixture("code_outputs.ipynb")).unwrap();
     assert_eq!(nb.nbformat, 4);

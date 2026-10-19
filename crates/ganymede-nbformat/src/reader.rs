@@ -9,6 +9,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
 use crate::types::{Notebook, NBFORMAT};
+use crate::upgrade;
 use crate::{Error, Result};
 
 /// Remove transient values that nbformat never stores (`strip_transient`).
@@ -383,7 +384,9 @@ fn check_notebook(nb: &Map<String, Value>, report: &mut ReadReport) {
     }
 }
 
-fn check_version(value: &Value) -> Result<()> {
+/// Check the notebook's major version. Returns whether it is nbformat 3,
+/// which is read by upgrading it to 4.5.
+fn check_version(value: &Value) -> Result<bool> {
     let Some(obj) = value.as_object() else {
         return Err(Error::NotAnObject);
     };
@@ -393,16 +396,17 @@ fn check_version(value: &Value) -> Result<()> {
     let Some(major) = major.as_u64() else {
         return Err(Error::InvalidVersion(major.clone()));
     };
+    if major == 3 {
+        return Ok(true);
+    }
     if major != u64::from(NBFORMAT) {
-        // TODO: upgrade nbformat 3 (and older) notebooks instead of rejecting
-        // them, as nbformat.convert does. Out of scope for now.
         let minor = obj
             .get("nbformat_minor")
             .and_then(Value::as_u64)
             .unwrap_or(0);
         return Err(Error::UnsupportedVersion { major, minor });
     }
-    Ok(())
+    Ok(false)
 }
 
 impl Notebook {
@@ -413,7 +417,8 @@ impl Notebook {
     /// missing or duplicate cell ids are repaired, as nbformat does. Values
     /// that break the schema are read leniently (see the [`crate::Output`]
     /// docs); a lone surrogate escape, which Python's `json` accepts, is read
-    /// as U+FFFD. Only nbformat 4 is accepted; see
+    /// as U+FFFD. nbformat 3 notebooks are upgraded to 4.5, as nbformat
+    /// does; other versions than 3 and 4 fail with
     /// [`Error::UnsupportedVersion`].
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Result<Self> {
@@ -457,8 +462,15 @@ impl Notebook {
     /// [`Notebook::from_value`], also returning what the lenient reader
     /// repaired.
     pub fn from_value_with_report(mut value: Value) -> Result<(Self, ReadReport)> {
-        check_version(&value)?;
-        strip_transient(&mut value);
+        if check_version(&value)? {
+            // As nbformat's `reads(..., as_version=4)`: the upgrade keeps
+            // `orig_nbformat` in the metadata, so no v4 `strip_transient`.
+            if let Value::Object(nb) = &mut value {
+                upgrade::upgrade_v3(nb);
+            }
+        } else {
+            strip_transient(&mut value);
+        }
         normalize_cell_ids(&mut value);
         let mut report = ReadReport::default();
         if let Some(nb) = value.as_object() {
@@ -494,9 +506,9 @@ mod tests {
 
     #[test]
     fn rejects_other_major_versions() {
-        let v3 = r#"{"nbformat": 3, "nbformat_minor": 0, "metadata": {}, "worksheets": []}"#;
-        match Notebook::from_str(v3) {
-            Err(Error::UnsupportedVersion { major: 3, minor: 0 }) => {}
+        let v2 = r#"{"nbformat": 2, "metadata": {}, "worksheets": []}"#;
+        match Notebook::from_str(v2) {
+            Err(Error::UnsupportedVersion { major: 2, minor: 0 }) => {}
             other => panic!("unexpected: {other:?}"),
         }
         assert!(matches!(

@@ -40,7 +40,12 @@ covers problems with the install itself.
 
 ## Notebooks
 
-- nbformat 3 notebooks can't be read.
+- nbformat 1 and 2 notebooks can't be read. nbformat 3 notebooks are
+  upgraded to 4.5 when opened and saved as 4.5, as Jupyter does.
+
+  > [!NOTE]
+  > **Unreleased.** Available only from a build of `main` (HEAD), not in
+  > the latest release.
 - A notebook changed on disk while it is open is not reloaded into the
   frontend; that is the document model on the [roadmap](roadmap.md).
 

@@ -10,6 +10,9 @@ writer. `unsplit_source.ipynb` is deliberately written with plain `json.dumps`
 (no `split_lines`, unsorted keys, indent 2) to exercise lenient reading;
 `unsplit_source.expected.ipynb` is what `nbformat.write` produces after reading
 it back, and is the expected output of the Rust writer for that input.
+`v3.ipynb` is an nbformat 3 notebook, also written with plain `json.dump`;
+`v3.expected.ipynb` is `nbformat.write` of it read with `as_version=4`, with
+the upgrade's random cell ids replaced by `v3-cell-N`.
 
 Cell ids are passed explicitly so the output is deterministic.
 """
@@ -425,6 +428,90 @@ def lenient() -> dict:
     }
 
 
+def v3() -> dict:
+    """An nbformat 3 notebook covering what the v4 upgrade changes (#142)."""
+    return {
+        "metadata": {
+            "name": "demo",
+            "signature": "sha256:abc",
+            "kernelspec": {"name": "python3", "display_name": "Python 3"},
+        },
+        "nbformat": 3,
+        "nbformat_minor": 0,
+        "worksheets": [
+            {
+                "cells": [
+                    {
+                        "cell_type": "heading",
+                        "level": 2,
+                        "metadata": {},
+                        "source": ["Title\n", "line two"],
+                    },
+                    {"cell_type": "heading", "level": 1, "metadata": {}, "source": "Top"},
+                    {
+                        "cell_type": "markdown",
+                        "metadata": {"trusted": True},
+                        "source": ["some *md*\n", "more"],
+                    },
+                    {
+                        "cell_type": "code",
+                        "collapsed": False,
+                        "input": ["print('hi')\n", "1+1"],
+                        "language": "python",
+                        "metadata": {},
+                        "prompt_number": 3,
+                        "outputs": [
+                            {"output_type": "stream", "stream": "stdout", "text": ["hi\n"]},
+                            {
+                                "output_type": "pyout",
+                                "prompt_number": 3,
+                                "metadata": {},
+                                "text": ["2"],
+                                "html": ["<b>2</b>"],
+                                "png": PNG_1X1,
+                                "json": '{"a": 1}',
+                            },
+                            {
+                                "output_type": "display_data",
+                                "metadata": {"png": {"width": 10}},
+                                "svg": ["<svg>\n", "</svg>"],
+                                "latex": "$x$",
+                            },
+                            {
+                                "output_type": "pyerr",
+                                "ename": "E",
+                                "evalue": "v",
+                                "traceback": ["tb"],
+                            },
+                        ],
+                    },
+                    {"cell_type": "html", "metadata": {}, "source": "<p>old</p>"},
+                    {
+                        "cell_type": "raw",
+                        "metadata": {"format": "text/x-python"},
+                        "source": "raw",
+                    },
+                    {
+                        "cell_type": "code",
+                        "collapsed": True,
+                        "input": "",
+                        "language": "python",
+                        "metadata": {},
+                        "outputs": [],
+                    },
+                ],
+                "metadata": {},
+            },
+            {
+                "cells": [
+                    {"cell_type": "markdown", "metadata": {}, "source": "second worksheet"},
+                ],
+                "metadata": {},
+            },
+        ],
+    }
+
+
 NBFORMAT_WRITTEN = {
     "code_outputs.ipynb": code_outputs,
     "markdown_attachments.ipynb": markdown_attachments,
@@ -454,6 +541,17 @@ def main() -> None:
         json.dump(lenient(), f, indent=1, ensure_ascii=True)
         f.write("\n")
     print("wrote lenient.ipynb")
+
+    with (HERE / "v3.ipynb").open("w", encoding="utf8") as f:
+        json.dump(v3(), f, indent=1, ensure_ascii=True)
+        f.write("\n")
+    print("wrote v3.ipynb")
+
+    nb = nbformat.read(HERE / "v3.ipynb", as_version=4)
+    for i, cell in enumerate(nb.cells):
+        cell.id = f"v3-cell-{i}"
+    nbformat.write(nb, HERE / "v3.expected.ipynb")
+    print("wrote v3.expected.ipynb")
 
 
 if __name__ == "__main__":

@@ -26,6 +26,7 @@ mod atomic;
 mod multiline;
 mod reader;
 mod types;
+mod upgrade;
 mod writer;
 
 pub use atomic::atomic_write;
@@ -51,8 +52,9 @@ pub enum Error {
     MissingVersion,
     #[error("notebook `nbformat` field is not an integer: {0}")]
     InvalidVersion(serde_json::Value),
-    /// Only nbformat 4 is supported. Older notebooks are not upgraded yet.
-    #[error("unsupported notebook format {major}.{minor}; only nbformat 4 is supported")]
+    /// Only nbformat 3 (upgraded on read) and 4 are supported. nbformat 1
+    /// and 2 are not upgraded.
+    #[error("unsupported notebook format {major}.{minor}; only nbformat 3 and 4 are supported")]
     UnsupportedVersion { major: u64, minor: u64 },
 }
 
