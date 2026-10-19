@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 416" width="900" height="416" role="img" aria-label="Three ways to embed Ganymede. A Rust app calls ganymede-engine in its own process, and the engine runs kernel processes over ZeroMQ. A Mac or iPad app starts ganymede-ffi, which runs ganymede-server on its own thread; the app&#x27;s web view talks to it over HTTP on 127.0.0.1, and it runs kernels from kernelspecs or uses a kernel server. A wasm module or iOS app builds the engine with zmq and subprocess off and connects it to its own kernel in the same process through in-memory channels.">
+  <title>Three ways to embed Ganymede. A Rust app calls ganymede-engine in its own process, and the engine runs kernel processes over ZeroMQ. A Mac or iPad app starts ganymede-ffi, which runs ganymede-server on its own thread; the app&#x27;s web view talks to it over HTTP on 127.0.0.1, and it runs kernels from kernelspecs or uses a kernel server. A wasm module or iOS app builds the engine with zmq and subprocess off and connects it to its own kernel in the same process through in-memory channels.</title>
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f6f7f9; stroke: #9aa3ad; stroke-width: 1.2; }
+    .inner { fill: #ffffff; stroke: #b8c0c8; stroke-width: 1; }
+    .acc { fill: #e8f0fe; stroke: #3b6fd8; stroke-width: 1.4; }
+    .warn { fill: #fdf0e6; stroke: #c96a1b; stroke-width: 1.4; }
+    .ok { fill: #e7f5ec; stroke: #2f8a4c; stroke-width: 1.4; }
+    .dash { stroke-dasharray: 5 4; }
+    .warnpill { fill: #c96a1b; }
+    .tw { font: 600 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #ffffff; }
+    .t { font: 600 14px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1f2328; }
+    .s { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .m { font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f2328; }
+    .l { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .ln { stroke: #6e7781; stroke-width: 1.4; fill: none; }
+    .life { stroke: #9aa3ad; stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+    .hl { stroke: #3b6fd8; stroke-width: 1.6; fill: none; }
+    .ah { fill: #6e7781; }
+    .ahb { fill: #3b6fd8; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #1b1b1f; }
+      .box { fill: #25262b; stroke: #5c6370; }
+      .inner { fill: #1b1b1f; stroke: #4a505a; }
+      .acc { fill: #1e2a44; stroke: #6b9bff; }
+      .warn { fill: #3a2a1c; stroke: #e0904a; }
+      .ok { fill: #1d3326; stroke: #5cc27e; }
+      .warnpill { fill: #e0904a; }
+      .tw { fill: #1b1b1f; }
+      .t, .m { fill: #e6e8eb; }
+      .s, .l { fill: #b6bcc4; }
+      .ln { stroke: #a0a7b0; }
+      .life { stroke: #5c6370; }
+      .hl { stroke: #6b9bff; }
+      .ah { fill: #a0a7b0; }
+      .ahb { fill: #6b9bff; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ahb" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="900" height="416" rx="8"/>
+  <rect class="box" x="20" y="20" width="270" height="250" rx="6"/>
+  <text class="t" x="34" y="42">Your Rust app</text>
+  <rect class="acc" x="40" y="60" width="230" height="56" rx="4"/>
+  <text class="m" x="52" y="80">App code</text>
+  <text class="l" x="52" y="97">Handler: on_iopub, on_input</text>
+  <line class="ln" x1="155" y1="118" x2="155" y2="150" marker-start="url(#a)" marker-end="url(#a)"/>
+  <text class="l" x="165" y="138">execute, complete</text>
+  <rect class="ok" x="40" y="152" width="230" height="56" rx="4"/>
+  <text class="m" x="52" y="172">ganymede-engine</text>
+  <text class="l" x="52" y="189">Engine, Kernel; zmq, subprocess on</text>
+  <line class="ln" x1="155" y1="210" x2="155" y2="302" marker-start="url(#a)" marker-end="url(#a)" stroke-dasharray="5 4"/>
+  <text class="l" x="165" y="290">ZeroMQ</text>
+  <rect class="inner" x="40" y="304" width="230" height="56" rx="4"/>
+  <text class="m" x="52" y="324">Kernel processes</text>
+  <text class="l" x="52" y="341">cdp-node, python3, any kernelspec</text>
+  <rect class="box" x="315" y="20" width="270" height="250" rx="6"/>
+  <text class="t" x="329" y="42">Mac or iPad app</text>
+  <rect class="acc" x="335" y="60" width="105" height="56" rx="4"/>
+  <text class="m" x="347" y="80">Swift or C</text>
+  <text class="l" x="347" y="97">start, url, stop</text>
+  <rect class="acc" x="460" y="60" width="105" height="56" rx="4"/>
+  <text class="m" x="472" y="80">Web view</text>
+  <text class="l" x="472" y="97">ganymede-ui</text>
+  <line class="ln" x1="442" y1="88" x2="458" y2="88" marker-end="url(#a)"/>
+  <line class="ln" x1="387" y1="118" x2="387" y2="150" marker-start="url(#a)" marker-end="url(#a)"/>
+  <rect class="ok" x="335" y="152" width="230" height="56" rx="4"/>
+  <text class="m" x="347" y="172">ganymede-ffi</text>
+  <text class="l" x="347" y="189">ganymede-server on its own thread</text>
+  <line class="ln" x1="512" y1="118" x2="512" y2="150" marker-start="url(#a)" marker-end="url(#a)" stroke-dasharray="5 4"/>
+  <text class="l" x="522" y="132">HTTP on</text>
+  <text class="l" x="522" y="145">127.0.0.1</text>
+  <line class="ln" x1="450" y1="210" x2="450" y2="302" marker-start="url(#a)" marker-end="url(#a)" stroke-dasharray="5 4"/>
+  <text class="l" x="460" y="290">ZeroMQ, or gateway_url</text>
+  <rect class="inner" x="335" y="304" width="230" height="56" rx="4"/>
+  <text class="m" x="347" y="324">Kernels</text>
+  <text class="l" x="347" y="341">kernelspecs, or a kernel server</text>
+  <rect class="box" x="610" y="20" width="270" height="340" rx="6"/>
+  <text class="t" x="624" y="42">wasm module or iOS app</text>
+  <rect class="acc" x="630" y="60" width="230" height="56" rx="4"/>
+  <text class="m" x="642" y="80">App code</text>
+  <text class="l" x="642" y="97">adopt(), or its own provisioner</text>
+  <line class="ln" x1="745" y1="118" x2="745" y2="150" marker-start="url(#a)" marker-end="url(#a)"/>
+  <rect class="ok" x="630" y="152" width="230" height="56" rx="4"/>
+  <text class="m" x="642" y="172">ganymede-engine</text>
+  <text class="l" x="642" y="189">zmq, subprocess off</text>
+  <line class="ln" x1="745" y1="210" x2="745" y2="302" marker-start="url(#a)" marker-end="url(#a)"/>
+  <text class="l" x="755" y="260">in_process_pair:</text>
+  <text class="l" x="755" y="275">channels in memory</text>
+  <rect class="inner" x="630" y="304" width="230" height="46" rx="4"/>
+  <text class="m" x="642" y="324">The app&#x27;s own kernel</text>
+  <text class="l" x="642" y="341">in the same process</text>
+  <line class="ln" x1="40" y1="394" x2="70" y2="394"/>
+  <text class="l" x="78" y="398">a call in the same process</text>
+  <line class="ln" x1="260" y1="394" x2="290" y2="394" stroke-dasharray="5 4"/>
+  <text class="l" x="298" y="398">a socket: ZeroMQ, HTTP, websocket</text>
+  <rect class="ok" x="530" y="388" width="16" height="12" rx="2"/>
+  <text class="l" x="552" y="398">Ganymede</text>
+  <rect class="acc" x="650" y="388" width="16" height="12" rx="2"/>
+  <text class="l" x="672" y="398">the app</text>
+</svg>

@@ -99,9 +99,9 @@ bottom do no I/O, so they build for any target.
 | Crate | What it is |
 |---|---|
 | `ganymede-cli` | The `ganymede` binary. |
-| `ganymede-ffi` | A C ABI (`include/ganymede.h`) that runs the server on loopback inside an app and returns its URL. A static library; `scripts/build-xcframework.sh` packages it for the Mac and iPad app. |
+| `ganymede-ffi` | A C ABI (`include/ganymede.h`) that runs the server on loopback inside an app and returns its URL. A static library; `scripts/build-xcframework.sh` packages it for the Mac and iPad app. See [Embedding](embedding.md#the-server-in-an-app-from-c). |
 | `ganymede-server` | The HTTP and websocket server. |
-| `ganymede-engine` | The library to embed: find kernelspecs, start or attach to kernels, execute with streaming output, run notebooks. |
+| `ganymede-engine` | The library to embed: find kernelspecs, start or attach to kernels, execute with streaming output, run notebooks. See [Embedding](embedding.md). |
 | `ganymede-api` | Kernel and session managers, response models, the per-client bridge, idle culling. No HTTP. Contents path validation confines kernel working directories to the root. |
 | `ganymede-gateway` | Kernels on another Jupyter server, as `jupyter_server`'s gateway client: kernelspecs and lifecycle over its REST API, channels over its websocket. The server uses it for `gateway_url`. |
 | `ganymede-exec` | Runs a notebook with nbclient's semantics. |

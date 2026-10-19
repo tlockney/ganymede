@@ -174,3 +174,7 @@ let kernel = engine.start("cdp-node").await?;
 let result = kernel.execute("1 + 1").await?;
 println!("{}", result.text());
 ```
+
+[Embedding](embedding.md) has the rest of the engine's API, streaming
+output and stdin, builds without ZeroMQ or subprocesses, and the C ABI
+that runs the server inside an app.
