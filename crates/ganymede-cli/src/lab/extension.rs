@@ -23,6 +23,7 @@ use super::pypi::{self, Index, Spec};
 use super::Limits;
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
+use ganymede_engine::nbformat::atomic_write;
 use ganymede_server::lab::extensions_dir;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashSet, VecDeque};
@@ -231,7 +232,7 @@ fn set_disabled(path: &Path, names: &[String], disabled: bool) -> Result<ExitCod
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
-    std::fs::write(path, serde_json::to_vec_pretty(&config)?)
+    atomic_write(path, &serde_json::to_vec_pretty(&config)?)
         .with_context(|| format!("writing {}", path.display()))?;
     Ok(ExitCode::SUCCESS)
 }
@@ -641,7 +642,7 @@ impl Record {
             "extensions": self.extensions,
             "required_by": self.required_by,
         });
-        std::fs::write(&path, serde_json::to_vec_pretty(&v)?)
+        atomic_write(&path, &serde_json::to_vec_pretty(&v)?)
             .with_context(|| format!("writing {}", path.display()))
     }
 }
@@ -952,6 +953,46 @@ mod tests {
         let fresh = ganymede_server::lab::page_config_file(&dir.path().join("new"));
         set_disabled(&fresh, &names(&["x"]), true).unwrap();
         assert_eq!(ganymede_server::lab::disabled_extensions(&fresh), ["x"]);
+    }
+
+    #[test]
+    fn page_config_and_records_are_replaced_not_truncated() {
+        // A hard link to the old file keeps the old bytes only when the
+        // write renames a new file into place; truncating in place would
+        // show through the link, and a crash then would leave it empty.
+        let dir = tempfile::tempdir().unwrap();
+        let path = ganymede_server::lab::page_config_file(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let old = r#"{"disabledExtensions": {"old": true}}"#;
+        std::fs::write(&path, old).unwrap();
+        let link = dir.path().join("page_config.link");
+        std::fs::hard_link(&path, &link).unwrap();
+        set_disabled(&path, &["new".to_string()], true).unwrap();
+        assert_eq!(std::fs::read_to_string(&link).unwrap(), old);
+        assert_eq!(
+            ganymede_server::lab::disabled_extensions(&path),
+            ["new", "old"]
+        );
+
+        let root = dir.path().join("ext");
+        let mut rec = Record {
+            key: "a".into(),
+            name: "a".into(),
+            version: "1.0.0".into(),
+            extensions: vec![],
+            required_by: None,
+        };
+        rec.save(&root).unwrap();
+        let path = record_path(&root, "a");
+        let before = std::fs::read(&path).unwrap();
+        let link = dir.path().join("record.link");
+        std::fs::hard_link(&path, &link).unwrap();
+        rec.version = "2.0.0".into();
+        rec.save(&root).unwrap();
+        assert_eq!(std::fs::read(&link).unwrap(), before);
+        assert_eq!(record(&root, "a").unwrap().version, "2.0.0");
+        // No temp files left beside the record.
+        assert_eq!(std::fs::read_dir(root.join(RECORDS)).unwrap().count(), 1);
     }
 
     #[test]
