@@ -77,6 +77,7 @@ fn state(root: &std::path::Path) -> AppState {
         token: Some(TOKEN.into()),
         cookie_secret: Arc::from(&b"test-secret"[..]),
         allow_origins: vec![],
+        allow_credentials: false,
         allow_remote_access: false,
         local_hostnames: vec!["localhost".into()],
         trust_xheaders: false,
@@ -1626,10 +1627,46 @@ async fn allowed_origins_get_cors_headers_and_preflight() {
         "https://app.example"
     );
 
+    // Credentials are off by default, as in jupyter_server, so a browser
+    // does not send the login cookie cross-origin.
+    assert!(h.get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS).is_none());
+
     // Without allow_origins there are no CORS headers.
     let app = build_router(state(dir.path()));
     let (_, h, _) = send(&app, preflight("https://app.example")).await;
     assert!(h.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+}
+
+#[tokio::test]
+async fn allow_credentials_lets_listed_origins_send_the_cookie() {
+    let dir = tempfile::tempdir().unwrap();
+    let app_with = |origins: &[&str]| {
+        let mut st = state(dir.path());
+        st.allow_origins = origins.iter().map(|o| o.to_string()).collect();
+        st.allow_credentials = true;
+        build_router(st)
+    };
+    let request = |origin: &str| {
+        let mut req = api_req("GET", "/api/status", None);
+        req.headers_mut()
+            .insert(header::ORIGIN, origin.parse().unwrap());
+        req
+    };
+
+    let app = app_with(&["https://app.example"]);
+    let (_, h, _) = send(&app, request("https://app.example")).await;
+    assert_eq!(h[header::ACCESS_CONTROL_ALLOW_CREDENTIALS], "true");
+    let (_, h, _) = send(&app, request("https://evil.example")).await;
+    assert!(h.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+
+    // With `*` every origin would get the cookie, so credentials stay off.
+    let app = app_with(&["*"]);
+    let (_, h, _) = send(&app, request("https://evil.example")).await;
+    assert_eq!(
+        h[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+        "https://evil.example"
+    );
+    assert!(h.get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS).is_none());
 }
 
 #[tokio::test]

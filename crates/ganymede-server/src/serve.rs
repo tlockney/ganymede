@@ -96,6 +96,10 @@ pub struct ServeArgs {
     /// Repeatable.
     #[arg(long, value_name = "ORIGIN")]
     pub allow_origin: Vec<String>,
+    /// Let pages on the --allow-origin origins use the login cookie, by
+    /// sending `Access-Control-Allow-Credentials: true`. Ignored with `*`.
+    #[arg(long)]
+    pub allow_credentials: bool,
     /// Accept requests whose `Host` is not a loopback address or a name in
     /// `local_hostnames`. On by default when --ip is not loopback.
     #[arg(long)]
@@ -181,6 +185,9 @@ impl ServeArgs {
             cfg.cookie_secret_file = Some(v);
         }
         cfg.allow_origins.extend(cli.allow_origin);
+        if cli.allow_credentials {
+            cfg.allow_credentials = true;
+        }
         if cli.allow_remote_access {
             cfg.allow_remote_access = Some(true);
         }
@@ -448,6 +455,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         token: token.clone(),
         cookie_secret: crate::auth::load_cookie_secret(&cookie_secret_file).into(),
         allow_origins: cfg.allow_origins.clone(),
+        allow_credentials: cfg.allow_credentials,
         allow_remote_access: cfg.allow_remote_access(),
         local_hostnames: cfg.local_hostnames.clone(),
         trust_xheaders: cfg.trust_xheaders,

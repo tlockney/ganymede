@@ -18,7 +18,7 @@ protections match `jupyter_server`'s, so its security model applies here.
 | `--ip` (`ip`) | `127.0.0.1` | Listens on loopback only. Other machines can't connect. |
 | `--token` (`token`) | A random token per start | Printed in the URL on stdout. Every API and websocket request needs it, or the login cookie it sets. |
 | `--allow-remote-access` (`allow_remote_access`) | Off on a loopback `--ip`, on otherwise | Off, requests must be addressed to a loopback address or a name in `local_hostnames` (default `localhost`). |
-| `--allow-origin` (`allow_origins`) | None | Only the server's own origin may make browser requests that use the login cookie. |
+| `--allow-origin` (`allow_origins`) | None | Only the server's own origin may make browser requests. Other origins, once listed, need the token unless `--allow-credentials` is set. |
 | `trust_xheaders` | `false` | `X-Forwarded-Proto` and `X-Scheme` are ignored. |
 | TLS | None | Ganymede speaks plain HTTP. Put TLS in front of it ([below](#tls)). |
 
@@ -125,10 +125,24 @@ trust_xheaders = true
 
 A web page on another origin (a notebook UI hosted elsewhere, Thebe on a
 docs site) can use the API only when its origin is listed with
-`--allow-origin` (or `allow_origins`), and it still needs the token.
-`--allow-origin '*'` allows every origin. Combined with the login cookie,
-that lets any page you visit act with your session. Prefer listing exact
-origins.
+`--allow-origin` (or `allow_origins`). It authenticates with the token,
+in an `Authorization: token` header: the browser does not send the login
+cookie on its requests, because the server does not send
+`Access-Control-Allow-Credentials`. That is `jupyter_server`'s default too.
+`--allow-origin '*'` allows every origin, so any page you visit can make
+requests, but only with the token. Prefer listing exact origins.
+
+`--allow-credentials` (`allow_credentials`) lets pages on the listed
+origins use the login cookie instead, as `jupyter_server`'s
+`allow_credentials` does. Those requests must still carry the `_xsrf`
+token. The cookie is `SameSite=Lax`, so browsers send it only from a page
+on the same site, such as `app.example.org` calling
+`notebooks.example.org`. It is ignored while `*` is allowed, since every
+page you visit could then act with your session.
+
+> [!NOTE]
+> **Unreleased.** `--allow-credentials` is available only from a build of
+> `main` (HEAD), not in the latest release.
 
 ## JupyterLab extensions are code
 

@@ -55,6 +55,7 @@ same name in snake case, except where the last column says otherwise.
 | `--token` | The auth token. Unset generates one; an empty string disables auth. | |
 | `--allow-remote-access` | Accept requests whose `Host` is not a loopback address or a name in `local_hostnames`. | |
 | `--allow-origin` | An origin, besides the server's own, allowed to use the API and websockets. Repeatable. | `allow_origins` |
+| `--allow-credentials` | Let pages on the `--allow-origin` origins use the login cookie. Off by default; ignored when `*` is allowed. See [Security](security.md#cross-origin-clients). | `allow_credentials` |
 | `--base-url` | A prefix for serving behind a reverse proxy, e.g. `/jupyter/`. | |
 | `--cookie-secret-file` | Key for signing login cookies. Default: `jupyter_cookie_secret` in the Jupyter runtime dir. | |
 | `--default-kernel` | The kernelspec new notebooks start. Default: the first kernelspec found. | |
@@ -73,8 +74,9 @@ same name in snake case, except where the last column says otherwise.
 | `--log-level`, `--log-file` | See [Logging](#logging). | |
 
 > [!NOTE]
-> **Unreleased.** `--gateway-url` and `--gateway-token` are available only
-> from a build of `main` (HEAD), not in the latest release.
+> **Unreleased.** `--gateway-url`, `--gateway-token` and
+> `--allow-credentials` are available only from a build of `main` (HEAD),
+> not in the latest release.
 
 `serve` prints the URL, with its token, as the only line on stdout.
 [Security](security.md) covers what `--ip 0.0.0.0` and `--token ""`
@@ -118,6 +120,7 @@ cull_idle_secs = 0               # 0: never
 startup_timeout_secs = 60
 quiet = false
 allow_origins = []
+allow_credentials = false
 # allow_remote_access = true     # unset: on when ip isn't a loopback address
 local_hostnames = ["localhost"]
 trust_xheaders = false
@@ -127,8 +130,8 @@ max_body_size = 536870912        # 512 MiB
 ```
 
 > [!NOTE]
-> **Unreleased.** `gateway_url` and `gateway_token` are read only by a
-> build of `main` (HEAD), not by the latest release.
+> **Unreleased.** `gateway_url`, `gateway_token` and `allow_credentials`
+> are read only by a build of `main` (HEAD), not by the latest release.
 
 Three keys have no flag:
 
