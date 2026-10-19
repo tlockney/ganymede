@@ -134,6 +134,11 @@ need, built or planned.
 | `WidgetManager` (TS) | The `jupyter.widget` comm target | anywidget-only, small, enough for cdp-kernel; full `@jupyter-widgets/base` plus `controls`, needed when a Python kernel with ipywidgets runs. Choose per profile, not globally |
 | `Editor` (TS) | Code editing | CodeMirror 6, mode from `language_info.codemirror_mode` |
 
+The server uses kernelspec dirs, subprocesses and ZMQ for `KernelspecSource`,
+`Provisioner` and `TransportFactory` unless an app embedding it passes its
+own in `serve::Startup`. Its `subprocess` and `zmq` features can then be
+turned off.
+
 Two of these seams already exist in the ecosystem and should be matched
 rather than invented. On the server side, `jupyter_server`'s gateway
 client is the remote provisioner. On the frontend side,
