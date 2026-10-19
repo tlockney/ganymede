@@ -49,6 +49,12 @@ pub struct Config {
     pub default_kernel: Option<String>,
     /// Shut down kernels idle this long with no clients. 0 disables.
     pub cull_idle_secs: u64,
+    /// Run kernels on this Jupyter server instead of locally, as
+    /// `jupyter_server`'s `GatewayClient.url`: `http(s)://host[:port][/base]`.
+    /// Kernelspecs come from it too; contents stay local.
+    pub gateway_url: Option<String>,
+    /// The gateway server's token (`GatewayClient.auth_token`).
+    pub gateway_token: Option<String>,
     /// Seconds a new kernel has to answer.
     pub startup_timeout_secs: u64,
     /// Discard kernel processes' own stdout and stderr (not cell output,
@@ -88,6 +94,8 @@ impl Default for Config {
             kernelspec_roots: vec![],
             default_kernel: None,
             cull_idle_secs: 0,
+            gateway_url: None,
+            gateway_token: None,
             startup_timeout_secs: 60,
             quiet: false,
             allow_origins: vec![],

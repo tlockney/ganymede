@@ -1,0 +1,31 @@
+[package]
+name = "ganymede-gateway"
+description = "Kernels on another Jupyter server, as jupyter_server's gateway client has them: kernelspecs, launches and interrupts over its REST API, channels over its websocket."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ganymede-protocol = { path = "../ganymede-protocol" }
+ganymede-kernel-host = { path = "../ganymede-kernel-host", default-features = false }
+async-trait.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["net"] }
+tracing.workspace = true
+uuid.workspace = true
+# TLS is rustls with ring (aws-lc does not cross-build for iOS without
+# cmake) and the platform's trust store, for both HTTP and websockets.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "0.7"
+tokio-tungstenite = { workspace = true, features = ["__rustls-tls"] }
+
+[dev-dependencies]
+ganymede-server = { path = "../ganymede-server", default-features = false }
+ganymede-engine = { path = "../ganymede-engine", default-features = false }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tempfile.workspace = true

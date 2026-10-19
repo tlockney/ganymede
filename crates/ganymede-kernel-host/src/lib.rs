@@ -35,7 +35,7 @@ pub use ganymede_protocol as protocol;
 pub use kernelspec::{FsKernelspecs, InterruptMode, Kernelspec, KernelspecSource};
 #[cfg(feature = "subprocess")]
 pub use process::SubprocessProvisioner;
-pub use process::{attach, in_process, LaunchOptions, LaunchedKernel, Provisioner};
+pub use process::{attach, in_process, KernelProcess, LaunchOptions, LaunchedKernel, Provisioner};
 pub use session::{Execution, Heartbeat, KernelSession};
 pub use transport::{
     in_process_pair, KernelSide, KernelTransport, TransportFactory, TransportSink,
