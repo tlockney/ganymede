@@ -20,9 +20,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # What the end-to-end jobs install, in one place: e2e here, and
-  # scripts/test-workstation.sh and scripts/test-install.sh read
-  # CDP_KERNEL_VERSION. Bump them together in one pull request
+  # What the end-to-end jobs install, in one place: e2e and image here,
+  # and scripts/test-workstation.sh and scripts/test-install.sh read
+  # CDP_KERNEL_VERSION; container/Dockerfile has it as a default too. Bump them together in one pull request
   # (docs/development.md). The scheduled run takes the latest releases.
   CDP_KERNEL_VERSION: ${{ github.event_name == 'schedule' && 'latest' || '0.6.0' }}
   E2E_PYTHON_PACKAGES: ${{ github.event_name == 'schedule' && 'ipykernel nbclient jupyter_server' || 'ipykernel==7.4.0 nbclient==0.11.0 jupyter_server==2.21.1' }}
@@ -256,6 +256,24 @@ jobs:
         with:
           node-version: 24
       - run: TEST_KERNEL=1 scripts/test-install.sh sh
+
+  # The container image (container/Dockerfile, #203) built from the
+  # checkout, then container/smoke-test.sh: no Python in it, a cell on
+  # cdp-node, and `ganymede lab` serving behind its token.
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: shellcheck -s sh container/smoke-test.sh
+      - run: >-
+          docker build -f container/Dockerfile -t ganymede
+          --build-arg GANYMEDE_SOURCE=checkout
+          --build-arg "CDP_KERNEL_VERSION=$CDP_KERNEL_VERSION" .
+      - run: container/smoke-test.sh ganymede
+        timeout-minutes: 5
 
   # docs/install.md on a workstation with no Python: the PR's release
   # binary, packaged as release.yml does, installed by site/install.sh over

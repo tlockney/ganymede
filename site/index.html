@@ -55,6 +55,7 @@
       <div class="tabs" role="tablist">
         <button role="tab" aria-selected="true" data-tab="release">Install script</button>
         <button role="tab" aria-selected="false" data-tab="cargo">cargo</button>
+        <button role="tab" aria-selected="false" data-tab="docker">Docker</button>
       </div>
       <pre data-panel="release"><code><span class="c"># Linux, macOS: latest release, plus cdp-kernel if Node 24+ is installed</span>
 curl -fsSL https://ganymede-server.com/install.sh | sh
@@ -62,6 +63,9 @@ ganymede kernelspec list</code></pre>
       <pre data-panel="cargo" hidden><code><span class="c"># Rust toolchain</span>
 cargo install --git https://github.com/tlockney/ganymede ganymede-cli
 ganymede kernelspec list</code></pre>
+      <pre data-panel="docker" hidden><code><span class="c"># JupyterLab and cdp-kernel, no Python</span>
+<span class="c"># Unreleased. The image is published from the next release on.</span>
+docker run --rm -p 8888:8888 ghcr.io/tlockney/ganymede</code></pre>
     </div>
     <p class="platforms">Linux and macOS are tested end to end. Windows binaries are built
       but not tested. <a href="docs/install">Other ways to install</a></p>

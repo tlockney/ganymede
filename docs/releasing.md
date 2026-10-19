@@ -27,7 +27,12 @@ partway through.
    `THIRD-PARTY-NOTICES` and SHA-256 checksums, attests their build
    provenance, and publishes the GitHub Release with the changelog section
    as notes.
-   It then redeploys the site from `main`.
+   It then redeploys the site from `main`, and builds the container image
+   ([`container/Dockerfile`](../container/Dockerfile)) from the release,
+   smoke-tests it, and pushes it to `ghcr.io/tlockney/ganymede` as the
+   version and `latest`, for amd64 and arm64. The first time the package
+   is pushed, GitHub creates it as private: make it public in the
+   package's settings.
 
 Then check the result:
 
@@ -36,6 +41,7 @@ gh release view vX.Y.Z --repo tlockney/ganymede
 gh release download vX.Y.Z --repo tlockney/ganymede -p '*x86_64-unknown-linux-gnu.tar.gz'
 gh attestation verify ganymede-X.Y.Z-x86_64-unknown-linux-gnu.tar.gz --repo tlockney/ganymede
 curl -fsSL https://ganymede-server.com/install.sh | sh -s -- --version X.Y.Z --no-kernel
+docker run --rm ghcr.io/tlockney/ganymede:X.Y.Z ganymede --version
 ```
 
 ## When it fails
