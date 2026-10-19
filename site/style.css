@@ -189,6 +189,15 @@ pre code { font-size: inherit; }
 .lvl.guide { color: var(--accent); background: var(--accent-soft); }
 .lvl.adv { color: var(--lvl-adv); background: var(--lvl-adv-bg); }
 .diagram { display: block; width: 100%; height: auto; margin: 0 0 24px; border-radius: 8px; }
+/* Diagrams come in a light and a dark copy, built from docs/images/ by the
+   docs build (docs/.vitepress/themed.ts); show the one for the theme. */
+.diagram.only-dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .diagram.only-dark { display: block; }
+  :root:not([data-theme="light"]) .diagram.only-light { display: none; }
+}
+:root[data-theme="dark"] .diagram.only-dark { display: block; }
+:root[data-theme="dark"] .diagram.only-light { display: none; }
 
 .note { border-left: 3px solid var(--accent); padding: 4px 0 4px 20px; }
 

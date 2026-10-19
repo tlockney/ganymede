@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitepress";
 import { groups } from "./levels.ts";
 import { notesPlugin, withEntries } from "./notes.ts";
+import { themedImages, writeThemedSvgs } from "./themed.ts";
 
 const repo = "https://github.com/tlockney/ganymede";
 const uiRepo = "https://github.com/tlockney/ganymede-ui";
@@ -18,6 +19,7 @@ const site = (process.env.SITE_URL ?? "https://ganymede-server.com").replace(/\/
 const base = `${new URL(site).pathname.replace(/\/$/, "")}/docs/`;
 const docsDir = path.resolve(import.meta.dirname, "..");
 const repoDir = path.resolve(docsDir, "..");
+writeThemedSvgs(docsDir);
 
 // ganymede-ui's docs/*.md, copied here by `npm run fetch-ui` (not
 // committed) and published under /docs/ganymede-ui/. Without the copy the
@@ -76,6 +78,7 @@ export default defineConfig({
   head: [["link", { rel: "icon", href: `${new URL(site).pathname.replace(/\/$/, "")}/favicon.svg`, type: "image/svg+xml" }]],
   markdown: {
     config(md) {
+      themedImages(md, docsDir);
       const render = md.renderer.rules.link_open ?? ((tokens, i, opts, _env, self) => self.renderToken(tokens, i, opts));
       md.renderer.rules.link_open = (tokens, i, opts, env, self) => {
         const token = tokens[i];

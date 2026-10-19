@@ -8,10 +8,12 @@
     .warn { fill: #fdf0e6; stroke: #c96a1b; stroke-width: 1.4; }
     .ok { fill: #e7f5ec; stroke: #2f8a4c; stroke-width: 1.4; }
     .dash { stroke-dasharray: 5 4; }
+    .warnpill { fill: #c96a1b; }
+    .tw { font: 600 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #ffffff; }
     .t { font: 600 14px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1f2328; }
-    .s { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #57606a; }
+    .s { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
     .m { font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f2328; }
-    .l { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #57606a; }
+    .l { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
     .ln { stroke: #6e7781; stroke-width: 1.4; fill: none; }
     .life { stroke: #9aa3ad; stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
     .hl { stroke: #3b6fd8; stroke-width: 1.6; fill: none; }
@@ -24,8 +26,10 @@
       .acc { fill: #1e2a44; stroke: #6b9bff; }
       .warn { fill: #3a2a1c; stroke: #e0904a; }
       .ok { fill: #1d3326; stroke: #5cc27e; }
+      .warnpill { fill: #e0904a; }
+      .tw { fill: #1b1b1f; }
       .t, .m { fill: #e6e8eb; }
-      .s, .l { fill: #a0a7b0; }
+      .s, .l { fill: #b6bcc4; }
       .ln { stroke: #a0a7b0; }
       .life { stroke: #5c6370; }
       .hl { stroke: #6b9bff; }
