@@ -49,6 +49,7 @@ missing, so you can judge the switch before making it.
   | `ServerApp.root_dir` | `root_dir` |
   | `ServerApp.base_url` | `base_url` |
   | `ServerApp.allow_origin` | `allow_origins` (a list) |
+  | `ServerApp.allow_credentials` | `allow_credentials` |
   | `ServerApp.allow_remote_access`, `ServerApp.local_hostnames` | `allow_remote_access`, `local_hostnames` |
   | `ServerApp.trust_xheaders` | `trust_xheaders` |
   | `ServerApp.cookie_secret_file` | `cookie_secret_file` |
@@ -60,8 +61,9 @@ missing, so you can judge the switch before making it.
   | `GatewayClient.url`, `GatewayClient.auth_token` | `gateway_url`, `gateway_token` |
 
   > [!NOTE]
-  > **Unreleased.** `gateway_url` and `gateway_token` are available only
-  > from a build of `main` (HEAD), not in the latest release.
+  > **Unreleased.** `gateway_url`, `gateway_token` and `allow_credentials`
+  > are available only from a build of `main` (HEAD), not in the latest
+  > release.
 
   Other settings have no equivalent. An unknown key in the file is an
   error, so a setting that doesn't carry over can't be ignored silently.

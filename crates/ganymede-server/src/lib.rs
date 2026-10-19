@@ -33,6 +33,11 @@ pub struct AppState {
     /// cookie-authenticated requests, and CORS (`Access-Control-Allow-*`
     /// headers and preflight answers).
     pub allow_origins: Vec<String>,
+    /// Send `Access-Control-Allow-Credentials: true` to listed origins, so
+    /// a page on one of them can use the login cookie. Off by default, as
+    /// `jupyter_server`'s `allow_credentials`; cross-origin clients then
+    /// authenticate with the token.
+    pub allow_credentials: bool,
     /// Skip the `Host` check. Off by default when bound to loopback, so a
     /// DNS-rebinding page cannot reach the server through its own name.
     pub allow_remote_access: bool,
@@ -79,7 +84,7 @@ pub fn build_router(state: AppState) -> axum::Router {
         ))
         .layer(axum::extract::DefaultBodyLimit::max(state.max_body_size));
     if !state.allow_origins.is_empty() {
-        app = app.layer(cors(state.allow_origins.clone()));
+        app = app.layer(cors(state.allow_origins.clone(), state.allow_credentials));
     }
     app.layer(axum::middleware::from_fn_with_state(
         state,
@@ -90,11 +95,20 @@ pub fn build_router(state: AppState) -> axum::Router {
 /// CORS for `allow_origins`, as `jupyter_server` sends it: the allowed
 /// origin echoed in `Access-Control-Allow-Origin`, and preflight requests
 /// answered before auth with the methods and headers its API handlers
-/// accept.
-fn cors(allow_origins: Vec<String>) -> tower_http::cors::CorsLayer {
+/// accept. With `allow_credentials`, also
+/// `Access-Control-Allow-Credentials: true`, except when `*` is listed:
+/// `jupyter_server` then sends `Access-Control-Allow-Origin: *`, which
+/// browsers never pair with credentials, so no page gets the cookie that
+/// way. Here every origin is echoed, so credentials are left off instead.
+fn cors(allow_origins: Vec<String>, allow_credentials: bool) -> tower_http::cors::CorsLayer {
     use axum::http::{header, HeaderName, Method};
     use tower_http::cors::{AllowOrigin, CorsLayer};
+    let credentials = allow_credentials && !allow_origins.iter().any(|o| o == "*");
+    if allow_credentials && !credentials {
+        tracing::warn!("allow_credentials is ignored while allow_origins contains \"*\"");
+    }
     CorsLayer::new()
+        .allow_credentials(credentials)
         .allow_origin(AllowOrigin::predicate(move |origin, _| {
             origin
                 .to_str()

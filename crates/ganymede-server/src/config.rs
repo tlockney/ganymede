@@ -61,6 +61,10 @@ pub struct Config {
     /// which reaches clients over iopub). Otherwise both go to stderr.
     pub quiet: bool,
     pub allow_origins: Vec<String>,
+    /// Let listed origins send the login cookie
+    /// (`Access-Control-Allow-Credentials: true`), as `jupyter_server`'s
+    /// `allow_credentials`. Ignored when `allow_origins` contains `*`.
+    pub allow_credentials: bool,
     /// Accept any `Host` header. Unset, it is on unless `ip` is a loopback
     /// address, as in `jupyter_server`.
     pub allow_remote_access: Option<bool>,
@@ -99,6 +103,7 @@ impl Default for Config {
             startup_timeout_secs: 60,
             quiet: false,
             allow_origins: vec![],
+            allow_credentials: false,
             allow_remote_access: None,
             local_hostnames: vec!["localhost".into()],
             trust_xheaders: false,
