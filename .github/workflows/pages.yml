@@ -2,8 +2,8 @@ name: pages
 # The site deploys from main on every merge that touches it. Docs for a
 # feature the latest release doesn't have say so (CLAUDE.md), since
 # install.sh installs the latest release. release.yml also dispatches this
-# workflow after publishing a release; a manual run deploys main, or the
-# given ref.
+# workflow after publishing a release, and ganymede-ui asks for a rebuild
+# when its docs change; a manual run deploys main, or the given ref.
 on:
   push:
     branches: [main]
@@ -12,6 +12,9 @@ on:
   # rather than the deploy.
   pull_request:
     paths: [site/**, docs/**, .github/workflows/pages.yml]
+  # ganymede-ui's docs workflow, when its docs/*.md change on its main.
+  repository_dispatch:
+    types: [ganymede-ui-docs]
   workflow_dispatch:
     inputs:
       ref:
@@ -32,7 +35,8 @@ env:
 jobs:
   # The landing page is plain HTML and CSS in site/, served at /. The docs
   # are Markdown in docs/, built by VitePress into /docs/
-  # (docs/.vitepress/config.mts). The design is cdp-kernel.org's.
+  # (docs/.vitepress/config.mts), plus ganymede-ui's docs. The design is
+  # cdp-kernel.org's.
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -55,6 +59,9 @@ jobs:
           cache: npm
           cache-dependency-path: docs/package-lock.json
       - run: npm ci
+        working-directory: docs
+      # ganymede-ui's docs/*.md, from its main, under /docs/ganymede-ui/.
+      - run: npm run fetch-ui
         working-directory: docs
       - run: npm run build
         working-directory: docs
