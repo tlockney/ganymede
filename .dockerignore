@@ -1,0 +1,10 @@
+# Build context for container/Dockerfile: the checkout, less what the
+# build recreates.
+.git
+.claude
+target
+node_modules
+docs/.vitepress/dist
+docs/.vitepress/cache
+validation/out
+e2e/wasm-smoke/target

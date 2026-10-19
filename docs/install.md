@@ -41,7 +41,8 @@ CI runs the same commands on every pull request, on Linux and macOS, with
 Python hidden from `PATH`
 ([`scripts/test-workstation.sh`](../scripts/test-workstation.sh)).
 [Other ways to install](#other-ways-to-install) covers the script's
-options, the download by hand, building from source, and Windows.
+options, the download by hand, a container, building from source, and
+Windows.
 
 ## 1. Install Ganymede
 
@@ -382,6 +383,38 @@ gh attestation verify "$NAME.tar.gz" --repo tlockney/ganymede
 
 It succeeds only for an archive built by `tlockney/ganymede`'s own
 release workflow, and prints the tag and commit it was built from.
+
+### In a container
+
+> [!NOTE]
+> **Unreleased.** The image is published from the next release on;
+> until then, build it from a clone as below.
+
+[`container/Dockerfile`](../container/Dockerfile) builds an image with
+Ganymede, Node 24, cdp-kernel's `cdp-node` kernelspec, and JupyterLab's
+frontend from `ganymede lab install`. It has no Python. Each release is
+published as `ghcr.io/tlockney/ganymede:<version>` (and `latest`), for
+amd64 and arm64:
+
+```sh
+docker run --rm -p 8888:8888 -v "$PWD:/notebooks" ghcr.io/tlockney/ganymede
+```
+
+It runs `ganymede lab` on port 8888 in `/notebooks`, here the current
+directory. Open the URL it prints with `127.0.0.1` in place of
+`0.0.0.0`. The server runs as uid 1000, so on Linux the mounted
+directory must be writable by that user. Without `-v`, notebooks go
+away with the container.
+
+Or build it from a clone of the repository:
+
+```sh
+docker build -f container/Dockerfile -t ganymede .
+docker run --rm -p 8888:8888 ganymede
+```
+
+The image installs the release named by the checkout's `Cargo.toml`;
+add `--build-arg GANYMEDE_SOURCE=checkout` to build the checkout itself.
 
 ### From source
 

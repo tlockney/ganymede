@@ -60,14 +60,16 @@ with Python hidden from `PATH`
 binary through `install.sh`, cdp-kernel from npm, `ganymede lab install`,
 `ganymede lab` driven by Playwright, `ganymede execute`, `ganymede serve`
 with the VS Code extension's requests, and the uninstall, failing if any
-Python ran.
+Python ran. Its `image` job builds `container/Dockerfile` from the
+checkout and runs `container/smoke-test.sh` on it.
 
 ## CI
 
 - **Pins.** The cdp-kernel, ipykernel, nbclient, and `jupyter_server`
   versions the end-to-end jobs install are in one place, the `env:` block
   at the top of `.github/workflows/ci.yml`. Bump them together in one
-  pull request. A weekly scheduled run installs the latest releases
+  pull request, with the `CDP_KERNEL_VERSION` default in
+  `container/Dockerfile`. A weekly scheduled run installs the latest releases
   instead, so drift shows up there first.
 - **Rust versions.** CI builds with the latest stable. `rust-version` in
   the workspace `Cargo.toml` is the oldest supported Rust, and the `msrv`
