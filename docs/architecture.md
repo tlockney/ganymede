@@ -250,7 +250,7 @@ In order of value per unit of work:
    ([Other Jupyter clients](clients.md) has which); Notebook 7's pages
    aren't served. Medium cost; server and desktop profiles only.
 5. **Output and widget compatibility.** The standard MIME types, comms,
-   the `jupyter.widget` protocol. anywidget-only is small; full ipywidgets
+   the `jupyter.widget` protocol. [anywidget](https://github.com/manzt/anywidget)-only is small; full ipywidgets
    is a dependency on the standard JS manager, taken only in profiles
    that expect Python kernels.
 6. **Debugger.** DAP over the control channel, a DAP client in the UI.
@@ -262,6 +262,25 @@ In order of value per unit of work:
 Items 1 to 3 are what make "might also run Python" free: a Python kernel
 is just another kernelspec, and ipywidgets is just another widget manager
 module.
+
+### Tested versions
+
+"Compatible" means compatible with these versions, which CI pins in
+[`ci.yml`](../.github/workflows/ci.yml) and bumps in one pull request.
+A weekly scheduled run repeats the end-to-end jobs with the latest
+release of each, so a new upstream version that breaks something shows
+up within a week.
+
+| Target | Tested against | Rule |
+| --- | --- | --- |
+| `jupyter_server` REST and websocket API | `jupyter_server` 2.21.1, run side by side in the e2e suite | A difference is a bug. |
+| Kernel protocol | 5.x; Ganymede's own messages say 5.5. ipykernel 7.4.0 and cdp-kernel 0.6.0 in the e2e suite | A difference is a bug. |
+| nbformat | 4.5, against Python's `nbformat` through `jupyter execute` (nbclient 0.11.0) | Byte-for-byte saves. Version 3 is upgraded on read. |
+| JupyterLab | 4.6.4, the `ganymede lab install` default, driven in Chromium | Other 4.x releases should work and are not tested. |
+| VS Code Jupyter extension | Its remote-server requests, replayed with `@jupyterlab/services` 7.5 | VS Code itself is not run in CI. |
+
+A difference from these that isn't listed in [Known gaps](known-gaps.md)
+is a bug; please [report it](https://github.com/tlockney/ganymede/issues).
 
 ## Further reading
 

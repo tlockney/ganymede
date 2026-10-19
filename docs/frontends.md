@@ -85,7 +85,7 @@ ganymede lab extension remove jupyterlab-execute-time
 as `jupyter labextension disable` does, and the next page load picks it
 up.
 
-`ganymede lab install` also installs `jupyterlab_widgets` and `anywidget`,
+`ganymede lab install` also installs `jupyterlab_widgets` and [`anywidget`](https://github.com/manzt/anywidget),
 so widgets (cdp-kernel's `jupyter.widget`, for one) work out of the box;
 `--no-default-extensions` skips them.
 

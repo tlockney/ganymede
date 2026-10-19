@@ -135,7 +135,7 @@ is set. The command prints the directory.
 
 It installs JupyterLab 4.6.4 by default; `--version X.Y.Z` picks another,
 and `--force` reinstalls. It also installs the frontend halves of
-`jupyterlab_widgets` and `anywidget`, so widgets (cdp-kernel's
+`jupyterlab_widgets` and [`anywidget`](https://github.com/manzt/anywidget), so widgets (cdp-kernel's
 `jupyter.widget`) work; `--no-default-extensions` skips them, and
 `ganymede lab extension install <package>` adds other prebuilt extensions
 from PyPI. [JupyterLab and VS Code](frontends.md#extensions) has the
@@ -385,9 +385,47 @@ mkdir -p ~/.local/bin && install -m 755 "$NAME/ganymede" ~/.local/bin/
 export PATH="$HOME/.local/bin:$PATH"   # if it is not on PATH already
 ```
 
-Set `VERSION=0.1.0` instead of the first line to pin a release. Windows
-binaries are built and released but not tested end to end; see
-[Known gaps](known-gaps.md#platforms).
+Set `VERSION=0.1.0` instead of the first line to pin a release.
+
+### On Windows
+
+The install script and the commands above need a POSIX shell. In
+PowerShell, this downloads the latest release's `.zip`, checks its SHA-256, and
+puts `ganymede.exe` in `%LOCALAPPDATA%\Programs\ganymede`, which it adds
+to your user `PATH`:
+
+```powershell
+$Version = (Invoke-RestMethod https://api.github.com/repos/tlockney/ganymede/releases/latest).tag_name.TrimStart("v")
+$Name = "ganymede-$Version-x86_64-pc-windows-msvc"
+$Base = "https://github.com/tlockney/ganymede/releases/download/v$Version"
+Set-Location (New-Item -ItemType Directory -Force "$env:TEMP\$Name")
+Invoke-WebRequest "$Base/$Name.zip" -OutFile "$Name.zip"
+Invoke-WebRequest "$Base/$Name.zip.sha256" -OutFile "$Name.zip.sha256"
+$Expected = (Get-Content "$Name.zip.sha256").Split(" ")[0]
+if ((Get-FileHash "$Name.zip" -Algorithm SHA256).Hash -ne $Expected) { throw "checksum mismatch" }
+Expand-Archive "$Name.zip" -DestinationPath . -Force
+$Bin = "$env:LOCALAPPDATA\Programs\ganymede"
+New-Item -ItemType Directory -Force $Bin | Out-Null
+Copy-Item "$Name\ganymede.exe" $Bin
+$UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if (";$UserPath;" -notlike "*;$Bin;*") {
+  [Environment]::SetEnvironmentVariable("Path", "$UserPath;$Bin", "User")
+}
+```
+
+Open a new terminal so it picks up the `PATH`, then follow the steps
+above from step 2, "Install Node and cdp-kernel"; the commands are the
+same. Kernelspecs go in `%APPDATA%\jupyter\kernels`.
+
+The binary is not signed. Windows doesn't flag a file that PowerShell
+downloaded, but one saved from a browser may get a SmartScreen
+"Windows protected your PC" prompt: choose **More info**, then
+**Run anyway**, or run `Unblock-File` on the `.zip` before extracting it.
+
+Windows binaries are built and released but not tested end to end, and
+signal interrupts and killing a kernel process are not implemented
+there; see [Known gaps](known-gaps.md#platforms) and
+[#60](https://github.com/tlockney/ganymede/issues/60).
 
 ### Verify a download
 

@@ -69,8 +69,10 @@ checkout and runs `container/smoke-test.sh` on it.
   versions the end-to-end jobs install are in one place, the `env:` block
   at the top of `.github/workflows/ci.yml`. Bump them together in one
   pull request, with the `CDP_KERNEL_VERSION` default in
-  `container/Dockerfile`. A weekly scheduled run installs the latest releases
-  instead, so drift shows up there first.
+  `container/Dockerfile` and the
+  [tested versions](architecture.md#tested-versions) table. A weekly
+  scheduled run installs the latest releases instead, so drift shows up
+  there first.
 - **Rust versions.** CI builds with the latest stable. `rust-version` in
   the workspace `Cargo.toml` is the oldest supported Rust, and the `msrv`
   job builds with exactly that; raise it on purpose.

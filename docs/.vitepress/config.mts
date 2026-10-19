@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitepress";
 import { groups } from "./levels.ts";
-import { notesPlugin, withEntries } from "./notes.ts";
+import { notesPlugin } from "./notes.ts";
 import { themedImages, writeThemedSvgs } from "./themed.ts";
 
 const repo = "https://github.com/tlockney/ganymede";
@@ -126,7 +126,9 @@ export default defineConfig({
     search: {
       provider: "local",
       options: {
-        _render: (src, env, md) => md.render(env.relativePath === "notes.md" ? withEntries(src, docsDir) : src, env),
+        // The development log is history for contributors, not docs, so
+        // search leaves it out (#192).
+        _render: (src, env, md) => (env.relativePath === "notes.md" ? "" : md.render(src, env)),
       },
     },
     editLink: {
