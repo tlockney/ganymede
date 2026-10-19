@@ -470,7 +470,13 @@ impl KernelManager {
         kernel.alive.send_replace(false);
         kernel.clients.lock().unwrap().discard_parked(&kernel.id);
         kernel.launched.lock().unwrap().take();
-        Ok(result?)
+        // The kernel is gone from the map and marked dead whatever the
+        // escalation reported, so the delete succeeded, as jupyter_server
+        // answers it (#171).
+        if let Err(e) = result {
+            tracing::warn!(kernel = %id, "kernel removed, but shutdown reported: {e}");
+        }
+        Ok(())
     }
 
     pub async fn interrupt(&self, id: &str) -> Result<()> {

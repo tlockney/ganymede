@@ -836,4 +836,62 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(weak.upgrade().is_none() && weak2.upgrade().is_none());
     }
+
+    /// A process that ignores the shutdown request and cannot be signalled.
+    struct UnkillableProcess;
+    #[async_trait]
+    impl ganymede_kernel_host::KernelProcess for UnkillableProcess {
+        fn pid(&self) -> Option<u32> {
+            Some(1)
+        }
+        async fn interrupt(&self) -> ganymede_kernel_host::Result<()> {
+            Ok(())
+        }
+        async fn terminate(&self) -> ganymede_kernel_host::Result<()> {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into())
+        }
+        async fn kill(&self) -> ganymede_kernel_host::Result<()> {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into())
+        }
+        async fn wait(&self) -> Option<i32> {
+            std::future::pending().await
+        }
+        fn is_alive(&self) -> bool {
+            true
+        }
+    }
+
+    struct UnkillableProvisioner;
+    #[async_trait]
+    impl Provisioner for UnkillableProvisioner {
+        async fn launch(
+            &self,
+            _spec: &Kernelspec,
+            _opts: LaunchOptions,
+        ) -> ganymede_kernel_host::Result<LaunchedKernel> {
+            let mut launched = in_process();
+            launched.process = Arc::new(UnkillableProcess);
+            Ok(launched)
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_succeeds_once_the_kernel_is_removed() {
+        let m = KernelManager::new(
+            Arc::new(StaticKernelspecs(vec![fake_spec("fake")])),
+            Arc::new(UnkillableProvisioner),
+            Arc::new(FakeTransports::default()),
+            KernelManagerConfig {
+                startup_timeout: Duration::from_secs(5),
+                shutdown_grace: Duration::from_millis(20),
+                ..Default::default()
+            },
+        );
+        let k = m.start(None, None).await.unwrap();
+        // Signalling fails, but the kernel is removed and marked dead, so
+        // the delete answers success, not a 5xx that a retry turns to 404.
+        m.shutdown(&k.id).await.unwrap();
+        assert!(m.list().is_empty());
+        assert_eq!(m.get(&k.id).unwrap_err().status, 404);
+    }
 }
