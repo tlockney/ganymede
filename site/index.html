@@ -32,7 +32,7 @@
       <a href="#start">Start</a>
       <a href="#features">Features</a>
       <a href="https://cdp-kernel.org">cdp-kernel</a>
-      <a href="#clients">Clients</a>
+      <a href="#clients">Frontends</a>
       <a href="docs/">Docs</a>
       <a href="https://github.com/tlockney/ganymede">GitHub</a>
     </nav>
@@ -41,7 +41,8 @@
 
 <main>
 <section class="hero">
-  <div class="wrap">
+  <div class="wrap hero-grid">
+  <div class="hero-text">
     <p class="eyebrow">Jupyter server · Rust · no Python</p>
     <h1>The Jupyter server, without the Python.</h1>
     <p class="lede">Ganymede runs your kernels and serves the same API as
@@ -49,7 +50,8 @@
       one Rust binary, or a library to embed, and it needs no Python environment to run a
       TypeScript notebook, or any other.</p>
     <p class="lede who">For people who want Jupyter where a Python environment is a burden or
-      impossible: TypeScript notebooks on <a href="https://cdp-kernel.org">cdp-kernel</a>,
+      impossible: TypeScript notebooks on <a href="https://cdp-kernel.org">cdp-kernel</a>
+      (a kernel that runs TypeScript cells on Node, Deno and more),
       CI jobs that run notebooks, and apps that embed a notebook server.</p>
     <div class="install">
       <div class="tabs" role="tablist">
@@ -57,7 +59,7 @@
         <button role="tab" aria-selected="false" data-tab="cargo">cargo</button>
         <button role="tab" aria-selected="false" data-tab="docker">Docker</button>
       </div>
-      <pre data-panel="release"><code><span class="c"># Linux, macOS: latest release, plus cdp-kernel if Node 24+ is installed</span>
+      <pre data-panel="release"><code><span class="c"># Linux and macOS</span>
 curl -fsSL https://ganymede-server.com/install.sh | sh
 ganymede kernelspec list</code></pre>
       <pre data-panel="cargo" hidden><code><span class="c"># Rust toolchain</span>
@@ -67,23 +69,24 @@ ganymede kernelspec list</code></pre>
 <span class="c"># Unreleased. The image is published from the next release on.</span>
 docker run --rm -p 8888:8888 ghcr.io/tlockney/ganymede</code></pre>
     </div>
-    <p class="platforms">Linux and macOS are tested end to end. Windows binaries are built
-      but not tested. <a href="docs/install">Other ways to install</a></p>
+    <p class="platforms">The script also installs cdp-kernel when Node 24 or later is
+      there. Linux and macOS are tested end to end; Windows binaries are built but not
+      tested. <a href="docs/install">Other ways to install</a></p>
     <div class="cta">
       <a class="btn primary" href="docs/install">Get started</a>
       <a class="btn" href="https://github.com/tlockney/ganymede">View on GitHub</a>
     </div>
+    <p class="byline"><a href="https://github.com/tlockney/ganymede/releases/latest">Latest
+      release</a> · MIT license · <a href="#status">Early software</a></p>
   </div>
-</section>
-
-<section class="screenshot">
-  <div class="wrap">
-    <figure class="shot">
-      <img src="images/jupyterlab.png" width="1280" height="800" loading="lazy"
-        alt="JupyterLab in a browser, served by ganymede lab, with a TypeScript notebook on the cdp-node kernel showing cell output.">
-      <figcaption>JupyterLab from <code>ganymede lab</code>, running a TypeScript notebook on
-        cdp-kernel.</figcaption>
-    </figure>
+  <figure class="shot">
+    <img class="only-light" src="images/jupyterlab.png" width="820" height="740"
+      alt="JupyterLab served by ganymede lab, with a TypeScript notebook on the cdp-node kernel: a typed array of Jupiter's moons, the largest one's name, and a Markdown table of their radii and orbits.">
+    <img class="only-dark" src="images/jupyterlab-dark.png" width="820" height="740"
+      alt="JupyterLab served by ganymede lab, with a TypeScript notebook on the cdp-node kernel: a typed array of Jupiter's moons, the largest one's name, and a Markdown table of their radii and orbits.">
+    <figcaption>JupyterLab from <code>ganymede lab</code>, running a TypeScript notebook on
+      cdp-kernel.</figcaption>
+  </figure>
   </div>
 </section>
 
@@ -168,7 +171,8 @@ http://127.0.0.1:8888/?token=<span class="s">4f9c…</span>
       <article>
         <h3>Embeddable</h3>
         <p><code>ganymede-engine</code> is a library: start kernels, execute with streaming
-          output, run notebooks. It builds for iOS, Android, and wasm.</p>
+          output, run notebooks. It builds for iOS, Android, and wasm.
+          <a href="docs/embedding">Embedding</a></p>
       </article>
       <article>
         <h3>Files as the source of truth</h3>
@@ -181,7 +185,7 @@ http://127.0.0.1:8888/?token=<span class="s">4f9c…</span>
 
 <section id="clients">
   <div class="wrap">
-    <h2>Where it fits</h2>
+    <h2>Frontends and kernels</h2>
     <p class="sub">Ganymede takes <code>jupyter_server</code>'s place and keeps both of its
       interfaces: the API above it and the kernels below.</p>
     <img class="diagram only-light" src="images/themed/architecture/ganymede.light.svg" width="860" height="532"
@@ -213,7 +217,7 @@ http://127.0.0.1:8888/?token=<span class="s">4f9c…</span>
       <p><a href="docs/architecture">Architecture</a> ·
         <a href="docs/python-free">Replacing Python</a></p>
     </div>
-    <div class="note">
+    <div class="note" id="status">
       <h3>Status</h3>
       <p>Early software. An end-to-end suite compares it against <code>jupyter execute</code>
         and <code>jupyter server</code> on cdp-kernel and ipykernel, on Linux and macOS.

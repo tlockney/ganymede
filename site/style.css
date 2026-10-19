@@ -84,9 +84,8 @@ h1, h2, h3 { line-height: 1.2; }
 h2 { font-size: 1.6rem; margin: 0 0 0.75rem; }
 h3 { font-size: 1.05rem; margin: 0 0 0.4rem; }
 
-.wrap { max-width: 1040px; margin: 0 auto; padding: 0 16px; }
+.wrap { max-width: 1200px; margin: 0 auto; padding: 0 16px; }
 section { padding: 64px 0; }
-section.screenshot { padding-top: 0; }
 section.alt { background: var(--bg-alt); border-block: 1px solid var(--line); }
 
 .top { border-bottom: 1px solid var(--line); }
@@ -97,6 +96,12 @@ section.alt { background: var(--bg-alt); border-block: 1px solid var(--line); }
 .nav nav a:hover { color: var(--fg); }
 
 .hero { padding-top: 72px; }
+/* Text beside the screenshot on wide screens, stacked on narrow ones. */
+.hero .wrap.hero-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 48px; align-items: start; }
+@media (max-width: 1180px) {
+  .hero .wrap.hero-grid { grid-template-columns: minmax(0, 1fr); }
+}
+.byline { font-size: 0.85rem; color: var(--fg-soft); margin: 16px 0 0; }
 .eyebrow { font-family: var(--mono); font-size: 0.85rem; color: var(--accent); margin: 0 0 12px; }
 .hero h1 { font-size: clamp(2rem, 5vw, 3.2rem); margin: 0 0 16px; max-width: 18ch; }
 .lede { font-size: 1.15rem; color: var(--fg-soft); max-width: 60ch; margin: 0 0 28px; }
@@ -109,6 +114,7 @@ pre {
   border-radius: 8px;
   padding: 20px 24px;
   overflow-x: auto;
+  scrollbar-width: thin;
   font: 0.875rem/1.7 var(--mono);
 }
 pre code { font-size: inherit; }
@@ -214,5 +220,13 @@ footer { border-top: 1px solid var(--line); padding: 28px 0; color: var(--fg-sof
 }
 
 .shot { margin: 0; }
+/* The screenshot comes in a light and a dark copy, like the diagrams. */
+.shot img.only-dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .shot img.only-dark { display: block; }
+  :root:not([data-theme="light"]) .shot img.only-light { display: none; }
+}
+:root[data-theme="dark"] .shot img.only-dark { display: block; }
+:root[data-theme="dark"] .shot img.only-light { display: none; }
 .shot img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; }
 .shot figcaption { font-size: 0.9rem; color: var(--fg-soft); margin-top: 8px; }

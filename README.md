@@ -22,7 +22,10 @@ machine with no Python or Jupyter, then
 [Getting started](docs/getting-started.md) and
 [Architecture](docs/architecture.md).
 
-![JupyterLab running a TypeScript notebook on Ganymede](docs/images/jupyterlab.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/jupyterlab-dark.png">
+  <img src="docs/images/jupyterlab.png" width="820" alt="JupyterLab served by ganymede lab, with a TypeScript notebook on the cdp-node kernel: a typed array of Jupiter's moons, the largest one's name, and a Markdown table of their radii and orbits.">
+</picture>
 
 ## Features
 
@@ -39,7 +42,7 @@ machine with no Python or Jupyter, then
 - Its own notebook app, [ganymede-ui](docs/app.md), in a browser and as a
   Mac and iPad app.
 - `ganymede-engine`, a library for embedding, which builds for iOS,
-  Android, and wasm.
+  Android, and wasm ([Embedding](docs/embedding.md)).
 
 ## Quick start
 

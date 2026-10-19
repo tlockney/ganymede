@@ -64,6 +64,7 @@ export function groups(): Group[] {
       level: "advanced",
       items: [
         { text: "Architecture", link: "/architecture" },
+        { text: "Embedding", link: "/embedding" },
         { text: "Replacing Python", link: "/python-free" },
         { text: "Protocol and kernel host", link: "/protocol" },
         { text: "User interfaces", link: "/ui" },
