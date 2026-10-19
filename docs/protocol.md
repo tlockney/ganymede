@@ -112,8 +112,8 @@ nbclient, papermill, Quarto), the REST surface must match `jupyter_server`:
   one.
 
 Stack: tokio, axum, tokio-tungstenite, serde, hmac/sha2, uuid, chrono.
-Terminals (portable-pty) and file watching (notify) would add to it;
-neither is built.
+There are no terminals, and no file watching yet (the document model on
+the [roadmap](roadmap.md)).
 
 ## Notebook format
 
@@ -129,8 +129,12 @@ neither is built.
   every save produces a diff.
 - Validate against the JSON schema; accept v3 and upgrade on load.
   Ganymede reads leniently and reports schema problems the way
-  `jupyter_server` does (`message` in the contents model); v3 is not read
-  yet.
+  `jupyter_server` does (`message` in the contents model), and upgrades
+  v3 notebooks to 4.5 on read.
+
+  > [!NOTE]
+  > **Unreleased.** Reading v3 is available only from a build of `main`
+  > (HEAD), not in the latest release.
 - `ganymede-nbformat` matches Python's writer byte for byte.
 
 ## Document model and collaboration

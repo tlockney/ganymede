@@ -66,7 +66,7 @@ There is no maintained native Android Jupyter client; people use a browser.
 
 | Client | Maintained | Talks to | Against Ganymede |
 |---|---|---|---|
-| **Datalayer jupyter-ui** (`@datalayer/jupyter-react`) | Yes, last commit 2026-10-06, MIT | React components over `@jupyterlab/services`: REST/websocket with token; optional Yjs collaboration | **Should work today** in non-collaborative mode, cross-origin with `allow_origins`. Its README notes comms "need to be fixed", so widgets may not. Relevant to Ganymede's own TypeScript UI. |
+| **Datalayer jupyter-ui** (`@datalayer/jupyter-react`) | Yes, last commit 2026-10-06, MIT | React components over `@jupyterlab/services`: REST/websocket with token; optional Yjs collaboration | **Should work today** in non-collaborative mode, cross-origin with `allow_origins`. Its README notes comms "need to be fixed", so widgets may not. ganymede-ui began on it and dropped it. |
 | Thebe | Yes, last commit 2026-06-22 | `@jupyterlab/services` against a server or Binder | Should work with token + CORS. Live code cells in static pages. |
 | JupyterLite | Yes | No server; in-browser kernels | Not a client; precedent for the iPad profile. |
 | Voilà | Yes, last commit 2026-09-04 | A `jupyter_server` extension | No (Python server extension). |
@@ -89,8 +89,9 @@ There is no maintained native Android Jupyter client; people use a browser.
    Ganymede works as a Jupyter gateway, which opens the door to every Python
    Jupyter server using it for kernels.
 3. **Datalayer jupyter-ui.** The cheapest way to see a React notebook on
-   Ganymede, cross-origin with a token, and a candidate base for Ganymede's own UI.
-   Can be automated with the existing Playwright harness.
+   Ganymede, cross-origin with a token. ganymede-ui started on it and moved
+   to JupyterLab's packages directly. Can be automated with the existing
+   Playwright harness.
 4. **Juno Connect.** The only iPad client. Expect gaps (classic `/tree` page,
    login form). Needs an iPad; cookie login has landed.
 5. **jpterm** (`--no-collaborative`) as a cheap scripted CI client, and

@@ -70,7 +70,7 @@ step by step, and has the same steps done by hand and the platform notes
 Quick test, no kernel or Python needed (`fake` is a built-in kernel):
 
 ```sh
-ganymede --version                 # ganymede 0.1.0
+ganymede --version
 ganymede info                      # versions and every directory in use
 ganymede run -k fake 'hello'       # prints "echo: hello" and "HELLO"
 ganymede serve --port 8888 --token test &
@@ -165,6 +165,8 @@ be `frontend/` here, live in
 | [`crates/ganymede-contents`](crates/ganymede-contents/) | Contents seam and filesystem implementation matching `jupyter_server`'s model: atomic writes, mtime conflicts, checkpoints, configurable checkpoint dir, path safety, notebook trust with Jupyter's signing key and `nbsignatures.db`. |
 | [`crates/ganymede-api`](crates/ganymede-api/) | Kernel and session managers, response models, per-client bridge with reply filtering, idle culling. No HTTP. |
 | [`crates/ganymede-server`](crates/ganymede-server/) | axum routes, token auth, origin check, websocket v1 and legacy framing, static assets, TOML config, JupyterLab's page and `/lab/api/*`, installed JupyterLab bundles, notebook trust. |
+| [`crates/ganymede-gateway`](crates/ganymede-gateway/) | Kernels on another Jupyter server, as `jupyter_server`'s gateway client: kernelspecs and lifecycle over REST, channels over its websocket. |
+| [`crates/ganymede-ffi`](crates/ganymede-ffi/) | A C ABI that runs the server inside an app and returns its URL; a static library packaged as an XCFramework for the Mac and iPad app. |
 
 ## Testing
 
