@@ -1,5 +1,11 @@
 # Development log
 
+> [!NOTE]
+> This is a history for contributors, not documentation. An entry
+> describes the code as it was when the entry was written. For how
+> Ganymede works now, read the guides and the reference; site search
+> leaves this page out.
+
 Findings from each step, newest last: what was built, what was checked
 against the reference implementations, what broke, and what was learned.
 

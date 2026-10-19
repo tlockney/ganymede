@@ -7,7 +7,8 @@ covers problems with the install itself.
 
 ## Platforms
 
-- **Windows** binaries are built and released but not tested end to end.
+- **Windows** binaries are built and released but not tested end to end
+  ([install them](install.md#on-windows)).
   Signal interrupts and killing a kernel process are not implemented
   there, so `interrupt_mode: signal` kernels can't be interrupted and a
   kernel may outlive its shutdown.
