@@ -120,18 +120,21 @@ impl Default for ExecuteOptions {
 }
 
 /// Receives an execution's messages as they arrive.
+#[async_trait::async_trait]
 pub trait Handler: Send {
     /// Every iopub message for the request except `status`: streams,
     /// displays, results, errors, clears, comms.
     fn on_iopub(&mut self, _msg: &Message) {}
     /// The kernel asked for input. `None` answers with an empty string.
-    fn on_input(&mut self, _prompt: &str, _password: bool) -> Option<String> {
+    /// Async, so a UI can wait for the user without blocking the runtime.
+    async fn on_input(&mut self, _prompt: &str, _password: bool) -> Option<String> {
         None
     }
 }
 
 /// A handler that ignores everything.
 pub struct NoHandler;
+#[async_trait::async_trait]
 impl Handler for NoHandler {}
 
 /// A finished execution.
@@ -322,7 +325,7 @@ impl Kernel {
                         Channel::Stdin if m.msg_type() == "input_request" => {
                             let prompt = m.content["prompt"].as_str().unwrap_or_default();
                             let password = m.content["password"].as_bool().unwrap_or(false);
-                            let value = handler.on_input(prompt, password).unwrap_or_default();
+                            let value = handler.on_input(prompt, password).await.unwrap_or_default();
                             session.reply_input(&m, &value).await?;
                         }
                         _ => {}
@@ -534,11 +537,12 @@ mod tests {
     }
 
     struct Collect(Vec<String>, &'static str);
+    #[async_trait::async_trait]
     impl Handler for Collect {
         fn on_iopub(&mut self, m: &Message) {
             self.0.push(m.msg_type().to_string());
         }
-        fn on_input(&mut self, prompt: &str, _: bool) -> Option<String> {
+        async fn on_input(&mut self, prompt: &str, _: bool) -> Option<String> {
             self.0.push(format!("input:{prompt}"));
             Some(self.1.into())
         }

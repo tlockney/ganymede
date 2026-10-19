@@ -20,6 +20,7 @@ pub struct Terminal {
     pub stdin_allowed: bool,
 }
 
+#[async_trait::async_trait]
 impl Handler for Terminal {
     fn on_iopub(&mut self, m: &Message) {
         let c = &m.content;
@@ -56,7 +57,7 @@ impl Handler for Terminal {
         }
     }
 
-    fn on_input(&mut self, prompt: &str, password: bool) -> Option<String> {
+    async fn on_input(&mut self, prompt: &str, password: bool) -> Option<String> {
         if !self.stdin_allowed {
             return None;
         }

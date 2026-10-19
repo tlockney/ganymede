@@ -11,9 +11,10 @@ pub mod models;
 pub mod sessions;
 
 pub use bridge::ClientConnection;
+#[cfg(feature = "zmq")]
+pub use kernels::ZmqTransportFactory;
 pub use kernels::{
     KernelManager, KernelManagerConfig, RunningKernel, StaticKernelspecs, TransportFactory,
-    ZmqTransportFactory,
 };
 pub use models::*;
 pub use sessions::{SessionCreate, SessionManager, SessionPatch};
