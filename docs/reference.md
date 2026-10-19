@@ -117,6 +117,8 @@ ganymede serve --root-dir . \
   --gateway-url https://kernels.example.org --gateway-token "$TOKEN"
 ```
 
+![Running kernels on another server. On your machine, a frontend talks to ganymede serve started with --gateway-url, which answers contents, sessions and trust from the notebook folder. For kernelspecs and kernels it calls the kernel server's REST API (kernelspecs, start, interrupt, restart, shut down) and relays each kernel's messages over its websocket. The kernel server, jupyter server or ganymede serve, runs the kernel processes over ZeroMQ.](images/architecture/gateway.svg)
+
 Kernelspecs come from that server (`/api/kernelspecs`, refreshed every
 minute); starting, interrupting, restarting and shutting down a kernel go
 through its REST API, and kernel messages through its websocket. HTTPS is

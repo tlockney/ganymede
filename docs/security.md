@@ -68,6 +68,8 @@ it.
 
 So don't use `--ip 0.0.0.0` on its own. Instead:
 
+![Three ways to reach Ganymede from another machine. Avoid listening on every interface with --ip 0.0.0.0: requests travel as plain HTTP, so anyone on the network can read the token. Instead forward a port over SSH to a server listening on 127.0.0.1, or put a TLS proxy such as tailscale serve, Caddy or nginx in front of a server on 127.0.0.1, with local_hostnames and trust_xheaders set. Each needs the token.](images/architecture/security.svg)
+
 - **On one machine**, keep the default and open the printed URL.
 - **From another machine of yours**, forward a port over SSH and leave
   the server on loopback:

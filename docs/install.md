@@ -209,6 +209,10 @@ command line.
 
 ## 8. Update and uninstall
 
+The steps above put files in these places:
+
+![What the install puts where. The ganymede binary goes in ~/.local/bin. It finds kernels in the Jupyter data dir (~/.local/share/jupyter, or ~/Library/Jupyter on macOS), where cdp-kernel install writes kernels/cdp-node/kernel.json and where notebook signatures are kept; that kernel.json's argv starts cdp-kernel, installed with npm on Node 24 or later. ganymede lab install puts JupyterLab and its extensions in Ganymede's data dir. The Jupyter config dir, ~/.jupyter, holds an optional ganymede.toml and JupyterLab's settings and workspaces, and the runtime dir holds each running kernel's connection file and the cookie secret.](images/architecture/install.svg)
+
 To update Ganymede, run the install command from step 1 again; it replaces
 the binary in place. To update cdp-kernel, rerun step 2's `npm install -g`
 and `cdp-kernel install` lines. A new Ganymede release can default to a

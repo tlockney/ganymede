@@ -190,6 +190,18 @@ to the client that ran the cell, which answers with an `input_reply`.
 - **Idle culling.** With `--cull-idle-secs`, kernels idle that long with
   no clients are shut down.
 
+### Saving a notebook
+
+![Saving a notebook. The client sends PUT /api/contents with the ETag it read as If-Match, or last_modified in the body. Ganymede reads the file on disk: if the ETag differs it answers 412, and if the file is more than 500 ms newer than last_modified it answers 409, writing nothing. Otherwise it validates the notebook, writes a temporary file and renames it over the old one, signs the notebook in the notary if every code cell is trusted, and creates the first checkpoint if there is none. It answers 200 or 201 with the model and its ETag. Further checkpoints come from POST to the checkpoints endpoint.](images/architecture/save.svg)
+
+A save is one `PUT /api/contents` request with the whole notebook. A
+client that sends the `ETag` it read (as `If-Match`) or the
+`last_modified` it was given gets 412 or 409, and nothing is written,
+when the file changed on disk since; that is how an edit from another
+device isn't overwritten. Otherwise the file is replaced atomically, so
+a sync or a crash never sees half a notebook, and signed when every code
+cell is trusted.
+
 ## Where it runs
 
 ![Where each piece runs in four setups: on a workstation, the frontend, ganymede serve and each kernel are separate processes; in the Mac app, ganymede-ui and Ganymede run inside the app and kernels are the Mac's processes; in the iPad app everything runs inside the app and the kernel runs in the page; in a browser with no server, the UI, kernels and IndexedDB storage all stay in one tab.](images/architecture/where-kernels-run.svg)
