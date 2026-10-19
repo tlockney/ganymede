@@ -1,0 +1,21 @@
+[package]
+name = "ganymede-ffi"
+description = "A C ABI for running the Ganymede server inside an app: start it on loopback, get its URL, stop it. Built as a static library for the Swift shell."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+ganymede-server = { path = "../ganymede-server" }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+anyhow.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
