@@ -874,6 +874,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "ganymede-gateway"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "ganymede-engine",
+ "ganymede-kernel-host",
+ "ganymede-protocol",
+ "ganymede-server",
+ "reqwest",
+ "rustls",
+ "rustls-platform-verifier",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ganymede-kernel-host"
 version = "0.3.0"
 dependencies = [
@@ -936,6 +958,7 @@ dependencies = [
  "futures",
  "ganymede-api",
  "ganymede-contents",
+ "ganymede-gateway",
  "ganymede-kernel-host",
  "ganymede-protocol",
  "getrandom 0.4.3",
@@ -2528,7 +2551,10 @@ checksum = "17a073bfed563fa236697a068031408a93cd9522e08abf9933ead3e73411bd71"
 dependencies = [
  "futures-util",
  "log",
+ "rustls",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite 0.30.0",
 ]
 
@@ -2753,6 +2779,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.10.3",
+ "rustls",
+ "rustls-pki-types",
  "sha1 0.11.0",
  "thiserror 2.0.21",
 ]

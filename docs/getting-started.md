@@ -189,6 +189,27 @@ loopback only unless `--ip` says otherwise. [Security](security.md)
 covers what `--ip 0.0.0.0` and `--token ""` expose, and how to reach a
 server from other machines safely.
 
+## Run kernels on another server
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`--gateway-url` runs kernels on another Jupyter or Ganymede server while
+notebooks and files stay local, as `jupyter_server --gateway-url` does:
+
+```sh
+ganymede serve --root-dir . \
+  --gateway-url https://kernels.example.org --gateway-token "$TOKEN"
+```
+
+Kernelspecs come from that server (`/api/kernelspecs`, refreshed every
+minute); starting, interrupting, restarting and shutting down a kernel go
+through its REST API, and kernel messages through its websocket. The
+flags read `JUPYTER_GATEWAY_URL` and `JUPYTER_GATEWAY_AUTH_TOKEN` when
+not given, and the config file keys are `gateway_url` and
+`gateway_token`. HTTPS is checked against the system's trust store.
+
 ## Embed it
 
 The CLI is built on `ganymede-engine`, which an application can use

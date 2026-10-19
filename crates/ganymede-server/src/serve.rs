@@ -70,6 +70,18 @@ pub struct ServeArgs {
     /// connected. 0 (the default) never does.
     #[arg(long, value_name = "SECS")]
     pub cull_idle_secs: Option<u64>,
+    /// Run kernels on this Jupyter server (`http(s)://host[:port][/base]`)
+    /// instead of locally.
+    #[arg(long, value_name = "URL", env = "JUPYTER_GATEWAY_URL")]
+    pub gateway_url: Option<String>,
+    /// Token for --gateway-url.
+    #[arg(
+        long,
+        value_name = "TOKEN",
+        env = "JUPYTER_GATEWAY_AUTH_TOKEN",
+        hide_env_values = true
+    )]
+    pub gateway_token: Option<String>,
     /// Prefix for a reverse proxy, e.g. `/jupyter`.
     #[arg(long)]
     pub base_url: Option<String>,
@@ -149,6 +161,12 @@ impl ServeArgs {
         }
         if let Some(v) = cli.cull_idle_secs {
             cfg.cull_idle_secs = v;
+        }
+        if let Some(v) = cli.gateway_url {
+            cfg.gateway_url = Some(v);
+        }
+        if let Some(v) = cli.gateway_token {
+            cfg.gateway_token = Some(v);
         }
         if let Some(v) = cli.config_dir {
             cfg.config_dir = Some(v);
@@ -261,6 +279,36 @@ fn default_provisioner() -> Result<Arc<dyn Provisioner>> {
     anyhow::bail!("no kernel provisioner: built without `subprocess` and none given")
 }
 
+/// A kernelspec source, provisioner and transport factory.
+type Kernels = (
+    Arc<dyn KernelspecSource>,
+    Arc<dyn Provisioner>,
+    Arc<dyn TransportFactory>,
+);
+
+/// `gateway_url`'s kernels, refreshing its kernelspecs every minute.
+#[cfg(feature = "gateway")]
+fn gateway(cfg: &Config) -> Result<Option<Kernels>> {
+    let Some(url) = cfg.gateway_url.as_deref().filter(|u| !u.is_empty()) else {
+        return Ok(None);
+    };
+    let g = Arc::new(ganymede_gateway::Gateway::new(
+        url,
+        cfg.gateway_token.clone(),
+    )?);
+    g.refresh_every(Duration::from_secs(60));
+    tracing::info!("kernels run on the gateway at {url}");
+    Ok(Some((g.clone(), g.clone(), g)))
+}
+
+#[cfg(not(feature = "gateway"))]
+fn gateway(cfg: &Config) -> Result<Option<Kernels>> {
+    if cfg.gateway_url.as_deref().is_some_and(|u| !u.is_empty()) {
+        anyhow::bail!("gateway_url is set, but this build has no `gateway` feature");
+    }
+    Ok(None)
+}
+
 #[cfg(feature = "zmq")]
 fn default_transports() -> Result<Arc<dyn TransportFactory>> {
     Ok(Arc::new(ganymede_api::ZmqTransportFactory))
@@ -346,16 +394,26 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         );
     }
 
-    let specs = startup
-        .kernelspecs
-        .unwrap_or_else(|| Arc::new(FsKernelspecs::discover(cfg.kernelspec_roots.clone())));
-    let provisioner = match startup.provisioner {
-        Some(p) => p,
-        None => default_provisioner()?,
-    };
-    let transports = match startup.transports {
-        Some(t) => t,
-        None => default_transports()?,
+    let (specs, provisioner, transports) = match gateway(&cfg)? {
+        // An app's own kernels win over the config's gateway.
+        Some((k, p, t)) => (
+            startup.kernelspecs.unwrap_or(k),
+            startup.provisioner.unwrap_or(p),
+            startup.transports.unwrap_or(t),
+        ),
+        None => (
+            startup
+                .kernelspecs
+                .unwrap_or_else(|| Arc::new(FsKernelspecs::discover(cfg.kernelspec_roots.clone()))),
+            match startup.provisioner {
+                Some(p) => p,
+                None => default_provisioner()?,
+            },
+            match startup.transports {
+                Some(t) => t,
+                None => default_transports()?,
+            },
+        ),
     };
     let kernels = Arc::new(KernelManager::new(
         specs,

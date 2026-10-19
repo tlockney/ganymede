@@ -12,17 +12,20 @@ name = "ganymede-server"
 path = "src/main.rs"
 
 [features]
-default = ["zmq", "subprocess"]
+default = ["zmq", "subprocess", "gateway"]
 # The kernels `run_with` makes when `Startup` names none: ZeroMQ transports
 # and subprocess launches. An app that brings its own builds without them.
 zmq = ["ganymede-api/zmq"]
 subprocess = ["ganymede-api/subprocess"]
+# `gateway_url`: kernels on another Jupyter server.
+gateway = ["dep:ganymede-gateway"]
 
 [dependencies]
 ganymede-protocol = { path = "../ganymede-protocol" }
 ganymede-kernel-host = { path = "../ganymede-kernel-host", default-features = false }
 ganymede-api = { path = "../ganymede-api", default-features = false }
 ganymede-contents = { path = "../ganymede-contents", features = ["sqlite"] }
+ganymede-gateway = { path = "../ganymede-gateway", optional = true }
 axum.workspace = true
 tower-http.workspace = true
 tower.workspace = true

@@ -102,8 +102,9 @@ Lower crates know nothing of the ones above them.
 | `ganymede-engine` | kernel-host, exec | The library to embed: find kernelspecs, start or attach to kernels, execute with streaming output, run notebooks. |
 | `ganymede-contents` | nbformat | The contents model over a filesystem. |
 | `ganymede-api` | kernel-host, contents | Kernel and session managers, response models, the per-client bridge, idle culling. No HTTP. Contents path validation confines kernel working directories to the root. |
-| `ganymede-server` | api, contents | The HTTP and websocket server. |
+| `ganymede-server` | api, contents, gateway | The HTTP and websocket server. |
 | `ganymede-cli` | engine, server | The `ganymede` binary. |
+| `ganymede-gateway` | kernel-host | Kernels on another Jupyter server, as `jupyter_server`'s gateway client: kernelspecs and lifecycle over its REST API, channels over its websocket. The server uses it for `gateway_url`. |
 | `ganymede-ffi` | server | A C ABI (`include/ganymede.h`) that runs the server on loopback inside an app and returns its URL. A static library; `scripts/build-xcframework.sh` packages it for the Swift shell. |
 
 Outside the Rust core, and outside this repository, the TypeScript for UIs
