@@ -25,6 +25,15 @@ covers problems with the install itself.
 - `/api/nbconvert` reports no exporters: there is no export to HTML, PDF,
   or other formats.
 - No JupyterHub single-user mode.
+- **Widgets** work in JupyterLab: `ganymede lab install` adds the
+  frontends of `jupyterlab_widgets` and `anywidget`, so ipywidgets from
+  ipykernel and cdp-kernel's widgets both render. Widget libraries with
+  their own JupyterLab extension need it installed with
+  `ganymede lab extension install`.
+- **Large output** isn't truncated or rate-limited by the kernel's
+  message rate. A client that falls 10,000 output messages behind loses
+  the rest of that output and is told, as `jupyter_server`'s rate limit
+  does; replies are never dropped.
 
 ## Kernels
 
@@ -35,6 +44,9 @@ covers problems with the install itself.
   into a conda or virtual environment, add its prefix with
   `--kernelspec-root`; see [Protocol and kernel host](protocol.md).
 - There is no default kernel unless `--default-kernel` sets one.
+- The **debugger** (`debug_request` on the control channel) is passed
+  through to the kernel untouched, so JupyterLab's debugger should work as far
+  as the kernel supports it, but it is untested.
 - Conformance tests don't yet cover debugger messages, malformed stdin
   frames, or kernel death and parallel starts through `serve`.
 
