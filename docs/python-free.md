@@ -27,29 +27,19 @@ where these pieces sit.
 > **Unreleased.** The remote provisioner (`--gateway-url`) is available
 > only from a build of `main` (HEAD), not in the latest release.
 
-What cdp-kernel needs from the server, from its docs:
+## Where Python still appears
 
-- A connection file and the five TCP ports, HMAC-SHA256 signing, and
-  the usual startup nudge.
-- The server's environment passed through to the kernel process, plus the
-  kernelspec `env` block. cdp-kernel documents that the kernel inherits the
-  server's environment.
-- Control-channel passthrough for `debug_request` on Node and Deno
-  targets. The UI needs a DAP client to use it; JupyterLab's debugger
-  extension is the reference.
-- stdin channel for `prompt()` and `confirm()`.
-- Comm routing with binary buffers for anywidget state.
+"No Python" means no Python runtime and no Python dependency. Python
+shows up in three places, none of them a dependency:
 
-Frontends that work against a Python-free server, before any UI of
-Ganymede's own:
+- `ganymede lab install` unpacks JupyterLab's JavaScript from its PyPI
+  wheel without running Python.
+- CI runs `jupyter execute`, `jupyter server`, and ipykernel as the
+  reference Ganymede is compared against.
+- The notebook writer matches the bytes Python's `nbformat` writes, so
+  files don't churn in git.
 
-- VS Code's Jupyter extension connects to a remote server over the REST
-  API and websocket. With cdp-kernel this is a fully Python-free setup.
-- JupyterLab's built frontend is static JS. Serving it needs the
-  `/lab/api/*` endpoints (settings, workspaces, translations, listings)
-  and a page config. Jupyverse, a Python ASGI reimplementation of
-  `jupyter_server`, documents this endpoint set and is the closest prior
-  art for a from-scratch server.
-
-Both are validated against Ganymede; see
-[JupyterLab and VS Code](frontends.md).
+What cdp-kernel needs from the server (a connection file, signing,
+stdin, comms with binary buffers, debugger passthrough) is covered in
+[Protocol and kernel host](protocol.md), and which frontends work without
+Python in [JupyterLab and VS Code](frontends.md).

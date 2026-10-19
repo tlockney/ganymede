@@ -152,38 +152,22 @@ with a `yrs` document as an optional live-session layer later; see
 
 ## What is usually missed
 
-- **Widgets.** Comms are cheap: route `comm_*` messages and buffers. Widgets
-  are not: they need a browser-side widget manager, model state sync, and
-  loading widget JS shipped with Python packages (via labextension or CDN).
-  Users expect ipywidgets, bokeh, plotly, and itables to work. Either
-  embed `@jupyter-widgets/html-manager` or declare widgets out of scope.
-- **The slow-joiner nudge** and the dual completion condition (shell reply
-  plus idle status). Both produce intermittent "notebook hangs on first
-  cell" bugs when missing.
-- **Windows.** Interrupts, process groups, path handling, ZMQ behaviour.
-  Decide whether Windows is a target before designing process management.
-- **Security.** Code execution service, HTML output sanitization, trust,
-  token auth, XSRF, websocket origin. Localhost-only is not a defense:
-  DNS rebinding and malicious notebooks are the standard attack paths.
-- **Binary buffers** in messages (widgets, arrays). Easy to drop in the
-  websocket bridge.
-- **Large and fast output.** Rate limiting iopub, truncating outputs,
-  not re-rendering the whole output on each stream chunk.
-- **Multiple clients on one kernel** and reconnect after websocket drop
-  without losing the kernel.
-- **Debugger** over `debug_request` (DAP). Optional, but the protocol
-  surface is in 5.5 and ipykernel advertises it.
-- **Subshells** (5.5). New kernels will support them; the host should at
-  least pass `subshell_id` through.
-- **Headless execution** (nbclient, papermill). Cheap once the host
-  exists, useful on its own, and the best conformance test.
-- **Config and ecosystem contracts.** `jupyter --paths`, runtime dir,
-  JupyterHub single-user contract, `base_url`. Skipping these is fine for
-  a personal tool; it is the difference between "works for me" and
-  deployable.
-- **Extension story.** JupyterLab's adoption rests on extensions. A core
-  without one is a different product; say so in the goals.
-- **Language server integration**, terminals, nbconvert export, and
-  `%matplotlib` inline backends all depend on things outside the core.
-- **nbformat round-trip fidelity** (indentation, key order) so saves do
-  not churn git history.
+The parts a from-scratch server most often gets wrong, and where
+Ganymede stands on each.
+
+| Area | Why it matters | Ganymede |
+| --- | --- | --- |
+| Slow-joiner nudge, and completion as reply plus idle | Without either, the first cell hangs now and then | Both, as above |
+| Widgets | Comms are cheap; widgets also need the frontend's widget manager and each package's JavaScript | Comms and binary buffers are routed; `ganymede lab install` adds `jupyterlab_widgets` and `anywidget` |
+| Binary buffers | Easy to drop in the websocket bridge | Carried in both websocket framings |
+| Large and fast output | A busy kernel can flood a slow client | Past 10,000 queued iopub messages a client's output is dropped and it is told, as `jupyter_server`'s rate limit does; replies are never dropped |
+| Several clients, reconnects | Laptops sleep and iPads suspend | Kernels outlive connections; a client that reconnects with its session gets what it missed |
+| Security | The server runs code; localhost alone doesn't stop DNS rebinding or a malicious notebook | Token, login cookie, XSRF, `Host` and origin checks, notebook trust; see [Security](security.md) |
+| Windows | Interrupts, process groups and paths differ | Built, untested; no signal interrupts or job object ([Known gaps](known-gaps.md#platforms)) |
+| Debugger (DAP over `debug_request`) | ipykernel advertises it | Passed through on control; not covered by tests yet |
+| Subshells (5.5) | New kernels will use them | `subshell_id` and subshell messages passed through |
+| Headless execution | Useful alone, and the best conformance test | `ganymede run` and `ganymede execute`, compared against `jupyter execute` in CI |
+| Ecosystem contracts | Runtime dir, `jupyter --paths`, `base_url`, JupyterHub | Jupyter's directories and `base_url` match; no JupyterHub single-user mode |
+| Extensions | JupyterLab's adoption rests on them | Prebuilt frontend extensions; no server extensions, by design |
+| nbformat fidelity | Every save otherwise churns git | Byte-identical to Python's writer |
+| Language servers, terminals, export | Each depends on something outside the core | None of them |

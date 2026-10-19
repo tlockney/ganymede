@@ -192,7 +192,7 @@ to the client that ran the cell, which answers with an `input_reply`.
 
 ## Where it runs
 
-![Where the pieces run in four setups: a workstation or server running ganymede serve; the Mac app, with Ganymede inside it; the iPad app, where the page runs the kernel unless a kernel server is set; and a browser with no server at all.](images/architecture/where-kernels-run.svg)
+![Where each piece runs in four setups: on a workstation, the frontend, ganymede serve and each kernel are separate processes; in the Mac app, ganymede-ui and Ganymede run inside the app and kernels are the Mac's processes; in the iPad app everything runs inside the app and the kernel runs in the page; in a browser with no server, the UI, kernels and IndexedDB storage all stay in one tab.](images/architecture/where-kernels-run.svg)
 
 The same crates, in four setups:
 

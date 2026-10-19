@@ -13,13 +13,54 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 The end-to-end tests in `crates/ganymede-cli/tests/` also use whatever real
-kernels and Jupyter are installed, and skip what is missing. The
-[README](../README.md#testing) lists the variables that make them strict.
+kernels and Jupyter are installed, and skip what is missing (variables
+[below](#end-to-end-tests)).
 CI runs them on Linux and macOS with cdp-kernel and ipykernel, with
 `jupyter execute` and `jupyter server` as the reference. Python there is a
 test oracle and a kernel, never a dependency of the product. Nothing may
 skip in that job; the `rust` job, which has no real kernels, lists what it
 skipped in its run summary.
+
+### End-to-end tests
+
+These variables make the end-to-end tests strict or add to them:
+
+| Variable | Effect |
+|---|---|
+| `GANYMEDE_E2E_KERNELS=cdp-node,python3` | These kernels must exist; their tests fail instead of skipping. |
+| `GANYMEDE_E2E_JUPYTER=/path/to/jupyter` | The reference `jupyter` (needs `nbclient` and `jupyter_server`). Defaults to `PATH`. |
+| `GANYMEDE_E2E_REQUIRE_JUPYTER=1` | Fail instead of skipping when it is missing. |
+| `E2E_DUMP=1` | Print both server transcripts. |
+| `GANYMEDE_E2E_LAB=1` | Run `lab.rs`, which downloads JupyterLab and the widget extensions from PyPI (about 18 MB). |
+
+- `kernels.rs`: the same scenarios on every kernel, through the engine and
+  the CLI: kernel_info passthrough, results, streams, errors, stdin,
+  interrupt, restart, comms, completion, inspection, standalone kernels.
+- `parity.rs`: each notebook in [`e2e/notebooks/`](../e2e/notebooks/) is
+  executed by `jupyter execute` and by `ganymede execute`, and the files
+  are compared after normalizing timestamps and ids. Mismatches are kept
+  under `$TMPDIR/ganymede-parity-*`. Also checks that `ganymede trust` and
+  `jupyter trust` share one signature store.
+- `server.rs`: one REST and websocket scenario against `jupyter server`
+  and `ganymede serve`, compared as transcripts, including which cells come
+  back `trusted` after each kind of save and after `POST .../trust`.
+- `lab.rs`: `ganymede lab install` from PyPI, then `ganymede serve`
+  answering `/lab` and `/lab/api/settings` from the installed bundle and
+  the default widget extensions.
+- `lab_start.rs`: `ganymede lab --no-browser` on a stand-in bundle,
+  offline: the port fallback, and the printed URL logging in at `/lab`.
+- [`e2e/wasm-smoke/`](../e2e/wasm-smoke/): the engine built for
+  `wasm32-wasip1`, running a notebook on the fake kernel under Node's WASI.
+
+CI runs the e2e job on Linux and macOS with Node 24, cdp-kernel 0.6.0,
+and ipykernel, plus a portability job for iOS, Android, and wasm. Its
+`workstation` job follows [Install](install.md) on Linux and macOS
+with Python hidden from `PATH`
+([`scripts/test-workstation.sh`](../scripts/test-workstation.sh)): the PR's
+binary through `install.sh`, cdp-kernel from npm, `ganymede lab install`,
+`ganymede lab` driven by Playwright, `ganymede execute`, `ganymede serve`
+with the VS Code extension's requests, and the uninstall, failing if any
+Python ran.
 
 ## CI
 
@@ -92,8 +133,18 @@ The `pages` workflow builds both on every pull request that touches them,
 so a broken page or dead link fails the PR. It deploys them to GitHub
 Pages from `main` on every merge that touches them, and again after each
 release. `install.sh` installs the latest release, so docs for a feature
-that isn't released yet carry an "Unreleased" note, which the release
-removes ([CLAUDE.md](../CLAUDE.md#documenting-unreleased-features)).
+that isn't released yet carry this note, one per section the feature
+adds, next to it in the docs page, README, or landing page:
+
+```md
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+```
+
+Keep the words `**Unreleased.**` as they are: the release looks for them
+and removes the notes ([Releasing](releasing.md)). A change to a feature
+that is already released needs no note.
 `site/install.sh` goes live on merge too, and must work with the latest
 release. The design is cdp-kernel.org's; keep
 `site/style.css` and `docs/.vitepress/theme/custom.css` in step with each

@@ -1,13 +1,14 @@
 // Reading levels for the docs. Each sidebar group belongs to one level, and
 // the theme shows the level under the title of every page in the group, so a
 // reader can tell an introduction from internals before reading further.
-export type Level = "intro" | "guide" | "reference" | "advanced" | "contributor";
+export type Level = "intro" | "guide" | "reference" | "advanced" | "background" | "contributor";
 
 export const levels: Record<Level, { label: string; note: string }> = {
   intro: { label: "Introductory", note: "No Jupyter or Rust experience needed." },
   guide: { label: "Guide", note: "Day-to-day use. Assumes you've run Ganymede once." },
   reference: { label: "Reference", note: "Look things up as you need them." },
   advanced: { label: "Advanced", note: "How the server works inside. Not needed to use it." },
+  background: { label: "Background", note: "Context: the Jupyter ecosystem Ganymede fits into." },
   contributor: { label: "Contributors", note: "For working on Ganymede itself." },
 };
 
@@ -43,11 +44,21 @@ export function groups(): Group[] {
       items: [
         { text: "JupyterLab and VS Code", link: "/frontends" },
         { text: "Ganymede's app", link: "/app" },
-        { text: "Known gaps", link: "/known-gaps" },
+        { text: "Security", link: "/security" },
       ],
     },
     {
-      text: "Design",
+      text: "Reference",
+      level: "reference",
+      items: [
+        { text: "CLI and configuration", link: "/reference" },
+        { text: "Known gaps", link: "/known-gaps" },
+        { text: "Roadmap", link: "/roadmap" },
+        { text: "Changelog", link: "/changelog" },
+      ],
+    },
+    {
+      text: "How it works",
       level: "advanced",
       items: [
         { text: "Architecture", link: "/architecture" },
@@ -58,14 +69,11 @@ export function groups(): Group[] {
       ],
     },
     {
-      text: "Reference",
-      level: "reference",
+      text: "Background",
+      level: "background",
       items: [
-        { text: "Security", link: "/security" },
-        { text: "Roadmap", link: "/roadmap" },
-        { text: "Changelog", link: "/changelog" },
-        { text: "Prior art", link: "/prior-art" },
         { text: "Other Jupyter clients", link: "/clients" },
+        { text: "Prior art", link: "/prior-art" },
       ],
     },
     {
