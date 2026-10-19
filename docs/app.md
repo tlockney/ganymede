@@ -4,8 +4,8 @@
 notebook app: JupyterLab's notebook in a smaller, Mac-style window. It is
 a client of the same API as JupyterLab and VS Code, so it runs against
 Ganymede, against `jupyter_server`, or with no server at all. It is early
-software; its [known gaps](https://github.com/tlockney/ganymede-ui/blob/main/docs/notes/archive.md)
-are listed in its development log.
+software; its [issues](https://github.com/tlockney/ganymede-ui/issues)
+list what doesn't work yet.
 
 There are three ways to run it, and they differ in where notebooks live
 and where kernels run:
