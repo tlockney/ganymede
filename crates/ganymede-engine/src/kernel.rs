@@ -3,7 +3,9 @@
 use crate::{Error, Result};
 use ganymede_kernel_host::protocol::content::{self, ExecuteRequest, KernelInfoReply, ReplyStatus};
 use ganymede_kernel_host::protocol::{Channel, ConnectionInfo, Message};
-use ganymede_kernel_host::{KernelSession, Kernelspec, LaunchOptions, LaunchedKernel, Provisioner};
+use ganymede_kernel_host::{
+    KernelSession, Kernelspec, LaunchOptions, LaunchedKernel, Provisioner, TransportFactory,
+};
 use ganymede_nbformat::{Notebook, Output};
 use serde_json::Value;
 use std::sync::{Arc, RwLock};
@@ -19,27 +21,20 @@ const FOREVER: Duration = Duration::from_secs(10 * 365 * 24 * 3600);
 const START_ATTEMPTS: u32 = 3;
 
 /// What it takes to launch the same kernel again.
-#[cfg_attr(not(feature = "zmq"), allow(dead_code))]
 pub(crate) struct Relaunch {
     pub provisioner: Arc<dyn Provisioner>,
+    pub transports: Arc<dyn TransportFactory>,
     pub spec: Kernelspec,
     pub opts: LaunchOptions,
 }
 
 impl Relaunch {
-    #[cfg(not(feature = "zmq"))]
     pub async fn launch(&self) -> Result<(KernelSession, LaunchedKernel)> {
-        Err(Error::Usage("built without the zmq feature".into()))
-    }
-
-    #[cfg(feature = "zmq")]
-    pub async fn launch(&self) -> Result<(KernelSession, LaunchedKernel)> {
-        use ganymede_kernel_host::zmq::ZmqTransport;
         let launched = self
             .provisioner
             .launch(&self.spec, self.opts.clone())
             .await?;
-        let transport = match ZmqTransport::connect(&launched.connection).await {
+        let transport = match self.transports.connect(&launched).await {
             Ok(t) => t,
             Err(e) => {
                 let _ = launched.process.kill().await;
@@ -267,7 +262,7 @@ impl Kernel {
 
     pub fn connection_info(&self) -> Option<ConnectionInfo> {
         let c = self.current.read().unwrap();
-        c.launched.as_ref().map(|l| l.connection.clone())
+        c.launched.as_ref().and_then(|l| l.connection.clone())
     }
 
     pub fn connection_file(&self) -> Option<std::path::PathBuf> {

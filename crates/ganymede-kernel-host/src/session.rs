@@ -1068,7 +1068,7 @@ mod tests {
             exit: watch::channel(false).0,
         });
         let launched = LaunchedKernel {
-            connection: ganymede_protocol::ConnectionInfo::new_tcp("127.0.0.1", [1, 2, 3, 4, 5]),
+            connection: None,
             connection_file: None,
             process: process.clone(),
             interrupt_mode: InterruptMode::Signal,
@@ -1085,7 +1085,7 @@ mod tests {
             exit: watch::channel(false).0,
         });
         let launched = LaunchedKernel {
-            connection: ganymede_protocol::ConnectionInfo::new_tcp("127.0.0.1", [1, 2, 3, 4, 5]),
+            connection: None,
             connection_file: None,
             process: process.clone(),
             interrupt_mode: InterruptMode::Signal,
@@ -1126,7 +1126,7 @@ mod tests {
             exit: watch::channel(false).0,
         });
         let launched = LaunchedKernel {
-            connection: ganymede_protocol::ConnectionInfo::new_tcp("127.0.0.1", [1, 2, 3, 4, 5]),
+            connection: None,
             connection_file: None,
             process: process.clone(),
             interrupt_mode: InterruptMode::Signal,

@@ -122,6 +122,7 @@ need, built or planned.
 |---|---|---|
 | `KernelTransport` | A stream of channel messages to and from one kernel, with channel name, header, content, buffers | ZMQ (desktop, server); in-process channel (iPad local kernel); websocket client to another host (iPad to server, or any host proxying a remote host) |
 | `Provisioner` | How a kernel comes to exist | Local subprocess from a kernelspec; attach to an existing connection file or address; in-process (the app owns the kernel); remote, which proxies to another host's REST API as `jupyter_server`'s gateway client does |
+| `TransportFactory` | How a launched kernel gets its `KernelTransport`, paired with its provisioner | ZMQ from the kernel's connection info (subprocess and attach); the app's own for an in-process kernel, which has no connection info (`LaunchedKernel.connection` is `None`) |
 | `KernelspecSource` | Where the list of launchable kernels comes from | Jupyter data dirs on the filesystem; extra roots from config, which is how conda and venv kernels get found without the host knowing what a venv is; an environment scanner as an optional module, as VS Code has; a static embedded list for the iPad (local kernel plus configured remotes) |
 | `Contents` | Files, directories, checkpoints | Local filesystem with atomic writes and mtime checks; Files app or iCloud container on iPad; passthrough to a remote host |
 | `Auth` | Who may call the API | None (in-app bridge); token; `tailscale serve` identity headers; later, an OIDC or Hub contract |

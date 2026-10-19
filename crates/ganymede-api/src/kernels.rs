@@ -3,11 +3,10 @@
 use crate::{
     now_iso, ApiError, KernelModel, KernelspecModel, KernelspecSpec, KernelspecsModel, Result,
 };
-use async_trait::async_trait;
 use ganymede_kernel_host::protocol::{Channel, Message};
 use ganymede_kernel_host::{
-    Error as HostError, KernelSession, KernelTransport, Kernelspec, KernelspecSource,
-    LaunchOptions, LaunchedKernel, Provisioner,
+    Error as HostError, KernelSession, Kernelspec, KernelspecSource, LaunchOptions, LaunchedKernel,
+    Provisioner,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -19,29 +18,11 @@ use tokio::sync::{broadcast, watch};
 /// Launches tried before a kernel that never answers counts as failed.
 const START_ATTEMPTS: u32 = 3;
 
+#[cfg(feature = "zmq")]
+pub use ganymede_kernel_host::zmq::ZmqTransportFactory;
 /// How a launched kernel gets its transport. ZMQ in the server; an
 /// in-process pair in an app or a test.
-#[async_trait]
-pub trait TransportFactory: Send + Sync {
-    async fn connect(
-        &self,
-        launched: &LaunchedKernel,
-    ) -> ganymede_kernel_host::Result<KernelTransport>;
-}
-
-#[cfg(feature = "zmq")]
-pub struct ZmqTransportFactory;
-
-#[cfg(feature = "zmq")]
-#[async_trait]
-impl TransportFactory for ZmqTransportFactory {
-    async fn connect(
-        &self,
-        launched: &LaunchedKernel,
-    ) -> ganymede_kernel_host::Result<KernelTransport> {
-        ganymede_kernel_host::zmq::ZmqTransport::connect(&launched.connection).await
-    }
-}
+pub use ganymede_kernel_host::TransportFactory;
 
 /// A fixed list of kernelspecs. The iPad profile's source, and the test
 /// double.

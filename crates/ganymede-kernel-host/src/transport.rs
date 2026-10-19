@@ -25,6 +25,15 @@ pub struct KernelTransport {
     pub incoming: Incoming,
 }
 
+/// How a launched kernel gets its transport: [`crate::zmq::ZmqTransportFactory`]
+/// for kernels with a [`ConnectionInfo`](ganymede_protocol::ConnectionInfo);
+/// an app's own for kernels it runs in-process, paired with the
+/// [`Provisioner`](crate::Provisioner) that launched them.
+#[async_trait]
+pub trait TransportFactory: Send + Sync {
+    async fn connect(&self, launched: &crate::LaunchedKernel) -> Result<KernelTransport>;
+}
+
 /// The kernel's end of an in-process transport. A kernel implementation
 /// (or a test fake) reads requests from `incoming` and writes replies and
 /// iopub traffic to `outgoing`.

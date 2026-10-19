@@ -41,6 +41,22 @@ impl HeartbeatSocket {
     }
 }
 
+/// Connects kernels by their [`ConnectionInfo`]: the transport for
+/// subprocess and attached kernels.
+pub struct ZmqTransportFactory;
+
+#[async_trait::async_trait]
+impl crate::TransportFactory for ZmqTransportFactory {
+    async fn connect(&self, launched: &crate::LaunchedKernel) -> Result<KernelTransport> {
+        match &launched.connection {
+            Some(info) => ZmqTransport::connect(info).await,
+            None => Err(crate::Error::Unsupported(
+                "ZeroMQ transport for a kernel with no connection info",
+            )),
+        }
+    }
+}
+
 impl ZmqTransport {
     /// Start connecting all five sockets and return at once: each socket's
     /// task keeps retrying until the kernel accepts it, and messages wait

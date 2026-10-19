@@ -1,11 +1,7 @@
 //! Finding kernels and bringing them up.
 
-use crate::kernel::Kernel;
-#[cfg(feature = "zmq")]
-use crate::kernel::Relaunch;
-#[cfg(feature = "zmq")]
-use crate::Error;
-use crate::Result;
+use crate::kernel::{Kernel, Relaunch};
+use crate::{Error, Result};
 #[cfg(feature = "zmq")]
 use ganymede_kernel_host::protocol::ConnectionInfo;
 #[cfg(feature = "zmq")]
@@ -13,25 +9,22 @@ use ganymede_kernel_host::{
     attach,
     process::{find_connection_file, read_connection_file},
     zmq::ZmqTransport,
-    LaunchOptions,
 };
 use ganymede_kernel_host::{
-    FsKernelspecs, KernelSession, KernelTransport, Kernelspec, KernelspecSource, LaunchedKernel,
-    Provisioner,
+    FsKernelspecs, KernelSession, KernelTransport, Kernelspec, KernelspecSource, LaunchOptions,
+    LaunchedKernel, Provisioner, TransportFactory,
 };
 use ganymede_nbformat::Notebook;
-#[cfg(feature = "zmq")]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 /// Where kernels come from. Cheap to clone.
 #[derive(Clone)]
-#[cfg_attr(not(feature = "zmq"), allow(dead_code))]
 pub struct Engine {
     specs: Arc<dyn KernelspecSource>,
     provisioner: Option<Arc<dyn Provisioner>>,
+    transports: Option<Arc<dyn TransportFactory>>,
     startup_timeout: Duration,
     quiet: bool,
 }
@@ -76,20 +69,26 @@ impl Engine {
     }
 
     /// Launch the named kernelspec and wait until it answers.
-    #[cfg(feature = "zmq")]
     pub async fn start(&self, name: &str) -> Result<Kernel> {
         self.start_with(name, StartOptions::default()).await
     }
 
-    #[cfg(feature = "zmq")]
+    /// [`Engine::start`] with a working directory and environment. Needs a
+    /// provisioner and a transport factory: subprocesses over ZeroMQ by
+    /// default, or the builder's.
     pub async fn start_with(&self, name: &str, opts: StartOptions) -> Result<Kernel> {
         let spec = self.kernelspec(name)?;
         let provisioner = self
             .provisioner
             .clone()
             .ok_or_else(|| Error::Usage("no provisioner: set one on the builder".into()))?;
+        let transports = self
+            .transports
+            .clone()
+            .ok_or_else(|| Error::Usage("no transport factory: set one on the builder".into()))?;
         let relaunch = Relaunch {
             provisioner,
+            transports,
             spec: spec.clone(),
             opts: LaunchOptions {
                 cwd: opts.cwd,
@@ -128,8 +127,8 @@ impl Engine {
 
     #[cfg(feature = "zmq")]
     pub async fn connect(&self, info: ConnectionInfo) -> Result<Kernel> {
+        let transport = ZmqTransport::connect(&info).await?;
         let launched = attach(info);
-        let transport = ZmqTransport::connect(&launched.connection).await?;
         let session = KernelSession::start(transport, Some(&launched));
         Kernel::ready(session, Some(launched), None, None, self.startup_timeout).await
     }
@@ -155,7 +154,6 @@ impl Engine {
     /// leaving the file as it was. The kernel is the notebook's
     /// `metadata.kernelspec.name` unless `kernel` is given; it runs in the
     /// notebook's directory.
-    #[cfg(feature = "zmq")]
     pub async fn execute_notebook(
         &self,
         path: &Path,
@@ -202,6 +200,7 @@ pub struct EngineBuilder {
     roots: Vec<PathBuf>,
     specs: Option<Arc<dyn KernelspecSource>>,
     provisioner: Option<Arc<dyn Provisioner>>,
+    transports: Option<Arc<dyn TransportFactory>>,
     startup_timeout: Option<Duration>,
     quiet: bool,
 }
@@ -225,6 +224,13 @@ impl EngineBuilder {
         self
     }
 
+    /// How launched kernels are connected: ZeroMQ by default. An app that
+    /// runs kernels in-process sets this with its own provisioner.
+    pub fn transports(mut self, t: Arc<dyn TransportFactory>) -> Self {
+        self.transports = Some(t);
+        self
+    }
+
     /// How long a new kernel has to answer `kernel_info_request`. 60 s
     /// by default, as `jupyter_client`.
     pub fn startup_timeout(mut self, t: Duration) -> Self {
@@ -244,6 +250,7 @@ impl EngineBuilder {
                 .specs
                 .unwrap_or_else(|| Arc::new(FsKernelspecs::discover(self.roots))),
             provisioner: self.provisioner.or_else(default_provisioner),
+            transports: self.transports.or_else(default_transports),
             startup_timeout: self.startup_timeout.unwrap_or(Duration::from_secs(60)),
             quiet: self.quiet,
         }
@@ -259,5 +266,15 @@ fn default_provisioner() -> Option<Arc<dyn Provisioner>> {
 
 #[cfg(not(feature = "subprocess"))]
 fn default_provisioner() -> Option<Arc<dyn Provisioner>> {
+    None
+}
+
+#[cfg(feature = "zmq")]
+fn default_transports() -> Option<Arc<dyn TransportFactory>> {
+    Some(Arc::new(ganymede_kernel_host::zmq::ZmqTransportFactory))
+}
+
+#[cfg(not(feature = "zmq"))]
+fn default_transports() -> Option<Arc<dyn TransportFactory>> {
     None
 }

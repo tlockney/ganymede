@@ -215,12 +215,10 @@ mod tests {
     use super::*;
     use crate::kernels::{KernelManagerConfig, StaticKernelspecs, TransportFactory};
     use async_trait::async_trait;
-    use ganymede_kernel_host::protocol::{
-        content::ExecuteRequest, Channel, ConnectionInfo, Message,
-    };
+    use ganymede_kernel_host::protocol::{content::ExecuteRequest, Channel, Message};
     use ganymede_kernel_host::testing::{FakeKernel, ReplyOrder};
     use ganymede_kernel_host::{
-        attach, in_process_pair, KernelTransport, Kernelspec, LaunchOptions, LaunchedKernel,
+        in_process, in_process_pair, KernelTransport, Kernelspec, LaunchOptions, LaunchedKernel,
         Provisioner,
     };
     use std::collections::VecDeque;
@@ -235,10 +233,7 @@ mod tests {
             _spec: &Kernelspec,
             _opts: LaunchOptions,
         ) -> ganymede_kernel_host::Result<LaunchedKernel> {
-            Ok(attach(ConnectionInfo::new_tcp(
-                "127.0.0.1",
-                [1, 2, 3, 4, 5],
-            )))
+            Ok(in_process())
         }
     }
 
