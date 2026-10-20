@@ -53,11 +53,6 @@ pull request with a GitHub issue, and records what it learned in the
   kernels it can't launch.
 - **nbformat 3.** Older notebooks are upgraded to 4.5 on read.
 
-> [!NOTE]
-> **Unreleased.** `ganymede ui`, `--gateway-url`, and reading nbformat 3
-> are available only from a build of `main` (HEAD), not in the latest
-> release.
-
 ## Next
 
 1. **Document model.** The file is the source of truth and is reloaded

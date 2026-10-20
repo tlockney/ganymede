@@ -17,8 +17,7 @@ design is on [The iPad use case](ipados.md).
 ![Three ways to embed Ganymede: a Rust app calling the engine in-process; an app whose web view talks HTTP to the server that ganymede-ffi runs on loopback; and a wasm or iOS build with zmq and subprocess off, where the kernel sits behind an in-process transport.](images/architecture/embedding.svg)
 
 The crates are not on crates.io, so depend on them from git:
-`ganymede-engine = { git = "https://github.com/tlockney/ganymede", tag = "v0.3.0" }`.
-What the notes below mark unreleased needs `branch = "main"` instead.
+`ganymede-engine = { git = "https://github.com/tlockney/ganymede", tag = "v0.4.0" }`.
 
 ## The engine in a Rust app
 
@@ -71,10 +70,6 @@ A failed cell is not an `Err`: `execute` returns `Ok` with `status`
 kernel, or `start` with no provisioner.
 
 ### Streaming output and stdin
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 A `Handler` gets each iopub message for the request except `status` as
 it arrives, and answers input requests. `on_input` is async, so a UI can
@@ -139,10 +134,6 @@ restart: restart needs a kernel this engine launched
 
 ## Without ZeroMQ or subprocesses
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 `ganymede-engine` has two features, both on by default:
 
 | Feature | Brings in | Without it, `start` needs |
@@ -196,10 +187,6 @@ its default features, so the XCFramework has them on iOS too
 ([#208](https://github.com/tlockney/ganymede/issues/208)).
 
 ## The server in an app, from C
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 `ganymede-ffi` is a static library with four C functions, declared in
 `crates/ganymede-ffi/include/ganymede.h`. The server runs on its own
@@ -274,10 +261,6 @@ ganymede-ui's app does this in `ServerHost.swift`; see its
 [architecture](ganymede-ui/architecture.md#mac-and-ipad-app).
 
 ## Remote kernels with ganymede-gateway
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 `Gateway` is a kernelspec source, provisioner and transport factory in
 one, for the kernels of another Jupyter or Ganymede server, as
