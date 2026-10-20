@@ -7,6 +7,10 @@
 //! normalized. That includes logging in the way a browser does: the login
 //! cookie a token sets, `/login` and `/logout`, the `_xsrf` check, and a
 //! websocket authenticated by the cookie alone.
+//!
+//! A second test crashes the kernel mid-cell on both servers and checks
+//! what they share (`status: restarting`, the same kernel id, state gone)
+//! rather than a transcript, since Ganymede also answers the crashed cell.
 
 mod common;
 
@@ -840,4 +844,147 @@ fn server_matches_jupyter_server_on_cdp_kernel() {
 #[test]
 fn server_matches_jupyter_server_on_ipykernel() {
     run_both(&CODE[1]);
+}
+
+/// Code that kills the kernel process itself, not only the runtime a cell
+/// runs in: cdp-kernel relaunches a runtime that exits, so its cell kills
+/// the kernel, its parent.
+fn crash_code(kernel: &str) -> &'static str {
+    match kernel {
+        "cdp-node" => "process.kill(process.ppid, 'SIGKILL')",
+        _ => "import os; os._exit(1)",
+    }
+}
+
+/// What a client sees when its kernel crashes mid-cell: `status:
+/// restarting`, then the same kernel id runs again with its state gone.
+/// Returns the crashed cell's reply, if one came.
+async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
+    let cl = Client {
+        http: reqwest::Client::new(),
+        base: base.to_string(),
+        transcript: vec![],
+    };
+    cl.wait_ready().await;
+    use reqwest::Method as M;
+    let (s, k) = cl
+        .call(M::POST, "api/kernels", Some(json!({"name": c.kernel})))
+        .await;
+    assert_eq!(s, 201, "{k}");
+    let kid = k["id"].as_str().unwrap().to_string();
+    let ws_url = |session: &str| {
+        format!(
+            "{}api/kernels/{kid}/channels?session_id={session}&token={TOKEN}",
+            base.replacen("http://", "ws://", 1)
+        )
+    };
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url("crash-1"))
+        .await
+        .unwrap();
+    let r = exchange(
+        &mut ws,
+        request("execute_request", "shell", json!({"code": c.set_state})),
+        None,
+    )
+    .await;
+    assert_eq!(r["reply"]["content"]["status"], "ok", "{r}");
+
+    let cell = request(
+        "execute_request",
+        "shell",
+        json!({"code": crash_code(c.kernel)}),
+    );
+    let cell_id = cell["header"]["msg_id"].clone();
+    ws.send(WsMessage::text(cell.to_string())).await.unwrap();
+    let mut reply = None;
+    loop {
+        let frame = tokio::time::timeout(Duration::from_secs(30), ws.next())
+            .await
+            .expect("no restarting status in 30 s");
+        let Some(Ok(WsMessage::Text(text))) = frame else {
+            panic!("websocket closed before the kernel restarted: {frame:?}");
+        };
+        let m: Value = serde_json::from_str(&text).unwrap();
+        if m["channel"] == "shell" && m["parent_header"]["msg_id"] == cell_id {
+            reply = Some(m["content"].clone());
+        }
+        if m["channel"] == "iopub"
+            && m["header"]["msg_type"] == "status"
+            && m["content"]["execution_state"] == "restarting"
+        {
+            break;
+        }
+    }
+    drop(ws);
+
+    // The same id, with a fresh kernel behind it. Ganymede reports it
+    // idle once it answers. jupyter_server can leave it `busy`, from the
+    // crashed cell, when the new kernel publishes no status of its own
+    // (cdp-kernel), so there the next cell is what shows it is back.
+    let (s, v) = cl.call(M::GET, &format!("api/kernels/{kid}"), None).await;
+    assert_eq!(s, 200, "kernel removed instead of restarted: {v}");
+    if wait_idle {
+        let mut state = Value::Null;
+        for _ in 0..300 {
+            let (_, v) = cl.call(M::GET, &format!("api/kernels/{kid}"), None).await;
+            state = v["execution_state"].clone();
+            if state == "idle" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(state, "idle");
+    }
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url("crash-2"))
+        .await
+        .unwrap();
+    let r = exchange(
+        &mut ws,
+        request("execute_request", "shell", json!({"code": c.read_state})),
+        None,
+    )
+    .await;
+    assert_eq!(
+        r["reply"]["content"]["status"], "error",
+        "state survived: {r}"
+    );
+    drop(ws);
+    let (s, _) = cl
+        .call(M::DELETE, &format!("api/kernels/{kid}"), None)
+        .await;
+    assert_eq!(s, 204);
+    reply
+}
+
+fn crash_both(c: &Code) {
+    if !have_kernel(c.kernel) {
+        return;
+    }
+    let Some(jupyter) = jupyter() else { return };
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    {
+        let s = start_jupyter(&jupyter);
+        rt.block_on(crash(&s.base, c, false));
+    }
+    let s = start_ganymede();
+    // jupyter_server leaves the crashed cell unanswered; Ganymede answers
+    // it, so the client stops waiting.
+    let reply = rt
+        .block_on(crash(&s.base, c, true))
+        .expect("the crashed cell is answered");
+    assert_eq!(
+        (&reply["status"], &reply["ename"]),
+        (&json!("error"), &json!("KernelDied")),
+        "{reply}"
+    );
+}
+
+#[test]
+fn a_crashed_cdp_kernel_restarts_as_under_jupyter_server() {
+    crash_both(&CODE[0]);
+}
+
+#[test]
+fn a_crashed_ipykernel_restarts_as_under_jupyter_server() {
+    crash_both(&CODE[1]);
 }

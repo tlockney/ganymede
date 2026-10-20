@@ -26,8 +26,9 @@ pull request with a GitHub issue, and records what it learned in the
 - **Kernel lifetime.** Kernels survive websocket drops, and a client that
   reconnects with the same `session_id` gets the output it missed, as
   `jupyter_server` buffers it. Idle culling is configurable. A kernel that
-  dies is reported `dead` to its clients and removed; an attached one is
-  watched by heartbeat. A start or restart whose kernel dies or doesn't
+  crashes is restarted under the same id, as `jupyter_server`'s restarter
+  does, and reported `dead` and removed after five crashes in a row
+  (unreleased); an attached one is watched by heartbeat. A start or restart whose kernel dies or doesn't
   answer is relaunched on fresh ports, up to three tries. Shutdown sends
   `shutdown_request`, then SIGTERM, then SIGKILL, and kernels die with the
   host.
@@ -70,9 +71,6 @@ pull request with a GitHub issue, and records what it learned in the
 
 ## Open
 
-- Restarting a kernel automatically when it crashes, as
-  `jupyter_server`'s restarter does. Today a dead kernel is reported and
-  removed.
 - Conformance gaps: debugger (`debug_request`) messages, malformed stdin
   frames, and kernel death and parallel starts driven through `serve`.
 - A Linux build for musl (Alpine).

@@ -187,6 +187,10 @@ to the client that ran the cell, which answers with an `input_reply`.
 - **Restart and shutdown.** `shutdown_request` on control, a grace period,
   then the process is killed. Restart launches the same kernelspec again
   under the same kernel id.
+- **Crash.** A kernel that exits with nothing asking it to is restarted
+  under the same id, as `jupyter_server`'s restarter does; after
+  `kernel_restart_limit` crashes in a row it is left dead
+  ([Kernel crashes](reference.md#kernel-crashes)). Unreleased.
 - **Idle culling.** With `--cull-idle-secs`, kernels idle that long with
   no clients are shut down.
 

@@ -3,12 +3,12 @@
 use crate::{
     now_iso, ApiError, KernelModel, KernelspecModel, KernelspecSpec, KernelspecsModel, Result,
 };
-use ganymede_kernel_host::protocol::{Channel, Message};
+use ganymede_kernel_host::protocol::{Channel, Header, Message};
 use ganymede_kernel_host::{
     Error as HostError, KernelSession, Kernelspec, KernelspecSource, LaunchOptions, LaunchedKernel,
     Provisioner,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
@@ -17,6 +17,13 @@ use tokio::sync::{broadcast, watch};
 
 /// Launches tried before a kernel that never answers counts as failed.
 const START_ATTEMPTS: u32 = 3;
+
+/// Unanswered shell requests remembered per kernel.
+const UNANSWERED_LIMIT: usize = 1000;
+
+/// A kernel that runs this long after a restart has started cleanly, and
+/// its next crash counts from one again (`KernelRestarter.stable_start_time`).
+const STABLE_START: Duration = Duration::from_secs(10);
 
 #[cfg(feature = "zmq")]
 pub use ganymede_kernel_host::zmq::ZmqTransportFactory;
@@ -45,6 +52,10 @@ pub struct KernelManagerConfig {
     pub quiet: bool,
     /// Shut down kernels idle this long with no connected clients.
     pub cull_idle: Option<Duration>,
+    /// Restarts in a row after a kernel crashes before it is left dead,
+    /// as `KernelRestarter.restart_limit`. A crash more than ten seconds
+    /// after the last restart counts from one again. 0 never restarts.
+    pub restart_limit: u32,
     /// Working directories for kernels are resolved under this root.
     pub root_dir: PathBuf,
     /// URL prefix for kernelspec resource links, as `jupyter_server`
@@ -60,6 +71,7 @@ impl Default for KernelManagerConfig {
             shutdown_grace: Duration::from_secs(5),
             quiet: false,
             cull_idle: None,
+            restart_limit: 5,
             root_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             base_url: "/".into(),
         }
@@ -90,6 +102,14 @@ pub struct RunningKernel {
     lifecycle: tokio::sync::Mutex<()>,
     last_activity: Mutex<String>,
     execution_state: Mutex<String>,
+    /// Shell requests clients have sent that the current session has not
+    /// answered, oldest first. Answered for the kernel if it crashes.
+    unanswered: Mutex<VecDeque<Header>>,
+    /// Restarts after crashes in a row, and when the last one was.
+    crashes: Mutex<(u32, Option<tokio::time::Instant>)>,
+    /// A client asked the current session's kernel to exit with a
+    /// `shutdown_request`, so its exit is not a crash.
+    asked_to_exit: AtomicBool,
 }
 
 impl std::fmt::Debug for RunningKernel {
@@ -135,7 +155,7 @@ impl RunningKernel {
     /// Pump one session's traffic to the clients, tracking activity, until
     /// the session dies. The task holds neither the kernel nor the session,
     /// so a kernel that is shut down and dropped is freed.
-    fn pump(self: &Arc<Self>, session: &KernelSession, kernels: Weak<KernelMap>) {
+    fn pump(self: &Arc<Self>, session: &KernelSession, core: Weak<Core>) {
         let mut rx = session.subscribe();
         let mut alive = session.watch_alive();
         let session_id = session.session_id().to_string();
@@ -167,14 +187,22 @@ impl RunningKernel {
                     Err(_) => break,
                 }
             }
-            if let (Some(k), Some(kernels)) = (me.upgrade(), kernels.upgrade()) {
-                k.session_died(&session_id, &kernels);
+            if let (Some(k), Some(core)) = (me.upgrade(), core.upgrade()) {
+                k.session_died(&session_id, &core);
             }
         });
     }
 
     fn forward(&self, channel: Channel, msg: Message) {
         self.touch();
+        if channel == Channel::Shell {
+            if let Some(parent) = msg.parent_id() {
+                self.unanswered
+                    .lock()
+                    .unwrap()
+                    .retain(|h| h.msg_id != parent);
+            }
+        }
         if channel == Channel::IoPub && msg.msg_type() == "status" && tracks_state(&msg) {
             if let Some(s) = msg.content.get("execution_state").and_then(|v| v.as_str()) {
                 self.set_state(s);
@@ -186,13 +214,77 @@ impl RunningKernel {
             .dispatch(&self.id, channel, &msg);
     }
 
+    /// A client sent a `shutdown_request`: the kernel will exit, and that
+    /// is not a crash. With `restart: true` too, since the client that
+    /// sent it is the one starting the next kernel, as `ganymede-engine`
+    /// does through a gateway.
+    pub(crate) fn asked_to_exit(&self) {
+        self.asked_to_exit.store(true, Ordering::SeqCst);
+    }
+
+    /// A shell request a client sent, to be answered for the kernel if it
+    /// crashes first.
+    pub(crate) fn sent_on_shell(&self, header: &Header) {
+        let mut unanswered = self.unanswered.lock().unwrap();
+        // Requests a kernel never answers (an unknown type, which kernels
+        // ignore) must not pile up for ever.
+        if unanswered.len() == UNANSWERED_LIMIT {
+            unanswered.pop_front();
+        }
+        unanswered.push_back(header.clone());
+    }
+
     /// The session died. Unless the manager shut it down or a start or
-    /// restart is replacing it, the kernel died on its own.
-    fn session_died(self: &Arc<Self>, session_id: &str, kernels: &KernelMap) {
+    /// restart is replacing it, the kernel crashed.
+    fn session_died(self: &Arc<Self>, session_id: &str, core: &Arc<Core>) {
         if self.booting.load(Ordering::SeqCst) || self.session().session_id() != session_id {
             return;
         }
-        self.remove_dead(kernels);
+        if self.asked_to_exit.load(Ordering::SeqCst) {
+            self.remove_dead(&core.kernels);
+            return;
+        }
+        tokio::spawn(core.clone().crashed(self.clone(), session_id.to_string()));
+    }
+
+    /// Answer the shell requests the crashed kernel left unanswered, so
+    /// clients stop waiting for them: the one it was running gets an
+    /// error (and an `error` output, for a cell), the ones queued behind
+    /// it are aborted, as a kernel aborts them after an error. Each is
+    /// followed by `status: idle`, which a client also waits for.
+    fn answer_for_crashed_kernel(&self, why: &str) {
+        let unanswered: Vec<Header> = self.unanswered.lock().unwrap().drain(..).collect();
+        let mut clients = self.clients.lock().unwrap();
+        for (i, parent) in unanswered.into_iter().enumerate() {
+            let reply_type = match parent.msg_type.strip_suffix("_request") {
+                Some(base) => format!("{base}_reply"),
+                None => continue,
+            };
+            let msg = |msg_type: &str, content: serde_json::Value| {
+                Message::new(msg_type, "server", "server", &content).with_parent(parent.clone())
+            };
+            let content = if i == 0 {
+                let error = serde_json::json!({
+                    "ename": "KernelDied",
+                    "evalue": why,
+                    "traceback": [format!("KernelDied: {why}")],
+                });
+                if parent.msg_type == "execute_request" {
+                    clients.dispatch(&self.id, Channel::IoPub, &msg("error", error.clone()));
+                }
+                let mut reply = error;
+                reply["status"] = "error".into();
+                reply
+            } else {
+                serde_json::json!({"status": "aborted"})
+            };
+            clients.dispatch(&self.id, Channel::Shell, &msg(&reply_type, content));
+            clients.dispatch(
+                &self.id,
+                Channel::IoPub,
+                &msg("status", serde_json::json!({"execution_state": "idle"})),
+            );
+        }
     }
 
     /// Drop a dead kernel from the map, tell clients `status: dead`, and
@@ -227,12 +319,18 @@ impl RunningKernel {
 
 type KernelMap = RwLock<HashMap<String, Arc<RunningKernel>>>;
 
-pub struct KernelManager {
-    specs: Arc<dyn KernelspecSource>,
+/// What launching a kernel takes, shared with the task that pumps each
+/// kernel's messages, so that task can launch it again after a crash.
+struct Core {
     provisioner: Arc<dyn Provisioner>,
     transports: Arc<dyn TransportFactory>,
-    kernels: Arc<KernelMap>,
-    pub config: KernelManagerConfig,
+    kernels: KernelMap,
+    config: KernelManagerConfig,
+}
+
+pub struct KernelManager {
+    specs: Arc<dyn KernelspecSource>,
+    core: Arc<Core>,
     pub started: String,
 }
 
@@ -245,12 +343,18 @@ impl KernelManager {
     ) -> Self {
         KernelManager {
             specs,
-            provisioner,
-            transports,
-            kernels: Arc::new(RwLock::new(HashMap::new())),
-            config,
+            core: Arc::new(Core {
+                provisioner,
+                transports,
+                kernels: RwLock::new(HashMap::new()),
+                config,
+            }),
             started: now_iso(),
         }
+    }
+
+    pub fn config(&self) -> &KernelManagerConfig {
+        &self.core.config
     }
 
     // ----- kernelspecs -------------------------------------------------
@@ -258,6 +362,7 @@ impl KernelManager {
     pub fn kernelspecs(&self) -> Result<KernelspecsModel> {
         let specs = self.specs.list()?;
         let default = self
+            .core
             .config
             .default_kernel
             .clone()
@@ -267,7 +372,7 @@ impl KernelManager {
             default,
             kernelspecs: specs
                 .into_iter()
-                .map(|s| (s.name.clone(), spec_model(&s, &self.config.base_url)))
+                .map(|s| (s.name.clone(), spec_model(&s, &self.core.config.base_url)))
                 .collect(),
         })
     }
@@ -278,13 +383,17 @@ impl KernelManager {
     }
 
     pub fn kernelspec(&self, name: &str) -> Result<KernelspecModel> {
-        Ok(spec_model(&self.specs.get(name)?, &self.config.base_url))
+        Ok(spec_model(
+            &self.specs.get(name)?,
+            &self.core.config.base_url,
+        ))
     }
 
     // ----- kernels -----------------------------------------------------
 
     pub fn list(&self) -> Vec<KernelModel> {
         let mut v: Vec<_> = self
+            .core
             .kernels
             .read()
             .unwrap()
@@ -296,7 +405,8 @@ impl KernelManager {
     }
 
     pub fn get(&self, id: &str) -> Result<Arc<RunningKernel>> {
-        self.kernels
+        self.core
+            .kernels
             .read()
             .unwrap()
             .get(id)
@@ -328,10 +438,10 @@ impl KernelManager {
         // under jupyter_server. A path that would leave the root gives
         // the root.
         let cwd = Some(match path {
-            Some(p) => ganymede_contents::kernel_cwd(&self.config.root_dir, p),
-            None => self.config.root_dir.clone(),
+            Some(p) => ganymede_contents::kernel_cwd(&self.core.config.root_dir, p),
+            None => self.core.config.root_dir.clone(),
         });
-        let (session, launched) = self.launch(&spec, cwd.clone(), &id).await?;
+        let (session, launched) = self.core.launch(&spec, cwd.clone(), &id).await?;
         let kernel = Arc::new(RunningKernel {
             id: id.clone(),
             name: spec.name.clone(),
@@ -346,17 +456,196 @@ impl KernelManager {
             lifecycle: tokio::sync::Mutex::new(()),
             last_activity: Mutex::new(now_iso()),
             execution_state: Mutex::new("starting".into()),
+            unanswered: Mutex::default(),
+            crashes: Mutex::default(),
+            asked_to_exit: AtomicBool::new(false),
         });
         let _guard = kernel.lifecycle.lock().await;
-        kernel.pump(&session, Arc::downgrade(&self.kernels));
-        self.kernels
+        kernel.pump(&session, Arc::downgrade(&self.core));
+        self.core
+            .kernels
             .write()
             .unwrap()
             .insert(id.clone(), kernel.clone());
         // The nudge runs after insertion so clients can connect while the
         // kernel starts, as they do against jupyter_server.
-        self.boot(&kernel).await?;
+        self.core.boot(&kernel).await?;
         Ok(kernel.model())
+    }
+
+    pub async fn shutdown(&self, id: &str) -> Result<()> {
+        let kernel = self.get(id)?;
+        let _guard = kernel.lifecycle.lock().await;
+        self.core.ensure_listed(&kernel)?;
+        self.core.kernels.write().unwrap().remove(id);
+        let result = kernel
+            .session()
+            .shutdown(false, self.core.config.shutdown_grace)
+            .await;
+        kernel.set_state("dead");
+        kernel.alive.send_replace(false);
+        kernel.clients.lock().unwrap().discard_parked(&kernel.id);
+        kernel.launched.lock().unwrap().take();
+        // The kernel is gone from the map and marked dead whatever the
+        // escalation reported, so the delete succeeded, as jupyter_server
+        // answers it (#171).
+        if let Err(e) = result {
+            tracing::warn!(kernel = %id, "kernel removed, but shutdown reported: {e}");
+        }
+        Ok(())
+    }
+
+    pub async fn interrupt(&self, id: &str) -> Result<()> {
+        let kernel = self.get(id)?;
+        kernel.session().interrupt().await?;
+        kernel.touch();
+        Ok(())
+    }
+
+    /// Same id, same client queues, new process. Clients see `status: restarting`
+    /// as they do from `jupyter_server`.
+    /// On failure the kernel is reported dead and removed.
+    pub async fn restart(&self, id: &str) -> Result<KernelModel> {
+        let kernel = self.get(id)?;
+        let _guard = kernel.lifecycle.lock().await;
+        self.core.ensure_listed(&kernel)?;
+        kernel.booting.store(true, Ordering::SeqCst);
+        kernel.announce(
+            "status",
+            serde_json::json!({"execution_state": "restarting"}),
+        );
+        kernel.set_state("restarting");
+        let old = kernel.session();
+        let _ = old.shutdown(true, self.core.config.shutdown_grace).await;
+        // The new kernel reuses the id, so its connection file has the same
+        // path. Dropping the old launch removes that file; do it before the
+        // new kernel can read it, not after.
+        kernel.launched.lock().unwrap().take();
+        if let Err(e) = self.core.relaunch(&kernel).await {
+            tracing::error!(kernel = %id, "kernel failed to restart: {e}");
+            kernel.booting.store(false, Ordering::SeqCst);
+            kernel.remove_dead(&self.core.kernels);
+            return Err(e);
+        }
+        self.core.boot(&kernel).await?;
+        kernel.touch();
+        Ok(kernel.model())
+    }
+
+    /// Shut down kernels idle longer than the configured limit with no
+    /// clients connected. Returns the ids culled.
+    pub async fn cull_idle(&self) -> Vec<String> {
+        let Some(limit) = self.core.config.cull_idle else {
+            return vec![];
+        };
+        let now = chrono::Utc::now();
+        let candidates: Vec<String> = self
+            .core
+            .kernels
+            .read()
+            .unwrap()
+            .values()
+            .filter(|k| {
+                k.clients.lock().unwrap().connections() == 0
+                    && k.execution_state.lock().unwrap().as_str() == "idle"
+            })
+            .filter(|k| {
+                chrono::DateTime::parse_from_rfc3339(&k.last_activity.lock().unwrap())
+                    .map(|t| now.signed_duration_since(t).to_std().unwrap_or_default() > limit)
+                    .unwrap_or(false)
+            })
+            .map(|k| k.id.clone())
+            .collect();
+        let mut culled = vec![];
+        for id in candidates {
+            tracing::info!(kernel = %id, "culling idle kernel");
+            if self.shutdown(&id).await.is_ok() {
+                culled.push(id);
+            }
+        }
+        culled
+    }
+
+    /// Shut every kernel down at once, so N hung kernels take one grace
+    /// period, not N, against a service manager's stop timeout.
+    pub async fn shutdown_all(&self) {
+        let ids: Vec<String> = self.core.kernels.read().unwrap().keys().cloned().collect();
+        futures::future::join_all(ids.iter().map(|id| self.shutdown(id))).await;
+    }
+
+    pub fn connections(&self) -> usize {
+        self.core
+            .kernels
+            .read()
+            .unwrap()
+            .values()
+            .map(|k| k.clients.lock().unwrap().connections())
+            .sum()
+    }
+
+    pub fn last_activity(&self) -> String {
+        self.core
+            .kernels
+            .read()
+            .unwrap()
+            .values()
+            .map(|k| k.last_activity.lock().unwrap().clone())
+            .max()
+            .unwrap_or_else(|| self.started.clone())
+    }
+}
+
+impl Core {
+    /// `kernel`'s session `session_id` died with nothing asking it to.
+    /// Restart the kernel under the same id, as `jupyter_client`'s
+    /// `KernelRestarter` does: clients see `status: restarting`, then the
+    /// new kernel's own statuses. After `restart_limit` crashes in a row,
+    /// each within [`STABLE_START`] of the last restart, it is left dead.
+    async fn crashed(self: Arc<Self>, kernel: Arc<RunningKernel>, session_id: String) {
+        let _guard = kernel.lifecycle.lock().await;
+        // A shutdown or restart that held the lock first has already
+        // dealt with this session.
+        if self.ensure_listed(&kernel).is_err() || kernel.session().session_id() != session_id {
+            return;
+        }
+        let count = {
+            let mut crashes = kernel.crashes.lock().unwrap();
+            let now = tokio::time::Instant::now();
+            crashes.0 = match crashes.1 {
+                Some(last) if now - last < STABLE_START => crashes.0 + 1,
+                _ => 1,
+            };
+            crashes.1 = Some(now);
+            crashes.0
+        };
+        let limit = self.config.restart_limit;
+        if count > limit {
+            if limit > 0 {
+                tracing::error!(kernel = %kernel.id, "kernel crashed {count} times in a row; leaving it dead");
+            }
+            kernel.answer_for_crashed_kernel("The kernel died.");
+            kernel.remove_dead(&self.kernels);
+            return;
+        }
+        tracing::warn!(kernel = %kernel.id, "kernel died; restarting it ({count}/{limit})");
+        kernel.booting.store(true, Ordering::SeqCst);
+        kernel.answer_for_crashed_kernel("The kernel died, and is being restarted.");
+        kernel.announce(
+            "status",
+            serde_json::json!({"execution_state": "restarting"}),
+        );
+        kernel.set_state("restarting");
+        kernel.launched.lock().unwrap().take();
+        if let Err(e) = self.relaunch(&kernel).await {
+            tracing::error!(kernel = %kernel.id, "kernel failed to restart: {e}");
+            kernel.booting.store(false, Ordering::SeqCst);
+            kernel.remove_dead(&self.kernels);
+            return;
+        }
+        // On failure `boot` reports the kernel dead and removes it.
+        if self.boot(&kernel).await.is_ok() {
+            kernel.touch();
+        }
     }
 
     /// Wait for the kernel's new session to answer, and launch it again on
@@ -365,7 +654,7 @@ impl KernelManager {
     /// kernels launched at once can be given the same one. The engine's
     /// `Relaunch::start` does the same. Runs with `booting` set, under the
     /// lifecycle lock. On failure the kernel is reported dead and removed.
-    async fn boot(&self, kernel: &Arc<RunningKernel>) -> Result<()> {
+    async fn boot(self: &Arc<Self>, kernel: &Arc<RunningKernel>) -> Result<()> {
         let mut attempt = 1;
         let result = loop {
             let session = kernel.session();
@@ -413,13 +702,16 @@ impl KernelManager {
     }
 
     /// Launch a new session for `kernel` and pump it to the clients.
-    async fn relaunch(&self, kernel: &Arc<RunningKernel>) -> Result<()> {
+    async fn relaunch(self: &Arc<Self>, kernel: &Arc<RunningKernel>) -> Result<()> {
         let (session, launched) = self
             .launch(&kernel.spec, kernel.cwd.clone(), &kernel.id)
             .await?;
         *kernel.session.write().unwrap() = session.clone();
         *kernel.launched.lock().unwrap() = Some(launched);
-        kernel.pump(&session, Arc::downgrade(&self.kernels));
+        // Requests to the old session will never be answered by this one.
+        kernel.unanswered.lock().unwrap().clear();
+        kernel.asked_to_exit.store(false, Ordering::SeqCst);
+        kernel.pump(&session, Arc::downgrade(self));
         Ok(())
     }
 
@@ -455,124 +747,6 @@ impl KernelManager {
         let transport = self.transports.connect(&launched).await?;
         let session = KernelSession::start(transport, Some(&launched));
         Ok((session, launched))
-    }
-
-    pub async fn shutdown(&self, id: &str) -> Result<()> {
-        let kernel = self.get(id)?;
-        let _guard = kernel.lifecycle.lock().await;
-        self.ensure_listed(&kernel)?;
-        self.kernels.write().unwrap().remove(id);
-        let result = kernel
-            .session()
-            .shutdown(false, self.config.shutdown_grace)
-            .await;
-        kernel.set_state("dead");
-        kernel.alive.send_replace(false);
-        kernel.clients.lock().unwrap().discard_parked(&kernel.id);
-        kernel.launched.lock().unwrap().take();
-        // The kernel is gone from the map and marked dead whatever the
-        // escalation reported, so the delete succeeded, as jupyter_server
-        // answers it (#171).
-        if let Err(e) = result {
-            tracing::warn!(kernel = %id, "kernel removed, but shutdown reported: {e}");
-        }
-        Ok(())
-    }
-
-    pub async fn interrupt(&self, id: &str) -> Result<()> {
-        let kernel = self.get(id)?;
-        kernel.session().interrupt().await?;
-        kernel.touch();
-        Ok(())
-    }
-
-    /// Same id, same client queues, new process. Clients see `status: restarting`
-    /// as they do from `jupyter_server`.
-    /// On failure the kernel is reported dead and removed.
-    pub async fn restart(&self, id: &str) -> Result<KernelModel> {
-        let kernel = self.get(id)?;
-        let _guard = kernel.lifecycle.lock().await;
-        self.ensure_listed(&kernel)?;
-        kernel.booting.store(true, Ordering::SeqCst);
-        kernel.announce(
-            "status",
-            serde_json::json!({"execution_state": "restarting"}),
-        );
-        kernel.set_state("restarting");
-        let old = kernel.session();
-        let _ = old.shutdown(true, self.config.shutdown_grace).await;
-        // The new kernel reuses the id, so its connection file has the same
-        // path. Dropping the old launch removes that file; do it before the
-        // new kernel can read it, not after.
-        kernel.launched.lock().unwrap().take();
-        if let Err(e) = self.relaunch(&kernel).await {
-            tracing::error!(kernel = %id, "kernel failed to restart: {e}");
-            kernel.booting.store(false, Ordering::SeqCst);
-            kernel.remove_dead(&self.kernels);
-            return Err(e);
-        }
-        self.boot(&kernel).await?;
-        kernel.touch();
-        Ok(kernel.model())
-    }
-
-    /// Shut down kernels idle longer than the configured limit with no
-    /// clients connected. Returns the ids culled.
-    pub async fn cull_idle(&self) -> Vec<String> {
-        let Some(limit) = self.config.cull_idle else {
-            return vec![];
-        };
-        let now = chrono::Utc::now();
-        let candidates: Vec<String> = self
-            .kernels
-            .read()
-            .unwrap()
-            .values()
-            .filter(|k| {
-                k.clients.lock().unwrap().connections() == 0
-                    && k.execution_state.lock().unwrap().as_str() == "idle"
-            })
-            .filter(|k| {
-                chrono::DateTime::parse_from_rfc3339(&k.last_activity.lock().unwrap())
-                    .map(|t| now.signed_duration_since(t).to_std().unwrap_or_default() > limit)
-                    .unwrap_or(false)
-            })
-            .map(|k| k.id.clone())
-            .collect();
-        let mut culled = vec![];
-        for id in candidates {
-            tracing::info!(kernel = %id, "culling idle kernel");
-            if self.shutdown(&id).await.is_ok() {
-                culled.push(id);
-            }
-        }
-        culled
-    }
-
-    /// Shut every kernel down at once, so N hung kernels take one grace
-    /// period, not N, against a service manager's stop timeout.
-    pub async fn shutdown_all(&self) {
-        let ids: Vec<String> = self.kernels.read().unwrap().keys().cloned().collect();
-        futures::future::join_all(ids.iter().map(|id| self.shutdown(id))).await;
-    }
-
-    pub fn connections(&self) -> usize {
-        self.kernels
-            .read()
-            .unwrap()
-            .values()
-            .map(|k| k.clients.lock().unwrap().connections())
-            .sum()
-    }
-
-    pub fn last_activity(&self) -> String {
-        self.kernels
-            .read()
-            .unwrap()
-            .values()
-            .map(|k| k.last_activity.lock().unwrap().clone())
-            .max()
-            .unwrap_or_else(|| self.started.clone())
     }
 }
 

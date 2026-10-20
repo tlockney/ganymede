@@ -354,6 +354,13 @@ mod tests {
     }
 
     fn scripted(cull: Option<Duration>) -> (Arc<KernelManager>, Arc<FakeTransports>) {
+        with_config(KernelManagerConfig {
+            cull_idle: cull,
+            ..Default::default()
+        })
+    }
+
+    fn with_config(config: KernelManagerConfig) -> (Arc<KernelManager>, Arc<FakeTransports>) {
         let transports = Arc::new(FakeTransports::default());
         let m = Arc::new(KernelManager::new(
             Arc::new(StaticKernelspecs(vec![
@@ -364,8 +371,7 @@ mod tests {
             transports.clone(),
             KernelManagerConfig {
                 startup_timeout: Duration::from_secs(5),
-                cull_idle: cull,
-                ..Default::default()
+                ..config
             },
         ));
         (m, transports)
@@ -677,7 +683,10 @@ mod tests {
 
     #[tokio::test]
     async fn kernel_that_dies_is_reported_dead_and_removed() {
-        let m = manager(None);
+        let (m, _) = with_config(KernelManagerConfig {
+            restart_limit: 0,
+            ..Default::default()
+        });
         let sm = SessionManager::new(m.clone());
         let s = sm
             .create(SessionCreate {
@@ -707,6 +716,160 @@ mod tests {
         drop(c);
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(weak.upgrade().is_none(), "RunningKernel leaked");
+    }
+
+    /// Send `code` as an execute_request; its message id.
+    async fn run(c: &mut crate::ClientConnection, code: &str) -> String {
+        let m = Message::new("execute_request", "sess", "u", &ExecuteRequest::new(code));
+        let id = m.header.msg_id.clone();
+        c.send(Channel::Shell, m).await.unwrap();
+        id
+    }
+
+    /// Messages to `c` until the kernel reports `state` with no parent:
+    /// a status the server announced, not one the kernel sent.
+    async fn until_announced(
+        c: &mut crate::ClientConnection,
+        state: &str,
+    ) -> Vec<(Channel, Message)> {
+        let mut got = vec![];
+        loop {
+            let m = tokio::time::timeout(Duration::from_secs(5), c.recv())
+                .await
+                .expect("announced status")
+                .expect("client open");
+            let done = m.0 == Channel::IoPub
+                && m.1.msg_type() == "status"
+                && m.1.parent_header.is_none()
+                && m.1.content["execution_state"] == state;
+            got.push(m);
+            if done {
+                return got;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_crashed_kernel_is_restarted_and_its_requests_answered() {
+        let m = manager(None);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        run(&mut c, "x = 1").await;
+        let crash = run(&mut c, "die").await;
+        let queued = run(&mut c, "after").await;
+        let got = until_announced(&mut c, "restarting").await;
+        let for_parent = |id: &str| -> Vec<(Channel, String, serde_json::Value)> {
+            got.iter()
+                .filter(|(_, m)| m.parent_id() == Some(id))
+                .map(|(ch, m)| (*ch, m.msg_type().to_string(), m.content.clone()))
+                .collect()
+        };
+        let crashed = for_parent(&crash);
+        let types: Vec<_> = crashed.iter().map(|(ch, t, _)| (*ch, t.as_str())).collect();
+        assert_eq!(
+            types,
+            [
+                // The fake's `die` vanishes before it publishes anything.
+                (Channel::IoPub, "error"),
+                (Channel::Shell, "execute_reply"),
+                (Channel::IoPub, "status"),
+            ]
+        );
+        assert_eq!(crashed[0].2["ename"], "KernelDied");
+        assert_eq!(crashed[1].2["status"], "error");
+        assert_eq!(crashed[2].2["execution_state"], "idle");
+        let aborted = for_parent(&queued);
+        assert_eq!(aborted.len(), 2, "{aborted:?}");
+        assert_eq!(
+            (aborted[0].1.as_str(), aborted[0].2["status"].as_str()),
+            ("execute_reply", Some("aborted"))
+        );
+
+        // The same kernel id runs again, with a fresh process.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while m.model(&k.id).unwrap().execution_state != "idle" {
+            assert!(tokio::time::Instant::now() < deadline, "never idle again");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let again = run(&mut c, "hello").await;
+        loop {
+            let (ch, msg) = c.recv().await.unwrap();
+            if ch == Channel::Shell && msg.parent_id() == Some(again.as_str()) {
+                assert_eq!(msg.content["status"], "ok");
+                assert_eq!(msg.content["execution_count"], 1, "a new kernel");
+                break;
+            }
+        }
+        assert_eq!(m.list().len(), 1);
+        m.shutdown(&k.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_kernel_that_keeps_crashing_is_left_dead() {
+        let (m, _) = with_config(KernelManagerConfig {
+            restart_limit: 2,
+            ..Default::default()
+        });
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        for _ in 0..2 {
+            run(&mut c, "die").await;
+            until_announced(&mut c, "restarting").await;
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            while m.model(&k.id).unwrap().execution_state != "idle" {
+                assert!(tokio::time::Instant::now() < deadline, "never idle again");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        let crash = run(&mut c, "die").await;
+        let got = until_none(&mut c).await;
+        let reply = got
+            .iter()
+            .find(|(ch, m)| *ch == Channel::Shell && m.parent_id() == Some(crash.as_str()))
+            .expect("the cell is answered");
+        assert_eq!(reply.1.content["status"], "error");
+        assert_eq!(
+            statuses(&got).last().map(String::as_str),
+            Some("dead"),
+            "{:?}",
+            statuses(&got)
+        );
+        assert!(!statuses(&got).contains(&"restarting".to_string()));
+        assert!(m.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_kernel_a_client_asked_to_exit_is_not_restarted() {
+        let m = manager(None);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        c.send(
+            Channel::Control,
+            Message::new(
+                "shutdown_request",
+                "sess",
+                "u",
+                &serde_json::json!({"restart": false}),
+            ),
+        )
+        .await
+        .unwrap();
+        let got = until_none(&mut c).await;
+        assert!(!statuses(&got).contains(&"restarting".to_string()));
+        assert_eq!(statuses(&got).last().map(String::as_str), Some("dead"));
+        assert!(m.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_shutdown_is_not_a_crash() {
+        let m = manager(None);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        m.shutdown(&k.id).await.unwrap();
+        let got = until_none(&mut c).await;
+        assert!(!statuses(&got).contains(&"restarting".to_string()));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(m.list().is_empty());
     }
 
     #[tokio::test]
