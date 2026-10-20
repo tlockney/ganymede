@@ -706,9 +706,12 @@ impl Core {
                         *state = "idle".into();
                     }
                 }
-                // A death while `booting` was set was not reported.
+                // A death while `booting` was set was not reported. Clients
+                // can run cells before the boot ends (`start` answers
+                // early), so one of them may have crashed it: restart it
+                // as any other crash.
                 if !session.is_alive() {
-                    kernel.remove_dead(&self.kernels);
+                    kernel.session_died(session.session_id(), self);
                 }
                 Ok(())
             }

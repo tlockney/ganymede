@@ -4,4 +4,6 @@
 
 `KernelManager::wait_started` waits for a start or restart in progress; the unit tests use it where they relied on the old blocking start.
 
+Clients can now run cells while `boot` is still nudging (it keeps asking until iopub has carried a status, which can take seconds on macOS). A cell that crashed the kernel in that window went unreported, because deaths during `booting` are ignored, and `boot` then removed the kernel as dead instead of restarting it. `boot` now hands such a death to `session_died`, so it restarts like any other crash. The macOS e2e test `a_crashed_ipykernel_restarts_as_under_jupyter_server` caught it.
+
 Lesson: when a choice is "deliberate" in the code, check the reference implementation's await chain before keeping it; here the comment explained the insertion order, not the request boundary.
