@@ -539,6 +539,100 @@ async fn websocket_channels_v1_execute_round_trip() {
     assert!(closed, "server sent a close frame after shutdown");
 }
 
+/// Comm buffers through the websocket layer and back, byte for byte, in
+/// both framings a frontend may use: the v1 subprotocol, and the legacy
+/// binary frames of a client that asks for none (#68). The fake kernel's
+/// `echo` comm sends every message back on iopub with its buffers.
+#[tokio::test]
+async fn websocket_carries_binary_buffers_both_ways() {
+    use ganymede_kernel_host::protocol::ws::legacy;
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+
+    let dir = tempfile::tempdir().unwrap();
+    let st = state(dir.path());
+    let kernels = st.kernels.clone();
+    let app = build_router(st);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let k = kernels.start(Some("fake"), None).await.unwrap();
+
+    let all_bytes: Vec<u8> = (0..=255).collect();
+    let large: Vec<u8> = (0..100_000u32).map(|i| (i * 7 % 251) as u8).collect();
+    let buffers: Vec<axum::body::Bytes> = vec![
+        // The ZMQ delimiter, which must stay data.
+        axum::body::Bytes::from_static(b"<IDS|MSG>"),
+        axum::body::Bytes::new(),
+        all_bytes.into(),
+        large.into(),
+    ];
+
+    for v1_protocol in [true, false] {
+        let mut req = format!("ws://{addr}/api/kernels/{}/channels", k.id)
+            .into_client_request()
+            .unwrap();
+        if v1_protocol {
+            req.headers_mut()
+                .insert("Sec-WebSocket-Protocol", v1::SUBPROTOCOL.parse().unwrap());
+        }
+        req.headers_mut()
+            .insert("Authorization", format!("token {TOKEN}").parse().unwrap());
+        let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        let frame = |msg: &Message| -> TMsg {
+            if v1_protocol {
+                TMsg::Binary(v1::encode(Channel::Shell, msg).unwrap().into())
+            } else {
+                match legacy::encode(Channel::Shell, msg).unwrap() {
+                    legacy::Frame::Text(t) => TMsg::Text(t.into()),
+                    legacy::Frame::Binary(b) => TMsg::Binary(b.into()),
+                }
+            }
+        };
+        let comm_id = format!("comm-{v1_protocol}");
+        let open = Message::new(
+            "comm_open",
+            "client-sess",
+            "me",
+            &json!({"comm_id": comm_id, "target_name": "echo", "data": {}}),
+        );
+        ws.send(frame(&open)).await.unwrap();
+        let sent = Message::new(
+            "comm_msg",
+            "client-sess",
+            "me",
+            &json!({"comm_id": comm_id, "data": {"n": 4}}),
+        )
+        .with_buffers(buffers.clone());
+        ws.send(frame(&sent)).await.unwrap();
+
+        let echoed = loop {
+            let got = tokio::time::timeout(Duration::from_secs(5), ws.next())
+                .await
+                .expect("echo in time")
+                .unwrap()
+                .unwrap();
+            let (channel, msg) = match got {
+                TMsg::Binary(b) if v1_protocol => v1::decode(&b).unwrap(),
+                TMsg::Binary(b) => legacy::decode_binary(&b).unwrap(),
+                TMsg::Text(t) if !v1_protocol => legacy::decode_text(t.as_str()).unwrap(),
+                _ => continue,
+            };
+            if channel == Channel::IoPub
+                && msg.msg_type() == "comm_msg"
+                && msg.parent_id() == Some(sent.msg_id())
+            {
+                break msg;
+            }
+        };
+        assert_eq!(echoed.content["data"], json!({"n": 4}));
+        assert_eq!(echoed.buffers.len(), buffers.len(), "v1: {v1_protocol}");
+        for (i, (got, want)) in echoed.buffers.iter().zip(&buffers).enumerate() {
+            assert!(got == want, "v1: {v1_protocol}: buffer {i} differs");
+        }
+    }
+    kernels.shutdown(&k.id).await.unwrap();
+}
+
 /// #53: output produced while a session's websocket is down is replayed
 /// when it reconnects with the same `session_id`, as in jupyter_server.
 #[tokio::test]
