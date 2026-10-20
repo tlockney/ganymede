@@ -30,7 +30,7 @@ ganymede ui install            # once: the default release, from GitHub
 ganymede ui                    # serves it at / and opens it in the browser
 ganymede ui list               # installed versions; --json too
 ganymede ui remove 0.1.0
-ganymede ui install --version 0.2.0
+ganymede ui install --version 0.1.0   # an older release
 ```
 
 `ganymede ui` is `ganymede lab` for this app: `serve` with the newest
