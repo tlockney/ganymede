@@ -49,6 +49,9 @@ pub struct Config {
     pub default_kernel: Option<String>,
     /// Shut down kernels idle this long with no clients. 0 disables.
     pub cull_idle_secs: u64,
+    /// Restarts in a row after a kernel crashes before it is left dead
+    /// (`KernelRestarter.restart_limit`). 0 never restarts.
+    pub kernel_restart_limit: u32,
     /// Run kernels on this Jupyter server instead of locally, as
     /// `jupyter_server`'s `GatewayClient.url`: `http(s)://host[:port][/base]`.
     /// Kernelspecs come from it too; contents stay local.
@@ -98,6 +101,7 @@ impl Default for Config {
             kernelspec_roots: vec![],
             default_kernel: None,
             cull_idle_secs: 0,
+            kernel_restart_limit: 5,
             gateway_url: None,
             gateway_token: None,
             startup_timeout_secs: 60,

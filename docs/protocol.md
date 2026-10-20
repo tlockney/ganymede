@@ -131,10 +131,6 @@ the [roadmap](roadmap.md)).
   Ganymede reads leniently and reports schema problems the way
   `jupyter_server` does (`message` in the contents model), and upgrades
   v3 notebooks to 4.5 on read.
-
-  > [!NOTE]
-  > **Unreleased.** Reading v3 is available only from a build of `main`
-  > (HEAD), not in the latest release.
 - `ganymede-nbformat` matches Python's writer byte for byte.
 
 ## Document model and collaboration

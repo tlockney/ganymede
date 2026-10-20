@@ -3,7 +3,9 @@
 //! What it knows that a plain message pipe does not:
 //! - The startup nudge: `kernel_info_request` on shell and control until
 //!   both answer and at least one iopub message has arrived, because PUB/SUB
-//!   drops what was published before the subscriber joined.
+//!   drops what was published before the subscriber joined. A kernel with
+//!   an XPUB iopub socket (ipykernel 7, JEP 65) sends `iopub_welcome` once
+//!   the subscription reaches it, which settles the iopub half at once.
 //! - Completion needs two signals: the reply on shell, and an iopub
 //!   `status: idle` whose parent is the request. They arrive in either order
 //!   on sockets with no ordering guarantee between them.
@@ -273,6 +275,9 @@ impl KernelSession {
 
     /// The startup handshake. Returns the kernel's info once shell and
     /// control both answer and iopub has delivered at least one message.
+    /// For a kernel that sends `iopub_welcome`, that message is the
+    /// welcome, and one `kernel_info_request` on each channel is enough;
+    /// a PUB kernel needs requests until one's status gets through.
     ///
     /// Each unanswered `kernel_info_request` waits longer than the last
     /// (0.5 s, doubling to 4 s) before another is sent. A kernel that
@@ -541,6 +546,14 @@ async fn route(inner: Arc<Inner>, mut incoming: crate::transport::Incoming) {
     while let Some((channel, msg)) = incoming.recv().await {
         if channel == Channel::IoPub {
             inner.iopub_seen.store(true, Ordering::SeqCst);
+            // The welcome answers the host's own subscription, which every
+            // client shares, so no client asked for it. jupyter_server
+            // passes it on only because each websocket there subscribes
+            // for itself; frontends ignore it.
+            if msg.msg_type() == "iopub_welcome" {
+                tracing::debug!(session = %inner.session_id, "iopub_welcome: iopub is live");
+                continue;
+            }
             if msg.msg_type() == "status" {
                 if let Ok(s) = msg.content_as::<content::Status>() {
                     inner.state.send_replace(s.execution_state);
@@ -607,6 +620,7 @@ mod tests {
     use super::*;
     use crate::testing::{FakeKernel, ReplyOrder};
     use crate::transport::in_process_pair;
+    use std::sync::atomic::AtomicUsize;
 
     async fn boot(order: ReplyOrder) -> (KernelSession, content::KernelInfoReply) {
         let (host, kernel) = in_process_pair(64);
@@ -644,6 +658,68 @@ mod tests {
         let n = asked.load(std::sync::atomic::Ordering::SeqCst);
         assert!(n <= 11, "{n} kernel_info_requests queued on shell");
         assert_eq!(s.pending_len(), 0);
+    }
+
+    /// A kernel whose iopub carries nothing but, if `welcome`, the
+    /// `iopub_welcome` an XPUB socket sends when the host subscribes.
+    /// It answers `kernel_info_request` on shell and control, and counts
+    /// those that reach shell.
+    fn quiet_iopub_kernel(mut k: crate::KernelSide, welcome: bool) -> Arc<AtomicUsize> {
+        let asked = Arc::new(AtomicUsize::new(0));
+        let count = asked.clone();
+        tokio::spawn(async move {
+            if welcome {
+                let m = Message::new(
+                    "iopub_welcome",
+                    "kernel",
+                    "kernel",
+                    &serde_json::json!({"subscription": ""}),
+                );
+                k.outgoing.send((Channel::IoPub, m)).await.unwrap();
+            }
+            while let Some((channel, req)) = k.incoming.recv().await {
+                if req.msg_type() != "kernel_info_request" {
+                    continue;
+                }
+                if channel == Channel::Shell {
+                    count.fetch_add(1, Ordering::SeqCst);
+                }
+                let reply =
+                    Message::reply_to(&req, "kernel_info_reply", &crate::testing::kernel_info());
+                if k.outgoing.send((channel, reply)).await.is_err() {
+                    return;
+                }
+            }
+        });
+        asked
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn iopub_welcome_ends_the_nudge_after_one_request() {
+        let (host, kernel) = in_process_pair(64);
+        let asked = quiet_iopub_kernel(kernel, true);
+        let s = KernelSession::start(host, None);
+        let mut sub = s.subscribe();
+        let info = s.nudge(Duration::from_secs(30)).await.unwrap();
+        assert_eq!(info.implementation, "fake");
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        // The welcome was for the host's subscription, not for clients,
+        // and is not a status.
+        while let Ok((ch, m)) = sub.try_recv() {
+            assert_ne!(m.msg_type(), "iopub_welcome", "{ch:?}");
+        }
+        assert_eq!(s.execution_state(), ExecutionState::Starting);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn without_a_welcome_a_silent_iopub_is_never_ready() {
+        let (host, kernel) = in_process_pair(64);
+        let asked = quiet_iopub_kernel(kernel, false);
+        let s = KernelSession::start(host, None);
+        let e = s.nudge(Duration::from_secs(30)).await.unwrap_err();
+        assert!(matches!(e, Error::Timeout(_)), "{e}");
+        // A PUB kernel is asked again until a status gets through.
+        assert!(asked.load(Ordering::SeqCst) > 1);
     }
 
     #[tokio::test]

@@ -38,26 +38,22 @@ covers problems with the install itself.
 
 ## Kernels
 
-- A kernel that crashes is reported and removed, not restarted
-  automatically as `jupyter_server`'s restarter does.
+- In the latest release, a kernel that crashes is reported and removed,
+  not restarted automatically as `jupyter_server`'s restarter does. A
+  build of `main` restarts it ([Kernel crashes](reference.md#kernel-crashes)).
 - Kernels are found only in the platform Jupyter directories and
   `$JUPYTER_PATH`, not under a Python `sys.prefix`. For a kernel installed
   into a conda or virtual environment, add its prefix with
   `--kernelspec-root`; see [Protocol and kernel host](protocol.md).
 - The **debugger** (`debug_request` on the control channel) is passed
-  through to the kernel untouched, so JupyterLab's debugger should work as far
-  as the kernel supports it, but it is untested.
-- Conformance tests don't yet cover debugger messages, malformed stdin
-  frames, or kernel death and parallel starts through `serve`.
+  through to the kernel untouched. A conformance test stops at a
+  breakpoint on kernels that announce one, but JupyterLab's debugger
+  panel itself is untested.
 
 ## Notebooks
 
 - nbformat 1 and 2 notebooks can't be read. nbformat 3 notebooks are
   upgraded to 4.5 when opened and saved as 4.5, as Jupyter does.
-
-  > [!NOTE]
-  > **Unreleased.** Available only from a build of `main` (HEAD), not in
-  > the latest release.
 - A notebook changed on disk while it is open is not reloaded into the
   frontend; that is the document model on the [roadmap](roadmap.md).
 

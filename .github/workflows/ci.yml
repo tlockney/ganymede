@@ -53,6 +53,11 @@ jobs:
         run: |
           set -o pipefail
           cargo test --workspace -- --nocapture 2>&1 | tee "$RUNNER_TEMP/test.log"
+      # The workspace build turns `sqlite` on, since the server needs it.
+      # Alone, the contents crate builds without it, as for iOS and
+      # Android: notebook signatures are kept in memory.
+      - name: cargo test -p ganymede-contents (without sqlite)
+        run: cargo test -p ganymede-contents
       - name: List skipped tests
         if: ${{ !cancelled() }}
         run: |

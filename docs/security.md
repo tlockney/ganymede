@@ -140,10 +140,6 @@ on the same site, such as `app.example.org` calling
 `notebooks.example.org`. It is ignored while `*` is allowed, since every
 page you visit could then act with your session.
 
-> [!NOTE]
-> **Unreleased.** `--allow-credentials` is available only from a build of
-> `main` (HEAD), not in the latest release.
-
 ## JupyterLab extensions are code
 
 A JupyterLab extension is JavaScript that JupyterLab loads into its page.

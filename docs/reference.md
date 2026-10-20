@@ -26,10 +26,6 @@ same flags. The guides show them in use:
 | `info` | Versions and the directories in use |
 | `completions <shell>` | Shell completions for bash, zsh, fish, powershell, elvish |
 
-> [!NOTE]
-> **Unreleased.** `ganymede ui` is available only from a build of `main`
-> (HEAD), not in the latest release.
-
 The kernel name `fake` is a built-in in-process kernel for trying things
 out.
 
@@ -60,6 +56,7 @@ same name in snake case, except where the last column says otherwise.
 | `--cookie-secret-file` | Key for signing login cookies. Default: `jupyter_cookie_secret` in the Jupyter runtime dir. | |
 | `--default-kernel` | The kernelspec new notebooks start. Default: the first kernelspec found. | |
 | `--cull-idle-secs` | Shut down kernels idle this long with no clients. `0` (the default) never does. | |
+| `--kernel-restart-limit` | Restart a kernel that crashes, up to this many times in a row, before leaving it dead. Default `5`; `0` never restarts. See [Kernel crashes](#kernel-crashes). | `kernel_restart_limit` |
 | `--checkpoint-dir` | Keep checkpoints here instead of `.ipynb_checkpoints` beside each file. | |
 | `--notary-dir` | Where the notebook-signing key and trusted signatures live. Default: the Jupyter data dir. | |
 | `--static-dir` | Serve a frontend's files. JupyterLab's bundle is served at `/lab`, anything else at `/`. Default: the newest JupyterLab from `ganymede lab install`. | |
@@ -74,9 +71,8 @@ same name in snake case, except where the last column says otherwise.
 | `--log-level`, `--log-file` | See [Logging](#logging). | |
 
 > [!NOTE]
-> **Unreleased.** `--gateway-url`, `--gateway-token` and
-> `--allow-credentials` are available only from a build of `main` (HEAD),
-> not in the latest release.
+> **Unreleased.** `--kernel-restart-limit` is available only from a build
+> of `main` (HEAD), not in the latest release.
 
 `serve` prints the URL, with its token, as the only line on stdout.
 [Security](security.md) covers what `--ip 0.0.0.0` and `--token ""`
@@ -117,6 +113,7 @@ base_url = "/"
 kernelspec_roots = []
 # default_kernel = "cdp-node"    # unset: the first kernelspec found
 cull_idle_secs = 0               # 0: never
+kernel_restart_limit = 5         # 0: a crashed kernel stays dead
 startup_timeout_secs = 60
 quiet = false
 allow_origins = []
@@ -129,10 +126,6 @@ max_body_size = 536870912        # 512 MiB
 # gateway_token = "..."
 ```
 
-> [!NOTE]
-> **Unreleased.** `gateway_url`, `gateway_token` and `allow_credentials`
-> are read only by a build of `main` (HEAD), not by the latest release.
-
 Three keys have no flag:
 
 | Key | Effect |
@@ -141,11 +134,31 @@ Three keys have no flag:
 | `trust_xheaders` | Trust `X-Forwarded-Proto` and `X-Scheme` from a reverse proxy, so login cookies sent over proxied HTTPS are marked `Secure`. |
 | `max_body_size` | Largest request body, in bytes, which caps a notebook's size. Default 512 MiB. |
 
-## Gateway
+## Kernel crashes
 
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
 > the latest release.
+
+A kernel that exits without being shut down or restarted, through the
+API or by a client's `shutdown_request`, is restarted under the same id, in the same directory, as `jupyter_server`'s
+`KernelRestarter` does. Its clients see:
+
+1. For the request it was running, a reply with `status: error` and
+   `ename: KernelDied` (and an `error` output, for a cell); for requests
+   queued behind it, `status: aborted` replies. Each is followed by
+   `status: idle`, so clients stop waiting for them.
+2. `status: restarting`, which JupyterLab shows as an automatic restart
+   and reconnects on.
+3. The new kernel's own statuses.
+
+A kernel that crashes again within ten seconds of being restarted counts
+toward `kernel_restart_limit` (default 5). One crash past the limit, it
+is reported `status: dead` and removed, as it always is with the limit
+set to `0`. The kernel's state is lost in a restart, as it is under
+Jupyter.
+
+## Gateway
 
 `--gateway-url` runs kernels on another Jupyter or Ganymede server while
 notebooks and files stay local, as `jupyter_server --gateway-url` does:
@@ -176,11 +189,6 @@ checked against the system's trust store.
 | `GANYMEDE_UI_URL` | A mirror of ganymede-ui's release downloads. |
 | `RUST_LOG` | The log filter, when `--log-level` isn't given. |
 | `HTTPS_PROXY` | Used for downloads. |
-
-> [!NOTE]
-> **Unreleased.** `JUPYTER_GATEWAY_URL`, `JUPYTER_GATEWAY_AUTH_TOKEN` and
-> `GANYMEDE_UI_URL` are read only by a build of `main` (HEAD), not by the
-> latest release.
 
 `ganymede info` prints every directory in use.
 

@@ -8,6 +8,7 @@ web-view UIs is in [tlockney/ganymede-ui](https://github.com/tlockney/ganymede-u
 ```sh
 cargo build --workspace
 cargo test --workspace                 # uses an in-process fake kernel
+cargo test -p ganymede-contents        # again without the sqlite feature
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```

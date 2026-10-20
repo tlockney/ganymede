@@ -23,14 +23,15 @@ pull request with a GitHub issue, and records what it learned in the
   buffers, stdin, aborted queues, history, display updates, the runtime
   exiting mid-cell, parallel starts, the debugger over control, and a
   malformed stdin frame, with kernelspec metadata and `kernel_info_reply`
-  extras passed through untouched. Through `serve`, parallel starts and a
-  restart that fails are run on real kernels, and a weekly job runs the
+  extras passed through untouched. Through `serve`, parallel starts, a crash,
+  and a restart that fails are run on real kernels, and a weekly job runs the
   scenarios against cdp-kernel's `main`.
 - **Kernel lifetime.** Kernels survive websocket drops, and a client that
   reconnects with the same `session_id` gets the output it missed, as
   `jupyter_server` buffers it. Idle culling is configurable. A kernel that
-  dies is reported `dead` to its clients and removed; an attached one is
-  watched by heartbeat. A start or restart whose kernel dies or doesn't
+  crashes is restarted under the same id, as `jupyter_server`'s restarter
+  does, and reported `dead` and removed after five crashes in a row
+  (unreleased); an attached one is watched by heartbeat. A start or restart whose kernel dies or doesn't
   answer is relaunched on fresh ports, up to three tries. Shutdown sends
   `shutdown_request`, then SIGTERM, then SIGKILL, and kernels die with the
   host.
@@ -56,11 +57,6 @@ pull request with a GitHub issue, and records what it learned in the
   kernels it can't launch.
 - **nbformat 3.** Older notebooks are upgraded to 4.5 on read.
 
-> [!NOTE]
-> **Unreleased.** `ganymede ui`, `--gateway-url`, and reading nbformat 3
-> are available only from a build of `main` (HEAD), not in the latest
-> release.
-
 ## Next
 
 1. **Document model.** The file is the source of truth and is reloaded
@@ -73,10 +69,6 @@ pull request with a GitHub issue, and records what it learned in the
 
 ## Open
 
-- Restarting a kernel automatically when it crashes, as
-  `jupyter_server`'s restarter does. Today a dead kernel is reported and
-  removed.
-- Conformance gap: kernel death driven through `serve` on a real kernel.
 - A Linux build for musl (Alpine).
 - Distributing the Mac and iPad app. Today the Mac app is a CI artifact,
   ad-hoc signed, and the iPad app is built from source.
