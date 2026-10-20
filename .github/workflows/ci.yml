@@ -164,6 +164,44 @@ jobs:
             exit 1
           fi
 
+  # cdp-kernel's main branch instead of a release, weekly and on request,
+  # so a change on either side shows up before cdp-kernel releases it:
+  # the kernel scenarios and the jupyter_server comparison on cdp-node.
+  e2e-cdp-kernel-main:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GANYMEDE_E2E_KERNELS: cdp-node
+      GANYMEDE_E2E_REQUIRE_JUPYTER: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install cdp-kernel from main, and the reference implementation
+        run: |
+          git clone --depth 1 https://github.com/tlockney/cdp-kernel "$RUNNER_TEMP/cdp-kernel"
+          cd "$RUNNER_TEMP/cdp-kernel"
+          git log -1 --format='cdp-kernel main at %H'
+          npm ci
+          # npm pack builds (prepack) and prints the tarball's name last.
+          npm install -g "$PWD/$(npm pack --silent | tail -n 1)"
+          cdp-kernel install --runtime node
+          # shellcheck disable=SC2086
+          python -m pip install $E2E_PYTHON_PACKAGES
+          echo "GANYMEDE_E2E_JUPYTER=$(command -v jupyter)" >> "$GITHUB_ENV"
+      - run: cargo test -p ganymede-cli
+
   # Targets the desktop CI cannot run: the core libraries must build for
   # iOS, Android, and wasm, and the engine must run a notebook inside wasm.
   portability:

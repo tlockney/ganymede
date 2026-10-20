@@ -57,6 +57,11 @@ struct Lang {
     /// Prints `before`, displays markdown `one` with display id `d1`,
     /// updates it to `two`, prints `after`.
     display_update: &'static str,
+    /// Three lines; the second sets `second`, the third evaluates to 42.
+    debug_cell: &'static str,
+    /// Code that hands the kernel's own runtime binding something that is
+    /// not JSON, where the language exposes one.
+    garbage_binding: Option<&'static str>,
 }
 
 const LANGS: &[Lang] = &[
@@ -88,6 +93,8 @@ const LANGS: &[Lang] = &[
         read_closed: "console.log(JSON.stringify(closedWith))",
         boom_target: "jupyter.comm.registerTarget('boom', () => { throw new Error('kaboom'); })",
         display_update: "console.log('before');\nawait jupyter.display(jupyter.md`one`, { display_id: 'd1' });\nawait jupyter.display(jupyter.md`two`, { display_id: 'd1', update: true });\nconsole.log('after')",
+        debug_cell: "const first: number = 20;\nconst second = first + 1;\nsecond * 2",
+        garbage_binding: Some("__cdpk_send('not json'); 1"),
     },
     Lang {
         kernel: "python3",
@@ -117,6 +124,8 @@ const LANGS: &[Lang] = &[
         read_closed: "print(json.dumps(closed_with))",
         boom_target: "def _boom(comm, msg):\n    raise RuntimeError('kaboom')\nget_ipython().kernel.comm_manager.register_target('boom', _boom)",
         display_update: "from IPython.display import display, Markdown\nprint('before')\nh = display(Markdown('one'), display_id='d1')\nh.update(Markdown('two'))\nprint('after')",
+        debug_cell: "first = 20\nsecond = first + 1\nsecond * 2",
+        garbage_binding: None,
     },
 ];
 
@@ -866,4 +875,167 @@ fn cli_standalone_kernel_and_attach() {
 extern "C" {
     #[link_name = "kill"]
     fn libc_kill(pid: i32, sig: i32) -> i32;
+}
+
+/// A `debug_request` on control, as JupyterLab's debugger sends it: done
+/// once the reply and the request's idle status have both arrived.
+async fn debug(k: &Kernel, command: &str, arguments: Value) -> Value {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let s = k.session();
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let m = s.message(
+        "debug_request",
+        &json!({"type": "request", "seq": seq, "command": command, "arguments": arguments}),
+    );
+    let e = s
+        .request(Channel::Control, m, true, Duration::from_secs(30))
+        .await
+        .unwrap_or_else(|e| panic!("debug_request {command}: {e}"));
+    assert_eq!(e.reply.msg_type(), "debug_reply");
+    e.reply.content
+}
+
+/// JupyterLab's debugger over the control channel: a breakpoint stops a
+/// cell, `debug_event`s arrive on iopub, and the cell finishes on
+/// `continue`. For kernels whose `kernel_info_reply` offers a debugger.
+#[test]
+fn debugger_stops_at_a_breakpoint() {
+    for l in langs() {
+        rt().block_on(async {
+            let k = Arc::new(engine().start(l.kernel).await.unwrap());
+            // `debugger: true`, or from protocol 5.5 (ipykernel 7) a
+            // `supported_features` entry.
+            let info = k.info_json();
+            let features = info["supported_features"].as_array().cloned().unwrap_or_default();
+            if info["debugger"] != true && !features.contains(&json!("debugger")) {
+                eprintln!("skipping: {} reports no debugger", l.kernel);
+                k.shutdown().await.unwrap();
+                return;
+            }
+            let info = debug(&k, "debugInfo", json!({})).await;
+            assert_eq!(info["success"], true, "{}: {info}", l.kernel);
+            let info = info["body"].clone();
+            let init = debug(
+                &k,
+                "initialize",
+                json!({"clientID": "ganymede", "adapterID": "", "pathFormat": "path",
+                       "linesStartAt1": true, "columnsStartAt1": true}),
+            )
+            .await;
+            assert_eq!(init["success"], true, "{}: {init}", l.kernel);
+            let mut sub = k.session().subscribe();
+            let attach = debug(&k, "attach", json!({})).await;
+            assert_eq!(attach["success"], true, "{}: {attach}", l.kernel);
+            let dumped = debug(&k, "dumpCell", json!({"code": l.debug_cell})).await;
+            let path = dumped["body"]["sourcePath"].as_str().unwrap().to_string();
+            let prefix = info["tmpFilePrefix"].as_str().unwrap();
+            assert!(path.starts_with(prefix), "{}: {path}", l.kernel);
+            let set = debug(
+                &k,
+                "setBreakpoints",
+                json!({"source": {"path": path}, "breakpoints": [{"line": 2}], "sourceModified": false}),
+            )
+            .await;
+            assert_eq!(set["body"]["breakpoints"][0]["verified"], true, "{}: {set}", l.kernel);
+            debug(&k, "configurationDone", json!({})).await;
+
+            let k2 = k.clone();
+            let code = l.debug_cell;
+            let cell = tokio::spawn(async move { k2.execute(code).await });
+            let stopped = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let (ch, m) = sub.recv().await.unwrap();
+                    if ch == Channel::IoPub
+                        && m.msg_type() == "debug_event"
+                        && m.content["event"] == "stopped"
+                    {
+                        return m.content;
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{}: no stopped event", l.kernel));
+            let thread = stopped["body"]["threadId"].clone();
+            let frames = debug(&k, "stackTrace", json!({"threadId": thread})).await;
+            let top = &frames["body"]["stackFrames"][0];
+            assert_eq!(top["line"], 2, "{}: {frames}", l.kernel);
+            assert_eq!(top["source"]["path"], path.as_str(), "{}", l.kernel);
+            let go = debug(&k, "continue", json!({"threadId": thread})).await;
+            assert_eq!(go["success"], true, "{}: {go}", l.kernel);
+            let r = tokio::time::timeout(Duration::from_secs(30), cell)
+                .await
+                .unwrap_or_else(|_| panic!("{}: cell never finished", l.kernel))
+                .unwrap()
+                .unwrap();
+            assert_eq!(plain(&r).trim(), "42", "{}", l.kernel);
+            let bye = debug(
+                &k,
+                "disconnect",
+                json!({"restart": false, "terminateDebuggee": false}),
+            )
+            .await;
+            assert_eq!(bye["success"], true, "{}: {bye}", l.kernel);
+            k.shutdown().await.unwrap();
+        });
+    }
+}
+
+/// Before answering a prompt, sends the kernel's stdin socket a frame set
+/// whose header is not JSON, from a peer of its own.
+struct Rogue(zeromq::DealerSocket);
+#[async_trait::async_trait]
+impl Handler for Rogue {
+    async fn on_input(&mut self, _prompt: &str, _password: bool) -> Option<String> {
+        use zeromq::SocketSend;
+        let frames: Vec<bytes::Bytes> = [&b"<IDS|MSG>"[..], b"", b"not json", b"{}", b"{}", b"{}"]
+            .into_iter()
+            .map(bytes::Bytes::copy_from_slice)
+            .collect();
+        self.0
+            .send(zeromq::ZmqMessage::try_from(frames).unwrap())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        Some("Ada".into())
+    }
+}
+
+/// A malformed frame set on stdin while a prompt waits is dropped and the
+/// real `input_reply` still answers it; cdp-kernel's runtime binding fed
+/// something that is not JSON leaves the kernel working. From cdp-kernel's
+/// own e2e (`malformed_stdin_message`, `garbage_binding_payload`).
+#[test]
+fn malformed_stdin_and_garbage_payloads_are_tolerated() {
+    use zeromq::Socket;
+    for l in langs() {
+        rt().block_on(async {
+            let k = engine().start(l.kernel).await.unwrap();
+            if let Some(code) = l.garbage_binding {
+                let r = k.execute(code).await.unwrap();
+                assert!(r.is_ok(), "{}: {:?}", l.kernel, r.reply);
+                let r = k.execute(l.answer).await.unwrap();
+                assert_eq!(plain(&r).trim(), "42", "{}", l.kernel);
+            }
+            let info = k.connection_info().expect("a ZeroMQ kernel");
+            let mut rogue = zeromq::DealerSocket::new();
+            rogue.connect(&info.stdin_endpoint()).await.unwrap();
+            let opts = ExecuteOptions {
+                allow_stdin: true,
+                ..Default::default()
+            };
+            let mut h = Rogue(rogue);
+            let r = tokio::time::timeout(
+                Duration::from_secs(30),
+                k.execute_with(l.input, &opts, &mut h),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("{}: the prompt was never answered", l.kernel))
+            .unwrap();
+            assert_eq!(plain(&r), "hi Ada\n", "{}", l.kernel);
+            let _ = h.0.close().await;
+            let r = k.execute(l.answer).await.unwrap();
+            assert_eq!(plain(&r).trim(), "42", "{}", l.kernel);
+            k.shutdown().await.unwrap();
+        });
+    }
 }

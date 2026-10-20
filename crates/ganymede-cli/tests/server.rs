@@ -94,9 +94,15 @@ fn free_port() -> u16 {
 }
 
 fn start_ganymede() -> Server {
+    start_ganymede_with(&[])
+}
+
+fn start_ganymede_with(extra: &[&std::ffi::OsStr]) -> Server {
     let root = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
-    let mut child = ganymede(&["serve", "--port", "0", "--token", TOKEN, "--root-dir"])
+    let mut child = ganymede(&["serve", "--port", "0", "--token", TOKEN])
+        .args(extra)
+        .arg("--root-dir")
         .arg(root.path())
         .arg("--config-dir")
         .arg(state.path())
@@ -840,4 +846,186 @@ fn server_matches_jupyter_server_on_cdp_kernel() {
 #[test]
 fn server_matches_jupyter_server_on_ipykernel() {
     run_both(&CODE[1]);
+}
+
+fn ws_url(base: &str, kid: &str, session: &str) -> String {
+    format!(
+        "{}api/kernels/{kid}/channels?session_id={session}&token={TOKEN}",
+        base.replacen("http://", "ws://", 1)
+    )
+}
+
+/// Several kernels started at once through `serve`, as a frontend
+/// restoring a workspace does, each with ports of its own: each answers.
+#[test]
+fn parallel_starts_through_serve() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    for c in CODE.iter().filter(|c| have_kernel(c.kernel)) {
+        let s = start_ganymede();
+        rt.block_on(async {
+            let cl = Client {
+                http: reqwest::Client::new(),
+                base: s.base.clone(),
+                transcript: vec![],
+            };
+            cl.wait_ready().await;
+            let started = futures::future::join_all((0..4).map(|_| {
+                cl.call(
+                    reqwest::Method::POST,
+                    "api/kernels",
+                    Some(json!({"name": c.kernel})),
+                )
+            }))
+            .await;
+            let ids: Vec<String> = started
+                .iter()
+                .map(|(st, k)| {
+                    assert_eq!(*st, 201, "{}: {k}", c.kernel);
+                    k["id"].as_str().unwrap().to_string()
+                })
+                .collect();
+            let base = &s.base;
+            let answers = futures::future::join_all(ids.iter().map(|kid| async move {
+                let (mut ws, _) = tokio_tungstenite::connect_async(ws_url(base, kid, kid))
+                    .await
+                    .unwrap();
+                let r = exchange(
+                    &mut ws,
+                    request("execute_request", "shell", json!({"code": c.answer})),
+                    None,
+                )
+                .await;
+                r["reply"]["content"]["status"].clone()
+            }))
+            .await;
+            assert!(
+                answers.iter().all(|a| a == "ok"),
+                "{}: {answers:?}",
+                c.kernel
+            );
+            let (_, listed) = cl.call(reqwest::Method::GET, "api/kernels", None).await;
+            assert_eq!(listed.as_array().unwrap().len(), 4, "{}", c.kernel);
+            for kid in &ids {
+                let (st, _) = cl
+                    .call(reqwest::Method::DELETE, &format!("api/kernels/{kid}"), None)
+                    .await;
+                assert_eq!(st, 204);
+            }
+        });
+    }
+}
+
+/// A restart whose new kernel never comes up, on a real kernel: the
+/// kernelspec wraps the installed one in a script that runs it once and
+/// fails every launch after that. Clients see `restarting`, then `dead`,
+/// and the kernel is gone.
+#[test]
+fn restart_failure_on_a_real_kernel_reports_it_dead() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    for c in CODE.iter().filter(|c| have_kernel(c.kernel)) {
+        let roots = tempfile::tempdir().unwrap();
+        let installed = ganymede_engine::Engine::builder()
+            .build()
+            .kernelspec(c.kernel)
+            .unwrap();
+        let name = format!("flaky-{}", c.kernel);
+        let dir = roots.path().join("kernels").join(&name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mark = roots.path().join("launched");
+        let mut argv = vec![
+            "sh".to_string(),
+            "-c".into(),
+            r#"[ -e "$FLAKY_MARK" ] && exit 3; : > "$FLAKY_MARK"; exec "$@""#.into(),
+            "flaky".into(),
+        ];
+        argv.extend(installed.argv.iter().cloned());
+        let mut env = installed.env.clone();
+        env.insert("FLAKY_MARK".into(), mark.display().to_string());
+        let spec = json!({
+            "argv": argv,
+            "display_name": name,
+            "language": installed.language,
+            "env": env,
+            "interrupt_mode": "message",
+            "metadata": installed.metadata,
+        });
+        std::fs::write(dir.join("kernel.json"), spec.to_string()).unwrap();
+
+        let s = start_ganymede_with(&[
+            std::ffi::OsStr::new("--kernelspec-root"),
+            roots.path().as_os_str(),
+            std::ffi::OsStr::new("--startup-timeout"),
+            std::ffi::OsStr::new("20"),
+        ]);
+        rt.block_on(async {
+            let cl = Client {
+                http: reqwest::Client::new(),
+                base: s.base.clone(),
+                transcript: vec![],
+            };
+            cl.wait_ready().await;
+            let (st, k) = cl
+                .call(
+                    reqwest::Method::POST,
+                    "api/kernels",
+                    Some(json!({"name": name})),
+                )
+                .await;
+            assert_eq!(st, 201, "{name}: {k}");
+            let kid = k["id"].as_str().unwrap().to_string();
+            let (mut ws, _) = tokio_tungstenite::connect_async(ws_url(&s.base, &kid, "flaky"))
+                .await
+                .unwrap();
+            let r = exchange(
+                &mut ws,
+                request("execute_request", "shell", json!({"code": c.answer})),
+                None,
+            )
+            .await;
+            assert_eq!(r["reply"]["content"]["status"], "ok", "{name}: {r}");
+
+            let (st, body) = cl
+                .call(
+                    reqwest::Method::POST,
+                    &format!("api/kernels/{kid}/restart"),
+                    None,
+                )
+                .await;
+            assert!(st >= 400, "{name}: restart answered {st}: {body}");
+            let mut states = vec![];
+            while let Ok(Some(Ok(frame))) =
+                tokio::time::timeout(Duration::from_secs(10), ws.next()).await
+            {
+                let WsMessage::Text(text) = frame else {
+                    continue;
+                };
+                let m: Value = serde_json::from_str(&text).unwrap();
+                if m["channel"] == "iopub"
+                    && m["header"]["msg_type"] == "status"
+                    && m["parent_header"].get("msg_id").is_none()
+                {
+                    states.push(
+                        m["content"]["execution_state"]
+                            .as_str()
+                            .unwrap()
+                            .to_string(),
+                    );
+                }
+            }
+            assert_eq!(
+                states.first().map(String::as_str),
+                Some("restarting"),
+                "{name}: {states:?}"
+            );
+            assert_eq!(
+                states.last().map(String::as_str),
+                Some("dead"),
+                "{name}: {states:?}"
+            );
+            let (st, _) = cl
+                .call(reqwest::Method::GET, &format!("api/kernels/{kid}"), None)
+                .await;
+            assert_eq!(st, 404, "{name}");
+        });
+    }
 }
