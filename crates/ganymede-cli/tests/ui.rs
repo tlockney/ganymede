@@ -133,7 +133,9 @@ fn install_from_github() {
         "{}",
         stderr(&out)
     );
-    run_ok(ui(&["ui", "remove", "0.1.0"]));
+    // The default version, whatever it is: the install directory's name.
+    let version = dir.file_name().unwrap().to_str().unwrap().to_owned();
+    run_ok(ui(&["ui", "remove", &version]));
     assert!(!dir.exists());
 }
 
