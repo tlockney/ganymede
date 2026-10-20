@@ -21,8 +21,11 @@ pull request with a GitHub issue, and records what it learned in the
 - **Kernel conformance.** cdp-kernel (Node 24) and ipykernel run the same
   scenarios in CI: launch, execute, interrupt, restart, comms with binary
   buffers, stdin, aborted queues, history, display updates, the runtime
-  exiting mid-cell, and parallel starts, with kernelspec metadata and
-  `kernel_info_reply` extras passed through untouched.
+  exiting mid-cell, parallel starts, the debugger over control, and a
+  malformed stdin frame, with kernelspec metadata and `kernel_info_reply`
+  extras passed through untouched. Through `serve`, parallel starts, a crash,
+  and a restart that fails are run on real kernels, and a weekly job runs the
+  scenarios against cdp-kernel's `main`.
 - **Kernel lifetime.** Kernels survive websocket drops, and a client that
   reconnects with the same `session_id` gets the output it missed, as
   `jupyter_server` buffers it. Idle culling is configurable. A kernel that
@@ -66,8 +69,6 @@ pull request with a GitHub issue, and records what it learned in the
 
 ## Open
 
-- Conformance gaps: debugger (`debug_request`) messages, malformed stdin
-  frames, and kernel death and parallel starts driven through `serve`.
 - A Linux build for musl (Alpine).
 - Distributing the Mac and iPad app. Today the Mac app is a CI artifact,
   ad-hoc signed, and the iPad app is built from source.

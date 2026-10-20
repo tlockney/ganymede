@@ -46,10 +46,9 @@ covers problems with the install itself.
   into a conda or virtual environment, add its prefix with
   `--kernelspec-root`; see [Protocol and kernel host](protocol.md).
 - The **debugger** (`debug_request` on the control channel) is passed
-  through to the kernel untouched, so JupyterLab's debugger should work as far
-  as the kernel supports it, but it is untested.
-- Conformance tests don't yet cover debugger messages, malformed stdin
-  frames, or kernel death and parallel starts through `serve`.
+  through to the kernel untouched. A conformance test stops at a
+  breakpoint on kernels that announce one, but JupyterLab's debugger
+  panel itself is untested.
 
 ## Notebooks
 

@@ -785,6 +785,7 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytes",
  "clap",
  "clap_complete",
  "futures",
@@ -802,6 +803,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ureq",
+ "zeromq",
  "zip",
 ]
 
