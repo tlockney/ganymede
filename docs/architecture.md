@@ -222,10 +222,6 @@ The same crates, in four setups:
 - **Any browser, no server.** ganymede-ui alone, with notebooks in
   IndexedDB and kernels in Workers. Ganymede isn't involved.
 
-> [!NOTE]
-> **Unreleased.** `--gateway-url` is available only from a build of
-> `main` (HEAD), not in the latest release.
-
 Python appears in none of them except as a kernelspec someone installed.
 [Ganymede's app](app.md) covers the last three from a user's side. A
 native kernel inside the iPad app's process, so it can run more than the

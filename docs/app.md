@@ -21,10 +21,6 @@ and where kernels run:
 
 ## In a browser, from Ganymede
 
-> [!NOTE]
-> **Unreleased.** `ganymede ui` is available only from a build of `main`
-> (HEAD), not in the latest release.
-
 ```sh
 ganymede ui install            # once: the default release, from GitHub
 ganymede ui                    # serves it at / and opens it in the browser

@@ -15,7 +15,7 @@ As of this survey:
 - Auth: token in header or `?token=`, or the login cookie a token or the
   `/login` form sets, with `jupyter_server`'s `_xsrf` check.
 - CORS via `allow_origins`. Cross-origin clients send the token; the login
-  cookie works cross-origin only with `allow_credentials` (unreleased).
+  cookie works cross-origin only with `allow_credentials`.
 - Kernel connection files are written to `JUPYTER_RUNTIME_DIR`, so a ZMQ
   client can attach to a kernel Ganymede launched.
 - Not served: classic Notebook / Notebook 7 pages (`/tree`, `/notebooks`),
