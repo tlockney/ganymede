@@ -23,10 +23,6 @@ where these pieces sit.
 | Language-specific UI behaviour: `%matplotlib`, `pip` magics, Python tracebacks | None. The only source of language information is `kernel_info_reply.language_info`; the editor mode comes from `codemirror_mode`, which cdp-kernel reports as TypeScript. Traceback rendering is ANSI text, not a Python format. |
 | Optional protocol messages treated as required (`history`, `is_complete`, `inspect`) | Treat every message beyond `kernel_info`, `execute`, `shutdown`, `interrupt`, and `status` as optional. Read `supported_features` when present. Time out and degrade rather than hang. |
 
-> [!NOTE]
-> **Unreleased.** The remote provisioner (`--gateway-url`) is available
-> only from a build of `main` (HEAD), not in the latest release.
-
 ## Where Python still appears
 
 "No Python" means no Python runtime and no Python dependency. Python

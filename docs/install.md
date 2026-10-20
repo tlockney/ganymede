@@ -444,10 +444,6 @@ release workflow, and prints the tag and commit it was built from.
 
 ### In a container
 
-> [!NOTE]
-> **Unreleased.** The image is published from the next release on;
-> until then, build it from a clone as below.
-
 [`container/Dockerfile`](../container/Dockerfile) builds an image with
 Ganymede, Node 24, cdp-kernel's `cdp-node` kernelspec, and JupyterLab's
 frontend from `ganymede lab install`. It has no Python. Each release is

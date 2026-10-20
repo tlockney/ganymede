@@ -26,10 +26,6 @@ same flags. The guides show them in use:
 | `info` | Versions and the directories in use |
 | `completions <shell>` | Shell completions for bash, zsh, fish, powershell, elvish |
 
-> [!NOTE]
-> **Unreleased.** `ganymede ui` is available only from a build of `main`
-> (HEAD), not in the latest release.
-
 The kernel name `fake` is a built-in in-process kernel for trying things
 out.
 
@@ -75,9 +71,8 @@ same name in snake case, except where the last column says otherwise.
 | `--log-level`, `--log-file` | See [Logging](#logging). | |
 
 > [!NOTE]
-> **Unreleased.** `--gateway-url`, `--gateway-token`,
-> `--allow-credentials` and `--kernel-restart-limit` are available only
-> from a build of `main` (HEAD), not in the latest release.
+> **Unreleased.** `--kernel-restart-limit` is available only from a build
+> of `main` (HEAD), not in the latest release.
 
 `serve` prints the URL, with its token, as the only line on stdout.
 [Security](security.md) covers what `--ip 0.0.0.0` and `--token ""`
@@ -131,10 +126,6 @@ max_body_size = 536870912        # 512 MiB
 # gateway_token = "..."
 ```
 
-> [!NOTE]
-> **Unreleased.** `gateway_url`, `gateway_token` and `allow_credentials`
-> are read only by a build of `main` (HEAD), not by the latest release.
-
 Three keys have no flag:
 
 | Key | Effect |
@@ -169,10 +160,6 @@ Jupyter.
 
 ## Gateway
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 `--gateway-url` runs kernels on another Jupyter or Ganymede server while
 notebooks and files stay local, as `jupyter_server --gateway-url` does:
 
@@ -202,11 +189,6 @@ checked against the system's trust store.
 | `GANYMEDE_UI_URL` | A mirror of ganymede-ui's release downloads. |
 | `RUST_LOG` | The log filter, when `--log-level` isn't given. |
 | `HTTPS_PROXY` | Used for downloads. |
-
-> [!NOTE]
-> **Unreleased.** `JUPYTER_GATEWAY_URL`, `JUPYTER_GATEWAY_AUTH_TOKEN` and
-> `GANYMEDE_UI_URL` are read only by a build of `main` (HEAD), not by the
-> latest release.
 
 `ganymede info` prints every directory in use.
 
