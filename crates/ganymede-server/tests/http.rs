@@ -188,7 +188,9 @@ async fn kernelspecs_kernels_and_sessions_rest() {
     )
     .unwrap();
     let id = k["id"].as_str().unwrap().to_string();
-    assert_eq!(k["execution_state"], "idle");
+    // Answered once the process runs, before its first reply, as
+    // jupyter_server does.
+    assert_eq!(k["execution_state"], "starting");
     let (_, list) = call(&app, "GET", "/api/kernels", None, t).await;
     assert_eq!(list.as_array().unwrap().len(), 1);
     assert_eq!(
