@@ -9,9 +9,16 @@ covers problems with the install itself.
 
 - **Windows** binaries are built and released but not tested end to end
   ([install them](install.md#on-windows)).
-  Signal interrupts and killing a kernel process are not implemented
-  there, so `interrupt_mode: signal` kernels can't be interrupted and a
-  kernel may outlive its shutdown.
+  Signal interrupts are not implemented there, so `interrupt_mode:
+  signal` kernels can't be interrupted. A kernel runs in a job object,
+  so shutdown kills it and every process it started, and they die with
+  the server.
+
+  > [!NOTE]
+  > **Unreleased.** Available only from a build of `main` (HEAD), not in
+  > the latest release. In the latest release, killing a kernel is not
+  > implemented on Windows, and a kernel may outlive its shutdown.
+
 - **Linux** binaries need glibc 2.35 or newer. There is no musl build for
   Alpine; [install from source](install.md#from-source) there.
 - **macOS** binaries are not signed or notarized. A browser download is

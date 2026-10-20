@@ -58,8 +58,12 @@ multiplexes clients onto them. Responsibilities:
 - Port allocation: bind to find free ports, release, pass to kernel. Racy by
   design; `ipc` transport sidesteps it on POSIX.
 - Launch: subprocess with env, cwd, process group (POSIX) or job object
-  (Windows) so interrupt and kill reach children. Not yet on Windows:
-  there is no job object, and the Windows build is untested.
+  (Windows) so interrupt and kill reach children. On Windows only kill
+  does: there are no signal interrupts, and the Windows build is untested.
+
+  > [!NOTE]
+  > **Unreleased.** Available only from a build of `main` (HEAD), not in
+  > the latest release. The latest release has no job object on Windows.
 - Startup handshake: send `kernel_info_request` on shell and control
   repeatedly until both reply. This "nudge" exists because PUB/SUB has a
   slow-joiner problem: iopub messages sent before the subscriber connects
@@ -159,7 +163,7 @@ Ganymede stands on each.
 | Large and fast output | A busy kernel can flood a slow client | Past 10,000 queued iopub messages a client's output is dropped and it is told, as `jupyter_server`'s rate limit does; replies are never dropped |
 | Several clients, reconnects | Laptops sleep and iPads suspend | Kernels outlive connections; a client that reconnects with its session gets what it missed |
 | Security | The server runs code; localhost alone doesn't stop DNS rebinding or a malicious notebook | Token, login cookie, XSRF, `Host` and origin checks, notebook trust; see [Security](security.md) |
-| Windows | Interrupts, process groups and paths differ | Built, untested; no signal interrupts or job object ([Known gaps](known-gaps.md#platforms)) |
+| Windows | Interrupts, process groups and paths differ | Built, untested; job object for kill, no signal interrupts ([Known gaps](known-gaps.md#platforms)) |
 | Debugger (DAP over `debug_request`) | ipykernel advertises it | Passed through on control; not covered by tests yet |
 | Subshells (5.5) | New kernels will use them | `subshell_id` and subshell messages passed through |
 | Headless execution | Useful alone, and the best conformance test | `ganymede run` and `ganymede execute`, compared against `jupyter execute` in CI |
