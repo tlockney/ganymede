@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 # The oldest Rust that builds the workspace; ci.yml's `msrv` job checks it.
 # Raise it on purpose, when a dependency or the code needs a newer one.
