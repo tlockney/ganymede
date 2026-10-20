@@ -181,7 +181,10 @@ to the client that ran the cell, which answers with an `input_reply`.
   launches the kernelspec's command. It then sends `kernel_info_request`
   on shell and control until both answer and iopub has delivered a
   message. This handshake exists because ZeroMQ's PUB/SUB drops messages
-  published before the subscriber connects.
+  published before the subscriber connects. A kernel with an XPUB iopub
+  socket (ipykernel 7, JEP 65) sends `iopub_welcome` when the
+  subscription arrives, which counts as that message, so one request on
+  each channel is enough. The welcome is not passed on to clients.
 - **Interrupt.** A signal to the process group, or an `interrupt_request`
   on control, whichever the kernelspec's `interrupt_mode` says.
 - **Restart and shutdown.** `shutdown_request` on control, a grace period,
