@@ -131,6 +131,11 @@ async fn signal_interrupt_reaches_the_process_group() {
     k.process.kill().await.unwrap();
 }
 
+/// SIGKILL follows SIGTERM after half of this. The shell runs its TERM
+/// trap only once it is scheduled again, which on a loaded macOS runner
+/// took more than 200 ms (#212), so give it a full second.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+
 #[tokio::test]
 async fn shutdown_escalates_to_sigterm_then_sigkill() {
     let dir = tempfile::tempdir().unwrap();
@@ -144,8 +149,9 @@ async fn shutdown_escalates_to_sigterm_then_sigkill() {
     let s = session(&k).await;
     file_says(&out, "ready").await;
     let start = std::time::Instant::now();
-    s.shutdown(false, Duration::from_millis(400)).await.unwrap();
-    assert!(start.elapsed() < Duration::from_secs(5));
+    s.shutdown(false, SHUTDOWN_GRACE).await.unwrap();
+    // Request, wait and SIGTERM wait take 2 x grace before SIGKILL.
+    assert!(start.elapsed() < 2 * SHUTDOWN_GRACE + Duration::from_secs(3));
     assert!(!k.process.is_alive(), "killed in the end");
     assert!(!s.is_alive());
     file_says(&out, "term").await;
@@ -159,7 +165,7 @@ async fn shutdown_escalates_to_sigterm_then_sigkill() {
     let k = launch(dir.path(), &script, Default::default()).await;
     let s = session(&k).await;
     file_says(&out2, "ready").await;
-    s.shutdown(false, Duration::from_millis(400)).await.unwrap();
+    s.shutdown(false, SHUTDOWN_GRACE).await.unwrap();
     assert_eq!(k.process.wait().await, Some(3), "exited by its own trap");
 }
 
