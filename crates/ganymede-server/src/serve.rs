@@ -70,6 +70,10 @@ pub struct ServeArgs {
     /// connected. 0 (the default) never does.
     #[arg(long, value_name = "SECS")]
     pub cull_idle_secs: Option<u64>,
+    /// Restart a kernel that crashes, up to this many times in a row,
+    /// before leaving it dead. Default 5; 0 never restarts.
+    #[arg(long, value_name = "N")]
+    pub kernel_restart_limit: Option<u32>,
     /// Run kernels on this Jupyter server (`http(s)://host[:port][/base]`)
     /// instead of locally.
     #[arg(long, value_name = "URL", env = "JUPYTER_GATEWAY_URL")]
@@ -165,6 +169,9 @@ impl ServeArgs {
         }
         if let Some(v) = cli.cull_idle_secs {
             cfg.cull_idle_secs = v;
+        }
+        if let Some(v) = cli.kernel_restart_limit {
+            cfg.kernel_restart_limit = v;
         }
         if let Some(v) = cli.gateway_url {
             cfg.gateway_url = Some(v);
@@ -431,6 +438,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
             startup_timeout: Duration::from_secs(cfg.startup_timeout_secs),
             quiet: cfg.quiet,
             cull_idle: (cfg.cull_idle_secs > 0).then(|| Duration::from_secs(cfg.cull_idle_secs)),
+            restart_limit: cfg.kernel_restart_limit,
             root_dir: root_dir.clone(),
             base_url: base_url.clone(),
             ..Default::default()

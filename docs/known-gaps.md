@@ -38,8 +38,9 @@ covers problems with the install itself.
 
 ## Kernels
 
-- A kernel that crashes is reported and removed, not restarted
-  automatically as `jupyter_server`'s restarter does.
+- In the latest release, a kernel that crashes is reported and removed,
+  not restarted automatically as `jupyter_server`'s restarter does. A
+  build of `main` restarts it ([Kernel crashes](reference.md#kernel-crashes)).
 - Kernels are found only in the platform Jupyter directories and
   `$JUPYTER_PATH`, not under a Python `sys.prefix`. For a kernel installed
   into a conda or virtual environment, add its prefix with

@@ -37,7 +37,9 @@ missing, so you can judge the switch before making it.
   as it is.
 - **The default kernel** is `--default-kernel`, or else the first
   kernelspec found, not `python3`.
-- **A kernel that crashes** is reported and removed, not restarted.
+- **A kernel that crashes** is reported and removed, not restarted, in
+  the latest release. A build of `main` restarts it as `jupyter_server`
+  does ([Kernel crashes](reference.md#kernel-crashes)).
 - **Configuration** is one TOML file instead of `jupyter_server_config.py`
   ([CLI and configuration](reference.md#config-file)). The settings that
   carry over:
@@ -56,6 +58,7 @@ missing, so you can judge the switch before making it.
   | `ServerApp.max_body_size` | `max_body_size` |
   | `MappingKernelManager.default_kernel_name` | `default_kernel` |
   | `MappingKernelManager.cull_idle_timeout` | `cull_idle_secs` |
+  | `KernelRestarter.restart_limit` | `kernel_restart_limit` (unreleased) |
   | `FileCheckpoints.checkpoint_dir` | `checkpoint_dir` |
   | `NotebookNotary.data_dir` | `notary_dir` |
   | `GatewayClient.url`, `GatewayClient.auth_token` | `gateway_url`, `gateway_token` |

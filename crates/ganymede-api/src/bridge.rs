@@ -281,6 +281,12 @@ impl ClientConnection {
             return Err(crate::ApiError::bad_request("clients cannot send on iopub"));
         }
         self.kernel.touch();
+        if channel == Channel::Shell {
+            self.kernel.sent_on_shell(&msg.header);
+        }
+        if msg.msg_type() == "shutdown_request" {
+            self.kernel.asked_to_exit();
+        }
         self.kernel.session().send(channel, msg).await?;
         Ok(())
     }
