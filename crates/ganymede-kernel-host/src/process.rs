@@ -181,6 +181,10 @@ fn is_file_name_token(s: &str) -> bool {
 struct ChildProcess {
     pid: u32,
     exit: watch::Receiver<Option<Option<i32>>>,
+    /// The job holding the kernel and everything it starts. `None` if the
+    /// job could not be set up; the kernel then runs without one.
+    #[cfg(windows)]
+    job: Option<Arc<job::Job>>,
 }
 
 #[cfg(feature = "subprocess")]
@@ -225,7 +229,11 @@ impl KernelProcess for ChildProcess {
                 other => other,
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            self.terminate_job()
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             Err(Error::Unsupported("kill on this platform"))
         }
@@ -250,6 +258,23 @@ impl KernelProcess for ChildProcess {
     fn kill_now(&self) {
         #[cfg(unix)]
         let _ = self.signal_group(libc::SIGKILL);
+        #[cfg(windows)]
+        let _ = self.terminate_job();
+    }
+}
+
+#[cfg(all(feature = "subprocess", windows))]
+impl ChildProcess {
+    /// Kill the kernel and every process in its job, the counterpart of
+    /// SIGKILL to the process group. Without a job, only `Unsupported`.
+    fn terminate_job(&self) -> Result<()> {
+        if !self.is_alive() {
+            return Ok(());
+        }
+        match &self.job {
+            Some(job) => Ok(job.terminate()?),
+            None => Err(Error::Unsupported("kill without a job object")),
+        }
     }
 }
 
@@ -316,6 +341,10 @@ impl Provisioner for SubprocessProvisioner {
         }
         #[cfg(unix)]
         cmd.process_group(0);
+        // Started suspended, so it can't start a child before it is in
+        // its job; resumed below.
+        #[cfg(windows)]
+        cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
         cmd.kill_on_drop(false);
 
         let mut child = spawn_tied_to_host(cmd).await.map_err(|e| {
@@ -326,6 +355,8 @@ impl Provisioner for SubprocessProvisioner {
             ))
         })?;
         let pid = child.id().ok_or(Error::KernelDied)?;
+        #[cfg(windows)]
+        let job = job::adopt(&child, pid);
         tracing::info!(kernel = %spec.name, kernel_id, pid, "launched kernel");
         let prefix = format!("[kernel {}] ", kernel_id.get(..8).unwrap_or(&kernel_id));
         if let Some(out) = child.stdout.take() {
@@ -336,6 +367,8 @@ impl Provisioner for SubprocessProvisioner {
         }
 
         let (exit_tx, exit_rx) = watch::channel(None);
+        #[cfg(windows)]
+        let leftovers = job.clone();
         tokio::spawn(async move {
             let status = child.wait().await.ok();
             let code = status.and_then(|s| s.code());
@@ -349,13 +382,23 @@ impl Provisioner for SubprocessProvisioner {
             unsafe {
                 libc::kill(-(pid as i32), libc::SIGKILL);
             }
+            // The same for what is left in its job.
+            #[cfg(windows)]
+            if let Some(job) = leftovers {
+                let _ = job.terminate();
+            }
             let _ = exit_tx.send(Some(code));
         });
 
         Ok(LaunchedKernel {
             connection: Some(info),
             connection_file: Some(connection_file),
-            process: Arc::new(ChildProcess { pid, exit: exit_rx }),
+            process: Arc::new(ChildProcess {
+                pid,
+                exit: exit_rx,
+                #[cfg(windows)]
+                job,
+            }),
             interrupt_mode: spec.interrupt_mode,
         })
     }
@@ -429,6 +472,142 @@ async fn spawn_tied_to_host(
     #[cfg(not(target_os = "linux"))]
     {
         cmd.spawn()
+    }
+}
+
+/// Windows job objects: the counterpart of the Unix process group. A
+/// kernel runs in its own job, so killing the job kills every process the
+/// kernel started, and the job is set to kill them all when its last
+/// handle closes, which happens at the latest when the host exits.
+#[cfg(all(feature = "subprocess", windows))]
+mod job {
+    use std::io;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use std::sync::Arc;
+    use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+
+    pub struct Job(OwnedHandle);
+
+    impl Job {
+        /// A job whose processes all die when its last handle closes.
+        fn new() -> io::Result<Job> {
+            // SAFETY: null attributes and name are allowed; the handle is
+            // checked before it is owned.
+            let h = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if h.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let job = Job(unsafe { OwnedHandle::from_raw_handle(h) });
+            // SAFETY: an all-zero struct is a valid "no limits" value.
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            // SAFETY: `info` is the struct this information class takes,
+            // with its size.
+            let ok = unsafe {
+                SetInformationJobObject(
+                    job.raw(),
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const core::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            };
+            if ok == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(job)
+        }
+
+        fn raw(&self) -> HANDLE {
+            self.0.as_raw_handle() as HANDLE
+        }
+
+        fn assign(&self, process: HANDLE) -> io::Result<()> {
+            // SAFETY: both handles are open for the duration of the call.
+            if unsafe { AssignProcessToJobObject(self.raw(), process) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+
+        /// Kill every process in the job.
+        pub fn terminate(&self) -> io::Result<()> {
+            // SAFETY: the job handle is open.
+            if unsafe { TerminateJobObject(self.raw(), 1) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+    }
+
+    /// Put a kernel started with `CREATE_SUSPENDED` in a new job, then
+    /// resume it. It is resumed even when the job can't be set up (the
+    /// host may itself be in a job that forbids it), so the kernel runs
+    /// either way; it then just isn't killed with its children.
+    pub fn adopt(child: &tokio::process::Child, pid: u32) -> Option<Arc<Job>> {
+        let job = child
+            .raw_handle()
+            .ok_or_else(|| io::Error::other("no process handle"))
+            .and_then(|process| {
+                let job = Job::new()?;
+                job.assign(process as HANDLE)?;
+                Ok(job)
+            });
+        if let Err(e) = resume(pid) {
+            tracing::warn!(pid, "resuming kernel: {e}");
+        }
+        match job {
+            Ok(job) => Some(Arc::new(job)),
+            Err(e) => {
+                tracing::warn!(pid, "kernel runs without a job object: {e}");
+                None
+            }
+        }
+    }
+
+    /// Resume the threads of a process started suspended: its main
+    /// thread, the only one it has. `std` doesn't hand out the thread
+    /// handle, so find it in a snapshot of the system's threads.
+    fn resume(pid: u32) -> io::Result<()> {
+        // SAFETY: plain call; the handle is checked before it is owned.
+        let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+        if snap == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        let snap = unsafe { OwnedHandle::from_raw_handle(snap) };
+        let snap = snap.as_raw_handle() as HANDLE;
+        // SAFETY: zeroed is valid; `dwSize` must be set before the call.
+        let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        let mut resumed = 0;
+        // SAFETY: `entry` is a valid THREADENTRY32 with its size set.
+        let mut more = unsafe { Thread32First(snap, &mut entry) } != 0;
+        while more {
+            if entry.th32OwnerProcessID == pid {
+                // SAFETY: the thread handle is checked, used once, and
+                // closed by `OwnedHandle`.
+                let t = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+                if !t.is_null() {
+                    let t = unsafe { OwnedHandle::from_raw_handle(t) };
+                    if unsafe { ResumeThread(t.as_raw_handle() as HANDLE) } != u32::MAX {
+                        resumed += 1;
+                    }
+                }
+            }
+            more = unsafe { Thread32Next(snap, &mut entry) } != 0;
+        }
+        if resumed == 0 {
+            return Err(io::Error::other("no thread of the kernel could be resumed"));
+        }
+        Ok(())
     }
 }
 

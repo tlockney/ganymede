@@ -12,6 +12,14 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+CI also type-checks the kernel host's Windows code from Linux. To run the
+same check, add the target once:
+
+```sh
+rustup target add x86_64-pc-windows-gnu
+cargo clippy -p ganymede-kernel-host --all-targets --target x86_64-pc-windows-gnu -- -D warnings
+```
+
 The end-to-end tests in `crates/ganymede-cli/tests/` also use whatever real
 kernels and Jupyter are installed, and skip what is missing (variables
 [below](#end-to-end-tests)).

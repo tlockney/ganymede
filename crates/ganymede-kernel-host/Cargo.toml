@@ -12,7 +12,7 @@ default = ["zmq", "subprocess"]
 # The ZeroMQ transport (TCP sockets).
 zmq = ["dep:zeromq", "tokio/net"]
 # Launching kernels as child processes from kernelspecs.
-subprocess = ["dep:libc", "tokio/process", "tokio/net"]
+subprocess = ["dep:libc", "dep:windows-sys", "tokio/process", "tokio/net"]
 
 [dependencies]
 ganymede-protocol = { path = "../ganymede-protocol" }
@@ -33,6 +33,16 @@ libc = { version = "0.2", optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 tempfile.workspace = true
 anyhow.workspace = true
+
+# Job objects, so a kernel's process tree dies on kill and with the host.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 # Browser wasm has no OS randomness or clock; take both from JavaScript.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
