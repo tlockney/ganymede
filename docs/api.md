@@ -86,12 +86,20 @@ HTTP/1.1 201 Created
 location: /api/kernels/5b140482-3d46-486f-8a0c-637e047675f2
 
 {"id": "5b140482-3d46-486f-8a0c-637e047675f2", "name": "python3",
- "last_activity": "2026-10-19T09:04:46.461678Z", "execution_state": "idle", "connections": 0}
+ "last_activity": "2026-10-19T09:04:46.461678Z", "execution_state": "starting", "connections": 0}
 ```
 
-The reply comes once the kernel has answered its first
-`kernel_info_request`. `POST /api/sessions` does the same for a notebook
-path, and is what JupyterLab and VS Code call.
+The reply comes as soon as the kernel process is running, as it does from
+`jupyter_server`. The kernel then has `--startup-timeout` seconds to answer;
+connect to its websocket meanwhile and watch for `status: idle`. A kernel
+that never answers is launched again, up to three times, and is then
+reported `status: dead` and removed. `POST /api/sessions` does the same
+for a notebook path, and is what JupyterLab and VS Code call.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. The latest release answers only after the kernel's
+> first reply, with `execution_state: idle`.
 
 ## Run code over the websocket
 

@@ -99,7 +99,8 @@ pub struct RunningKernel {
     /// a session being replaced is not reported as the kernel's.
     booting: AtomicBool,
     /// Held across start, restart, and shutdown, so they do not interleave.
-    lifecycle: tokio::sync::Mutex<()>,
+    /// In an `Arc` so the start's background boot can own its guard.
+    lifecycle: Arc<tokio::sync::Mutex<()>>,
     last_activity: Mutex<String>,
     execution_state: Mutex<String>,
     /// Shell requests clients have sent that the current session has not
@@ -453,23 +454,41 @@ impl KernelManager {
             clients: Mutex::default(),
             alive: watch::channel(true).0,
             booting: AtomicBool::new(true),
-            lifecycle: tokio::sync::Mutex::new(()),
+            lifecycle: Arc::default(),
             last_activity: Mutex::new(now_iso()),
             execution_state: Mutex::new("starting".into()),
             unanswered: Mutex::default(),
             crashes: Mutex::default(),
             asked_to_exit: AtomicBool::new(false),
         });
-        let _guard = kernel.lifecycle.lock().await;
+        let guard = kernel.lifecycle.clone().lock_owned().await;
         kernel.pump(&session, Arc::downgrade(&self.core));
         self.core
             .kernels
             .write()
             .unwrap()
             .insert(id.clone(), kernel.clone());
-        // The nudge runs after insertion so clients can connect while the
-        // kernel starts, as they do against jupyter_server.
-        self.core.boot(&kernel).await?;
+        // Answer once the process is running, as jupyter_server does: its
+        // start returns before the kernel's first reply. The handshake runs
+        // in the background, holding the lifecycle lock so a shutdown or
+        // restart waits for it, and clients can connect meanwhile. A kernel
+        // that never answers is reported dead and removed, as one that
+        // dies later is.
+        let (core, booting) = (self.core.clone(), kernel.clone());
+        tokio::spawn(async move {
+            let _guard = guard;
+            let _ = core.boot(&booting).await;
+        });
+        Ok(kernel.model())
+    }
+
+    /// Wait for a start or restart of `id` in progress, and its model once
+    /// the kernel has answered. 404 when the kernel did not come up: it was
+    /// reported dead and removed.
+    pub async fn wait_started(&self, id: &str) -> Result<KernelModel> {
+        let kernel = self.get(id)?;
+        let _guard = kernel.lifecycle.lock().await;
+        self.core.ensure_listed(&kernel)?;
         Ok(kernel.model())
     }
 
