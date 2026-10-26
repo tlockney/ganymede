@@ -12,6 +12,7 @@ ganymede-protocol = { path = "../ganymede-protocol" }
 ganymede-kernel-host = { path = "../ganymede-kernel-host", default-features = false }
 ganymede-nbformat = { path = "../ganymede-nbformat" }
 thiserror.workspace = true
+async-trait.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 chrono.workspace = true

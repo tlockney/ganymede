@@ -832,6 +832,8 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
         coalesce_streams: args.coalesce_streams,
         record_timing: !args.no_timing,
         store_widget_state: !args.no_widget_state,
+        // As `jupyter execute`: a cell that asks for input fails.
+        allow_stdin: false,
     };
     let mut stop = StopSignals::new()?;
     let mut status = ExitCode::SUCCESS;
