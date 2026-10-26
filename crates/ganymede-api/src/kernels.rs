@@ -149,6 +149,16 @@ impl RunningKernel {
         *self.last_activity.lock().unwrap() = now_iso();
     }
 
+    /// Wait out a start or restart in progress. A message sent to the
+    /// kernel before the handshake sees its iopub can lose its output and
+    /// its idle status, so clients' messages wait, as jupyter_server's
+    /// websocket does not read them until the kernel has answered.
+    pub(crate) async fn wait_booted(&self) {
+        if self.booting.load(Ordering::SeqCst) {
+            drop(self.lifecycle.lock().await);
+        }
+    }
+
     fn set_state(&self, state: &str) {
         *self.execution_state.lock().unwrap() = state.to_string();
     }

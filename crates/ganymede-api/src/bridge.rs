@@ -280,6 +280,7 @@ impl ClientConnection {
         if channel == Channel::IoPub {
             return Err(crate::ApiError::bad_request("clients cannot send on iopub"));
         }
+        self.kernel.wait_booted().await;
         self.kernel.touch();
         if channel == Channel::Shell {
             self.kernel.sent_on_shell(&msg.header);
