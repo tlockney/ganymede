@@ -42,7 +42,7 @@ running kernel. The crates underneath are re-exported as
 | `interrupt()` | A signal or `interrupt_request`, as the kernelspec says. |
 | `restart()` | Relaunch from the kernelspec, keeping the working directory and environment. Only for kernels from `start`. |
 | `shutdown()` | Ask the kernel to exit, then kill it if the engine launched it. Idempotent. |
-| `run_notebook(&mut nb, &opts)`, `run_notebook_with(.., on_event)` | Run a `Notebook` in memory with `nbclient`'s semantics. |
+| `run_notebook(&mut nb, &opts)`, `run_notebook_with(.., &mut handler)` | Run a `Notebook` in memory with `nbclient`'s semantics; the second reports progress and outputs to a `NotebookHandler`. |
 
 `ExecuteResult` has `status`, `execution_count`, `outputs` as a notebook
 stores them, the `execute_reply` content, and every iopub message.
@@ -131,6 +131,28 @@ error: Some(("FakeError", "raised"))
 matches: ["echo"]
 restart: restart needs a kernel this engine launched
 ```
+
+### Streaming a notebook run
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`run_notebook_with` takes an `exec::NotebookHandler`. Its `on_event`
+gets `CellStarted`, `CellFinished`, and an `Output` for each iopub
+message once it is written into the notebook's cells. `Output` names
+the cells whose outputs changed, which includes earlier cells when a
+display is updated. A closure taking an `exec::Event` is a handler.
+
+Kernels may ask for input only when `NotebookOptions::allow_stdin` is
+set; it is off by default, as in `nbclient`. `on_input` gets the cell's
+index and the prompt, and answers as `Handler::on_input` does.
+
+To run cells one at a time, as an editor does, keep one
+`exec::NotebookRun` and call `execute_cell_with(&kernel.session(),
+&mut nb.cells, index, &mut handler)` for each. The run carries the
+execution count and display ids between calls, so a cell that updates a
+display shown by an earlier cell rewrites that cell's output too.
 
 ## Without ZeroMQ or subprocesses
 

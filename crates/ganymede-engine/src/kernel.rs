@@ -1,6 +1,7 @@
 //! One running kernel, and what a host does with it.
 
 use crate::{Error, Result};
+pub use ganymede_exec::{Handler, NoHandler};
 use ganymede_kernel_host::protocol::content::{self, ExecuteRequest, KernelInfoReply, ReplyStatus};
 use ganymede_kernel_host::protocol::{Channel, ConnectionInfo, Message};
 use ganymede_kernel_host::{
@@ -10,7 +11,6 @@ use ganymede_nbformat::{Notebook, Output};
 use serde_json::Value;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tokio::sync::broadcast::error::RecvError;
 
 /// Requests that are not executions get this long to answer.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -113,24 +113,6 @@ impl Default for ExecuteOptions {
         }
     }
 }
-
-/// Receives an execution's messages as they arrive.
-#[async_trait::async_trait]
-pub trait Handler: Send {
-    /// Every iopub message for the request except `status`: streams,
-    /// displays, results, errors, clears, comms.
-    fn on_iopub(&mut self, _msg: &Message) {}
-    /// The kernel asked for input. `None` answers with an empty string.
-    /// Async, so a UI can wait for the user without blocking the runtime.
-    async fn on_input(&mut self, _prompt: &str, _password: bool) -> Option<String> {
-        None
-    }
-}
-
-/// A handler that ignores everything.
-pub struct NoHandler;
-#[async_trait::async_trait]
-impl Handler for NoHandler {}
 
 /// A finished execution.
 #[derive(Debug, Clone)]
@@ -299,57 +281,18 @@ impl Kernel {
         req.store_history = opts.store_history;
         req.allow_stdin = opts.allow_stdin;
         req.stop_on_error = opts.stop_on_error;
-        let msg = session.message("execute_request", &req);
-        let id = msg.header.msg_id.clone();
-        // Subscribe before sending so nothing is missed.
-        let mut sub = session.subscribe();
-        let request = session.request(Channel::Shell, msg, true, opts.timeout.unwrap_or(FOREVER));
-        tokio::pin!(request);
-        // By msg_id, not by count: after a lag the broadcast skips some
-        // messages, and the reply's record fills in exactly those.
-        let mut streamed = std::collections::HashSet::new();
-        let exec = loop {
-            tokio::select! {
-                biased;
-                r = sub.recv() => match r {
-                    Ok((ch, m)) if m.parent_id() == Some(id.as_str()) => match ch {
-                        Channel::IoPub if m.msg_type() != "status" => {
-                            handler.on_iopub(&m);
-                            streamed.insert(m.header.msg_id.clone());
-                        }
-                        Channel::Stdin if m.msg_type() == "input_request" => {
-                            let prompt = m.content["prompt"].as_str().unwrap_or_default();
-                            let password = m.content["password"].as_bool().unwrap_or(false);
-                            let value = handler.on_input(prompt, password).await.unwrap_or_default();
-                            session.reply_input(&m, &value).await?;
-                        }
-                        _ => {}
-                    },
-                    Ok(_) | Err(RecvError::Closed) => {}
-                    Err(RecvError::Lagged(n)) => tracing::warn!(
-                        "output handler fell {n} messages behind; the rest arrives with the reply"
-                    ),
-                },
-                r = &mut request => match r {
-                    // Stop the cell rather than leave the kernel busy; on a
-                    // shared kernel the next client would wait behind it.
-                    Err(ganymede_kernel_host::Error::Timeout(t)) => {
-                        if let Err(e) = session.interrupt().await {
-                            tracing::warn!("interrupting a timed-out cell: {e}");
-                        }
-                        return Err(ganymede_kernel_host::Error::Timeout(t).into());
-                    }
-                    r => break r?,
-                },
+        let timeout = opts.timeout.unwrap_or(FOREVER);
+        let exec = match ganymede_exec::execute_streaming(&session, req, timeout, handler).await {
+            // Stop the cell rather than leave the kernel busy; on a
+            // shared kernel the next client would wait behind it.
+            Err(ganymede_kernel_host::Error::Timeout(t)) => {
+                if let Err(e) = session.interrupt().await {
+                    tracing::warn!("interrupting a timed-out cell: {e}");
+                }
+                return Err(ganymede_kernel_host::Error::Timeout(t).into());
             }
+            r => r?,
         };
-        // The reply can win the race against the last broadcasts; the
-        // execution's own record has everything, in order.
-        for m in exec.outputs.iter() {
-            if !streamed.contains(&m.header.msg_id) {
-                handler.on_iopub(m);
-            }
-        }
         let reply: content::ExecuteReply = exec.reply.content_as()?;
         Ok(ExecuteResult {
             status: reply.status,
@@ -490,14 +433,18 @@ impl Kernel {
         ganymede_exec::execute_notebook(&self.session(), nb, opts).await
     }
 
-    /// [`Kernel::run_notebook`], with progress events.
+    /// [`Kernel::run_notebook`], reporting progress and outputs as they
+    /// arrive and answering input requests through `handler`. A closure
+    /// taking an [`ganymede_exec::Event`] is a handler. To run cells one
+    /// at a time, keep a [`ganymede_exec::NotebookRun`] and pass it
+    /// [`Kernel::session`].
     pub async fn run_notebook_with(
         &self,
         nb: &mut Notebook,
         opts: &ganymede_exec::Options,
-        on_event: &mut dyn FnMut(ganymede_exec::Event<'_>),
+        handler: &mut dyn ganymede_exec::NotebookHandler,
     ) -> std::result::Result<ganymede_exec::Report, ganymede_exec::Error> {
-        ganymede_exec::execute_notebook_with(&self.session(), nb, opts, on_event).await
+        ganymede_exec::execute_notebook_with(&self.session(), nb, opts, handler).await
     }
 }
 
