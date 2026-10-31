@@ -30,6 +30,17 @@ CODE='print(6*7)' STDIN_CODE='print(input())' SLEEP_CODE='import time; time.slee
   node vscode.cjs 'http://127.0.0.1:8888/?token=tok' <kernel>
 ```
 
+`nb-cli.sh` runs [nb-cli](https://github.com/jupyter-ai-contrib/nb-cli),
+the notebook CLI for agents, against a server it starts itself: remote
+mode (`nb connect --server --token`, then create, edit, execute, search,
+clear) and gateway mode (`nb execute --gateway`). It needs `nb` (`cargo
+install nb-cli`, or set `NB`) and Node, not npm:
+
+```
+validation/nb-cli.sh target/release/ganymede cdp-node
+KERNELSPEC_ROOT=<dir holding kernels/> validation/nb-cli.sh target/release/ganymede python3
+```
+
 `jupyterlab.mjs` writes every request the page made to the output JSON,
 with a screenshot next to it. It opens the page with `?token=` and relies
 on the login cookie for websockets, as a browser does. The `CODE`, `EXPECT`,
