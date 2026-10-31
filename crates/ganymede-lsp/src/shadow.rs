@@ -35,7 +35,7 @@ impl Shadow {
     }
 
     /// Writes the document a client message carries, when it is one of
-    /// [`WRITES`] for a URI under the virtual documents URI. Other messages
+    /// `didOpen`, `didChange`, or `didSave` for a URI under the virtual documents URI. Other messages
     /// are left alone. Returns the path written.
     pub async fn apply(&self, message: &Value) -> std::io::Result<Option<PathBuf>> {
         let Some(method) = message.get("method").and_then(Value::as_str) else {
