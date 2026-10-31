@@ -81,6 +81,13 @@ pub struct Config {
     /// Largest request body accepted, in bytes. A notebook is saved in one
     /// request, so this caps its size. `jupyter_server`'s default: 512 MiB.
     pub max_body_size: u64,
+    /// Serve `/api/terminals`, as `jupyter_server`'s `terminals_enabled`.
+    /// A terminal is a shell as the user running the server, which the
+    /// token already grants through kernels.
+    pub terminals_enabled: bool,
+    /// The command terminals run. Empty: `$SHELL` as a login shell, or
+    /// `powershell.exe` on Windows.
+    pub terminal_shell: Vec<String>,
 }
 
 impl Default for Config {
@@ -112,6 +119,8 @@ impl Default for Config {
             local_hostnames: vec!["localhost".into()],
             trust_xheaders: false,
             max_body_size: 512 * 1024 * 1024,
+            terminals_enabled: true,
+            terminal_shell: vec![],
         }
     }
 }

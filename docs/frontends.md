@@ -132,16 +132,39 @@ To use a mirror of PyPI's JSON API, set `GANYMEDE_PYPI_URL` (for example
 host as well. `GANYMEDE_PYPI_HOSTS` adds more allowed hosts, separated by
 commas.
 
+### Extension Manager
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+JupyterLab's Extension Manager panel lists the installed prebuilt
+extensions and whether each is enabled, from `GET /lab/api/extensions`.
+It is read-only, as JupyterLab's own `read-only` manager is: searching
+finds nothing, and its install, uninstall, enable, and disable buttons
+get an error that points at `ganymede lab extension`.
+
 ### Other extension directories
 
 Extensions installed some other way are found in `labextensions` under the
 Jupyter data directories or with `--labextensions-path`, which is searched
 first.
 
+## Terminals
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+JupyterLab's Terminal launcher works: Ganymede serves `/api/terminals` and
+reports `terminalsAvailable` in the page config. The terminal runs your
+login shell. Set `terminals_enabled = false` to turn terminals off; see
+[Open a terminal](api.md#open-a-terminal).
+
 ## What isn't there
 
-JupyterLab server extensions, terminals, and the language server endpoints
-(`/lsp/*`) are Python and are not implemented. `/api/nbconvert` reports no
+JupyterLab server extensions and the language server endpoints (`/lsp/*`)
+are Python and are not implemented. `/api/nbconvert` reports no
 exporters.
 
 ## Other clients

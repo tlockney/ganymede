@@ -12,6 +12,8 @@ As of this survey:
 - REST: `/api/kernels`, `/api/kernelspecs`, `/api/sessions`, `/api/contents`,
   `/api/status`, `/api/me`, `/api/config`, `/api/events`, and JupyterLab's
   `/lab/api/*`. Websocket at `/api/kernels/{id}/channels`.
+- Terminals (**Unreleased.** A build of `main` only): `/api/terminals` and the
+  websocket at `/terminals/websocket/{name}`.
 - Auth: token in header or `?token=`, or the login cookie a token or the
   `/login` form sets, with `jupyter_server`'s `_xsrf` check.
 - CORS via `allow_origins`. Cross-origin clients send the token; the login
@@ -19,8 +21,9 @@ As of this survey:
 - Kernel connection files are written to `JUPYTER_RUNTIME_DIR`, so a ZMQ
   client can attach to a kernel Ganymede launched.
 - Not served: classic Notebook / Notebook 7 pages (`/tree`, `/notebooks`),
-  terminals, `/lsp/*`, nbconvert exporters, server extensions.
-- Collaboration rooms (`/api/collaboration`) serve notebooks only; see
+  `/lsp/*`, nbconvert exporters, server extensions.
+- Collaboration rooms (**Unreleased.** A build of `main` only):
+  `/api/collaboration`, notebooks only; see
   [Document model and collaboration](protocol.md#document-model-and-collaboration).
 
 So a client works today if it speaks REST/websocket with a token and needs no
@@ -63,6 +66,12 @@ There is no maintained native Android Jupyter client; people use a browser.
 | jupynium.nvim | Yes, last commit 2026-09-20 | Drives a browser running Notebook/JupyterLab via Selenium | Needs the classic or Lab UI in a browser; Lab works, the classic UI isn't served. |
 | euporie | Yes, last commit 2026-10-07 | ZMQ only: local kernelspecs or `--connection-file` | Can attach to a Ganymede-launched kernel's connection file. |
 | jupyter console / qtconsole | Yes (2026-09 / 2026-03) | ZMQ, `--existing` connection file | Same as euporie. |
+
+### Agent CLIs
+
+| Client | Maintained | Talks to | Against Ganymede |
+|---|---|---|---|
+| **nb-cli** (`nb`, jupyter-ai-contrib) | Yes, 0.0.10, last commit 2026-09-09, BSD-3 | Remote mode: jupyter-server-documents or jupyter-collaboration if served, else the contents API and kernel websocket. Gateway mode: kernel-gateway subset, notebook on local disk | **Works**, tested 2026-10-31 on cdp-kernel and ipykernel with [`validation/nb-cli.sh`](https://github.com/tlockney/ganymede/blob/main/validation/nb-cli.sh): `create`, `read`, `cell add/update/delete`, `execute` (kernel state kept across calls), `search --with-errors`, `output clear`, `--restart-kernel`, and `execute --gateway`. Connect with `nb connect --server URL --token T`: auto-detect runs `jupyter server list`. `nb create` looks the kernel up on local disk, so the kernelspec must be installed locally too (or under `VIRTUAL_ENV`). In gateway mode pass `--kernel-id`; without it nb takes the first kernel listed, whatever its language. |
 
 ### Embeddable / libraries
 

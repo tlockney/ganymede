@@ -124,7 +124,14 @@ trust_xheaders = false
 max_body_size = 536870912        # 512 MiB
 # gateway_url = "https://kernels.example.org"
 # gateway_token = "..."
+terminals_enabled = true         # false: no /api/terminals
+terminal_shell = []              # empty: $SHELL -l, or powershell.exe on Windows
 ```
+
+> [!NOTE]
+> **Unreleased.** `terminals_enabled` and `terminal_shell` are available
+> only from a build of `main` (HEAD), not in the latest release, which
+> rejects them as unknown keys.
 
 Three keys have no flag:
 
@@ -175,6 +182,44 @@ minute); starting, interrupting, restarting and shutting down a kernel go
 through its REST API, and kernel messages through its websocket. HTTPS is
 checked against the system's trust store.
 
+## Server info file
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+While it runs, `serve`, `lab` and `ui` write `jpserver-<pid>.json` in the
+Jupyter runtime dir, as `jupyter_server` does, so tools that look for a
+running Jupyter server find Ganymede too: `jupyter server list` lists it,
+and an agent or script can read the URL and token from it instead of being
+given them.
+
+```json
+{
+  "base_url": "/",
+  "ganymede_version": "0.4.0",
+  "hostname": "127.0.0.1",
+  "password": false,
+  "pid": 41237,
+  "port": 8888,
+  "root_dir": "/Users/me/notebooks",
+  "secure": false,
+  "sock": "",
+  "token": "3f9c...",
+  "url": "http://127.0.0.1:8888/",
+  "version": "2.21.1"
+}
+```
+
+The keys are `jupyter_server`'s; `version` is the `jupyter_server`
+version whose API Ganymede matches (as `GET /api` reports), and
+`ganymede_version` tells a client it is Ganymede. `token` is empty when
+auth is off. Beside it, `jpserver-<pid>-open.html` redirects a browser to
+the server with the token. Both are readable only by you, since they hold
+the token, and are removed when the server stops; a file left by a server
+that was killed names a process that is gone, which `jupyter server list`
+checks and cleans up. A server embedded in an app writes neither.
+
 ## Environment variables
 
 | Variable | Effect |
@@ -182,7 +227,7 @@ checked against the system's trust store.
 | `JUPYTER_CONFIG_DIR` | The Jupyter config dir. Default `~/.jupyter`. |
 | `JUPYTER_DATA_DIR` | The user Jupyter data dir, where kernelspecs and signatures are. |
 | `JUPYTER_PATH` | More data dirs to search for kernelspecs, first. |
-| `JUPYTER_RUNTIME_DIR` | Where connection files and the cookie secret go. Default: `runtime/` in the data dir. |
+| `JUPYTER_RUNTIME_DIR` | Where connection files, the cookie secret and the [server info file](#server-info-file) go. Default: `runtime/` in the data dir. |
 | `JUPYTER_GATEWAY_URL`, `JUPYTER_GATEWAY_AUTH_TOKEN` | `--gateway-url` and `--gateway-token` when not given. |
 | `GANYMEDE_DATA_DIR` | Where `lab install` and `ui install` put what they download. |
 | `GANYMEDE_PYPI_URL`, `GANYMEDE_PYPI_HOSTS` | A PyPI mirror, and more hosts allowed to serve wheels; see [What a download trusts](frontends.md#what-a-download-trusts). |

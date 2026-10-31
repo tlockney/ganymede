@@ -87,6 +87,7 @@ fn state(root: &std::path::Path) -> AppState {
         lab: None,
         static_dir: None,
         collab: Default::default(),
+        terminals: None,
     }
 }
 
@@ -1001,6 +1002,124 @@ async fn lab_page_carries_page_config_and_assets_are_public() {
         get_text(&app, "/lab/api/themes/../static/main.js").await.0,
         StatusCode::NOT_FOUND
     );
+}
+
+#[tokio::test]
+async fn lab_extensions_are_listed_read_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let rich = dir.path().join("labextensions/@scope/rich");
+    std::fs::create_dir_all(&rich).unwrap();
+    std::fs::write(
+        rich.join("package.json"),
+        r#"{"name": "@scope/rich", "version": "2.0.0rc1", "description": "Rich",
+            "author": {"name": "A. Author"}, "license": "MIT",
+            "bugs": {"url": "https://example.com/bugs"},
+            "repository": {"type": "git", "url": "https://example.com/repo"},
+            "jupyterlab": {"_build": {"load": "static/remoteEntry.js"}, "discovery": {"kernel": []}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        rich.join("install.json"),
+        r#"{"packageManager": "python", "packageName": "rich"}"#,
+    )
+    .unwrap();
+    let st = lab_state(dir.path());
+    let config_dir = st.config_dir.clone();
+    let app = build_router(st);
+    let t = Some(TOKEN);
+    assert_eq!(
+        call(&app, "GET", "/lab/api/extensions", None, None).await.0,
+        StatusCode::FORBIDDEN
+    );
+
+    let (st, list) = call(&app, "GET", "/lab/api/extensions", None, t).await;
+    assert_eq!(st, StatusCode::OK);
+    let list = list.as_array().unwrap();
+    let rich = list.iter().find(|e| e["name"] == "@scope/rich").unwrap();
+    assert_eq!(rich["description"], "Rich");
+    assert_eq!(rich["homepage_url"], "https://example.com/repo");
+    assert_eq!(rich["repository_url"], "https://example.com/repo");
+    assert_eq!(rich["bug_tracker_url"], "https://example.com/bugs");
+    assert_eq!(rich["author"], "A. Author");
+    assert_eq!(rich["license"], "MIT");
+    assert_eq!(rich["companion"], "kernel");
+    assert_eq!(rich["installed_version"], "2.0.0-rc.1");
+    assert_eq!(rich["install"]["packageName"], "rich");
+    let mine = list.iter().find(|e| e["name"] == "my_ext").unwrap();
+    assert_eq!(
+        mine,
+        &json!({
+            "name": "my_ext",
+            "description": "",
+            "homepage_url": "",
+            "pkg_type": "prebuilt",
+            "allowed": true,
+            "approved": false,
+            "companion": null,
+            "core": false,
+            "enabled": true,
+            "install": {},
+            "installed": true,
+            "installed_version": "0.1.0",
+            "latest_version": "0.1.0",
+            "status": "ok",
+            "author": null,
+            "license": null,
+            "bug_tracker_url": null,
+            "documentation_url": null,
+            "package_manager_url": null,
+            "repository_url": null,
+        })
+    );
+
+    // Disabled in page_config.json, as `ganymede lab extension disable` writes it.
+    let pc = config_dir.join("labconfig/page_config.json");
+    std::fs::create_dir_all(pc.parent().unwrap()).unwrap();
+    std::fs::write(&pc, r#"{"disabledExtensions": {"my_ext": true}}"#).unwrap();
+    let (_, list) = call(&app, "GET", "/lab/api/extensions", None, t).await;
+    let enabled = |n: &str| {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == n)
+            .unwrap()["enabled"]
+            .clone()
+    };
+    assert_eq!(
+        (enabled("my_ext"), enabled("@scope/rich")),
+        (json!(false), json!(true))
+    );
+
+    // A search finds nothing: there is no package index.
+    let (st, h, list) = call_with(
+        &app,
+        "GET",
+        "/lab/api/extensions?query=widgets&page=1&per_page=20",
+        None,
+        &[(header::AUTHORIZATION, &format!("token {TOKEN}"))],
+    )
+    .await;
+    assert_eq!((st, list), (StatusCode::OK, json!([])));
+    assert_eq!(
+        h[header::LINK],
+        "</lab/api/extensions?page=1&per_page=20>; rel=\"last\", \
+         </lab/api/extensions?page=1&per_page=20>; rel=\"first\""
+    );
+
+    let (st, body) = call(
+        &app,
+        "POST",
+        "/lab/api/extensions",
+        Some(json!({"cmd": "install", "extension_name": "x"})),
+        t,
+    )
+    .await;
+    assert_eq!(st, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(body["status"], "error");
+    assert!(body["message"]
+        .as_str()
+        .unwrap()
+        .contains("ganymede lab extension"));
 }
 
 #[tokio::test]
@@ -2150,4 +2269,221 @@ async fn collaboration_room_syncs_saves_and_reloads() {
     let roots = Roots::get(&doc);
     let nb = schema::get(&doc.transact(), &roots).unwrap();
     assert_eq!(nb.cells.len(), 1);
+#[tokio::test]
+async fn terminals_are_404_when_disabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(state(dir.path()));
+    for (method, path) in [
+        ("GET", "/api/terminals"),
+        ("POST", "/api/terminals"),
+        ("GET", "/api/terminals/1"),
+        ("DELETE", "/api/terminals/1"),
+    ] {
+        let (s, _) = call(&app, method, path, None, Some(TOKEN)).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{method} {path}");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn terminals_rest_and_websocket() {
+    use ganymede_terminals::{TerminalConfig, TerminalManager};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    let mut st = state(dir.path());
+    st.terminals = Some(Arc::new(TerminalManager::new(TerminalConfig {
+        shell: vec!["/bin/sh".into()],
+        root_dir: dir.path().into(),
+    })));
+    let app = build_router(st);
+
+    assert_eq!(
+        call(&app, "GET", "/api/terminals", None, None).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let (s, list) = call(&app, "GET", "/api/terminals", None, Some(TOKEN)).await;
+    assert_eq!((s, list), (StatusCode::OK, json!([])));
+    let (s, t) = call(&app, "POST", "/api/terminals", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(t["name"], "1");
+    assert!(t["last_activity"].as_str().unwrap().ends_with('Z'), "{t}");
+    let body = json!({"name": "work", "cwd": "sub"});
+    let (s, t) = call(
+        &app,
+        "POST",
+        "/api/terminals",
+        Some(body.clone()),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!((s, &t["name"]), (StatusCode::OK, &json!("work")));
+    let (s, _) = call(&app, "POST", "/api/terminals", Some(body), Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (_, list) = call(&app, "GET", "/api/terminals", None, Some(TOKEN)).await;
+    let names: Vec<_> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].clone())
+        .collect();
+    assert_eq!(names, [json!("1"), json!("work")]);
+    let (s, t) = call(&app, "GET", "/api/terminals/work", None, Some(TOKEN)).await;
+    assert_eq!((s, &t["name"]), (StatusCode::OK, &json!("work")));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let served = app.clone();
+    tokio::spawn(async move { axum::serve(listener, served).await.unwrap() });
+    let connect = |name: &str, token: Option<&str>| {
+        let mut req = format!("ws://{addr}/terminals/websocket/{name}")
+            .into_client_request()
+            .unwrap();
+        if let Some(t) = token {
+            req.headers_mut()
+                .insert("Authorization", format!("token {t}").parse().unwrap());
+        }
+        tokio_tungstenite::connect_async(req)
+    };
+    assert!(connect("work", None).await.is_err());
+    assert!(connect("missing", Some(TOKEN)).await.is_err());
+    let (mut ws, _) = connect("work", Some(TOKEN)).await.unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(10), ws.next())
+        .await
+        .expect("setup in time")
+        .unwrap()
+        .unwrap();
+    assert_eq!(first, TMsg::Text(json!(["setup", {}]).to_string().into()));
+    for msg in [
+        json!(["set_size", 33, 101, 600, 800]),
+        json!(["stdin", "stty size; pwd; echo done-$((20+22))\n"]),
+    ] {
+        ws.send(TMsg::Text(msg.to_string().into())).await.unwrap();
+    }
+    let mut out = String::new();
+    while !out.contains("done-42") {
+        let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .expect("output in time")
+            .unwrap()
+            .unwrap();
+        let TMsg::Text(t) = frame else { continue };
+        let v: Value = serde_json::from_str(t.as_str()).unwrap();
+        assert_eq!(v[0], "stdout", "{v}");
+        out.push_str(v[1].as_str().unwrap());
+    }
+    assert!(out.contains("33 101"), "{out}");
+    assert!(out.contains("/sub"), "{out}");
+
+    let (s, _) = call(&app, "DELETE", "/api/terminals/work", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let mut disconnected = false;
+    while let Ok(Some(Ok(frame))) = tokio::time::timeout(Duration::from_secs(10), ws.next()).await {
+        if let TMsg::Text(t) = frame {
+            let v: Value = serde_json::from_str(t.as_str()).unwrap();
+            if v == json!(["disconnect", 1]) {
+                disconnected = true;
+                break;
+            }
+        }
+    }
+    assert!(disconnected);
+    let (s, _) = call(&app, "GET", "/api/terminals/work", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = call(&app, "DELETE", "/api/terminals/work", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn lab_page_config_reports_terminals() {
+    use ganymede_terminals::{TerminalConfig, TerminalManager};
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = lab_state(dir.path());
+    st.terminals = Some(Arc::new(TerminalManager::new(TerminalConfig::default())));
+    let app = build_router(st);
+    let (s, html) = get_text_with(
+        &app,
+        "/lab",
+        &[(header::AUTHORIZATION, &format!("token {TOKEN}"))],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(html.contains("\"terminalsAvailable\":true"), "{html}");
+}
+
+#[tokio::test]
+async fn files_serves_raw_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(
+        dir.path().join("sub/my pic.png"),
+        [0x89, b'P', b'N', b'G', 0xff],
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "hello").unwrap();
+    std::fs::write(dir.path().join("a.ipynb"), "{\"cells\": []}").unwrap();
+    std::fs::write(dir.path().join("blob"), [0xff, 0xfe]).unwrap();
+    std::fs::write(dir.path().join(".secret"), "no").unwrap();
+    let app = build_router(state(dir.path()));
+    let get = |path: &str| {
+        Request::get(path)
+            .header(header::AUTHORIZATION, format!("token {TOKEN}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let (st, h, body) = raw(&app, get("/files/sub/my%20pic.png")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(h[header::CONTENT_TYPE], "image/png");
+    assert!(h.get(header::CONTENT_DISPOSITION).is_none());
+    assert_eq!(body, [0x89, b'P', b'N', b'G', 0xff]);
+
+    let (_, h, _) = raw(&app, get("/files/sub/my%20pic.png?download=1")).await;
+    assert_eq!(
+        h[header::CONTENT_DISPOSITION],
+        "attachment; filename*=utf-8''my%20pic.png"
+    );
+
+    let (st, h, body) = raw(&app, get("/files/notes.txt")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(h[header::CONTENT_TYPE], "text/plain; charset=UTF-8");
+    assert_eq!(body, b"hello");
+
+    let (st, h, body) = raw(&app, get("/files/a.ipynb")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(h[header::CONTENT_TYPE], "application/x-ipynb+json");
+    assert_eq!(body, b"{\"cells\": []}");
+
+    let (_, h, body) = raw(&app, get("/files/blob")).await;
+    assert_eq!(h[header::CONTENT_TYPE], "application/octet-stream");
+    assert_eq!(body, [0xff, 0xfe]);
+
+    // As jupyter_server: hidden and missing files and escapes are 404,
+    // a directory is 400, and the token is required.
+    for path in [
+        "/files/.secret",
+        "/files/missing.txt",
+        "/files/..%2F..%2Fetc%2Fpasswd",
+    ] {
+        assert_eq!(
+            raw(&app, get(path)).await.0,
+            StatusCode::NOT_FOUND,
+            "{path}"
+        );
+    }
+    assert_eq!(
+        raw(&app, get("/files/sub")).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(&app, "GET", "/files/notes.txt", None, None).await.0,
+        StatusCode::FORBIDDEN
+    );
+}
+
+async fn raw(app: &axum::Router, req: Request<Body>) -> (StatusCode, header::HeaderMap, Vec<u8>) {
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let (parts, body) = resp.into_parts();
+    let bytes = axum::body::to_bytes(body, 1 << 20).await.unwrap();
+    (parts.status, parts.headers, bytes.to_vec())
 }
