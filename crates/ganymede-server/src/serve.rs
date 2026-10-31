@@ -349,7 +349,8 @@ pub fn notary(dir: Option<PathBuf>) -> Notary {
 }
 
 /// Serve until Ctrl-C, then shut down every kernel. Prints the URL, with
-/// its token, as the only line on stdout.
+/// its token, as the only line on stdout, and writes `jpserver-<pid>.json`
+/// in the runtime dir for as long as it serves.
 pub async fn run(cfg: Config) -> Result<()> {
     run_with(cfg, Startup::default()).await
 }
@@ -526,6 +527,21 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     if token.is_none() {
         tracing::warn!("auth disabled: anyone who can reach this port can run code");
     }
+    // Written before the URL is printed, so whoever reads the URL finds
+    // them. An embedding app has no use for them, and on iOS no runtime dir.
+    let _info_files = (!embedded).then(|| {
+        crate::server_info::ServerInfoFiles::write(
+            &ganymede_kernel_host::kernelspec::jupyter_runtime_dir(),
+            &crate::server_info::ServerInfo {
+                ip: &cfg.ip,
+                addr,
+                base_url: &base_url,
+                token: token.as_deref(),
+                root_dir: &root_dir,
+                page,
+            },
+        )
+    });
     if !embedded {
         println!("{url}");
     }
