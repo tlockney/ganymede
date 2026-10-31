@@ -182,3 +182,28 @@ HTTP/1.1 412 Precondition Failed
 
 [Saving a notebook](architecture.md#saving-a-notebook) draws the whole
 path.
+
+## Download a file
+
+```http
+GET /files/images/plot.png?download=1
+```
+
+```http
+HTTP/1.1 200 OK
+content-type: image/png
+content-disposition: attachment; filename*=utf-8''plot.png
+
+<the file's bytes>
+```
+
+`/files/{path}` serves a file's raw bytes, as `jupyter_server` does.
+JupyterLab uses it for Download and Open in New Browser Tab in the file
+browser, and for relative images and links in Markdown. The path is a
+contents path, with the same root and hidden-file rules as
+`/api/contents`. Without `download`, there is no `Content-Disposition`. A
+directory gets `400`.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.

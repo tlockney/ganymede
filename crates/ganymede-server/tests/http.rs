@@ -1950,3 +1950,80 @@ async fn contents_etag_and_if_match() {
         "external"
     );
 }
+
+#[tokio::test]
+async fn files_serves_raw_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(
+        dir.path().join("sub/my pic.png"),
+        [0x89, b'P', b'N', b'G', 0xff],
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "hello").unwrap();
+    std::fs::write(dir.path().join("a.ipynb"), "{\"cells\": []}").unwrap();
+    std::fs::write(dir.path().join("blob"), [0xff, 0xfe]).unwrap();
+    std::fs::write(dir.path().join(".secret"), "no").unwrap();
+    let app = build_router(state(dir.path()));
+    let get = |path: &str| {
+        Request::get(path)
+            .header(header::AUTHORIZATION, format!("token {TOKEN}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let (st, h, body) = raw(&app, get("/files/sub/my%20pic.png")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(h[header::CONTENT_TYPE], "image/png");
+    assert!(h.get(header::CONTENT_DISPOSITION).is_none());
+    assert_eq!(body, [0x89, b'P', b'N', b'G', 0xff]);
+
+    let (_, h, _) = raw(&app, get("/files/sub/my%20pic.png?download=1")).await;
+    assert_eq!(
+        h[header::CONTENT_DISPOSITION],
+        "attachment; filename*=utf-8''my%20pic.png"
+    );
+
+    let (st, h, body) = raw(&app, get("/files/notes.txt")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(h[header::CONTENT_TYPE], "text/plain; charset=UTF-8");
+    assert_eq!(body, b"hello");
+
+    let (st, h, body) = raw(&app, get("/files/a.ipynb")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(h[header::CONTENT_TYPE], "application/x-ipynb+json");
+    assert_eq!(body, b"{\"cells\": []}");
+
+    let (_, h, body) = raw(&app, get("/files/blob")).await;
+    assert_eq!(h[header::CONTENT_TYPE], "application/octet-stream");
+    assert_eq!(body, [0xff, 0xfe]);
+
+    // As jupyter_server: hidden and missing files and escapes are 404,
+    // a directory is 400, and the token is required.
+    for path in [
+        "/files/.secret",
+        "/files/missing.txt",
+        "/files/..%2F..%2Fetc%2Fpasswd",
+    ] {
+        assert_eq!(
+            raw(&app, get(path)).await.0,
+            StatusCode::NOT_FOUND,
+            "{path}"
+        );
+    }
+    assert_eq!(
+        raw(&app, get("/files/sub")).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(&app, "GET", "/files/notes.txt", None, None).await.0,
+        StatusCode::FORBIDDEN
+    );
+}
+
+async fn raw(app: &axum::Router, req: Request<Body>) -> (StatusCode, header::HeaderMap, Vec<u8>) {
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let (parts, body) = resp.into_parts();
+    let bytes = axum::body::to_bytes(body, 1 << 20).await.unwrap();
+    (parts.status, parts.headers, bytes.to_vec())
+}
