@@ -311,6 +311,10 @@ pub fn router(state: AppState, lab: &Lab) -> Router {
         .route("/lab/api/listings/{*path}", get(listings))
         .route("/lab/api/plugins", get(plugins))
         .route("/lab/api/licenses", get(licenses))
+        .route(
+            "/lab/api/extensions",
+            get(list_extensions).post(change_extension),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::api,
@@ -658,6 +662,144 @@ async fn licenses(
     .await
 }
 
+// ----- extension manager ----------------------------------------------------
+
+#[derive(Deserialize, Default)]
+struct ExtensionsQuery {
+    /// Present (even empty) for a search, absent for the installed list.
+    query: Option<String>,
+    per_page: Option<String>,
+}
+
+/// The read-only extension manager's listing, as `jupyterlab`'s
+/// `ExtensionHandler` with `ReadOnlyExtensionManager` answers it: the
+/// installed prebuilt extensions when there is no `query`, and nothing
+/// for a search, since there is no package index to search. One page, so
+/// the `Link` header's first and last pages are both 1.
+async fn list_extensions(
+    State(s): State<AppState>,
+    Query(q): Query<ExtensionsQuery>,
+    uri: axum::extract::OriginalUri,
+) -> HttpResult<Response> {
+    let search = q.query.is_some();
+    let list = crate::routes::blocking(move || {
+        let lab = lab_of(&s)?;
+        Ok(if search {
+            Vec::new()
+        } else {
+            installed_extensions(lab)
+        })
+    })
+    .await?;
+    let per_page = q
+        .per_page
+        .as_deref()
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(30)
+        .min(100);
+    let link = |page: u32| format!("<{}?page={page}&per_page={per_page}>", uri.path());
+    let links = format!("{}; rel=\"last\", {}; rel=\"first\"", link(1), link(1));
+    Ok(([(header::LINK, links)], Json(Value::Array(list))).into_response())
+}
+
+/// Each prebuilt extension as `jupyterlab`'s `ExtensionPackage`: the
+/// fields `ganymede lab extension list` prints, plus the package
+/// metadata the Extension Manager panel shows.
+fn installed_extensions(lab: &Lab) -> Vec<Value> {
+    let disabled = disabled_extensions(&lab.page_config_file);
+    lab.extensions
+        .iter()
+        .map(|e| {
+            let pkg = read_json(&e.dir.join("package.json")).unwrap_or_else(|| json!({}));
+            let str_at = |ptr: &str| pkg.pointer(ptr).and_then(Value::as_str).map(String::from);
+            // `repository` and `author` may be a string or an object.
+            let repository = str_at("/repository/url").or_else(|| str_at("/repository"));
+            let homepage = str_at("/homepage")
+                .or_else(|| repository.clone())
+                .unwrap_or_default();
+            let discovery = pkg.pointer("/jupyterlab/discovery");
+            let companion = if discovery.and_then(|d| d.get("server")).is_some() {
+                Some("server")
+            } else if discovery.and_then(|d| d.get("kernel")).is_some() {
+                Some("kernel")
+            } else {
+                None
+            };
+            let version = semver_version(&e.version);
+            json!({
+                "name": e.name,
+                "description": str_at("/description").unwrap_or_default(),
+                "homepage_url": homepage,
+                "pkg_type": "prebuilt",
+                "allowed": true,
+                "approved": false,
+                "companion": companion,
+                "core": false,
+                "enabled": !disabled.contains(&e.name),
+                "install": read_json(&e.dir.join("install.json")).unwrap_or_else(|| json!({})),
+                "installed": true,
+                "installed_version": version,
+                "latest_version": version,
+                "status": "ok",
+                "author": str_at("/author/name").or_else(|| str_at("/author")),
+                "license": str_at("/license"),
+                "bug_tracker_url": str_at("/bugs/url"),
+                "documentation_url": null,
+                "package_manager_url": null,
+                "repository_url": repository,
+            })
+        })
+        .collect()
+}
+
+/// `jupyterlab`'s `get_semver_version`: drops `.devN` and `.postN`, and
+/// turns a trailing `aN`, `bN`, or `rcN` into `-alpha.N`, `-beta.N`, or
+/// `-rc.N`.
+fn semver_version(v: &str) -> String {
+    let mut out = String::new();
+    for (i, part) in v.split('.').enumerate() {
+        let dropped = ["dev", "post"].iter().any(|p| {
+            part.strip_prefix(p)
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        });
+        if dropped {
+            continue;
+        }
+        if i > 0 {
+            out.push('.');
+        }
+        out.push_str(part);
+    }
+    let digits = out.len() - out.bytes().rev().take_while(u8::is_ascii_digit).count();
+    let (head, n) = out.split_at(digits);
+    if n.is_empty() {
+        return out;
+    }
+    for (py, semver) in [("rc", "-rc."), ("a", "-alpha."), ("b", "-beta.")] {
+        if let Some(base) = head.strip_suffix(py) {
+            return format!("{base}{semver}{n}");
+        }
+    }
+    out
+}
+
+/// Install, uninstall, enable, and disable are refused: the extension
+/// manager is read-only, and `ganymede lab extension` changes extensions.
+/// The body is `jupyterlab`'s `ActionResult`, whose `message` the panel
+/// shows.
+async fn change_extension() -> Response {
+    (
+        StatusCode::METHOD_NOT_ALLOWED,
+        [(header::ALLOW, "GET")],
+        Json(json!({
+            "status": "error",
+            "message": "The extension manager is read-only; use `ganymede lab extension` to install, remove, enable, or disable extensions.",
+            "needs_restart": [],
+        })),
+    )
+        .into_response()
+}
+
 // ----- helpers --------------------------------------------------------------
 
 fn read_json(p: &FsPath) -> Option<Value> {
@@ -966,6 +1108,22 @@ pub(crate) fn html_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn semver_versions_as_jupyterlab_converts_them() {
+        for (py, semver) in [
+            ("1.2.3", "1.2.3"),
+            ("1.2.3.post1", "1.2.3"),
+            ("1.2.3.dev4", "1.2.3"),
+            ("1.2.3a1", "1.2.3-alpha.1"),
+            ("1.2.3b2", "1.2.3-beta.2"),
+            ("1.2.3rc10", "1.2.3-rc.10"),
+            ("1.2.3rc1.dev0", "1.2.3-rc.1"),
+            ("1.2.3-beta.1", "1.2.3-beta.1"),
+        ] {
+            assert_eq!(semver_version(py), semver, "{py}");
+        }
+    }
 
     #[test]
     fn reads_disabled_extensions_in_both_shapes() {

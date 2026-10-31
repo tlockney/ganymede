@@ -1004,6 +1004,124 @@ async fn lab_page_carries_page_config_and_assets_are_public() {
 }
 
 #[tokio::test]
+async fn lab_extensions_are_listed_read_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let rich = dir.path().join("labextensions/@scope/rich");
+    std::fs::create_dir_all(&rich).unwrap();
+    std::fs::write(
+        rich.join("package.json"),
+        r#"{"name": "@scope/rich", "version": "2.0.0rc1", "description": "Rich",
+            "author": {"name": "A. Author"}, "license": "MIT",
+            "bugs": {"url": "https://example.com/bugs"},
+            "repository": {"type": "git", "url": "https://example.com/repo"},
+            "jupyterlab": {"_build": {"load": "static/remoteEntry.js"}, "discovery": {"kernel": []}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        rich.join("install.json"),
+        r#"{"packageManager": "python", "packageName": "rich"}"#,
+    )
+    .unwrap();
+    let st = lab_state(dir.path());
+    let config_dir = st.config_dir.clone();
+    let app = build_router(st);
+    let t = Some(TOKEN);
+    assert_eq!(
+        call(&app, "GET", "/lab/api/extensions", None, None).await.0,
+        StatusCode::FORBIDDEN
+    );
+
+    let (st, list) = call(&app, "GET", "/lab/api/extensions", None, t).await;
+    assert_eq!(st, StatusCode::OK);
+    let list = list.as_array().unwrap();
+    let rich = list.iter().find(|e| e["name"] == "@scope/rich").unwrap();
+    assert_eq!(rich["description"], "Rich");
+    assert_eq!(rich["homepage_url"], "https://example.com/repo");
+    assert_eq!(rich["repository_url"], "https://example.com/repo");
+    assert_eq!(rich["bug_tracker_url"], "https://example.com/bugs");
+    assert_eq!(rich["author"], "A. Author");
+    assert_eq!(rich["license"], "MIT");
+    assert_eq!(rich["companion"], "kernel");
+    assert_eq!(rich["installed_version"], "2.0.0-rc.1");
+    assert_eq!(rich["install"]["packageName"], "rich");
+    let mine = list.iter().find(|e| e["name"] == "my_ext").unwrap();
+    assert_eq!(
+        mine,
+        &json!({
+            "name": "my_ext",
+            "description": "",
+            "homepage_url": "",
+            "pkg_type": "prebuilt",
+            "allowed": true,
+            "approved": false,
+            "companion": null,
+            "core": false,
+            "enabled": true,
+            "install": {},
+            "installed": true,
+            "installed_version": "0.1.0",
+            "latest_version": "0.1.0",
+            "status": "ok",
+            "author": null,
+            "license": null,
+            "bug_tracker_url": null,
+            "documentation_url": null,
+            "package_manager_url": null,
+            "repository_url": null,
+        })
+    );
+
+    // Disabled in page_config.json, as `ganymede lab extension disable` writes it.
+    let pc = config_dir.join("labconfig/page_config.json");
+    std::fs::create_dir_all(pc.parent().unwrap()).unwrap();
+    std::fs::write(&pc, r#"{"disabledExtensions": {"my_ext": true}}"#).unwrap();
+    let (_, list) = call(&app, "GET", "/lab/api/extensions", None, t).await;
+    let enabled = |n: &str| {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == n)
+            .unwrap()["enabled"]
+            .clone()
+    };
+    assert_eq!(
+        (enabled("my_ext"), enabled("@scope/rich")),
+        (json!(false), json!(true))
+    );
+
+    // A search finds nothing: there is no package index.
+    let (st, h, list) = call_with(
+        &app,
+        "GET",
+        "/lab/api/extensions?query=widgets&page=1&per_page=20",
+        None,
+        &[(header::AUTHORIZATION, &format!("token {TOKEN}"))],
+    )
+    .await;
+    assert_eq!((st, list), (StatusCode::OK, json!([])));
+    assert_eq!(
+        h[header::LINK],
+        "</lab/api/extensions?page=1&per_page=20>; rel=\"last\", \
+         </lab/api/extensions?page=1&per_page=20>; rel=\"first\""
+    );
+
+    let (st, body) = call(
+        &app,
+        "POST",
+        "/lab/api/extensions",
+        Some(json!({"cmd": "install", "extension_name": "x"})),
+        t,
+    )
+    .await;
+    assert_eq!(st, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(body["status"], "error");
+    assert!(body["message"]
+        .as_str()
+        .unwrap()
+        .contains("ganymede lab extension"));
+}
+
+#[tokio::test]
 async fn lab_settings_round_trip_json5() {
     let dir = tempfile::tempdir().unwrap();
     let app = build_router(lab_state(dir.path()));
