@@ -86,6 +86,17 @@ fn install_then_serve_jupyterlab() {
         ] {
             assert!(settings.iter().any(|s| s["id"] == id), "{id}: {v}");
         }
+        let r = get("lab/api/extensions").await.unwrap();
+        assert_eq!(r.status(), 200);
+        let v: serde_json::Value = r.json().await.unwrap();
+        for e in ["anywidget", "@jupyter-widgets/jupyterlab-manager"] {
+            let ext = v.as_array().unwrap().iter().find(|x| x["name"] == e);
+            assert_eq!(
+                ext.map(|x| &x["enabled"]),
+                Some(&serde_json::json!(true)),
+                "{e}: {v}"
+            );
+        }
     });
     drop(child);
 

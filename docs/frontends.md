@@ -132,6 +132,18 @@ To use a mirror of PyPI's JSON API, set `GANYMEDE_PYPI_URL` (for example
 host as well. `GANYMEDE_PYPI_HOSTS` adds more allowed hosts, separated by
 commas.
 
+### Extension Manager
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+JupyterLab's Extension Manager panel lists the installed prebuilt
+extensions and whether each is enabled, from `GET /lab/api/extensions`.
+It is read-only, as JupyterLab's own `read-only` manager is: searching
+finds nothing, and its install, uninstall, enable, and disable buttons
+get an error that points at `ganymede lab extension`.
+
 ### Other extension directories
 
 Extensions installed some other way are found in `labextensions` under the
