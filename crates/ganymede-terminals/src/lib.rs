@@ -266,7 +266,7 @@ impl TerminalClient {
 
     /// The next output, or `None` once the terminal has ended and
     /// [`Output::Exited`] was delivered. A client that falls more than
-    /// [`CLIENT_QUEUE`] chunks behind skips the ones it missed.
+    /// 1024 chunks behind skips the ones it missed.
     pub async fn recv(&mut self) -> Option<Output> {
         loop {
             match self.rx.recv().await {
