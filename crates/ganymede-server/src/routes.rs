@@ -76,6 +76,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/nbconvert", get(nbconvert))
         .route("/api/events/subscribe", get(crate::ws::events))
         .route("/kernelspecs/{name}/{*file}", get(kernelspec_resource))
+        .route("/files/{*path}", get(get_file))
         .route("/api/kernelspecs", get(kernelspecs))
         .route("/api/kernelspecs/{name}", get(kernelspec))
         .route("/api/kernels", get(list_kernels).post(start_kernel))
@@ -303,6 +304,84 @@ async fn kernelspec_resource(
         _ => "application/octet-stream",
     };
     Ok(([(header::CONTENT_TYPE, mime)], bytes).into_response())
+}
+
+#[derive(Deserialize, Default)]
+struct FilesQuery {
+    download: Option<String>,
+}
+
+/// `GET /files/{path}`: a file's raw bytes, as `jupyter_server`'s
+/// `FilesHandler` serves them for Download, Open in New Browser Tab and
+/// relative links in Markdown. Goes through the contents manager, so root
+/// confinement and the hidden-file policy are the contents API's; a
+/// directory is a 400, as `cm.get(type="file")` answers there.
+async fn get_file(
+    State(s): State<AppState>,
+    Path(path): Path<String>,
+    Query(q): Query<FilesQuery>,
+) -> HttpResult<Response> {
+    let model = s
+        .contents
+        .get(
+            &path,
+            GetOptions {
+                content: true,
+                type_hint: Some(ContentType::File),
+                ..GetOptions::default()
+            },
+        )
+        .await?;
+    let base64 = model.format == Some(Format::Base64);
+    let bytes = match model.content {
+        Some(Value::String(c)) if base64 => {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD
+                .decode(c)
+                .map_err(|e| HttpError(500, format!("bad base64 from contents: {e}")))?
+        }
+        Some(Value::String(c)) => c.into_bytes(),
+        _ => Vec::new(),
+    };
+    let mut headers = HeaderMap::new();
+    let content_type = file_content_type(&model.name, base64);
+    headers.insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_str(&content_type)
+            .unwrap_or(header::HeaderValue::from_static("application/octet-stream")),
+    );
+    // Tornado's `get_argument("download", False)`: any non-empty value.
+    if q.download.is_some_and(|d| !d.is_empty()) {
+        let disposition = format!("attachment; filename*=utf-8''{}", url_escape(&model.name));
+        if let Ok(v) = header::HeaderValue::from_str(&disposition) {
+            headers.insert(header::CONTENT_DISPOSITION, v);
+        }
+    }
+    Ok((headers, bytes).into_response())
+}
+
+/// `FilesHandler`'s `Content-Type`: `.ipynb` is `application/x-ipynb+json`;
+/// otherwise the type guessed from the name, with a compression suffix
+/// (Python's `mimetypes` encodings) giving `application/gzip` for `.gz`
+/// and `application/octet-stream` for the rest; with no guess, by the
+/// format the contents manager read it in.
+fn file_content_type(name: &str, base64: bool) -> String {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".ipynb") {
+        return "application/x-ipynb+json".into();
+    }
+    let ext = lower.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    match ext {
+        "gz" => return "application/gzip".into(),
+        "z" | "bz2" | "xz" | "br" => return "application/octet-stream".into(),
+        _ => {}
+    }
+    match mime_guess::from_path(&lower).first_raw() {
+        Some("text/plain") => "text/plain; charset=UTF-8".into(),
+        Some(m) => m.into(),
+        None if base64 => "application/octet-stream".into(),
+        None => "text/plain; charset=UTF-8".into(),
+    }
 }
 
 // ----- kernels ----------------------------------------------------------------

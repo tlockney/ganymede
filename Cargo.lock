@@ -999,6 +999,7 @@ dependencies = [
  "hex",
  "hmac",
  "json5",
+ "mime_guess",
  "serde",
  "serde_json",
  "sha2",
