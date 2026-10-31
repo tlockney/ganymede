@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use ganymede_api::{KernelManager, KernelManagerConfig, SessionManager, TransportFactory};
 use ganymede_contents::{FsContents, FsOptions, Notary};
 use ganymede_kernel_host::{FsKernelspecs, KernelspecSource, Provisioner};
+use ganymede_terminals::{TerminalConfig, TerminalManager};
 use std::future::IntoFuture;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -456,6 +457,12 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     let cookie_secret_file = cfg.cookie_secret_file.clone().unwrap_or_else(|| {
         ganymede_kernel_host::kernelspec::jupyter_runtime_dir().join("jupyter_cookie_secret")
     });
+    let terminals = (cfg.terminals_enabled && TerminalManager::supported()).then(|| {
+        Arc::new(TerminalManager::new(TerminalConfig {
+            shell: cfg.terminal_shell.clone(),
+            root_dir: root_dir.clone(),
+        }))
+    });
     let state = AppState {
         kernels: kernels.clone(),
         sessions,
@@ -472,6 +479,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         config_dir,
         static_dir: if lab.is_some() { None } else { static_dir },
         lab: lab.map(Arc::new),
+        terminals: terminals.clone(),
     };
 
     let mut app = crate::build_router(state);
@@ -526,6 +534,9 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     }
 
     serve_until(listener, app, stop, DRAIN_TIMEOUT).await?;
+    if let Some(t) = &terminals {
+        t.shutdown_all();
+    }
     kernels.shutdown_all().await;
     Ok(())
 }

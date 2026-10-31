@@ -124,7 +124,14 @@ trust_xheaders = false
 max_body_size = 536870912        # 512 MiB
 # gateway_url = "https://kernels.example.org"
 # gateway_token = "..."
+terminals_enabled = true         # false: no /api/terminals
+terminal_shell = []              # empty: $SHELL -l, or powershell.exe on Windows
 ```
+
+> [!NOTE]
+> **Unreleased.** `terminals_enabled` and `terminal_shell` are available
+> only from a build of `main` (HEAD), not in the latest release, which
+> rejects them as unknown keys.
 
 Three keys have no flag:
 

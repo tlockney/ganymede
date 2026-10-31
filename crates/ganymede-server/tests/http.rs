@@ -86,6 +86,7 @@ fn state(root: &std::path::Path) -> AppState {
         config_dir: root.join(".jupyter-config"),
         lab: None,
         static_dir: None,
+        terminals: None,
     }
 }
 
@@ -1949,4 +1950,146 @@ async fn contents_etag_and_if_match() {
         std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
         "external"
     );
+}
+
+#[tokio::test]
+async fn terminals_are_404_when_disabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(state(dir.path()));
+    for (method, path) in [
+        ("GET", "/api/terminals"),
+        ("POST", "/api/terminals"),
+        ("GET", "/api/terminals/1"),
+        ("DELETE", "/api/terminals/1"),
+    ] {
+        let (s, _) = call(&app, method, path, None, Some(TOKEN)).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{method} {path}");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn terminals_rest_and_websocket() {
+    use ganymede_terminals::{TerminalConfig, TerminalManager};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    let mut st = state(dir.path());
+    st.terminals = Some(Arc::new(TerminalManager::new(TerminalConfig {
+        shell: vec!["/bin/sh".into()],
+        root_dir: dir.path().into(),
+    })));
+    let app = build_router(st);
+
+    assert_eq!(
+        call(&app, "GET", "/api/terminals", None, None).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let (s, list) = call(&app, "GET", "/api/terminals", None, Some(TOKEN)).await;
+    assert_eq!((s, list), (StatusCode::OK, json!([])));
+    let (s, t) = call(&app, "POST", "/api/terminals", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(t["name"], "1");
+    assert!(t["last_activity"].as_str().unwrap().ends_with('Z'), "{t}");
+    let body = json!({"name": "work", "cwd": "sub"});
+    let (s, t) = call(
+        &app,
+        "POST",
+        "/api/terminals",
+        Some(body.clone()),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!((s, &t["name"]), (StatusCode::OK, &json!("work")));
+    let (s, _) = call(&app, "POST", "/api/terminals", Some(body), Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (_, list) = call(&app, "GET", "/api/terminals", None, Some(TOKEN)).await;
+    let names: Vec<_> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].clone())
+        .collect();
+    assert_eq!(names, [json!("1"), json!("work")]);
+    let (s, t) = call(&app, "GET", "/api/terminals/work", None, Some(TOKEN)).await;
+    assert_eq!((s, &t["name"]), (StatusCode::OK, &json!("work")));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let served = app.clone();
+    tokio::spawn(async move { axum::serve(listener, served).await.unwrap() });
+    let connect = |name: &str, token: Option<&str>| {
+        let mut req = format!("ws://{addr}/terminals/websocket/{name}")
+            .into_client_request()
+            .unwrap();
+        if let Some(t) = token {
+            req.headers_mut()
+                .insert("Authorization", format!("token {t}").parse().unwrap());
+        }
+        tokio_tungstenite::connect_async(req)
+    };
+    assert!(connect("work", None).await.is_err());
+    assert!(connect("missing", Some(TOKEN)).await.is_err());
+    let (mut ws, _) = connect("work", Some(TOKEN)).await.unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(10), ws.next())
+        .await
+        .expect("setup in time")
+        .unwrap()
+        .unwrap();
+    assert_eq!(first, TMsg::Text(json!(["setup", {}]).to_string().into()));
+    for msg in [
+        json!(["set_size", 33, 101, 600, 800]),
+        json!(["stdin", "stty size; pwd; echo done-$((20+22))\n"]),
+    ] {
+        ws.send(TMsg::Text(msg.to_string().into())).await.unwrap();
+    }
+    let mut out = String::new();
+    while !out.contains("done-42") {
+        let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .expect("output in time")
+            .unwrap()
+            .unwrap();
+        let TMsg::Text(t) = frame else { continue };
+        let v: Value = serde_json::from_str(t.as_str()).unwrap();
+        assert_eq!(v[0], "stdout", "{v}");
+        out.push_str(v[1].as_str().unwrap());
+    }
+    assert!(out.contains("33 101"), "{out}");
+    assert!(out.contains("/sub"), "{out}");
+
+    let (s, _) = call(&app, "DELETE", "/api/terminals/work", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let mut disconnected = false;
+    while let Ok(Some(Ok(frame))) = tokio::time::timeout(Duration::from_secs(10), ws.next()).await {
+        if let TMsg::Text(t) = frame {
+            let v: Value = serde_json::from_str(t.as_str()).unwrap();
+            if v == json!(["disconnect", 1]) {
+                disconnected = true;
+                break;
+            }
+        }
+    }
+    assert!(disconnected);
+    let (s, _) = call(&app, "GET", "/api/terminals/work", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = call(&app, "DELETE", "/api/terminals/work", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn lab_page_config_reports_terminals() {
+    use ganymede_terminals::{TerminalConfig, TerminalManager};
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = lab_state(dir.path());
+    st.terminals = Some(Arc::new(TerminalManager::new(TerminalConfig::default())));
+    let app = build_router(st);
+    let (s, html) = get_text_with(
+        &app,
+        "/lab",
+        &[(header::AUTHORIZATION, &format!("token {TOKEN}"))],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(html.contains("\"terminalsAvailable\":true"), "{html}");
 }

@@ -60,6 +60,9 @@ pub struct AppState {
     pub lab: Option<Arc<lab::Lab>>,
     /// Any other `--static-dir`, served at `/` behind the routes.
     pub static_dir: Option<PathBuf>,
+    /// `/api/terminals`; `None` when `terminals_enabled` is off or the
+    /// platform cannot start processes (iOS).
+    pub terminals: Option<Arc<ganymede_terminals::TerminalManager>>,
 }
 
 /// The API router, login pages, and JupyterLab or generic static assets

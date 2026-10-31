@@ -12,6 +12,8 @@ As of this survey:
 - REST: `/api/kernels`, `/api/kernelspecs`, `/api/sessions`, `/api/contents`,
   `/api/status`, `/api/me`, `/api/config`, `/api/events`, and JupyterLab's
   `/lab/api/*`. Websocket at `/api/kernels/{id}/channels`.
+- Terminals (**Unreleased.** A build of `main` only): `/api/terminals` and the
+  websocket at `/terminals/websocket/{name}`.
 - Auth: token in header or `?token=`, or the login cookie a token or the
   `/login` form sets, with `jupyter_server`'s `_xsrf` check.
 - CORS via `allow_origins`. Cross-origin clients send the token; the login
@@ -19,7 +21,7 @@ As of this survey:
 - Kernel connection files are written to `JUPYTER_RUNTIME_DIR`, so a ZMQ
   client can attach to a kernel Ganymede launched.
 - Not served: classic Notebook / Notebook 7 pages (`/tree`, `/notebooks`),
-  terminals, `/lsp/*`, collaboration rooms (`/api/collaboration`),
+  `/lsp/*`, collaboration rooms (`/api/collaboration`),
   nbconvert exporters, server extensions.
 
 So a client works today if it speaks REST/websocket with a token and needs no
