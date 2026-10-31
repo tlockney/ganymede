@@ -26,6 +26,7 @@ ganymede-kernel-host = { path = "../ganymede-kernel-host", default-features = fa
 ganymede-api = { path = "../ganymede-api", default-features = false }
 ganymede-contents = { path = "../ganymede-contents", features = ["sqlite"] }
 ganymede-gateway = { path = "../ganymede-gateway", optional = true }
+ganymede-terminals = { path = "../ganymede-terminals" }
 axum.workspace = true
 tower-http.workspace = true
 tower.workspace = true

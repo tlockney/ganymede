@@ -89,6 +89,12 @@ pub fn router(state: AppState) -> Router {
             "/api/sessions/{id}",
             get(get_session).patch(patch_session).delete(delete_session),
         )
+        .route("/api/terminals", get(list_terminals).post(create_terminal))
+        .route(
+            "/api/terminals/{name}",
+            get(get_terminal).delete(delete_terminal),
+        )
+        .route("/terminals/websocket/{name}", get(crate::ws::terminal))
         .route(
             "/api/contents",
             get(get_contents_root).post(post_contents_root),
@@ -757,4 +763,65 @@ pub(crate) fn origin_listed(allow_origins: &[String], origin: &str) -> bool {
     allow_origins
         .iter()
         .any(|o| o == "*" || o == origin || o == origin_host)
+}
+
+// ----- terminals -------------------------------------------------------------
+
+impl From<ganymede_terminals::Error> for HttpError {
+    fn from(e: ganymede_terminals::Error) -> Self {
+        HttpError(e.status(), e.to_string())
+    }
+}
+
+/// The terminal manager, or 404 as `jupyter_server` answers with
+/// `terminals_enabled` off: it registers no terminal routes then.
+pub(crate) fn terminals(s: &AppState) -> HttpResult<&ganymede_terminals::TerminalManager> {
+    s.terminals
+        .as_deref()
+        .ok_or_else(|| HttpError(404, "Not Found".into()))
+}
+
+fn terminal_model(t: ganymede_terminals::TerminalModel) -> Value {
+    json!({"name": t.name, "last_activity": t.last_activity})
+}
+
+async fn list_terminals(State(s): State<AppState>) -> HttpResult<Json<Value>> {
+    let list = terminals(&s)?.list();
+    Ok(Json(Value::Array(
+        list.into_iter().map(terminal_model).collect(),
+    )))
+}
+
+#[derive(Deserialize, Default)]
+struct TerminalCreate {
+    name: Option<String>,
+    cwd: Option<String>,
+}
+
+/// `POST /api/terminals`, body `{"name"?, "cwd"?}`: 200 with the model,
+/// as `jupyter_server` answers.
+async fn create_terminal(
+    State(s): State<AppState>,
+    LenientJson(body): LenientJson<TerminalCreate>,
+) -> HttpResult<Json<Value>> {
+    let Some(mgr) = s.terminals.clone() else {
+        return Err(HttpError(404, "Not Found".into()));
+    };
+    let model = blocking(move || Ok(mgr.create(body.name, body.cwd.as_deref())?)).await?;
+    Ok(Json(terminal_model(model)))
+}
+
+async fn get_terminal(
+    State(s): State<AppState>,
+    Path(name): Path<String>,
+) -> HttpResult<Json<Value>> {
+    Ok(Json(terminal_model(terminals(&s)?.get(&name)?)))
+}
+
+async fn delete_terminal(
+    State(s): State<AppState>,
+    Path(name): Path<String>,
+) -> HttpResult<StatusCode> {
+    terminals(&s)?.delete(&name)?;
+    Ok(StatusCode::NO_CONTENT)
 }

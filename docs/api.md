@@ -139,6 +139,46 @@ iopub messages go to every client connected to the kernel; the
 Clients that offer the `v1.kernel.websocket.jupyter.org` subprotocol get
 the same messages in its binary framing instead.
 
+## Open a terminal
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`POST /api/terminals` starts a shell in a pseudo-terminal and returns its
+name:
+
+```http
+POST /api/terminals
+{"cwd": "projects"}
+
+200 OK
+{"name": "1", "last_activity": "2026-10-31T21:02:11.402317Z"}
+```
+
+`cwd` is optional. A relative one is resolved against the root dir, and a
+missing directory falls back to the root dir. `name` is optional too;
+unnamed terminals are numbered from 1, and a name in use is a 409.
+`GET /api/terminals` lists them, `GET /api/terminals/<name>` gets one, and
+`DELETE /api/terminals/<name>` ends its shell (204).
+
+Connect to `/terminals/websocket/<name>`. Messages are JSON arrays in text
+frames, terminado's protocol, which JupyterLab's terminal speaks:
+
+| Direction | Message |
+|---|---|
+| server → client | `["setup", {}]` first, then the terminal's recent output as one `["stdout", text]` |
+| server → client | `["stdout", text]` as the shell writes |
+| server → client | `["disconnect", 1]` when the shell exits or the terminal is deleted |
+| client → server | `["stdin", text]`, keystrokes |
+| client → server | `["set_size", rows, cols]`, the window size |
+
+Any number of clients can attach to one terminal; all see its output. The
+shell is `$SHELL` started as a login shell (`powershell.exe` on Windows),
+or `terminal_shell` from the [config file](reference.md#config-file).
+`terminals_enabled = false` turns the routes off, and they answer 404.
+There are no terminals on iOS, where an app cannot start processes.
+
 ## Save a notebook
 
 ```http

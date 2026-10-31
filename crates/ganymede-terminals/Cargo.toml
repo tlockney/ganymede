@@ -1,0 +1,23 @@
+[package]
+name = "ganymede-terminals"
+description = "Terminals for the Jupyter terminals API: the user's shell in a pseudo-terminal, shared by any number of clients."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+
+# Platforms where an app may start processes. iOS and wasm have no
+# terminals: `TerminalManager::supported()` is false there.
+[target.'cfg(not(any(target_os = "ios", target_os = "tvos", target_os = "watchos", target_os = "visionos", target_family = "wasm")))'.dependencies]
+portable-pty = "0.9"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+tempfile.workspace = true
