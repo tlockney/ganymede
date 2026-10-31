@@ -533,6 +533,69 @@ fn serve_answers_the_api() {
     assert!(child.wait().unwrap().success(), "clean exit on SIGTERM");
 }
 
+#[test]
+fn serve_writes_a_server_info_file_while_running() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = tempfile::tempdir().unwrap();
+    let mut child = ganymede(&["serve", "--port", "0", "--token", "secret", "--root-dir"])
+        .arg(root.path())
+        .env("JUPYTER_RUNTIME_DIR", runtime.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let base = line.trim().split('?').next().unwrap().to_string();
+    let port = base.rsplit(':').next().unwrap().trim_end_matches('/');
+
+    let file = runtime.path().join(format!("jpserver-{}.json", child.id()));
+    let info: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&file).expect("jpserver file")).unwrap();
+    assert_eq!(info["url"], base);
+    assert_eq!(info["port"].to_string(), port);
+    assert_eq!(info["token"], "secret");
+    assert_eq!(info["pid"], child.id());
+    assert_eq!(
+        info["root_dir"],
+        root.path().canonicalize().unwrap().to_str().unwrap()
+    );
+    let open = runtime
+        .path()
+        .join(format!("jpserver-{}-open.html", child.id()));
+    assert!(std::fs::read_to_string(&open)
+        .unwrap()
+        .contains("?token=secret"));
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    // `jupyter server list` finds it, as it finds a jupyter_server.
+    if let Some(jupyter) = jupyter() {
+        let out = run_ok(
+            std::process::Command::new(jupyter)
+                .args(["server", "list", "--json"])
+                .env("JUPYTER_RUNTIME_DIR", runtime.path()),
+        );
+        let listed: Vec<serde_json::Value> = stdout(&out)
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(listed, [info], "{}", stdout(&out));
+    }
+
+    unsafe {
+        kill(child.id() as i32, 15);
+    }
+    assert!(child.wait().unwrap().success(), "clean exit on SIGTERM");
+    assert!(!file.exists(), "removed on exit");
+    assert!(!open.exists(), "removed on exit");
+}
+
 extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
 }

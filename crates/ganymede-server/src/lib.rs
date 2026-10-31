@@ -12,6 +12,7 @@ pub mod config;
 pub mod lab;
 pub mod routes;
 pub mod serve;
+pub mod server_info;
 pub mod ws;
 
 use ganymede_api::{KernelManager, SessionManager};
