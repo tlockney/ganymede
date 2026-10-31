@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use ganymede_api::{KernelManager, KernelManagerConfig, SessionManager, TransportFactory};
 use ganymede_contents::{FsContents, FsOptions, Notary};
 use ganymede_kernel_host::{FsKernelspecs, KernelspecSource, Provisioner};
+use ganymede_terminals::{TerminalConfig, TerminalManager};
 use std::future::IntoFuture;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -348,7 +349,8 @@ pub fn notary(dir: Option<PathBuf>) -> Notary {
 }
 
 /// Serve until Ctrl-C, then shut down every kernel. Prints the URL, with
-/// its token, as the only line on stdout.
+/// its token, as the only line on stdout, and writes `jpserver-<pid>.json`
+/// in the runtime dir for as long as it serves.
 pub async fn run(cfg: Config) -> Result<()> {
     run_with(cfg, Startup::default()).await
 }
@@ -456,6 +458,12 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     let cookie_secret_file = cfg.cookie_secret_file.clone().unwrap_or_else(|| {
         ganymede_kernel_host::kernelspec::jupyter_runtime_dir().join("jupyter_cookie_secret")
     });
+    let terminals = (cfg.terminals_enabled && TerminalManager::supported()).then(|| {
+        Arc::new(TerminalManager::new(TerminalConfig {
+            shell: cfg.terminal_shell.clone(),
+            root_dir: root_dir.clone(),
+        }))
+    });
     let state = AppState {
         kernels: kernels.clone(),
         sessions,
@@ -472,6 +480,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         config_dir,
         static_dir: if lab.is_some() { None } else { static_dir },
         lab: lab.map(Arc::new),
+        terminals: terminals.clone(),
     };
 
     let mut app = crate::build_router(state);
@@ -518,6 +527,21 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     if token.is_none() {
         tracing::warn!("auth disabled: anyone who can reach this port can run code");
     }
+    // Written before the URL is printed, so whoever reads the URL finds
+    // them. An embedding app has no use for them, and on iOS no runtime dir.
+    let _info_files = (!embedded).then(|| {
+        crate::server_info::ServerInfoFiles::write(
+            &ganymede_kernel_host::kernelspec::jupyter_runtime_dir(),
+            &crate::server_info::ServerInfo {
+                ip: &cfg.ip,
+                addr,
+                base_url: &base_url,
+                token: token.as_deref(),
+                root_dir: &root_dir,
+                page,
+            },
+        )
+    });
     if !embedded {
         println!("{url}");
     }
@@ -526,6 +550,9 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     }
 
     serve_until(listener, app, stop, DRAIN_TIMEOUT).await?;
+    if let Some(t) = &terminals {
+        t.shutdown_all();
+    }
     kernels.shutdown_all().await;
     Ok(())
 }

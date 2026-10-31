@@ -150,10 +150,21 @@ Extensions installed some other way are found in `labextensions` under the
 Jupyter data directories or with `--labextensions-path`, which is searched
 first.
 
+## Terminals
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+JupyterLab's Terminal launcher works: Ganymede serves `/api/terminals` and
+reports `terminalsAvailable` in the page config. The terminal runs your
+login shell. Set `terminals_enabled = false` to turn terminals off; see
+[Open a terminal](api.md#open-a-terminal).
+
 ## What isn't there
 
-JupyterLab server extensions, terminals, and the language server endpoints
-(`/lsp/*`) are Python and are not implemented. `/api/nbconvert` reports no
+JupyterLab server extensions and the language server endpoints (`/lsp/*`)
+are Python and are not implemented. `/api/nbconvert` reports no
 exporters.
 
 ## Other clients

@@ -126,6 +126,7 @@ impl Lab {
         token: Option<&str>,
         tree_path: &str,
         workspace: &str,
+        terminals: bool,
     ) -> Value {
         let full = |p: &str| format!("{base_url}{p}");
         let federated: Vec<Value> = self
@@ -188,7 +189,7 @@ impl Lab {
             "serverRoot": root,
             "settingsUrl": "/lab/api/settings",
             "store_id": 0,
-            "terminalsAvailable": false,
+            "terminalsAvailable": terminals,
             "themesUrl": "/lab/api/themes",
             "token": token.unwrap_or(""),
             "translationsApiUrl": "/lab/api/translations",
@@ -207,8 +208,9 @@ impl Lab {
         token: Option<&str>,
         tree_path: &str,
         workspace: &str,
+        terminals: bool,
     ) -> String {
-        let config = self.page_config(base_url, token, tree_path, workspace);
+        let config = self.page_config(base_url, token, tree_path, workspace, terminals);
         render_template(&self.template, &config, base_url)
     }
 
@@ -377,7 +379,13 @@ fn page(
     workspace: &str,
 ) -> HttpResult<Response> {
     let lab = lab_of(s)?;
-    let html = Html(lab.render_page(&s.base_url, s.token.as_deref(), tree_path, workspace));
+    let html = Html(lab.render_page(
+        &s.base_url,
+        s.token.as_deref(),
+        tree_path,
+        workspace,
+        s.terminals.is_some(),
+    ));
     Ok(match crate::auth::xsrf_cookie(s, headers) {
         Some(cookie) => ([(header::SET_COOKIE, cookie)], html).into_response(),
         None => html.into_response(),

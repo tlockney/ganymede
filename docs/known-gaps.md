@@ -29,7 +29,8 @@ covers problems with the install itself.
 
 - JupyterLab **server extensions**, which are Python, don't run. Prebuilt
   frontend extensions do; see [JupyterLab and VS Code](frontends.md#extensions).
-- No **terminals** and no language server endpoints (`/lsp/*`).
+- No language server endpoints (`/lsp/*`). **Unreleased.** Terminals
+  are served from a build of `main` (HEAD); the latest release has none.
 - `/api/nbconvert` reports no exporters: there is no export to HTML, PDF,
   or other formats.
 - No JupyterHub single-user mode.
