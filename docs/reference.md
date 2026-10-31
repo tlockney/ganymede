@@ -126,10 +126,17 @@ max_body_size = 536870912        # 512 MiB
 # gateway_token = "..."
 terminals_enabled = true         # false: no /api/terminals
 terminal_shell = []              # empty: $SHELL -l, or powershell.exe on Windows
+
+# Language servers for jupyterlab-lsp, none by default. One table each:
+# [language_servers.pyright]
+# argv = ["pyright-langserver", "--stdio"]
+# languages = ["python"]
+# mime_types = ["text/x-python"]
 ```
 
 > [!NOTE]
-> **Unreleased.** `terminals_enabled` and `terminal_shell` are available
+> **Unreleased.** `terminals_enabled`, `terminal_shell`, and
+> `language_servers` ([Language servers](frontends.md#language-servers)) are available
 > only from a build of `main` (HEAD), not in the latest release, which
 > rejects them as unknown keys.
 

@@ -64,6 +64,9 @@ pub struct AppState {
     /// `/api/terminals`; `None` when `terminals_enabled` is off or the
     /// platform cannot start processes (iOS).
     pub terminals: Option<Arc<ganymede_terminals::TerminalManager>>,
+    /// `/lsp/*`; `None` when no language server is configured or the
+    /// platform cannot start processes (iOS).
+    pub lsp: Option<Arc<ganymede_lsp::LspManager>>,
 }
 
 /// The API router, login pages, and JupyterLab or generic static assets

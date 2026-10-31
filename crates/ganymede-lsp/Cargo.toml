@@ -1,0 +1,26 @@
+[package]
+name = "ganymede-lsp"
+description = "Language servers for jupyterlab-lsp: configured servers started on demand and relayed to websocket clients, as jupyter-lsp does."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs"] }
+tracing.workspace = true
+chrono.workspace = true
+percent-encoding = "2"
+
+# Platforms where an app may start processes. iOS and wasm have no
+# language servers: `LspManager::supported()` is false there.
+[target.'cfg(not(any(target_os = "ios", target_os = "tvos", target_os = "watchos", target_os = "visionos", target_family = "wasm")))'.dependencies]
+tokio = { workspace = true, features = ["process"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+tempfile.workspace = true

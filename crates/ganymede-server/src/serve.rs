@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use ganymede_api::{KernelManager, KernelManagerConfig, SessionManager, TransportFactory};
 use ganymede_contents::{FsContents, FsOptions, Notary};
 use ganymede_kernel_host::{FsKernelspecs, KernelspecSource, Provisioner};
+use ganymede_lsp::{LspConfig, LspManager};
 use ganymede_terminals::{TerminalConfig, TerminalManager};
 use std::future::IntoFuture;
 use std::path::PathBuf;
@@ -464,6 +465,18 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
             root_dir: root_dir.clone(),
         }))
     });
+    let lsp = LspManager::supported()
+        .then(|| {
+            LspManager::new(LspConfig {
+                servers: cfg.language_servers.clone(),
+                root_dir: root_dir.clone(),
+            })
+        })
+        .filter(|m| !m.is_empty())
+        .map(Arc::new);
+    if !cfg.language_servers.is_empty() && !LspManager::supported() {
+        tracing::warn!("language servers are configured but cannot run on this platform");
+    }
     let state = AppState {
         kernels: kernels.clone(),
         sessions,
@@ -481,6 +494,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         static_dir: if lab.is_some() { None } else { static_dir },
         lab: lab.map(Arc::new),
         terminals: terminals.clone(),
+        lsp: lsp.clone(),
     };
 
     let mut app = crate::build_router(state);
@@ -552,6 +566,9 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     serve_until(listener, app, stop, DRAIN_TIMEOUT).await?;
     if let Some(t) = &terminals {
         t.shutdown_all();
+    }
+    if let Some(l) = &lsp {
+        l.shutdown_all();
     }
     kernels.shutdown_all().await;
     Ok(())
