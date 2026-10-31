@@ -472,6 +472,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         config_dir,
         static_dir: if lab.is_some() { None } else { static_dir },
         lab: lab.map(Arc::new),
+        collab: Arc::default(),
     };
 
     let mut app = crate::build_router(state);

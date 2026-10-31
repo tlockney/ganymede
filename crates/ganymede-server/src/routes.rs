@@ -100,6 +100,11 @@ pub fn router(state: AppState) -> Router {
                 .delete(delete_contents)
                 .post(post_contents),
         )
+        .route(
+            "/api/collaboration/session/{*path}",
+            axum::routing::put(crate::collab::session),
+        )
+        .route("/api/collaboration/room/{room}", get(crate::collab::room))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             crate::auth::api,
