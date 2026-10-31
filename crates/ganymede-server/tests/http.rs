@@ -2269,6 +2269,8 @@ async fn collaboration_room_syncs_saves_and_reloads() {
     let roots = Roots::get(&doc);
     let nb = schema::get(&doc.transact(), &roots).unwrap();
     assert_eq!(nb.cells.len(), 1);
+}
+
 #[tokio::test]
 async fn terminals_are_404_when_disabled() {
     let dir = tempfile::tempdir().unwrap();
