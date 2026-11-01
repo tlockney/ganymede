@@ -132,12 +132,39 @@ pub struct LspConfig {
 }
 
 /// A `file://` URI for a path, as the lab page config's `rootUri`.
+/// Percent-encoded as Python's `Path.as_uri()` does, so a root with a
+/// space (iCloud's `Mobile Documents`), `#`, `?`, or `%` gives a valid URI.
+/// A Windows verbatim path (`\\?\C:\...`, what `canonicalize` returns)
+/// becomes `file:///C:/...`.
 pub fn file_uri(path: &Path) -> String {
-    let p = path.to_string_lossy().replace('\\', "/");
-    if p.starts_with('/') {
-        format!("file://{p}")
+    file_uri_str(&path.to_string_lossy())
+}
+
+/// Bytes left as they are in a `file://` path: what Python's `quote`
+/// keeps, plus `:` for a Windows drive.
+const URI_PATH: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'/')
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~')
+    .remove(b':');
+
+fn file_uri_str(path: &str) -> String {
+    let p = if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        format!("//{unc}")
     } else {
-        format!("file:///{p}")
+        path.strip_prefix(r"\\?\").unwrap_or(path).to_string()
+    };
+    let p = p.replace('\\', "/");
+    let encoded = percent_encoding::utf8_percent_encode(&p, URI_PATH).to_string();
+    if let Some(unc) = encoded.strip_prefix("//") {
+        // A UNC share: the server is the URI's host.
+        format!("file://{unc}")
+    } else if encoded.starts_with('/') {
+        format!("file://{encoded}")
+    } else {
+        format!("file:///{encoded}")
     }
 }
 
@@ -394,6 +421,31 @@ fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false)
 }
 
+/// A bare program name found in `path` with one of the `pathext`
+/// extensions (`.COM;.EXE;.BAT;.CMD` on Windows), as `shutil.which` looks
+/// it up. `None` for a name with an extension or a directory in it, and
+/// for one not found: it is then run as given.
+fn find_program(
+    name: &str,
+    path: Option<std::ffi::OsString>,
+    pathext: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    let bare = Path::new(name);
+    if bare.extension().is_some() || bare.components().count() != 1 {
+        return None;
+    }
+    let pathext = pathext.unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+    let exts: Vec<String> = pathext
+        .to_string_lossy()
+        .split(';')
+        .filter(|e| !e.is_empty())
+        .map(str::to_string)
+        .collect();
+    std::env::split_paths(&path?)
+        .flat_map(|dir| exts.iter().map(move |e| dir.join(format!("{name}{e}"))))
+        .find(|p| p.is_file())
+}
+
 /// `$VAR`, `${VAR}`, and `$$` in `value`, from `lookup`, as Python's
 /// `string.Template.safe_substitute`: unknown names are left as written.
 fn expand_env(value: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
@@ -446,7 +498,7 @@ fn expand_env(value: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
     target_family = "wasm"
 )))]
 mod process {
-    use super::{expand_env, framing, Error, Result, Session};
+    use super::{expand_env, find_program, framing, Error, Result, Session};
     use std::path::Path;
     use std::process::Stdio;
     use std::sync::Arc;
@@ -472,7 +524,22 @@ mod process {
             .argv
             .split_first()
             .ok_or_else(|| spawn_err("empty argv".into()))?;
-        let mut cmd = tokio::process::Command::new(prog);
+        // npm installs servers on Windows as `.cmd` shims, which
+        // `CreateProcess` doesn't find by bare name; look them up through
+        // `PATHEXT`, as `jupyter-lsp`'s `shutil.which` does.
+        let program = if cfg!(windows) {
+            find_program(prog, std::env::var_os("PATH"), std::env::var_os("PATHEXT"))
+                .map(|p| p.into_os_string())
+                .unwrap_or_else(|| prog.into())
+        } else {
+            prog.into()
+        };
+        let mut cmd = tokio::process::Command::new(program);
+        // Its own process group, so stopping it also stops what it started
+        // (`typescript-language-server` runs `tsserver`; npm shims wrap
+        // the real server in a shell).
+        #[cfg(unix)]
+        cmd.process_group(0);
         cmd.args(args)
             .current_dir(cwd)
             .stdin(Stdio::piped())
@@ -512,17 +579,48 @@ mod process {
             reader_session.ended(generation);
         });
         let name = session.name.clone();
+        let pid = child.id();
         tokio::spawn(async move {
             tokio::select! {
                 _ = killed => {
-                    let _ = child.kill().await;
+                    // SIGTERM to the group, a moment to exit, then SIGKILL.
+                    signal_group(pid, Signal::Term);
+                    let grace = std::time::Duration::from_secs(2);
+                    if tokio::time::timeout(grace, child.wait()).await.is_err() {
+                        let _ = child.kill().await;
+                    }
                 }
                 status = child.wait() => {
                     tracing::debug!(server = %name, ?status, "language server exited");
                 }
             }
+            // Whatever is left in its group goes too, as kernels' do.
+            signal_group(pid, Signal::Kill);
         });
         Ok(Running { to_server, kill })
+    }
+    enum Signal {
+        Term,
+        Kill,
+    }
+
+    /// Signals the server's process group (unix; a no-op elsewhere, where
+    /// `kill_on_drop` ends the server itself).
+    #[allow(unused_variables)]
+    fn signal_group(pid: Option<u32>, signal: Signal) {
+        #[cfg(unix)]
+        if let Some(pid) = pid.and_then(|p| i32::try_from(p).ok()) {
+            let sig = match signal {
+                Signal::Term => libc::SIGTERM,
+                Signal::Kill => libc::SIGKILL,
+            };
+            // SAFETY: `kill` takes no pointers. The group is the server's
+            // own (`process_group(0)`); a group id is not reused while it
+            // has members, and with none left this finds nothing.
+            unsafe {
+                libc::kill(-pid, sig);
+            }
+        }
     }
 }
 
@@ -557,6 +655,41 @@ mod process {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_uris_are_encoded() {
+        assert_eq!(file_uri_str("/srv/nb"), "file:///srv/nb");
+        assert_eq!(
+            file_uri_str("/Users/u/Library/Mobile Documents/a#b?c%d/é"),
+            "file:///Users/u/Library/Mobile%20Documents/a%23b%3Fc%25d/%C3%A9"
+        );
+        assert_eq!(file_uri_str(r"C:\Users\u\nb"), "file:///C:/Users/u/nb");
+        assert_eq!(file_uri_str(r"\\?\C:\Users\u"), "file:///C:/Users/u");
+        assert_eq!(
+            file_uri_str(r"\\?\UNC\server\share\nb"),
+            "file://server/share/nb"
+        );
+    }
+
+    #[test]
+    fn program_lookup_tries_pathext() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pyright-langserver.CMD"), "").unwrap();
+        std::fs::write(dir.path().join("plain"), "").unwrap();
+        let path = std::env::join_paths([Path::new("/nonexistent"), dir.path()]).unwrap();
+        let exts = Some(std::ffi::OsString::from(".COM;.EXE;.BAT;.CMD"));
+        assert_eq!(
+            find_program("pyright-langserver", Some(path.clone()), exts.clone()),
+            Some(dir.path().join("pyright-langserver.CMD"))
+        );
+        // A name with an extension or a directory is used as given.
+        assert_eq!(
+            find_program("plain.exe", Some(path.clone()), exts.clone()),
+            None
+        );
+        assert_eq!(find_program("./x", Some(path.clone()), exts.clone()), None);
+        assert_eq!(find_program("missing", Some(path), exts), None);
+    }
 
     #[test]
     fn env_expansion_is_safe_substitute() {

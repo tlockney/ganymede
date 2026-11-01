@@ -21,6 +21,9 @@ percent-encoding = "2"
 [target.'cfg(not(any(target_os = "ios", target_os = "tvos", target_os = "watchos", target_os = "visionos", target_family = "wasm")))'.dependencies]
 tokio = { workspace = true, features = ["process"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 tempfile.workspace = true

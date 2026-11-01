@@ -21,7 +21,9 @@ pub struct Shadow {
     dir: PathBuf,
     /// Its `file://` URI, as the page config sends it.
     uri: String,
-    /// Cleared on first use, so documents from an earlier run don't linger.
+    /// Whether the directory was cleared yet: on first use, so documents
+    /// from an earlier run don't linger. Held across each write, so two
+    /// clients' edits are applied one after the other and none is lost.
     cleared: tokio::sync::Mutex<bool>,
 }
 
@@ -75,7 +77,11 @@ impl Shadow {
             }
             None => return Ok(None),
         };
-        self.clear_once().await?;
+        let mut cleared = self.cleared.lock().await;
+        if !*cleared {
+            self.clear().await?;
+            *cleared = true;
+        }
         let old = match tokio::fs::read_to_string(&path).await {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -120,19 +126,13 @@ impl Shadow {
         Ok(Some(path))
     }
 
-    async fn clear_once(&self) -> std::io::Result<()> {
-        let mut cleared = self.cleared.lock().await;
-        if *cleared {
-            return Ok(());
-        }
+    async fn clear(&self) -> std::io::Result<()> {
         match tokio::fs::remove_dir_all(&self.dir).await {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
-        tokio::fs::create_dir_all(&self.dir).await?;
-        *cleared = true;
-        Ok(())
+        tokio::fs::create_dir_all(&self.dir).await
     }
 
     pub fn dir(&self) -> &Path {

@@ -142,3 +142,38 @@ async fn virtual_documents_are_written_before_relaying() {
         .join("other.ipynb")
         .exists());
 }
+
+#[tokio::test]
+async fn stopping_a_server_ends_what_it_started() {
+    let root = tempfile::tempdir().unwrap();
+    let pidfile = root.path().join("worker.pid");
+    // A wrapper with a worker, as npm shims and typescript-language-server
+    // (which runs tsserver) are.
+    let script = format!("sleep 300 & echo $! > '{}'; cat", pidfile.display());
+    let m = manager(root.path(), &[("wrapped", &["sh", "-c", &script], false)]);
+    let mut c = m.connect("wrapped").unwrap();
+    c.send("{}".into()).await;
+    assert_eq!(next(&mut c).await.as_deref(), Some("{}"));
+    let pid: i32 = std::fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let alive = |pid: i32| {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .unwrap()
+            .success()
+    };
+    assert!(alive(pid));
+    drop(c);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while alive(pid) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker {pid} outlived its server"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
