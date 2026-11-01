@@ -3,7 +3,7 @@
   "private": true,
   "description": "Drives real Jupyter clients against a running server.",
   "dependencies": {
-    "@jupyterlab/services": "^7.2.4",
+    "@jupyterlab/services": "^7.6.4",
     "node-fetch": "^2.7.0",
     "playwright": "1.64.1",
     "ws": "^8.18.0"
