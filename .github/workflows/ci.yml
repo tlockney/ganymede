@@ -125,7 +125,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 15
     env:
       GANYMEDE_E2E_KERNELS: cdp-node,python3
       GANYMEDE_E2E_REQUIRE_JUPYTER: "1"
@@ -179,7 +179,7 @@ jobs:
   e2e-cdp-kernel-main:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
     env:
       GANYMEDE_E2E_KERNELS: cdp-node
       GANYMEDE_E2E_REQUIRE_JUPYTER: "1"

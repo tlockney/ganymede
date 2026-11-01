@@ -77,10 +77,22 @@ struct Server {
 }
 
 impl Drop for Server {
+    /// SIGTERM, then SIGKILL after 10 s: a server stuck shutting down
+    /// (jupyter_server with a kernel mid-restart) must not hang the test.
     fn drop(&mut self) {
+        let pid = self.child.id() as i32;
         unsafe {
-            kill(self.child.id() as i32, 15);
+            kill(pid, 15);
         }
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if !matches!(self.child.try_wait(), Ok(None)) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        eprintln!("server {pid} ignored SIGTERM for 10 s; killing it");
+        let _ = self.child.kill();
         let _ = self.child.wait();
     }
 }
@@ -1037,6 +1049,13 @@ fn restart_failure_on_a_real_kernel_reports_it_dead() {
 /// Code that kills the kernel process itself, not only the runtime a cell
 /// runs in: cdp-kernel relaunches a runtime that exits, so its cell kills
 /// the kernel, its parent.
+/// Await `f`, or fail the test naming the step that stalled.
+async fn within<T>(secs: u64, step: &str, f: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(Duration::from_secs(secs), f)
+        .await
+        .unwrap_or_else(|_| panic!("{step}: no result in {secs} s"))
+}
+
 fn crash_code(kernel: &str) -> &'static str {
     match kernel {
         "cdp-node" => "process.kill(process.ppid, 'SIGKILL')",
@@ -1049,15 +1068,21 @@ fn crash_code(kernel: &str) -> &'static str {
 /// Returns the crashed cell's reply, if one came.
 async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
     let cl = Client {
-        http: reqwest::Client::new(),
+        http: reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap(),
         base: base.to_string(),
         transcript: vec![],
     };
-    cl.wait_ready().await;
+    within(60, "waiting for the server", cl.wait_ready()).await;
     use reqwest::Method as M;
-    let (s, k) = cl
-        .call(M::POST, "api/kernels", Some(json!({"name": c.kernel})))
-        .await;
+    let (s, k) = within(
+        60,
+        "starting the kernel",
+        cl.call(M::POST, "api/kernels", Some(json!({"name": c.kernel}))),
+    )
+    .await;
     assert_eq!(s, 201, "{k}");
     let kid = k["id"].as_str().unwrap().to_string();
     let ws_url = |session: &str| {
@@ -1066,13 +1091,21 @@ async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
             base.replacen("http://", "ws://", 1)
         )
     };
-    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url("crash-1"))
-        .await
-        .unwrap();
-    let r = exchange(
-        &mut ws,
-        request("execute_request", "shell", json!({"code": c.set_state})),
-        None,
+    let (mut ws, _) = within(
+        30,
+        "connecting the first websocket",
+        tokio_tungstenite::connect_async(ws_url("crash-1")),
+    )
+    .await
+    .unwrap();
+    let r = within(
+        90,
+        "running the cell that sets state",
+        exchange(
+            &mut ws,
+            request("execute_request", "shell", json!({"code": c.set_state})),
+            None,
+        ),
     )
     .await;
     assert_eq!(r["reply"]["content"]["status"], "ok", "{r}");
@@ -1083,7 +1116,13 @@ async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
         json!({"code": crash_code(c.kernel)}),
     );
     let cell_id = cell["header"]["msg_id"].clone();
-    ws.send(WsMessage::text(cell.to_string())).await.unwrap();
+    within(
+        30,
+        "sending the crash cell",
+        ws.send(WsMessage::text(cell.to_string())),
+    )
+    .await
+    .unwrap();
     let mut reply = None;
     loop {
         let frame = tokio::time::timeout(Duration::from_secs(30), ws.next())
@@ -1109,12 +1148,22 @@ async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
     // idle once it answers. jupyter_server can leave it `busy`, from the
     // crashed cell, when the new kernel publishes no status of its own
     // (cdp-kernel), so there the next cell is what shows it is back.
-    let (s, v) = cl.call(M::GET, &format!("api/kernels/{kid}"), None).await;
+    let (s, v) = within(
+        60,
+        "reading the kernel after the crash",
+        cl.call(M::GET, &format!("api/kernels/{kid}"), None),
+    )
+    .await;
     assert_eq!(s, 200, "kernel removed instead of restarted: {v}");
     if wait_idle {
         let mut state = Value::Null;
         for _ in 0..300 {
-            let (_, v) = cl.call(M::GET, &format!("api/kernels/{kid}"), None).await;
+            let (_, v) = within(
+                60,
+                "polling the restarted kernel",
+                cl.call(M::GET, &format!("api/kernels/{kid}"), None),
+            )
+            .await;
             state = v["execution_state"].clone();
             if state == "idle" {
                 break;
@@ -1123,13 +1172,21 @@ async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
         }
         assert_eq!(state, "idle");
     }
-    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url("crash-2"))
-        .await
-        .unwrap();
-    let r = exchange(
-        &mut ws,
-        request("execute_request", "shell", json!({"code": c.read_state})),
-        None,
+    let (mut ws, _) = within(
+        30,
+        "connecting the second websocket",
+        tokio_tungstenite::connect_async(ws_url("crash-2")),
+    )
+    .await
+    .unwrap();
+    let r = within(
+        90,
+        "running a cell on the restarted kernel",
+        exchange(
+            &mut ws,
+            request("execute_request", "shell", json!({"code": c.read_state})),
+            None,
+        ),
     )
     .await;
     assert_eq!(
@@ -1137,9 +1194,12 @@ async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
         "state survived: {r}"
     );
     drop(ws);
-    let (s, _) = cl
-        .call(M::DELETE, &format!("api/kernels/{kid}"), None)
-        .await;
+    let (s, _) = within(
+        60,
+        "deleting the kernel",
+        cl.call(M::DELETE, &format!("api/kernels/{kid}"), None),
+    )
+    .await;
     assert_eq!(s, 204);
     reply
 }
