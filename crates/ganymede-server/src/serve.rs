@@ -349,6 +349,15 @@ pub fn notary(dir: Option<PathBuf>) -> Notary {
     })
 }
 
+/// Document rooms' file ids for `root`, kept in the Jupyter data dir's
+/// `ganymede_file_ids.db` when there is one.
+fn file_ids(root: &std::path::Path) -> ganymede_contents::FileIds {
+    match ganymede_kernel_host::kernelspec::jupyter_user_data_dir() {
+        Some(dir) => ganymede_contents::FileIds::open(&dir.join("ganymede_file_ids.db"), root),
+        None => ganymede_contents::FileIds::in_memory(),
+    }
+}
+
 /// Serve until Ctrl-C, then shut down every kernel. Prints the URL, with
 /// its token, as the only line on stdout, and writes `jpserver-<pid>.json`
 /// in the runtime dir for as long as it serves.
@@ -493,7 +502,10 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         config_dir,
         static_dir: if lab.is_some() { None } else { static_dir },
         lab: lab.map(Arc::new),
-        collab: Arc::default(),
+        collab: Arc::new(crate::collab::Collab::new(
+            file_ids(&root_dir),
+            Some(root_dir.clone()),
+        )),
         terminals: terminals.clone(),
         lsp: lsp.clone(),
     };

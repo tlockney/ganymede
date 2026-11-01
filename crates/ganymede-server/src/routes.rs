@@ -639,11 +639,10 @@ async fn patch_contents(
     let new_path = body
         .path
         .ok_or_else(|| HttpError(400, "PATCH needs {\"path\": ...}".into()))?;
-    Ok(Json(
-        s.contents
-            .rename(&p, &ganymede_contents::normalize_api_path(&new_path))
-            .await?,
-    ))
+    let new_path = ganymede_contents::normalize_api_path(&new_path);
+    let model = s.contents.rename(&p, &new_path).await?;
+    s.collab.moved(&p, &model.path);
+    Ok(Json(model))
 }
 
 async fn delete_contents(
@@ -651,7 +650,10 @@ async fn delete_contents(
     Path(path): Path<String>,
 ) -> HttpResult<StatusCode> {
     match target(&path) {
-        ContentsTarget::Path(p) => s.contents.delete(&p).await?,
+        ContentsTarget::Path(p) => {
+            s.contents.delete(&p).await?;
+            s.collab.removed(&p);
+        }
         ContentsTarget::Checkpoint(p, id) => s.contents.delete_checkpoint(&p, &id).await?,
         ContentsTarget::Checkpoints(_) | ContentsTarget::Trust(_) => {
             return Err(method_not_allowed())
