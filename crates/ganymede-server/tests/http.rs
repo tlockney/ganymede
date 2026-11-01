@@ -86,6 +86,9 @@ fn state(root: &std::path::Path) -> AppState {
         config_dir: root.join(".jupyter-config"),
         lab: None,
         static_dir: None,
+        collab: Default::default(),
+        terminals: None,
+        lsp: None,
     }
 }
 
@@ -188,7 +191,9 @@ async fn kernelspecs_kernels_and_sessions_rest() {
     )
     .unwrap();
     let id = k["id"].as_str().unwrap().to_string();
-    assert_eq!(k["execution_state"], "idle");
+    // Answered once the process runs, before its first reply, as
+    // jupyter_server does.
+    assert_eq!(k["execution_state"], "starting");
     let (_, list) = call(&app, "GET", "/api/kernels", None, t).await;
     assert_eq!(list.as_array().unwrap().len(), 1);
     assert_eq!(
@@ -966,6 +971,12 @@ async fn lab_page_carries_page_config_and_assets_are_public() {
     assert_eq!(cfg["token"], TOKEN);
     assert_eq!(cfg["treePath"], "a/b.ipynb");
     assert_eq!(cfg["terminalsAvailable"], false);
+    let root_uri = cfg["rootUri"].as_str().unwrap();
+    assert!(root_uri.starts_with("file://"), "{root_uri}");
+    assert_eq!(
+        cfg["virtualDocumentsUri"],
+        format!("{root_uri}/.virtual_documents")
+    );
     assert_eq!(
         cfg["federated_extensions"],
         json!([{"name": "my_ext", "load": "static/remoteEntry.abc.js", "entrypoints": null, "extension": "./extension"}])
@@ -998,6 +1009,124 @@ async fn lab_page_carries_page_config_and_assets_are_public() {
         get_text(&app, "/lab/api/themes/../static/main.js").await.0,
         StatusCode::NOT_FOUND
     );
+}
+
+#[tokio::test]
+async fn lab_extensions_are_listed_read_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let rich = dir.path().join("labextensions/@scope/rich");
+    std::fs::create_dir_all(&rich).unwrap();
+    std::fs::write(
+        rich.join("package.json"),
+        r#"{"name": "@scope/rich", "version": "2.0.0rc1", "description": "Rich",
+            "author": {"name": "A. Author"}, "license": "MIT",
+            "bugs": {"url": "https://example.com/bugs"},
+            "repository": {"type": "git", "url": "https://example.com/repo"},
+            "jupyterlab": {"_build": {"load": "static/remoteEntry.js"}, "discovery": {"kernel": []}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        rich.join("install.json"),
+        r#"{"packageManager": "python", "packageName": "rich"}"#,
+    )
+    .unwrap();
+    let st = lab_state(dir.path());
+    let config_dir = st.config_dir.clone();
+    let app = build_router(st);
+    let t = Some(TOKEN);
+    assert_eq!(
+        call(&app, "GET", "/lab/api/extensions", None, None).await.0,
+        StatusCode::FORBIDDEN
+    );
+
+    let (st, list) = call(&app, "GET", "/lab/api/extensions", None, t).await;
+    assert_eq!(st, StatusCode::OK);
+    let list = list.as_array().unwrap();
+    let rich = list.iter().find(|e| e["name"] == "@scope/rich").unwrap();
+    assert_eq!(rich["description"], "Rich");
+    assert_eq!(rich["homepage_url"], "https://example.com/repo");
+    assert_eq!(rich["repository_url"], "https://example.com/repo");
+    assert_eq!(rich["bug_tracker_url"], "https://example.com/bugs");
+    assert_eq!(rich["author"], "A. Author");
+    assert_eq!(rich["license"], "MIT");
+    assert_eq!(rich["companion"], "kernel");
+    assert_eq!(rich["installed_version"], "2.0.0-rc.1");
+    assert_eq!(rich["install"]["packageName"], "rich");
+    let mine = list.iter().find(|e| e["name"] == "my_ext").unwrap();
+    assert_eq!(
+        mine,
+        &json!({
+            "name": "my_ext",
+            "description": "",
+            "homepage_url": "",
+            "pkg_type": "prebuilt",
+            "allowed": true,
+            "approved": false,
+            "companion": null,
+            "core": false,
+            "enabled": true,
+            "install": {},
+            "installed": true,
+            "installed_version": "0.1.0",
+            "latest_version": "0.1.0",
+            "status": "ok",
+            "author": null,
+            "license": null,
+            "bug_tracker_url": null,
+            "documentation_url": null,
+            "package_manager_url": null,
+            "repository_url": null,
+        })
+    );
+
+    // Disabled in page_config.json, as `ganymede lab extension disable` writes it.
+    let pc = config_dir.join("labconfig/page_config.json");
+    std::fs::create_dir_all(pc.parent().unwrap()).unwrap();
+    std::fs::write(&pc, r#"{"disabledExtensions": {"my_ext": true}}"#).unwrap();
+    let (_, list) = call(&app, "GET", "/lab/api/extensions", None, t).await;
+    let enabled = |n: &str| {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == n)
+            .unwrap()["enabled"]
+            .clone()
+    };
+    assert_eq!(
+        (enabled("my_ext"), enabled("@scope/rich")),
+        (json!(false), json!(true))
+    );
+
+    // A search finds nothing: there is no package index.
+    let (st, h, list) = call_with(
+        &app,
+        "GET",
+        "/lab/api/extensions?query=widgets&page=1&per_page=20",
+        None,
+        &[(header::AUTHORIZATION, &format!("token {TOKEN}"))],
+    )
+    .await;
+    assert_eq!((st, list), (StatusCode::OK, json!([])));
+    assert_eq!(
+        h[header::LINK],
+        "</lab/api/extensions?page=1&per_page=20>; rel=\"last\", \
+         </lab/api/extensions?page=1&per_page=20>; rel=\"first\""
+    );
+
+    let (st, body) = call(
+        &app,
+        "POST",
+        "/lab/api/extensions",
+        Some(json!({"cmd": "install", "extension_name": "x"})),
+        t,
+    )
+    .await;
+    assert_eq!(st, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(body["status"], "error");
+    assert!(body["message"]
+        .as_str()
+        .unwrap()
+        .contains("ganymede lab extension"));
 }
 
 #[tokio::test]
@@ -1947,4 +2076,514 @@ async fn contents_etag_and_if_match() {
         std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
         "external"
     );
+}
+
+/// `/api/collaboration`: a y-websocket client opens a notebook room,
+/// edits it, sees the edit saved, saves on request, and sees a change made
+/// to the file on disk.
+#[tokio::test]
+async fn collaboration_room_syncs_saves_and_reloads() {
+    use ganymede_documents::schema::{self, Roots};
+    use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
+    use ganymede_documents::yrs::updates::decoder::Decode;
+    use ganymede_documents::yrs::updates::encoder::Encode;
+    use ganymede_documents::yrs::{Array, Doc, Map, Out, ReadTxn, Text, Transact, Update};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("demo.ipynb");
+    let original = "{\n \"cells\": [\n  {\n   \"cell_type\": \"markdown\",\n   \"id\": \"a\",\n   \"metadata\": {},\n   \"source\": [\n    \"hello\"\n   ]\n  }\n ],\n \"metadata\": {\n  \"big\": 18446744073709551616\n },\n \"nbformat\": 4,\n \"nbformat_minor\": 5\n}\n";
+    std::fs::write(&file, original).unwrap();
+    let app = build_router(state(dir.path()));
+
+    let body = json!({"format": "json", "type": "notebook"});
+    let (s, v) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/demo.ipynb",
+        Some(body.clone()),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, again) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/demo.ipynb",
+        Some(body.clone()),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["fileId"], again["fileId"]);
+    assert_eq!(v["type"], "notebook");
+    let (s, _) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/nope.ipynb",
+        Some(body),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let url = |session: &str| {
+        let mut req = format!(
+            "ws://{addr}/api/collaboration/room/json:notebook:{}?sessionId={session}",
+            v["fileId"].as_str().unwrap()
+        )
+        .into_client_request()
+        .unwrap();
+        req.headers_mut()
+            .insert("Authorization", format!("token {TOKEN}").parse().unwrap());
+        req
+    };
+
+    // A stale session is told to reload.
+    let (mut stale, _) = tokio_tungstenite::connect_async(url("old")).await.unwrap();
+    match stale.next().await {
+        Some(Ok(TMsg::Close(Some(frame)))) => assert_eq!(u16::from(frame.code), 1003),
+        other => panic!("expected a close, got {other:?}"),
+    }
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(url(v["sessionId"].as_str().unwrap()))
+        .await
+        .unwrap();
+    let doc = Doc::new();
+    let roots = Roots::get(&doc);
+    let sv = doc.transact().state_vector();
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::SyncStep1(sv)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+
+    // Apply frames until `until` holds, answering the server's step 1.
+    async fn pump<S>(ws: &mut S, doc: &Doc, until: impl Fn(&Doc) -> bool) -> Vec<Vec<u8>>
+    where
+        S: futures::Stream<Item = Result<TMsg, tokio_tungstenite::tungstenite::Error>>
+            + futures::Sink<TMsg>
+            + Unpin,
+        <S as futures::Sink<TMsg>>::Error: std::fmt::Debug,
+    {
+        let mut raw = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while !until(doc) {
+            let msg = tokio::time::timeout_at(deadline, ws.next())
+                .await
+                .expect("timed out waiting for the room")
+                .unwrap()
+                .unwrap();
+            let TMsg::Binary(b) = msg else { continue };
+            if b.first() == Some(&2) {
+                raw.push(b.to_vec());
+                continue;
+            }
+            match YMsg::decode_v1(&b) {
+                Ok(YMsg::Sync(SyncMessage::SyncStep1(sv))) => {
+                    let u = doc.transact().encode_state_as_update_v1(&sv);
+                    ws.send(TMsg::Binary(
+                        YMsg::Sync(SyncMessage::SyncStep2(u)).encode_v1().into(),
+                    ))
+                    .await
+                    .unwrap();
+                }
+                Ok(YMsg::Sync(SyncMessage::SyncStep2(u) | SyncMessage::Update(u))) => {
+                    doc.transact_mut()
+                        .apply_update(Update::decode_v1(&u).unwrap())
+                        .unwrap();
+                }
+                _ => {}
+            }
+        }
+        raw
+    }
+    let source = |doc: &Doc| -> Option<String> {
+        let roots = Roots::get(doc);
+        let txn = doc.transact();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+            return None;
+        };
+        let Some(Out::YText(t)) = cell.get(&txn, "source") else {
+            return None;
+        };
+        Some(ganymede_documents::yrs::GetString::get_string(&t, &txn))
+    };
+    pump(&mut ws, &doc, |d| source(d).is_some()).await;
+    assert_eq!(source(&doc).as_deref(), Some("hello"));
+
+    // Edit; the room saves a second later, keeping what it did not touch.
+    let before = doc.transact().state_vector();
+    {
+        let mut txn = doc.transact_mut();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+            panic!()
+        };
+        let Some(Out::YText(t)) = cell.get(&txn, "source") else {
+            panic!()
+        };
+        t.insert(&mut txn, 5, ", world");
+    }
+    let u = doc.transact().encode_state_as_update_v1(&before);
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::Update(u)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !std::fs::read_to_string(&file)
+        .unwrap()
+        .contains("hello, world")
+    {
+        assert!(std::time::Instant::now() < deadline, "edit was not saved");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        original.replace("\"hello\"", "\"hello, world\"")
+    );
+
+    // An explicit save is answered.
+    ws.send(TMsg::Binary(vec![2, 4, b's', b'a', b'v', b'e', 9].into()))
+        .await
+        .unwrap();
+    let raw = loop {
+        let msg = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        if let TMsg::Binary(b) = msg {
+            if b.first() == Some(&2) {
+                break b.to_vec();
+            }
+        }
+    };
+    let reply: Value = serde_json::from_slice(&raw[2..]).unwrap();
+    assert_eq!(reply["responseTo"], 9);
+    assert_eq!(reply["status"], "success");
+
+    // A change on disk reaches the client.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    std::fs::write(&file, original.replace("\"hello\"", "\"changed on disk\"")).unwrap();
+    pump(&mut ws, &doc, |d| {
+        source(d).as_deref() == Some("changed on disk")
+    })
+    .await;
+    let roots = Roots::get(&doc);
+    let nb = schema::get(&doc.transact(), &roots).unwrap();
+    assert_eq!(nb.cells.len(), 1);
+}
+
+#[tokio::test]
+async fn terminals_are_404_when_disabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(state(dir.path()));
+    for (method, path) in [
+        ("GET", "/api/terminals"),
+        ("POST", "/api/terminals"),
+        ("GET", "/api/terminals/1"),
+        ("DELETE", "/api/terminals/1"),
+    ] {
+        let (s, _) = call(&app, method, path, None, Some(TOKEN)).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{method} {path}");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn terminals_rest_and_websocket() {
+    use ganymede_terminals::{TerminalConfig, TerminalManager};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    let mut st = state(dir.path());
+    st.terminals = Some(Arc::new(TerminalManager::new(TerminalConfig {
+        shell: vec!["/bin/sh".into()],
+        root_dir: dir.path().into(),
+    })));
+    let app = build_router(st);
+
+    assert_eq!(
+        call(&app, "GET", "/api/terminals", None, None).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let (s, list) = call(&app, "GET", "/api/terminals", None, Some(TOKEN)).await;
+    assert_eq!((s, list), (StatusCode::OK, json!([])));
+    let (s, t) = call(&app, "POST", "/api/terminals", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(t["name"], "1");
+    assert!(t["last_activity"].as_str().unwrap().ends_with('Z'), "{t}");
+    let body = json!({"name": "work", "cwd": "sub"});
+    let (s, t) = call(
+        &app,
+        "POST",
+        "/api/terminals",
+        Some(body.clone()),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!((s, &t["name"]), (StatusCode::OK, &json!("work")));
+    let (s, _) = call(&app, "POST", "/api/terminals", Some(body), Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (_, list) = call(&app, "GET", "/api/terminals", None, Some(TOKEN)).await;
+    let names: Vec<_> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].clone())
+        .collect();
+    assert_eq!(names, [json!("1"), json!("work")]);
+    let (s, t) = call(&app, "GET", "/api/terminals/work", None, Some(TOKEN)).await;
+    assert_eq!((s, &t["name"]), (StatusCode::OK, &json!("work")));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let served = app.clone();
+    tokio::spawn(async move { axum::serve(listener, served).await.unwrap() });
+    let connect = |name: &str, token: Option<&str>| {
+        let mut req = format!("ws://{addr}/terminals/websocket/{name}")
+            .into_client_request()
+            .unwrap();
+        if let Some(t) = token {
+            req.headers_mut()
+                .insert("Authorization", format!("token {t}").parse().unwrap());
+        }
+        tokio_tungstenite::connect_async(req)
+    };
+    assert!(connect("work", None).await.is_err());
+    assert!(connect("missing", Some(TOKEN)).await.is_err());
+    let (mut ws, _) = connect("work", Some(TOKEN)).await.unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(10), ws.next())
+        .await
+        .expect("setup in time")
+        .unwrap()
+        .unwrap();
+    assert_eq!(first, TMsg::Text(json!(["setup", {}]).to_string().into()));
+    for msg in [
+        json!(["set_size", 33, 101, 600, 800]),
+        json!(["stdin", "stty size; pwd; echo done-$((20+22))\n"]),
+    ] {
+        ws.send(TMsg::Text(msg.to_string().into())).await.unwrap();
+    }
+    let mut out = String::new();
+    while !out.contains("done-42") {
+        let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .expect("output in time")
+            .unwrap()
+            .unwrap();
+        let TMsg::Text(t) = frame else { continue };
+        let v: Value = serde_json::from_str(t.as_str()).unwrap();
+        assert_eq!(v[0], "stdout", "{v}");
+        out.push_str(v[1].as_str().unwrap());
+    }
+    assert!(out.contains("33 101"), "{out}");
+    assert!(out.contains("/sub"), "{out}");
+
+    let (s, _) = call(&app, "DELETE", "/api/terminals/work", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let mut disconnected = false;
+    while let Ok(Some(Ok(frame))) = tokio::time::timeout(Duration::from_secs(10), ws.next()).await {
+        if let TMsg::Text(t) = frame {
+            let v: Value = serde_json::from_str(t.as_str()).unwrap();
+            if v == json!(["disconnect", 1]) {
+                disconnected = true;
+                break;
+            }
+        }
+    }
+    assert!(disconnected);
+    let (s, _) = call(&app, "GET", "/api/terminals/work", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = call(&app, "DELETE", "/api/terminals/work", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn lab_page_config_reports_terminals() {
+    use ganymede_terminals::{TerminalConfig, TerminalManager};
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = lab_state(dir.path());
+    st.terminals = Some(Arc::new(TerminalManager::new(TerminalConfig::default())));
+    let app = build_router(st);
+    let (s, html) = get_text_with(
+        &app,
+        "/lab",
+        &[(header::AUTHORIZATION, &format!("token {TOKEN}"))],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(html.contains("\"terminalsAvailable\":true"), "{html}");
+}
+
+#[tokio::test]
+async fn files_serves_raw_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(
+        dir.path().join("sub/my pic.png"),
+        [0x89, b'P', b'N', b'G', 0xff],
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "hello").unwrap();
+    std::fs::write(dir.path().join("a.ipynb"), "{\"cells\": []}").unwrap();
+    std::fs::write(dir.path().join("blob"), [0xff, 0xfe]).unwrap();
+    std::fs::write(dir.path().join(".secret"), "no").unwrap();
+    let app = build_router(state(dir.path()));
+    let get = |path: &str| {
+        Request::get(path)
+            .header(header::AUTHORIZATION, format!("token {TOKEN}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let (st, h, body) = raw(&app, get("/files/sub/my%20pic.png")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(h[header::CONTENT_TYPE], "image/png");
+    assert!(h.get(header::CONTENT_DISPOSITION).is_none());
+    assert_eq!(body, [0x89, b'P', b'N', b'G', 0xff]);
+
+    let (_, h, _) = raw(&app, get("/files/sub/my%20pic.png?download=1")).await;
+    assert_eq!(
+        h[header::CONTENT_DISPOSITION],
+        "attachment; filename*=utf-8''my%20pic.png"
+    );
+
+    let (st, h, body) = raw(&app, get("/files/notes.txt")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(h[header::CONTENT_TYPE], "text/plain; charset=UTF-8");
+    assert_eq!(body, b"hello");
+
+    let (st, h, body) = raw(&app, get("/files/a.ipynb")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(h[header::CONTENT_TYPE], "application/x-ipynb+json");
+    assert_eq!(body, b"{\"cells\": []}");
+
+    let (_, h, body) = raw(&app, get("/files/blob")).await;
+    assert_eq!(h[header::CONTENT_TYPE], "application/octet-stream");
+    assert_eq!(body, [0xff, 0xfe]);
+
+    // As jupyter_server: hidden and missing files and escapes are 404,
+    // a directory is 400, and the token is required.
+    for path in [
+        "/files/.secret",
+        "/files/missing.txt",
+        "/files/..%2F..%2Fetc%2Fpasswd",
+    ] {
+        assert_eq!(
+            raw(&app, get(path)).await.0,
+            StatusCode::NOT_FOUND,
+            "{path}"
+        );
+    }
+    assert_eq!(
+        raw(&app, get("/files/sub")).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(&app, "GET", "/files/notes.txt", None, None).await.0,
+        StatusCode::FORBIDDEN
+    );
+}
+
+async fn raw(app: &axum::Router, req: Request<Body>) -> (StatusCode, header::HeaderMap, Vec<u8>) {
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let (parts, body) = resp.into_parts();
+    let bytes = axum::body::to_bytes(body, 1 << 20).await.unwrap();
+    (parts.status, parts.headers, bytes.to_vec())
+}
+
+#[tokio::test]
+async fn language_servers_are_404_when_none_configured() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(state(dir.path()));
+    let (s, _) = call(&app, "GET", "/lsp/status", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+/// `cat` as the language server: it echoes each framed message, so a
+/// client's message comes back through the server's stdout.
+#[cfg(unix)]
+#[tokio::test]
+async fn language_server_status_and_websocket() {
+    use ganymede_lsp::{LanguageServerSpec, LspConfig, LspManager};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    let spec: LanguageServerSpec = serde_json::from_value(json!({
+        "argv": ["cat"],
+        "languages": ["python"],
+        "mime_types": ["text/x-python"],
+        "env": {"SECRET": "x"},
+        "display_name": "Echo",
+    }))
+    .unwrap();
+    st.lsp = Some(Arc::new(LspManager::new(LspConfig {
+        servers: [("echo".to_string(), spec)].into(),
+        root_dir: dir.path().into(),
+    })));
+    let app = build_router(st);
+
+    assert_eq!(
+        call(&app, "GET", "/lsp/status", None, None).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let (s, status) = call(&app, "GET", "/lsp/status", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(status["version"], 2);
+    assert_eq!(status["specs"]["echo"]["argv"], json!([""]));
+    assert_eq!(status["specs"]["echo"]["env"], json!({}));
+    assert_eq!(status["specs"]["echo"]["display_name"], "Echo");
+    assert_eq!(status["sessions"]["echo"]["status"], "not_started");
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let served = app.clone();
+    tokio::spawn(async move { axum::serve(listener, served).await.unwrap() });
+    let connect = |name: &str, token: Option<&str>| {
+        let mut req = format!("ws://{addr}/lsp/ws/{name}")
+            .into_client_request()
+            .unwrap();
+        if let Some(t) = token {
+            req.headers_mut()
+                .insert("Authorization", format!("token {t}").parse().unwrap());
+        }
+        tokio_tungstenite::connect_async(req)
+    };
+    assert!(connect("echo", None).await.is_err());
+    assert!(connect("missing", Some(TOKEN)).await.is_err());
+    let (mut a, _) = connect("echo", Some(TOKEN)).await.unwrap();
+    let (mut b, _) = connect("echo", Some(TOKEN)).await.unwrap();
+    let (_, status) = call(&app, "GET", "/lsp/status", None, Some(TOKEN)).await;
+    assert_eq!(status["sessions"]["echo"]["status"], "started");
+    assert_eq!(status["sessions"]["echo"]["handler_count"], 2);
+
+    let msg = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}}).to_string();
+    a.send(TMsg::Text(msg.clone().into())).await.unwrap();
+    for ws in [&mut a, &mut b] {
+        let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .expect("reply in time")
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame, TMsg::Text(msg.clone().into()));
+    }
+
+    a.close(None).await.unwrap();
+    b.close(None).await.unwrap();
+    // The server stops once both sockets are gone.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_, status) = call(&app, "GET", "/lsp/status", None, Some(TOKEN)).await;
+        if status["sessions"]["echo"]["status"] == "stopped" {
+            assert_eq!(status["sessions"]["echo"]["handler_count"], 0);
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{status}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }

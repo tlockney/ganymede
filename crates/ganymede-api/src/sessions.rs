@@ -225,6 +225,17 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
+    /// Start a kernel and wait for it to answer, as a client does by
+    /// watching its status.
+    async fn started(
+        m: &KernelManager,
+        name: Option<&str>,
+        path: Option<&str>,
+    ) -> Result<crate::KernelModel> {
+        let k = m.start(name, path).await?;
+        m.wait_started(&k.id).await
+    }
+
     struct FakeProvisioner;
     #[async_trait]
     impl Provisioner for FakeProvisioner {
@@ -325,7 +336,7 @@ mod tests {
             Some("../../etc"),
             Some("no/such/dir"),
         ] {
-            m.start(None, path).await.unwrap();
+            started(&m, None, path).await.unwrap();
         }
         let r = root.clone();
         let nb = root.join("nb");
@@ -392,7 +403,7 @@ mod tests {
     #[tokio::test]
     async fn kernel_lifecycle_and_models() {
         let m = manager(None);
-        let k = m.start(None, Some("nb/notebook.ipynb")).await.unwrap();
+        let k = started(&m, None, Some("nb/notebook.ipynb")).await.unwrap();
         assert_eq!(
             (k.name.as_str(), k.execution_state.as_str(), k.connections),
             ("fake", "idle", 0)
@@ -413,7 +424,7 @@ mod tests {
     #[tokio::test]
     async fn clients_see_iopub_and_only_their_own_replies() {
         let m = manager(None);
-        let k = m.start(Some("fake"), None).await.unwrap();
+        let k = started(&m, Some("fake"), None).await.unwrap();
         let mut a = m.connect_client(&k.id).unwrap();
         let mut b = m.connect_client(&k.id).unwrap();
         assert_eq!(m.model(&k.id).unwrap().connections, 2);
@@ -487,7 +498,7 @@ mod tests {
     #[tokio::test]
     async fn a_dropped_session_gets_its_buffered_output_on_reconnect() {
         let m = manager(None);
-        let k = m.start(Some("fake"), None).await.unwrap();
+        let k = started(&m, Some("fake"), None).await.unwrap();
         let mut a = m.connect_client_as(&k.id, Some("tab-1")).unwrap();
         let exec = Message::new(
             "execute_request",
@@ -525,7 +536,7 @@ mod tests {
     #[tokio::test]
     async fn another_session_discards_the_buffer() {
         let m = manager(None);
-        let k = m.start(Some("fake"), None).await.unwrap();
+        let k = started(&m, Some("fake"), None).await.unwrap();
         let mut a = m.connect_client_as(&k.id, Some("tab-1")).unwrap();
         a.send(
             Channel::Shell,
@@ -548,7 +559,7 @@ mod tests {
     #[tokio::test]
     async fn a_new_connection_replaces_a_stale_one_with_its_session() {
         let m = manager(None);
-        let k = m.start(Some("fake"), None).await.unwrap();
+        let k = started(&m, Some("fake"), None).await.unwrap();
         let mut old = m.connect_client_as(&k.id, Some("tab-1")).unwrap();
         let _other = m.connect_client_as(&k.id, Some("tab-2")).unwrap();
         let _new = m.connect_client_as(&k.id, Some("tab-1")).unwrap();
@@ -562,7 +573,7 @@ mod tests {
     #[tokio::test]
     async fn no_buffer_without_a_session_id_or_after_shutdown() {
         let m = manager(None);
-        let k = m.start(Some("fake"), None).await.unwrap();
+        let k = started(&m, Some("fake"), None).await.unwrap();
         let a = m.connect_client(&k.id).unwrap();
         drop(a);
         m.restart(&k.id).await.unwrap();
@@ -579,7 +590,7 @@ mod tests {
     #[tokio::test]
     async fn restart_announces_restarting_to_connected_clients() {
         let m = manager(None);
-        let k = m.start(Some("fake"), None).await.unwrap();
+        let k = started(&m, Some("fake"), None).await.unwrap();
         let mut c = m.connect_client(&k.id).unwrap();
         m.restart(&k.id).await.unwrap();
         let mut states = vec![];
@@ -597,8 +608,8 @@ mod tests {
     #[tokio::test]
     async fn cull_shuts_down_idle_unconnected_kernels() {
         let m = manager(Some(Duration::from_millis(50)));
-        let k = m.start(Some("fake"), None).await.unwrap();
-        let busy = m.start(Some("fake"), None).await.unwrap();
+        let k = started(&m, Some("fake"), None).await.unwrap();
+        let busy = started(&m, Some("fake"), None).await.unwrap();
         let _c = m.connect_client(&busy.id).unwrap();
         tokio::time::sleep(Duration::from_millis(120)).await;
         assert_eq!(m.cull_idle().await, vec![k.id.clone()]);
@@ -670,7 +681,7 @@ mod tests {
     #[tokio::test]
     async fn shut_down_kernels_are_freed() {
         let m = manager(None);
-        let k = m.start(Some("fake"), None).await.unwrap();
+        let k = started(&m, Some("fake"), None).await.unwrap();
         let weak = Arc::downgrade(&m.get(&k.id).unwrap());
         m.restart(&k.id).await.unwrap();
         let mut c = m.connect_client(&k.id).unwrap();
@@ -696,6 +707,7 @@ mod tests {
             .await
             .unwrap();
         let id = s.kernel.id;
+        m.wait_started(&id).await.unwrap();
         let weak = Arc::downgrade(&m.get(&id).unwrap());
         let mut c = m.connect_client(&id).unwrap();
         c.send(
@@ -752,7 +764,7 @@ mod tests {
     #[tokio::test]
     async fn a_crashed_kernel_is_restarted_and_its_requests_answered() {
         let m = manager(None);
-        let k = m.start(Some("fake"), None).await.unwrap();
+        let k = started(&m, Some("fake"), None).await.unwrap();
         let mut c = m.connect_client(&k.id).unwrap();
         run(&mut c, "x = 1").await;
         let crash = run(&mut c, "die").await;
@@ -810,7 +822,7 @@ mod tests {
             restart_limit: 2,
             ..Default::default()
         });
-        let k = m.start(Some("fake"), None).await.unwrap();
+        let k = started(&m, Some("fake"), None).await.unwrap();
         let mut c = m.connect_client(&k.id).unwrap();
         for _ in 0..2 {
             run(&mut c, "die").await;
@@ -841,7 +853,7 @@ mod tests {
     #[tokio::test]
     async fn a_kernel_a_client_asked_to_exit_is_not_restarted() {
         let m = manager(None);
-        let k = m.start(Some("fake"), None).await.unwrap();
+        let k = started(&m, Some("fake"), None).await.unwrap();
         let mut c = m.connect_client(&k.id).unwrap();
         c.send(
             Channel::Control,
@@ -863,7 +875,7 @@ mod tests {
     #[tokio::test]
     async fn a_shutdown_is_not_a_crash() {
         let m = manager(None);
-        let k = m.start(Some("fake"), None).await.unwrap();
+        let k = started(&m, Some("fake"), None).await.unwrap();
         let mut c = m.connect_client(&k.id).unwrap();
         m.shutdown(&k.id).await.unwrap();
         let got = until_none(&mut c).await;
@@ -875,7 +887,7 @@ mod tests {
     #[tokio::test]
     async fn control_and_kernel_info_statuses_do_not_change_execution_state() {
         let m = manager(None);
-        let k = m.start(Some("fake"), None).await.unwrap();
+        let k = started(&m, Some("fake"), None).await.unwrap();
         let mut c = m.connect_client(&k.id).unwrap();
         c.send(
             Channel::Shell,
@@ -924,7 +936,7 @@ mod tests {
     async fn start_launches_again_when_a_kernel_dies_while_starting() {
         let (m, t) = scripted(None);
         t.script.lock().unwrap().extend([Launch::Die, Launch::Die]);
-        let k = m.start(Some("fake"), None).await.unwrap();
+        let k = started(&m, Some("fake"), None).await.unwrap();
         assert_eq!(k.execution_state, "idle");
         assert_eq!(m.list().len(), 1);
     }
@@ -933,14 +945,14 @@ mod tests {
     async fn start_gives_up_after_three_launches() {
         let (m, t) = scripted(None);
         t.script.lock().unwrap().extend([Launch::Die; 3]);
-        assert!(m.start(Some("fake"), None).await.is_err());
+        assert!(started(&m, Some("fake"), None).await.is_err());
         assert!(m.list().is_empty());
     }
 
     #[tokio::test]
     async fn failed_restart_reports_dead_and_removes_the_kernel() {
         let (m, t) = scripted(None);
-        let k = m.start(Some("fake"), None).await.unwrap();
+        let k = started(&m, Some("fake"), None).await.unwrap();
         let weak = Arc::downgrade(&m.get(&k.id).unwrap());
         let mut c = m.connect_client(&k.id).unwrap();
         t.script.lock().unwrap().push_back(Launch::Fail);
@@ -965,7 +977,7 @@ mod tests {
     #[tokio::test]
     async fn restart_that_never_answers_reports_dead() {
         let (m, t) = scripted(None);
-        let k = m.start(Some("fake"), None).await.unwrap();
+        let k = started(&m, Some("fake"), None).await.unwrap();
         let mut c = m.connect_client(&k.id).unwrap();
         t.script.lock().unwrap().extend([Launch::Die; 3]);
         assert!(m.restart(&k.id).await.is_err());
@@ -981,7 +993,7 @@ mod tests {
     #[tokio::test]
     async fn restart_racing_shutdown_leaves_nothing_running() {
         let m = manager(None);
-        let k = m.start(Some("fake"), None).await.unwrap();
+        let k = started(&m, Some("fake"), None).await.unwrap();
         let weak = Arc::downgrade(&m.get(&k.id).unwrap());
         // The shutdown waits for the restart, then stops the new kernel.
         let (restart, shutdown) = tokio::join!(m.restart(&k.id), m.shutdown(&k.id));
@@ -989,7 +1001,7 @@ mod tests {
         assert!(m.list().is_empty());
 
         // A restart that waited for a shutdown finds the kernel gone.
-        let k = m.start(Some("fake"), None).await.unwrap();
+        let k = started(&m, Some("fake"), None).await.unwrap();
         let weak2 = Arc::downgrade(&m.get(&k.id).unwrap());
         let (shutdown, restart) = tokio::join!(m.shutdown(&k.id), m.restart(&k.id));
         assert!(shutdown.is_ok());
@@ -1050,7 +1062,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let k = m.start(None, None).await.unwrap();
+        let k = started(&m, None, None).await.unwrap();
         // Signalling fails, but the kernel is removed and marked dead, so
         // the delete answers success, not a 5xx that a retry turns to 404.
         m.shutdown(&k.id).await.unwrap();

@@ -19,18 +19,23 @@
 //!   `metadata.widgets`.
 //! - An error reply stops execution unless errors are allowed for the
 //!   run, for the error name, or for the cell (tag `raises-exception`).
+//! - Kernels may not ask for input unless [`Options::allow_stdin`].
+//!
+//! Outputs are written into the cells as they arrive. A
+//! [`NotebookHandler`] sees each one, and answers input requests.
 
 use base64::Engine as _;
 use ganymede_kernel_host::protocol::content::{self, ExecuteRequest};
-use ganymede_kernel_host::protocol::Message;
-use ganymede_kernel_host::KernelSession;
+use ganymede_kernel_host::protocol::{Channel, Message};
+use ganymede_kernel_host::{Execution, KernelSession};
 use ganymede_nbformat::{
     Cell, CodeCell, DisplayDataOutput, ErrorOutput, ExecuteResultOutput, MimeBundle,
     MultilineString, Notebook, Output, StreamOutput,
 };
 use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
+use tokio::sync::broadcast::error::RecvError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -71,6 +76,10 @@ pub struct Options {
     pub record_timing: bool,
     /// Save `jupyter.widget` comm state in `metadata.widgets`.
     pub store_widget_state: bool,
+    /// Let kernels ask for input; [`NotebookHandler::on_input`] answers.
+    /// Off, as in `nbclient`, so a cell that asks for input fails instead
+    /// of waiting.
+    pub allow_stdin: bool,
 }
 
 impl Default for Options {
@@ -84,6 +93,7 @@ impl Default for Options {
             coalesce_streams: false,
             record_timing: true,
             store_widget_state: true,
+            allow_stdin: false,
         }
     }
 }
@@ -110,6 +120,108 @@ pub enum Event<'a> {
         cell: &'a CodeCell,
         ok: bool,
     },
+    /// An iopub message for cell `index` was applied to `cells`. It
+    /// changed the outputs of the cells in `changed`, which can include
+    /// earlier cells when it updates a display, and is empty for messages
+    /// that are not outputs.
+    Output {
+        index: usize,
+        msg: &'a Message,
+        changed: &'a [usize],
+        cells: &'a [Cell],
+    },
+}
+
+/// Receives one execution's messages as they arrive.
+#[async_trait::async_trait]
+pub trait Handler: Send {
+    /// Every iopub message for the request except `status`: streams,
+    /// displays, results, errors, clears, comms.
+    fn on_iopub(&mut self, _msg: &Message) {}
+    /// The kernel asked for input. `None` answers with an empty string.
+    /// Async, so a UI can wait for the user without blocking the runtime.
+    async fn on_input(&mut self, _prompt: &str, _password: bool) -> Option<String> {
+        None
+    }
+}
+
+/// A handler that ignores everything.
+pub struct NoHandler;
+#[async_trait::async_trait]
+impl Handler for NoHandler {}
+
+/// Receives a notebook run's progress and answers its input requests.
+/// A closure taking an [`Event`] is one that answers no input.
+#[async_trait::async_trait]
+pub trait NotebookHandler: Send {
+    fn on_event(&mut self, _event: Event<'_>) {}
+    /// Cell `index` asked for input, which [`Options::allow_stdin`]
+    /// allowed. `None` answers with an empty string.
+    async fn on_input(&mut self, _index: usize, _prompt: &str, _password: bool) -> Option<String> {
+        None
+    }
+}
+
+#[async_trait::async_trait]
+impl<F: FnMut(Event<'_>) + Send> NotebookHandler for F {
+    fn on_event(&mut self, event: Event<'_>) {
+        self(event)
+    }
+}
+
+/// Send `req` and wait for its reply and idle status, handing each iopub
+/// message to `handler` as it arrives and answering input requests
+/// through it. A timeout returns [`ganymede_kernel_host::Error::Timeout`]
+/// and leaves the kernel running the code; interrupting is the caller's
+/// choice.
+pub async fn execute_streaming(
+    session: &KernelSession,
+    req: ExecuteRequest,
+    timeout: Duration,
+    handler: &mut dyn Handler,
+) -> ganymede_kernel_host::Result<Execution> {
+    let msg = session.message("execute_request", &req);
+    let id = msg.header.msg_id.clone();
+    // Subscribe before sending so nothing is missed.
+    let mut sub = session.subscribe();
+    let request = session.request(Channel::Shell, msg, true, timeout);
+    tokio::pin!(request);
+    // By msg_id, not by count: after a lag the broadcast skips some
+    // messages, and the reply's record fills in exactly those.
+    let mut streamed = HashSet::new();
+    let exec = loop {
+        tokio::select! {
+            biased;
+            r = sub.recv() => match r {
+                Ok((ch, m)) if m.parent_id() == Some(id.as_str()) => match ch {
+                    Channel::IoPub if m.msg_type() != "status" => {
+                        handler.on_iopub(&m);
+                        streamed.insert(m.header.msg_id.clone());
+                    }
+                    Channel::Stdin if m.msg_type() == "input_request" => {
+                        let prompt = m.content["prompt"].as_str().unwrap_or_default();
+                        let password = m.content["password"].as_bool().unwrap_or(false);
+                        let value = handler.on_input(prompt, password).await.unwrap_or_default();
+                        session.reply_input(&m, &value).await?;
+                    }
+                    _ => {}
+                },
+                Ok(_) | Err(RecvError::Closed) => {}
+                Err(RecvError::Lagged(n)) => tracing::warn!(
+                    "output handler fell {n} messages behind; the rest arrives with the reply"
+                ),
+            },
+            r = &mut request => break r?,
+        }
+    };
+    // The reply can win the race against the last broadcasts; the
+    // execution's own record has everything, in order.
+    for m in &exec.outputs {
+        if !streamed.contains(&m.header.msg_id) {
+            handler.on_iopub(m);
+        }
+    }
+    Ok(exec)
 }
 
 /// Execute every code cell in order, writing outputs into `nb`.
@@ -118,15 +230,15 @@ pub async fn execute_notebook(
     nb: &mut Notebook,
     opts: &Options,
 ) -> Result<Report> {
-    execute_notebook_with(session, nb, opts, &mut |_| {}).await
+    execute_notebook_with(session, nb, opts, &mut |_: Event<'_>| {}).await
 }
 
-/// [`execute_notebook`], reporting each cell to `on_event`.
+/// [`execute_notebook`], reporting progress and outputs to `handler`.
 pub async fn execute_notebook_with(
     session: &KernelSession,
     nb: &mut Notebook,
     opts: &Options,
-    on_event: &mut dyn FnMut(Event<'_>),
+    handler: &mut dyn NotebookHandler,
 ) -> Result<Report> {
     let mut run = NotebookRun::new(opts.clone());
     if let Some(info) = session.kernel_info_json() {
@@ -143,8 +255,10 @@ pub async fn execute_notebook_with(
         if !run.should_execute(cell) {
             continue;
         }
-        on_event(Event::CellStarted { index, cell });
-        let result = run.execute_cell(session, &mut nb.cells, index).await;
+        handler.on_event(Event::CellStarted { index, cell });
+        let result = run
+            .execute_cell_with(session, &mut nb.cells, index, handler)
+            .await;
         let Cell::Code(cell) = &nb.cells[index] else {
             unreachable!()
         };
@@ -152,7 +266,7 @@ pub async fn execute_notebook_with(
             Ok(status) => {
                 report.executed += 1;
                 let ok = status == CellStatus::Ok;
-                on_event(Event::CellFinished { index, cell, ok });
+                handler.on_event(Event::CellFinished { index, cell, ok });
                 if let CellStatus::Error { allowed, .. } = &status {
                     report.errored.push(index);
                     if !allowed {
@@ -198,7 +312,8 @@ impl CellStatus {
 }
 
 /// State that spans cells: the execution counter, display ids, widget
-/// state. One per notebook execution.
+/// state. One per notebook execution. A host that runs cells one at a
+/// time keeps one, so a display update reaches outputs of earlier cells.
 pub struct NotebookRun {
     opts: Options,
     executed: u64,
@@ -233,6 +348,19 @@ impl NotebookRun {
         cells: &mut [Cell],
         index: usize,
     ) -> Result<CellStatus> {
+        self.execute_cell_with(session, cells, index, &mut |_: Event<'_>| {})
+            .await
+    }
+
+    /// [`NotebookRun::execute_cell`], reporting outputs to `handler` as
+    /// they arrive and answering input requests through it.
+    pub async fn execute_cell_with(
+        &mut self,
+        session: &KernelSession,
+        cells: &mut [Cell],
+        index: usize,
+        handler: &mut dyn NotebookHandler,
+    ) -> Result<CellStatus> {
         let Cell::Code(cell) = &mut cells[index] else {
             panic!("cell {index} is not a code cell");
         };
@@ -244,13 +372,20 @@ impl NotebookRun {
             cell.metadata.insert("execution".into(), json!({}));
         }
         let mut req = ExecuteRequest::new(cell.source.as_str().to_string());
-        req.allow_stdin = false;
+        req.allow_stdin = self.opts.allow_stdin;
         req.stop_on_error = !allows_errors;
         cell.outputs.clear();
         self.executed += 1;
         let execution_count = self.executed;
-        let exec = session
-            .execute(req, timeout.unwrap_or(FOREVER))
+        // Messages in arrival order, as nbclient handles them.
+        let mut cell_handler = CellHandler {
+            run: self,
+            cells,
+            index,
+            clear_pending: false,
+            handler,
+        };
+        let exec = execute_streaming(session, req, timeout.unwrap_or(FOREVER), &mut cell_handler)
             .await
             .map_err(|e| match e {
                 ganymede_kernel_host::Error::Timeout(_) => Error::CellTimeout {
@@ -260,14 +395,9 @@ impl NotebookRun {
                 e => Error::Kernel(e),
             })?;
 
-        // Messages in arrival order, as nbclient handles them: the reply's
-        // place among iopub messages only matters for timing.
-        let mut clear_pending = false;
+        // The reply's place among iopub messages only matters for timing.
         for m in exec.status.iter().chain(exec.outputs.iter()) {
             self.record_timing(cells, index, m);
-        }
-        for m in &exec.outputs {
-            self.process(cells, index, m, &mut clear_pending);
         }
         let Cell::Code(cell) = &mut cells[index] else {
             unreachable!()
@@ -334,8 +464,17 @@ impl NotebookRun {
         }
     }
 
-    fn process(&mut self, cells: &mut [Cell], index: usize, m: &Message, clear_pending: &mut bool) {
+    /// Apply one iopub message for cell `index`. Returns the cells whose
+    /// outputs it changed.
+    fn process(
+        &mut self,
+        cells: &mut [Cell],
+        index: usize,
+        m: &Message,
+        clear_pending: &mut bool,
+    ) -> Vec<usize> {
         let msg_type = m.msg_type();
+        let mut changed = Vec::new();
         let display_id = m
             .content
             .get("transient")
@@ -347,7 +486,7 @@ impl NotebookRun {
                 msg_type,
                 "execute_result" | "display_data" | "update_display_data"
             ) {
-                self.update_display(cells, id, m);
+                changed = self.update_display(cells, id, m);
             }
         }
         match msg_type {
@@ -356,20 +495,21 @@ impl NotebookRun {
                     *clear_pending = true;
                 } else {
                     self.clear(cells, index);
+                    changed.push(index);
                 }
             }
             t if t.starts_with("comm") => self.comm(m),
             "execute_input" | "update_display_data" => {}
             _ => {
                 let Some(out) = output_from_msg(m) else {
-                    return;
+                    return changed;
                 };
                 if *clear_pending {
                     self.clear(cells, index);
                     *clear_pending = false;
                 }
                 let Cell::Code(cell) = &mut cells[index] else {
-                    return;
+                    return changed;
                 };
                 if let Some(id) = display_id {
                     self.display_ids
@@ -380,8 +520,12 @@ impl NotebookRun {
                         .push(cell.outputs.len());
                 }
                 cell.outputs.push(out);
+                if !changed.contains(&index) {
+                    changed.push(index);
+                }
             }
         }
+        changed
     }
 
     fn clear(&mut self, cells: &mut [Cell], index: usize) {
@@ -395,9 +539,12 @@ impl NotebookRun {
         }
     }
 
-    fn update_display(&self, cells: &mut [Cell], id: &str, m: &Message) {
+    /// Rewrite every output with display id `id`. Returns the cells it
+    /// touched.
+    fn update_display(&self, cells: &mut [Cell], id: &str, m: &Message) -> Vec<usize> {
+        let mut touched = Vec::new();
         let Some(map) = self.display_ids.get(id) else {
-            return;
+            return touched;
         };
         let data = bundle(&m.content["data"]);
         let metadata = m.content["metadata"]
@@ -408,6 +555,9 @@ impl NotebookRun {
             let Some(Cell::Code(cell)) = cells.get_mut(ci) else {
                 continue;
             };
+            if !outs.is_empty() {
+                touched.push(ci);
+            }
             for &oi in outs {
                 match cell.outputs.get_mut(oi) {
                     Some(Output::DisplayData(o)) => {
@@ -422,6 +572,7 @@ impl NotebookRun {
                 }
             }
         }
+        touched
     }
 
     fn comm(&mut self, m: &Message) {
@@ -492,6 +643,34 @@ impl NotebookRun {
                 }
             }),
         );
+    }
+}
+
+/// Feeds one cell's messages into a [`NotebookRun`] as they arrive.
+struct CellHandler<'a> {
+    run: &'a mut NotebookRun,
+    cells: &'a mut [Cell],
+    index: usize,
+    clear_pending: bool,
+    handler: &'a mut dyn NotebookHandler,
+}
+
+#[async_trait::async_trait]
+impl Handler for CellHandler<'_> {
+    fn on_iopub(&mut self, msg: &Message) {
+        let changed = self
+            .run
+            .process(self.cells, self.index, msg, &mut self.clear_pending);
+        self.handler.on_event(Event::Output {
+            index: self.index,
+            msg,
+            changed: &changed,
+            cells: self.cells,
+        });
+    }
+
+    async fn on_input(&mut self, prompt: &str, password: bool) -> Option<String> {
+        self.handler.on_input(self.index, prompt, password).await
     }
 }
 
@@ -880,6 +1059,77 @@ mod tests {
             panic!()
         };
         assert_eq!(c.execution_count, Some(3));
+    }
+
+    /// Records events as text and answers input with `answer`.
+    struct Record(Vec<String>, &'static str);
+    #[async_trait::async_trait]
+    impl NotebookHandler for Record {
+        fn on_event(&mut self, e: Event<'_>) {
+            self.0.push(match e {
+                Event::CellStarted { index, .. } => format!("start {index}"),
+                Event::CellFinished { index, ok, .. } => format!("finish {index} {ok}"),
+                Event::Output {
+                    index,
+                    msg,
+                    changed,
+                    cells,
+                } => format!(
+                    "{index} {} {changed:?} {}",
+                    msg.msg_type(),
+                    outputs(cells, index).len()
+                ),
+            });
+        }
+        async fn on_input(&mut self, index: usize, prompt: &str, _: bool) -> Option<String> {
+            self.0.push(format!("input {index} {prompt:?}"));
+            Some(self.1.into())
+        }
+    }
+
+    #[tokio::test]
+    async fn streams_outputs_and_answers_input() {
+        let (host, side) = in_process_pair(64);
+        FakeKernel::spawn(side, ReplyOrder::IdleThenReply);
+        let s = KernelSession::start(host, None);
+        s.nudge(Duration::from_secs(5)).await.unwrap();
+
+        let mut nb: Notebook = Notebook::from_str(r##"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[
+            {"cell_type":"code","id":"a","source":"display","metadata":{},"outputs":[],"execution_count":null},
+            {"cell_type":"code","id":"b","source":"input","metadata":{},"outputs":[],"execution_count":null}
+        ]}"##).unwrap();
+        let opts = Options {
+            allow_stdin: true,
+            ..Default::default()
+        };
+        let mut h = Record(vec![], "forty-two");
+        execute_notebook_with(&s, &mut nb, &opts, &mut h)
+            .await
+            .unwrap();
+        assert_eq!(
+            h.0,
+            [
+                "start 0",
+                "0 execute_input [] 0",
+                "0 display_data [0] 1",
+                "0 update_display_data [0] 1",
+                "0 clear_output [] 1",
+                "0 stream [0] 1",
+                "finish 0 true",
+                "start 1",
+                "1 execute_input [] 0",
+                "input 1 \"? \"",
+                "1 stream [1] 1",
+                "finish 1 true",
+            ]
+        );
+        let Cell::Code(b) = &nb.cells[1] else {
+            panic!()
+        };
+        let Some(Output::Stream(out)) = b.outputs.first() else {
+            panic!()
+        };
+        assert_eq!(out.text.as_str(), "you said: forty-two\n");
     }
 
     #[tokio::test]

@@ -120,3 +120,122 @@ pub async fn events(
         }
     })
 }
+
+/// `/terminals/websocket/{name}`: terminado's protocol, JSON arrays in text
+/// frames. The server sends `["setup", {}]`, the terminal's kept output,
+/// then `["stdout", text]` as it comes, and `["disconnect", 1]` when the
+/// shell ends. The client sends `["stdin", text]` and
+/// `["set_size", rows, cols, ...]`.
+pub async fn terminal(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !origin_allowed(&state, &headers) {
+        return HttpError(403, "origin not allowed".into()).into_response();
+    }
+    let client = match crate::routes::terminals(&state).and_then(|t| Ok(t.connect(&name)?)) {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    ws.on_upgrade(move |socket| run_terminal(socket, client))
+}
+
+async fn run_terminal(mut socket: WebSocket, mut client: ganymede_terminals::TerminalClient) {
+    use ganymede_terminals::Output;
+    use serde_json::{json, Value};
+    let text = |v: Value| WsMessage::Text(v.to_string().into());
+    if socket.send(text(json!(["setup", {}]))).await.is_err() {
+        return;
+    }
+    if let Some(h) = client.take_history() {
+        if socket.send(text(json!(["stdout", h]))).await.is_err() {
+            return;
+        }
+    }
+    loop {
+        tokio::select! {
+            incoming = socket.recv() => {
+                let t = match incoming {
+                    Some(Ok(WsMessage::Text(t))) => t,
+                    Some(Ok(WsMessage::Binary(_) | WsMessage::Ping(_) | WsMessage::Pong(_))) => continue,
+                    Some(Ok(WsMessage::Close(_))) | None | Some(Err(_)) => break,
+                };
+                let Ok(Value::Array(msg)) = serde_json::from_str::<Value>(t.as_str()) else {
+                    tracing::debug!("undecodable terminal message");
+                    continue;
+                };
+                match msg.first().and_then(Value::as_str) {
+                    Some("stdin") => {
+                        if let Some(data) = msg.get(1).and_then(Value::as_str) {
+                            client.write(data);
+                        }
+                    }
+                    Some("set_size") => {
+                        let n = |i: usize| msg.get(i).and_then(Value::as_u64).and_then(|v| u16::try_from(v).ok());
+                        if let (Some(rows), Some(cols)) = (n(1), n(2)) {
+                            client.resize(rows, cols);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            out = client.recv() => match out {
+                Some(Output::Stdout(s)) => {
+                    if socket.send(text(json!(["stdout", s]))).await.is_err() { break }
+                }
+                Some(Output::Exited) | None => {
+                    let _ = socket.send(text(json!(["disconnect", 1]))).await;
+                    let _ = socket.send(WsMessage::Close(None)).await;
+                    break;
+                }
+            }
+        }
+    }
+    tracing::debug!(terminal = client.name(), "terminal websocket closed");
+}
+
+/// `/lsp/ws/{name}`: JSON-RPC with a language server, one message per
+/// text frame and no `Content-Length` header, as `jupyter-lsp` relays it.
+/// Every client of a server shares its process and sees all it sends.
+pub async fn language_server(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !origin_allowed(&state, &headers) {
+        return HttpError(403, "origin not allowed".into()).into_response();
+    }
+    let client = match crate::routes::lsp(&state).and_then(|m| Ok(m.connect(&name)?)) {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    ws.on_upgrade(move |socket| run_language_server(socket, client))
+}
+
+async fn run_language_server(mut socket: WebSocket, mut client: ganymede_lsp::LspClient) {
+    loop {
+        tokio::select! {
+            incoming = socket.recv() => match incoming {
+                Some(Ok(WsMessage::Text(t))) => client.send(t.as_str().to_owned()).await,
+                Some(Ok(WsMessage::Binary(b))) => {
+                    client.send(String::from_utf8_lossy(&b).into_owned()).await
+                }
+                Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_))) => {}
+                Some(Ok(WsMessage::Close(_))) | None | Some(Err(_)) => break,
+            },
+            out = client.recv() => match out {
+                Some(m) => {
+                    if socket.send(WsMessage::Text(m.as_ref().into())).await.is_err() { break }
+                }
+                None => {
+                    let _ = socket.send(WsMessage::Close(None)).await;
+                    break;
+                }
+            }
+        }
+    }
+    tracing::debug!(server = client.server(), "language server websocket closed");
+}

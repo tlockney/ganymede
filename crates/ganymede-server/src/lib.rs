@@ -8,10 +8,12 @@
 #![recursion_limit = "256"]
 
 pub mod auth;
+pub mod collab;
 pub mod config;
 pub mod lab;
 pub mod routes;
 pub mod serve;
+pub mod server_info;
 pub mod ws;
 
 use ganymede_api::{KernelManager, SessionManager};
@@ -60,6 +62,14 @@ pub struct AppState {
     pub lab: Option<Arc<lab::Lab>>,
     /// Any other `--static-dir`, served at `/` behind the routes.
     pub static_dir: Option<PathBuf>,
+    /// Document rooms behind `/api/collaboration`.
+    pub collab: Arc<collab::Collab>,
+    /// `/api/terminals`; `None` when `terminals_enabled` is off or the
+    /// platform cannot start processes (iOS).
+    pub terminals: Option<Arc<ganymede_terminals::TerminalManager>>,
+    /// `/lsp/*`; `None` when no language server is configured or the
+    /// platform cannot start processes (iOS).
+    pub lsp: Option<Arc<ganymede_lsp::LspManager>>,
 }
 
 /// The API router, login pages, and JupyterLab or generic static assets

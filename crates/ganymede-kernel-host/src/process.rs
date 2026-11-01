@@ -89,13 +89,45 @@ impl Default for SubprocessProvisioner {
 }
 
 #[cfg(feature = "subprocess")]
+/// How long a port handed out by [`allocate_ports`] is kept from being
+/// handed out again: long enough for its kernel to bind it, including
+/// cdp-kernel's retries.
+const PORT_RESERVATION: std::time::Duration = std::time::Duration::from_secs(300);
+
+#[cfg(feature = "subprocess")]
+/// Ports [`allocate_ports`] handed out recently, with when. A port is free
+/// again once its listener is dropped, so without this two kernels
+/// started at once by this process can be given the same port before
+/// either binds it. One then fails to bind: ipykernel exits before
+/// answering, but cdp-kernel retries for a few seconds, answers
+/// `kernel_info` meanwhile, and dies after the start has succeeded.
+/// jupyter_client's `LocalPortCache` does the same job.
+static RESERVED_PORTS: std::sync::Mutex<std::collections::BTreeMap<u16, std::time::Instant>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+#[cfg(feature = "subprocess")]
+/// Reserve `port` unless this process handed it out recently.
+fn reserve_port(port: u16) -> bool {
+    let now = std::time::Instant::now();
+    let mut reserved = RESERVED_PORTS.lock().unwrap();
+    reserved.retain(|_, at| now.duration_since(*at) < PORT_RESERVATION);
+    if reserved.contains_key(&port) {
+        return false;
+    }
+    reserved.insert(port, now);
+    true
+}
+
+#[cfg(feature = "subprocess")]
 /// Five free TCP ports on `ip`, picked at random below the ephemeral port
 /// ranges (Linux 32768-60999, macOS and Windows 49152-65535). Port 0 would
 /// return an ephemeral port, which outgoing connections also take their
 /// source ports from: while the kernel starts, a client reconnecting to
 /// that port can be given it as its own source port and connect to
-/// itself, and the kernel then fails to bind. Racy against other
-/// processes binding the same port; `ipc` transport avoids this on POSIX.
+/// itself, and the kernel then fails to bind. No port is handed out twice
+/// within five minutes, so kernels this process starts at once
+/// never share one. Still racy against other processes binding the same
+/// port; `ipc` transport avoids this on POSIX.
 pub async fn allocate_ports(ip: &str) -> Result<[u16; 5]> {
     const RANGE: std::ops::Range<u16> = 20000..32768;
     let mut listeners = Vec::new();
@@ -111,16 +143,23 @@ pub async fn allocate_ports(ip: &str) -> Result<[u16; 5]> {
             continue;
         }
         if let Ok(l) = tokio::net::TcpListener::bind((ip, port)).await {
-            ports[found] = port;
-            listeners.push(l);
-            found += 1;
+            if reserve_port(port) {
+                ports[found] = port;
+                listeners.push(l);
+                found += 1;
+            }
         }
     }
-    // A crowded range: fall back to ports the OS picks.
-    for p in &mut ports[found..] {
+    // A crowded range: fall back to ports the OS picks. Holding each
+    // listener keeps the OS from returning the same port twice here.
+    while found < ports.len() {
         let l = tokio::net::TcpListener::bind((ip, 0)).await?;
-        *p = l.local_addr()?.port();
+        let port = l.local_addr()?.port();
         listeners.push(l);
+        if reserve_port(port) {
+            ports[found] = port;
+            found += 1;
+        }
     }
     drop(listeners);
     Ok(ports)
@@ -344,7 +383,7 @@ impl Provisioner for SubprocessProvisioner {
         // Started suspended, so it can't start a child before it is in
         // its job; resumed below.
         #[cfg(windows)]
-        cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
+        cmd.creation_flags(job::CREATE_SUSPENDED);
         cmd.kill_on_drop(false);
 
         let mut child = spawn_tied_to_host(cmd).await.map_err(|e| {
@@ -356,7 +395,17 @@ impl Provisioner for SubprocessProvisioner {
         })?;
         let pid = child.id().ok_or(Error::KernelDied)?;
         #[cfg(windows)]
-        let job = job::adopt(&child, pid);
+        let job = match job::adopt(&child) {
+            Ok(job) => job,
+            Err(e) => {
+                let _ = child.start_kill();
+                let _ = std::fs::remove_file(&connection_file);
+                return Err(Error::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("resuming {:?}: {e}", argv[0]),
+                )));
+            }
+        };
         tracing::info!(kernel = %spec.name, kernel_id, pid, "launched kernel");
         let prefix = format!("[kernel {}] ", kernel_id.get(..8).unwrap_or(&kernel_id));
         if let Some(out) = child.stdout.take() {
@@ -479,8 +528,12 @@ async fn spawn_tied_to_host(
 /// kernel runs in its own job, so killing the job kills every process the
 /// kernel started, and the job is set to kill them all when its last
 /// handle closes, which happens at the latest when the host exits.
+///
+/// Public so other process launchers in the host (language servers)
+/// share it: start the process with [`job::CREATE_SUSPENDED`], then
+/// [`job::adopt`] it.
 #[cfg(all(feature = "subprocess", windows))]
-mod job {
+pub mod job {
     use std::io;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use std::sync::Arc;
@@ -495,6 +548,12 @@ mod job {
     };
     use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
 
+    /// The creation flag [`adopt`] expects the process to be started with,
+    /// so it can't start a child before it is in its job.
+    pub const CREATE_SUSPENDED: u32 = windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+
+    /// A job object; every process in it dies when it is terminated or
+    /// when its last handle closes.
     pub struct Job(OwnedHandle);
 
     impl Job {
@@ -548,11 +607,16 @@ mod job {
         }
     }
 
-    /// Put a kernel started with `CREATE_SUSPENDED` in a new job, then
+    /// Put a process started with [`CREATE_SUSPENDED`] in a new job, then
     /// resume it. It is resumed even when the job can't be set up (the
-    /// host may itself be in a job that forbids it), so the kernel runs
-    /// either way; it then just isn't killed with its children.
-    pub fn adopt(child: &tokio::process::Child, pid: u32) -> Option<Arc<Job>> {
+    /// host may itself be in a job that forbids it), so it runs either
+    /// way; it then just isn't killed with its children, and this returns
+    /// `Ok(None)`. An error means the process could not be resumed and
+    /// stays suspended: the caller should kill it.
+    pub fn adopt(child: &tokio::process::Child) -> io::Result<Option<Arc<Job>>> {
+        let pid = child
+            .id()
+            .ok_or_else(|| io::Error::other("the process has already exited"))?;
         let job = child
             .raw_handle()
             .ok_or_else(|| io::Error::other("no process handle"))
@@ -561,14 +625,12 @@ mod job {
                 job.assign(process as HANDLE)?;
                 Ok(job)
             });
-        if let Err(e) = resume(pid) {
-            tracing::warn!(pid, "resuming kernel: {e}");
-        }
+        resume(pid)?;
         match job {
-            Ok(job) => Some(Arc::new(job)),
+            Ok(job) => Ok(Some(Arc::new(job))),
             Err(e) => {
-                tracing::warn!(pid, "kernel runs without a job object: {e}");
-                None
+                tracing::warn!(pid, "process runs without a job object: {e}");
+                Ok(None)
             }
         }
     }
@@ -605,7 +667,9 @@ mod job {
             more = unsafe { Thread32Next(snap, &mut entry) } != 0;
         }
         if resumed == 0 {
-            return Err(io::Error::other("no thread of the kernel could be resumed"));
+            return Err(io::Error::other(
+                "no thread of the process could be resumed",
+            ));
         }
         Ok(())
     }
@@ -794,6 +858,20 @@ mod tests {
                 "[kernel ab] last\n"
             ]
         );
+    }
+
+    /// Kernels started at once must not share a port (#260): each port is
+    /// free once `allocate_ports` returns, so only the reservation keeps
+    /// the next call from picking it again.
+    #[tokio::test]
+    async fn concurrent_allocations_never_share_a_port() {
+        let calls = (0..400).map(|_| tokio::spawn(allocate_ports("127.0.0.1")));
+        let mut seen = std::collections::HashSet::new();
+        for call in futures::future::join_all(calls).await {
+            for port in call.unwrap().unwrap() {
+                assert!(seen.insert(port), "port {port} handed out twice");
+            }
+        }
     }
 
     #[tokio::test]

@@ -1,0 +1,16 @@
+[package]
+name = "ganymede-documents"
+description = "Document rooms: a notebook held live as a yrs (Yjs) document in jupyter_ydoc's schema, with the y-websocket sync protocol. No I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ganymede-nbformat = { path = "../ganymede-nbformat" }
+yrs = { version = "0.28", features = ["sync"] }
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+tracing.workspace = true

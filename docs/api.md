@@ -86,12 +86,20 @@ HTTP/1.1 201 Created
 location: /api/kernels/5b140482-3d46-486f-8a0c-637e047675f2
 
 {"id": "5b140482-3d46-486f-8a0c-637e047675f2", "name": "python3",
- "last_activity": "2026-10-19T09:04:46.461678Z", "execution_state": "idle", "connections": 0}
+ "last_activity": "2026-10-19T09:04:46.461678Z", "execution_state": "starting", "connections": 0}
 ```
 
-The reply comes once the kernel has answered its first
-`kernel_info_request`. `POST /api/sessions` does the same for a notebook
-path, and is what JupyterLab and VS Code call.
+The reply comes as soon as the kernel process is running, as it does from
+`jupyter_server`. The kernel then has `--startup-timeout` seconds to answer;
+connect to its websocket meanwhile and watch for `status: idle`. A kernel
+that never answers is launched again, up to three times, and is then
+reported `status: dead` and removed. `POST /api/sessions` does the same
+for a notebook path, and is what JupyterLab and VS Code call.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. The latest release answers only after the kernel's
+> first reply, with `execution_state: idle`.
 
 ## Run code over the websocket
 
@@ -130,6 +138,46 @@ iopub messages go to every client connected to the kernel; the
 [Running a cell](architecture.md#running-a-cell) draws the sequence.
 Clients that offer the `v1.kernel.websocket.jupyter.org` subprotocol get
 the same messages in its binary framing instead.
+
+## Open a terminal
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`POST /api/terminals` starts a shell in a pseudo-terminal and returns its
+name:
+
+```http
+POST /api/terminals
+{"cwd": "projects"}
+
+200 OK
+{"name": "1", "last_activity": "2026-10-31T21:02:11.402317Z"}
+```
+
+`cwd` is optional. A relative one is resolved against the root dir, and a
+missing directory falls back to the root dir. `name` is optional too;
+unnamed terminals are numbered from 1, and a name in use is a 409.
+`GET /api/terminals` lists them, `GET /api/terminals/<name>` gets one, and
+`DELETE /api/terminals/<name>` ends its shell (204).
+
+Connect to `/terminals/websocket/<name>`. Messages are JSON arrays in text
+frames, terminado's protocol, which JupyterLab's terminal speaks:
+
+| Direction | Message |
+|---|---|
+| server → client | `["setup", {}]` first, then the terminal's recent output as one `["stdout", text]` |
+| server → client | `["stdout", text]` as the shell writes |
+| server → client | `["disconnect", 1]` when the shell exits or the terminal is deleted |
+| client → server | `["stdin", text]`, keystrokes |
+| client → server | `["set_size", rows, cols]`, the window size |
+
+Any number of clients can attach to one terminal; all see its output. The
+shell is `$SHELL` started as a login shell (`powershell.exe` on Windows),
+or `terminal_shell` from the [config file](reference.md#config-file).
+`terminals_enabled = false` turns the routes off, and they answer 404.
+There are no terminals on iOS, where an app cannot start processes.
 
 ## Save a notebook
 
@@ -174,3 +222,28 @@ HTTP/1.1 412 Precondition Failed
 
 [Saving a notebook](architecture.md#saving-a-notebook) draws the whole
 path.
+
+## Download a file
+
+```http
+GET /files/images/plot.png?download=1
+```
+
+```http
+HTTP/1.1 200 OK
+content-type: image/png
+content-disposition: attachment; filename*=utf-8''plot.png
+
+<the file's bytes>
+```
+
+`/files/{path}` serves a file's raw bytes, as `jupyter_server` does.
+JupyterLab uses it for Download and Open in New Browser Tab in the file
+browser, and for relative images and links in Markdown. The path is a
+contents path, with the same root and hidden-file rules as
+`/api/contents`. Without `download`, there is no `Content-Disposition`. A
+directory gets `400`.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.

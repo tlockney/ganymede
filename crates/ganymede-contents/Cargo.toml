@@ -17,7 +17,7 @@ sqlite = ["dep:rusqlite"]
 sha2.workspace = true
 hmac.workspace = true
 getrandom = "0.4"
-rusqlite = { version = "0.40", default-features = false, features = ["bundled"], optional = true }
+rusqlite = { version = "0.41", default-features = false, features = ["bundled"], optional = true }
 hex.workspace = true
 ganymede-nbformat = { path = "../ganymede-nbformat" }
 serde.workspace = true
