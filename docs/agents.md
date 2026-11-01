@@ -32,21 +32,37 @@ nb connect --server http://127.0.0.1:8888 --token <token>
 ```
 
 `nb connect` with no arguments finds the server by running `jupyter
-server list`, which needs Python, so pass `--server` and `--token`. The
-connection is kept in `.jupyter/cli.json` in the current directory, and
-later commands use it. Notebook paths are relative to the server's root
-dir. Against v0.4.0, nb-cli edits cells through the contents API (each
-`nb cell add` reads and writes the whole notebook) and runs them on a
-kernel through the server; outputs are saved in the notebook on the
-server. A build of `main` also serves collaboration rooms, which nb-cli
-looks for and would use to edit cells instead; that path hasn't been
-tested yet ([#278](https://github.com/tlockney/ganymede/issues/278)).
+server list`, which needs Python, so pass `--server` and `--token`. Run
+`nb connect` and every later `nb` command from the server's root dir
+(`~/analysis` here):
+
+- The connection is kept in `.jupyter/cli.json` in the current
+  directory only. From another directory, `nb` finds no connection and
+  silently works on local files with a local kernel.
+- `nb create` checks for an existing notebook in the current directory,
+  not on the server. Run elsewhere, it replaces a server notebook of the
+  same name with an empty one.
+- `.jupyter/cli.json` holds the token in plain text; inside a git
+  repository, add `.jupyter/` to `.gitignore`.
+
+Notebook paths are relative to the server's root dir. Without
+collaboration rooms on the server, nb-cli edits cells through the
+contents API (each `nb cell add` reads and writes the whole notebook)
+and runs them on a kernel through the server; outputs are saved in the
+notebook on the server.
+
+> [!NOTE]
+> **Unreleased.** A build of `main` serves collaboration rooms, which
+> nb-cli looks for and would use to edit cells instead of the contents
+> API. That path hasn't been tested yet
+> ([#278](https://github.com/tlockney/ganymede/issues/278)).
 
 `nb create` looks up the kernel on local disk, not on the server, and
 only under `VIRTUAL_ENV` and the platform's Jupyter data dirs (not
 `JUPYTER_PATH`). If the kernelspec is installed only where the server
-runs, copy it to `$VIRTUAL_ENV/share/jupyter/kernels/<name>/` and set
-`VIRTUAL_ENV`, or create the notebook from JupyterLab or ganymede-ui.
+runs, copy it to your user data dir (`~/.local/share/jupyter/kernels/`
+on Linux, `~/Library/Jupyter/kernels/` on macOS), or create the notebook
+from JupyterLab or ganymede-ui.
 
 ### Finding the server's URL and token
 
@@ -60,14 +76,22 @@ so a script or agent can read the URL and token instead of being given
 them:
 
 ```sh
+cd ~/analysis
 dir=$(ganymede info --json | jq -r .runtime_dir)
-f=$(jq -s --arg root "$HOME/analysis" \
-  'map(select(.ganymede_version and .root_dir == $root)) | .[0]' "$dir"/jpserver-*.json)
-nb connect --server "$(jq -r .url <<<"$f")" --token "$(jq -r .token <<<"$f")"
+f=$(jq -s --arg root "$(pwd -P)" \
+  'map(select(.ganymede_version and .root_dir == $root)) | .[0] // empty' "$dir"/jpserver-*.json)
+if [ -z "$f" ]; then
+  echo "no Ganymede server for $(pwd -P)" >&2
+else
+  nb connect --server "$(jq -r .url <<<"$f")" --token "$(jq -r .token <<<"$f")"
+fi
 ```
 
 The runtime dir is shared with Jupyter, so the filter picks Ganymede's
-server for the notebook folder rather than the newest file.
+server for the notebook folder rather than the newest file. The server
+writes its root dir with symlinks resolved, hence `pwd -P`. A file left
+by a server that was killed can still match; `jupyter server list`, or a
+failed `nb connect`, shows it is stale.
 
 ## Set up Claude Code
 
@@ -82,7 +106,8 @@ project's `CLAUDE.md` (or `AGENTS.md` for other agents):
 
 For .ipynb files, use the notebook-cli skill (the `nb` command). Do not
 use the Read or Write tools on .ipynb files. A Ganymede server is
-running; `nb status` shows the connection.
+running; `nb status` shows the connection. Run `nb` from the
+notebook folder, where `.jupyter/cli.json` is.
 ```
 
 An agent that edits the JSON directly can break the file, and its edits
@@ -123,8 +148,8 @@ CELL
 nb execute fares.ipynb --cell-index -1
 ```
 
-`--source` turns `\n`, `\t` and `\\` into the characters they name,
-which suits a short Markdown cell but changes string literals in code.
+`--source` turns escapes such as `\n`, `\t`, `\"` and `\\` into the
+characters they name, which suits a short Markdown cell but changes string literals in code.
 For code, pass `--source -` and the cell on stdin, as above.
 
 ## Steps outside the kernel
@@ -166,19 +191,20 @@ ganymede execute ~/analysis/fares.ipynb
 
 ## What doesn't work yet
 
-- **No live view on v0.4.0.** The agent's edits go to the file, and
+- **No live view.** Without collaboration rooms (see the note under
+  [Connect nb-cli](#connect-nb-cli)), the agent's edits go to the file, and
   JupyterLab doesn't watch it: it notices only when you save, and then
   asks whether to overwrite. Overwrite replaces the agent's cells with
   your stale copy. Reload first (File, Reload Notebook from Disk), and
   don't edit a notebook while the agent works in it. Watching cells
   arrive needs shared documents on the server
-  ([#244](https://github.com/tlockney/ganymede/issues/244)); rooms are on
-  `main` but untested with nb-cli
-  ([#278](https://github.com/tlockney/ganymede/issues/278)).
-- **A cell timeout doesn't stop the cell.** `nb execute -t` gives up
-  waiting, but the kernel keeps running the cell, and the next call waits
-  for it. Interrupt the kernel from a frontend or restart it with
-  `--restart-kernel`.
+  ([#244](https://github.com/tlockney/ganymede/issues/244)).
+- **A cell timeout doesn't stop the cell.** `nb execute` waits 30
+  seconds per cell by default (`-t` sets it; raise it for slow
+  downloads). On a timeout it gives up before saving, so outputs of
+  cells that already ran in that call are lost, and the kernel keeps
+  running the cell, so the next call waits for it. Interrupt the kernel
+  from a frontend or restart it with `--restart-kernel`.
 - **No input.** nb-cli runs cells with stdin off, so code that asks for
   input fails, as under nbclient.
 - **Colour codes in TypeScript output.** cdp-kernel formats `text/plain`

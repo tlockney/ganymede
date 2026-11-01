@@ -19,3 +19,9 @@
 - `main` now serves collaboration rooms, which nb-cli probes for and
   would edit through. The validation predates them, so the page
   describes v0.4.0's contents-API path and #278 re-runs it on `main`.
+- Second review: nb-cli reads `.jupyter/cli.json` from the current
+  directory only and falls back to local mode without it, and `nb
+  create` checks for an existing notebook locally before writing to the
+  server, so the page says to run `nb` from the server's root dir. The
+  rooms-on-`main` sentence is an Unreleased note so the release step
+  lists it.
