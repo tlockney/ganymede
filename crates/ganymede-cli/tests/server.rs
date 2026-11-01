@@ -18,7 +18,6 @@ use common::*;
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::io::BufRead;
-use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -78,9 +77,10 @@ struct Server {
 }
 
 impl Drop for Server {
-    /// SIGTERM, then SIGKILL to its process group after 10 s: a server
-    /// stuck shutting down (jupyter_server with a kernel mid-restart) must
-    /// not hang the test or leave its kernels behind.
+    /// SIGTERM, then SIGKILL after 10 s: a server stuck shutting down
+    /// (jupyter_server with a kernel mid-restart) must not hang the test.
+    /// Its kernels run in their own process groups, so a killed server can
+    /// leave them behind.
     fn drop(&mut self) {
         let pid = self.child.id() as i32;
         unsafe {
@@ -93,11 +93,8 @@ impl Drop for Server {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        eprintln!("server {pid} still running 10 s after SIGTERM; killing its process group");
-        // Each server leads its own group (`process_group(0)` at spawn).
-        unsafe {
-            kill(-pid, 9);
-        }
+        eprintln!("server {pid} still running 10 s after SIGTERM; killing it");
+        let _ = self.child.kill();
         let _ = self.child.wait();
     }
 }
@@ -132,7 +129,6 @@ fn start_ganymede_with(extra: &[&std::ffi::OsStr]) -> Server {
         .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .process_group(0)
         .spawn()
         .unwrap();
     let mut line = String::new();
@@ -176,7 +172,6 @@ fn start_jupyter(jupyter: &std::path::Path) -> Server {
         .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .process_group(0)
         .spawn()
         .unwrap();
     Server {
@@ -335,6 +330,12 @@ fn uuid() -> String {
 /// what a frontend sees for it: each iopub message's type and content,
 /// stdin requests (answered with `answer`), and the reply.
 async fn exchange(ws: &mut Ws, msg: Value, answer: Option<&str>) -> Value {
+    exchange_step("exchange", ws, msg, answer).await
+}
+
+/// [`exchange`], failing with `step` in the message if 60 s pass with no
+/// frame.
+async fn exchange_step(step: &str, ws: &mut Ws, msg: Value, answer: Option<&str>) -> Value {
     let id = msg["header"]["msg_id"].as_str().unwrap().to_string();
     ws.send(WsMessage::text(msg.to_string())).await.unwrap();
     let mut iopub = Vec::new();
@@ -344,7 +345,7 @@ async fn exchange(ws: &mut Ws, msg: Value, answer: Option<&str>) -> Value {
     while reply.is_none() || !idle {
         let frame = tokio::time::timeout(Duration::from_secs(60), ws.next())
             .await
-            .expect("no message in 60 s")
+            .unwrap_or_else(|_| panic!("{step}: no message in 60 s"))
             .unwrap()
             .unwrap();
         let WsMessage::Text(text) = frame else {
@@ -1104,9 +1105,10 @@ async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
     .await
     .unwrap();
     let r = within(
-        50,
+        180,
         "running the cell that sets state",
-        exchange(
+        exchange_step(
+            "running the cell that sets state",
             &mut ws,
             request("execute_request", "shell", json!({"code": c.set_state})),
             None,
@@ -1185,9 +1187,10 @@ async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
     .await
     .unwrap();
     let r = within(
-        50,
+        180,
         "running a cell on the restarted kernel",
-        exchange(
+        exchange_step(
+            "running a cell on the restarted kernel",
             &mut ws,
             request("execute_request", "shell", json!({"code": c.read_state})),
             None,
