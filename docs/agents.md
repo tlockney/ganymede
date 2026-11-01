@@ -35,9 +35,12 @@ nb connect --server http://127.0.0.1:8888 --token <token>
 server list`, which needs Python, so pass `--server` and `--token`. The
 connection is kept in `.jupyter/cli.json` in the current directory, and
 later commands use it. Notebook paths are relative to the server's root
-dir. In this mode nb-cli edits cells through the contents API (each `nb
-cell add` reads and writes the whole notebook) and runs them on a kernel
-through the server; outputs are saved in the notebook on the server.
+dir. Against v0.4.0, nb-cli edits cells through the contents API (each
+`nb cell add` reads and writes the whole notebook) and runs them on a
+kernel through the server; outputs are saved in the notebook on the
+server. A build of `main` also serves collaboration rooms, which nb-cli
+looks for and would use to edit cells instead; that path hasn't been
+tested yet ([#278](https://github.com/tlockney/ganymede/issues/278)).
 
 `nb create` looks up the kernel on local disk, not on the server, and
 only under `VIRTUAL_ENV` and the platform's Jupyter data dirs (not
@@ -57,9 +60,14 @@ so a script or agent can read the URL and token instead of being given
 them:
 
 ```sh
-f=$(ls -t "$(ganymede info --json | jq -r .runtime_dir)"/jpserver-*.json | head -1)
-nb connect --server "$(jq -r .url "$f")" --token "$(jq -r .token "$f")"
+dir=$(ganymede info --json | jq -r .runtime_dir)
+f=$(jq -s --arg root "$HOME/analysis" \
+  'map(select(.ganymede_version and .root_dir == $root)) | .[0]' "$dir"/jpserver-*.json)
+nb connect --server "$(jq -r .url <<<"$f")" --token "$(jq -r .token <<<"$f")"
 ```
+
+The runtime dir is shared with Jupyter, so the filter picks Ganymede's
+server for the notebook folder rather than the newest file.
 
 ## Set up Claude Code
 
@@ -97,7 +105,7 @@ These keep the notebook readable for a person and runnable from the top:
   --cell-index N`) and run it again, rather than appending a corrected
   copy below the broken one.
 - **Finish with a clean run.** Restart the kernel and run everything
-  (`nb execute analysis.ipynb --restart-kernel`), then check for errors
+  (`nb execute fares.ipynb --restart-kernel`), then check for errors
   (below).
 
 A session looks like this:
@@ -107,9 +115,17 @@ nb create fares.ipynb -k cdp-node
 nb cell update fares.ipynb --cell-index 0 --type markdown \
   --source "# Fares by zone\nDo October fares differ by zone? Data: the city's open data portal."
 nb cell add fares.ipynb --type markdown --source "## Load\nOctober trips, one row per trip."
-nb cell add fares.ipynb --source 'const rows = await fetchCsv(URL); rows.length'
+nb cell add fares.ipynb --source - <<'CELL'
+const res = await fetch("https://data.example.org/trips-2026-10.csv");
+const rows = (await res.text()).trim().split("\n").slice(1);
+rows.length
+CELL
 nb execute fares.ipynb --cell-index -1
 ```
+
+`--source` turns `\n`, `\t` and `\\` into the characters they name,
+which suits a short Markdown cell but changes string literals in code.
+For code, pass `--source -` and the cell on stdin, as above.
 
 ## Steps outside the kernel
 
@@ -133,7 +149,8 @@ wc -l trips-2026-10.csv
 
 ## Check the notebook
 
-`nb execute` exits 0 even when a cell raises. Look for errors with:
+`nb execute` exits 1 and stops at the first cell that raises (unless
+`--allow-errors`). To list every cell with an error:
 
 ```sh
 nb search fares.ipynb --with-errors
@@ -149,12 +166,15 @@ ganymede execute ~/analysis/fares.ipynb
 
 ## What doesn't work yet
 
-- **No live view.** The agent's edits go to the file. JupyterLab or
-  ganymede-ui shows them after a reload (JupyterLab offers to reload
-  when the file changes on disk). Watching cells arrive needs shared
-  documents on the server, which are in progress
-  ([#243](https://github.com/tlockney/ganymede/issues/243),
-  [#244](https://github.com/tlockney/ganymede/issues/244)).
+- **No live view on v0.4.0.** The agent's edits go to the file, and
+  JupyterLab doesn't watch it: it notices only when you save, and then
+  asks whether to overwrite. Overwrite replaces the agent's cells with
+  your stale copy. Reload first (File, Reload Notebook from Disk), and
+  don't edit a notebook while the agent works in it. Watching cells
+  arrive needs shared documents on the server
+  ([#244](https://github.com/tlockney/ganymede/issues/244)); rooms are on
+  `main` but untested with nb-cli
+  ([#278](https://github.com/tlockney/ganymede/issues/278)).
 - **A cell timeout doesn't stop the cell.** `nb execute -t` gives up
   waiting, but the kernel keeps running the cell, and the next call waits
   for it. Interrupt the kernel from a frontend or restart it with

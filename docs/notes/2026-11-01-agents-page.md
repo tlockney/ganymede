@@ -11,3 +11,11 @@
 - Only the `jpserver-<pid>.json` part depends on unreleased behaviour, so
   it is its own subsection with the Unreleased note; nb-cli itself works
   against v0.4.0.
+- Review fixes: nb-cli 0.0.10's `nb execute` exits 1 and stops at the
+  first failing cell (the page first said 0); JupyterLab without
+  collaboration doesn't notice disk changes until you save, and
+  Overwrite then drops the agent's cells; `--source` unescapes `\n`, so
+  code goes in on stdin.
+- `main` now serves collaboration rooms, which nb-cli probes for and
+  would edit through. The validation predates them, so the page
+  describes v0.4.0's contents-API path and #278 re-runs it on `main`.
