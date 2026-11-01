@@ -383,7 +383,7 @@ impl Provisioner for SubprocessProvisioner {
         // Started suspended, so it can't start a child before it is in
         // its job; resumed below.
         #[cfg(windows)]
-        cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
+        cmd.creation_flags(job::CREATE_SUSPENDED);
         cmd.kill_on_drop(false);
 
         let mut child = spawn_tied_to_host(cmd).await.map_err(|e| {
@@ -395,7 +395,17 @@ impl Provisioner for SubprocessProvisioner {
         })?;
         let pid = child.id().ok_or(Error::KernelDied)?;
         #[cfg(windows)]
-        let job = job::adopt(&child, pid);
+        let job = match job::adopt(&child) {
+            Ok(job) => job,
+            Err(e) => {
+                let _ = child.start_kill();
+                let _ = std::fs::remove_file(&connection_file);
+                return Err(Error::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("resuming {:?}: {e}", argv[0]),
+                )));
+            }
+        };
         tracing::info!(kernel = %spec.name, kernel_id, pid, "launched kernel");
         let prefix = format!("[kernel {}] ", kernel_id.get(..8).unwrap_or(&kernel_id));
         if let Some(out) = child.stdout.take() {
@@ -518,8 +528,12 @@ async fn spawn_tied_to_host(
 /// kernel runs in its own job, so killing the job kills every process the
 /// kernel started, and the job is set to kill them all when its last
 /// handle closes, which happens at the latest when the host exits.
+///
+/// Public so other process launchers in the host (language servers)
+/// share it: start the process with [`job::CREATE_SUSPENDED`], then
+/// [`job::adopt`] it.
 #[cfg(all(feature = "subprocess", windows))]
-mod job {
+pub mod job {
     use std::io;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use std::sync::Arc;
@@ -534,6 +548,12 @@ mod job {
     };
     use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
 
+    /// The creation flag [`adopt`] expects the process to be started with,
+    /// so it can't start a child before it is in its job.
+    pub const CREATE_SUSPENDED: u32 = windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+
+    /// A job object; every process in it dies when it is terminated or
+    /// when its last handle closes.
     pub struct Job(OwnedHandle);
 
     impl Job {
@@ -587,11 +607,16 @@ mod job {
         }
     }
 
-    /// Put a kernel started with `CREATE_SUSPENDED` in a new job, then
+    /// Put a process started with [`CREATE_SUSPENDED`] in a new job, then
     /// resume it. It is resumed even when the job can't be set up (the
-    /// host may itself be in a job that forbids it), so the kernel runs
-    /// either way; it then just isn't killed with its children.
-    pub fn adopt(child: &tokio::process::Child, pid: u32) -> Option<Arc<Job>> {
+    /// host may itself be in a job that forbids it), so it runs either
+    /// way; it then just isn't killed with its children, and this returns
+    /// `Ok(None)`. An error means the process could not be resumed and
+    /// stays suspended: the caller should kill it.
+    pub fn adopt(child: &tokio::process::Child) -> io::Result<Option<Arc<Job>>> {
+        let pid = child
+            .id()
+            .ok_or_else(|| io::Error::other("the process has already exited"))?;
         let job = child
             .raw_handle()
             .ok_or_else(|| io::Error::other("no process handle"))
@@ -600,14 +625,12 @@ mod job {
                 job.assign(process as HANDLE)?;
                 Ok(job)
             });
-        if let Err(e) = resume(pid) {
-            tracing::warn!(pid, "resuming kernel: {e}");
-        }
+        resume(pid)?;
         match job {
-            Ok(job) => Some(Arc::new(job)),
+            Ok(job) => Ok(Some(Arc::new(job))),
             Err(e) => {
-                tracing::warn!(pid, "kernel runs without a job object: {e}");
-                None
+                tracing::warn!(pid, "process runs without a job object: {e}");
+                Ok(None)
             }
         }
     }
@@ -644,7 +667,9 @@ mod job {
             more = unsafe { Thread32Next(snap, &mut entry) } != 0;
         }
         if resumed == 0 {
-            return Err(io::Error::other("no thread of the kernel could be resumed"));
+            return Err(io::Error::other(
+                "no thread of the process could be resumed",
+            ));
         }
         Ok(())
     }
