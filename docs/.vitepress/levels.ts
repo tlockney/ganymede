@@ -44,6 +44,7 @@ export function groups(): Group[] {
       items: [
         { text: "JupyterLab and VS Code", link: "/frontends" },
         { text: "Ganymede's app", link: "/app" },
+        { text: "Agents", link: "/agents" },
         { text: "Switching from jupyter_server", link: "/switching" },
         { text: "Security", link: "/security" },
       ],
