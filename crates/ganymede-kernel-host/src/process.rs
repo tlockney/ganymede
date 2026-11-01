@@ -89,13 +89,45 @@ impl Default for SubprocessProvisioner {
 }
 
 #[cfg(feature = "subprocess")]
+/// How long a port handed out by [`allocate_ports`] is kept from being
+/// handed out again: long enough for its kernel to bind it, including
+/// cdp-kernel's retries.
+const PORT_RESERVATION: std::time::Duration = std::time::Duration::from_secs(300);
+
+#[cfg(feature = "subprocess")]
+/// Ports [`allocate_ports`] handed out recently, with when. A port is free
+/// again once its listener is dropped, so without this two kernels
+/// started at once by this process can be given the same port before
+/// either binds it. One then fails to bind: ipykernel exits before
+/// answering, but cdp-kernel retries for a few seconds, answers
+/// `kernel_info` meanwhile, and dies after the start has succeeded.
+/// jupyter_client's `LocalPortCache` does the same job.
+static RESERVED_PORTS: std::sync::Mutex<std::collections::BTreeMap<u16, std::time::Instant>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+#[cfg(feature = "subprocess")]
+/// Reserve `port` unless this process handed it out recently.
+fn reserve_port(port: u16) -> bool {
+    let now = std::time::Instant::now();
+    let mut reserved = RESERVED_PORTS.lock().unwrap();
+    reserved.retain(|_, at| now.duration_since(*at) < PORT_RESERVATION);
+    if reserved.contains_key(&port) {
+        return false;
+    }
+    reserved.insert(port, now);
+    true
+}
+
+#[cfg(feature = "subprocess")]
 /// Five free TCP ports on `ip`, picked at random below the ephemeral port
 /// ranges (Linux 32768-60999, macOS and Windows 49152-65535). Port 0 would
 /// return an ephemeral port, which outgoing connections also take their
 /// source ports from: while the kernel starts, a client reconnecting to
 /// that port can be given it as its own source port and connect to
-/// itself, and the kernel then fails to bind. Racy against other
-/// processes binding the same port; `ipc` transport avoids this on POSIX.
+/// itself, and the kernel then fails to bind. No port is handed out twice
+/// within five minutes, so kernels this process starts at once
+/// never share one. Still racy against other processes binding the same
+/// port; `ipc` transport avoids this on POSIX.
 pub async fn allocate_ports(ip: &str) -> Result<[u16; 5]> {
     const RANGE: std::ops::Range<u16> = 20000..32768;
     let mut listeners = Vec::new();
@@ -111,16 +143,23 @@ pub async fn allocate_ports(ip: &str) -> Result<[u16; 5]> {
             continue;
         }
         if let Ok(l) = tokio::net::TcpListener::bind((ip, port)).await {
-            ports[found] = port;
-            listeners.push(l);
-            found += 1;
+            if reserve_port(port) {
+                ports[found] = port;
+                listeners.push(l);
+                found += 1;
+            }
         }
     }
-    // A crowded range: fall back to ports the OS picks.
-    for p in &mut ports[found..] {
+    // A crowded range: fall back to ports the OS picks. Holding each
+    // listener keeps the OS from returning the same port twice here.
+    while found < ports.len() {
         let l = tokio::net::TcpListener::bind((ip, 0)).await?;
-        *p = l.local_addr()?.port();
+        let port = l.local_addr()?.port();
         listeners.push(l);
+        if reserve_port(port) {
+            ports[found] = port;
+            found += 1;
+        }
     }
     drop(listeners);
     Ok(ports)
@@ -794,6 +833,20 @@ mod tests {
                 "[kernel ab] last\n"
             ]
         );
+    }
+
+    /// Kernels started at once must not share a port (#260): each port is
+    /// free once `allocate_ports` returns, so only the reservation keeps
+    /// the next call from picking it again.
+    #[tokio::test]
+    async fn concurrent_allocations_never_share_a_port() {
+        let calls = (0..400).map(|_| tokio::spawn(allocate_ports("127.0.0.1")));
+        let mut seen = std::collections::HashSet::new();
+        for call in futures::future::join_all(calls).await {
+            for port in call.unwrap().unwrap() {
+                assert!(seen.insert(port), "port {port} handed out twice");
+            }
+        }
     }
 
     #[tokio::test]
