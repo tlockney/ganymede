@@ -86,6 +86,7 @@ fn state(root: &std::path::Path) -> AppState {
         config_dir: root.join(".jupyter-config"),
         lab: None,
         static_dir: None,
+        collab: Default::default(),
         terminals: None,
     }
 }
@@ -2068,6 +2069,206 @@ async fn contents_etag_and_if_match() {
         std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
         "external"
     );
+}
+
+/// `/api/collaboration`: a y-websocket client opens a notebook room,
+/// edits it, sees the edit saved, saves on request, and sees a change made
+/// to the file on disk.
+#[tokio::test]
+async fn collaboration_room_syncs_saves_and_reloads() {
+    use ganymede_documents::schema::{self, Roots};
+    use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
+    use ganymede_documents::yrs::updates::decoder::Decode;
+    use ganymede_documents::yrs::updates::encoder::Encode;
+    use ganymede_documents::yrs::{Array, Doc, Map, Out, ReadTxn, Text, Transact, Update};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("demo.ipynb");
+    let original = "{\n \"cells\": [\n  {\n   \"cell_type\": \"markdown\",\n   \"id\": \"a\",\n   \"metadata\": {},\n   \"source\": [\n    \"hello\"\n   ]\n  }\n ],\n \"metadata\": {\n  \"big\": 18446744073709551616\n },\n \"nbformat\": 4,\n \"nbformat_minor\": 5\n}\n";
+    std::fs::write(&file, original).unwrap();
+    let app = build_router(state(dir.path()));
+
+    let body = json!({"format": "json", "type": "notebook"});
+    let (s, v) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/demo.ipynb",
+        Some(body.clone()),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, again) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/demo.ipynb",
+        Some(body.clone()),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["fileId"], again["fileId"]);
+    assert_eq!(v["type"], "notebook");
+    let (s, _) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/nope.ipynb",
+        Some(body),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let url = |session: &str| {
+        let mut req = format!(
+            "ws://{addr}/api/collaboration/room/json:notebook:{}?sessionId={session}",
+            v["fileId"].as_str().unwrap()
+        )
+        .into_client_request()
+        .unwrap();
+        req.headers_mut()
+            .insert("Authorization", format!("token {TOKEN}").parse().unwrap());
+        req
+    };
+
+    // A stale session is told to reload.
+    let (mut stale, _) = tokio_tungstenite::connect_async(url("old")).await.unwrap();
+    match stale.next().await {
+        Some(Ok(TMsg::Close(Some(frame)))) => assert_eq!(u16::from(frame.code), 1003),
+        other => panic!("expected a close, got {other:?}"),
+    }
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(url(v["sessionId"].as_str().unwrap()))
+        .await
+        .unwrap();
+    let doc = Doc::new();
+    let roots = Roots::get(&doc);
+    let sv = doc.transact().state_vector();
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::SyncStep1(sv)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+
+    // Apply frames until `until` holds, answering the server's step 1.
+    async fn pump<S>(ws: &mut S, doc: &Doc, until: impl Fn(&Doc) -> bool) -> Vec<Vec<u8>>
+    where
+        S: futures::Stream<Item = Result<TMsg, tokio_tungstenite::tungstenite::Error>>
+            + futures::Sink<TMsg>
+            + Unpin,
+        <S as futures::Sink<TMsg>>::Error: std::fmt::Debug,
+    {
+        let mut raw = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while !until(doc) {
+            let msg = tokio::time::timeout_at(deadline, ws.next())
+                .await
+                .expect("timed out waiting for the room")
+                .unwrap()
+                .unwrap();
+            let TMsg::Binary(b) = msg else { continue };
+            if b.first() == Some(&2) {
+                raw.push(b.to_vec());
+                continue;
+            }
+            match YMsg::decode_v1(&b) {
+                Ok(YMsg::Sync(SyncMessage::SyncStep1(sv))) => {
+                    let u = doc.transact().encode_state_as_update_v1(&sv);
+                    ws.send(TMsg::Binary(
+                        YMsg::Sync(SyncMessage::SyncStep2(u)).encode_v1().into(),
+                    ))
+                    .await
+                    .unwrap();
+                }
+                Ok(YMsg::Sync(SyncMessage::SyncStep2(u) | SyncMessage::Update(u))) => {
+                    doc.transact_mut()
+                        .apply_update(Update::decode_v1(&u).unwrap())
+                        .unwrap();
+                }
+                _ => {}
+            }
+        }
+        raw
+    }
+    let source = |doc: &Doc| -> Option<String> {
+        let roots = Roots::get(doc);
+        let txn = doc.transact();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+            return None;
+        };
+        let Some(Out::YText(t)) = cell.get(&txn, "source") else {
+            return None;
+        };
+        Some(ganymede_documents::yrs::GetString::get_string(&t, &txn))
+    };
+    pump(&mut ws, &doc, |d| source(d).is_some()).await;
+    assert_eq!(source(&doc).as_deref(), Some("hello"));
+
+    // Edit; the room saves a second later, keeping what it did not touch.
+    let before = doc.transact().state_vector();
+    {
+        let mut txn = doc.transact_mut();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+            panic!()
+        };
+        let Some(Out::YText(t)) = cell.get(&txn, "source") else {
+            panic!()
+        };
+        t.insert(&mut txn, 5, ", world");
+    }
+    let u = doc.transact().encode_state_as_update_v1(&before);
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::Update(u)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !std::fs::read_to_string(&file)
+        .unwrap()
+        .contains("hello, world")
+    {
+        assert!(std::time::Instant::now() < deadline, "edit was not saved");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        original.replace("\"hello\"", "\"hello, world\"")
+    );
+
+    // An explicit save is answered.
+    ws.send(TMsg::Binary(vec![2, 4, b's', b'a', b'v', b'e', 9].into()))
+        .await
+        .unwrap();
+    let raw = loop {
+        let msg = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        if let TMsg::Binary(b) = msg {
+            if b.first() == Some(&2) {
+                break b.to_vec();
+            }
+        }
+    };
+    let reply: Value = serde_json::from_slice(&raw[2..]).unwrap();
+    assert_eq!(reply["responseTo"], 9);
+    assert_eq!(reply["status"], "success");
+
+    // A change on disk reaches the client.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    std::fs::write(&file, original.replace("\"hello\"", "\"changed on disk\"")).unwrap();
+    pump(&mut ws, &doc, |d| {
+        source(d).as_deref() == Some("changed on disk")
+    })
+    .await;
+    let roots = Roots::get(&doc);
+    let nb = schema::get(&doc.transact(), &roots).unwrap();
+    assert_eq!(nb.cells.len(), 1);
 }
 
 #[tokio::test]
