@@ -10,8 +10,10 @@
 //! Each configured server runs as one process shared by every client of
 //! it: started when the first client connects, ended when the last one
 //! leaves. What the server sends goes to every client, and every client's
-//! messages go to the server unchanged, except that notebook documents are
-//! also written to disk for servers that read files (see [`shadow`]).
+//! messages go to the server unchanged, except that the server gets one
+//! copy of each open document however many clients edit it (see
+//! `documents.rs`), and notebook documents are also written to disk for
+//! servers that read files (see [`shadow`]).
 //!
 //! On iOS and wasm an app cannot start processes, so
 //! [`LspManager::supported`] is false and [`LspManager::connect`] fails.
@@ -28,6 +30,7 @@
     allow(dead_code)
 )]
 
+mod documents;
 pub mod framing;
 pub mod shadow;
 
@@ -196,6 +199,7 @@ impl LspManager {
                     name: name.clone(),
                     spec,
                     state: Mutex::new(State::default()),
+                    documents: tokio::sync::Mutex::new((0, documents::Documents::default())),
                 });
                 (name, s)
             })
@@ -255,6 +259,7 @@ impl LspManager {
         let id = st.next_client;
         st.clients.insert(id, tx);
         let to_server = st.running.as_ref().expect("started").to_server.clone();
+        let generation = st.generation;
         drop(st);
         let shadow = session
             .spec
@@ -263,6 +268,7 @@ impl LspManager {
         Ok(LspClient {
             session,
             id,
+            generation,
             rx,
             to_server,
             shadow,
@@ -305,6 +311,10 @@ struct Session {
     name: String,
     spec: LanguageServerSpec,
     state: Mutex<State>,
+    /// The open documents, for the process of the generation beside them.
+    /// Held while a document message is written to disk and sent, so
+    /// clients' changes reach the disk and the server in one order.
+    documents: tokio::sync::Mutex<(u64, documents::Documents)>,
 }
 
 #[derive(Default)]
@@ -380,6 +390,8 @@ impl Session {
 pub struct LspClient {
     session: Arc<Session>,
     id: u64,
+    /// The server process this client is attached to.
+    generation: u64,
     rx: mpsc::UnboundedReceiver<Arc<str>>,
     to_server: mpsc::UnboundedSender<String>,
     shadow: Option<Arc<shadow::Shadow>>,
@@ -390,18 +402,43 @@ impl LspClient {
         &self.session.name
     }
 
-    /// Sends a JSON-RPC message to the server, after writing the document
-    /// it carries to disk if it is a virtual document.
+    /// Sends a JSON-RPC message to the server. A document message is
+    /// first reconciled with other clients' (see `documents.rs`), and the
+    /// document written to disk if it is a virtual one.
     pub async fn send(&self, message: String) {
         self.session.state.lock().unwrap().last_handler_message_at = Some(now_iso());
-        if let Some(shadow) = &self.shadow {
-            if let Ok(v) = serde_json::from_str::<Value>(&message) {
-                if let Err(e) = shadow.apply(&v).await {
-                    tracing::warn!(server = %self.session.name, "virtual document not written: {e}");
-                }
-            }
+        // Only `didOpen`, `didChange` and `didClose` are parsed here.
+        if !message.contains("textDocument/did") {
+            let _ = self.to_server.send(message);
+            return;
         }
-        let _ = self.to_server.send(message);
+        let Ok(value) = serde_json::from_str::<Value>(&message) else {
+            let _ = self.to_server.send(message);
+            return;
+        };
+        let mut docs = self.session.documents.lock().await;
+        if self.generation < docs.0 {
+            // A client of a process that has ended: the message goes
+            // nowhere, and the table is the new process's.
+            let _ = self.to_server.send(message);
+            return;
+        }
+        if self.generation > docs.0 {
+            *docs = (self.generation, documents::Documents::default());
+        }
+        let (relay, changed) = docs.1.client_message(self.id, &value);
+        if let (Some(shadow), Some(uri)) = (&self.shadow, changed) {
+            write_shadow(&self.session.name, shadow, &uri, docs.1.text(&uri)).await;
+        }
+        match relay {
+            documents::Relay::AsIs => {
+                let _ = self.to_server.send(message);
+            }
+            documents::Relay::Replace(v) => {
+                let _ = self.to_server.send(v.to_string());
+            }
+            documents::Relay::Drop => {}
+        }
     }
 
     /// The next message from the server; `None` once the server has
@@ -413,7 +450,37 @@ impl LspClient {
 
 impl Drop for LspClient {
     fn drop(&mut self) {
+        // Close what only this client had open, so the server doesn't
+        // keep it and a later `didOpen` isn't a second one, and give the
+        // server another client's text where it had this one's. Moot when
+        // this was the last client: the server stops below.
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            let (session, id, generation) = (self.session.clone(), self.id, self.generation);
+            let (to_server, shadow) = (self.to_server.clone(), self.shadow.clone());
+            rt.spawn(async move {
+                let mut docs = session.documents.lock().await;
+                if docs.0 != generation {
+                    return;
+                }
+                let (send, changed) = docs.1.disconnect(id);
+                if let Some(shadow) = &shadow {
+                    for uri in &changed {
+                        write_shadow(&session.name, shadow, uri, docs.1.text(uri)).await;
+                    }
+                }
+                for m in send {
+                    let _ = to_server.send(m.to_string());
+                }
+            });
+        }
         self.session.disconnect(self.id);
+    }
+}
+
+async fn write_shadow(server: &str, shadow: &shadow::Shadow, uri: &str, text: Option<&str>) {
+    let Some(text) = text else { return };
+    if let Err(e) = shadow.write(uri, text).await {
+        tracing::warn!(server, "virtual document not written: {e}");
     }
 }
 
