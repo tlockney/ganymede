@@ -125,7 +125,7 @@ fn reserve_port(port: u16) -> bool {
 /// source ports from: while the kernel starts, a client reconnecting to
 /// that port can be given it as its own source port and connect to
 /// itself, and the kernel then fails to bind. No port is handed out twice
-/// within [`PORT_RESERVATION`], so kernels this process starts at once
+/// within five minutes, so kernels this process starts at once
 /// never share one. Still racy against other processes binding the same
 /// port; `ipc` transport avoids this on POSIX.
 pub async fn allocate_ports(ip: &str) -> Result<[u16; 5]> {
