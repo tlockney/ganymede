@@ -24,6 +24,11 @@ tokio = { workspace = true, features = ["process"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# The kernel host's job objects, so stopping a server also stops what it
+# started (npm `.cmd` shims run the real server under `cmd.exe`).
+[target.'cfg(windows)'.dependencies]
+ganymede-kernel-host = { path = "../ganymede-kernel-host", default-features = false, features = ["subprocess"] }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 tempfile.workspace = true

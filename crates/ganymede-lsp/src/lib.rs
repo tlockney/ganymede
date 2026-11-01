@@ -499,6 +499,8 @@ fn expand_env(value: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
 )))]
 mod process {
     use super::{expand_env, find_program, framing, Error, Result, Session};
+    #[cfg(windows)]
+    use ganymede_kernel_host::process::job;
     use std::path::Path;
     use std::process::Stdio;
     use std::sync::Arc;
@@ -535,11 +537,15 @@ mod process {
             prog.into()
         };
         let mut cmd = tokio::process::Command::new(program);
-        // Its own process group, so stopping it also stops what it started
-        // (`typescript-language-server` runs `tsserver`; npm shims wrap
-        // the real server in a shell).
+        // Its own process group (a job object on Windows), so stopping it
+        // also stops what it started (`typescript-language-server` runs
+        // `tsserver`; npm shims wrap the real server in a shell). Started
+        // suspended on Windows so it can't start a child before it is in
+        // its job; `job::adopt` resumes it.
         #[cfg(unix)]
         cmd.process_group(0);
+        #[cfg(windows)]
+        cmd.creation_flags(job::CREATE_SUSPENDED);
         cmd.args(args)
             .current_dir(cwd)
             .stdin(Stdio::piped())
@@ -550,6 +556,8 @@ mod process {
             cmd.env(k, expand_env(v, |name| std::env::var(name).ok()));
         }
         let mut child = cmd.spawn().map_err(|e| spawn_err(e.to_string()))?;
+        #[cfg(windows)]
+        let job = child.id().and_then(|pid| job::adopt(&child, pid));
         let mut stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
         let (to_server, mut from_clients) = mpsc::unbounded_channel::<String>();
@@ -594,8 +602,13 @@ mod process {
                     tracing::debug!(server = %name, ?status, "language server exited");
                 }
             }
-            // Whatever is left in its group goes too, as kernels' do.
+            // Whatever is left in its group (or job) goes too, as kernels'
+            // does.
             signal_group(pid, Signal::Kill);
+            #[cfg(windows)]
+            if let Some(job) = job {
+                let _ = job.terminate();
+            }
         });
         Ok(Running { to_server, kill })
     }
@@ -604,8 +617,8 @@ mod process {
         Kill,
     }
 
-    /// Signals the server's process group (unix; a no-op elsewhere, where
-    /// `kill_on_drop` ends the server itself).
+    /// Signals the server's process group (unix; a no-op elsewhere: on
+    /// Windows its job is terminated instead).
     #[allow(unused_variables)]
     fn signal_group(pid: Option<u32>, signal: Signal) {
         #[cfg(unix)]
