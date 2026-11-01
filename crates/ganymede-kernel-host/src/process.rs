@@ -395,7 +395,17 @@ impl Provisioner for SubprocessProvisioner {
         })?;
         let pid = child.id().ok_or(Error::KernelDied)?;
         #[cfg(windows)]
-        let job = job::adopt(&child, pid);
+        let job = match job::adopt(&child) {
+            Ok(job) => job,
+            Err(e) => {
+                let _ = child.start_kill();
+                let _ = std::fs::remove_file(&connection_file);
+                return Err(Error::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("resuming {:?}: {e}", argv[0]),
+                )));
+            }
+        };
         tracing::info!(kernel = %spec.name, kernel_id, pid, "launched kernel");
         let prefix = format!("[kernel {}] ", kernel_id.get(..8).unwrap_or(&kernel_id));
         if let Some(out) = child.stdout.take() {
@@ -600,8 +610,13 @@ pub mod job {
     /// Put a process started with [`CREATE_SUSPENDED`] in a new job, then
     /// resume it. It is resumed even when the job can't be set up (the
     /// host may itself be in a job that forbids it), so it runs either
-    /// way; it then just isn't killed with its children.
-    pub fn adopt(child: &tokio::process::Child, pid: u32) -> Option<Arc<Job>> {
+    /// way; it then just isn't killed with its children, and this returns
+    /// `Ok(None)`. An error means the process could not be resumed and
+    /// stays suspended: the caller should kill it.
+    pub fn adopt(child: &tokio::process::Child) -> io::Result<Option<Arc<Job>>> {
+        let pid = child
+            .id()
+            .ok_or_else(|| io::Error::other("the process has already exited"))?;
         let job = child
             .raw_handle()
             .ok_or_else(|| io::Error::other("no process handle"))
@@ -610,14 +625,12 @@ pub mod job {
                 job.assign(process as HANDLE)?;
                 Ok(job)
             });
-        if let Err(e) = resume(pid) {
-            tracing::warn!(pid, "resuming process: {e}");
-        }
+        resume(pid)?;
         match job {
-            Ok(job) => Some(Arc::new(job)),
+            Ok(job) => Ok(Some(Arc::new(job))),
             Err(e) => {
                 tracing::warn!(pid, "process runs without a job object: {e}");
-                None
+                Ok(None)
             }
         }
     }

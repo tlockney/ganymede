@@ -12,3 +12,10 @@
   x86_64-pc-windows-gnu -p ganymede-lsp -p ganymede-kernel-host` checks
   the Windows-only code from Linux; the server crate needs a MinGW C
   compiler for `ring`, so it can't be checked that way.
+- `job::adopt` now returns an error when it can't resume the process,
+  and both callers kill it: a server left suspended would take
+  `initialize` and never answer, with no timeout to report it.
+- Feature unification: the server always depends on `ganymede-lsp`, so
+  every Windows build of it now compiles `ganymede-kernel-host` with
+  `subprocess`, even with the server's own features off. Nothing more is
+  routed. If that matters, the job code can move to a small leaf crate.

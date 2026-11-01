@@ -557,7 +557,10 @@ mod process {
         }
         let mut child = cmd.spawn().map_err(|e| spawn_err(e.to_string()))?;
         #[cfg(windows)]
-        let job = child.id().and_then(|pid| job::adopt(&child, pid));
+        let job = job::adopt(&child).map_err(|e| {
+            let _ = child.start_kill();
+            spawn_err(format!("resuming the server: {e}"))
+        })?;
         let mut stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
         let (to_server, mut from_clients) = mpsc::unbounded_channel::<String>();
@@ -591,6 +594,11 @@ mod process {
         tokio::spawn(async move {
             tokio::select! {
                 _ = killed => {
+                    // Windows has no SIGTERM: end the whole job now.
+                    #[cfg(windows)]
+                    if let Some(job) = &job {
+                        let _ = job.terminate();
+                    }
                     // SIGTERM to the group, a moment to exit, then SIGKILL.
                     signal_group(pid, Signal::Term);
                     let grace = std::time::Duration::from_secs(2);
