@@ -25,6 +25,8 @@ ganymede-protocol = { path = "../ganymede-protocol" }
 ganymede-kernel-host = { path = "../ganymede-kernel-host", default-features = false }
 ganymede-api = { path = "../ganymede-api", default-features = false }
 ganymede-contents = { path = "../ganymede-contents", features = ["sqlite"] }
+ganymede-documents = { path = "../ganymede-documents" }
+ganymede-nbformat = { path = "../ganymede-nbformat" }
 ganymede-gateway = { path = "../ganymede-gateway", optional = true }
 ganymede-terminals = { path = "../ganymede-terminals" }
 ganymede-lsp = { path = "../ganymede-lsp" }

@@ -108,6 +108,7 @@ bottom do no I/O, so they build for any target.
 | `ganymede-lsp` | Language servers for `/lsp/*`: the servers listed in the config file, one process each, started for the first client and relayed to every client, as `jupyter-lsp` does. None on iOS or wasm. |
 | `ganymede-exec` | Runs a notebook with nbclient's semantics. |
 | `ganymede-contents` | The contents model over a filesystem. |
+| `ganymede-documents` | Document rooms: a notebook as a `yrs` (Yjs) document in JupyterLab's collaboration schema, and the y-websocket protocol, as a state machine with no I/O. The server hosts rooms behind `/api/collaboration`. |
 | `ganymede-kernel-host` | Kernelspec discovery; the `KernelTransport` seam (ZeroMQ, in-process); provisioners (subprocess, attach to a running kernel); the per-kernel session state machine. |
 | `ganymede-protocol` | Message types, the ZeroMQ multipart frame layout with HMAC, connection files, the websocket codecs. |
 | `ganymede-nbformat` | nbformat 4.5 reading and writing. |

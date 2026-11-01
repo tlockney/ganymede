@@ -21,8 +21,10 @@ As of this survey:
 - Kernel connection files are written to `JUPYTER_RUNTIME_DIR`, so a ZMQ
   client can attach to a kernel Ganymede launched.
 - Not served: classic Notebook / Notebook 7 pages (`/tree`, `/notebooks`),
-  `/lsp/*`, collaboration rooms (`/api/collaboration`),
-  nbconvert exporters, server extensions.
+  `/lsp/*`, nbconvert exporters, server extensions.
+- Collaboration rooms (**Unreleased.** A build of `main` only):
+  `/api/collaboration`, notebooks only; see
+  [Document model and collaboration](protocol.md#document-model-and-collaboration).
 
 So a client works today if it speaks REST/websocket with a token and needs no
 HTML pages from the server.

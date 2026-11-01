@@ -145,10 +145,33 @@ port, and `y-sync` for the protocol. This is the one place where Rust
 makes the server simpler than the Python original: one process can own the
 CRDT, the file on disk, and the kernel connection.
 
-Retrofitting collaboration onto a non-CRDT model is a rewrite. Ganymede's
-plan is the file as the source of truth, reloaded when it changes on disk,
-with a `yrs` document as an optional live-session layer later; see
-[the iPad use case](ipados.md) for why.
+Retrofitting collaboration onto a non-CRDT model is a rewrite, so the
+server owns the live notebook as a `yrs` document, in the schema
+`jupyter_ydoc` and JupyterLab's `@jupyter/ydoc` share. The file stays the
+source of truth: a room loads it, autosaves it a second after the last
+edit (with an `If-Match` on the hash it last read), and reloads it when it
+changes on disk. See [the iPad use case](ipados.md) for why the file comes
+first.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`ganymede serve` answers `jupyter-collaboration`'s
+`PUT /api/collaboration/session/{path}` and its room websocket
+(`/api/collaboration/room/json:notebook:{fileId}`: y-websocket sync,
+awareness, and the `save` message). With the collaboration extensions
+installed, JupyterLab opens notebooks through rooms, and two tabs or two
+people edit one notebook live:
+
+```sh
+ganymede lab extension install jupyter-docprovider jupyter-collaboration-ui
+```
+
+Limits for now: notebooks only (a text file opened collaboratively fails
+to load), file ids are kept in memory and don't follow renames, the
+server polls each open file every second instead of watching it, and
+there is no forking, timeline, or chat.
 
 ## What is usually missed
 

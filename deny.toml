@@ -9,7 +9,12 @@ all-features = true
 # Every RustSec advisory against a crate in Cargo.lock fails the job,
 # unmaintained and unsound ones included. Ignore one only with a reason
 # and a link here.
-ignore = []
+ignore = [
+    # smallstr is unmaintained (no vulnerability). It comes in through yrs
+    # 0.28, the only Rust Yjs, which ganymede-documents needs; yrs has no
+    # release without it yet. Drop this when yrs moves off smallstr.
+    { id = "RUSTSEC-2026-0215", reason = "unmaintained, via yrs; no alternative" },
+]
 
 [bans]
 # Two versions of one crate are worth knowing about but rarely worth a
