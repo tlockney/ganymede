@@ -771,8 +771,11 @@ fn parallel_starts() {
                 .into_iter()
                 .map(|r| r.unwrap().unwrap_or_else(|e| panic!("{}: {e}", l.kernel)))
                 .collect();
-            for k in &kernels {
-                let r = k.execute(l.answer).await.unwrap();
+            for (i, k) in kernels.iter().enumerate() {
+                let r = k
+                    .execute(l.answer)
+                    .await
+                    .unwrap_or_else(|e| panic!("{} #{i}: {e}", l.kernel));
                 assert_eq!(plain(&r).trim(), "42", "{}", l.kernel);
             }
             for k in kernels {
