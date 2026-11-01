@@ -17,7 +17,8 @@
   server starts and lists no kernels.
 - Registering an in-app kernel through the C ABI is split into #266, to
   be designed with the native kernel.
-- CI's `ffi` job builds the iOS slices through the script on macOS; the
-  no-kernels test (`starts_with_no_kernels_without_processes`) runs only
-  with `cargo test -p ganymede-ffi --no-default-features --features
-  gateway`, which CI doesn't run yet.
+- CI builds the iOS slices through the script on macOS, and runs
+  `cargo test -p ganymede-ffi --no-default-features --features gateway`
+  so the no-kernels path (`starts_with_no_kernels_without_processes`) is
+  tested. The FFI crate asks the server whether a gateway is configured
+  (`serve::gateway_configured`) rather than repeating the check.

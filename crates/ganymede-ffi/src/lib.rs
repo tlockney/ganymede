@@ -19,11 +19,12 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 
 use async_trait::async_trait;
+use ganymede_api::StaticKernelspecs;
 use ganymede_kernel_host::{
-    Kernelspec, KernelspecSource, LaunchOptions, LaunchedKernel, Provisioner, TransportFactory,
+    Kernelspec, LaunchOptions, LaunchedKernel, Provisioner, TransportFactory,
 };
 use ganymede_server::config::Config;
-use ganymede_server::serve::{run_with, Startup};
+use ganymede_server::serve::{gateway_configured, run_with, Startup};
 
 /// A running server. Opaque to C.
 pub struct GanymedeServer {
@@ -138,17 +139,11 @@ fn config(json: Option<&str>) -> anyhow::Result<Config> {
     Ok(serde_json::from_value(value)?)
 }
 
-/// The kernels of a build that can't run kernelspecs: none.
-#[cfg_attr(all(feature = "zmq", feature = "subprocess"), allow(dead_code))]
+/// How a build that can't run kernelspecs starts kernels: it doesn't.
+/// Paired with an empty kernelspec list, so the server never asks.
 struct NoKernels;
 
-const NO_KERNELS: &str = "this build of ganymede-ffi runs no kernels; set gateway_url";
-
-impl KernelspecSource for NoKernels {
-    fn list(&self) -> ganymede_kernel_host::Result<Vec<Kernelspec>> {
-        Ok(Vec::new())
-    }
-}
+const NO_KERNELS: &str = "this build of ganymede-ffi starts no kernels of its own";
 
 #[async_trait]
 impl Provisioner for NoKernels {
@@ -176,13 +171,13 @@ impl TransportFactory for NoKernels {
 /// [`NoKernels`] rather than failing to start: the app may run its
 /// kernels elsewhere, as the iPad app runs them in the web page.
 fn startup(cfg: &Config) -> Startup {
-    let gateway = cfg.gateway_url.as_deref().is_some_and(|u| !u.is_empty());
-    if cfg!(all(feature = "zmq", feature = "subprocess")) || gateway {
+    if cfg!(all(feature = "zmq", feature = "subprocess")) || gateway_configured(cfg) {
         return Startup::default();
     }
+    tracing::info!("built without zmq or subprocess and no gateway_url: no kernels to list");
     let none = std::sync::Arc::new(NoKernels);
     Startup {
-        kernelspecs: Some(none.clone()),
+        kernelspecs: Some(std::sync::Arc::new(StaticKernelspecs(Vec::new()))),
         provisioner: Some(none.clone()),
         transports: Some(none),
         ..Default::default()

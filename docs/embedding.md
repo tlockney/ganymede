@@ -206,6 +206,10 @@ embedding the server passes its own `kernelspecs`, `provisioner` and
 `transports` in `serve::Startup`; built without a feature and given
 none, `run_with` fails at startup.
 
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
 `ganymede-ffi` has the same three features, on by default. The
 XCFramework's macOS slice keeps them; its iOS slices are built with
 `--no-default-features --features gateway`. Built without `zmq` or
@@ -232,7 +236,9 @@ code.
 [`ganymede.toml`](reference.md#config-file), or NULL. `port` defaults to
 0, so the OS picks one; `ip` is `127.0.0.1` and the token is random, as
 in `ganymede serve`. An unknown key is an error. Kernels are the
-kernelspecs the config finds, or a kernel server's through `gateway_url`.
+kernelspecs the config finds, or a kernel server's through `gateway_url`;
+a build without `zmq` or `subprocess`, such as the iOS slices, has only
+the latter (see above).
 Strings passed in are UTF-8 and stay the caller's. The embedded server
 installs no signal handlers and prints nothing to stdout.
 

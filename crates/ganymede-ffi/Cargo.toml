@@ -23,6 +23,7 @@ gateway = ["ganymede-server/gateway"]
 
 [dependencies]
 ganymede-server = { path = "../ganymede-server", default-features = false }
+ganymede-api = { path = "../ganymede-api", default-features = false }
 ganymede-kernel-host = { path = "../ganymede-kernel-host", default-features = false }
 async-trait.workspace = true
 serde_json.workspace = true

@@ -302,10 +302,19 @@ type Kernels = (
     Arc<dyn TransportFactory>,
 );
 
+/// Whether `cfg` runs kernels on another server (`gateway_url` is set).
+pub fn gateway_configured(cfg: &Config) -> bool {
+    cfg.gateway_url.as_deref().is_some_and(|u| !u.is_empty())
+}
+
 /// `gateway_url`'s kernels, refreshing its kernelspecs every minute.
 #[cfg(feature = "gateway")]
 fn gateway(cfg: &Config) -> Result<Option<Kernels>> {
-    let Some(url) = cfg.gateway_url.as_deref().filter(|u| !u.is_empty()) else {
+    let Some(url) = cfg
+        .gateway_url
+        .as_deref()
+        .filter(|_| gateway_configured(cfg))
+    else {
         return Ok(None);
     };
     let g = Arc::new(ganymede_gateway::Gateway::new(
@@ -319,7 +328,7 @@ fn gateway(cfg: &Config) -> Result<Option<Kernels>> {
 
 #[cfg(not(feature = "gateway"))]
 fn gateway(cfg: &Config) -> Result<Option<Kernels>> {
-    if cfg.gateway_url.as_deref().is_some_and(|u| !u.is_empty()) {
+    if gateway_configured(cfg) {
         anyhow::bail!("gateway_url is set, but this build has no `gateway` feature");
     }
     Ok(None)
