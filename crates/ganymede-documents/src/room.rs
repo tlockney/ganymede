@@ -382,6 +382,52 @@ impl Room {
         fx
     }
 
+    /// The file changed on disk while the room may hold unsaved edits.
+    /// `base` is the file as the host last read or wrote it, `disk` the
+    /// file now, at `hash`.
+    ///
+    /// A clean room just [reloads](Room::reload). A dirty one merges (see
+    /// [`crate::merge`]): the disk's changes are applied on top of the
+    /// room's edits, which stay unsaved, so the host saves the merge next.
+    /// Returns the parts where the room's edits lost to the disk.
+    pub fn merge_disk(
+        &mut self,
+        base: &Notebook,
+        disk: &Notebook,
+        hash: &str,
+    ) -> (Effects, Vec<String>) {
+        if !self.is_dirty() {
+            return (self.reload(disk, hash), Vec::new());
+        }
+        let ours = match self.notebook() {
+            Some(Ok(nb)) => schema::notebook_value(&nb),
+            Some(Err(_)) => return (self.reload(disk, hash), vec!["all".into()]),
+            None => return (Effects::default(), Vec::new()),
+        };
+        let theirs = schema::notebook_value(disk);
+        let merged = crate::merge::merge(&schema::notebook_value(base), &ours, &theirs);
+        if merged.notebook == theirs {
+            return (self.reload(disk, hash), merged.conflicts);
+        }
+        let Ok(notebook) = Notebook::from_value(merged.notebook) else {
+            return (self.reload(disk, hash), vec!["all".into()]);
+        };
+        let Some(roots) = self.roots.clone() else {
+            return (Effects::default(), Vec::new());
+        };
+        {
+            let mut txn = self.awareness.doc().transact_mut();
+            schema::set(&mut txn, &roots, &notebook);
+        }
+        self.content_changed.store(false, Ordering::Relaxed);
+        self.generation += 1;
+        self.baseline = Some(theirs);
+        let mut fx = self.broadcast_own();
+        fx.merge(self.set_state(hash));
+        fx.changed = true;
+        (fx, merged.conflicts)
+    }
+
     /// The file was renamed.
     pub fn set_path(&mut self, path: &str) -> Effects {
         if let Some(roots) = &self.roots {

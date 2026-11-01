@@ -25,6 +25,7 @@
 //! the root, no leading slash, `""` for the root itself, exactly as they
 //! appear after `/api/contents/`.
 
+pub mod fileid;
 mod fs;
 mod model;
 mod paths;
@@ -32,6 +33,7 @@ pub mod trust;
 
 use async_trait::async_trait;
 
+pub use fileid::FileIds;
 pub use fs::{FsContents, FsOptions, CHECKPOINT_ID, DEFAULT_CHECKPOINT_DIR};
 pub use model::{Checkpoint, ContentType, ContentsModel, Format, GetOptions, IfMatch, SaveRequest};
 pub use paths::{kernel_cwd, normalize_api_path};

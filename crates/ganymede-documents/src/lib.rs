@@ -4,12 +4,14 @@
 //! - [`schema`] maps a [`ganymede_nbformat::Notebook`] to and from the Y
 //!   document schema JupyterLab's collaboration client
 //!   (`jupyter-collaboration`, `@jupyter/ydoc`) expects.
+//! - [`merge`] merges a file changed on disk into a room's unsaved edits.
 //! - [`room::Room`] is one document and its connected clients, as a state
 //!   machine with no I/O: the host feeds it frames and carries out the
 //!   [`room::Effects`] it returns. `ganymede-server` hosts rooms behind
 //!   `/api/collaboration`; the apps can host them in-process through
 //!   `ganymede-ffi`.
 
+pub mod merge;
 pub mod room;
 pub mod schema;
 
