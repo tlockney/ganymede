@@ -1,8 +1,7 @@
 ## 2026-11-01, document model: watcher, merges, file ids (#141)
 
-Roadmap step 6, on the rooms from the spike (#243, see
-[yrs document rooms](2026-10-31-yrs-document-rooms.md)), items 1, 2 and 5
-of its plan.
+Roadmap step 6, on the rooms from the spike (#243, the yrs document
+rooms entry of 2026-10-31): items 1, 2 and 5 of its plan.
 
 - **Watcher.** `ganymede-server/src/watch.rs`: one `notify` watcher per
   server, on each open file's parent directory, not the file, so a save by
