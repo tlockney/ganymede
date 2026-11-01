@@ -10,8 +10,21 @@ publish.workspace = true
 [lib]
 crate-type = ["staticlib", "rlib"]
 
+[features]
+default = ["zmq", "subprocess", "gateway"]
+# Kernelspecs run as child processes over ZeroMQ, as `ganymede serve`
+# runs them. The macOS slice keeps these; the iOS slices build without
+# them (scripts/build-xcframework.sh), where an app can't start
+# processes, and the server then has no kernels of its own.
+zmq = ["ganymede-server/zmq"]
+subprocess = ["ganymede-server/subprocess"]
+# `gateway_url`: kernels on another Jupyter server.
+gateway = ["ganymede-server/gateway"]
+
 [dependencies]
-ganymede-server = { path = "../ganymede-server" }
+ganymede-server = { path = "../ganymede-server", default-features = false }
+ganymede-kernel-host = { path = "../ganymede-kernel-host", default-features = false }
+async-trait.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 anyhow.workspace = true

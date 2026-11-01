@@ -204,9 +204,15 @@ and a `KernelspecSource` listing the kernel to `.kernelspecs`, and
 `ganymede-server` has the same two features, plus `gateway`. An app
 embedding the server passes its own `kernelspecs`, `provisioner` and
 `transports` in `serve::Startup`; built without a feature and given
-none, `run_with` fails at startup. `ganymede-ffi` builds the server with
-its default features, so the XCFramework has them on iOS too
-([#208](https://github.com/tlockney/ganymede/issues/208)).
+none, `run_with` fails at startup.
+
+`ganymede-ffi` has the same three features, on by default. The
+XCFramework's macOS slice keeps them; its iOS slices are built with
+`--no-default-features --features gateway`. Built without `zmq` or
+`subprocess`, the server in `ganymede-ffi` lists no kernels and refuses
+to start one, rather than failing to start, unless `gateway_url` is
+set. The C functions can't pass an app's own provisioner yet
+([#266](https://github.com/tlockney/ganymede/issues/266)).
 
 ## The server in an app, from C
 
