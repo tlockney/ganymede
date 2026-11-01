@@ -78,7 +78,11 @@ binary through `install.sh`, cdp-kernel from npm, `ganymede lab install`,
 execute`, nb-cli's remote and gateway modes (`validation/nb-cli.sh`),
 `ganymede serve` with the VS Code extension's requests, and the
 uninstall, failing if any Python ran. Its `image` job builds `container/Dockerfile` from the
-checkout and runs `container/smoke-test.sh` on it.
+checkout and runs `container/smoke-test.sh` on it. Its `lsp` job
+drives JupyterLab with `jupyterlab-lsp` against `ganymede serve` and
+against `jupyter lab` with jupyter-lsp, and checks both show the same
+diagnostics from typescript-language-server and pyright
+([`scripts/test-lsp.sh`](../scripts/test-lsp.sh)).
 
 ## CI
 

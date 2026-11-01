@@ -55,6 +55,9 @@ pub struct FederatedExtension {
     /// The `jupyterlab._build` object from its `package.json`.
     pub build: Map<String, Value>,
     pub version: String,
+    /// `jupyterlab.disabledExtensions` from its `package.json`: plugins
+    /// it replaces, which JupyterLab turns off while it is enabled.
+    pub disables: Vec<String>,
 }
 
 /// JupyterLab's application directory and the state it needs.
@@ -160,7 +163,7 @@ impl Lab {
             "copyAbsolutePath": false,
             "delete_to_trash": false,
             "devMode": false,
-            "disabledExtensions": disabled_extensions(&self.page_config_file),
+            "disabledExtensions": page_disabled_extensions(&self.page_config_file, &self.extensions),
             "exposeAppInBrowser": false,
             "extensionManager": {"name": "read-only", "can_install": false, "install_path": null},
             "federated_extensions": federated,
@@ -907,6 +910,16 @@ pub fn find_extensions(dirs: &[PathBuf]) -> Vec<FederatedExtension> {
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string(),
+                disables: pkg
+                    .pointer("/jupyterlab/disabledExtensions")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             });
         }
     }
@@ -939,6 +952,48 @@ pub fn disabled_extensions(page_config: &FsPath) -> Vec<String> {
             .collect(),
         _ => Vec::new(),
     };
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The page's `disabledExtensions`, as jupyterlab_server's
+/// `get_page_config` builds it: the plugins each enabled extension's
+/// `jupyterlab.disabledExtensions` names (jupyterlab-lsp turns off the
+/// core language-server plugins it replaces), then `page_config.json` on
+/// top, where `true` adds a name and `false` takes one out.
+pub fn page_disabled_extensions(
+    page_config: &FsPath,
+    extensions: &[FederatedExtension],
+) -> Vec<String> {
+    let config: Vec<(String, bool)> = match read_json(page_config)
+        .as_ref()
+        .and_then(|v| v.get("disabledExtensions"))
+    {
+        Some(Value::Object(m)) => m
+            .iter()
+            .filter_map(|(k, v)| v.as_bool().map(|b| (k.clone(), b)))
+            .collect(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|k| (k.to_string(), true))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let off = |name: &str| config.iter().any(|(k, b)| k == name && *b);
+    let mut out: Vec<String> = extensions
+        .iter()
+        .filter(|e| !off(&e.name))
+        .flat_map(|e| e.disables.iter().cloned())
+        .collect();
+    for (k, b) in &config {
+        if *b {
+            out.push(k.clone());
+        } else {
+            out.retain(|x| x != k);
+        }
+    }
     out.sort();
     out.dedup();
     out
@@ -1124,6 +1179,41 @@ mod tests {
         ] {
             assert_eq!(semver_version(py), semver, "{py}");
         }
+    }
+
+    #[test]
+    fn extensions_disable_the_plugins_they_replace() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = page_config_file(dir.path());
+        let ext = |name: &str, disables: &[&str]| FederatedExtension {
+            name: name.into(),
+            dir: dir.path().into(),
+            build: Map::new(),
+            version: "1.0.0".into(),
+            disables: disables.iter().map(|s| s.to_string()).collect(),
+        };
+        let exts = [
+            ext(
+                "@jupyter-lsp/jupyterlab-lsp",
+                &["core:lsp", "core:completer"],
+            ),
+            ext("other", &["core:x"]),
+        ];
+        assert_eq!(
+            page_disabled_extensions(&f, &exts),
+            ["core:completer", "core:lsp", "core:x"]
+        );
+        // `false` re-enables a plugin; a disabled extension disables nothing.
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(
+            &f,
+            r#"{"disabledExtensions": {"core:completer": false, "other": true, "mine": true}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            page_disabled_extensions(&f, &exts),
+            ["core:lsp", "mine", "other"]
+        );
     }
 
     #[test]
