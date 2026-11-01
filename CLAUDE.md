@@ -38,25 +38,21 @@ cut, so on the release branch remove each of those notes, and reword the
 text around a note if it read as unreleased. A note added to `main` after
 the branch was cut stays.
 
-## Review gate
+## Independent review
 
-No PR merges without an independent review. The thread or person who
-wrote a PR doesn't review it.
+Every PR gets a review from a Claude session that didn't write it. A
+scheduled reviewer reviews each open PR once CI is green: the
+code-review skill at high effort, the PR against its issue's acceptance
+criteria, and the PR template's Verification checklist against the
+diff. It posts one GitHub review ending in `Review: pass` or
+`Review: changes needed`. The review is advisory and makes every call
+itself: it never waits on a person.
 
-- A scheduled review session reviews each open PR once CI is green: the
-  code-review skill at high effort, the PR against its issue's
-  acceptance criteria, and the PR template's Verification checklist
-  against the diff. It posts one GitHub review ending in
-  `Review: pass`, `Review: changes needed`, or `Review: needs Thomas`,
-  and adds the `review: pass` label on a pass.
-- The `review-gate` check passes only with that label. A push removes
-  it, so new commits get a new review. Dependabot PRs skip review.
-- The author fixes review comments the way it fixes CI failures, then
-  waits for the next review. Don't add `review: pass` to your own PR.
-- `Review: needs Thomas` means the PR adds a dependency, a crate or
-  package, an advisory ignore or license exception, `unsafe` code, new
-  network surface, or an API change. Thomas decides and
-  adds the label.
+- The author treats `Review: changes needed` like a CI failure: fix it,
+  or answer the finding on its thread with why not.
+- New dependencies, advisory ignores, license exceptions, `unsafe`, new
+  network surface, and API changes must be justified in the PR; the
+  reviewer fails a PR that doesn't.
 
 ## Spikes
 
