@@ -1081,6 +1081,7 @@ dependencies = [
  "ganymede-api",
  "ganymede-contents",
  "ganymede-documents",
+ "ganymede-exec",
  "ganymede-gateway",
  "ganymede-kernel-host",
  "ganymede-lsp",

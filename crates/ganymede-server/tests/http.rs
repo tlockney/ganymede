@@ -2688,3 +2688,176 @@ async fn language_server_status_and_websocket() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+/// jupyter-server-documents' execute endpoint: cells run on the server
+/// into the room, with no client connected, and land in the file.
+#[tokio::test]
+async fn execute_endpoint_runs_cells_into_the_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("run.ipynb");
+    let code = |id: &str, src: &str| json!({"cell_type": "code", "execution_count": null, "id": id, "metadata": {}, "outputs": [], "source": src});
+    let nb = json!({
+        "cells": [code("a", "hello"), code("b", "display"), code("c", "raise"), code("d", "never"),
+                  {"cell_type": "markdown", "id": "m", "metadata": {}, "source": "text"}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5
+    });
+    std::fs::write(&file, serde_json::to_string_pretty(&nb).unwrap()).unwrap();
+    let app = build_router(state(dir.path()));
+    let (s, kernel) = call(&app, "POST", "/api/kernels", Some(json!({})), Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let kid = kernel["id"].as_str().unwrap().to_string();
+    let (_, session) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/run.ipynb",
+        Some(json!({"format": "json", "type": "notebook"})),
+        Some(TOKEN),
+    )
+    .await;
+    let doc = format!("json:notebook:{}", session["fileId"].as_str().unwrap());
+    // jupyter-server-documents' and jupyter_server_fileid's id endpoints
+    // agree with the session's.
+    let (s, v) = call(
+        &app,
+        "POST",
+        "/api/fileid/index?path=run.ipynb",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v, json!({"id": session["fileId"], "path": "run.ipynb"}));
+    let (s, v) = call(
+        &app,
+        "GET",
+        "/api/fileid/id?path=run.ipynb",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!((s, &v["id"]), (StatusCode::OK, &session["fileId"]));
+    let id = session["fileId"].as_str().unwrap();
+    let (s, v) = call(
+        &app,
+        "GET",
+        &format!("/api/fileid/path?id={id}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!((s, &v["path"]), (StatusCode::OK, &json!("run.ipynb")));
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/api/fileid/index?path=missing.ipynb",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = call(
+        &app,
+        "GET",
+        "/api/fileid/id?path=other.ipynb",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    // nb-cli's probe: an empty request is a 400, not a 404.
+    let (s, _) = call(
+        &app,
+        "POST",
+        &format!("/api/kernels/{kid}/execute"),
+        Some(json!({"document_id": "", "cells": []})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let hash = |src: &str| ganymede_documents::murmur2(src.as_bytes(), 0).to_string();
+    let url = format!("/api/kernels/{kid}/execute");
+    let exec = |body: Value| call(&app, "POST", &url, Some(body), Some(TOKEN));
+
+    // Refusals.
+    let (s, v) = exec(json!({"document_id": doc, "cells": [
+        {"cell_id": "a", "source_hash": hash("hello")},
+        {"cell_id": "b", "source_hash": hash("changed")}]}))
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert_eq!(v, json!({"error": "source_mismatch", "cell_id": "b"}));
+    let (s, _) =
+        exec(json!({"document_id": doc, "cells": [{"cell_id": "m", "source_hash": hash("text")}]}))
+            .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "markdown cell");
+    let (s, _) =
+        exec(json!({"document_id": doc, "cells": [{"cell_id": "zz", "source_hash": "0"}]})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "unknown cell");
+    let (s, _) = exec(json!({"document_id": "json:notebook:nope", "cells": [{"cell_id": "a", "source_hash": "0"}]})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "unknown document");
+    let (s, _) = exec(json!({"document_id": doc, "cells": []})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "no cells");
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/api/kernels/nope/execute",
+        Some(
+            json!({"document_id": doc, "cells": [{"cell_id": "a", "source_hash": hash("hello")}]}),
+        ),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "unknown kernel");
+
+    // Two chained requests: a, then b, c, d. c fails, so d is skipped.
+    let (s, v) = exec(json!({"document_id": doc, "request_id": "r1",
+        "cells": [{"cell_id": "a", "source_hash": hash("hello")}]}))
+    .await;
+    assert_eq!((s, v), (StatusCode::OK, Value::Null));
+    let (s, _) = exec(
+        json!({"document_id": doc, "request_id": "r2", "previous_request_id": "r1",
+        "cells": [
+            {"cell_id": "b", "source_hash": hash("display")},
+            {"cell_id": "c", "source_hash": hash("raise")},
+            {"cell_id": "d", "source_hash": hash("never")}]}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let saved = loop {
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        if v["cells"][2]["outputs"]
+            .as_array()
+            .is_some_and(|o| !o.is_empty())
+            && v["cells"][2]["execution_count"].is_number()
+        {
+            break v;
+        }
+        assert!(std::time::Instant::now() < deadline, "not run: {v:#}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let cells = &saved["cells"];
+    assert_eq!(cells[0]["execution_count"], 1);
+    assert!(
+        cells[0]["outputs"].to_string().contains("hello"),
+        "{:#}",
+        cells[0]
+    );
+    assert_eq!(cells[1]["execution_count"], 2);
+    // The display was updated, then cleared by the wait-clear before the
+    // stream.
+    assert_eq!(
+        cells[1]["outputs"].as_array().unwrap().len(),
+        1,
+        "{:#}",
+        cells[1]
+    );
+    assert_eq!(cells[1]["outputs"][0]["text"], json!(["after\n"]));
+    assert_eq!(cells[2]["outputs"][0]["output_type"], "error");
+    assert_eq!(cells[3]["execution_count"], Value::Null);
+    assert_eq!(cells[3]["outputs"], json!([]));
+    assert!(
+        cells[0].get("execution_state").is_none(),
+        "runtime state is not saved"
+    );
+}

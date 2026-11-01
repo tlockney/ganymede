@@ -83,6 +83,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/kernels/{id}", get(get_kernel).delete(delete_kernel))
         .route("/api/kernels/{id}/interrupt", post(interrupt_kernel))
         .route("/api/kernels/{id}/restart", post(restart_kernel))
+        .route("/api/kernels/{id}/execute", post(crate::execute::execute))
         .route("/api/kernels/{id}/channels", get(crate::ws::channels))
         .route("/api/sessions", get(list_sessions).post(create_session))
         .route(
@@ -114,6 +115,9 @@ pub fn router(state: AppState) -> Router {
             axum::routing::put(crate::collab::session),
         )
         .route("/api/collaboration/room/{room}", get(crate::collab::room))
+        .route("/api/fileid/index", post(crate::collab::fileid_index))
+        .route("/api/fileid/id", get(crate::collab::fileid_id))
+        .route("/api/fileid/path", get(crate::collab::fileid_path))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             crate::auth::api,

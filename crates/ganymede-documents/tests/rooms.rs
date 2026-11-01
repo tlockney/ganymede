@@ -434,3 +434,71 @@ fn awareness_is_relayed_and_cleared_on_disconnect() {
     assert!(room.notebook().is_none());
     let _ = StateVector::default();
 }
+
+/// Outputs written by the server reach a client with small updates: a
+/// growing stream is appended to, kept outputs are not resent.
+#[test]
+fn set_outputs_appends_to_a_growing_stream() {
+    let nb = Notebook::from_str(&fixture("code_outputs.ipynb")).unwrap();
+    let mut room = Room::notebook_room(&nb, "x.ipynb");
+    let client = client_of(&room);
+    let id = nb.cells[1].id().unwrap().to_string();
+    let stream =
+        |text: &str| serde_json::json!({"name": "stdout", "output_type": "stream", "text": text});
+
+    let (_, fx) = room.edit(|txn, roots| {
+        let cell = schema::find_cell(txn, roots, &id).unwrap();
+        schema::set_outputs(txn, &cell, vec![stream("one\n")]);
+    });
+    assert!(fx.changed);
+    for (_, f) in &fx.send {
+        apply_frame(&client, f);
+    }
+    let big = "x".repeat(2000);
+    let (_, fx) = room.edit(|txn, roots| {
+        let cell = schema::find_cell(txn, roots, &id).unwrap();
+        schema::set_outputs(txn, &cell, vec![stream(&format!("one\n{big}"))]);
+    });
+    let total: usize = fx.send.iter().map(|(_, f)| f.len()).sum();
+    assert!(total < big.len() + 200, "sent {total} bytes");
+    for (_, f) in &fx.send {
+        apply_frame(&client, f);
+    }
+    let result = serde_json::json!({"data": {"text/plain": "2"}, "execution_count": 1, "metadata": {}, "output_type": "execute_result"});
+    let (_, fx) = room.edit(|txn, roots| {
+        let cell = schema::find_cell(txn, roots, &id).unwrap();
+        schema::set_outputs(
+            txn,
+            &cell,
+            vec![stream(&format!("one\n{big}")), result.clone()],
+        );
+    });
+    let total: usize = fx.send.iter().map(|(_, f)| f.len()).sum();
+    assert!(total < 500, "sent {total} bytes");
+    for (_, f) in &fx.send {
+        apply_frame(&client, f);
+    }
+    let roots = Roots::get(&client);
+    let seen = schema::get(&client.transact(), &roots).unwrap();
+    let ganymede_nbformat::Cell::Code(c) = &seen.cells[1] else {
+        panic!()
+    };
+    assert_eq!(c.outputs.len(), 2);
+    let v = serde_json::to_value(&c.outputs).unwrap();
+    assert_eq!(v[0]["text"], format!("one\n{big}"));
+    assert_eq!(v[1]["data"]["text/plain"], "2");
+
+    // Cleared.
+    let (_, fx) = room.edit(|txn, roots| {
+        let cell = schema::find_cell(txn, roots, &id).unwrap();
+        schema::set_outputs(txn, &cell, vec![]);
+    });
+    for (_, f) in &fx.send {
+        apply_frame(&client, f);
+    }
+    let seen = schema::get(&client.transact(), &roots).unwrap();
+    let ganymede_nbformat::Cell::Code(c) = &seen.cells[1] else {
+        panic!()
+    };
+    assert!(c.outputs.is_empty());
+}

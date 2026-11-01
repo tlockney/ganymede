@@ -126,6 +126,18 @@ impl FileIds {
         }
     }
 
+    /// The id `path` has, without making one.
+    pub fn get(&self, path: &str) -> Option<String> {
+        match &*self.lock() {
+            Store::Memory { by_path, .. } => by_path.get(path).cloned(),
+            #[cfg(feature = "sqlite")]
+            Store::Sqlite { db, root } => sqlite::id(db, root, path).unwrap_or_else(|e| {
+                tracing::warn!("file id for {path}: {e}");
+                None
+            }),
+        }
+    }
+
     /// The path an id names now.
     pub fn path(&self, id: &str) -> Option<String> {
         match &*self.lock() {
@@ -227,6 +239,15 @@ mod sqlite {
         Ok((id, true))
     }
 
+    pub fn id(db: &Connection, root: &str, path: &str) -> rusqlite::Result<Option<String>> {
+        db.query_row(
+            "SELECT id FROM file_ids WHERE root = ?1 AND path = ?2",
+            params![root, path],
+            |r| r.get(0),
+        )
+        .optional()
+    }
+
     pub fn path(db: &Connection, root: &str, id: &str) -> rusqlite::Result<Option<String>> {
         db.query_row(
             "SELECT path FROM file_ids WHERE root = ?1 AND id = ?2",
@@ -275,6 +296,8 @@ mod tests {
         let (b, _) = ids.index("dir/sub/b.ipynb");
         let (c, _) = ids.index("dirt.ipynb");
         assert_eq!(ids.path(&a).as_deref(), Some("dir/a.ipynb"));
+        assert_eq!(ids.get("dir/a.ipynb"), Some(a.clone()));
+        assert_eq!(ids.get("nope"), None);
 
         ids.moved("dir", "renamed");
         assert_eq!(ids.path(&a).as_deref(), Some("renamed/a.ipynb"));

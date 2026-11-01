@@ -18,3 +18,53 @@ pub mod schema;
 pub use room::{ConnId, Effects, Room, RoomError, SaveStatus, Target};
 pub use schema::SchemaError;
 pub use yrs;
+
+/// MurmurHash2 (32-bit) of `data`, as `jupyter-server-documents` hashes
+/// a cell's UTF-8 source (seed 0) for its execute endpoint, so a request
+/// names the source it saw and a changed cell is refused.
+pub fn murmur2(data: &[u8], seed: u32) -> u32 {
+    const M: u32 = 0x5BD1_E995;
+    let mut h = seed ^ data.len() as u32;
+    let mut chunks = data.chunks_exact(4);
+    for c in &mut chunks {
+        let mut k = u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+        k = k.wrapping_mul(M);
+        k ^= k >> 24;
+        k = k.wrapping_mul(M);
+        h = h.wrapping_mul(M) ^ k;
+    }
+    let rest = chunks.remainder();
+    if rest.len() == 3 {
+        h ^= u32::from(rest[2]) << 16;
+    }
+    if rest.len() >= 2 {
+        h ^= u32::from(rest[1]) << 8;
+    }
+    if !rest.is_empty() {
+        h ^= u32::from(rest[0]);
+        h = h.wrapping_mul(M);
+    }
+    h ^= h >> 13;
+    h = h.wrapping_mul(M);
+    h ^= h >> 15;
+    h
+}
+
+#[cfg(test)]
+mod tests {
+    /// Values from `jupyter_server_documents.rooms.ynotebook_room._source_hash`.
+    #[test]
+    fn murmur2_matches_jupyter_server_documents() {
+        for (s, h) in [
+            ("", 0),
+            ("a", 2456313694),
+            ("ab", 446775395),
+            ("abc", 324500635),
+            ("abcd", 646393889),
+            ("print('hello')\n", 1612567987),
+            ("héllo wörld 🚀", 1432791399),
+        ] {
+            assert_eq!(super::murmur2(s.as_bytes(), 0), h, "{s:?}");
+        }
+    }
+}

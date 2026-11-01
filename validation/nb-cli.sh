@@ -6,10 +6,11 @@
 # `jupyter server list`, which needs Python), then create, cell
 # add/update/delete, execute, read, search --with-errors and output clear,
 # with the notebook on the server. nb-cli first tries jupyter-server-documents
-# (`POST /api/fileid/index`) and jupyter-collaboration
-# (`PUT /api/collaboration/session`); Ganymede serves neither, so it falls
-# back to the contents API and the kernel websocket. Kernel state must
-# survive separate `nb execute` calls: the journaling flow depends on it.
+# (`POST /api/fileid/index`), which Ganymede answers, so nb-cli edits the
+# notebook through a document room and runs cells with
+# `POST /api/kernels/{id}/execute`, the server writing outputs into the
+# room. Kernel state must survive separate `nb execute` calls: the
+# journaling flow depends on it.
 #
 # Gateway mode: `nb execute --gateway --gateway-token --kernel-id` on a
 # notebook kept on local disk, using only the kernel-gateway subset.
