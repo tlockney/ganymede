@@ -242,6 +242,8 @@ jobs:
         run: cargo test -p ganymede-engine --no-default-features --test in_process
       - name: Server serves an app's own kernels without ZeroMQ or subprocesses
         run: cargo test -p ganymede-server --no-default-features --test embedded
+      - name: ganymede-ffi as the iOS slices build it (no ZeroMQ or subprocesses)
+        run: cargo test -p ganymede-ffi --no-default-features --features gateway
       - name: Core libraries for browser wasm
         run: cargo check -p ganymede-engine --no-default-features --target wasm32-unknown-unknown
       - name: Engine runs a notebook under WASI

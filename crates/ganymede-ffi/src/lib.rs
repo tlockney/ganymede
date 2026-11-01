@@ -8,13 +8,23 @@
 //!
 //! Strings passed in are UTF-8 and owned by the caller. Strings returned
 //! are owned by the caller and freed with [`ganymede_string_free`].
+//!
+//! Built without the `zmq` or `subprocess` feature, as the iOS slices
+//! of the XCFramework are, the server can't run kernelspecs itself. It
+//! then lists no kernels and refuses to start one, unless the config
+//! sets `gateway_url`, whose kernels it runs as usual.
 
 use std::ffi::{c_char, CStr, CString};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
+use async_trait::async_trait;
+use ganymede_api::StaticKernelspecs;
+use ganymede_kernel_host::{
+    Kernelspec, LaunchOptions, LaunchedKernel, Provisioner, TransportFactory,
+};
 use ganymede_server::config::Config;
-use ganymede_server::serve::{run_with, Startup};
+use ganymede_server::serve::{gateway_configured, run_with, Startup};
 
 /// A running server. Opaque to C.
 pub struct GanymedeServer {
@@ -129,8 +139,54 @@ fn config(json: Option<&str>) -> anyhow::Result<Config> {
     Ok(serde_json::from_value(value)?)
 }
 
+/// How a build that can't run kernelspecs starts kernels: it doesn't.
+/// Paired with an empty kernelspec list, so the server never asks.
+struct NoKernels;
+
+const NO_KERNELS: &str = "this build of ganymede-ffi starts no kernels of its own";
+
+#[async_trait]
+impl Provisioner for NoKernels {
+    async fn launch(
+        &self,
+        _: &Kernelspec,
+        _: LaunchOptions,
+    ) -> ganymede_kernel_host::Result<LaunchedKernel> {
+        Err(ganymede_kernel_host::Error::Unsupported(NO_KERNELS))
+    }
+}
+
+#[async_trait]
+impl TransportFactory for NoKernels {
+    async fn connect(
+        &self,
+        _: &LaunchedKernel,
+    ) -> ganymede_kernel_host::Result<ganymede_kernel_host::KernelTransport> {
+        Err(ganymede_kernel_host::Error::Unsupported(NO_KERNELS))
+    }
+}
+
+/// What `run_with` is given for kernels. A build without `zmq` or
+/// `subprocess` has no default kernels, so without a gateway it gets
+/// [`NoKernels`] rather than failing to start: the app may run its
+/// kernels elsewhere, as the iPad app runs them in the web page.
+fn startup(cfg: &Config) -> Startup {
+    if cfg!(all(feature = "zmq", feature = "subprocess")) || gateway_configured(cfg) {
+        return Startup::default();
+    }
+    tracing::info!("built without zmq or subprocess and no gateway_url: no kernels to list");
+    let none = std::sync::Arc::new(NoKernels);
+    Startup {
+        kernelspecs: Some(std::sync::Arc::new(StaticKernelspecs(Vec::new()))),
+        provisioner: Some(none.clone()),
+        transports: Some(none),
+        ..Default::default()
+    }
+}
+
 fn start(json: Option<&str>) -> anyhow::Result<GanymedeServer> {
     let cfg = config(json)?;
+    let kernels = startup(&cfg);
     let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(4);
     let (url_tx, url_rx) = mpsc::channel::<anyhow::Result<String>>();
     let thread = std::thread::Builder::new()
@@ -153,7 +209,7 @@ fn start(json: Option<&str>) -> anyhow::Result<GanymedeServer> {
                     let _ = listening.send(Ok(url.to_string()));
                 })),
                 stop: Some(stop_rx),
-                ..Default::default()
+                ..kernels
             };
             if let Err(e) = rt.block_on(run_with(cfg, startup)) {
                 tracing::error!("server stopped: {e:#}");
@@ -180,7 +236,7 @@ fn start(json: Option<&str>) -> anyhow::Result<GanymedeServer> {
 
 #[cfg(test)]
 mod tests {
-    use super::config;
+    use super::{config, startup};
 
     #[test]
     fn port_defaults_to_any() {
@@ -193,5 +249,19 @@ mod tests {
     fn bad_config_is_an_error() {
         assert!(config(Some("[]")).is_err());
         assert!(config(Some(r#"{"no_such_key": 1}"#)).is_err());
+    }
+
+    #[test]
+    fn kernels_without_processes() {
+        let local = startup(&config(None).unwrap());
+        let remote = startup(&config(Some(r#"{"gateway_url": "http://k:8888"}"#)).unwrap());
+        assert!(remote.kernelspecs.is_none() && remote.provisioner.is_none());
+        let full = cfg!(all(feature = "zmq", feature = "subprocess"));
+        assert_eq!(local.kernelspecs.is_none(), full);
+        assert_eq!(local.provisioner.is_none(), full);
+        assert_eq!(local.transports.is_none(), full);
+        if let Some(specs) = local.kernelspecs {
+            assert!(specs.list().unwrap().is_empty());
+        }
     }
 }
