@@ -19,7 +19,8 @@
 # Playwright's Chromium installed (cd validation && npm ci && npx
 # playwright install chromium). Downloads cdp-kernel from npm (version
 # CDP_KERNEL_VERSION, which CI pins; latest without it) and JupyterLab
-# from PyPI. HOME is a new directory, so nothing outside the
+# from PyPI. With NB set to an nb-cli binary, also runs
+# validation/nb-cli.sh on cdp-node. HOME is a new directory, so nothing outside the
 # work dir changes; KEEP=1 keeps it.
 
 set -eu
@@ -213,6 +214,9 @@ await jupyter.display(jupyter.html`<b class="${probe}">bold</b><script>document.
 await jupyter.display({ "application/javascript": `document.body.dataset.probeJs = "ran"` }, { raw: true });' \
 	node trust.mjs "$base" "$token" cdp-node "$out/trust.json" || fail "HTML and JavaScript outputs after reload"
 RELOAD=1 node widgets.mjs "$base" "$token" cdp-node "$out/widgets.json" || fail "widget after reload"
+# Open a notebook, run a TypeScript cell, save, and check the saved output.
+CODE='const n: number = 6 * 7; console.log("hi from " + n)' EXPECT='hi from 42' \
+	node jupyterlab.mjs "$base" "$token" cdp-node "$out/jupyterlab.json" || fail "JupyterLab runs and saves a cell"
 cd "$work"
 stop_server
 
@@ -248,6 +252,11 @@ EOF
 (cd "$work/notebooks" && ganymede execute first.ipynb --inplace)
 grep -q 'Friday, January 2\*\* is 17 characters' "$work/notebooks/first.ipynb" ||
 	fail "first.ipynb has no jupyter.display output from the npm: import"
+
+if [ -n "${NB:-}" ]; then
+	step "nb-cli, the agents' notebook CLI, against ganymede serve"
+	NB=$NB "$repo/validation/nb-cli.sh" "$(command -v ganymede)" cdp-node || fail "nb-cli against ganymede serve"
+fi
 
 step "ganymede serve, with the VS Code Jupyter extension's remote-server flow"
 (cd "$work/notebooks" && exec ganymede serve >"$work/serve.out" 2>"$work/serve.err") &
