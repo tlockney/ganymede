@@ -12,7 +12,7 @@
 //! leaves. What the server sends goes to every client, and every client's
 //! messages go to the server unchanged, except that the server gets one
 //! copy of each open document however many clients edit it (see
-//! [`documents`]), and notebook documents are also written to disk for
+//! `documents.rs`), and notebook documents are also written to disk for
 //! servers that read files (see [`shadow`]).
 //!
 //! On iOS and wasm an app cannot start processes, so
@@ -403,7 +403,7 @@ impl LspClient {
     }
 
     /// Sends a JSON-RPC message to the server. A document message is
-    /// first reconciled with other clients' (see [`documents`]), and the
+    /// first reconciled with other clients' (see `documents.rs`), and the
     /// document written to disk if it is a virtual one.
     pub async fn send(&self, message: String) {
         self.session.state.lock().unwrap().last_handler_message_at = Some(now_iso());

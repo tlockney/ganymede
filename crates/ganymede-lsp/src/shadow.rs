@@ -2,7 +2,7 @@
 //! language server as one document under `virtualDocumentsUri`, a URI that
 //! names no real file. Servers that read files themselves (to resolve
 //! imports, for example) need it on disk, so each time the server's text
-//! of a document under that URI changes (see [`crate::documents`]), it is
+//! of a document under that URI changes (see `documents.rs`), it is
 //! written there before the server gets the message, as `jupyter-lsp`'s
 //! shadow file system does.
 
