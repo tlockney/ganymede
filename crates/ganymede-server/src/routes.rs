@@ -95,6 +95,8 @@ pub fn router(state: AppState) -> Router {
             get(get_terminal).delete(delete_terminal),
         )
         .route("/terminals/websocket/{name}", get(crate::ws::terminal))
+        .route("/lsp/status", get(lsp_status))
+        .route("/lsp/ws/{name}", get(crate::ws::language_server))
         .route(
             "/api/contents",
             get(get_contents_root).post(post_contents_root),
@@ -829,4 +831,26 @@ async fn delete_terminal(
 ) -> HttpResult<StatusCode> {
     terminals(&s)?.delete(&name)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ----- language servers -------------------------------------------------------
+
+impl From<ganymede_lsp::Error> for HttpError {
+    fn from(e: ganymede_lsp::Error) -> Self {
+        HttpError(e.status(), e.to_string())
+    }
+}
+
+/// The language server manager, or 404 as a server without `jupyter-lsp`
+/// answers: none is configured.
+pub(crate) fn lsp(s: &AppState) -> HttpResult<&ganymede_lsp::LspManager> {
+    s.lsp
+        .as_deref()
+        .ok_or_else(|| HttpError(404, "Not Found".into()))
+}
+
+/// `GET /lsp/status`: the configured servers and their sessions, as
+/// `jupyter-lsp` reports them.
+async fn lsp_status(State(s): State<AppState>) -> HttpResult<Json<Value>> {
+    Ok(Json(lsp(&s)?.status()))
 }

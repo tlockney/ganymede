@@ -45,6 +45,12 @@ protections match `jupyter_server`'s, so its security model applies here.
   server. That is no more than the token already grants through
   kernels, but it needs no kernel installed. `terminals_enabled = false`
   turns terminals off. (**Unreleased.** Terminals are in a build of `main` only.)
+- Language servers (`/lsp/*`) run only the commands in the config file;
+  a request names a configured server and can't supply a command.
+  `/lsp/status` reports each server's spec with `argv` and `env`
+  blanked. Notebook text sent to a server is written under
+  `.virtual_documents/` in the root dir, and nowhere else.
+  (**Unreleased.** In a build of `main` only.)
 - Treat the URL with the token like a password. Anyone who sees it (a
   shared terminal, a screenshot, shell history) can run code as you until
   the server restarts with a new token. A token set with `--token` or in

@@ -161,11 +161,64 @@ reports `terminalsAvailable` in the page config. The terminal runs your
 login shell. Set `terminals_enabled = false` to turn terminals off; see
 [Open a terminal](api.md#open-a-terminal).
 
+## Language servers
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+With the [`jupyterlab-lsp`](https://github.com/jupyter-lsp/jupyterlab-lsp)
+extension, JupyterLab gets diagnostics, go to definition, hover, rename,
+and completion from language servers, in notebooks and in the file
+editor. Ganymede serves the endpoints its Python server extension,
+`jupyter-lsp`, provides (`/lsp/status` and `/lsp/ws/<name>`), and runs
+the language servers you configure. It finds none on its own: each one is
+a `[language_servers.<name>]` table in the
+[config file](reference.md#config-file), in `jupyter-lsp`'s spec format.
+
+```sh
+ganymede lab extension install jupyterlab-lsp
+npm install -g typescript-language-server typescript@5 pyright
+```
+
+```toml
+[language_servers.typescript-language-server]
+argv = ["typescript-language-server", "--stdio"]
+languages = ["typescript", "javascript"]
+mime_types = ["text/x.typescript", "application/typescript", "text/javascript"]
+display_name = "TypeScript"
+
+[language_servers.pyright]
+argv = ["pyright-langserver", "--stdio"]
+languages = ["python"]
+mime_types = ["text/x-python", "text/x-ipython"]
+```
+
+| Key | Meaning |
+| --- | --- |
+| `argv` | The command. It must speak LSP on stdin and stdout. Required; empty turns the server off. |
+| `languages`, `mime_types` | What the frontend matches a document against to pick a server. cdp-kernel's notebooks are `text/x.typescript`. |
+| `display_name` | Shown in JupyterLab. |
+| `env` | Added to the server's environment. `$VAR` and `${VAR}` are replaced from Ganymede's environment. |
+| `requires_documents_on_disk` | Default `true`: notebooks are written to `.virtual_documents/` under the root dir before the server sees them, for servers that read files themselves. Set `false` for servers that work from memory. |
+
+Other `jupyter-lsp` keys (`workspace_configuration`, `config_schema`,
+`urls`, ...) are passed to the frontend as they are. A server starts when
+the first editor connects to it and stops when the last one disconnects;
+every editor shares the one process. Its stderr goes to Ganymede's.
+
+`typescript-language-server` needs TypeScript 5: TypeScript 7 has no
+`tsserver.js`. For TypeScript notebooks on cdp-kernel, completion and
+hover also come from the kernel itself, and `jupyterlab-lsp` 5.3 doesn't
+attach to them yet
+([cdp-kernel#400](https://github.com/tlockney/cdp-kernel/issues/400));
+`.ts` files in the file editor and Python notebooks work. There are no
+language servers on iOS, where an app cannot start processes.
+
 ## What isn't there
 
-JupyterLab server extensions and the language server endpoints (`/lsp/*`)
-are Python and are not implemented. `/api/nbconvert` reports no
-exporters.
+JupyterLab server extensions are Python and are not implemented.
+`/api/nbconvert` reports no exporters.
 
 ## Other clients
 

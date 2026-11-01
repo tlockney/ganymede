@@ -88,6 +88,12 @@ pub struct Config {
     /// The command terminals run. Empty: `$SHELL` as a login shell, or
     /// `powershell.exe` on Windows.
     pub terminal_shell: Vec<String>,
+    /// Language servers for `jupyterlab-lsp`, served at `/lsp/*`, keyed by
+    /// name, in `jupyter-lsp`'s spec format: `argv`, `languages`,
+    /// `mime_types`, `display_name`, `env`, `requires_documents_on_disk`,
+    /// and any other field, passed to the frontend as it is. None by
+    /// default; the routes answer 404 until one is configured.
+    pub language_servers: std::collections::BTreeMap<String, ganymede_lsp::LanguageServerSpec>,
 }
 
 impl Default for Config {
@@ -121,6 +127,7 @@ impl Default for Config {
             max_body_size: 512 * 1024 * 1024,
             terminals_enabled: true,
             terminal_shell: vec![],
+            language_servers: Default::default(),
         }
     }
 }
@@ -167,6 +174,34 @@ mod tests {
         assert_eq!(cfg.ip, "127.0.0.1");
         assert_eq!(cfg.startup_timeout_secs, 60);
         assert!(!cfg.quiet);
+    }
+
+    #[test]
+    fn language_servers_are_tables_in_jupyter_lsp_format() {
+        let cfg = Config::from_toml(
+            r#"
+[language_servers.pyright]
+argv = ["pyright-langserver", "--stdio"]
+languages = ["python"]
+mime_types = ["text/x-python"]
+env = { NODE_OPTIONS = "${HOME}" }
+workspace_configuration = { "python.analysis.typeCheckingMode" = "strict" }
+
+[language_servers.off]
+"#,
+        )
+        .unwrap();
+        let p = &cfg.language_servers["pyright"];
+        assert_eq!(p.argv, ["pyright-langserver", "--stdio"]);
+        assert_eq!(p.languages, ["python"]);
+        assert_eq!(p.env["NODE_OPTIONS"], "${HOME}");
+        assert!(p.requires_documents_on_disk);
+        assert_eq!(
+            p.extra["workspace_configuration"]["python.analysis.typeCheckingMode"],
+            "strict"
+        );
+        assert!(cfg.language_servers["off"].argv.is_empty());
+        assert!(Config::default().language_servers.is_empty());
     }
 
     #[test]

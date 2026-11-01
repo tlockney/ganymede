@@ -105,6 +105,7 @@ bottom do no I/O, so they build for any target.
 | `ganymede-api` | Kernel and session managers, response models, the per-client bridge, idle culling. No HTTP. Contents path validation confines kernel working directories to the root. |
 | `ganymede-gateway` | Kernels on another Jupyter server, as `jupyter_server`'s gateway client: kernelspecs and lifecycle over its REST API, channels over its websocket. The server uses it for `gateway_url`. |
 | `ganymede-terminals` | Terminals for `/api/terminals`: the user's shell in a pseudo-terminal (`portable-pty`), shared by any number of clients. None on iOS or wasm. |
+| `ganymede-lsp` | Language servers for `/lsp/*`: the servers listed in the config file, one process each, started for the first client and relayed to every client, as `jupyter-lsp` does. None on iOS or wasm. |
 | `ganymede-exec` | Runs a notebook with nbclient's semantics. |
 | `ganymede-contents` | The contents model over a filesystem. |
 | `ganymede-documents` | Document rooms: a notebook as a `yrs` (Yjs) document in JupyterLab's collaboration schema, and the y-websocket protocol, as a state machine with no I/O. The server hosts rooms behind `/api/collaboration`. |

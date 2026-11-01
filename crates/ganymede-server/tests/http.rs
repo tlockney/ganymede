@@ -88,6 +88,7 @@ fn state(root: &std::path::Path) -> AppState {
         static_dir: None,
         collab: Default::default(),
         terminals: None,
+        lsp: None,
     }
 }
 
@@ -970,6 +971,12 @@ async fn lab_page_carries_page_config_and_assets_are_public() {
     assert_eq!(cfg["token"], TOKEN);
     assert_eq!(cfg["treePath"], "a/b.ipynb");
     assert_eq!(cfg["terminalsAvailable"], false);
+    let root_uri = cfg["rootUri"].as_str().unwrap();
+    assert!(root_uri.starts_with("file://"), "{root_uri}");
+    assert_eq!(
+        cfg["virtualDocumentsUri"],
+        format!("{root_uri}/.virtual_documents")
+    );
     assert_eq!(
         cfg["federated_extensions"],
         json!([{"name": "my_ext", "load": "static/remoteEntry.abc.js", "entrypoints": null, "extension": "./extension"}])
@@ -2488,4 +2495,95 @@ async fn raw(app: &axum::Router, req: Request<Body>) -> (StatusCode, header::Hea
     let (parts, body) = resp.into_parts();
     let bytes = axum::body::to_bytes(body, 1 << 20).await.unwrap();
     (parts.status, parts.headers, bytes.to_vec())
+}
+
+#[tokio::test]
+async fn language_servers_are_404_when_none_configured() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(state(dir.path()));
+    let (s, _) = call(&app, "GET", "/lsp/status", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+/// `cat` as the language server: it echoes each framed message, so a
+/// client's message comes back through the server's stdout.
+#[cfg(unix)]
+#[tokio::test]
+async fn language_server_status_and_websocket() {
+    use ganymede_lsp::{LanguageServerSpec, LspConfig, LspManager};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    let spec: LanguageServerSpec = serde_json::from_value(json!({
+        "argv": ["cat"],
+        "languages": ["python"],
+        "mime_types": ["text/x-python"],
+        "env": {"SECRET": "x"},
+        "display_name": "Echo",
+    }))
+    .unwrap();
+    st.lsp = Some(Arc::new(LspManager::new(LspConfig {
+        servers: [("echo".to_string(), spec)].into(),
+        root_dir: dir.path().into(),
+    })));
+    let app = build_router(st);
+
+    assert_eq!(
+        call(&app, "GET", "/lsp/status", None, None).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let (s, status) = call(&app, "GET", "/lsp/status", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(status["version"], 2);
+    assert_eq!(status["specs"]["echo"]["argv"], json!([""]));
+    assert_eq!(status["specs"]["echo"]["env"], json!({}));
+    assert_eq!(status["specs"]["echo"]["display_name"], "Echo");
+    assert_eq!(status["sessions"]["echo"]["status"], "not_started");
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let served = app.clone();
+    tokio::spawn(async move { axum::serve(listener, served).await.unwrap() });
+    let connect = |name: &str, token: Option<&str>| {
+        let mut req = format!("ws://{addr}/lsp/ws/{name}")
+            .into_client_request()
+            .unwrap();
+        if let Some(t) = token {
+            req.headers_mut()
+                .insert("Authorization", format!("token {t}").parse().unwrap());
+        }
+        tokio_tungstenite::connect_async(req)
+    };
+    assert!(connect("echo", None).await.is_err());
+    assert!(connect("missing", Some(TOKEN)).await.is_err());
+    let (mut a, _) = connect("echo", Some(TOKEN)).await.unwrap();
+    let (mut b, _) = connect("echo", Some(TOKEN)).await.unwrap();
+    let (_, status) = call(&app, "GET", "/lsp/status", None, Some(TOKEN)).await;
+    assert_eq!(status["sessions"]["echo"]["status"], "started");
+    assert_eq!(status["sessions"]["echo"]["handler_count"], 2);
+
+    let msg = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}}).to_string();
+    a.send(TMsg::Text(msg.clone().into())).await.unwrap();
+    for ws in [&mut a, &mut b] {
+        let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .expect("reply in time")
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame, TMsg::Text(msg.clone().into()));
+    }
+
+    a.close(None).await.unwrap();
+    b.close(None).await.unwrap();
+    // The server stops once both sockets are gone.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_, status) = call(&app, "GET", "/lsp/status", None, Some(TOKEN)).await;
+        if status["sessions"]["echo"]["status"] == "stopped" {
+            assert_eq!(status["sessions"]["echo"]["handler_count"], 0);
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{status}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }

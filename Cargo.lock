@@ -1020,6 +1020,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ganymede-lsp"
+version = "0.4.0"
+dependencies = [
+ "chrono",
+ "libc",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "ganymede-nbformat"
 version = "0.4.0"
 dependencies = [
@@ -1063,6 +1078,7 @@ dependencies = [
  "ganymede-documents",
  "ganymede-gateway",
  "ganymede-kernel-host",
+ "ganymede-lsp",
  "ganymede-nbformat",
  "ganymede-protocol",
  "ganymede-terminals",
