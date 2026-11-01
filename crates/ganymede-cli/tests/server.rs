@@ -18,6 +18,7 @@ use common::*;
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::io::BufRead;
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -77,8 +78,9 @@ struct Server {
 }
 
 impl Drop for Server {
-    /// SIGTERM, then SIGKILL after 10 s: a server stuck shutting down
-    /// (jupyter_server with a kernel mid-restart) must not hang the test.
+    /// SIGTERM, then SIGKILL to its process group after 10 s: a server
+    /// stuck shutting down (jupyter_server with a kernel mid-restart) must
+    /// not hang the test or leave its kernels behind.
     fn drop(&mut self) {
         let pid = self.child.id() as i32;
         unsafe {
@@ -86,13 +88,16 @@ impl Drop for Server {
         }
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
-            if !matches!(self.child.try_wait(), Ok(None)) {
+            if let Ok(Some(_)) = self.child.try_wait() {
                 return;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        eprintln!("server {pid} ignored SIGTERM for 10 s; killing it");
-        let _ = self.child.kill();
+        eprintln!("server {pid} still running 10 s after SIGTERM; killing its process group");
+        // Each server leads its own group (`process_group(0)` at spawn).
+        unsafe {
+            kill(-pid, 9);
+        }
         let _ = self.child.wait();
     }
 }
@@ -127,6 +132,7 @@ fn start_ganymede_with(extra: &[&std::ffi::OsStr]) -> Server {
         .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .process_group(0)
         .spawn()
         .unwrap();
     let mut line = String::new();
@@ -170,6 +176,7 @@ fn start_jupyter(jupyter: &std::path::Path) -> Server {
         .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .process_group(0)
         .spawn()
         .unwrap();
     Server {
@@ -1046,9 +1053,6 @@ fn restart_failure_on_a_real_kernel_reports_it_dead() {
     }
 }
 
-/// Code that kills the kernel process itself, not only the runtime a cell
-/// runs in: cdp-kernel relaunches a runtime that exits, so its cell kills
-/// the kernel, its parent.
 /// Await `f`, or fail the test naming the step that stalled.
 async fn within<T>(secs: u64, step: &str, f: impl std::future::Future<Output = T>) -> T {
     tokio::time::timeout(Duration::from_secs(secs), f)
@@ -1056,6 +1060,9 @@ async fn within<T>(secs: u64, step: &str, f: impl std::future::Future<Output = T
         .unwrap_or_else(|_| panic!("{step}: no result in {secs} s"))
 }
 
+/// Code that kills the kernel process itself, not only the runtime a cell
+/// runs in: cdp-kernel relaunches a runtime that exits, so its cell kills
+/// the kernel, its parent.
 fn crash_code(kernel: &str) -> &'static str {
     match kernel {
         "cdp-node" => "process.kill(process.ppid, 'SIGKILL')",
@@ -1068,10 +1075,8 @@ fn crash_code(kernel: &str) -> &'static str {
 /// Returns the crashed cell's reply, if one came.
 async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
     let cl = Client {
-        http: reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .unwrap(),
+        // No client timeout: `within` bounds each call and names the step.
+        http: reqwest::Client::new(),
         base: base.to_string(),
         transcript: vec![],
     };
@@ -1099,7 +1104,7 @@ async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
     .await
     .unwrap();
     let r = within(
-        90,
+        50,
         "running the cell that sets state",
         exchange(
             &mut ws,
@@ -1180,7 +1185,7 @@ async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
     .await
     .unwrap();
     let r = within(
-        90,
+        50,
         "running a cell on the restarted kernel",
         exchange(
             &mut ws,
