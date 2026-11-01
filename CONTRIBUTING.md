@@ -10,5 +10,9 @@ project's rules (the host knows no language; the REST and websocket API
 matches `jupyter_server`), the CI setup, and how to work on the docs.
 [Releasing](docs/development.md#releases) covers cutting a release.
 
+Each pull request also gets an independent review from a Claude session
+that didn't write it; [CLAUDE.md](CLAUDE.md#independent-review) has the
+rules, including those for `spike` PRs.
+
 Report security problems privately, as [SECURITY.md](SECURITY.md) says,
 not in a public issue.
