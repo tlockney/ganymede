@@ -143,6 +143,57 @@ async fn virtual_documents_are_written_before_relaying() {
         .exists());
 }
 
+/// Two tabs on one notebook: the server gets the document once, each
+/// edit once, and a close when the last tab leaves (#262).
+#[tokio::test]
+async fn two_clients_on_one_document_apply_each_edit_once() {
+    let root = tempfile::tempdir().unwrap();
+    let m = manager(root.path(), &[("disk", &["cat"], true)]);
+    let vd = ganymede_lsp::virtual_documents_uri(root.path());
+    let uri = format!("{vd}/nb.ipynb");
+    let open = json!({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": uri, "languageId": "fake", "version": 0, "text": "a = 1\n"}}})
+    .to_string();
+    let edit = |version: i64| {
+        json!({"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
+            "textDocument": {"uri": uri, "version": version},
+            "contentChanges": [{"range": {"start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 0}}, "text": "# x\n"}]}})
+        .to_string()
+    };
+    let ping = r#"{"jsonrpc":"2.0","method":"ping"}"#;
+
+    let mut a = m.connect("disk").unwrap();
+    let b = m.connect("disk").unwrap();
+    a.send(open.clone()).await;
+    b.send(open.clone()).await;
+    a.send(edit(1)).await;
+    b.send(edit(1)).await;
+    b.send(ping.into()).await;
+    // What the server got, in order, up to the marker.
+    let mut got = Vec::new();
+    loop {
+        let m = next(&mut a).await.unwrap();
+        if m == ping {
+            break;
+        }
+        got.push(serde_json::from_str::<serde_json::Value>(&m).unwrap());
+    }
+    let methods: Vec<_> = got.iter().map(|m| m["method"].clone()).collect();
+    assert_eq!(
+        methods,
+        ["textDocument/didOpen", "textDocument/didChange"],
+        "{got:?}"
+    );
+    let file = root.path().join(VIRTUAL_DOCUMENTS_DIR).join("nb.ipynb");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "# x\na = 1\n");
+
+    // `b` leaves with the document still open in `a`: no close.
+    drop(b);
+    a.send(ping.into()).await;
+    assert_eq!(next(&mut a).await.as_deref(), Some(ping));
+}
+
 #[tokio::test]
 async fn stopping_a_server_ends_what_it_started() {
     let root = tempfile::tempdir().unwrap();
