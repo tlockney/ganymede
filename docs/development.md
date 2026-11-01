@@ -82,7 +82,11 @@ checkout and runs `container/smoke-test.sh` on it. Its `lsp` job
 drives JupyterLab with `jupyterlab-lsp` against `ganymede serve` and
 against `jupyter lab` with jupyter-lsp, and checks both show the same
 diagnostics from typescript-language-server and pyright
-([`scripts/test-lsp.sh`](../scripts/test-lsp.sh)).
+([`scripts/test-lsp.sh`](../scripts/test-lsp.sh)). Its `coverage` job
+runs the whole suite on Linux under `cargo llvm-cov`, kernels included,
+and puts line coverage in the job summary, with a row for each `.rs`
+file the pull request changes. It is informational and never fails on a
+number. Locally: `cargo llvm-cov --workspace --open`.
 
 ## CI
 
