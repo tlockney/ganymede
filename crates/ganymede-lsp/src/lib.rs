@@ -417,14 +417,18 @@ impl LspClient {
             return;
         };
         let mut docs = self.session.documents.lock().await;
-        if docs.0 != self.generation {
+        if self.generation < docs.0 {
+            // A client of a process that has ended: the message goes
+            // nowhere, and the table is the new process's.
+            let _ = self.to_server.send(message);
+            return;
+        }
+        if self.generation > docs.0 {
             *docs = (self.generation, documents::Documents::default());
         }
-        let (relay, written) = docs.1.client_message(self.id, &value);
-        if let (Some(shadow), Some((uri, text))) = (&self.shadow, written) {
-            if let Err(e) = shadow.write(&uri, &text).await {
-                tracing::warn!(server = %self.session.name, "virtual document not written: {e}");
-            }
+        let (relay, changed) = docs.1.client_message(self.id, &value);
+        if let (Some(shadow), Some(uri)) = (&self.shadow, changed) {
+            write_shadow(&self.session.name, shadow, &uri, docs.1.text(&uri)).await;
         }
         match relay {
             documents::Relay::AsIs => {
@@ -447,21 +451,36 @@ impl LspClient {
 impl Drop for LspClient {
     fn drop(&mut self) {
         // Close what only this client had open, so the server doesn't
-        // keep it and a later `didOpen` isn't a second one. Moot when this
-        // was the last client: the server stops below.
+        // keep it and a later `didOpen` isn't a second one, and give the
+        // server another client's text where it had this one's. Moot when
+        // this was the last client: the server stops below.
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
             let (session, id, generation) = (self.session.clone(), self.id, self.generation);
-            let to_server = self.to_server.clone();
+            let (to_server, shadow) = (self.to_server.clone(), self.shadow.clone());
             rt.spawn(async move {
                 let mut docs = session.documents.lock().await;
-                if docs.0 == generation {
-                    for m in docs.1.disconnect(id) {
-                        let _ = to_server.send(m.to_string());
+                if docs.0 != generation {
+                    return;
+                }
+                let (send, changed) = docs.1.disconnect(id);
+                if let Some(shadow) = &shadow {
+                    for uri in &changed {
+                        write_shadow(&session.name, shadow, uri, docs.1.text(uri)).await;
                     }
+                }
+                for m in send {
+                    let _ = to_server.send(m.to_string());
                 }
             });
         }
         self.session.disconnect(self.id);
+    }
+}
+
+async fn write_shadow(server: &str, shadow: &shadow::Shadow, uri: &str, text: Option<&str>) {
+    let Some(text) = text else { return };
+    if let Err(e) = shadow.write(uri, text).await {
+        tracing::warn!(server, "virtual document not written: {e}");
     }
 }
 

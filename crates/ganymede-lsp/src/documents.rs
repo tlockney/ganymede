@@ -15,7 +15,15 @@
 //!   full text, since its ranges no longer fit;
 //! - versions are the relay's own, one more per change the server gets;
 //! - `didClose` goes through when the last client closes the document,
-//!   and a client that disconnects closes what it had open.
+//!   and a client that disconnects closes what it had open. When the
+//!   client whose text the server has leaves, the server gets another
+//!   client's text;
+//! - a `didChange` from a client that has the document open only through
+//!   other clients is dropped, since there is no text to apply it to.
+//!
+//! Tabs that share edits (collaboration) converge, so the server gets
+//! each edit once. Tabs that don't send different texts: the server has
+//! the text of the tab that changed it last, sent in full.
 //!
 //! The text the server has is also what the shadow file system writes.
 
@@ -48,13 +56,18 @@ pub(crate) struct Documents {
 }
 
 impl Documents {
+    /// The server's text of `uri`.
+    pub(crate) fn text(&self, uri: &str) -> Option<&str> {
+        self.docs.get(uri).map(|d| d.text.as_str())
+    }
+
     /// Handles a client's message, and returns what to send and, when the
-    /// server's text of a document changed, its URI and new text.
+    /// server's text of a document changed, its URI.
     pub(crate) fn client_message(
         &mut self,
         client: u64,
         message: &Value,
-    ) -> (Relay, Option<(String, String)>) {
+    ) -> (Relay, Option<String>) {
         let method = message.get("method").and_then(Value::as_str);
         let params = message.get("params");
         let doc = params.and_then(|p| p.get("textDocument"));
@@ -77,7 +90,7 @@ impl Documents {
                     None => (Relay::AsIs, None),
                 }
             }
-            Some("textDocument/didClose") => (self.close(client, uri), None),
+            Some("textDocument/didClose") => self.close(client, uri),
             _ => (Relay::AsIs, None),
         }
     }
@@ -88,7 +101,7 @@ impl Documents {
         uri: &str,
         text: &str,
         doc: Option<&Value>,
-    ) -> (Relay, Option<(String, String)>) {
+    ) -> (Relay, Option<String>) {
         let Some(d) = self.docs.get_mut(uri) else {
             let version = doc
                 .and_then(|d| d.get("version"))
@@ -102,7 +115,7 @@ impl Documents {
                     views: BTreeMap::from([(client, text.to_string())]),
                 },
             );
-            return (Relay::AsIs, Some((uri.to_string(), text.to_string())));
+            return (Relay::AsIs, Some(uri.to_string()));
         };
         d.views.insert(client, text.to_string());
         if d.text == text {
@@ -112,7 +125,7 @@ impl Documents {
         d.version += 1;
         (
             Relay::Replace(full_change(uri, d.version, text)),
-            Some((uri.to_string(), d.text.clone())),
+            Some(uri.to_string()),
         )
     }
 
@@ -122,14 +135,15 @@ impl Documents {
         uri: &str,
         changes: &[Value],
         message: &Value,
-    ) -> (Relay, Option<(String, String)>) {
+    ) -> (Relay, Option<String>) {
         let Some(d) = self.docs.get_mut(uri) else {
             return (Relay::AsIs, None);
         };
         let Some(before) = d.views.get(&client) else {
-            // Changes to a document this client never opened: the server
-            // will have said so, and there's no text to apply them to.
-            return (Relay::AsIs, None);
+            // The server has the document open through other clients, so
+            // it would take this change, but there's no text here to apply
+            // it to, and the two copies would part.
+            return (Relay::Drop, None);
         };
         let mut after = before.clone();
         for c in changes {
@@ -152,40 +166,62 @@ impl Documents {
         } else {
             Relay::Replace(full_change(uri, d.version, &d.text))
         };
-        (relay, Some((uri.to_string(), d.text.clone())))
+        (relay, Some(uri.to_string()))
     }
 
-    fn close(&mut self, client: u64, uri: &str) -> Relay {
+    fn close(&mut self, client: u64, uri: &str) -> (Relay, Option<String>) {
         let Some(d) = self.docs.get_mut(uri) else {
-            return Relay::AsIs;
+            return (Relay::AsIs, None);
         };
         d.views.remove(&client);
         if d.views.is_empty() {
             self.docs.remove(uri);
-            Relay::AsIs
-        } else {
-            Relay::Drop
+            return (Relay::AsIs, None);
+        }
+        match d.resync(uri) {
+            Some(m) => (Relay::Replace(m), Some(uri.to_string())),
+            None => (Relay::Drop, None),
         }
     }
 
-    /// A client left: the `didClose` messages for documents only it had
-    /// open.
-    pub(crate) fn disconnect(&mut self, client: u64) -> Vec<Value> {
-        let mut closed = Vec::new();
+    /// A client left: what to send the server (a `didClose` for each
+    /// document only it had open, a full text for each whose server text
+    /// was its), and the URIs whose server text changed.
+    pub(crate) fn disconnect(&mut self, client: u64) -> (Vec<Value>, Vec<String>) {
+        let (mut send, mut changed) = (Vec::new(), Vec::new());
         self.docs.retain(|uri, d| {
-            d.views.remove(&client);
+            if d.views.remove(&client).is_none() {
+                return true;
+            }
             if d.views.is_empty() {
-                closed.push(json!({
+                send.push(json!({
                     "jsonrpc": "2.0",
                     "method": "textDocument/didClose",
                     "params": {"textDocument": {"uri": uri}},
                 }));
-                false
-            } else {
-                true
+                return false;
             }
+            if let Some(m) = d.resync(uri) {
+                send.push(m);
+                changed.push(uri.clone());
+            }
+            true
         });
-        closed
+        (send, changed)
+    }
+}
+
+impl Doc {
+    /// When no remaining client has the server's text, the full-text
+    /// change that gives the server the first one's.
+    fn resync(&mut self, uri: &str) -> Option<Value> {
+        if self.views.values().any(|v| *v == self.text) {
+            return None;
+        }
+        let text = self.views.values().next()?.clone();
+        self.version += 1;
+        self.text = text;
+        Some(full_change(uri, self.version, &self.text))
     }
 }
 
@@ -286,10 +322,12 @@ mod tests {
         let mut d = Documents::default();
         let (r, w) = d.client_message(1, &open("a = 1\n"));
         assert_eq!(r, Relay::AsIs);
-        assert_eq!(w, Some((URI.into(), "a = 1\n".into())));
+        assert_eq!(w.as_deref(), Some(URI));
+        assert_eq!(d.text(URI), Some("a = 1\n"));
         let (r, w) = d.client_message(1, &edit(7, ((0, 4), (0, 5)), "2"));
         assert_eq!(r, Relay::Replace(edit(1, ((0, 4), (0, 5)), "2")));
-        assert_eq!(w, Some((URI.into(), "a = 2\n".into())));
+        assert_eq!(w.as_deref(), Some(URI));
+        assert_eq!(d.text(URI), Some("a = 2\n"));
         assert_eq!(d.client_message(1, &close()).0, Relay::AsIs);
         assert!(d.docs.is_empty());
     }
@@ -301,10 +339,7 @@ mod tests {
         // The second tab opens the same text: the server has it already.
         assert_eq!(d.client_message(2, &open("a = 1\n")), (Relay::Drop, None));
         let e = edit(1, ((0, 0), (0, 0)), "# x\n");
-        assert_eq!(
-            d.client_message(1, &e).1,
-            Some((URI.into(), "# x\na = 1\n".into()))
-        );
+        assert_eq!(d.client_message(1, &e).1.as_deref(), Some(URI));
         // The same edit, from the other tab.
         assert_eq!(d.client_message(2, &e), (Relay::Drop, None));
         assert_eq!(d.docs[URI].text, "# x\na = 1\n");
@@ -321,7 +356,8 @@ mod tests {
         // server's, so its result goes in full.
         let (r, w) = d.client_message(2, &edit(1, ((0, 0), (0, 0)), "x"));
         assert_eq!(r, Relay::Replace(full_change(URI, 2, "xa\n")));
-        assert_eq!(w, Some((URI.into(), "xa\n".into())));
+        assert_eq!(w.as_deref(), Some(URI));
+        assert_eq!(d.text(URI), Some("xa\n"));
         // A client opening different text replaces the server's.
         let (r, _) = d.client_message(3, &open("z\n"));
         assert_eq!(r, Relay::Replace(full_change(URI, 3, "z\n")));
@@ -333,9 +369,10 @@ mod tests {
         d.client_message(1, &open("a\n"));
         d.client_message(2, &open("a\n"));
         assert_eq!(d.client_message(1, &close()).0, Relay::Drop);
-        assert!(d.disconnect(1).is_empty());
-        let closed = d.disconnect(2);
+        assert_eq!(d.disconnect(1), (vec![], vec![]));
+        let (closed, changed) = d.disconnect(2);
         assert_eq!(closed.len(), 1);
+        assert!(changed.is_empty());
         assert_eq!(closed[0]["params"]["textDocument"]["uri"], URI);
         // Now a stray close goes through untouched.
         assert_eq!(d.client_message(2, &close()).0, Relay::AsIs);
@@ -351,6 +388,32 @@ mod tests {
         assert_eq!(
             d.client_message(1, &edit(1, ((0, 0), (0, 0)), "x")),
             (Relay::AsIs, None)
+        );
+        // Edits from a client that never opened a document others have.
+        d.client_message(1, &open("a\n"));
+        assert_eq!(
+            d.client_message(2, &edit(1, ((0, 0), (0, 0)), "x")),
+            (Relay::Drop, None)
+        );
+        assert_eq!(d.text(URI), Some("a\n"));
+    }
+
+    #[test]
+    fn the_server_follows_a_remaining_client_when_its_text_leaves() {
+        let mut d = Documents::default();
+        d.client_message(1, &open("a\n"));
+        d.client_message(2, &open("a\n"));
+        // Tabs that don't share edits: the server has client 1's text.
+        d.client_message(1, &edit(1, ((0, 1), (0, 1)), "b"));
+        assert_eq!(d.text(URI), Some("ab\n"));
+        let (send, changed) = d.disconnect(1);
+        assert_eq!(send, vec![full_change(URI, 2, "a\n")]);
+        assert_eq!(changed, vec![URI.to_string()]);
+        // The same on close.
+        d.client_message(3, &open("c\n"));
+        assert_eq!(
+            d.client_message(3, &close()),
+            (Relay::Replace(full_change(URI, 4, "a\n")), Some(URI.into()))
         );
     }
 }

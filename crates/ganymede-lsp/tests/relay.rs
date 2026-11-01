@@ -144,7 +144,7 @@ async fn virtual_documents_are_written_before_relaying() {
 }
 
 /// Two tabs on one notebook: the server gets the document once, each
-/// edit once, and a close when the last tab leaves (#262).
+/// edit once, and one close when both tabs have left (#262).
 #[tokio::test]
 async fn two_clients_on_one_document_apply_each_edit_once() {
     let root = tempfile::tempdir().unwrap();
@@ -165,6 +165,8 @@ async fn two_clients_on_one_document_apply_each_edit_once() {
 
     let mut a = m.connect("disk").unwrap();
     let b = m.connect("disk").unwrap();
+    // Keeps the server running, and reads what it gets after `a` leaves.
+    let mut c = m.connect("disk").unwrap();
     a.send(open.clone()).await;
     b.send(open.clone()).await;
     a.send(edit(1)).await;
@@ -188,10 +190,30 @@ async fn two_clients_on_one_document_apply_each_edit_once() {
     let file = root.path().join(VIRTUAL_DOCUMENTS_DIR).join("nb.ipynb");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "# x\na = 1\n");
 
-    // `b` leaves with the document still open in `a`: no close.
+    // Both tabs leave: one didClose, after the second.
     drop(b);
-    a.send(ping.into()).await;
-    assert_eq!(next(&mut a).await.as_deref(), Some(ping));
+    drop(a);
+    let mut closes = 0;
+    loop {
+        let m = next(&mut c).await.unwrap();
+        if m.contains("textDocument/didClose") {
+            closes += 1;
+            break;
+        }
+    }
+    // Anything else `a` or `b` sent arrives before a marker sent now.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    c.send(ping.into()).await;
+    loop {
+        let m = next(&mut c).await.unwrap();
+        if m == ping {
+            break;
+        }
+        if m.contains("textDocument/didClose") {
+            closes += 1;
+        }
+    }
+    assert_eq!(closes, 1);
 }
 
 #[tokio::test]

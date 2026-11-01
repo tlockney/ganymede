@@ -207,7 +207,9 @@ Other `jupyter-lsp` keys (`workspace_configuration`, `config_schema`,
 the first editor connects to it and stops when the last one disconnects;
 every editor shares the one process. Its stderr goes to Ganymede's.
 When several editors have one document open (two tabs on a notebook),
-the server gets the document once and each edit once.
+the server gets the document once. Tabs that share edits, through
+collaboration, send each edit once; tabs that don't send different
+texts, and the server has the one changed last.
 
 `typescript-language-server` needs TypeScript 5: TypeScript 7 has no
 `tsserver.js`. For TypeScript notebooks on cdp-kernel, completion and

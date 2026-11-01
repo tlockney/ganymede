@@ -18,3 +18,14 @@
   and the server see changes in the same order.
 - Still shared: request ids. Each client numbers its own requests and
   every response goes to every client, so two tabs' ids collide (#269).
+- Review fixes: a client of an ended server process no longer resets
+  the new process's documents (only a newer generation resets them); a
+  `didChange` from a client that never opened a document others have is
+  dropped instead of parting the two copies; when the client whose text
+  the server has leaves, the server gets a remaining client's text.
+- Tabs that don't share edits each send different text, so the server
+  flips to the full text of the tab that changed last. That beats
+  applying both tabs' ranges to one text, which is what `main` did.
+- The relay's text model now decides what the server gets, so its
+  line counting (`\n` only) and UTF-16 positions matter more:
+  #276.
