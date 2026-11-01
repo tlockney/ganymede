@@ -92,6 +92,7 @@ fn state(root: &std::path::Path) -> AppState {
         )),
         terminals: None,
         lsp: None,
+        mcp: None,
     }
 }
 
@@ -2955,4 +2956,200 @@ async fn execute_display_updates_reach_only_current_outputs() {
             "{a}"
         );
     }
+}
+
+/// One JSON-RPC call to `/mcp`; the response and the session id it set.
+async fn mcp_call(
+    app: &axum::Router,
+    session: Option<&str>,
+    body: Value,
+) -> (StatusCode, Option<String>, Value) {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header(header::HOST, "localhost:8888")
+        .header(header::AUTHORIZATION, format!("token {TOKEN}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ACCEPT, "application/json, text/event-stream")
+        .header("mcp-protocol-version", "2025-06-18");
+    if let Some(s) = session {
+        req = req.header("mcp-session-id", s);
+    }
+    let resp = app
+        .clone()
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let sid = resp
+        .headers()
+        .get("mcp-session-id")
+        .map(|v| v.to_str().unwrap().to_string());
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 22)
+        .await
+        .unwrap();
+    // Server-sent events: the response is the last `data:` message.
+    let body = String::from_utf8_lossy(&bytes);
+    let v = body
+        .lines()
+        .rev()
+        .filter_map(|l| l.strip_prefix("data: "))
+        .find_map(|d| serde_json::from_str::<Value>(d).ok())
+        .unwrap_or(Value::String(body.into()));
+    (status, sid, v)
+}
+
+fn mcp_text(v: &Value) -> String {
+    assert!(v.get("error").is_none(), "{v}");
+    v["result"]["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test]
+async fn mcp_journals_into_a_notebook() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    let app_off = build_router(st.clone());
+    let (s, _, _) = mcp_call(&app_off, None, json!({})).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "/mcp is off by default");
+    st.mcp = Some(Arc::new(ganymede_server::mcp::McpState::new(
+        ganymede_server::mcp::McpOptions {
+            read_only: false,
+            no_execute: false,
+            images: false,
+            outputs_dir: Some(dir.path().join("spill")),
+        },
+    )));
+    let app = build_router(st);
+
+    // The token is required.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    let (s, sid, v) = mcp_call(
+        &app,
+        None,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "test-agent", "version": "1"}}}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let sid = sid.expect("session id");
+    assert!(v["result"]["capabilities"]["tools"].is_object(), "{v}");
+    let (s, _, _) = mcp_call(
+        &app,
+        Some(&sid),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED);
+
+    let mut n = 1;
+    let mut tool = |name: &'static str, args: Value| {
+        n += 1;
+        let (app, sid) = (app.clone(), sid.clone());
+        async move {
+            let (s, _, v) = mcp_call(
+                &app,
+                Some(&sid),
+                json!({"jsonrpc": "2.0", "id": n, "method": "tools/call",
+                       "params": {"name": name, "arguments": args}}),
+            )
+            .await;
+            assert_eq!(s, StatusCode::OK, "{v}");
+            v
+        }
+    };
+    let (_, _, v) = mcp_call(
+        &app,
+        Some(&sid),
+        json!({"jsonrpc": "2.0", "id": 100, "method": "tools/list"}),
+    )
+    .await;
+    let names: Vec<&str> = v["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    for t in ["notebook_open", "cell_run", "cell_add", "notebook_read"] {
+        assert!(names.contains(&t), "{names:?}");
+    }
+
+    let v = tool(
+        "notebook_open",
+        json!({"path": "journal.ipynb", "title": "Exploring"}),
+    )
+    .await;
+    let out = mcp_text(&v);
+    assert!(
+        out.starts_with("Created journal.ipynb on kernel fake"),
+        "{out}"
+    );
+    assert!(out.contains("# Exploring"), "{out}");
+
+    let v = tool("cell_add", json!({"source": "Looking at the data."})).await;
+    mcp_text(&v);
+    let v = tool("cell_run", json!({"source": "hello"})).await;
+    assert!(mcp_text(&v).contains("hello"), "{v}");
+    let v = tool("cell_run", json!({"source": "raise"})).await;
+    let out = mcp_text(&v);
+    assert!(out.contains("FakeError: raised"), "{out}");
+    assert!(!out.contains('\u{1b}'), "ANSI is stripped: {out:?}");
+    let v = tool("cell_run", json!({"source": "scratch", "record": false})).await;
+    mcp_text(&v);
+
+    let v = tool("notebook_read", json!({})).await;
+    let read = mcp_text(&v);
+    assert!(read.contains("Looking at the data."), "{read}");
+    assert!(
+        !read.contains("scratch"),
+        "scratch runs leave nothing: {read}"
+    );
+
+    // The room saves to disk: title, note, two recorded runs with
+    // provenance and outputs.
+    let file = dir.path().join("journal.ipynb");
+    let nb = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(s) = std::fs::read_to_string(&file) {
+                let nb: Value = serde_json::from_str(&s).unwrap();
+                if nb["cells"].as_array().map(Vec::len) == Some(4)
+                    && nb["cells"][3]["outputs"].as_array().map(Vec::len) == Some(1)
+                {
+                    return nb;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("journal saved");
+    let cells = nb["cells"].as_array().unwrap();
+    assert_eq!(cells[1]["cell_type"], "markdown");
+    assert_eq!(cells[2]["source"], json!(["hello"]));
+    assert!(cells[2]["outputs"].to_string().contains("hello"));
+    assert_eq!(
+        cells[2]["metadata"]["ganymede"]["agent"]["by"],
+        "test-agent"
+    );
+    assert_eq!(cells[3]["outputs"][0]["output_type"], "error");
+    assert_eq!(nb["metadata"]["kernelspec"]["name"], "fake");
 }

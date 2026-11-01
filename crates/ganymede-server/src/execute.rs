@@ -73,8 +73,11 @@ pub(crate) enum RoomCmd {
     Enqueue {
         kernels: Arc<KernelManager>,
         kernel_id: String,
-        cells: Vec<(String, String)>,
+        /// Cell ids, with the source hash to check (`None`: don't check).
+        cells: Vec<(String, Option<String>)>,
         reply: oneshot::Sender<Result<(), Refused>>,
+        /// Told when the whole batch has run.
+        finished: Option<oneshot::Sender<()>>,
     },
     /// The worker wants a cell as it is now, to run it.
     Get(String, oneshot::Sender<Option<Cell>>),
@@ -109,6 +112,7 @@ struct Batch {
     kernels: Arc<KernelManager>,
     kernel_id: String,
     cells: Vec<String>,
+    finished: Option<oneshot::Sender<()>>,
 }
 
 /// A room's side of execution: its queue and how many cells are pending.
@@ -139,6 +143,7 @@ impl RoomExec {
                 kernel_id,
                 cells,
                 reply,
+                finished,
             } => {
                 let (checked, fx) = enqueue(room, &cells);
                 if checked.is_ok() {
@@ -152,6 +157,7 @@ impl RoomExec {
                         kernels,
                         kernel_id,
                         cells: cells.into_iter().map(|(id, _)| id).collect(),
+                        finished,
                     });
                 }
                 let _ = reply.send(checked);
@@ -218,7 +224,7 @@ impl RoomExec {
 }
 
 /// Check every cell, then clear and mark them all, or none.
-fn enqueue(room: &mut Room, cells: &[(String, String)]) -> (Result<(), Refused>, Effects) {
+fn enqueue(room: &mut Room, cells: &[(String, Option<String>)]) -> (Result<(), Refused>, Effects) {
     if room.notebook().is_none() {
         return (
             Err(Refused::Bad("not a notebook room".into())),
@@ -240,7 +246,10 @@ fn enqueue(room: &mut Room, cells: &[(String, String)]) -> (Result<(), Refused>,
                 Some(Out::Any(Any::String(s))) => s.to_string(),
                 _ => String::new(),
             };
-            if ganymede_documents::murmur2(source.as_bytes(), 0).to_string() != *hash {
+            let stale = hash
+                .as_ref()
+                .is_some_and(|h| ganymede_documents::murmur2(source.as_bytes(), 0).to_string() != *h);
+            if stale {
                 return Err(Refused::SourceMismatch(id.clone()));
             }
             found.push(cell);
@@ -267,6 +276,9 @@ async fn run_worker(room: mpsc::UnboundedSender<Cmd>, mut rx: mpsc::UnboundedRec
             stopped = !run
                 .cell(&room, &batch.kernels, &batch.kernel_id, cell_id)
                 .await;
+        }
+        if let Some(f) = batch.finished {
+            let _ = f.send(());
         }
     }
 }
@@ -518,7 +530,7 @@ pub async fn execute(
             Some(Value::Number(n)) => n.to_string(),
             _ => return Err(bad(format!("source_hash is required for cell {id:?}"))),
         };
-        cells.push((id.to_string(), hash));
+        cells.push((id.to_string(), Some(hash)));
     }
     // 404 for an unknown kernel, as the other kernel endpoints answer.
     state.kernels.get(&kernel_id).map_err(HttpError::from)?;
@@ -547,6 +559,7 @@ pub async fn execute(
         kernel_id,
         cells,
         reply,
+        finished: None,
     });
     send_to_notebook_room(&state.collab, &state.contents, &document_id, cmd)
         .ok_or_else(|| bad(format!("No YRoom available for document: {document_id:?}")))?;
@@ -571,6 +584,35 @@ pub async fn execute(
         "null",
     )
         .into_response())
+}
+
+/// Queue cells of the notebook at `path` on `kernel_id`, unchecked, and
+/// wait until they have run or `timeout` passes. False on a timeout.
+pub(crate) async fn run_and_wait(
+    state: &AppState,
+    path: &str,
+    kernel_id: &str,
+    cells: Vec<String>,
+    timeout: Duration,
+) -> Result<bool, String> {
+    let (reply, answer) = oneshot::channel();
+    let (finished, done) = oneshot::channel();
+    let cmd = Cmd::Exec(RoomCmd::Enqueue {
+        kernels: state.kernels.clone(),
+        kernel_id: kernel_id.to_string(),
+        cells: cells.into_iter().map(|c| (c, None)).collect(),
+        reply,
+        finished: Some(finished),
+    });
+    let room = crate::collab::notebook_room_id(&state.collab, path);
+    send_to_notebook_room(&state.collab, &state.contents, &room, cmd)
+        .ok_or_else(|| format!("cannot open {path}"))?;
+    match answer.await {
+        Ok(Ok(())) => {}
+        Ok(Err(Refused::SourceMismatch(id) | Refused::Bad(id))) => return Err(id),
+        Err(_) => return Err(format!("{path}: room closed")),
+    }
+    Ok(tokio::time::timeout(timeout, done).await.is_ok())
 }
 
 #[cfg(test)]

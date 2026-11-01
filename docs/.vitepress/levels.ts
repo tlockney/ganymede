@@ -47,6 +47,7 @@ export function groups(): Group[] {
         { text: "Agents", link: "/agents" },
         { text: "Switching from jupyter_server", link: "/switching" },
         { text: "Security", link: "/security" },
+        { text: "Agents over MCP", link: "/mcp" },
       ],
     },
     {

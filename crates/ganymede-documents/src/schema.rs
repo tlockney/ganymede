@@ -270,7 +270,7 @@ pub fn set_text(txn: &mut TransactionMut, text: &TextRef, new: &str) {
 
 /// Insert a cell as a map in the schema above. Keys go in sorted order so
 /// that the same cell always gets the same history.
-fn insert_cell(txn: &mut TransactionMut, ycells: &ArrayRef, index: u32, cell: Value) {
+pub fn insert_cell(txn: &mut TransactionMut, ycells: &ArrayRef, index: u32, cell: Value) {
     let Value::Object(mut cell) = cell else {
         // Not an object: nothing sensible to show, keep it as data.
         ycells.insert(txn, index, json_to_any(&cell));
@@ -325,6 +325,11 @@ pub fn insert_output(txn: &mut TransactionMut, youtputs: &ArrayRef, index: u32, 
             }
         }
     }
+}
+
+/// The index of the cell with this id.
+pub fn cell_index<T: ReadTxn>(txn: &T, roots: &Roots, id: &str) -> Option<u32> {
+    (0..roots.cells.len(txn)).find(|&i| cell_id(txn, &roots.cells, i).as_deref() == Some(id))
 }
 
 /// The cell with this id, as a map.

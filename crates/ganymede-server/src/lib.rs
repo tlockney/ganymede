@@ -12,6 +12,7 @@ pub mod collab;
 pub mod config;
 pub mod execute;
 pub mod lab;
+pub mod mcp;
 pub mod routes;
 pub mod serve;
 pub mod server_info;
@@ -72,12 +73,17 @@ pub struct AppState {
     /// `/lsp/*`; `None` when no language server is configured or the
     /// platform cannot start processes (iOS).
     pub lsp: Option<Arc<ganymede_lsp::LspManager>>,
+    /// `/mcp`; `None` unless `mcp_enabled`.
+    pub mcp: Option<Arc<mcp::McpState>>,
 }
 
 /// The API router, login pages, and JupyterLab or generic static assets
 /// when configured, before the base URL prefix.
 pub fn build_router(state: AppState) -> axum::Router {
     let mut app = routes::router(state.clone()).merge(auth::router(state.clone()));
+    if let Some(m) = &state.mcp {
+        app = app.merge(mcp::router(state.clone(), m));
+    }
     match (state.lab.clone(), &state.static_dir) {
         (Some(lab), _) => app = app.merge(lab::router(state.clone(), &lab)),
         (None, Some(dir)) => {

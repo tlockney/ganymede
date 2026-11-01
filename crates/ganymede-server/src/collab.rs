@@ -110,6 +110,24 @@ impl Collab {
         self.ids.removed(path);
     }
 
+    /// Saves every room with unsaved edits, as the server stops, so edits
+    /// made within the save delay aren't lost.
+    pub async fn flush_all(&self) {
+        let waits: Vec<_> = self
+            .rooms
+            .lock()
+            .expect("rooms")
+            .values()
+            .filter_map(|room| {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                room.send(Cmd::Flush(tx)).ok().map(|()| rx)
+            })
+            .collect();
+        for rx in waits {
+            let _ = tokio::time::timeout(Duration::from_secs(5), rx).await;
+        }
+    }
+
     fn watch(&self, path: &str) -> Option<(Watch, mpsc::UnboundedReceiver<()>)> {
         let file = self.root.as_ref()?.join(path);
         self.watcher.watch(&file)
@@ -124,6 +142,11 @@ pub(crate) enum Cmd {
     Moved(String, String),
     /// Server-side execution; see [`crate::execute`].
     Exec(crate::execute::RoomCmd),
+    /// Run a function on the room, as `ganymede mcp` does to read and edit
+    /// notebooks.
+    With(Box<dyn FnOnce(&mut Room) -> ganymede_documents::Effects + Send>),
+    /// Save now if there are unsaved edits; answered when done.
+    Flush(tokio::sync::oneshot::Sender<()>),
 }
 
 pub(crate) enum Out {
@@ -377,6 +400,30 @@ pub(crate) fn send_to_notebook_room(
     tx.send(cmd).ok()
 }
 
+/// The room id of the notebook at `path`.
+pub(crate) fn notebook_room_id(collab: &Collab, path: &str) -> String {
+    format!("json:notebook:{}", collab.ids.index(path).0)
+}
+
+/// Run `f` on the room of the notebook at `path`, opening it if needed.
+/// `None` when the room can't be opened (the file is gone or not a
+/// notebook).
+pub(crate) async fn with_notebook<R: Send + 'static>(
+    collab: &Arc<Collab>,
+    contents: &Arc<dyn Contents>,
+    path: &str,
+    f: impl FnOnce(&mut Room) -> (R, ganymede_documents::Effects) + Send + 'static,
+) -> Option<R> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let cmd = Cmd::With(Box::new(move |room: &mut Room| {
+        let (r, fx) = f(room);
+        let _ = tx.send(r);
+        fx
+    }));
+    send_to_notebook_room(collab, contents, &notebook_room_id(collab, path), cmd)?;
+    rx.await.ok()
+}
+
 async fn close(socket: &mut WebSocket, code: u16, reason: String) {
     let _ = socket
         .send(WsMessage::Close(Some(CloseFrame {
@@ -515,10 +562,24 @@ async fn run_room(
                         drop(watch.take());
                         watch = collab.watch(&d.path);
                     }
+                    Cmd::With(f) => {
+                        let fx = f(&mut room);
+                        if fx.changed { last_edit = Some(Instant::now()) }
+                        dispatch(&clients, fx.send);
+                    }
                     Cmd::Exec(cmd) => {
                         let fx = exec.handle(&mut room, cmd);
                         if fx.changed { last_edit = Some(Instant::now()) }
                         dispatch(&clients, fx.send);
+                    }
+                    Cmd::Flush(done) => {
+                        if let Some(d) = disk.as_mut() {
+                            if room.is_dirty() {
+                                save_room(contents.as_ref(), &mut room, d, &clients, false).await;
+                            }
+                        }
+                        last_edit = None;
+                        let _ = done.send(());
                     }
                 }
             }
