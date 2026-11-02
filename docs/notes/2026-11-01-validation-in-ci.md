@@ -28,6 +28,16 @@ The workstation job now runs both, with Python hidden:
   direct mode. It now expects `Mode: collaborative`. Its checks of the
   file on disk poll for up to 5 s, since the room saves shortly after a
   change rather than on each request.
+- Room mode exposed two nb-cli gaps. It counts cells and resolves
+  indexes such as `--cell-index -1` from `GET /api/contents`, which reads
+  the file, while its edits go through the room. Three `nb cell add`
+  calls inside the room's 1 s save delay all inserted at index 1, and the
+  following delete refused ("Cannot delete all cells"). The script now
+  waits for each edit to reach the file. And nb-cli's yrs 0.27 reads a
+  Yjs integer as a float, so it drops every `execute_result` it reads
+  from the room (#296). `READ_CODE` now prints, and execution counts
+  are checked on disk. nb-cli's empty-body probe of the execute
+  endpoint gets the 400 it expects, so the script allows that one.
 
 python3 isn't covered here because the workstation job has no Python;
 nb-cli on ipykernel stays a by-hand run.

@@ -39,12 +39,15 @@ bin=$(cd "$(dirname "$bin")" && pwd)/$(basename "$bin")
 command -v "$NB" >/dev/null || { echo "nb not found; set NB or cargo install nb-cli" >&2; exit 2; }
 command -v node >/dev/null || { echo "node is needed to read JSON" >&2; exit 2; }
 
+# READ_CODE prints rather than returning a result: nb-cli 0.0.10 drops
+# execute_result outputs it reads from a room, because its yrs reads the
+# integer execution_count as a float, which nbformat rejects (#296).
 case "$kernel" in
 python*)
-	: "${SET_CODE:=x = 40}" "${READ_CODE:=x + 2}" "${ERROR_CODE:=1/0}"
+	: "${SET_CODE:=x = 40}" "${READ_CODE:=print(x + 2)}" "${ERROR_CODE:=1/0}"
 	;;
 *)
-	: "${SET_CODE:=let x = 40}" "${READ_CODE:=x + 2}" "${ERROR_CODE:=throw new Error('boom')}"
+	: "${SET_CODE:=let x = 40}" "${READ_CODE:=console.log(x + 2)}" "${ERROR_CODE:=throw new Error('boom')}"
 	;;
 esac
 
@@ -101,6 +104,10 @@ on_disk() {
 		sleep 0.1
 	done
 }
+# nb-cli resolves cell indexes and counts from GET /api/contents, which
+# reads the file, while its edits go through the room. Wait for each edit
+# to reach the file before the next one: `cells N` waits for N cells.
+cells() { on_disk 'j.cells.length' "^$1\$" || fail "expected $1 cells on disk, got $(json 'j.cells.length' <"$work/root/j.ipynb")"; }
 
 # --- Remote mode --------------------------------------------------------
 
@@ -121,38 +128,46 @@ on_disk 'j.nbformat' 4 || fail "j.ipynb not created in the server root"
 
 step "nb cell update/add/delete"
 "$NB" cell update j.ipynb --cell-index 0 --source "$SET_CODE"
+on_disk 'j.cells[0].source.length' '^[1-9]' || fail "cell update not saved"
 "$NB" cell add j.ipynb --source '# Notes' --type markdown
+cells 2
 "$NB" cell add j.ipynb --source "$READ_CODE"
+cells 3
 "$NB" cell add j.ipynb --source 'scratch'
+cells 4
 "$NB" cell delete j.ipynb --cell-index -1
-on_disk 'j.cells.length' '^3$' ||
-	fail "expected 3 cells on disk, got $(json 'j.cells.length' <"$work/root/j.ipynb")"
+cells 3
 
 step "nb execute (whole notebook)"
 "$NB" execute j.ipynb >"$work/exec1.out" || fail "execute: $(cat "$work/exec1.out")"
-"$NB" read j.ipynb >"$work/read1.out"
-grep -q '42' "$work/read1.out" || fail "no 42 in outputs: $(cat "$work/read1.out")"
-grep -q '"execution_count":2' "$work/read1.out" || fail "no execution_count 2"
+# The server writes outputs into the room; `nb read` reads the file.
 on_disk 'JSON.stringify(j.cells[2].outputs)' 42 ||
 	fail "output not saved to the file on the server"
+on_disk 'j.cells[2].execution_count' '^2$' || fail "no execution_count 2 on disk"
+"$NB" read j.ipynb >"$work/read1.out"
+grep -q '42' "$work/read1.out" || fail "no 42 in outputs: $(cat "$work/read1.out")"
 [ "$(kernels)" = 1 ] || fail "expected one kernel, got $(kernels)"
 
 step "kernel state across separate nb execute calls"
 "$NB" cell add j.ipynb --source "$READ_CODE"
+cells 4
 "$NB" execute j.ipynb --cell-index -1 >"$work/exec2.out"
 grep -q '42' "$work/exec2.out" || fail "state lost between calls: $(cat "$work/exec2.out")"
-grep -q '"execution_count":3' "$work/exec2.out" || fail "new kernel used (execution_count reset)"
+on_disk 'j.cells[3].execution_count' '^3$' || fail "new kernel used (execution_count reset)"
 [ "$(kernels)" = 1 ] || fail "second call started another kernel"
 
 step "error cell, nb search --with-errors"
 "$NB" cell add j.ipynb --source "$ERROR_CODE"
+cells 5
 "$NB" execute j.ipynb --cell-index -1 >"$work/exec3.out" || true
 grep -q '"output_type":"error"' "$work/exec3.out" || fail "no error output: $(cat "$work/exec3.out")"
+on_disk 'JSON.stringify(j.cells[4].outputs)' '"error"' || fail "error output not saved"
 "$NB" search j.ipynb --with-errors | tee "$work/search.out" | head -1
 grep -q 'Found 1 cell' "$work/search.out" || fail "search --with-errors"
 
 step "nb output clear"
 "$NB" output clear j.ipynb
+on_disk 'j.cells.map(c => (c.outputs || []).length).join("")' '^0*$' || fail "outputs not cleared on disk"
 ! "$NB" read j.ipynb | grep -q '@@output' || fail "outputs left after clear"
 
 step "nb execute --restart-kernel"
@@ -176,7 +191,8 @@ gw() { "$NB" execute g.ipynb --gateway "$url" --gateway-token "$token" --kernel-
 gw >"$work/gw1.out" || fail "gateway execute: $(cat "$work/gw1.out")"
 json "JSON.stringify(j.cells[1].outputs)" <g.ipynb | grep -q 42 || fail "gateway output not saved locally"
 gw --cell-index -1 >"$work/gw2.out"
-grep -q '"execution_count":3' "$work/gw2.out" || fail "gateway kernel state not kept"
+grep -q 42 "$work/gw2.out" || fail "gateway kernel state not kept: $(cat "$work/gw2.out")"
+[ "$(json 'j.cells[1].execution_count' <g.ipynb)" = 3 ] || fail "gateway kernel state not kept (execution_count)"
 
 # --- What nb-cli called -------------------------------------------------
 
@@ -184,8 +200,10 @@ step "requests"
 grep 'started processing' "$work/serve.log" |
 	sed -E 's/.*method=([A-Z]+) uri=([^ ?]*).*/\1 \2/; s/[0-9a-f-]{36}/{id}/g' |
 	sort | uniq -c
+# nb-cli probes the execute endpoint with an empty body and expects 400.
 bad=$(grep 'finished processing' "$work/serve.log" | grep -E 'status=(4|5)[0-9][0-9]' |
-	grep -vE 'uri=/api/(fileid/index|collaboration/session)' || true)
+	grep -vE 'uri=/api/(fileid/index|collaboration/session)' |
+	grep -vE 'method=POST uri=/api/kernels/[^/ ]*/execute[?]?[^ ]* .*status=400' || true)
 [ -z "$bad" ] || fail "unexpected errors: $bad"
 
 printf '\nPASS: nb-cli on %s\n' "$kernel"
