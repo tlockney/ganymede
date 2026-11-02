@@ -40,6 +40,7 @@ These variables make the end-to-end tests strict or add to them:
 | `GANYMEDE_E2E_JUPYTER=/path/to/jupyter` | The reference `jupyter` (needs `nbclient` and `jupyter_server`). Defaults to `PATH`. |
 | `GANYMEDE_E2E_REQUIRE_JUPYTER=1` | Fail instead of skipping when it is missing. |
 | `E2E_DUMP=1` | Print both server transcripts. |
+| `GANYMEDE_E2E_PYTHON=/path/to/python` | The Python for `collab.rs` (needs `jupyter_ydoc`, `pycrdt`, `websockets`). Defaults to `python3`, then `python`. |
 | `GANYMEDE_E2E_LAB=1` | Run `lab.rs`, which downloads JupyterLab and the widget extensions from PyPI (about 18 MB). |
 
 - `kernels.rs`: the same scenarios on every kernel, through the engine and
@@ -53,6 +54,11 @@ These variables make the end-to-end tests strict or add to them:
 - `server.rs`: one REST and websocket scenario against `jupyter server`
   and `ganymede serve`, compared as transcripts, including which cells come
   back `trusted` after each kind of save and after `POST .../trust`.
+- `collab.rs`: a `jupyter-collaboration` client
+  ([`e2e/collab/ydoc_client.py`](../e2e/collab/ydoc_client.py), on
+  `jupyter_ydoc` and `pycrdt`) syncs with a document room, edits the
+  notebook while another program changes it on disk, and both sides and
+  the saved file must converge.
 - `lab.rs`: `ganymede lab install` from PyPI, then `ganymede serve`
   answering `/lab` and `/lab/api/settings` from the installed bundle and
   the default widget extensions.
@@ -61,7 +67,7 @@ These variables make the end-to-end tests strict or add to them:
 - [`e2e/wasm-smoke/`](../e2e/wasm-smoke/): the engine built for
   `wasm32-wasip1`, running a notebook on the fake kernel under Node's WASI.
 
-CI runs the e2e job on Linux and macOS with Node 24, cdp-kernel 0.7.1,
+CI runs the e2e job on Linux and macOS with Node 24, cdp-kernel 0.7.2,
 and ipykernel, plus a portability job for iOS, Android, and wasm. Its
 `workstation` job follows [Install](install.md) on Linux and macOS
 with Python hidden from `PATH`
