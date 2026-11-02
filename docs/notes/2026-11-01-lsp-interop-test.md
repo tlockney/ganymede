@@ -27,3 +27,9 @@ jupyterlab-lsp's. The page config now merges those lists, with
 `page_config.json` on top (`true` adds a name, `false` takes one out, and
 a disabled extension disables nothing), as jupyterlab_server does. The
 test now fails on any page error. Without the fix it fails.
+
+The first CI run of the job failed on Ganymede only: the notebook opened
+with "No Kernel", so jupyterlab-lsp never learned its language. jupyter
+finds ipykernel's spec in `sys.prefix/share/jupyter`; Ganymede doesn't
+know the prefix, and locally a spec in `~/.local` had hidden that. The
+script now passes the prefix's `share/jupyter` as `--kernelspec-root`.

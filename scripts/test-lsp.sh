@@ -5,7 +5,9 @@
 # Python notebook, through the virtual documents) on both. Both servers
 # get the same two language servers from config, with jupyter-lsp's
 # autodetection off, and serve the same JupyterLab and jupyterlab-lsp
-# (Ganymede through --static-dir and --labextensions-path).
+# (Ganymede through --static-dir and --labextensions-path), and the
+# ipykernel spec in the same prefix (--kernelspec-root), which jupyter
+# finds through sys.prefix and Ganymede can't.
 #
 # Usage: scripts/test-lsp.sh <ganymede-binary>
 # Needs on PATH: python with jupyterlab, jupyterlab-lsp, jupyter-lsp and
@@ -98,6 +100,7 @@ step "ganymede serve"
 	--root-dir "$work/ganymede-root" --config-dir "$work/ganymede-state" \
 	--static-dir "$prefix/share/jupyter/lab/static" \
 	--labextensions-path "$prefix/share/jupyter/labextensions" \
+	--kernelspec-root "$prefix/share/jupyter" \
 	>"$work/ganymede.out" 2>"$work/ganymede.err" &
 server=$!
 i=0
