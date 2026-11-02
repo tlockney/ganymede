@@ -30,6 +30,11 @@ env:
   # the latest release.
   NB_CLI_VERSION: ${{ github.event_name == 'schedule' && '' || '0.0.10' }}
 
+  # The lsp job: JupyterLab, its LSP extension and the oracle, and the
+  # language servers both sides run.
+  LSP_PYTHON_PACKAGES: jupyterlab==4.6.5 jupyterlab-lsp==5.3.0 jupyter-lsp==2.3.1 ipykernel==7.4.0
+  LSP_NPM_PACKAGES: typescript-language-server@5.3.0 typescript@5.9.3 pyright@1.1.414
+
 jobs:
   rust:
     runs-on: ubuntu-latest
@@ -326,6 +331,56 @@ jobs:
           --build-arg "CDP_KERNEL_VERSION=$CDP_KERNEL_VERSION" .
       - run: container/smoke-test.sh ganymede
         timeout-minutes: 5
+
+  # jupyterlab-lsp against `ganymede serve`, with jupyter-lsp on
+  # `jupyter lab` as the oracle: the same diagnostics from
+  # typescript-language-server and pyright on both (#257).
+  lsp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build --release --locked -p ganymede-cli
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: validation/package-lock.json
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: .github/workflows/ci.yml
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('validation/package-lock.json') }}
+      - name: Install JupyterLab, the LSP extensions, and language servers
+        run: |
+          # Word splitting is wanted: a list of requirements.
+          # shellcheck disable=SC2086
+          python -m pip install $LSP_PYTHON_PACKAGES
+          # shellcheck disable=SC2086
+          npm install -g $LSP_NPM_PACKAGES
+          cd validation
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: jupyterlab-lsp on Ganymede and on jupyter-lsp
+        run: scripts/test-lsp.sh target/release/ganymede
+        env:
+          OUT_DIR: ${{ runner.temp }}/lsp
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lsp
+          path: ${{ runner.temp }}/lsp
+          if-no-files-found: ignore
 
   # docs/install.md on a workstation with no Python: the PR's release
   # binary, packaged as release.yml does, installed by site/install.sh over

@@ -31,6 +31,16 @@ CODE='print(6*7)' STDIN_CODE='print(input())' SLEEP_CODE='import time; time.slee
   node vscode.cjs 'http://127.0.0.1:8888/?token=tok' <kernel>
 ```
 
+`lsp.mjs` opens a `.ts` file and a Python notebook in JupyterLab with
+`jupyterlab-lsp` and waits for a diagnostic from
+typescript-language-server and pyright. CI's `lsp` job runs it through
+[`../scripts/test-lsp.sh`](../scripts/test-lsp.sh), on `ganymede serve`
+and on `jupyter lab` with jupyter-lsp as the oracle:
+
+```
+scripts/test-lsp.sh target/release/ganymede
+```
+
 `nb-cli.sh` runs [nb-cli](https://github.com/jupyter-ai-contrib/nb-cli),
 the notebook CLI for agents, against a server it starts itself: remote
 mode (`nb connect --server --token`, then create, edit, execute, search,
