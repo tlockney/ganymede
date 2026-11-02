@@ -112,9 +112,12 @@ impl Router {
             // A response: to the client whose request it answers.
             (Some(id), false) => {
                 let ours = id.as_u64();
-                if ours.is_some_and(|o| self.initializing.remove(&o)) {
-                    let chosen = obj
-                        .get("result")
+                // Only a result says what the server counts in: an error
+                // (a second `initialize` to a running server) changes
+                // nothing.
+                let result = obj.get("result").filter(|r| !r.is_null());
+                if ours.is_some_and(|o| self.initializing.remove(&o)) && result.is_some() {
+                    let chosen = result
                         .and_then(|r| r.get("capabilities"))
                         .and_then(|c| c.get("positionEncoding"))
                         .and_then(Value::as_str);
@@ -273,6 +276,15 @@ mod tests {
         );
         assert_eq!(r.encoding(), Encoding::Utf16);
         to(r.server_message(&answer(json!("utf-8")), &[1]));
+        assert_eq!(r.encoding(), Encoding::Utf8);
+        // A second client's initialize that the running server refuses
+        // leaves the server's choice as it was.
+        let ours = init(&mut r);
+        to(r.server_message(
+            &json!({"id": ours["id"], "error": {"code": -32600, "message": "initialized"}})
+                .to_string(),
+            &[1],
+        ));
         assert_eq!(r.encoding(), Encoding::Utf8);
         // A later initialize without one is back to the default.
         let ours = init(&mut r);

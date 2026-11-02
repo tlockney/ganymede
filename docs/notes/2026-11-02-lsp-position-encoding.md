@@ -15,3 +15,9 @@ correct copy with a wrong one.
 - A server picks UTF-8 or UTF-32 only when the client offered it in
   `general.positionEncodings`. The latest `initialize` answer wins, so
   every client of one process is counted the same way.
+- Every client's `initialize` reaches the one server process, and a server
+  may answer the second with an error. Only a `result` changes the
+  encoding. The document copy isn't rebuilt when the encoding changes, so
+  text applied under one encoding would be read under another; that takes
+  a second successful `initialize` choosing differently, which a
+  conforming server doesn't do.
