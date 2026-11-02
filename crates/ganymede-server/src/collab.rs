@@ -105,6 +105,11 @@ impl Collab {
         }
     }
 
+    /// The contents root on disk, when the contents are a local directory.
+    pub(crate) fn root(&self) -> Option<&std::path::Path> {
+        self.root.as_deref()
+    }
+
     /// `path` was deleted through the contents API.
     pub fn removed(&self, path: &str) {
         self.ids.removed(path);

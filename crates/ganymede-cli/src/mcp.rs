@@ -130,11 +130,46 @@ pub async fn run(
         url: mcp_url(&base),
         token,
     };
-    let r = tokio::task::spawn_blocking(move || proxy(ep)).await?;
-    // The server saves open notebooks as it stops.
+    let proxying = tokio::task::spawn_blocking(move || proxy(ep));
+    // Ctrl-C or SIGTERM stops the server too, which saves open notebooks
+    // and shuts its kernels down; stdin closing does the same.
+    let r = tokio::select! {
+        r = proxying => Some(r?),
+        () = stop_signal() => None,
+    };
     let _ = stop_tx.send(()).await;
     server.await??;
-    r
+    match r {
+        Some(r) => r,
+        // The proxy thread is still reading stdin, which would keep the
+        // runtime from shutting down.
+        None => std::process::exit(130),
+    }
+}
+
+/// The first Ctrl-C, or on Unix SIGTERM or SIGHUP.
+async fn stop_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let (Ok(mut term), Ok(mut hup)) = (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::hangup()),
+        ) else {
+            return std::future::pending().await;
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+            _ = hup.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
 }
 
 fn mcp_url(base: &str) -> String {
@@ -224,6 +259,8 @@ fn proxy(ep: Endpoint) -> Result<()> {
     let out = Arc::new(Mutex::new(std::io::stdout()));
     let session = Arc::new(Mutex::new(Session::default()));
     let stdin = std::io::stdin();
+    let order = Arc::new(Order::default());
+    let mut next = 0u64;
     let mut workers = Vec::new();
     for line in stdin.lock().lines() {
         let line = line?;
@@ -241,19 +278,31 @@ fn proxy(ep: Endpoint) -> Result<()> {
                 continue;
             }
         };
+        // Messages reach the server in the order they came (each waits for
+        // the one before to be accepted), but their answers stream back
+        // alongside, so a long cell doesn't hold up a cancellation.
         // `initialize` sets the session the rest need, so it is answered
-        // before the next line is read; everything else runs alongside,
-        // so a long cell doesn't hold up a cancellation.
+        // before the next line is read.
+        let ticket = Ticket {
+            order: order.clone(),
+            n: next,
+            done: false,
+        };
+        next += 1;
         if msg["method"] == "initialize" {
-            forward(&agent, &ep, &session, &out, msg);
+            forward(&agent, &ep, &session, &out, msg, ticket);
         } else {
             let (agent, ep, session, out) =
                 (agent.clone(), ep.clone(), session.clone(), out.clone());
             workers.push(std::thread::spawn(move || {
-                forward(&agent, &ep, &session, &out, msg)
+                forward(&agent, &ep, &session, &out, msg, ticket)
             }));
             workers.retain(|w| !w.is_finished());
         }
+    }
+    // Answer what is still running before ending the session.
+    for w in workers {
+        let _ = w.join();
     }
     let id = session.lock().expect("session").id.clone();
     if let Some(id) = id {
@@ -264,6 +313,44 @@ fn proxy(ep: Endpoint) -> Result<()> {
         let _ = req.call();
     }
     Ok(())
+}
+
+/// The order messages are posted in.
+#[derive(Default)]
+struct Order {
+    turn: Mutex<u64>,
+    cv: std::sync::Condvar,
+}
+
+/// One message's place in [`Order`]; dropping it lets the next go.
+struct Ticket {
+    order: Arc<Order>,
+    n: u64,
+    done: bool,
+}
+
+impl Ticket {
+    fn wait(&self) {
+        let mut turn = self.order.turn.lock().expect("order");
+        while *turn < self.n {
+            turn = self.order.cv.wait(turn).expect("order");
+        }
+    }
+
+    fn release(&mut self) {
+        if !self.done {
+            self.done = true;
+            let mut turn = self.order.turn.lock().expect("order");
+            *turn = (*turn).max(self.n + 1);
+            self.order.cv.notify_all();
+        }
+    }
+}
+
+impl Drop for Ticket {
+    fn drop(&mut self) {
+        self.release();
+    }
 }
 
 fn write_line(out: &Mutex<std::io::Stdout>, v: &Value) {
@@ -281,12 +368,13 @@ fn forward(
     session: &Mutex<Session>,
     out: &Mutex<std::io::Stdout>,
     msg: Value,
+    ticket: Ticket,
 ) {
     let id = msg
         .get("id")
         .cloned()
         .filter(|_| msg.get("method").is_some());
-    if let Err(e) = post(agent, ep, session, out, &msg) {
+    if let Err(e) = post(agent, ep, session, out, &msg, ticket) {
         match id {
             Some(id) => write_line(
                 out,
@@ -304,7 +392,9 @@ fn post(
     session: &Mutex<Session>,
     out: &Mutex<std::io::Stdout>,
     msg: &Value,
+    mut ticket: Ticket,
 ) -> Result<()> {
+    ticket.wait();
     let mut req = agent
         .post(&ep.url)
         .header("Content-Type", "application/json")
@@ -321,7 +411,10 @@ fn post(
             req = req.header("MCP-Protocol-Version", v);
         }
     }
-    let mut resp = req.send(msg.to_string())?;
+    let resp = req.send(msg.to_string());
+    // Accepted (its headers are back), or failed: the next may go.
+    ticket.release();
+    let mut resp = resp?;
     let status = resp.status();
     if let Some(id) = resp.headers().get("mcp-session-id") {
         session.lock().expect("session").id = id.to_str().ok().map(String::from);

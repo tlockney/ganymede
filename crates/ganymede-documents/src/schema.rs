@@ -435,6 +435,26 @@ pub fn get_restoring<T: ReadTxn>(
     roots: &Roots,
     baseline: Option<&Value>,
 ) -> Result<Notebook, SchemaError> {
+    read(txn, roots, baseline, false)
+}
+
+/// [`get_restoring`], keeping the ids the document gives every cell even
+/// when the notebook's format (4.4 and older) has none, for code that
+/// addresses cells by id rather than writing the file.
+pub fn get_with_ids<T: ReadTxn>(
+    txn: &T,
+    roots: &Roots,
+    baseline: Option<&Value>,
+) -> Result<Notebook, SchemaError> {
+    read(txn, roots, baseline, true)
+}
+
+fn read<T: ReadTxn>(
+    txn: &T,
+    roots: &Roots,
+    baseline: Option<&Value>,
+    keep_ids: bool,
+) -> Result<Notebook, SchemaError> {
     let mut top = match out_to_json(txn, &Out::YMap(roots.meta.clone())) {
         Value::Object(m) => m,
         _ => JsonMap::new(),
@@ -444,7 +464,7 @@ pub fn get_restoring<T: ReadTxn>(
         .and_then(Value::as_u64)
         .unwrap_or(0);
     let major = top.get("nbformat").and_then(Value::as_u64).unwrap_or(0);
-    let strip_ids = major == 4 && minor <= 4;
+    let strip_ids = !keep_ids && major == 4 && minor <= 4;
     let cells: Vec<Value> = roots
         .cells
         .iter(txn)

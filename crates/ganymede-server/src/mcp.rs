@@ -70,24 +70,15 @@ pub struct McpOptions {
     pub outputs_dir: Option<PathBuf>,
 }
 
-/// State shared by every MCP connection of one server.
-#[derive(Default)]
-pub struct McpShared {
-    /// The notebook last opened, for tools called without `path`.
-    current: Mutex<Option<String>>,
-}
-
-/// A server's `/mcp`: its options and shared state.
+/// A server's `/mcp`: its options.
 pub struct McpState {
     opts: Arc<McpOptions>,
-    shared: Arc<McpShared>,
 }
 
 impl McpState {
     pub fn new(opts: McpOptions) -> Self {
         McpState {
             opts: Arc::new(opts),
-            shared: Arc::default(),
         }
     }
 }
@@ -98,16 +89,10 @@ pub fn router(state: AppState, mcp: &McpState) -> axum::Router {
     use rmcp::transport::streamable_http_server::{
         session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
     };
-    let (opts, shared) = (mcp.opts.clone(), mcp.shared.clone());
+    let opts = mcp.opts.clone();
     let app_state = state.clone();
     let service: StreamableHttpService<Notebooks, LocalSessionManager> = StreamableHttpService::new(
-        move || {
-            Ok(Notebooks::new(
-                app_state.clone(),
-                opts.clone(),
-                shared.clone(),
-            ))
-        },
+        move || Ok(Notebooks::new(app_state.clone(), opts.clone())),
         Default::default(),
         StreamableHttpServerConfig::default().disable_allowed_hosts(),
     );
@@ -119,12 +104,15 @@ pub fn router(state: AppState, mcp: &McpState) -> axum::Router {
         ))
 }
 
-/// The MCP server: one per connection, all sharing [`McpShared`].
+/// The MCP server: one per connection (MCP session).
 #[derive(Clone)]
 pub struct Notebooks {
     state: AppState,
     opts: Arc<McpOptions>,
-    shared: Arc<McpShared>,
+    /// The notebook this connection last opened, for tools called
+    /// without `path`. Per connection, so agents sharing a server don't
+    /// redirect each other.
+    current: Arc<Mutex<Option<String>>>,
     tool_router: ToolRouter<Self>,
     prompt_router: PromptRouter<Self>,
 }
@@ -253,18 +241,18 @@ pub struct ListArgs {
 
 #[tool_router]
 impl Notebooks {
-    pub fn new(state: AppState, opts: Arc<McpOptions>, shared: Arc<McpShared>) -> Self {
+    pub fn new(state: AppState, opts: Arc<McpOptions>) -> Self {
         Notebooks {
             state,
             opts,
-            shared,
+            current: Arc::default(),
             tool_router: Self::tool_router(),
             prompt_router: Self::prompt_router(),
         }
     }
 
     #[tool(
-        description = "Open a notebook, creating it if it doesn't exist, and start or join its kernel. Later calls may leave out `path`. Returns a compact view of the notebook."
+        description = "Open a notebook, creating it if it doesn't exist, and start or join its kernel. Later calls may leave out `path`. Paths are relative to the server's root directory, which the reply names. Returns a compact view of the notebook."
     )]
     async fn notebook_open(
         &self,
@@ -287,15 +275,19 @@ impl Notebooks {
             self.create(&path, a.kernel.as_deref(), a.title.as_deref())
                 .await?;
         }
-        *self.shared.current.lock().expect("current") = Some(path.clone());
+        *self.current.lock().expect("current") = Some(path.clone());
         let kernel = if self.opts.read_only || self.opts.no_execute {
             None
         } else {
             Some(self.kernel_for(&path, a.kernel.as_deref()).await?)
         };
         let nb = self.notebook(&path).await?;
+        let root = match self.state.collab.root() {
+            Some(r) => format!(" (server root {})", r.display()),
+            None => String::new(),
+        };
         let mut out = format!(
-            "{} {path}{}\n\n",
+            "{} {path}{root}{}\n\n",
             if exists { "Opened" } else { "Created" },
             match &kernel {
                 Some((_, name)) => format!(" on kernel {name}"),
@@ -489,18 +481,29 @@ impl Notebooks {
     ) -> Result<CallToolResult, McpError> {
         self.can_execute()?;
         let path = self.path(a.path)?;
-        let (kernel_id, name) = self.kernel_for(&path, None).await?;
+        // Only restart starts a kernel; there is nothing to interrupt or
+        // shut down without one.
+        let (kernel_id, name) = match a.action {
+            KernelAction::Restart => self.kernel_for(&path, None).await?,
+            _ => self
+                .running_kernel(&path)
+                .ok_or_else(|| err(format!("no kernel is running for {path}")))?,
+        };
         let kernels = &self.state.kernels;
         let r = match a.action {
             KernelAction::Interrupt => kernels.interrupt(&kernel_id).await.map(|_| "Interrupted"),
             KernelAction::Restart => kernels.restart(&kernel_id).await.map(|_| "Restarted"),
             KernelAction::Shutdown => {
+                // Deleting the session shuts its kernel down.
                 for s in self.state.sessions.list() {
                     if s.kernel.id == kernel_id {
                         let _ = self.state.sessions.delete(&s.id).await;
                     }
                 }
-                kernels.shutdown(&kernel_id).await.map(|_| "Shut down")
+                match kernels.shutdown(&kernel_id).await {
+                    Err(e) if e.status == 404 => Ok("Shut down"),
+                    r => r.map(|_| "Shut down"),
+                }
             }
         };
         let done = r.map_err(|e| err(e.message))?;
@@ -643,7 +646,7 @@ impl ServerHandler for Notebooks {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
-        let current = self.shared.current.lock().expect("current").clone();
+        let current = self.current.lock().expect("current").clone();
         let resources = current
             .into_iter()
             .map(|p| {
@@ -707,7 +710,12 @@ fn stamp(txn: &mut TransactionMut, cell: &ganymede_documents::yrs::MapRef, by: &
     let mut g = meta
         .get(txn, "ganymede")
         .map(|o| schema::out_to_json(txn, &o))
+        .filter(Value::is_object)
         .unwrap_or_else(|| json!({}));
+    // Indexing a non-object panics; another tool may have written one.
+    if !g["agent"].is_object() {
+        g["agent"] = json!({});
+    }
     let agent = &mut g["agent"];
     if agent.get("by").is_none() {
         agent["by"] = json!(by);
@@ -736,7 +744,6 @@ impl Notebooks {
         match path {
             Some(p) => Ok(ganymede_contents::normalize_api_path(&p)),
             None => self
-                .shared
                 .current
                 .lock()
                 .expect("current")
@@ -756,7 +763,7 @@ impl Notebooks {
     }
 
     async fn notebook(&self, path: &str) -> Result<Notebook, McpError> {
-        self.room(path, |room| (room.notebook(), Effects::default()))
+        self.room(path, |room| (room.notebook_with_ids(), Effects::default()))
             .await?
             .ok_or_else(|| err(format!("{path} is not a notebook")))?
             .map_err(|e| err(e.to_string()))
@@ -818,6 +825,16 @@ impl Notebooks {
             .await
             .map_err(|e| err(e.to_string()))?;
         Ok(())
+    }
+
+    /// The kernel of the notebook's session, if it has one.
+    fn running_kernel(&self, path: &str) -> Option<(String, String)> {
+        self.state
+            .sessions
+            .list()
+            .into_iter()
+            .find(|s| s.path == path)
+            .map(|s| (s.kernel.id, s.kernel.name))
     }
 
     /// The kernel of the notebook's session, started (with a session, so
@@ -1060,19 +1077,22 @@ impl Notebooks {
         s
     }
 
-    /// Write a long output to a file named by its sha256.
+    /// Write a long output to a file named by its sha256, in a directory
+    /// only this user can read (outputs may print secrets): by default
+    /// under the Jupyter runtime dir, not the shared temp dir. The file is
+    /// always written, never trusted because it exists.
     fn spill(&self, body: &str) -> std::io::Result<PathBuf> {
-        let dir = self
-            .opts
-            .outputs_dir
-            .clone()
-            .unwrap_or_else(|| std::env::temp_dir().join("ganymede-mcp-outputs"));
-        std::fs::create_dir_all(&dir)?;
+        let dir = self.opts.outputs_dir.clone().unwrap_or_else(|| {
+            ganymede_kernel_host::kernelspec::jupyter_runtime_dir().join("ganymede-mcp-outputs")
+        });
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(&dir)?;
         let name = hex::encode(sha2::Sha256::digest(body.as_bytes()));
         let path = dir.join(format!("{name}.txt"));
-        if !path.exists() {
-            std::fs::write(&path, body)?;
-        }
+        std::fs::write(&path, body)?;
         Ok(path)
     }
 }

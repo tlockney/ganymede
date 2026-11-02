@@ -3100,7 +3100,7 @@ async fn mcp_journals_into_a_notebook() {
     .await;
     let out = mcp_text(&v);
     assert!(
-        out.starts_with("Created journal.ipynb on kernel fake"),
+        out.starts_with("Created journal.ipynb (server root ") && out.contains(" on kernel fake"),
         "{out}"
     );
     assert!(out.contains("# Exploring"), "{out}");
@@ -3152,4 +3152,123 @@ async fn mcp_journals_into_a_notebook() {
     );
     assert_eq!(cells[3]["outputs"][0]["output_type"], "error");
     assert_eq!(nb["metadata"]["kernelspec"]["name"], "fake");
+}
+
+/// An initialized MCP session on `app`.
+async fn mcp_connect(app: &axum::Router, client: &str) -> String {
+    let (s, sid, v) = mcp_call(
+        app,
+        None,
+        json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": client, "version": "1"}}}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let sid = sid.expect("session id");
+    mcp_call(
+        app,
+        Some(&sid),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )
+    .await;
+    sid
+}
+
+async fn mcp_tool(app: &axum::Router, sid: &str, name: &str, args: Value) -> Value {
+    let (s, _, v) = mcp_call(
+        app,
+        Some(sid),
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+               "params": {"name": name, "arguments": args}}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    v
+}
+
+fn mcp_app(dir: &std::path::Path) -> axum::Router {
+    let mut st = state(dir);
+    st.mcp = Some(Arc::new(ganymede_server::mcp::McpState::new(
+        ganymede_server::mcp::McpOptions {
+            read_only: false,
+            no_execute: false,
+            images: false,
+            outputs_dir: Some(dir.join("spill")),
+        },
+    )));
+    build_router(st)
+}
+
+/// nbformat 4.4 notebooks keep no cell ids on disk, but the tools address
+/// cells by the ids the document gives them.
+#[tokio::test]
+async fn mcp_works_on_notebooks_without_cell_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let nb = json!({"cells": [
+        {"cell_type": "markdown", "metadata": {}, "source": "old notes"},
+        {"cell_type": "code", "execution_count": null, "metadata": {}, "outputs": [], "source": "first"}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 4});
+    std::fs::write(dir.path().join("old.ipynb"), nb.to_string()).unwrap();
+    let app = mcp_app(dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+
+    mcp_text(&mcp_tool(&app, &sid, "notebook_open", json!({"path": "old.ipynb"})).await);
+    let read = mcp_text(&mcp_tool(&app, &sid, "notebook_read", json!({})).await);
+    assert!(!read.contains("null"), "every cell has an id: {read}");
+    let out = mcp_text(&mcp_tool(&app, &sid, "cell_run", json!({"source": "hello"})).await);
+    assert!(out.contains("hello"), "the recorded cell ran: {out}");
+    let out = mcp_text(&mcp_tool(&app, &sid, "notebook_run_all", json!({"restart": false})).await);
+    assert!(out.contains("first"), "{out}");
+    // Saved as 4.4: still no ids on disk.
+    let file = dir.path().join("old.ipynb");
+    let saved = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+            if v["cells"].as_array().map(Vec::len) == Some(3)
+                && v["cells"][1]["execution_count"].is_number()
+            {
+                return v;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("saved");
+    assert_eq!(saved["nbformat_minor"], 4);
+    assert!(saved["cells"][2].get("id").is_none());
+    assert!(saved["cells"][2]["outputs"].to_string().contains("hello"));
+}
+
+/// Each connection has its own current notebook, and kernel_control
+/// answers what it did.
+#[tokio::test]
+async fn mcp_connections_and_kernel_control() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = mcp_app(dir.path());
+    let a = mcp_connect(&app, "a").await;
+    let b = mcp_connect(&app, "b").await;
+    mcp_text(&mcp_tool(&app, &a, "notebook_open", json!({"path": "a.ipynb"})).await);
+    mcp_text(&mcp_tool(&app, &b, "notebook_open", json!({"path": "b.ipynb"})).await);
+    mcp_text(&mcp_tool(&app, &a, "cell_add", json!({"source": "from a"})).await);
+    let read = mcp_text(&mcp_tool(&app, &a, "notebook_read", json!({})).await);
+    assert!(read.contains("from a"), "{read}");
+    let read = mcp_text(&mcp_tool(&app, &b, "notebook_read", json!({})).await);
+    assert!(!read.contains("from a"), "b's notebook is its own: {read}");
+
+    let out = mcp_text(&mcp_tool(&app, &a, "kernel_control", json!({"action": "interrupt"})).await);
+    assert!(out.starts_with("Interrupted"), "{out}");
+    let out = mcp_text(&mcp_tool(&app, &a, "kernel_control", json!({"action": "shutdown"})).await);
+    assert!(out.starts_with("Shut down"), "{out}");
+    // Nothing runs now: interrupt and shutdown don't start a kernel.
+    let v = mcp_tool(&app, &a, "kernel_control", json!({"action": "interrupt"})).await;
+    assert!(v.to_string().contains("no kernel is running"), "{v}");
+    let (_, kernels) = call(&app, "GET", "/api/kernels", None, Some(TOKEN)).await;
+    assert_eq!(
+        kernels.as_array().unwrap().len(),
+        1,
+        "only b's kernel: {kernels}"
+    );
+    let out = mcp_text(&mcp_tool(&app, &a, "kernel_control", json!({"action": "restart"})).await);
+    assert!(out.starts_with("Restarted"), "{out}");
 }

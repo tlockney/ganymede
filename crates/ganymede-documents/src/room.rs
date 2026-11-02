@@ -337,6 +337,17 @@ impl Room {
         ))
     }
 
+    /// [`Room::notebook`] with every cell's id, even in a notebook whose
+    /// format (4.4 and older) keeps none on disk.
+    pub fn notebook_with_ids(&self) -> Option<Result<Notebook, SchemaError>> {
+        let roots = self.roots.as_ref()?;
+        Some(schema::get_with_ids(
+            &self.doc().transact(),
+            roots,
+            self.baseline.as_ref(),
+        ))
+    }
+
     /// The host wrote the document as of `generation` to disk, and the
     /// file now hashes to `hash` (contents' sha256). Sets `state.hash`,
     /// which JupyterLab watches to learn of saves, and `state.dirty`.

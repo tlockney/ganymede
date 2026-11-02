@@ -917,3 +917,65 @@ fn mcp_on_stdio_uses_a_running_server() {
     }
     let _ = server.wait();
 }
+
+/// Requests still running when stdin closes are answered, and
+/// SIGTERM saves open notebooks as stdin closing does.
+#[test]
+fn mcp_on_stdio_finishes_requests_and_saves_on_sigterm() {
+    let root = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let cmd = || {
+        let mut cmd = ganymede(&["mcp", "--no-execute", "--root-dir"]);
+        cmd.arg(root.path())
+            .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
+            .env("JUPYTER_CONFIG_DIR", state.path().join("config"))
+            .env("JUPYTER_DATA_DIR", state.path().join("data"));
+        cmd
+    };
+    let sources = |name: &str| -> Vec<String> {
+        let nb: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.path().join(name)).unwrap()).unwrap();
+        nb["cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| match &c["source"] {
+                serde_json::Value::Array(a) => a.iter().map(|s| s.as_str().unwrap()).collect(),
+                s => s.as_str().unwrap().to_string(),
+            })
+            .collect()
+    };
+
+    // Two notes sent without waiting, then EOF without reading.
+    let mut mcp = McpClient::start(cmd());
+    mcp.tool("notebook_open", serde_json::json!({"path": "a.ipynb"}));
+    for (i, src) in ["one", "two"].into_iter().enumerate() {
+        mcp.send(
+            serde_json::json!({"jsonrpc": "2.0", "id": 10 + i, "method": "tools/call",
+            "params": {"name": "cell_add", "arguments": {"source": src}}}),
+        );
+    }
+    drop(mcp.stdin.take());
+    let mut answered = Vec::new();
+    for line in mcp.lines.by_ref() {
+        let v: serde_json::Value = serde_json::from_str(&line.unwrap()).unwrap();
+        assert!(v.get("error").is_none(), "{v}");
+        answered.push(v["id"].as_u64().unwrap());
+    }
+    answered.sort();
+    assert_eq!(answered, [10, 11]);
+    assert!(mcp.child.wait().unwrap().success());
+    let mut got = sources("a.ipynb");
+    got.sort();
+    assert_eq!(got, ["one", "two"]);
+
+    // SIGTERM within the save delay.
+    let mut mcp = McpClient::start(cmd());
+    mcp.tool("notebook_open", serde_json::json!({"path": "b.ipynb"}));
+    mcp.tool("cell_add", serde_json::json!({"source": "kept"}));
+    unsafe {
+        kill(mcp.child.id() as i32, 15);
+    }
+    mcp.child.wait().unwrap();
+    assert_eq!(sources("b.ipynb"), ["kept"]);
+}

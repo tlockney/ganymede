@@ -165,7 +165,7 @@ impl RoomExec {
             }
             RoomCmd::Get(id, reply) => {
                 let cell = room
-                    .notebook()
+                    .notebook_with_ids()
                     .and_then(Result::ok)
                     .and_then(|nb| nb.cells.into_iter().find(|c| c.id() == Some(id.as_str())));
                 let _ = reply.send(cell);

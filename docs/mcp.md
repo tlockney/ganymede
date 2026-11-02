@@ -70,8 +70,9 @@ the notebook sees them live.
 Outputs come back as text in nb-cli's `@@cell` / `@@output` format:
 Markdown or plain text, HTML tags stripped, tracebacks without terminal
 colors and cut to the last frames. An output over 4,000 characters is
-written to a file named by its SHA-256 hash in a temporary directory,
-and the reply gives its path. Images are left out unless the agent's
+written to a file named by its SHA-256 hash in `ganymede-mcp-outputs`
+in the Jupyter runtime dir (readable only by you), and the reply gives
+its path. Images are left out unless the agent's
 server was started with `--images`, which sends them as MCP image
 content. Kernels can't ask for input.
 
