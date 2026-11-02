@@ -255,7 +255,12 @@ grep -q 'Friday, January 2\*\* is 17 characters' "$work/notebooks/first.ipynb" |
 
 if [ -n "${NB:-}" ]; then
 	step "nb-cli, the agents' notebook CLI, against ganymede serve"
-	NB=$NB "$repo/validation/nb-cli.sh" "$(command -v ganymede)" cdp-node || fail "nb-cli against ganymede serve"
+	# `nb create` asks python for jupyter_core's paths and falls back to
+	# the platform dirs when that fails. That probe is nb-cli's, not
+	# Ganymede's, so nb-cli runs without the recording shims: as on a
+	# machine with no Python, python isn't found at all.
+	PATH=${PATH#"$shims:"} NB=$NB "$repo/validation/nb-cli.sh" "$(command -v ganymede)" cdp-node ||
+		fail "nb-cli against ganymede serve"
 fi
 
 step "ganymede serve, with the VS Code Jupyter extension's remote-server flow"

@@ -12,6 +12,13 @@ The workstation job now runs both, with Python hidden:
   caches the binary by version. It is a test tool, not a dependency of
   the product. With Python hidden, this also shows nb-cli's remote and
   gateway modes need no Python once `--server`/`--token` are given.
+  `nb create` does run `python3 -c 'import jupyter_core.paths ...'`
+  (then `python`) to find kernelspecs, and falls back to the platform
+  dirs when that fails. The first CI run caught it through the
+  workstation script's shims and failed "No Python". That probe is
+  nb-cli's, so nb-cli runs with the shims left off `PATH`, where python
+  isn't found, as on a machine without it. Ganymede's own steps keep the
+  shims.
 
 python3 isn't covered here because the workstation job has no Python;
 nb-cli on ipykernel stays a by-hand run.
