@@ -86,7 +86,10 @@ fn state(root: &std::path::Path) -> AppState {
         config_dir: root.join(".jupyter-config"),
         lab: None,
         static_dir: None,
-        collab: Default::default(),
+        collab: Arc::new(ganymede_server::collab::Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            root.canonicalize().ok(),
+        )),
         terminals: None,
         lsp: None,
     }
@@ -2129,6 +2132,7 @@ async fn collaboration_room_syncs_saves_and_reloads() {
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let app2 = app.clone();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let url = |session: &str| {
         let mut req = format!(
@@ -2276,6 +2280,103 @@ async fn collaboration_room_syncs_saves_and_reloads() {
     let roots = Roots::get(&doc);
     let nb = schema::get(&doc.transact(), &roots).unwrap();
     assert_eq!(nb.cells.len(), 1);
+
+    // An edit in the room and a change on disk to another cell, at the
+    // same time: the room merges them and saves both.
+    let two_cells = |a: &str, b: &str| {
+        format!(
+            "{{\n \"cells\": [\n  {{\n   \"cell_type\": \"markdown\",\n   \"id\": \"a\",\n   \"metadata\": {{}},\n   \"source\": [\n    \"{a}\"\n   ]\n  }},\n  {{\n   \"cell_type\": \"markdown\",\n   \"id\": \"b\",\n   \"metadata\": {{}},\n   \"source\": [\n    \"{b}\"\n   ]\n  }}\n ],\n \"metadata\": {{\n  \"big\": 18446744073709551616\n }},\n \"nbformat\": 4,\n \"nbformat_minor\": 5\n}}\n"
+        )
+    };
+    std::fs::write(&file, two_cells("changed on disk", "second")).unwrap();
+    let cells = |d: &Doc| Roots::get(d).cells.len(&d.transact());
+    pump(&mut ws, &doc, |d| cells(d) == 2).await;
+    let before = doc.transact().state_vector();
+    {
+        let mut txn = doc.transact_mut();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+            panic!()
+        };
+        let Some(Out::YText(t)) = cell.get(&txn, "source") else {
+            panic!()
+        };
+        t.insert(&mut txn, 0, "room: ");
+    }
+    let u = doc.transact().encode_state_as_update_v1(&before);
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::Update(u)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+    std::fs::write(&file, two_cells("changed on disk", "second, on disk")).unwrap();
+    let merged = two_cells("room: changed on disk", "second, on disk");
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::fs::read_to_string(&file).unwrap() != merged {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "not merged: {}",
+            std::fs::read_to_string(&file).unwrap()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // A rename through the contents API keeps the file id, and the room
+    // follows the file.
+    let (s, _) = call(
+        &app2,
+        "PATCH",
+        "/api/contents/demo.ipynb",
+        Some(json!({"path": "moved.ipynb"})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, moved) = call(
+        &app2,
+        "PUT",
+        "/api/collaboration/session/moved.ipynb",
+        Some(json!({"format": "json", "type": "notebook"})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(moved["fileId"], v["fileId"]);
+    let path = |d: &Doc| {
+        let roots = Roots::get(d);
+        let txn = d.transact();
+        roots.state.get(&txn, "path").map(|o| o.to_string(&txn))
+    };
+    pump(&mut ws, &doc, |d| path(d).as_deref() == Some("moved.ipynb")).await;
+    let moved_file = dir.path().join("moved.ipynb");
+    let before = doc.transact().state_vector();
+    {
+        let mut txn = doc.transact_mut();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 1) else {
+            panic!()
+        };
+        let Some(Out::YText(t)) = cell.get(&txn, "source") else {
+            panic!()
+        };
+        t.push(&mut txn, "!");
+    }
+    let u = doc.transact().encode_state_as_update_v1(&before);
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::Update(u)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !std::fs::read_to_string(&moved_file)
+        .unwrap()
+        .contains("second, on disk!")
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "not saved after the rename"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(!file.exists());
 }
 
 #[tokio::test]

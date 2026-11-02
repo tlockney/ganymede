@@ -63,7 +63,14 @@ covers problems with the install itself.
 - nbformat 1 and 2 notebooks can't be read. nbformat 3 notebooks are
   upgraded to 4.5 when opened and saved as 4.5, as Jupyter does.
 - A notebook changed on disk while it is open is not reloaded into the
-  frontend; that is the document model on the [roadmap](roadmap.md).
+  frontend, unless JupyterLab opened it through a document room (with the
+  collaboration extensions; see
+  [Document model and collaboration](protocol.md#document-model-and-collaboration)).
+  Other frontends see the change on the next open.
+
+  > [!NOTE]
+  > **Unreleased.** Available only from a build of `main` (HEAD), not in
+  > the latest release.
 
 ## The app
 
