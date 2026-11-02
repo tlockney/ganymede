@@ -2861,3 +2861,97 @@ async fn execute_endpoint_runs_cells_into_the_document() {
         "runtime state is not saved"
     );
 }
+
+/// A display update reaches the cell that shows the display, and only
+/// while it still does: not after the cell ran again.
+#[tokio::test]
+async fn execute_display_updates_reach_only_current_outputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("d.ipynb");
+    let code = |id: &str, src: &str| json!({"cell_type": "code", "execution_count": null, "id": id, "metadata": {}, "outputs": [], "source": src});
+    let write = |a: &str| {
+        let nb = json!({"cells": [code("a", a), code("b", "update")],
+                        "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+        std::fs::write(&file, serde_json::to_string_pretty(&nb).unwrap()).unwrap();
+    };
+    write("show");
+    let app = build_router(state(dir.path()));
+    let (_, kernel) = call(&app, "POST", "/api/kernels", Some(json!({})), Some(TOKEN)).await;
+    let kid = kernel["id"].as_str().unwrap().to_string();
+    let (_, session) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/d.ipynb",
+        Some(json!({"format": "json", "type": "notebook"})),
+        Some(TOKEN),
+    )
+    .await;
+    let doc = format!("json:notebook:{}", session["fileId"].as_str().unwrap());
+    let hash = |src: &str| ganymede_documents::murmur2(src.as_bytes(), 0).to_string();
+    let url = format!("/api/kernels/{kid}/execute");
+    let run = |id: &'static str, src: &'static str| {
+        let (app, url, doc) = (app.clone(), url.clone(), doc.clone());
+        let body =
+            json!({"document_id": doc, "cells": [{"cell_id": id, "source_hash": hash(src)}]});
+        async move { call(&app, "POST", &url, Some(body), Some(TOKEN)).await.0 }
+    };
+    // Waits until cell `i` on disk shows `text` and has a count.
+    let saved = |i: usize, text: &'static str| {
+        let file = file.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(15), async {
+                loop {
+                    let v: Value =
+                        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+                    let c = &v["cells"][i];
+                    if c["outputs"].to_string().contains(text) && c["execution_count"].is_number() {
+                        return v;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("cell {i} never showed {text}"))
+        }
+    };
+
+    assert_eq!(run("a", "show").await, StatusCode::OK);
+    saved(0, "shown").await;
+    assert_eq!(run("b", "update").await, StatusCode::OK);
+    saved(0, "updated").await;
+
+    // a runs again without the display; a later update leaves it alone.
+    write("hello");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while run("a", "hello").await == StatusCode::CONFLICT {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the room never reloaded"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    saved(0, "hello").await;
+    assert_eq!(run("b", "update").await, StatusCode::OK);
+    // b's own run has finished once its count moves past a's.
+    let v = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+            if v["cells"][1]["execution_count"].as_i64() > v["cells"][0]["execution_count"].as_i64()
+            {
+                return v;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let v2: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    for v in [&v, &v2] {
+        let a = v["cells"][0]["outputs"].to_string();
+        assert!(
+            a.contains("hello") && !a.contains("updated") && !a.contains("shown"),
+            "{a}"
+        );
+    }
+}

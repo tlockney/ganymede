@@ -47,6 +47,8 @@ const PREDECESSOR_TIMEOUT: Duration = Duration::from_secs(10);
 /// A worker forgets the cells it ran (and so their display ids) after this
 /// many, so a long session doesn't grow without bound.
 const MAX_REMEMBERED_CELLS: usize = 256;
+/// Queued request ids kept for successors; the oldest go first.
+const MAX_QUEUED_IDS: usize = 10_000;
 
 #[derive(Deserialize, Default)]
 pub struct ExecuteBody {
@@ -76,8 +78,15 @@ pub(crate) enum RoomCmd {
     },
     /// The worker wants a cell as it is now, to run it.
     Get(String, oneshot::Sender<Option<Cell>>),
-    /// New outputs for a cell.
-    Outputs(String, Vec<Value>),
+    /// New outputs for a cell. A display update to a cell that already
+    /// finished carries what the cell must still show for it to apply: its
+    /// output count and execution count, so an update never brings back
+    /// outputs a client cleared or a later run replaced.
+    Outputs {
+        cell_id: String,
+        outputs: Vec<Value>,
+        only_if: Option<(u32, Option<i64>)>,
+    },
     /// A cell finished (or was skipped): its final outputs, if it ran, and
     /// the kernel's execution count.
     Done {
@@ -156,11 +165,31 @@ impl RoomExec {
                 let _ = reply.send(cell);
                 Effects::default()
             }
-            RoomCmd::Outputs(id, outputs) => {
+            RoomCmd::Outputs {
+                cell_id,
+                outputs,
+                only_if,
+            } => {
                 room.edit(|txn, roots| {
-                    if let Some(cell) = schema::find_cell(txn, roots, &id) {
-                        schema::set_outputs(txn, &cell, outputs);
+                    let Some(cell) = schema::find_cell(txn, roots, &cell_id) else {
+                        return;
+                    };
+                    if let Some((len, count)) = only_if {
+                        let shown = match cell.get(txn, "outputs") {
+                            Some(ganymede_documents::yrs::Out::YArray(a)) => {
+                                ganymede_documents::yrs::Array::len(&a, txn)
+                            }
+                            _ => 0,
+                        };
+                        let shown_count = cell
+                            .get(txn, "execution_count")
+                            .map(|c| schema::out_to_json(txn, &c))
+                            .and_then(|c| c.as_i64());
+                        if shown != len || shown_count != count {
+                            return;
+                        }
                     }
+                    schema::set_outputs(txn, &cell, outputs);
                 })
                 .1
             }
@@ -259,7 +288,11 @@ fn done(
 struct Run {
     run: NotebookRun,
     cells: Vec<Cell>,
+    /// The cell id of each run; empty once the cell has run again, so
+    /// display updates no longer reach that copy.
     ids: Vec<String>,
+    /// Each run's execution count.
+    counts: Vec<Option<i64>>,
 }
 
 impl Run {
@@ -273,6 +306,7 @@ impl Run {
             }),
             cells: Vec::new(),
             ids: Vec::new(),
+            counts: Vec::new(),
         }
     }
 
@@ -306,13 +340,18 @@ impl Run {
         if self.cells.len() >= MAX_REMEMBERED_CELLS {
             *self = Run::new();
         }
+        for id in self.ids.iter_mut().filter(|id| **id == cell_id) {
+            id.clear();
+        }
         self.cells.push(Cell::Code(cell));
         self.ids.push(cell_id.clone());
+        self.counts.push(None);
         let index = self.cells.len() - 1;
         kernel.touch();
 
         let mut count: Option<i64> = None;
         let ids = self.ids.clone();
+        let counts = self.counts.clone();
         let mut handler = |event: Event<'_>| {
             if let Event::Output {
                 msg,
@@ -325,12 +364,22 @@ impl Run {
                     count = msg.content["execution_count"].as_i64();
                 }
                 for &i in changed {
-                    if let (Some(Cell::Code(c)), Some(id)) = (cells.get(i), ids.get(i)) {
-                        let _ = room.send(Cmd::Exec(RoomCmd::Outputs(
-                            id.clone(),
-                            live_outputs(&c.outputs),
-                        )));
+                    let (Some(Cell::Code(c)), Some(id)) = (cells.get(i), ids.get(i)) else {
+                        continue;
+                    };
+                    if id.is_empty() {
+                        continue;
                     }
+                    let outputs = live_outputs(&c.outputs);
+                    // An update to an earlier cell (`update_display`) changes
+                    // an output in place, so the count is the one it shows.
+                    let only_if = (i != index)
+                        .then(|| (outputs.len() as u32, counts.get(i).copied().flatten()));
+                    let _ = room.send(Cmd::Exec(RoomCmd::Outputs {
+                        cell_id: id.clone(),
+                        outputs,
+                        only_if,
+                    }));
                 }
             }
         };
@@ -339,6 +388,7 @@ impl Run {
             .execute_cell_with(&kernel.session(), &mut self.cells, index, &mut handler)
             .await;
         kernel.touch();
+        self.counts[index] = count;
         let outputs = match &self.cells[index] {
             Cell::Code(c) => Some(outputs_json(&c.outputs)),
             _ => None,
@@ -390,18 +440,41 @@ pub struct Requests {
 }
 
 impl Requests {
+    /// Forgets ids that were waited for but never queued, after a minute.
+    /// A queued id stays until a successor has waited on it, as
+    /// jupyter-server-documents keeps it; at most [`MAX_QUEUED_IDS`].
+    fn prune(q: &mut HashMap<String, (watch::Sender<bool>, Instant)>) {
+        q.retain(|_, (tx, t)| *tx.borrow() || t.elapsed() < Duration::from_secs(60));
+        if q.len() > MAX_QUEUED_IDS {
+            let mut by_age: Vec<(Instant, String)> =
+                q.iter().map(|(id, (_, t))| (*t, id.clone())).collect();
+            by_age.sort();
+            for (_, id) in by_age.into_iter().take(q.len() - MAX_QUEUED_IDS) {
+                q.remove(&id);
+            }
+        }
+    }
+
     fn channel(&self, id: &str) -> watch::Receiver<bool> {
         let mut q = self.queued.lock().expect("requests");
-        // Forget ids nobody waited for.
-        q.retain(|_, (_, t)| t.elapsed() < Duration::from_secs(60));
+        Self::prune(&mut q);
         q.entry(id.to_string())
             .or_insert_with(|| (watch::channel(false).0, Instant::now()))
             .0
             .subscribe()
     }
 
+    /// A successor waited on `id` and found it queued.
+    fn consumed(&self, id: &str) {
+        let mut q = self.queued.lock().expect("requests");
+        if q.get(id).is_some_and(|(tx, _)| *tx.borrow()) {
+            q.remove(id);
+        }
+    }
+
     fn mark(&self, id: &str) {
         let mut q = self.queued.lock().expect("requests");
+        Self::prune(&mut q);
         let (tx, _) = q
             .entry(id.to_string())
             .or_insert_with(|| (watch::channel(false).0, Instant::now()));
@@ -456,13 +529,16 @@ pub async fn execute(
         .filter(|p| !p.is_empty())
     {
         let mut rx = state.collab.requests.channel(prev);
-        let waited = tokio::time::timeout(PREDECESSOR_TIMEOUT, rx.wait_for(|q| *q)).await;
-        if !matches!(waited, Ok(Ok(_))) {
+        let waited = tokio::time::timeout(PREDECESSOR_TIMEOUT, rx.wait_for(|q| *q))
+            .await
+            .is_ok_and(|r| r.is_ok());
+        if !waited {
             return Err(HttpError(
                 408,
                 "Timed out waiting for previous_request_id to be enqueued".into(),
             ));
         }
+        state.collab.requests.consumed(prev);
     }
 
     let (reply, answer) = oneshot::channel();
@@ -495,4 +571,27 @@ pub async fn execute(
         "null",
     )
         .into_response())
+}
+
+#[cfg(test)]
+mod request_tests {
+    use super::*;
+
+    #[test]
+    fn queued_ids_outlive_the_minute_until_a_successor_waits() {
+        let r = Requests::default();
+        r.mark("queued");
+        let _ = r.channel("never-queued");
+        let old = Instant::now()
+            .checked_sub(Duration::from_secs(120))
+            .expect("an old instant");
+        for (_, t) in r.queued.lock().unwrap().values_mut() {
+            *t = old;
+        }
+        // A later request prunes: the unqueued id goes, the queued stays.
+        assert!(*r.channel("queued").borrow());
+        assert!(!r.queued.lock().unwrap().contains_key("never-queued"));
+        r.consumed("queued");
+        assert!(r.queued.lock().unwrap().is_empty());
+    }
 }

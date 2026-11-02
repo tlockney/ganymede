@@ -377,6 +377,20 @@ impl FakeKernel {
             self.iopub(msg, "clear_output", &serde_json::json!({"wait": true}))
                 .await;
             self.stream(msg, "after\n").await;
+        } else if code == "show" || code == "update" {
+            // A display with id d1, and an update to it from another cell.
+            let (msg_type, text) = if code == "show" {
+                ("display_data", "shown")
+            } else {
+                ("update_display_data", "updated")
+            };
+            self.iopub(
+                msg,
+                msg_type,
+                &serde_json::json!({"data": {"text/markdown": text}, "metadata": {},
+                                    "transient": {"display_id": "d1"}}),
+            )
+            .await;
         } else if code == "comm" {
             let id = uuid::Uuid::new_v4().simple().to_string();
             self.comms.insert(id.clone(), "fake.target".into());
