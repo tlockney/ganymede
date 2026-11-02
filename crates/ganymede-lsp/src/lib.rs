@@ -242,6 +242,11 @@ impl LspManager {
 
     /// Attaches a client to a server, starting the server if no client
     /// has it open.
+    ///
+    /// # Panics
+    ///
+    /// Outside a Tokio runtime: the client keeps the runtime's handle to
+    /// clean up when it's dropped.
     pub fn connect(&self, name: &str) -> Result<LspClient> {
         let session = self
             .sessions
@@ -275,7 +280,7 @@ impl LspManager {
             rx,
             to_server,
             shadow,
-            // Starting the process needs a runtime, so there is one here.
+            // See `# Panics` above.
             runtime: tokio::runtime::Handle::current(),
         })
     }

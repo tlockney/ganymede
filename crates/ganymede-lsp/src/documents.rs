@@ -196,8 +196,10 @@ impl Documents {
             return (Relay::Drop, None);
         };
         let mut after = before.clone();
+        let mut skipped = false;
         for c in changes {
             let Some(text) = c.get("text").and_then(Value::as_str) else {
+                skipped = true;
                 continue;
             };
             let r = match c.get("range") {
@@ -206,7 +208,10 @@ impl Documents {
                     Some(r) => Some(r),
                     // Not a range: there's no telling what it would
                     // replace.
-                    None => continue,
+                    None => {
+                        skipped = true;
+                        continue;
+                    }
                 },
             };
             after = apply_change(&after, text, r, encoding);
@@ -224,7 +229,9 @@ impl Documents {
         }
         d.version += 1;
         d.text = after;
-        let relay = if in_step {
+        // A skipped change goes as the text the relay applied, so the
+        // server can't read it differently.
+        let relay = if in_step && !skipped {
             let mut m = message.clone();
             m["params"]["textDocument"]["version"] = d.version.into();
             Relay::Replace(m)
@@ -564,7 +571,10 @@ mod tests {
             {"range": {"start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 5}},
                 "text": "2"}
         ]));
-        d.client_message(1, &mixed);
+        // It goes to the server as the text the relay applied, so the
+        // server can't read the bad range its own way.
+        let (relay, _) = d.client_message(1, &mixed);
+        assert_eq!(relay, Relay::Replace(full_change(URI, 1, "a = 2\n")));
         assert_eq!(d.text(URI), Some("a = 2\n"));
     }
 
