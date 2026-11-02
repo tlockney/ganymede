@@ -26,9 +26,43 @@
 //! the text of the tab that changed it last, sent in full.
 //!
 //! The text the server has is also what the shadow file system writes.
+//!
+//! Ranges are applied as the server reads them: lines end at `\r\n`,
+//! `\r` or `\n`, and `character` counts the position encoding the server
+//! chose in its `initialize` result (UTF-16 unless it chose another).
 
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
+
+/// What an LSP position's `character` counts (`positionEncoding`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) enum Encoding {
+    Utf8,
+    /// The protocol's default, and what browsers' strings count.
+    #[default]
+    Utf16,
+    Utf32,
+}
+
+impl Encoding {
+    /// The `positionEncoding` a server's `initialize` result names;
+    /// UTF-16 when it names none or one the protocol doesn't define.
+    pub(crate) fn from_lsp(name: Option<&str>) -> Self {
+        match name {
+            Some("utf-8") => Encoding::Utf8,
+            Some("utf-32") => Encoding::Utf32,
+            _ => Encoding::Utf16,
+        }
+    }
+
+    fn units(self, c: char) -> usize {
+        match self {
+            Encoding::Utf8 => c.len_utf8(),
+            Encoding::Utf16 => c.len_utf16(),
+            Encoding::Utf32 => 1,
+        }
+    }
+}
 
 /// What to do with a client's message.
 #[derive(Debug, PartialEq)]
@@ -53,6 +87,8 @@ struct Doc {
 #[derive(Default)]
 pub(crate) struct Documents {
     docs: HashMap<String, Doc>,
+    /// What the server's positions count.
+    pub(crate) encoding: Encoding,
 }
 
 impl Documents {
@@ -136,6 +172,7 @@ impl Documents {
         changes: &[Value],
         message: &Value,
     ) -> (Relay, Option<String>) {
+        let encoding = self.encoding;
         let Some(d) = self.docs.get_mut(uri) else {
             return (Relay::AsIs, None);
         };
@@ -150,7 +187,7 @@ impl Documents {
             let Some(text) = c.get("text").and_then(Value::as_str) else {
                 continue;
             };
-            after = apply_change(&after, text, c.get("range").and_then(range));
+            after = apply_change(&after, text, c.get("range").and_then(range), encoding);
         }
         let in_step = *before == d.text;
         d.views.insert(client, after.clone());
@@ -248,12 +285,17 @@ fn range(v: &Value) -> Option<((usize, usize), (usize, usize))> {
 }
 
 /// Replaces the range (all of `old` without one) with `text`.
-fn apply_change(old: &str, text: &str, range: Option<((usize, usize), (usize, usize))>) -> String {
+fn apply_change(
+    old: &str,
+    text: &str,
+    range: Option<((usize, usize), (usize, usize))>,
+    encoding: Encoding,
+) -> String {
     let Some((start, end)) = range else {
         return text.to_string();
     };
-    let a = offset(old, start);
-    let b = offset(old, end).max(a);
+    let a = offset(old, start, encoding);
+    let b = offset(old, end, encoding).max(a);
     let mut out = String::with_capacity(old.len() + text.len());
     out.push_str(&old[..a]);
     out.push_str(text);
@@ -261,26 +303,33 @@ fn apply_change(old: &str, text: &str, range: Option<((usize, usize), (usize, us
     out
 }
 
-/// The byte offset of an LSP position. `character` counts UTF-16 code
-/// units, as the protocol's default encoding and the browser's strings
-/// do. Past the end of a line is its end; past the last line is the end.
-fn offset(text: &str, (line, character): (usize, usize)) -> usize {
+/// The byte offset of an LSP position. Lines end at `\r\n`, `\r` or
+/// `\n`, and `character` counts `encoding`'s units. Past the end of a
+/// line is its end; past the last line is the end.
+fn offset(text: &str, (line, character): (usize, usize), encoding: Encoding) -> usize {
     let mut start = 0;
     for _ in 0..line {
-        match text[start..].find('\n') {
-            Some(i) => start += i + 1,
+        match line_end(&text[start..]) {
+            Some((i, len)) => start += i + len,
             None => return text.len(),
         }
     }
-    let line_end = text[start..].find('\n').map_or(text.len(), |i| start + i);
+    let end = line_end(&text[start..]).map_or(text.len(), |(i, _)| start + i);
     let mut units = 0;
-    for (i, c) in text[start..line_end].char_indices() {
+    for (i, c) in text[start..end].char_indices() {
         if units >= character {
             return start + i;
         }
-        units += c.len_utf16();
+        units += encoding.units(c);
     }
-    line_end
+    end
+}
+
+/// Where the first line of `text` ends, and the length of its line end.
+fn line_end(text: &str) -> Option<(usize, usize)> {
+    let i = text.find(['\r', '\n'])?;
+    let len = if text[i..].starts_with("\r\n") { 2 } else { 1 };
+    Some((i, len))
 }
 
 #[cfg(test)]
@@ -309,12 +358,62 @@ mod tests {
     #[test]
     fn range_edits_count_utf16() {
         let doc = "import os\nx = 'é😀'\n";
-        let edit = |s, e, text| apply_change(doc, text, Some((s, e)));
+        let edit = |s, e, text| apply_change(doc, text, Some((s, e)), Encoding::Utf16);
         assert_eq!(edit((0, 7), (0, 9), "sys"), "import sys\nx = 'é😀'\n");
         // 😀 is two UTF-16 units: character 8 is after it.
         assert_eq!(edit((1, 5), (1, 8), "ab"), "import os\nx = 'ab'\n");
         assert_eq!(edit((9, 0), (9, 0), "end"), format!("{doc}end"));
         assert_eq!(edit((0, 99), (1, 0), ""), "import osx = 'é😀'\n");
+    }
+
+    #[test]
+    fn lines_end_at_crlf_cr_and_lf() {
+        for nl in ["\r\n", "\r", "\n"] {
+            let doc = format!("a = 1{nl}b = 2{nl}c = 3{nl}");
+            let edit = |s, e, text| apply_change(&doc, text, Some((s, e)), Encoding::Utf16);
+            assert_eq!(
+                edit((1, 4), (1, 5), "9"),
+                format!("a = 1{nl}b = 9{nl}c = 3{nl}")
+            );
+            // Past the end of a line stops before its line end.
+            assert_eq!(
+                edit((0, 99), (0, 99), "!"),
+                format!("a = 1!{nl}b = 2{nl}c = 3{nl}")
+            );
+            // Joining two lines removes the whole line end.
+            assert_eq!(edit((0, 5), (1, 0), ""), format!("a = 1b = 2{nl}c = 3{nl}"));
+            assert_eq!(edit((3, 0), (3, 0), "d"), format!("{doc}d"));
+        }
+        // Mixed, as a file edited on two systems can be.
+        let doc = "a\rb\r\nc\nd";
+        assert_eq!(
+            apply_change(doc, "X", Some(((3, 0), (3, 1))), Encoding::Utf16),
+            "a\rb\r\nc\nX"
+        );
+    }
+
+    #[test]
+    fn characters_count_the_servers_encoding() {
+        // é is 2 UTF-8 bytes and 1 UTF-16 unit; 😀 is 4 and 2.
+        let doc = "x = 'é😀z'\n";
+        let z = |enc, at| apply_change(doc, "Z", Some(((0, at), (0, at + 1))), enc);
+        assert_eq!(z(Encoding::Utf8, 11), "x = 'é😀Z'\n");
+        assert_eq!(z(Encoding::Utf16, 8), "x = 'é😀Z'\n");
+        assert_eq!(z(Encoding::Utf32, 7), "x = 'é😀Z'\n");
+        assert_eq!(Encoding::from_lsp(Some("utf-8")), Encoding::Utf8);
+        assert_eq!(Encoding::from_lsp(Some("utf-32")), Encoding::Utf32);
+        assert_eq!(Encoding::from_lsp(Some("utf-16")), Encoding::Utf16);
+        assert_eq!(Encoding::from_lsp(None), Encoding::Utf16);
+
+        // A server on UTF-8 gets an edit in step as sent, and the relay's
+        // copy matches it.
+        let mut d = Documents {
+            encoding: Encoding::Utf8,
+            ..Documents::default()
+        };
+        d.client_message(1, &open(doc));
+        d.client_message(1, &edit(1, ((0, 11), (0, 12)), "Z"));
+        assert_eq!(d.text(URI), Some("x = 'é😀Z'\n"));
     }
 
     #[test]

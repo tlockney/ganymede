@@ -447,7 +447,11 @@ impl LspClient {
             }
             return;
         }
-        self.session.state.lock().unwrap().last_handler_message_at = Some(now_iso());
+        let encoding = {
+            let mut st = self.session.state.lock().unwrap();
+            st.last_handler_message_at = Some(now_iso());
+            st.router.encoding()
+        };
         let Ok(value) = serde_json::from_str::<Value>(&message) else {
             let _ = self.to_server.send(message);
             return;
@@ -462,6 +466,7 @@ impl LspClient {
         if self.generation > docs.0 {
             *docs = (self.generation, documents::Documents::default());
         }
+        docs.1.encoding = encoding;
         let (relay, changed) = docs.1.client_message(self.id, &value);
         if let (Some(shadow), Some(uri)) = (&self.shadow, changed) {
             write_shadow(&self.session.name, shadow, &uri, docs.1.text(&uri)).await;
