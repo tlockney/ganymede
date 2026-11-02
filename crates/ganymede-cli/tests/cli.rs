@@ -918,6 +918,60 @@ fn mcp_on_stdio_uses_a_running_server() {
     let _ = server.wait();
 }
 
+/// When the server has ended the session (here: it restarted), the
+/// proxy starts a new one and the call goes through.
+#[test]
+fn mcp_on_stdio_starts_a_new_session_when_the_server_ends_one() {
+    let root = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let start = || {
+        let mut serve = ganymede(&["serve", "--mcp", "--token", "secret", "--port"]);
+        serve
+            .arg(port.to_string())
+            .arg("--root-dir")
+            .arg(root.path())
+            .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
+            .env("JUPYTER_CONFIG_DIR", state.path().join("config"))
+            .env("JUPYTER_DATA_DIR", state.path().join("data"))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut server = serve.spawn().unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(server.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        server
+    };
+    let stop = |mut server: std::process::Child| {
+        unsafe {
+            kill(server.id() as i32, 15);
+        }
+        server.wait().unwrap();
+    };
+    let mut server = start();
+    let mut cmd = ganymede(&["mcp", "--token", "secret", "--server"]);
+    cmd.arg(format!("http://127.0.0.1:{port}/"));
+    let mut mcp = McpClient::start(cmd);
+    let out = mcp.tool("notebooks_list", serde_json::json!({}));
+    assert!(!out.contains("error"), "{out}");
+    stop(server);
+    server = start();
+    std::fs::write(
+        root.path().join("after.ipynb"),
+        r#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#,
+    )
+    .unwrap();
+    let out = mcp.tool("notebooks_list", serde_json::json!({}));
+    assert!(out.contains("after.ipynb"), "{out}");
+    assert!(mcp.finish().success());
+    stop(server);
+}
+
 /// Requests still running when stdin closes are answered, and
 /// SIGTERM saves open notebooks as stdin closing does.
 #[test]

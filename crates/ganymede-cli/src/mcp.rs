@@ -251,6 +251,9 @@ fn serves_mcp(ep: &Endpoint) -> bool {
 struct Session {
     id: Option<String>,
     version: Option<String>,
+    /// The client's `initialize`, to start a new session with when the
+    /// server has ended ours.
+    init: Option<Value>,
 }
 
 /// Forwards stdin to `ep` until stdin closes, then ends the session.
@@ -395,26 +398,19 @@ fn post(
     mut ticket: Ticket,
 ) -> Result<()> {
     ticket.wait();
-    let mut req = agent
-        .post(&ep.url)
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream");
-    if let Some(t) = &ep.token {
-        req = req.header("Authorization", &format!("token {t}"));
+    if msg["method"] == "initialize" {
+        session.lock().expect("session").init = Some(msg.clone());
     }
-    {
-        let s = session.lock().expect("session");
-        if let Some(id) = &s.id {
-            req = req.header("Mcp-Session-Id", id);
-        }
-        if let Some(v) = &s.version {
-            req = req.header("MCP-Protocol-Version", v);
-        }
-    }
-    let resp = req.send(msg.to_string());
+    let (resp, sent) = send(agent, ep, session, msg);
     // Accepted (its headers are back), or failed: the next may go.
     ticket.release();
     let mut resp = resp?;
+    // The server ended our session (rmcp does after an idle while, and a
+    // restarted server knows none): start a new one and try once more.
+    if resp.status().as_u16() == 404 && sent.is_some() && msg["method"] != "initialize" {
+        reinitialize(agent, ep, session, sent.as_deref())?;
+        resp = send(agent, ep, session, msg).0?;
+    }
     let status = resp.status();
     if let Some(id) = resp.headers().get("mcp-session-id") {
         session.lock().expect("session").id = id.to_str().ok().map(String::from);
@@ -448,6 +444,89 @@ fn post(
         }
         _ => bail!("{status}: {}", body.trim()),
     }
+}
+
+/// Posts `msg` with the session's headers; also returns the session id
+/// it went with.
+fn send(
+    agent: &ureq::Agent,
+    ep: &Endpoint,
+    session: &Mutex<Session>,
+    msg: &Value,
+) -> (
+    Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+    Option<String>,
+) {
+    let mut req = agent
+        .post(&ep.url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream");
+    if let Some(t) = &ep.token {
+        req = req.header("Authorization", &format!("token {t}"));
+    }
+    let sent = {
+        let s = session.lock().expect("session");
+        if let Some(id) = &s.id {
+            req = req.header("Mcp-Session-Id", id);
+        }
+        if let Some(v) = &s.version {
+            req = req.header("MCP-Protocol-Version", v);
+        }
+        s.id.clone()
+    };
+    (req.send(msg.to_string()), sent)
+}
+
+/// Starts a new session in place of `stale` with the client's own
+/// `initialize`, unless another message already did. The answers stay
+/// here: the client still has the first ones.
+fn reinitialize(
+    agent: &ureq::Agent,
+    ep: &Endpoint,
+    session: &Mutex<Session>,
+    stale: Option<&str>,
+) -> Result<()> {
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+    let _one = ONE_AT_A_TIME.lock().expect("reinitialize");
+    let init = {
+        let mut s = session.lock().expect("session");
+        if s.id.as_deref() != stale {
+            return Ok(());
+        }
+        s.id = None;
+        s.init
+            .clone()
+            .context("the server ended the session before it began")?
+    };
+    tracing::info!("the server ended the MCP session; starting a new one");
+    let mut resp = send(agent, ep, session, &init).0?;
+    if !resp.status().is_success() {
+        bail!("starting a new session: {}", resp.status());
+    }
+    let id = resp
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from)
+        .context("starting a new session: no session id")?;
+    session.lock().expect("session").id = Some(id);
+    let is_sse = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("text/event-stream"));
+    let reader = resp.body_mut().as_reader();
+    if is_sse {
+        relay_events(reader, init.get("id"), |_| {})?;
+    } else {
+        std::io::copy(&mut reader.take(1 << 20), &mut std::io::sink())?;
+    }
+    let initialized = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+    let resp = send(agent, ep, session, &initialized).0?;
+    if !resp.status().is_success() {
+        bail!("starting a new session: {}", resp.status());
+    }
+    Ok(())
 }
 
 /// Passes on each message of an event stream. A request (`want` is its

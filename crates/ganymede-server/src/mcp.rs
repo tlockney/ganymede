@@ -26,7 +26,7 @@
 //! (`cell_run` with `record: false`) run in the kernel and leave nothing in
 //! the notebook.
 
-use crate::collab::{hold_notebook, with_notebook, Hold};
+use crate::collab::{hold_notebook, notebook_room_id, with_notebook, Hold};
 use crate::AppState;
 use base64::Engine as _;
 use ganymede_api::sessions::KernelRef;
@@ -84,6 +84,10 @@ impl McpState {
     }
 }
 
+/// How long an MCP session may go without a request before it ends.
+/// `ganymede mcp` starts a new one when the server has ended its own.
+const SESSION_IDLE: Duration = Duration::from_secs(60 * 60);
+
 /// `/mcp`, streamable HTTP, behind the API's auth. The `Host` check is the
 /// server's own (`allow_remote_access`), so rmcp's is off.
 pub fn router(state: AppState, mcp: &McpState) -> axum::Router {
@@ -92,9 +96,14 @@ pub fn router(state: AppState, mcp: &McpState) -> axum::Router {
     };
     let opts = mcp.opts.clone();
     let app_state = state.clone();
+    // rmcp ends a session after 5 idle minutes; an agent often waits
+    // longer on its user. A session holds its notebooks' rooms open, so
+    // the limit stays, for clients that never end theirs.
+    let mut sessions = LocalSessionManager::default();
+    sessions.session_config.keep_alive = Some(SESSION_IDLE);
     let service: StreamableHttpService<Notebooks, LocalSessionManager> = StreamableHttpService::new(
         move || Ok(Notebooks::new(app_state.clone(), opts.clone())),
-        Default::default(),
+        Arc::new(sessions),
         StreamableHttpServerConfig::default().disable_allowed_hosts(),
     );
     axum::Router::new()
@@ -114,9 +123,9 @@ pub struct Notebooks {
     /// without `path`. Per connection, so agents sharing a server don't
     /// redirect each other.
     current: Arc<Mutex<Option<String>>>,
-    /// The rooms of notebooks this connection used, kept open while it
-    /// lasts so cell ids stay the same: a notebook without ids (nbformat
-    /// 4.4 and older) gets new ones each time its room opens.
+    /// The rooms of notebooks this connection used, by room id, kept open
+    /// while it lasts so cell ids stay the same: a notebook without ids
+    /// (nbformat 4.4 and older) gets new ones each time its room opens.
     holds: Arc<Mutex<HashMap<String, Hold>>>,
     tool_router: ToolRouter<Self>,
     prompt_router: PromptRouter<Self>,
@@ -272,7 +281,7 @@ impl Notebooks {
         // must not lead to writing over the file.
         let exists = match self.state.contents.get(&path, GetOptions::default()).await {
             Ok(_) => true,
-            Err(e) if e.status() == 404 => false,
+            Err(ganymede_contents::Error::NotFound(_)) => false,
             Err(e) => return Err(err(format!("cannot open {path}: {e}"))),
         };
         if !exists {
@@ -461,7 +470,7 @@ impl Notebooks {
                     // out; checked first, so a bad `after` changes nothing.
                     let to = match &after {
                         None => 0,
-                        Some(a) if *a == id => return Ok(()),
+                        Some(a) if *a == id => return Ok(false),
                         Some(a) => match schema::cell_index(txn, roots, a) {
                             Some(i) if i < from => i + 1,
                             Some(i) => i,
@@ -469,7 +478,7 @@ impl Notebooks {
                         },
                     };
                     if to == from {
-                        return Ok(());
+                        return Ok(false);
                     }
                     let Some(Out::YMap(cell)) = roots.cells.get(txn, from) else {
                         return Err(format!("no cell {id}"));
@@ -477,12 +486,15 @@ impl Notebooks {
                     let value = schema::out_to_json(txn, &Out::YMap(cell));
                     roots.cells.remove(txn, from);
                     schema::insert_cell(txn, &roots.cells, to, value);
-                    Ok(())
+                    Ok(true)
                 })
             })
             .await?;
-        moved.map_err(err)?;
-        text(format!("Moved cell {}", a.id))
+        if moved.map_err(err)? {
+            text(format!("Moved cell {}", a.id))
+        } else {
+            text(format!("Cell {} is already there", a.id))
+        }
     }
 
     #[tool(description = "Interrupt, restart or shut down the notebook's kernel.")]
@@ -672,14 +684,17 @@ impl ServerHandler for Notebooks {
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
-        let path = match request.uri.strip_prefix("notebook://") {
-            // The tools' paths are normalized, so one file is one room.
-            Some(p) => ganymede_contents::normalize_api_path(p),
-            None => String::new(),
-        };
-        if !path.ends_with(".ipynb") {
+        let Some(path) = request.uri.strip_prefix("notebook://") else {
             return Err(McpError::resource_not_found(
                 format!("not a notebook:// URI: {}", request.uri),
+                None,
+            ));
+        };
+        // The tools' paths are normalized, so one file is one room.
+        let path = ganymede_contents::normalize_api_path(path);
+        if !path.ends_with(".ipynb") {
+            return Err(McpError::resource_not_found(
+                format!("not a notebook: {path}"),
                 None,
             ));
         }
@@ -774,10 +789,13 @@ impl Notebooks {
         f: impl FnOnce(&mut Room) -> (R, Effects) + Send + 'static,
     ) -> Result<R, McpError> {
         {
+            // By room id, so a file recreated at the same path (a new
+            // room) is held too; a room that stopped is held again.
+            let room_id = notebook_room_id(&self.state.collab, path);
             let mut holds = self.holds.lock().expect("holds");
-            if !holds.contains_key(path) {
+            if !holds.get(&room_id).is_some_and(Hold::is_live) {
                 if let Some(h) = hold_notebook(&self.state.collab, &self.state.contents, path) {
-                    holds.insert(path.to_string(), h);
+                    holds.insert(room_id, h);
                 }
             }
         }

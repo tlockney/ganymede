@@ -449,6 +449,14 @@ pub(crate) struct Hold {
     conn: ConnId,
 }
 
+impl Hold {
+    /// Whether the room is still running; it stops when its file can't
+    /// be loaded.
+    pub(crate) fn is_live(&self) -> bool {
+        !self.room.is_closed()
+    }
+}
+
 impl Drop for Hold {
     fn drop(&mut self) {
         let _ = self.room.send(Cmd::Leave(self.conn));

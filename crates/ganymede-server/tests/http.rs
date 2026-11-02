@@ -3274,6 +3274,23 @@ async fn mcp_cell_ids_outlive_an_idle_room() {
     let again =
         mcp_text(&mcp_tool(&app, &sid, "notebook_read", json!({"path": "old.ipynb"})).await);
     assert_eq!(read, again, "same ids after the room sat idle");
+
+    // A room that stopped (its file wasn't a notebook yet) is held again
+    // once it opens.
+    let late = dir.path().join("late.ipynb");
+    std::fs::write(&late, "not yet").unwrap();
+    let v = mcp_tool(&app, &sid, "notebook_read", json!({"path": "late.ipynb"})).await;
+    assert!(
+        v.get("error").is_some() || v["result"]["isError"] == true,
+        "{v}"
+    );
+    std::fs::write(&late, nb.to_string()).unwrap();
+    let read =
+        mcp_text(&mcp_tool(&app, &sid, "notebook_read", json!({"path": "late.ipynb"})).await);
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let again =
+        mcp_text(&mcp_tool(&app, &sid, "notebook_read", json!({"path": "late.ipynb"})).await);
+    assert_eq!(read, again, "same ids after the room sat idle");
 }
 
 /// cell_move checks `after` before it touches the cell, and moves both
@@ -3316,7 +3333,8 @@ async fn mcp_cell_move_and_resource_paths() {
         }
     };
     assert_eq!(order(read(app.clone(), sid.clone()).await), "abc");
-    mcp_text(&mv(json!("b")).await);
+    let out = mcp_text(&mv(json!("b")).await);
+    assert!(out.contains("already there"), "{out}");
     assert_eq!(
         order(read(app.clone(), sid.clone()).await),
         "abc",

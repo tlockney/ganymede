@@ -45,3 +45,9 @@ notebook MCP server needs Python.
 - **Proxy and dropped streams.** A request whose event stream ends before
   its answer (the server stopped during a long `cell_run`) gets a
   JSON-RPC error; before, the client waited forever.
+- **Sessions end.** rmcp ends a session after 5 idle minutes and answers
+  404 after that; a restarted server knows no sessions at all. `/mcp`
+  now keeps idle sessions for an hour (the limit stays, for HTTP clients
+  that never send DELETE), and the proxy keeps the client's `initialize`
+  and, on a 404, starts a new session with it and retries once. Made-up
+  4.4 ids last only as long as the session.
