@@ -71,6 +71,8 @@ pub struct Collab {
     watcher: Arc<Watcher>,
     rooms: Mutex<HashMap<String, mpsc::UnboundedSender<Cmd>>>,
     next_conn: AtomicU64,
+    /// How long a room with no clients is kept: [`CLEANUP_DELAY`].
+    cleanup_delay: Duration,
     /// Request ids the execute endpoint has queued.
     pub(crate) requests: crate::execute::Requests,
 }
@@ -92,8 +94,17 @@ impl Collab {
             watcher: Watcher::new(),
             rooms: Mutex::default(),
             next_conn: AtomicU64::new(1),
+            cleanup_delay: CLEANUP_DELAY,
             requests: Default::default(),
         }
+    }
+
+    /// Keep rooms with no clients for `delay` instead of a minute, so
+    /// tests can see rooms retire.
+    #[doc(hidden)]
+    pub fn with_cleanup_delay(mut self, delay: Duration) -> Self {
+        self.cleanup_delay = delay;
+        self
     }
 
     /// `old` (a file or directory) was renamed to `new` through the
@@ -383,13 +394,13 @@ fn open_room(
 
 /// Send `cmd` to a notebook room, opening it if needed: for callers other
 /// than a websocket client, such as the execute endpoint. `None` when the
-/// room id names no known notebook.
+/// room id names no known notebook. Returns the room's sender.
 pub(crate) fn send_to_notebook_room(
     collab: &Arc<Collab>,
     contents: &Arc<dyn Contents>,
     room_id: &str,
     cmd: Cmd,
-) -> Option<()> {
+) -> Option<mpsc::UnboundedSender<Cmd>> {
     let parts: Vec<&str> = room_id.splitn(3, ':').collect();
     let ["json", "notebook", file_id] = parts[..] else {
         return None;
@@ -402,7 +413,8 @@ pub(crate) fn send_to_notebook_room(
             open_room(collab, &mut rooms, contents, room_id, Some(path))
         }
     };
-    tx.send(cmd).ok()
+    tx.send(cmd).ok()?;
+    Some(tx)
 }
 
 /// The room id of the notebook at `path`.
@@ -427,6 +439,35 @@ pub(crate) async fn with_notebook<R: Send + 'static>(
     }));
     send_to_notebook_room(collab, contents, &notebook_room_id(collab, path), cmd)?;
     rx.await.ok()
+}
+
+/// A notebook room kept open, as a client keeps it while connected: the
+/// room doesn't retire, so cell ids it made up for a notebook without
+/// them (nbformat 4.4 and older) stay the same. Leaves on drop.
+pub(crate) struct Hold {
+    room: mpsc::UnboundedSender<Cmd>,
+    conn: ConnId,
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        let _ = self.room.send(Cmd::Leave(self.conn));
+    }
+}
+
+/// Join the room of the notebook at `path` as a client that never reads
+/// its frames. `None` when the path names no notebook room.
+pub(crate) fn hold_notebook(
+    collab: &Arc<Collab>,
+    contents: &Arc<dyn Contents>,
+    path: &str,
+) -> Option<Hold> {
+    let room_id = notebook_room_id(collab, path);
+    let conn = collab.next_conn.fetch_add(1, Ordering::Relaxed);
+    // The receiver is dropped: frames sent to this client go nowhere.
+    let (out, _) = mpsc::unbounded_channel();
+    let room = send_to_notebook_room(collab, contents, &room_id, Cmd::Join(conn, out))?;
+    Some(Hold { room, conn })
 }
 
 async fn close(socket: &mut WebSocket, code: u16, reason: String) {
@@ -613,7 +654,7 @@ async fn run_room(
                     save_room(contents.as_ref(), &mut room, d, &clients, false).await;
                     last_edit = None;
                 }
-                if empty_since.is_some_and(|t| t.elapsed() >= CLEANUP_DELAY) && exec.is_idle() {
+                if empty_since.is_some_and(|t| t.elapsed() >= collab.cleanup_delay) && exec.is_idle() {
                     if room.is_dirty() {
                         save_room(contents.as_ref(), &mut room, d, &clients, false).await;
                     }

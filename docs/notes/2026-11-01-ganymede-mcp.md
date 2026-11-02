@@ -37,3 +37,11 @@ notebook MCP server needs Python.
 - **`--read-only`, `--no-execute`, `--images`** can't be passed to a
   running server per connection, so they make `ganymede mcp` start its
   own server.
+- **Cell ids on 4.4 notebooks.** The room makes ids up at load, and saving
+  4.4 strips them, so a room that retired after a minute with no client
+  came back with new ids, and ids from an earlier read stopped working.
+  Each MCP connection now joins the rooms it uses as a client that reads
+  no frames (`collab::Hold`), so they stay open until it ends.
+- **Proxy and dropped streams.** A request whose event stream ends before
+  its answer (the server stopped during a long `cell_run`) gets a
+  JSON-RPC error; before, the client waited forever.

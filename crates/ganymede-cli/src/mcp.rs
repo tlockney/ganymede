@@ -426,19 +426,11 @@ fn post(
         .is_some_and(|v| v.starts_with("text/event-stream"));
     let reader = resp.body_mut().as_reader();
     if is_sse {
-        for line in BufReader::new(reader).lines() {
-            let line = line?;
-            if let Some(data) = line.strip_prefix("data:") {
-                let data = data.trim_start();
-                if data.is_empty() {
-                    continue;
-                }
-                let v: Value = serde_json::from_str(data).context("bad event from the server")?;
-                note_version(session, &v);
-                write_line(out, &v);
-            }
-        }
-        return Ok(());
+        let want = msg.get("id").filter(|_| msg.get("method").is_some());
+        return relay_events(reader, want, |v| {
+            note_version(session, v);
+            write_line(out, v);
+        });
     }
     let mut body = String::new();
     reader.take(64 << 20).read_to_string(&mut body)?;
@@ -458,9 +450,77 @@ fn post(
     }
 }
 
+/// Passes on each message of an event stream. A request (`want` is its
+/// id) is answered by a message with that id; a stream that ends before
+/// that (the server stopped, the connection dropped) is an error, so the
+/// client gets one instead of waiting forever.
+fn relay_events(
+    reader: impl Read,
+    want: Option<&Value>,
+    mut emit: impl FnMut(&Value),
+) -> Result<()> {
+    let mut answered = want.is_none();
+    let read = || -> Result<()> {
+        for line in BufReader::new(reader).lines() {
+            let line = line?;
+            if let Some(data) = line.strip_prefix("data:") {
+                let data = data.trim_start();
+                if data.is_empty() {
+                    continue;
+                }
+                let v: Value = serde_json::from_str(data).context("bad event from the server")?;
+                emit(&v);
+                if want.is_some_and(|id| v.get("id") == Some(id) && v.get("method").is_none()) {
+                    answered = true;
+                }
+            }
+        }
+        Ok(())
+    };
+    let r = read();
+    if answered {
+        return Ok(());
+    }
+    r?;
+    bail!("the server's event stream ended without an answer")
+}
+
 /// The protocol version `initialize` settled on, sent on later requests.
 fn note_version(session: &Mutex<Session>, v: &Value) {
     if let Some(ver) = v["result"]["protocolVersion"].as_str() {
         session.lock().expect("session").version = Some(ver.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn relay(stream: &str, want: Option<Value>) -> (Result<()>, Vec<Value>) {
+        let mut got = Vec::new();
+        let r = relay_events(stream.as_bytes(), want.as_ref(), |v| got.push(v.clone()));
+        (r, got)
+    }
+
+    #[test]
+    fn a_stream_without_the_answer_is_an_error() {
+        let progress =
+            "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}\n\n";
+        let (r, got) = relay(progress, Some(json!(7)));
+        assert!(r.unwrap_err().to_string().contains("without an answer"));
+        assert_eq!(got.len(), 1);
+
+        // A server request with the same id is not the answer.
+        let ping = "data: {\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"ping\"}\n\n";
+        assert!(relay(ping, Some(json!(7))).0.is_err());
+
+        let answer =
+            format!("{progress}data: {{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{{}}}}\n\n");
+        let (r, got) = relay(&answer, Some(json!(7)));
+        r.unwrap();
+        assert_eq!(got.len(), 2);
+
+        // A notification wants no answer.
+        relay(progress, None).0.unwrap();
     }
 }

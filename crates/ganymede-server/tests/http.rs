@@ -3240,6 +3240,120 @@ async fn mcp_works_on_notebooks_without_cell_ids() {
     assert!(saved["cells"][2]["outputs"].to_string().contains("hello"));
 }
 
+/// Cell ids a 4.4 notebook's room made up stay valid while the connection
+/// lasts, though the room would otherwise retire and reload with new ones.
+#[tokio::test]
+async fn mcp_cell_ids_outlive_an_idle_room() {
+    let dir = tempfile::tempdir().unwrap();
+    let nb = json!({"cells": [
+        {"cell_type": "code", "execution_count": null, "metadata": {}, "outputs": [], "source": "first"}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 4});
+    std::fs::write(dir.path().join("old.ipynb"), nb.to_string()).unwrap();
+    let mut st = state(dir.path());
+    st.collab = Arc::new(
+        ganymede_server::collab::Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            dir.path().canonicalize().ok(),
+        )
+        .with_cleanup_delay(Duration::from_millis(100)),
+    );
+    st.mcp = Some(Arc::new(ganymede_server::mcp::McpState::new(
+        ganymede_server::mcp::McpOptions {
+            read_only: true,
+            no_execute: false,
+            images: false,
+            outputs_dir: None,
+        },
+    )));
+    let app = build_router(st);
+    let sid = mcp_connect(&app, "agent").await;
+    let v = mcp_tool(&app, &sid, "notebook_read", json!({"path": "old.ipynb"})).await;
+    let read = mcp_text(&v);
+    // Several cleanup delays: an unheld room would have retired.
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let again =
+        mcp_text(&mcp_tool(&app, &sid, "notebook_read", json!({"path": "old.ipynb"})).await);
+    assert_eq!(read, again, "same ids after the room sat idle");
+}
+
+/// cell_move checks `after` before it touches the cell, and moves both
+/// ways; resource URIs name the same room as the tools' paths.
+#[tokio::test]
+async fn mcp_cell_move_and_resource_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let cells: Vec<Value> = ["a", "b", "c"]
+        .iter()
+        .map(|s| {
+            json!({"cell_type": "code", "id": s, "execution_count": null,
+            "metadata": {}, "outputs": [], "source": format!("src_{s}")})
+        })
+        .collect();
+    let nb = json!({"cells": cells, "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.path().join("m.ipynb"), nb.to_string()).unwrap();
+    let app = mcp_app(dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    let order = |r: String| {
+        let mut at: Vec<(usize, char)> = ['a', 'b', 'c']
+            .iter()
+            .map(|c| (r.find(&format!("src_{c}")).unwrap(), *c))
+            .collect();
+        at.sort();
+        at.into_iter().map(|(_, c)| c).collect::<String>()
+    };
+    let read = |app: axum::Router, sid: String| async move {
+        mcp_text(&mcp_tool(&app, &sid, "notebook_read", json!({"path": "m.ipynb"})).await)
+    };
+    let mv = |after: Value| {
+        let (app, sid) = (app.clone(), sid.clone());
+        async move {
+            mcp_tool(
+                &app,
+                &sid,
+                "cell_move",
+                json!({"path": "m.ipynb", "id": "b", "after": after}),
+            )
+            .await
+        }
+    };
+    assert_eq!(order(read(app.clone(), sid.clone()).await), "abc");
+    mcp_text(&mv(json!("b")).await);
+    assert_eq!(
+        order(read(app.clone(), sid.clone()).await),
+        "abc",
+        "after itself: no-op"
+    );
+    let v = mv(json!("nope")).await;
+    assert!(v.to_string().contains("no cell nope"), "{v}");
+    assert_eq!(order(read(app.clone(), sid.clone()).await), "abc");
+    mcp_text(&mv(json!("c")).await);
+    assert_eq!(order(read(app.clone(), sid.clone()).await), "acb", "down");
+    mcp_text(&mv(json!("a")).await);
+    assert_eq!(order(read(app.clone(), sid.clone()).await), "abc", "up");
+    mcp_text(&mv(Value::Null).await);
+    assert_eq!(order(read(app.clone(), sid.clone()).await), "bac", "top");
+
+    let (_, _, res) = mcp_call(
+        &app,
+        Some(&sid),
+        json!({"jsonrpc": "2.0", "id": 90, "method": "resources/read",
+        "params": {"uri": "notebook://./m.ipynb"}}),
+    )
+    .await;
+    let text = res["result"]["contents"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(order(text), "bac", "{res}");
+    let (_, _, res) = mcp_call(
+        &app,
+        Some(&sid),
+        json!({"jsonrpc": "2.0", "id": 91, "method": "resources/read",
+        "params": {"uri": "notebook://notes.txt"}}),
+    )
+    .await;
+    assert!(res.get("error").is_some(), "{res}");
+}
+
 /// Each connection has its own current notebook, and kernel_control
 /// answers what it did.
 #[tokio::test]

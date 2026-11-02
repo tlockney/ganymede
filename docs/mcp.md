@@ -48,7 +48,7 @@ a URL instead of starting a command.
 | Tool | Does |
 | --- | --- |
 | `notebook_open` | Open a notebook, creating it (and its directories) when missing, with an optional title cell; start or join its kernel. Later calls may leave out `path`. |
-| `notebook_read` | The notebook as text: cells with ids, sources and outputs. |
+| `notebook_read` | The notebook as text: cells with ids, sources and outputs. A notebook in nbformat 4.4 or older has no cell ids on disk; the server makes them up when it opens the notebook, and they stay the same while the MCP connection lasts. |
 | `cell_run` | Run code and return its outputs. Recorded as a new code cell by default; `record: false` runs it as scratch work that leaves nothing in the notebook. |
 | `cell_add` | Add a Markdown note; `mode: recorded` records a step that ran outside the kernel, such as a shell command. |
 | `cell_edit` | Replace a cell's source; `run: true` runs it after. |
@@ -81,7 +81,9 @@ content. Kernels can't ask for input.
 Cells an agent writes carry
 `metadata.ganymede.agent = {"by": "<client name>", "mode": "executed" | "recorded" | "note", "at": "<time>"}`,
 where the name is the one the MCP client gave when it connected. Scratch
-runs leave nothing.
+runs leave no cells, but they run on the notebook's kernel as any cell
+does: they advance its execution count and its output history (`_` in
+Python).
 
 ## Options
 

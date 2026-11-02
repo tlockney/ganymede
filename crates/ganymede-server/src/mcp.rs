@@ -26,7 +26,7 @@
 //! (`cell_run` with `record: false`) run in the kernel and leave nothing in
 //! the notebook.
 
-use crate::collab::with_notebook;
+use crate::collab::{hold_notebook, with_notebook, Hold};
 use crate::AppState;
 use base64::Engine as _;
 use ganymede_api::sessions::KernelRef;
@@ -46,6 +46,7 @@ use rmcp::{ErrorData as McpError, Peer, RoleServer, ServerHandler};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::Digest;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -113,6 +114,10 @@ pub struct Notebooks {
     /// without `path`. Per connection, so agents sharing a server don't
     /// redirect each other.
     current: Arc<Mutex<Option<String>>>,
+    /// The rooms of notebooks this connection used, kept open while it
+    /// lasts so cell ids stay the same: a notebook without ids (nbformat
+    /// 4.4 and older) gets new ones each time its room opens.
+    holds: Arc<Mutex<HashMap<String, Hold>>>,
     tool_router: ToolRouter<Self>,
     prompt_router: PromptRouter<Self>,
 }
@@ -246,6 +251,7 @@ impl Notebooks {
             state,
             opts,
             current: Arc::default(),
+            holds: Arc::default(),
             tool_router: Self::tool_router(),
             prompt_router: Self::prompt_router(),
         }
@@ -262,12 +268,13 @@ impl Notebooks {
         if !path.ends_with(".ipynb") {
             return Err(err("path must end in .ipynb"));
         }
-        let exists = self
-            .state
-            .contents
-            .get(&path, GetOptions::default())
-            .await
-            .is_ok();
+        // Create only what isn't there; another error (permissions, I/O)
+        // must not lead to writing over the file.
+        let exists = match self.state.contents.get(&path, GetOptions::default()).await {
+            Ok(_) => true,
+            Err(e) if e.status() == 404 => false,
+            Err(e) => return Err(err(format!("cannot open {path}: {e}"))),
+        };
         if !exists {
             if self.opts.read_only {
                 return Err(err(format!("{path} doesn't exist (read-only)")));
@@ -450,21 +457,25 @@ impl Notebooks {
                     let Some(from) = schema::cell_index(txn, roots, &id) else {
                         return Err(format!("no cell {id}"));
                     };
+                    // Where it goes, as an index before the cell is taken
+                    // out; checked first, so a bad `after` changes nothing.
+                    let to = match &after {
+                        None => 0,
+                        Some(a) if *a == id => return Ok(()),
+                        Some(a) => match schema::cell_index(txn, roots, a) {
+                            Some(i) if i < from => i + 1,
+                            Some(i) => i,
+                            None => return Err(format!("no cell {a}")),
+                        },
+                    };
+                    if to == from {
+                        return Ok(());
+                    }
                     let Some(Out::YMap(cell)) = roots.cells.get(txn, from) else {
                         return Err(format!("no cell {id}"));
                     };
                     let value = schema::out_to_json(txn, &Out::YMap(cell));
                     roots.cells.remove(txn, from);
-                    let to = match &after {
-                        None => 0,
-                        Some(a) => match schema::cell_index(txn, roots, a) {
-                            Some(i) => i + 1,
-                            None => {
-                                schema::insert_cell(txn, &roots.cells, from, value);
-                                return Err(format!("no cell {a}"));
-                            }
-                        },
-                    };
                     schema::insert_cell(txn, &roots.cells, to, value);
                     Ok(())
                 })
@@ -661,13 +672,18 @@ impl ServerHandler for Notebooks {
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
-        let Some(path) = request.uri.strip_prefix("notebook://") else {
+        let path = match request.uri.strip_prefix("notebook://") {
+            // The tools' paths are normalized, so one file is one room.
+            Some(p) => ganymede_contents::normalize_api_path(p),
+            None => String::new(),
+        };
+        if !path.ends_with(".ipynb") {
             return Err(McpError::resource_not_found(
                 format!("not a notebook:// URI: {}", request.uri),
                 None,
             ));
-        };
-        let nb = self.notebook(path).await?;
+        }
+        let nb = self.notebook(&path).await?;
         Ok(ReadResourceResult::new(vec![ResourceContents::text(
             self.render(&nb, true),
             request.uri.clone(),
@@ -757,6 +773,14 @@ impl Notebooks {
         path: &str,
         f: impl FnOnce(&mut Room) -> (R, Effects) + Send + 'static,
     ) -> Result<R, McpError> {
+        {
+            let mut holds = self.holds.lock().expect("holds");
+            if !holds.contains_key(path) {
+                if let Some(h) = hold_notebook(&self.state.collab, &self.state.contents, path) {
+                    holds.insert(path.to_string(), h);
+                }
+            }
+        }
         with_notebook(&self.state.collab, &self.state.contents, path, f)
             .await
             .ok_or_else(|| err(format!("cannot open {path}")))
