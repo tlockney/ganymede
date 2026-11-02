@@ -2663,7 +2663,8 @@ async fn language_server_status_and_websocket() {
     assert_eq!(status["sessions"]["echo"]["status"], "started");
     assert_eq!(status["sessions"]["echo"]["handler_count"], 2);
 
-    let msg = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}}).to_string();
+    // A notification goes to every client (a request would reach one).
+    let msg = json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}).to_string();
     a.send(TMsg::Text(msg.clone().into())).await.unwrap();
     for ws in [&mut a, &mut b] {
         let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())

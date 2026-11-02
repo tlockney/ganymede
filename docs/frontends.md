@@ -209,7 +209,10 @@ every editor shares the one process. Its stderr goes to Ganymede's.
 When several editors have one document open (two tabs on a notebook),
 the server gets the document once. Tabs that share edits, through
 collaboration, send each edit once; tabs that don't send different
-texts, and the server has the one changed last.
+texts, and the server has the one changed last. Each editor gets the
+answers to its own requests (hover, completion) and not another tab's,
+diagnostics go to every editor, and a question from the server (its
+configuration) is put to one editor.
 
 `typescript-language-server` needs TypeScript 5: TypeScript 7 has no
 `tsserver.js`. For TypeScript notebooks on cdp-kernel, completion and

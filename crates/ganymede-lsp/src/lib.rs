@@ -9,9 +9,10 @@
 //!
 //! Each configured server runs as one process shared by every client of
 //! it: started when the first client connects, ended when the last one
-//! leaves. What the server sends goes to every client, and every client's
-//! messages go to the server unchanged, except that the server gets one
-//! copy of each open document however many clients edit it (see
+//! leaves. Notifications from the server go to every client; a response
+//! goes only to the client whose request it answers, and a request from
+//! the server is asked of one client (see `router.rs`). The server gets
+//! one copy of each open document however many clients edit it (see
 //! `documents.rs`), and notebook documents are also written to disk for
 //! servers that read files (see [`shadow`]).
 //!
@@ -32,6 +33,7 @@
 
 mod documents;
 pub mod framing;
+mod router;
 pub mod shadow;
 
 use serde::{Deserialize, Serialize};
@@ -251,6 +253,7 @@ impl LspManager {
             st.generation += 1;
             let running = process::start(&session, st.generation, &self.root_dir)?;
             st.running = Some(running);
+            st.router = router::Router::default();
             st.status = Status::Started;
             tracing::info!(server = %session.name, argv = ?session.spec.argv, "language server started");
         }
@@ -326,6 +329,8 @@ struct State {
     running: Option<process::Running>,
     clients: BTreeMap<u64, mpsc::UnboundedSender<Arc<str>>>,
     next_client: u64,
+    /// Request ids between the clients and this process.
+    router: router::Router,
     last_handler_message_at: Option<String>,
     last_server_message_at: Option<String>,
 }
@@ -342,12 +347,24 @@ impl Session {
         })
     }
 
-    /// A message from the server, to every client.
-    fn broadcast(&self, message: String) {
-        let message: Arc<str> = message.into();
+    /// A message from the server: a notification to every client, a
+    /// response to the client that asked, a request to one client.
+    fn server_message(&self, message: String) {
         let mut st = self.state.lock().unwrap();
         st.last_server_message_at = Some(now_iso());
-        st.clients.retain(|_, tx| tx.send(message.clone()).is_ok());
+        let ids: Vec<u64> = st.clients.keys().copied().collect();
+        match st.router.server_message(&message, &ids) {
+            router::Route::All => {
+                let message: Arc<str> = message.into();
+                st.clients.retain(|_, tx| tx.send(message.clone()).is_ok());
+            }
+            router::Route::To(client, message) => {
+                if let Some(tx) = st.clients.get(&client) {
+                    let _ = tx.send(message);
+                }
+            }
+            router::Route::Nowhere => {}
+        }
     }
 
     /// The process `generation` ended: its clients are closed, and the
@@ -360,6 +377,7 @@ impl Session {
         st.running = None;
         st.status = Status::Stopped;
         st.clients.clear();
+        st.router = router::Router::default();
         tracing::info!(server = %self.name, "language server exited");
     }
 
@@ -371,11 +389,18 @@ impl Session {
             tracing::info!(server = %self.name, "language server stopped");
         }
         st.clients.clear();
+        st.router = router::Router::default();
     }
 
     fn disconnect(&self, id: u64) {
         let mut st = self.state.lock().unwrap();
         st.clients.remove(&id);
+        let remaining: Vec<u64> = st.clients.keys().copied().collect();
+        for (client, message) in st.router.disconnect(id, &remaining) {
+            if let Some(tx) = st.clients.get(&client) {
+                let _ = tx.send(message);
+            }
+        }
         if st.clients.is_empty() {
             if let Some(r) = st.running.take() {
                 r.kill();
@@ -406,12 +431,23 @@ impl LspClient {
     /// first reconciled with other clients' (see `documents.rs`), and the
     /// document written to disk if it is a virtual one.
     pub async fn send(&self, message: String) {
-        self.session.state.lock().unwrap().last_handler_message_at = Some(now_iso());
-        // Only `didOpen`, `didChange` and `didClose` are parsed here.
+        // Only `didOpen`, `didChange` and `didClose` are parsed here, and
+        // messages with an id, which `router.rs` rewrites.
         if !message.contains("textDocument/did") {
-            let _ = self.to_server.send(message);
+            let mut st = self.session.state.lock().unwrap();
+            st.last_handler_message_at = Some(now_iso());
+            let message = if message.contains("\"id\"") && st.generation == self.generation {
+                st.router.client_message(self.id, message)
+            } else {
+                Some(message)
+            };
+            drop(st);
+            if let Some(message) = message {
+                let _ = self.to_server.send(message);
+            }
             return;
         }
+        self.session.state.lock().unwrap().last_handler_message_at = Some(now_iso());
         let Ok(value) = serde_json::from_str::<Value>(&message) else {
             let _ = self.to_server.send(message);
             return;
@@ -646,7 +682,7 @@ mod process {
             let mut r = tokio::io::BufReader::new(stdout);
             loop {
                 match framing::read_message(&mut r).await {
-                    Ok(Some(msg)) => reader_session.broadcast(msg),
+                    Ok(Some(msg)) => reader_session.server_message(msg),
                     Ok(None) => break,
                     Err(e) => {
                         tracing::warn!(server = %reader_session.name, "bad message from language server: {e}");
