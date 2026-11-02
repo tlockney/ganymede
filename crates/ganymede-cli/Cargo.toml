@@ -32,6 +32,7 @@ rustyline = "19"
 sha2.workspace = true
 tempfile.workspace = true
 hex.workspace = true
+uuid.workspace = true
 # `ganymede lab install`: HTTPS (rustls, platform trust store, proxy from
 # the environment) and the wheel's zip format, all in Rust.
 ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier", "json"] }

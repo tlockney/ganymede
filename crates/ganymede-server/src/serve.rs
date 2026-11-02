@@ -110,6 +110,10 @@ pub struct ServeArgs {
     /// `local_hostnames`. On by default when --ip is not loopback.
     #[arg(long)]
     pub allow_remote_access: bool,
+    /// Serve the MCP server for agents at `/mcp`, behind the token; see
+    /// `ganymede mcp`.
+    #[arg(long)]
+    pub mcp: bool,
 }
 
 /// The file name looked for in the Jupyter config dir when `--config` is
@@ -199,6 +203,9 @@ impl ServeArgs {
         }
         if cli.allow_remote_access {
             cfg.allow_remote_access = Some(true);
+        }
+        if cli.mcp {
+            cfg.mcp_enabled = true;
         }
         cfg.kernelspec_roots.extend(cli.kernelspec_root);
         cfg.labextensions_paths.extend(cli.labextensions_path);
@@ -495,6 +502,10 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     if !cfg.language_servers.is_empty() && !LspManager::supported() {
         tracing::warn!("language servers are configured but cannot run on this platform");
     }
+    let state_collab = Arc::new(crate::collab::Collab::new(
+        file_ids(&root_dir),
+        Some(root_dir.clone()),
+    ));
     let state = AppState {
         kernels: kernels.clone(),
         sessions,
@@ -511,12 +522,17 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         config_dir,
         static_dir: if lab.is_some() { None } else { static_dir },
         lab: lab.map(Arc::new),
-        collab: Arc::new(crate::collab::Collab::new(
-            file_ids(&root_dir),
-            Some(root_dir.clone()),
-        )),
+        collab: state_collab.clone(),
         terminals: terminals.clone(),
         lsp: lsp.clone(),
+        mcp: cfg.mcp_enabled.then(|| {
+            Arc::new(crate::mcp::McpState::new(crate::mcp::McpOptions {
+                read_only: cfg.mcp_read_only,
+                no_execute: cfg.mcp_no_execute,
+                images: cfg.mcp_images,
+                outputs_dir: None,
+            }))
+        }),
     };
 
     let mut app = crate::build_router(state);
@@ -586,6 +602,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     }
 
     serve_until(listener, app, stop, DRAIN_TIMEOUT).await?;
+    state_collab.flush_all().await;
     if let Some(t) = &terminals {
         t.shutdown_all();
     }

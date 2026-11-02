@@ -5,6 +5,7 @@ mod console;
 mod info;
 mod lab;
 mod lab_start;
+mod mcp;
 mod render;
 mod ui;
 
@@ -206,6 +207,14 @@ enum Cmd {
         #[command(flatten)]
         start: Box<lab_start::StartArgs>,
     },
+    /// Serve notebook tools to an agent over MCP on stdio.
+    ///
+    /// Agents that start MCP servers as subprocesses (Claude Code, Codex,
+    /// Cursor) run this to open, edit and run notebooks. It uses a running
+    /// `ganymede serve --mcp` whose root holds the current directory, so
+    /// the agent's edits show live in JupyterLab or ganymede-ui, else
+    /// starts a server of its own.
+    Mcp(mcp::McpArgs),
     /// Serve the Jupyter REST and websocket API (JupyterLab, VS Code, ...).
     Serve(Box<ganymede_server::serve::ServeArgs>),
     /// Show versions, build details, and every directory Ganymede uses:
@@ -538,6 +547,10 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
         Cmd::Serve(args) => {
             let cfg = server_config(*args, &cli.kernelspec_root, cli.startup_timeout, cli.quiet)?;
             ganymede_server::serve::run(cfg).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Mcp(args) => {
+            mcp::run(args, &cli.kernelspec_root, cli.startup_timeout).await?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Info { json } => info::run(&engine, &cli.kernelspec_root, json),
