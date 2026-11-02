@@ -183,6 +183,26 @@ a client keeps its room across a server restart, and a rename or delete
 through the contents API moves or drops them; a room open on a renamed
 file follows it. A file moved by another program gets a new id.
 
+The server runs cells into a room too, with
+`jupyter-server-documents`' `POST /api/kernels/{kernel_id}/execute`:
+
+```json
+{"document_id": "json:notebook:<file id>",
+ "cells": [{"cell_id": "...", "source_hash": "<MurmurHash2 of the source, seed 0>"}],
+ "request_id": "...", "previous_request_id": "..."}
+```
+
+It checks each cell's source against the hash, clears the cells and
+queues them as one batch, and answers `200 null`; `409
+{"error": "source_mismatch", "cell_id"}` if a cell changed since the
+client hashed it, and `408` if `previous_request_id` wasn't queued within
+ten seconds. The server then writes outputs and execution counts into the
+room as the kernel sends them, so they reach every client, and the file,
+with no client connected. A cell that fails stops the rest of its batch.
+`POST /api/fileid/index?path=` gives a file's id, as
+`jupyter-server-documents` does; nb-cli takes a server that answers it
+for one that runs cells this way.
+
 Limits for now: notebooks only (a text file opened collaboratively fails
 to load); two processes can each hold a room on one file (the Mac server
 and the iPad app on one iCloud file, say), and they merge through the

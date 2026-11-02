@@ -71,6 +71,8 @@ pub struct Collab {
     watcher: Arc<Watcher>,
     rooms: Mutex<HashMap<String, mpsc::UnboundedSender<Cmd>>>,
     next_conn: AtomicU64,
+    /// Request ids the execute endpoint has queued.
+    pub(crate) requests: crate::execute::Requests,
 }
 
 impl Default for Collab {
@@ -90,6 +92,7 @@ impl Collab {
             watcher: Watcher::new(),
             rooms: Mutex::default(),
             next_conn: AtomicU64::new(1),
+            requests: Default::default(),
         }
     }
 
@@ -113,15 +116,17 @@ impl Collab {
     }
 }
 
-enum Cmd {
+pub(crate) enum Cmd {
     Join(ConnId, mpsc::UnboundedSender<Out>),
     Frame(ConnId, Vec<u8>),
     Leave(ConnId),
     /// A rename through the contents API: old and new path.
     Moved(String, String),
+    /// Server-side execution; see [`crate::execute`].
+    Exec(crate::execute::RoomCmd),
 }
 
-enum Out {
+pub(crate) enum Out {
     Frame(Vec<u8>),
     Close(u16, String),
 }
@@ -163,6 +168,70 @@ pub async fn session(
         })),
     )
         .into_response())
+}
+
+#[derive(Deserialize)]
+pub struct FileIdQuery {
+    path: Option<String>,
+    id: Option<String>,
+}
+
+/// `POST /api/fileid/index?path=`, `jupyter-server-documents`' way to get
+/// a file's id (and make one): `{"id", "path"}`. nb-cli takes a server
+/// that answers it for one that writes kernel outputs into rooms, and
+/// runs cells through `POST /api/kernels/{id}/execute`.
+pub async fn fileid_index(
+    State(state): State<AppState>,
+    Query(q): Query<FileIdQuery>,
+) -> Result<Json<Value>, HttpError> {
+    let path = q.path.ok_or_else(|| {
+        HttpError(
+            400,
+            "'path' parameter was not provided in the request.".into(),
+        )
+    })?;
+    let path = ganymede_contents::normalize_api_path(&path);
+    state.contents.get(&path, GetOptions::default()).await?;
+    let (id, _) = state.collab.ids.index(&path);
+    Ok(Json(json!({"id": id, "path": path})))
+}
+
+/// `GET /api/fileid/id?path=`, as `jupyter_server_fileid`: the id of a
+/// path that has one, or 404.
+pub async fn fileid_id(
+    State(state): State<AppState>,
+    Query(q): Query<FileIdQuery>,
+) -> Result<Json<Value>, HttpError> {
+    let path = q.path.ok_or_else(|| {
+        HttpError(
+            400,
+            "'path' parameter was not provided in the request.".into(),
+        )
+    })?;
+    let path = ganymede_contents::normalize_api_path(&path);
+    let id =
+        state.collab.ids.get(&path).ok_or_else(|| {
+            HttpError(404, format!("The ID for file, {path}, could not be found."))
+        })?;
+    Ok(Json(json!({"id": id, "path": path})))
+}
+
+/// `GET /api/fileid/path?id=`, as `jupyter_server_fileid`.
+pub async fn fileid_path(
+    State(state): State<AppState>,
+    Query(q): Query<FileIdQuery>,
+) -> Result<Json<Value>, HttpError> {
+    let id = q.id.ok_or_else(|| {
+        HttpError(
+            400,
+            "'id' parameter was not provided in the request.".into(),
+        )
+    })?;
+    let path =
+        state.collab.ids.path(&id).ok_or_else(|| {
+            HttpError(404, format!("The path for file, {id}, could not be found."))
+        })?;
+    Ok(Json(json!({"id": id, "path": path})))
 }
 
 #[derive(Deserialize)]
@@ -230,20 +299,7 @@ async fn serve_socket(
     let (out_tx, mut out_rx) = mpsc::unbounded_channel();
     let room = {
         let mut rooms = collab.rooms.lock().expect("rooms");
-        let tx = rooms
-            .entry(room_id.clone())
-            .or_insert_with(|| {
-                let (tx, rx) = mpsc::unbounded_channel();
-                tokio::spawn(run_room(
-                    collab.clone(),
-                    state.contents.clone(),
-                    room_id.clone(),
-                    doc.clone(),
-                    rx,
-                ));
-                tx
-            })
-            .clone();
+        let tx = open_room(&collab, &mut rooms, &state.contents, &room_id, doc);
         let _ = tx.send(Cmd::Join(conn, out_tx));
         tx
     };
@@ -269,6 +325,56 @@ async fn serve_socket(
         }
     }
     let _ = room.send(Cmd::Leave(conn));
+}
+
+/// The room's task, started if it isn't running. Call with `rooms` locked,
+/// and send to the room before unlocking, so it can't retire in between.
+fn open_room(
+    collab: &Arc<Collab>,
+    rooms: &mut HashMap<String, mpsc::UnboundedSender<Cmd>>,
+    contents: &Arc<dyn Contents>,
+    room_id: &str,
+    path: Option<String>,
+) -> mpsc::UnboundedSender<Cmd> {
+    rooms
+        .entry(room_id.to_string())
+        .or_insert_with(|| {
+            let (tx, rx) = mpsc::unbounded_channel();
+            tokio::spawn(run_room(
+                collab.clone(),
+                contents.clone(),
+                room_id.to_string(),
+                path,
+                tx.clone(),
+                rx,
+            ));
+            tx
+        })
+        .clone()
+}
+
+/// Send `cmd` to a notebook room, opening it if needed: for callers other
+/// than a websocket client, such as the execute endpoint. `None` when the
+/// room id names no known notebook.
+pub(crate) fn send_to_notebook_room(
+    collab: &Arc<Collab>,
+    contents: &Arc<dyn Contents>,
+    room_id: &str,
+    cmd: Cmd,
+) -> Option<()> {
+    let parts: Vec<&str> = room_id.splitn(3, ':').collect();
+    let ["json", "notebook", file_id] = parts[..] else {
+        return None;
+    };
+    let mut rooms = collab.rooms.lock().expect("rooms");
+    let tx = match rooms.get(room_id) {
+        Some(tx) => tx.clone(),
+        None => {
+            let path = collab.ids.path(file_id)?;
+            open_room(collab, &mut rooms, contents, room_id, Some(path))
+        }
+    };
+    tx.send(cmd).ok()
 }
 
 async fn close(socket: &mut WebSocket, code: u16, reason: String) {
@@ -321,6 +427,7 @@ async fn run_room(
     contents: Arc<dyn Contents>,
     room_id: String,
     path: Option<String>,
+    me: mpsc::UnboundedSender<Cmd>,
     mut rx: mpsc::UnboundedReceiver<Cmd>,
 ) {
     let mut clients: HashMap<ConnId, mpsc::UnboundedSender<Out>> = HashMap::new();
@@ -338,8 +445,13 @@ async fn run_room(
                 rooms.remove(&room_id);
                 rx.close();
                 while let Ok(cmd) = rx.try_recv() {
-                    if let Cmd::Join(_, out) = cmd {
-                        let _ = out.send(Out::Close(4500, format!("Error initializing: {path}.")));
+                    match cmd {
+                        Cmd::Join(_, out) => {
+                            let _ =
+                                out.send(Out::Close(4500, format!("Error initializing: {path}.")));
+                        }
+                        Cmd::Exec(cmd) => cmd.unavailable(&format!("cannot load {path}: {e}")),
+                        _ => {}
                     }
                 }
                 return;
@@ -350,7 +462,10 @@ async fn run_room(
     tracing::info!(room = %room_id, path = ?path, watched = watch.is_some(), "room opened");
 
     let mut last_edit: Option<Instant> = None;
-    let mut empty_since: Option<Instant> = None;
+    // A room opened for execution, with no client, retires like one whose
+    // clients left.
+    let mut empty_since: Option<Instant> = Some(Instant::now());
+    let mut exec = crate::execute::RoomExec::new(me);
     // When file events last arrived and are not yet looked at.
     let mut disk_event: Option<Instant> = None;
     let mut tick = tokio::time::interval(Duration::from_millis(250));
@@ -400,6 +515,11 @@ async fn run_room(
                         drop(watch.take());
                         watch = collab.watch(&d.path);
                     }
+                    Cmd::Exec(cmd) => {
+                        let fx = exec.handle(&mut room, cmd);
+                        if fx.changed { last_edit = Some(Instant::now()) }
+                        dispatch(&clients, fx.send);
+                    }
                 }
             }
             Some(()) = changed(&mut watch) => {
@@ -427,7 +547,7 @@ async fn run_room(
                     save_room(contents.as_ref(), &mut room, d, &clients, false).await;
                     last_edit = None;
                 }
-                if empty_since.is_some_and(|t| t.elapsed() >= CLEANUP_DELAY) {
+                if empty_since.is_some_and(|t| t.elapsed() >= CLEANUP_DELAY) && exec.is_idle() {
                     if room.is_dirty() {
                         save_room(contents.as_ref(), &mut room, d, &clients, false).await;
                     }
