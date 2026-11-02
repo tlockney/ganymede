@@ -2,9 +2,10 @@
 
 Scripts that drive real Jupyter clients against a running server. They
 need a kernel and a browser. CI's `workstation` job runs `login.mjs`,
-`trust.mjs`, and `widgets.mjs` on cdp-kernel through
+`trust.mjs`, `widgets.mjs`, `jupyterlab.mjs`, and `nb-cli.sh` on
+cdp-kernel through
 [`../scripts/test-workstation.sh`](../scripts/test-workstation.sh); the
-rest are run by hand. Results and what broke are recorded in
+rest, and the python3 runs, are by hand. Results and what broke are recorded in
 the [development log](../docs/notes.md), one file per entry in
 [`../docs/notes/`](../docs/notes/).
 

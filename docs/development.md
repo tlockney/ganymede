@@ -73,9 +73,11 @@ and ipykernel, plus a portability job for iOS, Android, and wasm. Its
 with Python hidden from `PATH`
 ([`scripts/test-workstation.sh`](../scripts/test-workstation.sh)): the PR's
 binary through `install.sh`, cdp-kernel from npm, `ganymede lab install`,
-`ganymede lab` driven by Playwright, `ganymede execute`, `ganymede serve`
-with the VS Code extension's requests, and the uninstall, failing if any
-Python ran. Its `image` job builds `container/Dockerfile` from the
+`ganymede lab` driven by Playwright (login, trust, widgets, and
+`validation/jupyterlab.mjs` running and saving a cell), `ganymede
+execute`, nb-cli's remote and gateway modes (`validation/nb-cli.sh`),
+`ganymede serve` with the VS Code extension's requests, and the
+uninstall, failing if any Python ran. Its `image` job builds `container/Dockerfile` from the
 checkout and runs `container/smoke-test.sh` on it.
 
 ## CI
@@ -87,7 +89,9 @@ checkout and runs `container/smoke-test.sh` on it.
   `container/Dockerfile` and the
   [tested versions](architecture.md#tested-versions) table. A weekly
   scheduled run installs the latest releases instead, so drift shows up
-  there first.
+  there first. `NB_CLI_VERSION` (nb-cli, for the workstation job) is
+  pinned there too and also goes to the latest release on the scheduled
+  run.
 - **Rust versions.** CI builds with the latest stable. `rust-version` in
   the workspace `Cargo.toml` is the oldest supported Rust, and the `msrv`
   job builds with exactly that; raise it on purpose.
