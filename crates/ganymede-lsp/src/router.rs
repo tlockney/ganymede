@@ -143,8 +143,6 @@ impl Router {
     /// server asked of it is asked of the next client in `remaining`.
     pub fn disconnect(&mut self, client: u64, remaining: &[u64]) -> Vec<(u64, Arc<str>)> {
         self.pending.retain(|_, (c, _)| *c != client);
-        let pending = &self.pending;
-        self.initializing.retain(|ours| pending.contains_key(ours));
         let Some(&next) = remaining.first() else {
             self.asked.retain(|_, (c, _)| *c != client);
             return Vec::new();
@@ -263,10 +261,10 @@ mod tests {
             sent(r.client_message(1, json!({"id": 0, "method": "initialize"}).to_string()))
         };
         let ours = init(&mut r);
-        let answer = |enc: Value| {
-            json!({"id": ours["id"], "result": {"capabilities": {"positionEncoding": enc}}})
-                .to_string()
+        let answer_to = |id: &Value, enc: Value| {
+            json!({"id": id, "result": {"capabilities": {"positionEncoding": enc}}}).to_string()
         };
+        let answer = |enc: Value| answer_to(&ours["id"], enc);
         // Another response doesn't count.
         let other = sent(r.client_message(1, json!({"id": 1, "method": "m"}).to_string()));
         r.server_message(
@@ -286,6 +284,15 @@ mod tests {
             &[1],
         ));
         assert_eq!(r.encoding(), Encoding::Utf8);
+        // The server's choice counts even when the client that asked has
+        // left: the encoding is the server's, not the client's.
+        let ours = sent(r.client_message(2, json!({"id": 0, "method": "initialize"}).to_string()));
+        r.disconnect(2, &[1]);
+        assert_eq!(
+            r.server_message(&answer_to(&ours["id"], json!("utf-32")), &[1]),
+            Route::Nowhere
+        );
+        assert_eq!(r.encoding(), Encoding::Utf32);
         // A later initialize without one is back to the default.
         let ours = init(&mut r);
         to(r.server_message(
