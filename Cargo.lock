@@ -877,6 +877,7 @@ dependencies = [
  "futures",
  "ganymede-contents",
  "ganymede-engine",
+ "ganymede-nbformat",
  "ganymede-server",
  "hex",
  "reqwest",
