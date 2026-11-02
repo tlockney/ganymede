@@ -21,6 +21,8 @@ more installed kernelspec, not something the server needs.
   Ganymede.
 - [Ganymede's app](app.md): its own notebook app, in a browser and on the
   Mac and iPad.
+- [Agents](agents.md): a coding agent journaling an analysis into a
+  notebook with nb-cli.
 - [CLI and configuration](reference.md): every command, flag, config key
   and environment variable.
 - [Architecture](architecture.md): how Ganymede compares to the Jupyter
