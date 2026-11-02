@@ -64,3 +64,30 @@ fn failure_returns_null_and_a_message() {
     // A null error_out is allowed too.
     assert!(unsafe { ganymede_server_start(cfg.as_ptr(), std::ptr::null_mut()) }.is_null());
 }
+
+/// Built as for iOS (`--no-default-features --features gateway`), the
+/// server starts with no kernels instead of failing.
+#[cfg(not(all(feature = "zmq", feature = "subprocess")))]
+#[test]
+fn starts_with_no_kernels_without_processes() {
+    let root = tempfile::tempdir().unwrap();
+    let cfg = CString::new(format!(
+        r#"{{"root_dir": {:?}, "cookie_secret_file": {:?}}}"#,
+        root.path(),
+        root.path().join("secret")
+    ))
+    .unwrap();
+    let mut err: *mut c_char = std::ptr::null_mut();
+    let server = unsafe { ganymede_server_start(cfg.as_ptr(), &mut err) };
+    assert!(!server.is_null(), "{}", unsafe {
+        CStr::from_ptr(err).to_string_lossy()
+    });
+    let url = unsafe { CStr::from_ptr(ganymede_server_url(server)) }
+        .to_str()
+        .unwrap()
+        .to_string();
+    let reply = get(&url, "/api/kernelspecs");
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    assert!(reply.contains(r#""kernelspecs":{}"#), "{reply}");
+    unsafe { ganymede_server_stop(server) };
+}

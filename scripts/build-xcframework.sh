@@ -2,14 +2,18 @@
 # Builds ganymede-ffi for macOS (arm64 + x86_64), iOS, and the iOS
 # simulator, and packages them with include/ganymede.h as
 # target/xcframework/GanymedeFFI.xcframework, which the Swift shell links.
-# Needs macOS with Xcode.
+# The iOS slices build without `zmq` and `subprocess`: an iOS app can't
+# start kernel processes, so that server lists no kernels unless the
+# config sets `gateway_url`. Needs macOS with Xcode.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-13.0}
 export IPHONEOS_DEPLOYMENT_TARGET=${IPHONEOS_DEPLOYMENT_TARGET:-16.0}
-targets=(aarch64-apple-darwin x86_64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim)
-for t in "${targets[@]}"; do
+for t in aarch64-apple-darwin x86_64-apple-darwin; do
   cargo build --locked --release -p ganymede-ffi --target "$t"
+done
+for t in aarch64-apple-ios aarch64-apple-ios-sim; do
+  cargo build --locked --release -p ganymede-ffi --target "$t" --no-default-features --features gateway
 done
 lib=libganymede_ffi.a
 out=target/xcframework
