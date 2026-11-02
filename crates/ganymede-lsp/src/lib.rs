@@ -275,6 +275,8 @@ impl LspManager {
             rx,
             to_server,
             shadow,
+            // Starting the process needs a runtime, so there is one here.
+            runtime: tokio::runtime::Handle::current(),
         })
     }
 
@@ -420,6 +422,9 @@ pub struct LspClient {
     rx: mpsc::UnboundedReceiver<Arc<str>>,
     to_server: mpsc::UnboundedSender<String>,
     shadow: Option<Arc<shadow::Shadow>>,
+    /// Where the cleanup on drop runs, so it runs even when the client is
+    /// dropped outside the runtime.
+    runtime: tokio::runtime::Handle,
 }
 
 impl LspClient {
@@ -495,25 +500,23 @@ impl Drop for LspClient {
         // keep it and a later `didOpen` isn't a second one, and give the
         // server another client's text where it had this one's. Moot when
         // this was the last client: the server stops below.
-        if let Ok(rt) = tokio::runtime::Handle::try_current() {
-            let (session, id, generation) = (self.session.clone(), self.id, self.generation);
-            let (to_server, shadow) = (self.to_server.clone(), self.shadow.clone());
-            rt.spawn(async move {
-                let mut docs = session.documents.lock().await;
-                if docs.0 != generation {
-                    return;
+        let (session, id, generation) = (self.session.clone(), self.id, self.generation);
+        let (to_server, shadow) = (self.to_server.clone(), self.shadow.clone());
+        self.runtime.spawn(async move {
+            let mut docs = session.documents.lock().await;
+            if docs.0 != generation {
+                return;
+            }
+            let (send, changed) = docs.1.disconnect(id);
+            if let Some(shadow) = &shadow {
+                for uri in &changed {
+                    write_shadow(&session.name, shadow, uri, docs.1.text(uri)).await;
                 }
-                let (send, changed) = docs.1.disconnect(id);
-                if let Some(shadow) = &shadow {
-                    for uri in &changed {
-                        write_shadow(&session.name, shadow, uri, docs.1.text(uri)).await;
-                    }
-                }
-                for m in send {
-                    let _ = to_server.send(m.to_string());
-                }
-            });
-        }
+            }
+            for m in send {
+                let _ = to_server.send(m.to_string());
+            }
+        });
         self.session.disconnect(self.id);
     }
 }
