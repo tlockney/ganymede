@@ -92,6 +92,7 @@ fn state(root: &std::path::Path) -> AppState {
         )),
         terminals: None,
         lsp: None,
+        mcp: None,
     }
 }
 
@@ -2955,4 +2956,451 @@ async fn execute_display_updates_reach_only_current_outputs() {
             "{a}"
         );
     }
+}
+
+/// One JSON-RPC call to `/mcp`; the response and the session id it set.
+async fn mcp_call(
+    app: &axum::Router,
+    session: Option<&str>,
+    body: Value,
+) -> (StatusCode, Option<String>, Value) {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header(header::HOST, "localhost:8888")
+        .header(header::AUTHORIZATION, format!("token {TOKEN}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ACCEPT, "application/json, text/event-stream")
+        .header("mcp-protocol-version", "2025-06-18");
+    if let Some(s) = session {
+        req = req.header("mcp-session-id", s);
+    }
+    let resp = app
+        .clone()
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let sid = resp
+        .headers()
+        .get("mcp-session-id")
+        .map(|v| v.to_str().unwrap().to_string());
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 22)
+        .await
+        .unwrap();
+    // Server-sent events: the response is the last `data:` message.
+    let body = String::from_utf8_lossy(&bytes);
+    let v = body
+        .lines()
+        .rev()
+        .filter_map(|l| l.strip_prefix("data: "))
+        .find_map(|d| serde_json::from_str::<Value>(d).ok())
+        .unwrap_or(Value::String(body.into()));
+    (status, sid, v)
+}
+
+fn mcp_text(v: &Value) -> String {
+    assert!(v.get("error").is_none(), "{v}");
+    v["result"]["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test]
+async fn mcp_journals_into_a_notebook() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    let app_off = build_router(st.clone());
+    let (s, _, _) = mcp_call(&app_off, None, json!({})).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "/mcp is off by default");
+    st.mcp = Some(Arc::new(ganymede_server::mcp::McpState::new(
+        ganymede_server::mcp::McpOptions {
+            read_only: false,
+            no_execute: false,
+            images: false,
+            outputs_dir: Some(dir.path().join("spill")),
+        },
+    )));
+    let app = build_router(st);
+
+    // The token is required.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    let (s, sid, v) = mcp_call(
+        &app,
+        None,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "test-agent", "version": "1"}}}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let sid = sid.expect("session id");
+    assert!(v["result"]["capabilities"]["tools"].is_object(), "{v}");
+    let (s, _, _) = mcp_call(
+        &app,
+        Some(&sid),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED);
+
+    let mut n = 1;
+    let mut tool = |name: &'static str, args: Value| {
+        n += 1;
+        let (app, sid) = (app.clone(), sid.clone());
+        async move {
+            let (s, _, v) = mcp_call(
+                &app,
+                Some(&sid),
+                json!({"jsonrpc": "2.0", "id": n, "method": "tools/call",
+                       "params": {"name": name, "arguments": args}}),
+            )
+            .await;
+            assert_eq!(s, StatusCode::OK, "{v}");
+            v
+        }
+    };
+    let (_, _, v) = mcp_call(
+        &app,
+        Some(&sid),
+        json!({"jsonrpc": "2.0", "id": 100, "method": "tools/list"}),
+    )
+    .await;
+    let names: Vec<&str> = v["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    for t in ["notebook_open", "cell_run", "cell_add", "notebook_read"] {
+        assert!(names.contains(&t), "{names:?}");
+    }
+
+    let v = tool(
+        "notebook_open",
+        json!({"path": "journal.ipynb", "title": "Exploring"}),
+    )
+    .await;
+    let out = mcp_text(&v);
+    assert!(
+        out.starts_with("Created journal.ipynb (server root ") && out.contains(" on kernel fake"),
+        "{out}"
+    );
+    assert!(out.contains("# Exploring"), "{out}");
+
+    let v = tool("cell_add", json!({"source": "Looking at the data."})).await;
+    mcp_text(&v);
+    let v = tool("cell_run", json!({"source": "hello"})).await;
+    assert!(mcp_text(&v).contains("hello"), "{v}");
+    let v = tool("cell_run", json!({"source": "raise"})).await;
+    let out = mcp_text(&v);
+    assert!(out.contains("FakeError: raised"), "{out}");
+    assert!(!out.contains('\u{1b}'), "ANSI is stripped: {out:?}");
+    let v = tool("cell_run", json!({"source": "scratch", "record": false})).await;
+    mcp_text(&v);
+
+    let v = tool("notebook_read", json!({})).await;
+    let read = mcp_text(&v);
+    assert!(read.contains("Looking at the data."), "{read}");
+    assert!(
+        !read.contains("scratch"),
+        "scratch runs leave nothing: {read}"
+    );
+
+    // The room saves to disk: title, note, two recorded runs with
+    // provenance and outputs.
+    let file = dir.path().join("journal.ipynb");
+    let nb = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(s) = std::fs::read_to_string(&file) {
+                let nb: Value = serde_json::from_str(&s).unwrap();
+                if nb["cells"].as_array().map(Vec::len) == Some(4)
+                    && nb["cells"][3]["outputs"].as_array().map(Vec::len) == Some(1)
+                {
+                    return nb;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("journal saved");
+    let cells = nb["cells"].as_array().unwrap();
+    assert_eq!(cells[1]["cell_type"], "markdown");
+    assert_eq!(cells[2]["source"], json!(["hello"]));
+    assert!(cells[2]["outputs"].to_string().contains("hello"));
+    assert_eq!(
+        cells[2]["metadata"]["ganymede"]["agent"]["by"],
+        "test-agent"
+    );
+    assert_eq!(cells[3]["outputs"][0]["output_type"], "error");
+    assert_eq!(nb["metadata"]["kernelspec"]["name"], "fake");
+}
+
+/// An initialized MCP session on `app`.
+async fn mcp_connect(app: &axum::Router, client: &str) -> String {
+    let (s, sid, v) = mcp_call(
+        app,
+        None,
+        json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": client, "version": "1"}}}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let sid = sid.expect("session id");
+    mcp_call(
+        app,
+        Some(&sid),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )
+    .await;
+    sid
+}
+
+async fn mcp_tool(app: &axum::Router, sid: &str, name: &str, args: Value) -> Value {
+    let (s, _, v) = mcp_call(
+        app,
+        Some(sid),
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+               "params": {"name": name, "arguments": args}}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    v
+}
+
+fn mcp_app(dir: &std::path::Path) -> axum::Router {
+    let mut st = state(dir);
+    st.mcp = Some(Arc::new(ganymede_server::mcp::McpState::new(
+        ganymede_server::mcp::McpOptions {
+            read_only: false,
+            no_execute: false,
+            images: false,
+            outputs_dir: Some(dir.join("spill")),
+        },
+    )));
+    build_router(st)
+}
+
+/// nbformat 4.4 notebooks keep no cell ids on disk, but the tools address
+/// cells by the ids the document gives them.
+#[tokio::test]
+async fn mcp_works_on_notebooks_without_cell_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let nb = json!({"cells": [
+        {"cell_type": "markdown", "metadata": {}, "source": "old notes"},
+        {"cell_type": "code", "execution_count": null, "metadata": {}, "outputs": [], "source": "first"}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 4});
+    std::fs::write(dir.path().join("old.ipynb"), nb.to_string()).unwrap();
+    let app = mcp_app(dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+
+    mcp_text(&mcp_tool(&app, &sid, "notebook_open", json!({"path": "old.ipynb"})).await);
+    let read = mcp_text(&mcp_tool(&app, &sid, "notebook_read", json!({})).await);
+    assert!(!read.contains("null"), "every cell has an id: {read}");
+    let out = mcp_text(&mcp_tool(&app, &sid, "cell_run", json!({"source": "hello"})).await);
+    assert!(out.contains("hello"), "the recorded cell ran: {out}");
+    let out = mcp_text(&mcp_tool(&app, &sid, "notebook_run_all", json!({"restart": false})).await);
+    assert!(out.contains("first"), "{out}");
+    // Saved as 4.4: still no ids on disk.
+    let file = dir.path().join("old.ipynb");
+    let saved = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+            if v["cells"].as_array().map(Vec::len) == Some(3)
+                && v["cells"][1]["execution_count"].is_number()
+            {
+                return v;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("saved");
+    assert_eq!(saved["nbformat_minor"], 4);
+    assert!(saved["cells"][2].get("id").is_none());
+    assert!(saved["cells"][2]["outputs"].to_string().contains("hello"));
+}
+
+/// Cell ids a 4.4 notebook's room made up stay valid while the connection
+/// lasts, though the room would otherwise retire and reload with new ones.
+#[tokio::test]
+async fn mcp_cell_ids_outlive_an_idle_room() {
+    let dir = tempfile::tempdir().unwrap();
+    let nb = json!({"cells": [
+        {"cell_type": "code", "execution_count": null, "metadata": {}, "outputs": [], "source": "first"}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 4});
+    std::fs::write(dir.path().join("old.ipynb"), nb.to_string()).unwrap();
+    let mut st = state(dir.path());
+    st.collab = Arc::new(
+        ganymede_server::collab::Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            dir.path().canonicalize().ok(),
+        )
+        .with_cleanup_delay(Duration::from_millis(100)),
+    );
+    st.mcp = Some(Arc::new(ganymede_server::mcp::McpState::new(
+        ganymede_server::mcp::McpOptions {
+            read_only: true,
+            no_execute: false,
+            images: false,
+            outputs_dir: None,
+        },
+    )));
+    let app = build_router(st);
+    let sid = mcp_connect(&app, "agent").await;
+    let v = mcp_tool(&app, &sid, "notebook_read", json!({"path": "old.ipynb"})).await;
+    let read = mcp_text(&v);
+    // Several cleanup delays: an unheld room would have retired.
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let again =
+        mcp_text(&mcp_tool(&app, &sid, "notebook_read", json!({"path": "old.ipynb"})).await);
+    assert_eq!(read, again, "same ids after the room sat idle");
+
+    // A room that stopped (its file wasn't a notebook yet) is held again
+    // once it opens.
+    let late = dir.path().join("late.ipynb");
+    std::fs::write(&late, "not yet").unwrap();
+    let v = mcp_tool(&app, &sid, "notebook_read", json!({"path": "late.ipynb"})).await;
+    assert!(
+        v.get("error").is_some() || v["result"]["isError"] == true,
+        "{v}"
+    );
+    std::fs::write(&late, nb.to_string()).unwrap();
+    let read =
+        mcp_text(&mcp_tool(&app, &sid, "notebook_read", json!({"path": "late.ipynb"})).await);
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let again =
+        mcp_text(&mcp_tool(&app, &sid, "notebook_read", json!({"path": "late.ipynb"})).await);
+    assert_eq!(read, again, "same ids after the room sat idle");
+}
+
+/// cell_move checks `after` before it touches the cell, and moves both
+/// ways; resource URIs name the same room as the tools' paths.
+#[tokio::test]
+async fn mcp_cell_move_and_resource_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let cells: Vec<Value> = ["a", "b", "c"]
+        .iter()
+        .map(|s| {
+            json!({"cell_type": "code", "id": s, "execution_count": null,
+            "metadata": {}, "outputs": [], "source": format!("src_{s}")})
+        })
+        .collect();
+    let nb = json!({"cells": cells, "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.path().join("m.ipynb"), nb.to_string()).unwrap();
+    let app = mcp_app(dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    let order = |r: String| {
+        let mut at: Vec<(usize, char)> = ['a', 'b', 'c']
+            .iter()
+            .map(|c| (r.find(&format!("src_{c}")).unwrap(), *c))
+            .collect();
+        at.sort();
+        at.into_iter().map(|(_, c)| c).collect::<String>()
+    };
+    let read = |app: axum::Router, sid: String| async move {
+        mcp_text(&mcp_tool(&app, &sid, "notebook_read", json!({"path": "m.ipynb"})).await)
+    };
+    let mv = |after: Value| {
+        let (app, sid) = (app.clone(), sid.clone());
+        async move {
+            mcp_tool(
+                &app,
+                &sid,
+                "cell_move",
+                json!({"path": "m.ipynb", "id": "b", "after": after}),
+            )
+            .await
+        }
+    };
+    assert_eq!(order(read(app.clone(), sid.clone()).await), "abc");
+    let out = mcp_text(&mv(json!("b")).await);
+    assert!(out.contains("already there"), "{out}");
+    assert_eq!(
+        order(read(app.clone(), sid.clone()).await),
+        "abc",
+        "after itself: no-op"
+    );
+    let v = mv(json!("nope")).await;
+    assert!(v.to_string().contains("no cell nope"), "{v}");
+    assert_eq!(order(read(app.clone(), sid.clone()).await), "abc");
+    mcp_text(&mv(json!("c")).await);
+    assert_eq!(order(read(app.clone(), sid.clone()).await), "acb", "down");
+    mcp_text(&mv(json!("a")).await);
+    assert_eq!(order(read(app.clone(), sid.clone()).await), "abc", "up");
+    mcp_text(&mv(Value::Null).await);
+    assert_eq!(order(read(app.clone(), sid.clone()).await), "bac", "top");
+
+    let (_, _, res) = mcp_call(
+        &app,
+        Some(&sid),
+        json!({"jsonrpc": "2.0", "id": 90, "method": "resources/read",
+        "params": {"uri": "notebook://./m.ipynb"}}),
+    )
+    .await;
+    let text = res["result"]["contents"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(order(text), "bac", "{res}");
+    let (_, _, res) = mcp_call(
+        &app,
+        Some(&sid),
+        json!({"jsonrpc": "2.0", "id": 91, "method": "resources/read",
+        "params": {"uri": "notebook://notes.txt"}}),
+    )
+    .await;
+    assert!(res.get("error").is_some(), "{res}");
+}
+
+/// Each connection has its own current notebook, and kernel_control
+/// answers what it did.
+#[tokio::test]
+async fn mcp_connections_and_kernel_control() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = mcp_app(dir.path());
+    let a = mcp_connect(&app, "a").await;
+    let b = mcp_connect(&app, "b").await;
+    mcp_text(&mcp_tool(&app, &a, "notebook_open", json!({"path": "a.ipynb"})).await);
+    mcp_text(&mcp_tool(&app, &b, "notebook_open", json!({"path": "b.ipynb"})).await);
+    mcp_text(&mcp_tool(&app, &a, "cell_add", json!({"source": "from a"})).await);
+    let read = mcp_text(&mcp_tool(&app, &a, "notebook_read", json!({})).await);
+    assert!(read.contains("from a"), "{read}");
+    let read = mcp_text(&mcp_tool(&app, &b, "notebook_read", json!({})).await);
+    assert!(!read.contains("from a"), "b's notebook is its own: {read}");
+
+    let out = mcp_text(&mcp_tool(&app, &a, "kernel_control", json!({"action": "interrupt"})).await);
+    assert!(out.starts_with("Interrupted"), "{out}");
+    let out = mcp_text(&mcp_tool(&app, &a, "kernel_control", json!({"action": "shutdown"})).await);
+    assert!(out.starts_with("Shut down"), "{out}");
+    // Nothing runs now: interrupt and shutdown don't start a kernel.
+    let v = mcp_tool(&app, &a, "kernel_control", json!({"action": "interrupt"})).await;
+    assert!(v.to_string().contains("no kernel is running"), "{v}");
+    let (_, kernels) = call(&app, "GET", "/api/kernels", None, Some(TOKEN)).await;
+    assert_eq!(
+        kernels.as_array().unwrap().len(),
+        1,
+        "only b's kernel: {kernels}"
+    );
+    let out = mcp_text(&mcp_tool(&app, &a, "kernel_control", json!({"action": "restart"})).await);
+    assert!(out.starts_with("Restarted"), "{out}");
 }

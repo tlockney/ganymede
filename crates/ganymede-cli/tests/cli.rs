@@ -737,3 +737,299 @@ fn lab_list_clean_uninstall_and_extension_toggles() {
     assert!(!d.join("lab").exists() && !d.join("labextensions").exists());
     assert_eq!(json(&["lab", "list", "--json"]), serde_json::json!([]));
 }
+
+/// `ganymede mcp` on stdio: newline-delimited JSON-RPC in, answers out.
+struct McpClient {
+    child: std::process::Child,
+    stdin: Option<std::process::ChildStdin>,
+    lines: std::io::Lines<std::io::BufReader<std::process::ChildStdout>>,
+    next: u64,
+}
+
+impl McpClient {
+    fn start(mut cmd: std::process::Command) -> Self {
+        let mut child = cmd
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take();
+        let lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        let mut c = McpClient {
+            child,
+            stdin,
+            lines,
+            next: 0,
+        };
+        let v = c.request(
+            "initialize",
+            serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {},
+                               "clientInfo": {"name": "cli-test", "version": "1"}}),
+        );
+        assert_eq!(v["result"]["serverInfo"]["name"], "ganymede", "{v}");
+        c.send(serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+        c
+    }
+
+    fn send(&mut self, v: serde_json::Value) {
+        let stdin = self.stdin.as_mut().unwrap();
+        writeln!(stdin, "{v}").unwrap();
+        stdin.flush().unwrap();
+    }
+
+    fn request(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        self.next += 1;
+        let id = self.next;
+        self.send(
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}),
+        );
+        loop {
+            let line = self.lines.next().expect("an answer").unwrap();
+            let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if v["id"] == id {
+                return v;
+            }
+        }
+    }
+
+    /// A tool's text, failing on an error.
+    fn tool(&mut self, name: &str, args: serde_json::Value) -> String {
+        let v = self.request(
+            "tools/call",
+            serde_json::json!({"name": name, "arguments": args}),
+        );
+        assert!(
+            v.get("error").is_none() && v["result"]["isError"] != true,
+            "{v}"
+        );
+        v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// Closes stdin and waits for the command to stop.
+    fn finish(mut self) -> std::process::ExitStatus {
+        drop(self.stdin.take());
+        self.child.wait().unwrap()
+    }
+}
+
+#[test]
+fn mcp_on_stdio_with_its_own_server() {
+    let root = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let mut cmd = ganymede(&["mcp", "--no-execute", "--root-dir"]);
+    cmd.arg(root.path())
+        .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
+        .env("JUPYTER_CONFIG_DIR", state.path().join("config"))
+        .env("JUPYTER_DATA_DIR", state.path().join("data"));
+    let mut mcp = McpClient::start(cmd);
+    let out = mcp.tool(
+        "notebook_open",
+        serde_json::json!({"path": "notes/log.ipynb", "title": "Log"}),
+    );
+    assert!(out.starts_with("Created notes/log.ipynb"), "{out}");
+    mcp.tool("cell_add", serde_json::json!({"source": "First finding."}));
+    let v = mcp.request(
+        "tools/call",
+        serde_json::json!({"name": "cell_run", "arguments": {"source": "1"}}),
+    );
+    assert!(v.to_string().contains("execution is turned off"), "{v}");
+    // The edit is saved when stdin closes, though the save delay hasn't
+    // passed.
+    assert!(mcp.finish().success());
+    let nb: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.path().join("notes/log.ipynb")).unwrap())
+            .unwrap();
+    let sources: Vec<String> = nb["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| match &c["source"] {
+            serde_json::Value::Array(a) => a.iter().map(|s| s.as_str().unwrap()).collect(),
+            s => s.as_str().unwrap().to_string(),
+        })
+        .collect();
+    assert_eq!(sources, ["# Log", "First finding."]);
+}
+
+#[test]
+fn mcp_on_stdio_uses_a_running_server() {
+    let root = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("sub")).unwrap();
+    std::fs::write(
+        root.path().join("sub/a.ipynb"),
+        r##"{"cells":[{"cell_type":"markdown","id":"m1","metadata":{},"source":"from disk"}],"metadata":{},"nbformat":4,"nbformat_minor":5}"##,
+    )
+    .unwrap();
+    let env = |c: &mut std::process::Command| {
+        c.env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
+            .env("JUPYTER_CONFIG_DIR", state.path().join("config"))
+            .env("JUPYTER_DATA_DIR", state.path().join("data"));
+    };
+    let mut serve = ganymede(&[
+        "serve",
+        "--mcp",
+        "--port",
+        "0",
+        "--token",
+        "secret",
+        "--root-dir",
+    ]);
+    serve
+        .arg(root.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    env(&mut serve);
+    let mut server = serve.spawn().unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(server.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+
+    // Run from a directory under the server's root.
+    let mut cmd = ganymede(&["mcp"]);
+    cmd.current_dir(root.path().join("sub"));
+    env(&mut cmd);
+    let mut mcp = McpClient::start(cmd);
+    let out = mcp.tool("notebook_read", serde_json::json!({"path": "sub/a.ipynb"}));
+    assert!(out.contains("from disk"), "{out}");
+    let out = mcp.tool("notebooks_list", serde_json::json!({"dir": "sub"}));
+    assert!(out.contains("a.ipynb"), "{out}");
+    assert!(mcp.finish().success());
+    // No second server: `ganymede mcp` wrote no server info file.
+    let files = std::fs::read_dir(state.path().join("runtime"))
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".json")
+        })
+        .count();
+    assert_eq!(files, 1);
+    unsafe {
+        kill(server.id() as i32, 15);
+    }
+    let _ = server.wait();
+}
+
+/// When the server has ended the session (here: it restarted), the
+/// proxy starts a new one and the call goes through.
+#[test]
+fn mcp_on_stdio_starts_a_new_session_when_the_server_ends_one() {
+    let root = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let start = || {
+        let mut serve = ganymede(&["serve", "--mcp", "--token", "secret", "--port"]);
+        serve
+            .arg(port.to_string())
+            .arg("--root-dir")
+            .arg(root.path())
+            .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
+            .env("JUPYTER_CONFIG_DIR", state.path().join("config"))
+            .env("JUPYTER_DATA_DIR", state.path().join("data"))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut server = serve.spawn().unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(server.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        server
+    };
+    let stop = |mut server: std::process::Child| {
+        unsafe {
+            kill(server.id() as i32, 15);
+        }
+        server.wait().unwrap();
+    };
+    let mut server = start();
+    let mut cmd = ganymede(&["mcp", "--token", "secret", "--server"]);
+    cmd.arg(format!("http://127.0.0.1:{port}/"));
+    let mut mcp = McpClient::start(cmd);
+    let out = mcp.tool("notebooks_list", serde_json::json!({}));
+    assert!(!out.contains("error"), "{out}");
+    stop(server);
+    server = start();
+    std::fs::write(
+        root.path().join("after.ipynb"),
+        r#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#,
+    )
+    .unwrap();
+    let out = mcp.tool("notebooks_list", serde_json::json!({}));
+    assert!(out.contains("after.ipynb"), "{out}");
+    assert!(mcp.finish().success());
+    stop(server);
+}
+
+/// Requests still running when stdin closes are answered, and
+/// SIGTERM saves open notebooks as stdin closing does.
+#[test]
+fn mcp_on_stdio_finishes_requests_and_saves_on_sigterm() {
+    let root = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let cmd = || {
+        let mut cmd = ganymede(&["mcp", "--no-execute", "--root-dir"]);
+        cmd.arg(root.path())
+            .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
+            .env("JUPYTER_CONFIG_DIR", state.path().join("config"))
+            .env("JUPYTER_DATA_DIR", state.path().join("data"));
+        cmd
+    };
+    let sources = |name: &str| -> Vec<String> {
+        let nb: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.path().join(name)).unwrap()).unwrap();
+        nb["cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| match &c["source"] {
+                serde_json::Value::Array(a) => a.iter().map(|s| s.as_str().unwrap()).collect(),
+                s => s.as_str().unwrap().to_string(),
+            })
+            .collect()
+    };
+
+    // Two notes sent without waiting, then EOF without reading.
+    let mut mcp = McpClient::start(cmd());
+    mcp.tool("notebook_open", serde_json::json!({"path": "a.ipynb"}));
+    for (i, src) in ["one", "two"].into_iter().enumerate() {
+        mcp.send(
+            serde_json::json!({"jsonrpc": "2.0", "id": 10 + i, "method": "tools/call",
+            "params": {"name": "cell_add", "arguments": {"source": src}}}),
+        );
+    }
+    drop(mcp.stdin.take());
+    let mut answered = Vec::new();
+    for line in mcp.lines.by_ref() {
+        let v: serde_json::Value = serde_json::from_str(&line.unwrap()).unwrap();
+        assert!(v.get("error").is_none(), "{v}");
+        answered.push(v["id"].as_u64().unwrap());
+    }
+    answered.sort();
+    assert_eq!(answered, [10, 11]);
+    assert!(mcp.child.wait().unwrap().success());
+    let mut got = sources("a.ipynb");
+    got.sort();
+    assert_eq!(got, ["one", "two"]);
+
+    // SIGTERM within the save delay.
+    let mut mcp = McpClient::start(cmd());
+    mcp.tool("notebook_open", serde_json::json!({"path": "b.ipynb"}));
+    mcp.tool("cell_add", serde_json::json!({"source": "kept"}));
+    unsafe {
+        kill(mcp.child.id() as i32, 15);
+    }
+    mcp.child.wait().unwrap();
+    assert_eq!(sources("b.ipynb"), ["kept"]);
+}

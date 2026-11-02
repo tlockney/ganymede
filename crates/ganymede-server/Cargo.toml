@@ -56,6 +56,7 @@ getrandom = "0.4"
 form_urlencoded = "1"
 mime_guess = "2"
 dirs.workspace = true
+rmcp = { version = "3.8", default-features = false, features = ["server", "macros", "transport-io", "transport-streamable-http-server", "schemars"] }
 
 # Watching notebooks' directories for changes made by other programs
 # (document rooms). Elsewhere, such as iOS, rooms poll.

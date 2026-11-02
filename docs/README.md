@@ -25,6 +25,8 @@ more installed kernelspec, not something the server needs.
   notebook with nb-cli.
 - [CLI and configuration](reference.md): every command, flag, config key
   and environment variable.
+- [Agents over MCP](mcp.md): notebook tools for Claude Code and other
+  MCP clients, with `ganymede mcp`.
 - [Architecture](architecture.md): how Ganymede compares to the Jupyter
   stack it replaces, and how its crates fit together.
 - [Roadmap](roadmap.md): what is done and what comes next.

@@ -94,6 +94,15 @@ pub struct Config {
     /// and any other field, passed to the frontend as it is. None by
     /// default; the routes answer 404 until one is configured.
     pub language_servers: std::collections::BTreeMap<String, ganymede_lsp::LanguageServerSpec>,
+    /// Serve the MCP server for agents at `/mcp` (streamable HTTP), behind
+    /// the token. Off by default.
+    pub mcp_enabled: bool,
+    /// `/mcp` reads notebooks only: no edits, no execution.
+    pub mcp_read_only: bool,
+    /// `/mcp` edits notebooks but runs no code.
+    pub mcp_no_execute: bool,
+    /// `/mcp` sends images in outputs to the model as image content.
+    pub mcp_images: bool,
 }
 
 impl Default for Config {
@@ -128,6 +137,10 @@ impl Default for Config {
             terminals_enabled: true,
             terminal_shell: vec![],
             language_servers: Default::default(),
+            mcp_enabled: false,
+            mcp_read_only: false,
+            mcp_no_execute: false,
+            mcp_images: false,
         }
     }
 }
