@@ -46,7 +46,8 @@ async fn shared_process_broadcasts_and_stops_with_last_client() {
     assert_eq!(st["sessions"]["echo"]["status"], "started");
     assert_eq!(st["sessions"]["echo"]["handler_count"], 2);
 
-    let msg = r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"x":"é"}}"#;
+    // A notification goes to every client, unchanged.
+    let msg = r#"{"jsonrpc":"2.0","method":"initialized","params":{"x":"é"}}"#;
     a.send(msg.into()).await;
     assert_eq!(next(&mut a).await.as_deref(), Some(msg));
     assert_eq!(next(&mut b).await.as_deref(), Some(msg));
@@ -214,6 +215,61 @@ async fn two_clients_on_one_document_apply_each_edit_once() {
         }
     }
     assert_eq!(closes, 1);
+}
+
+/// Answers each request with `{"id": <its id>, "result": <the request as
+/// it arrived>}` and echoes anything else. Perl, which both CI runners
+/// have, because `cat` can't answer.
+const ANSWERS: &str = r#"
+$| = 1; binmode STDIN; binmode STDOUT;
+while (1) {
+    my $len;
+    while (defined(my $l = <STDIN>)) {
+        $l =~ s/\r?\n$//;
+        last if $l eq '' && defined $len;
+        $len = $1 if $l =~ /^Content-Length:\s*(\d+)/i;
+    }
+    last unless defined $len;
+    read(STDIN, my $body, $len) == $len or last;
+    my $out = $body;
+    if ($body =~ /"method"/ && $body =~ /"id":(\d+|"[^"]*")/) {
+        $out = qq({"id":$1,"jsonrpc":"2.0","result":$body});
+    }
+    print "Content-Length: " . length($out) . "\r\n\r\n" . $out;
+}
+"#;
+
+/// Two tabs number their requests alike: each gets the answer to its own
+/// request, with its own id, and not the other's (#269).
+#[tokio::test]
+async fn two_clients_with_the_same_request_id_get_their_own_answers() {
+    let root = tempfile::tempdir().unwrap();
+    let m = manager(root.path(), &[("answers", &["perl", "-e", ANSWERS], false)]);
+    let mut a = m.connect("answers").unwrap();
+    let mut b = m.connect("answers").unwrap();
+    let hover = |line: u32| {
+        json!({"jsonrpc": "2.0", "id": 1, "method": "textDocument/hover",
+            "params": {"position": {"line": line, "character": 0}}})
+        .to_string()
+    };
+    a.send(hover(10)).await;
+    b.send(hover(20)).await;
+    let answer =
+        |m: Option<String>| serde_json::from_str::<serde_json::Value>(&m.unwrap()).unwrap();
+    let got_a = answer(next(&mut a).await);
+    let got_b = answer(next(&mut b).await);
+    assert_eq!(got_a["id"], 1);
+    assert_eq!(got_b["id"], 1);
+    assert_eq!(got_a["result"]["params"]["position"]["line"], 10);
+    assert_eq!(got_b["result"]["params"]["position"]["line"], 20);
+    // The server saw two different ids.
+    assert_ne!(got_a["result"]["id"], got_b["result"]["id"]);
+
+    // Neither got the other's answer: a notification is the next message.
+    let ping = r#"{"jsonrpc":"2.0","method":"ping"}"#;
+    a.send(ping.into()).await;
+    assert_eq!(next(&mut a).await.as_deref(), Some(ping));
+    assert_eq!(next(&mut b).await.as_deref(), Some(ping));
 }
 
 #[tokio::test]

@@ -289,6 +289,90 @@ fn reload_keeps_unchanged_cells_and_edits_changed_source() {
     );
 }
 
+/// The file changed on disk while a client's edit was unsaved: both
+/// changes end up in the room, which stays dirty so the host saves the
+/// merge.
+#[test]
+fn a_disk_change_merges_with_unsaved_edits() {
+    let nb = Notebook::from_str(&fixture("code_outputs.ipynb")).unwrap();
+    assert!(nb.cells.len() >= 2);
+    let mut room = Room::notebook_room(&nb, "x.ipynb");
+    let client = Doc::new();
+    sync(&mut room, 1, &client);
+
+    // The client edits the first cell.
+    let before = client.transact().state_vector();
+    {
+        let roots = Roots::get(&client);
+        let mut txn = client.transact_mut();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+            panic!()
+        };
+        let Some(Out::YText(src)) = cell.get(&txn, "source") else {
+            panic!()
+        };
+        src.insert(&mut txn, 0, "# room\n");
+    }
+    let update = client.transact().encode_state_as_update_v1(&before);
+    room.receive(1, &Message::Sync(SyncMessage::Update(update)).encode_v1())
+        .unwrap();
+    assert!(room.is_dirty());
+
+    // Meanwhile another program changes the second cell on disk.
+    let mut disk = nb.clone();
+    let ganymede_nbformat::Cell::Code(c) = &mut disk.cells[1] else {
+        panic!()
+    };
+    *c.source.as_mut_string() = format!("# disk\n{}", c.source.as_str());
+    let (fx, conflicts) = room.merge_disk(&nb, &disk, "h2");
+    assert!(conflicts.is_empty(), "{conflicts:?}");
+    assert!(fx.changed);
+    assert!(room.is_dirty(), "the merge still needs saving");
+    for (_, frame) in &fx.send {
+        apply_frame(&client, frame);
+    }
+    let merged = room.notebook().unwrap().unwrap();
+    assert!(merged.cells[0]
+        .source()
+        .unwrap()
+        .as_str()
+        .starts_with("# room\n"));
+    assert!(merged.cells[1]
+        .source()
+        .unwrap()
+        .as_str()
+        .starts_with("# disk\n"));
+    let roots = Roots::get(&client);
+    let seen = schema::get(&client.transact(), &roots).unwrap();
+    assert_eq!(
+        schema::through_yjs(&schema::notebook_value(&seen)),
+        schema::through_yjs(&schema::notebook_value(&merged))
+    );
+
+    // Both sides change the same cell: the disk wins it.
+    let mut disk2 = merged.clone();
+    let ganymede_nbformat::Cell::Code(c) = &mut disk2.cells[0] else {
+        panic!()
+    };
+    *c.source.as_mut_string() = "disk wins".into();
+    let (_, conflicts) = room.merge_disk(&disk, &disk2, "h3");
+    assert_eq!(conflicts.len(), 1, "{conflicts:?}");
+    assert!(conflicts[0].starts_with("cell "));
+    let after = room.notebook().unwrap().unwrap();
+    assert_eq!(after.cells[0].source().unwrap().as_str(), "disk wins");
+
+    // A clean room just reloads.
+    let generation = room.generation();
+    room.saved(generation, "h4");
+    let (_, conflicts) = room.merge_disk(&disk2, &nb, "h5");
+    assert!(conflicts.is_empty());
+    assert!(!room.is_dirty());
+    assert_eq!(
+        room.notebook().unwrap().unwrap().to_file_string(),
+        nb.to_file_string()
+    );
+}
+
 #[test]
 fn set_text_makes_a_minimal_edit() {
     let doc = Doc::new();
@@ -349,4 +433,72 @@ fn awareness_is_relayed_and_cleared_on_disconnect() {
     // A transient room has no content to save.
     assert!(room.notebook().is_none());
     let _ = StateVector::default();
+}
+
+/// Outputs written by the server reach a client with small updates: a
+/// growing stream is appended to, kept outputs are not resent.
+#[test]
+fn set_outputs_appends_to_a_growing_stream() {
+    let nb = Notebook::from_str(&fixture("code_outputs.ipynb")).unwrap();
+    let mut room = Room::notebook_room(&nb, "x.ipynb");
+    let client = client_of(&room);
+    let id = nb.cells[1].id().unwrap().to_string();
+    let stream =
+        |text: &str| serde_json::json!({"name": "stdout", "output_type": "stream", "text": text});
+
+    let (_, fx) = room.edit(|txn, roots| {
+        let cell = schema::find_cell(txn, roots, &id).unwrap();
+        schema::set_outputs(txn, &cell, vec![stream("one\n")]);
+    });
+    assert!(fx.changed);
+    for (_, f) in &fx.send {
+        apply_frame(&client, f);
+    }
+    let big = "x".repeat(2000);
+    let (_, fx) = room.edit(|txn, roots| {
+        let cell = schema::find_cell(txn, roots, &id).unwrap();
+        schema::set_outputs(txn, &cell, vec![stream(&format!("one\n{big}"))]);
+    });
+    let total: usize = fx.send.iter().map(|(_, f)| f.len()).sum();
+    assert!(total < big.len() + 200, "sent {total} bytes");
+    for (_, f) in &fx.send {
+        apply_frame(&client, f);
+    }
+    let result = serde_json::json!({"data": {"text/plain": "2"}, "execution_count": 1, "metadata": {}, "output_type": "execute_result"});
+    let (_, fx) = room.edit(|txn, roots| {
+        let cell = schema::find_cell(txn, roots, &id).unwrap();
+        schema::set_outputs(
+            txn,
+            &cell,
+            vec![stream(&format!("one\n{big}")), result.clone()],
+        );
+    });
+    let total: usize = fx.send.iter().map(|(_, f)| f.len()).sum();
+    assert!(total < 500, "sent {total} bytes");
+    for (_, f) in &fx.send {
+        apply_frame(&client, f);
+    }
+    let roots = Roots::get(&client);
+    let seen = schema::get(&client.transact(), &roots).unwrap();
+    let ganymede_nbformat::Cell::Code(c) = &seen.cells[1] else {
+        panic!()
+    };
+    assert_eq!(c.outputs.len(), 2);
+    let v = serde_json::to_value(&c.outputs).unwrap();
+    assert_eq!(v[0]["text"], format!("one\n{big}"));
+    assert_eq!(v[1]["data"]["text/plain"], "2");
+
+    // Cleared.
+    let (_, fx) = room.edit(|txn, roots| {
+        let cell = schema::find_cell(txn, roots, &id).unwrap();
+        schema::set_outputs(txn, &cell, vec![]);
+    });
+    for (_, f) in &fx.send {
+        apply_frame(&client, f);
+    }
+    let seen = schema::get(&client.transact(), &roots).unwrap();
+    let ganymede_nbformat::Cell::Code(c) = &seen.cells[1] else {
+        panic!()
+    };
+    assert!(c.outputs.is_empty());
 }

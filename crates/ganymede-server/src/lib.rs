@@ -10,10 +10,12 @@
 pub mod auth;
 pub mod collab;
 pub mod config;
+pub mod execute;
 pub mod lab;
 pub mod routes;
 pub mod serve;
 pub mod server_info;
+pub mod watch;
 pub mod ws;
 
 use ganymede_api::{KernelManager, SessionManager};

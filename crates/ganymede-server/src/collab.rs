@@ -11,30 +11,38 @@
 //!   `save` message). A room id without two colons, such as
 //!   `JupyterLab:globalAwareness`, is a transient room: awareness only.
 //!
-//! Each room is a task that owns a [`Room`] and the file: it loads the
-//! notebook through [`Contents`], autosaves a second after the last edit
-//! with an `If-Match` on the hash it last saw, and polls the file every
-//! second, reloading the room when the file changed and the change is not
-//! its own save. A save refused because the file changed reloads too, as
-//! `jupyter-collaboration` does: the disk wins. A room with no clients is
-//! saved and dropped after a minute.
+//! Each room is a task that owns a [`Room`] and the file (#141): it loads
+//! the notebook through [`Contents`] and autosaves a second after the last
+//! edit, with an `If-Match` on the hash it last read or wrote, so it never
+//! overwrites a file that changed since. It learns of changes made by other
+//! programs from a [`Watcher`] on the file's directory, debounced by half a
+//! second, and polls every ten seconds besides; where there are no file
+//! events, it polls every second. A change whose hash is the room's own
+//! last save is ignored. Any other change is merged into the room (see
+//! [`ganymede_documents::merge`]): a clean room just reloads; a room with
+//! unsaved edits keeps them, takes the disk's changes to other cells, and
+//! saves the merge. Where both changed the same cell, the disk wins that
+//! cell. A room with no clients is saved and dropped after a minute.
 //!
-//! File ids are made per server run and kept in memory; they don't follow
-//! renames yet.
+//! File ids come from [`FileIds`]: kept in a database when the server has
+//! one, so they survive restarts, and moved by renames through the
+//! contents API, which also move open rooms.
 
 use crate::routes::{origin_allowed, HttpError, LenientJson};
+use crate::watch::{Watch, Watcher};
 use crate::AppState;
 use axum::extract::ws::{CloseFrame, Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use ganymede_contents::{ContentType, Contents, GetOptions, IfMatch, SaveRequest};
+use ganymede_contents::{ContentType, Contents, FileIds, GetOptions, IfMatch, SaveRequest};
 use ganymede_documents::{ConnId, Room, SaveStatus, Target};
 use ganymede_nbformat::Notebook;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -42,8 +50,12 @@ use tokio::sync::mpsc;
 
 /// How long after the last edit a room saves.
 const SAVE_DELAY: Duration = Duration::from_secs(1);
-/// How often a room checks its file for changes made elsewhere.
+/// How often a room checks its file for changes made elsewhere, without
+/// and with file events.
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+const WATCHED_POLL_INTERVAL: Duration = Duration::from_secs(10);
+/// How long file events must settle before a room looks at the file.
+const DEBOUNCE: Duration = Duration::from_millis(500);
 /// How long a room with no clients is kept, in case one reconnects.
 const CLEANUP_DELAY: Duration = Duration::from_secs(60);
 
@@ -52,35 +64,69 @@ pub struct Collab {
     /// Changes every server run; clients holding another one are asked to
     /// reload, as `jupyter-collaboration` does after a restart.
     session_id: String,
-    ids: Mutex<FileIds>,
+    ids: FileIds,
+    /// The contents root on disk, for watching files; `None` when the
+    /// contents are not a local directory, and rooms poll.
+    root: Option<PathBuf>,
+    watcher: Arc<Watcher>,
     rooms: Mutex<HashMap<String, mpsc::UnboundedSender<Cmd>>>,
     next_conn: AtomicU64,
+    /// Request ids the execute endpoint has queued.
+    pub(crate) requests: crate::execute::Requests,
 }
 
 impl Default for Collab {
     fn default() -> Self {
-        Collab {
-            session_id: uuid::Uuid::new_v4().to_string(),
-            ids: Mutex::default(),
-            rooms: Mutex::default(),
-            next_conn: AtomicU64::new(1),
-        }
+        Collab::new(FileIds::in_memory(), None)
     }
 }
 
-#[derive(Default)]
-struct FileIds {
-    by_path: HashMap<String, String>,
-    by_id: HashMap<String, String>,
+impl Collab {
+    /// Rooms whose file ids come from `ids`, for contents rooted at `root`
+    /// on disk (watched for changes) when given.
+    pub fn new(ids: FileIds, root: Option<PathBuf>) -> Self {
+        Collab {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            ids,
+            root,
+            watcher: Watcher::new(),
+            rooms: Mutex::default(),
+            next_conn: AtomicU64::new(1),
+            requests: Default::default(),
+        }
+    }
+
+    /// `old` (a file or directory) was renamed to `new` through the
+    /// contents API: ids follow, and open rooms take the new path.
+    pub fn moved(&self, old: &str, new: &str) {
+        self.ids.moved(old, new);
+        for room in self.rooms.lock().expect("rooms").values() {
+            let _ = room.send(Cmd::Moved(old.to_string(), new.to_string()));
+        }
+    }
+
+    /// `path` was deleted through the contents API.
+    pub fn removed(&self, path: &str) {
+        self.ids.removed(path);
+    }
+
+    fn watch(&self, path: &str) -> Option<(Watch, mpsc::UnboundedReceiver<()>)> {
+        let file = self.root.as_ref()?.join(path);
+        self.watcher.watch(&file)
+    }
 }
 
-enum Cmd {
+pub(crate) enum Cmd {
     Join(ConnId, mpsc::UnboundedSender<Out>),
     Frame(ConnId, Vec<u8>),
     Leave(ConnId),
+    /// A rename through the contents API: old and new path.
+    Moved(String, String),
+    /// Server-side execution; see [`crate::execute`].
+    Exec(crate::execute::RoomCmd),
 }
 
-enum Out {
+pub(crate) enum Out {
     Frame(Vec<u8>),
     Close(u16, String),
 }
@@ -106,18 +152,7 @@ pub async fn session(
             404 => HttpError(404, format!("File {path:?} does not exist")),
             _ => HttpError::from(e),
         })?;
-    let (id, new) = {
-        let mut ids = state.collab.ids.lock().expect("file ids");
-        match ids.by_path.get(&path) {
-            Some(id) => (id.clone(), false),
-            None => {
-                let id = uuid::Uuid::new_v4().to_string();
-                ids.by_path.insert(path.clone(), id.clone());
-                ids.by_id.insert(id.clone(), path.clone());
-                (id, true)
-            }
-        }
-    };
+    let (id, new) = state.collab.ids.index(&path);
     let status = if new {
         StatusCode::CREATED
     } else {
@@ -133,6 +168,70 @@ pub async fn session(
         })),
     )
         .into_response())
+}
+
+#[derive(Deserialize)]
+pub struct FileIdQuery {
+    path: Option<String>,
+    id: Option<String>,
+}
+
+/// `POST /api/fileid/index?path=`, `jupyter-server-documents`' way to get
+/// a file's id (and make one): `{"id", "path"}`. nb-cli takes a server
+/// that answers it for one that writes kernel outputs into rooms, and
+/// runs cells through `POST /api/kernels/{id}/execute`.
+pub async fn fileid_index(
+    State(state): State<AppState>,
+    Query(q): Query<FileIdQuery>,
+) -> Result<Json<Value>, HttpError> {
+    let path = q.path.ok_or_else(|| {
+        HttpError(
+            400,
+            "'path' parameter was not provided in the request.".into(),
+        )
+    })?;
+    let path = ganymede_contents::normalize_api_path(&path);
+    state.contents.get(&path, GetOptions::default()).await?;
+    let (id, _) = state.collab.ids.index(&path);
+    Ok(Json(json!({"id": id, "path": path})))
+}
+
+/// `GET /api/fileid/id?path=`, as `jupyter_server_fileid`: the id of a
+/// path that has one, or 404.
+pub async fn fileid_id(
+    State(state): State<AppState>,
+    Query(q): Query<FileIdQuery>,
+) -> Result<Json<Value>, HttpError> {
+    let path = q.path.ok_or_else(|| {
+        HttpError(
+            400,
+            "'path' parameter was not provided in the request.".into(),
+        )
+    })?;
+    let path = ganymede_contents::normalize_api_path(&path);
+    let id =
+        state.collab.ids.get(&path).ok_or_else(|| {
+            HttpError(404, format!("The ID for file, {path}, could not be found."))
+        })?;
+    Ok(Json(json!({"id": id, "path": path})))
+}
+
+/// `GET /api/fileid/path?id=`, as `jupyter_server_fileid`.
+pub async fn fileid_path(
+    State(state): State<AppState>,
+    Query(q): Query<FileIdQuery>,
+) -> Result<Json<Value>, HttpError> {
+    let id = q.id.ok_or_else(|| {
+        HttpError(
+            400,
+            "'id' parameter was not provided in the request.".into(),
+        )
+    })?;
+    let path =
+        state.collab.ids.path(&id).ok_or_else(|| {
+            HttpError(404, format!("The path for file, {id}, could not be found."))
+        })?;
+    Ok(Json(json!({"id": id, "path": path})))
 }
 
 #[derive(Deserialize)]
@@ -176,13 +275,7 @@ async fn serve_socket(
             close(&mut socket, 1003, reason.to_string()).await;
             return;
         }
-        let path = collab
-            .ids
-            .lock()
-            .expect("file ids")
-            .by_id
-            .get(file_id)
-            .cloned();
+        let path = collab.ids.path(file_id);
         let Some(path) = path else {
             close(&mut socket, 4404, format!("Unknown file id {file_id}")).await;
             return;
@@ -206,20 +299,7 @@ async fn serve_socket(
     let (out_tx, mut out_rx) = mpsc::unbounded_channel();
     let room = {
         let mut rooms = collab.rooms.lock().expect("rooms");
-        let tx = rooms
-            .entry(room_id.clone())
-            .or_insert_with(|| {
-                let (tx, rx) = mpsc::unbounded_channel();
-                tokio::spawn(run_room(
-                    collab.clone(),
-                    state.contents.clone(),
-                    room_id.clone(),
-                    doc.clone(),
-                    rx,
-                ));
-                tx
-            })
-            .clone();
+        let tx = open_room(&collab, &mut rooms, &state.contents, &room_id, doc);
         let _ = tx.send(Cmd::Join(conn, out_tx));
         tx
     };
@@ -247,6 +327,56 @@ async fn serve_socket(
     let _ = room.send(Cmd::Leave(conn));
 }
 
+/// The room's task, started if it isn't running. Call with `rooms` locked,
+/// and send to the room before unlocking, so it can't retire in between.
+fn open_room(
+    collab: &Arc<Collab>,
+    rooms: &mut HashMap<String, mpsc::UnboundedSender<Cmd>>,
+    contents: &Arc<dyn Contents>,
+    room_id: &str,
+    path: Option<String>,
+) -> mpsc::UnboundedSender<Cmd> {
+    rooms
+        .entry(room_id.to_string())
+        .or_insert_with(|| {
+            let (tx, rx) = mpsc::unbounded_channel();
+            tokio::spawn(run_room(
+                collab.clone(),
+                contents.clone(),
+                room_id.to_string(),
+                path,
+                tx.clone(),
+                rx,
+            ));
+            tx
+        })
+        .clone()
+}
+
+/// Send `cmd` to a notebook room, opening it if needed: for callers other
+/// than a websocket client, such as the execute endpoint. `None` when the
+/// room id names no known notebook.
+pub(crate) fn send_to_notebook_room(
+    collab: &Arc<Collab>,
+    contents: &Arc<dyn Contents>,
+    room_id: &str,
+    cmd: Cmd,
+) -> Option<()> {
+    let parts: Vec<&str> = room_id.splitn(3, ':').collect();
+    let ["json", "notebook", file_id] = parts[..] else {
+        return None;
+    };
+    let mut rooms = collab.rooms.lock().expect("rooms");
+    let tx = match rooms.get(room_id) {
+        Some(tx) => tx.clone(),
+        None => {
+            let path = collab.ids.path(file_id)?;
+            open_room(collab, &mut rooms, contents, room_id, Some(path))
+        }
+    };
+    tx.send(cmd).ok()
+}
+
 async fn close(socket: &mut WebSocket, code: u16, reason: String) {
     let _ = socket
         .send(WsMessage::Close(Some(CloseFrame {
@@ -257,11 +387,13 @@ async fn close(socket: &mut WebSocket, code: u16, reason: String) {
 }
 
 /// A room's file: what was last read or written, to tell our own writes
-/// from someone else's.
+/// from someone else's and to merge theirs.
 struct Disk {
     path: String,
     hash: String,
     last_modified: String,
+    /// The notebook as last read or written: the base of a merge.
+    base: Notebook,
 }
 
 async fn load(contents: &dyn Contents, path: &str) -> Result<(Notebook, Disk), String> {
@@ -280,11 +412,12 @@ async fn load(contents: &dyn Contents, path: &str) -> Result<(Notebook, Disk), S
     let nb =
         Notebook::from_value(model.content.unwrap_or(Value::Null)).map_err(|e| e.to_string())?;
     Ok((
-        nb,
+        nb.clone(),
         Disk {
             path: path.to_string(),
             hash: model.hash.unwrap_or_default(),
             last_modified: model.last_modified,
+            base: nb,
         },
     ))
 }
@@ -294,6 +427,7 @@ async fn run_room(
     contents: Arc<dyn Contents>,
     room_id: String,
     path: Option<String>,
+    me: mpsc::UnboundedSender<Cmd>,
     mut rx: mpsc::UnboundedReceiver<Cmd>,
 ) {
     let mut clients: HashMap<ConnId, mpsc::UnboundedSender<Out>> = HashMap::new();
@@ -311,18 +445,29 @@ async fn run_room(
                 rooms.remove(&room_id);
                 rx.close();
                 while let Ok(cmd) = rx.try_recv() {
-                    if let Cmd::Join(_, out) = cmd {
-                        let _ = out.send(Out::Close(4500, format!("Error initializing: {path}.")));
+                    match cmd {
+                        Cmd::Join(_, out) => {
+                            let _ =
+                                out.send(Out::Close(4500, format!("Error initializing: {path}.")));
+                        }
+                        Cmd::Exec(cmd) => cmd.unavailable(&format!("cannot load {path}: {e}")),
+                        _ => {}
                     }
                 }
                 return;
             }
         },
     };
-    tracing::info!(room = %room_id, path = ?path, "room opened");
+    let mut watch = path.as_deref().and_then(|p| collab.watch(p));
+    tracing::info!(room = %room_id, path = ?path, watched = watch.is_some(), "room opened");
 
     let mut last_edit: Option<Instant> = None;
-    let mut empty_since: Option<Instant> = None;
+    // A room opened for execution, with no client, retires like one whose
+    // clients left.
+    let mut empty_since: Option<Instant> = Some(Instant::now());
+    let mut exec = crate::execute::RoomExec::new(me);
+    // When file events last arrived and are not yet looked at.
+    let mut disk_event: Option<Instant> = None;
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     let mut last_poll = Instant::now();
     loop {
@@ -360,21 +505,49 @@ async fn run_room(
                         dispatch(&clients, fx.send);
                         if clients.is_empty() { empty_since = Some(Instant::now()) }
                     }
+                    Cmd::Moved(old, new) => {
+                        let Some(d) = disk.as_mut() else { continue };
+                        let Some(rest) = moved_path(&d.path, &old, &new) else { continue };
+                        tracing::info!(room = %room_id, "{} moved to {rest}", d.path);
+                        d.path = rest;
+                        let fx = room.set_path(&d.path);
+                        dispatch(&clients, fx.send);
+                        drop(watch.take());
+                        watch = collab.watch(&d.path);
+                    }
+                    Cmd::Exec(cmd) => {
+                        let fx = exec.handle(&mut room, cmd);
+                        if fx.changed { last_edit = Some(Instant::now()) }
+                        dispatch(&clients, fx.send);
+                    }
                 }
+            }
+            Some(()) = changed(&mut watch) => {
+                disk_event = Some(Instant::now());
             }
             _ = tick.tick() => {
                 let Some(d) = disk.as_mut() else {
                     if clients.is_empty() && retire(&collab, &room_id, &mut rx) { break }
                     continue;
                 };
-                if last_edit.is_some_and(|t| t.elapsed() >= SAVE_DELAY) {
+                let poll_every = if watch.is_some() { WATCHED_POLL_INTERVAL } else { POLL_INTERVAL };
+                if disk_event.is_some_and(|t| t.elapsed() >= DEBOUNCE) {
+                    disk_event = None;
+                    last_poll = Instant::now();
+                    if reload(contents.as_ref(), &mut room, d, &clients).await {
+                        last_edit = Some(Instant::now());
+                    }
+                } else if last_poll.elapsed() >= poll_every && disk_event.is_none() {
+                    last_poll = Instant::now();
+                    if poll(contents.as_ref(), &mut room, d, &clients).await {
+                        last_edit = Some(Instant::now());
+                    }
+                }
+                if last_edit.is_some_and(|t| t.elapsed() >= SAVE_DELAY) && disk_event.is_none() {
                     save_room(contents.as_ref(), &mut room, d, &clients, false).await;
                     last_edit = None;
-                } else if last_edit.is_none() && last_poll.elapsed() >= POLL_INTERVAL {
-                    last_poll = Instant::now();
-                    poll(contents.as_ref(), &mut room, d, &clients).await;
                 }
-                if empty_since.is_some_and(|t| t.elapsed() >= CLEANUP_DELAY) {
+                if empty_since.is_some_and(|t| t.elapsed() >= CLEANUP_DELAY) && exec.is_idle() {
                     if room.is_dirty() {
                         save_room(contents.as_ref(), &mut room, d, &clients, false).await;
                     }
@@ -385,6 +558,23 @@ async fn run_room(
         }
     }
     tracing::info!(room = %room_id, "room closed");
+}
+
+/// The next file event, or never when the room isn't watched.
+async fn changed(watch: &mut Option<(Watch, mpsc::UnboundedReceiver<()>)>) -> Option<()> {
+    match watch {
+        Some((_, rx)) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// `path` after `old` was renamed to `new`, if it was `old` or under it.
+fn moved_path(path: &str, old: &str, new: &str) -> Option<String> {
+    if path == old {
+        return Some(new.to_string());
+    }
+    let rest = path.strip_prefix(old)?.strip_prefix('/')?;
+    Some(format!("{new}/{rest}"))
 }
 
 /// Remove the room from the map, unless a client is on its way in.
@@ -412,7 +602,8 @@ fn dispatch(clients: &HashMap<ConnId, mpsc::UnboundedSender<Out>>, send: Vec<(Ta
     }
 }
 
-/// Write the room to its file, if it changed or `force`.
+/// Write the room to its file, if it changed or `force`. When the file
+/// changed since it was last read, merge it in first and save the merge.
 async fn save_room(
     contents: &dyn Contents,
     room: &mut Room,
@@ -420,76 +611,96 @@ async fn save_room(
     clients: &HashMap<ConnId, mpsc::UnboundedSender<Out>>,
     force: bool,
 ) -> SaveStatus {
-    if !room.is_dirty() && !force {
-        return SaveStatus::Skipped;
+    // Each round either saves or merges a newer file; give up if another
+    // program keeps writing.
+    for _ in 0..3 {
+        if !room.is_dirty() && !force {
+            return SaveStatus::Skipped;
+        }
+        let generation = room.generation();
+        let nb = match room.notebook() {
+            Some(Ok(nb)) => nb,
+            Some(Err(e)) => {
+                tracing::warn!(path = %disk.path, "room content is not a notebook: {e}");
+                return SaveStatus::Failed;
+            }
+            None => return SaveStatus::Skipped,
+        };
+        let content = serde_json::to_value(&nb).expect("a notebook serializes");
+        let request =
+            SaveRequest::notebook(content).with_if_match(IfMatch::Hashes(vec![disk.hash.clone()]));
+        match contents.save(&disk.path, request).await {
+            Ok(model) => {
+                disk.hash = model.hash.unwrap_or_default();
+                disk.last_modified = model.last_modified;
+                disk.base = nb;
+                let fx = room.saved(generation, &disk.hash);
+                dispatch(clients, fx.send);
+                tracing::debug!(path = %disk.path, "room saved");
+                return SaveStatus::Success;
+            }
+            Err(e) if e.status() == 412 => {
+                tracing::info!(path = %disk.path, "file changed on disk; merging before saving");
+                reload(contents, room, disk, clients).await;
+            }
+            Err(e) => {
+                tracing::warn!(path = %disk.path, "room save failed: {e}");
+                return SaveStatus::Failed;
+            }
+        }
     }
-    let generation = room.generation();
-    let nb = match room.notebook() {
-        Some(Ok(nb)) => nb,
-        Some(Err(e)) => {
-            tracing::warn!(path = %disk.path, "room content is not a notebook: {e}");
-            return SaveStatus::Failed;
-        }
-        None => return SaveStatus::Skipped,
-    };
-    let content = serde_json::to_value(&nb).expect("a notebook serializes");
-    let request =
-        SaveRequest::notebook(content).with_if_match(IfMatch::Hashes(vec![disk.hash.clone()]));
-    match contents.save(&disk.path, request).await {
-        Ok(model) => {
-            disk.hash = model.hash.unwrap_or_default();
-            disk.last_modified = model.last_modified;
-            let fx = room.saved(generation, &disk.hash);
-            dispatch(clients, fx.send);
-            tracing::debug!(path = %disk.path, "room saved");
-            SaveStatus::Success
-        }
-        Err(e) if e.status() == 412 => {
-            tracing::info!(path = %disk.path, "file changed on disk; reloading the room instead of saving");
-            reload(contents, room, disk, clients).await;
-            SaveStatus::Failed
-        }
-        Err(e) => {
-            tracing::warn!(path = %disk.path, "room save failed: {e}");
-            SaveStatus::Failed
-        }
-    }
+    SaveStatus::Failed
 }
 
-/// Reload when the file changed and it was not our write.
+/// Merge the file in when it changed and it was not our write. True when
+/// the room needs saving after.
 async fn poll(
     contents: &dyn Contents,
     room: &mut Room,
     disk: &mut Disk,
     clients: &HashMap<ConnId, mpsc::UnboundedSender<Out>>,
-) {
+) -> bool {
     let Ok(model) = contents.get(&disk.path, GetOptions::default()).await else {
-        return; // gone or unreadable: keep the room as it is
+        return false; // gone or unreadable: keep the room as it is
     };
     if model.last_modified == disk.last_modified {
-        return;
+        return false;
     }
-    reload(contents, room, disk, clients).await;
+    reload(contents, room, disk, clients).await
 }
 
+/// Read the file and merge it into the room, unless it is what we last
+/// read or wrote. True when the room holds a merge that needs saving.
 async fn reload(
     contents: &dyn Contents,
     room: &mut Room,
     disk: &mut Disk,
     clients: &HashMap<ConnId, mpsc::UnboundedSender<Out>>,
-) {
+) -> bool {
     match load(contents, &disk.path).await {
         Ok((nb, fresh)) => {
-            let ours = fresh.hash == disk.hash;
             disk.last_modified = fresh.last_modified;
-            if ours {
-                return; // touched, not changed (or our own write)
+            if fresh.hash == disk.hash {
+                return false; // touched, not changed (or our own write)
             }
             disk.hash = fresh.hash;
-            tracing::info!(path = %disk.path, "file changed on disk; reloading the room");
-            let fx = room.reload(&nb, &disk.hash);
+            let (fx, conflicts) = room.merge_disk(&disk.base, &nb, &disk.hash);
+            disk.base = nb;
+            if conflicts.is_empty() {
+                tracing::info!(path = %disk.path, "file changed on disk; merged into the room");
+            } else {
+                tracing::warn!(
+                    path = %disk.path,
+                    "file changed on disk; the room's edits to {} lost to it",
+                    conflicts.join(", ")
+                );
+            }
             dispatch(clients, fx.send);
+            room.is_dirty()
         }
-        Err(e) => tracing::warn!(path = %disk.path, "cannot reload: {e}"),
+        Err(e) => {
+            tracing::warn!(path = %disk.path, "cannot reload: {e}");
+            false
+        }
     }
 }

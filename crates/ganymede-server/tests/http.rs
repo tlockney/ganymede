@@ -86,7 +86,10 @@ fn state(root: &std::path::Path) -> AppState {
         config_dir: root.join(".jupyter-config"),
         lab: None,
         static_dir: None,
-        collab: Default::default(),
+        collab: Arc::new(ganymede_server::collab::Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            root.canonicalize().ok(),
+        )),
         terminals: None,
         lsp: None,
     }
@@ -2129,6 +2132,7 @@ async fn collaboration_room_syncs_saves_and_reloads() {
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let app2 = app.clone();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let url = |session: &str| {
         let mut req = format!(
@@ -2276,6 +2280,103 @@ async fn collaboration_room_syncs_saves_and_reloads() {
     let roots = Roots::get(&doc);
     let nb = schema::get(&doc.transact(), &roots).unwrap();
     assert_eq!(nb.cells.len(), 1);
+
+    // An edit in the room and a change on disk to another cell, at the
+    // same time: the room merges them and saves both.
+    let two_cells = |a: &str, b: &str| {
+        format!(
+            "{{\n \"cells\": [\n  {{\n   \"cell_type\": \"markdown\",\n   \"id\": \"a\",\n   \"metadata\": {{}},\n   \"source\": [\n    \"{a}\"\n   ]\n  }},\n  {{\n   \"cell_type\": \"markdown\",\n   \"id\": \"b\",\n   \"metadata\": {{}},\n   \"source\": [\n    \"{b}\"\n   ]\n  }}\n ],\n \"metadata\": {{\n  \"big\": 18446744073709551616\n }},\n \"nbformat\": 4,\n \"nbformat_minor\": 5\n}}\n"
+        )
+    };
+    std::fs::write(&file, two_cells("changed on disk", "second")).unwrap();
+    let cells = |d: &Doc| Roots::get(d).cells.len(&d.transact());
+    pump(&mut ws, &doc, |d| cells(d) == 2).await;
+    let before = doc.transact().state_vector();
+    {
+        let mut txn = doc.transact_mut();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+            panic!()
+        };
+        let Some(Out::YText(t)) = cell.get(&txn, "source") else {
+            panic!()
+        };
+        t.insert(&mut txn, 0, "room: ");
+    }
+    let u = doc.transact().encode_state_as_update_v1(&before);
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::Update(u)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+    std::fs::write(&file, two_cells("changed on disk", "second, on disk")).unwrap();
+    let merged = two_cells("room: changed on disk", "second, on disk");
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::fs::read_to_string(&file).unwrap() != merged {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "not merged: {}",
+            std::fs::read_to_string(&file).unwrap()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // A rename through the contents API keeps the file id, and the room
+    // follows the file.
+    let (s, _) = call(
+        &app2,
+        "PATCH",
+        "/api/contents/demo.ipynb",
+        Some(json!({"path": "moved.ipynb"})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, moved) = call(
+        &app2,
+        "PUT",
+        "/api/collaboration/session/moved.ipynb",
+        Some(json!({"format": "json", "type": "notebook"})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(moved["fileId"], v["fileId"]);
+    let path = |d: &Doc| {
+        let roots = Roots::get(d);
+        let txn = d.transact();
+        roots.state.get(&txn, "path").map(|o| o.to_string(&txn))
+    };
+    pump(&mut ws, &doc, |d| path(d).as_deref() == Some("moved.ipynb")).await;
+    let moved_file = dir.path().join("moved.ipynb");
+    let before = doc.transact().state_vector();
+    {
+        let mut txn = doc.transact_mut();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 1) else {
+            panic!()
+        };
+        let Some(Out::YText(t)) = cell.get(&txn, "source") else {
+            panic!()
+        };
+        t.push(&mut txn, "!");
+    }
+    let u = doc.transact().encode_state_as_update_v1(&before);
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::Update(u)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !std::fs::read_to_string(&moved_file)
+        .unwrap()
+        .contains("second, on disk!")
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "not saved after the rename"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(!file.exists());
 }
 
 #[tokio::test]
@@ -2562,7 +2663,8 @@ async fn language_server_status_and_websocket() {
     assert_eq!(status["sessions"]["echo"]["status"], "started");
     assert_eq!(status["sessions"]["echo"]["handler_count"], 2);
 
-    let msg = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}}).to_string();
+    // A notification goes to every client (a request would reach one).
+    let msg = json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}).to_string();
     a.send(TMsg::Text(msg.clone().into())).await.unwrap();
     for ws in [&mut a, &mut b] {
         let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
@@ -2585,5 +2687,272 @@ async fn language_server_status_and_websocket() {
         }
         assert!(tokio::time::Instant::now() < deadline, "{status}");
         tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// jupyter-server-documents' execute endpoint: cells run on the server
+/// into the room, with no client connected, and land in the file.
+#[tokio::test]
+async fn execute_endpoint_runs_cells_into_the_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("run.ipynb");
+    let code = |id: &str, src: &str| json!({"cell_type": "code", "execution_count": null, "id": id, "metadata": {}, "outputs": [], "source": src});
+    let nb = json!({
+        "cells": [code("a", "hello"), code("b", "display"), code("c", "raise"), code("d", "never"),
+                  {"cell_type": "markdown", "id": "m", "metadata": {}, "source": "text"}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5
+    });
+    std::fs::write(&file, serde_json::to_string_pretty(&nb).unwrap()).unwrap();
+    let app = build_router(state(dir.path()));
+    let (s, kernel) = call(&app, "POST", "/api/kernels", Some(json!({})), Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let kid = kernel["id"].as_str().unwrap().to_string();
+    let (_, session) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/run.ipynb",
+        Some(json!({"format": "json", "type": "notebook"})),
+        Some(TOKEN),
+    )
+    .await;
+    let doc = format!("json:notebook:{}", session["fileId"].as_str().unwrap());
+    // jupyter-server-documents' and jupyter_server_fileid's id endpoints
+    // agree with the session's.
+    let (s, v) = call(
+        &app,
+        "POST",
+        "/api/fileid/index?path=run.ipynb",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v, json!({"id": session["fileId"], "path": "run.ipynb"}));
+    let (s, v) = call(
+        &app,
+        "GET",
+        "/api/fileid/id?path=run.ipynb",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!((s, &v["id"]), (StatusCode::OK, &session["fileId"]));
+    let id = session["fileId"].as_str().unwrap();
+    let (s, v) = call(
+        &app,
+        "GET",
+        &format!("/api/fileid/path?id={id}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!((s, &v["path"]), (StatusCode::OK, &json!("run.ipynb")));
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/api/fileid/index?path=missing.ipynb",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = call(
+        &app,
+        "GET",
+        "/api/fileid/id?path=other.ipynb",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    // nb-cli's probe: an empty request is a 400, not a 404.
+    let (s, _) = call(
+        &app,
+        "POST",
+        &format!("/api/kernels/{kid}/execute"),
+        Some(json!({"document_id": "", "cells": []})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let hash = |src: &str| ganymede_documents::murmur2(src.as_bytes(), 0).to_string();
+    let url = format!("/api/kernels/{kid}/execute");
+    let exec = |body: Value| call(&app, "POST", &url, Some(body), Some(TOKEN));
+
+    // Refusals.
+    let (s, v) = exec(json!({"document_id": doc, "cells": [
+        {"cell_id": "a", "source_hash": hash("hello")},
+        {"cell_id": "b", "source_hash": hash("changed")}]}))
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert_eq!(v, json!({"error": "source_mismatch", "cell_id": "b"}));
+    let (s, _) =
+        exec(json!({"document_id": doc, "cells": [{"cell_id": "m", "source_hash": hash("text")}]}))
+            .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "markdown cell");
+    let (s, _) =
+        exec(json!({"document_id": doc, "cells": [{"cell_id": "zz", "source_hash": "0"}]})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "unknown cell");
+    let (s, _) = exec(json!({"document_id": "json:notebook:nope", "cells": [{"cell_id": "a", "source_hash": "0"}]})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "unknown document");
+    let (s, _) = exec(json!({"document_id": doc, "cells": []})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "no cells");
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/api/kernels/nope/execute",
+        Some(
+            json!({"document_id": doc, "cells": [{"cell_id": "a", "source_hash": hash("hello")}]}),
+        ),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "unknown kernel");
+
+    // Two chained requests: a, then b, c, d. c fails, so d is skipped.
+    let (s, v) = exec(json!({"document_id": doc, "request_id": "r1",
+        "cells": [{"cell_id": "a", "source_hash": hash("hello")}]}))
+    .await;
+    assert_eq!((s, v), (StatusCode::OK, Value::Null));
+    let (s, _) = exec(
+        json!({"document_id": doc, "request_id": "r2", "previous_request_id": "r1",
+        "cells": [
+            {"cell_id": "b", "source_hash": hash("display")},
+            {"cell_id": "c", "source_hash": hash("raise")},
+            {"cell_id": "d", "source_hash": hash("never")}]}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let saved = loop {
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        if v["cells"][2]["outputs"]
+            .as_array()
+            .is_some_and(|o| !o.is_empty())
+            && v["cells"][2]["execution_count"].is_number()
+        {
+            break v;
+        }
+        assert!(std::time::Instant::now() < deadline, "not run: {v:#}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let cells = &saved["cells"];
+    assert_eq!(cells[0]["execution_count"], 1);
+    assert!(
+        cells[0]["outputs"].to_string().contains("hello"),
+        "{:#}",
+        cells[0]
+    );
+    assert_eq!(cells[1]["execution_count"], 2);
+    // The display was updated, then cleared by the wait-clear before the
+    // stream.
+    assert_eq!(
+        cells[1]["outputs"].as_array().unwrap().len(),
+        1,
+        "{:#}",
+        cells[1]
+    );
+    assert_eq!(cells[1]["outputs"][0]["text"], json!(["after\n"]));
+    assert_eq!(cells[2]["outputs"][0]["output_type"], "error");
+    assert_eq!(cells[3]["execution_count"], Value::Null);
+    assert_eq!(cells[3]["outputs"], json!([]));
+    assert!(
+        cells[0].get("execution_state").is_none(),
+        "runtime state is not saved"
+    );
+}
+
+/// A display update reaches the cell that shows the display, and only
+/// while it still does: not after the cell ran again.
+#[tokio::test]
+async fn execute_display_updates_reach_only_current_outputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("d.ipynb");
+    let code = |id: &str, src: &str| json!({"cell_type": "code", "execution_count": null, "id": id, "metadata": {}, "outputs": [], "source": src});
+    let write = |a: &str| {
+        let nb = json!({"cells": [code("a", a), code("b", "update")],
+                        "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+        std::fs::write(&file, serde_json::to_string_pretty(&nb).unwrap()).unwrap();
+    };
+    write("show");
+    let app = build_router(state(dir.path()));
+    let (_, kernel) = call(&app, "POST", "/api/kernels", Some(json!({})), Some(TOKEN)).await;
+    let kid = kernel["id"].as_str().unwrap().to_string();
+    let (_, session) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/d.ipynb",
+        Some(json!({"format": "json", "type": "notebook"})),
+        Some(TOKEN),
+    )
+    .await;
+    let doc = format!("json:notebook:{}", session["fileId"].as_str().unwrap());
+    let hash = |src: &str| ganymede_documents::murmur2(src.as_bytes(), 0).to_string();
+    let url = format!("/api/kernels/{kid}/execute");
+    let run = |id: &'static str, src: &'static str| {
+        let (app, url, doc) = (app.clone(), url.clone(), doc.clone());
+        let body =
+            json!({"document_id": doc, "cells": [{"cell_id": id, "source_hash": hash(src)}]});
+        async move { call(&app, "POST", &url, Some(body), Some(TOKEN)).await.0 }
+    };
+    // Waits until cell `i` on disk shows `text` and has a count.
+    let saved = |i: usize, text: &'static str| {
+        let file = file.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(15), async {
+                loop {
+                    let v: Value =
+                        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+                    let c = &v["cells"][i];
+                    if c["outputs"].to_string().contains(text) && c["execution_count"].is_number() {
+                        return v;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("cell {i} never showed {text}"))
+        }
+    };
+
+    assert_eq!(run("a", "show").await, StatusCode::OK);
+    saved(0, "shown").await;
+    assert_eq!(run("b", "update").await, StatusCode::OK);
+    saved(0, "updated").await;
+
+    // a runs again without the display; a later update leaves it alone.
+    write("hello");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while run("a", "hello").await == StatusCode::CONFLICT {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the room never reloaded"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    saved(0, "hello").await;
+    assert_eq!(run("b", "update").await, StatusCode::OK);
+    // b's own run has finished once its count moves past a's.
+    let v = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+            if v["cells"][1]["execution_count"].as_i64() > v["cells"][0]["execution_count"].as_i64()
+            {
+                return v;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let v2: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    for v in [&v, &v2] {
+        let a = v["cells"][0]["outputs"].to_string();
+        assert!(
+            a.contains("hello") && !a.contains("updated") && !a.contains("shown"),
+            "{a}"
+        );
     }
 }

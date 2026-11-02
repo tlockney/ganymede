@@ -327,6 +327,84 @@ pub fn insert_output(txn: &mut TransactionMut, youtputs: &ArrayRef, index: u32, 
     }
 }
 
+/// The cell with this id, as a map.
+pub fn find_cell<T: ReadTxn>(txn: &T, roots: &Roots, id: &str) -> Option<MapRef> {
+    roots.cells.iter(txn).find_map(|out| match out {
+        Out::YMap(m) => match m.get(txn, "id") {
+            Some(Out::Any(Any::String(s))) if &*s == id => Some(m),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+/// Make a code cell's outputs `outputs`, with the smallest change: outputs
+/// that are already there stay, and a stream that grew gets the new text
+/// appended, so a kernel printing line by line sends a line at a time.
+pub fn set_outputs(txn: &mut TransactionMut, ycell: &MapRef, outputs: Vec<Value>) {
+    let youtputs = match ycell.get(txn, "outputs") {
+        Some(Out::YArray(a)) => a,
+        _ => ycell.insert(txn, "outputs", ArrayPrelim::default()),
+    };
+    let len = youtputs.len(txn);
+    let mut i = 0u32;
+    let mut new = outputs.into_iter().peekable();
+    // Keep the outputs that are unchanged.
+    while i < len {
+        let Some(next) = new.peek() else { break };
+        let Some(old) = youtputs.get(txn, i) else {
+            break;
+        };
+        if out_to_json(txn, &old) != through_yjs(next) {
+            break;
+        }
+        new.next();
+        i += 1;
+    }
+    // The first that differs: a stream that only grew is appended to.
+    if i + 1 == len {
+        if let (Some(Out::YMap(old)), Some(next)) = (youtputs.get(txn, i), new.peek()) {
+            if let Some(added) = stream_growth(txn, &old, next) {
+                if let Some(Out::YText(text)) = old.get(txn, "text") {
+                    let at = text.len(txn);
+                    text.insert(txn, at, &added);
+                    new.next();
+                    i += 1;
+                }
+            }
+        }
+    }
+    if i < youtputs.len(txn) {
+        let n = youtputs.len(txn) - i;
+        youtputs.remove_range(txn, i, n);
+    }
+    for (k, output) in new.enumerate() {
+        insert_output(txn, &youtputs, i + k as u32, output);
+    }
+}
+
+/// The text `new` adds to the stream `old`, when `new` is `old` with more
+/// text and nothing else changed.
+fn stream_growth<T: ReadTxn>(txn: &T, old: &MapRef, new: &Value) -> Option<String> {
+    let old = out_to_json(txn, &Out::YMap(old.clone()));
+    if old.get("output_type")?.as_str()? != "stream"
+        || new.get("output_type")?.as_str()? != "stream"
+        || old.get("name") != new.get("name")
+    {
+        return None;
+    }
+    let (old_text, new_text) = (old.get("text")?.as_str()?, new.get("text")?.as_str()?);
+    let added = new_text.strip_prefix(old_text)?;
+    let strip = |v: &Value| {
+        let mut v = v.clone();
+        if let Some(m) = v.as_object_mut() {
+            m.remove("text");
+        }
+        v
+    };
+    (strip(&old) == through_yjs(&strip(new))).then(|| added.to_string())
+}
+
 /// Fill a map whose values are plain JSON.
 fn fill_shallow(txn: &mut TransactionMut, map: &MapRef, m: JsonMap<String, Value>) {
     for (key, value) in sorted(m) {

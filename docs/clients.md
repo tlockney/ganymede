@@ -73,6 +73,17 @@ There is no maintained native Android Jupyter client; people use a browser.
 |---|---|---|---|
 | **nb-cli** (`nb`, jupyter-ai-contrib) | Yes, 0.0.10, last commit 2026-09-09, BSD-3 | Remote mode: jupyter-server-documents or jupyter-collaboration if served, else the contents API and kernel websocket. Gateway mode: kernel-gateway subset, notebook on local disk | **Works**, tested 2026-10-31 on cdp-kernel and ipykernel with [`validation/nb-cli.sh`](https://github.com/tlockney/ganymede/blob/main/validation/nb-cli.sh): `create`, `read`, `cell add/update/delete`, `execute` (kernel state kept across calls), `search --with-errors`, `output clear`, `--restart-kernel`, and `execute --gateway`. Connect with `nb connect --server URL --token T`: auto-detect runs `jupyter server list`. `nb create` looks the kernel up on local disk, so the kernelspec must be installed locally too (or under `VIRTUAL_ENV`). In gateway mode pass `--kernel-id`; without it nb takes the first kernel listed, whatever its language. |
 
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+A build of `main` answers `jupyter-server-documents`' `POST /api/fileid/index`,
+so nb-cli's remote mode edits notebooks through a document room and runs
+cells with `POST /api/kernels/{id}/execute`, the server writing outputs
+into the room; see
+[Document model and collaboration](protocol.md#document-model-and-collaboration).
+The test above predates this and used the contents API.
+
 ### Embeddable / libraries
 
 | Client | Maintained | Talks to | Against Ganymede |

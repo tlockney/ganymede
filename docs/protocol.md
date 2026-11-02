@@ -168,10 +168,46 @@ people edit one notebook live:
 ganymede lab extension install jupyter-docprovider jupyter-collaboration-ui
 ```
 
+A room watches its file's directory (inotify, FSEvents, or Windows'
+change notifications; elsewhere it polls every second) and takes in
+changes other programs make. A change that arrives while the room has
+unsaved edits is merged, cell by cell: the room keeps its edits, takes
+the other program's changes to other cells, cells it added or deleted,
+and saves the result. Where both changed the same cell, or one deleted a
+cell the other changed, the file on disk wins that cell, and the server
+logs it. Notebooks older than nbformat 4.5 have no cell ids, so for them
+the file wins outright, as in `jupyter-collaboration`.
+
+File ids are kept in `ganymede_file_ids.db` in the Jupyter data dir, so
+a client keeps its room across a server restart, and a rename or delete
+through the contents API moves or drops them; a room open on a renamed
+file follows it. A file moved by another program gets a new id.
+
+The server runs cells into a room too, with
+`jupyter-server-documents`' `POST /api/kernels/{kernel_id}/execute`:
+
+```json
+{"document_id": "json:notebook:<file id>",
+ "cells": [{"cell_id": "...", "source_hash": "<MurmurHash2 of the source, seed 0>"}],
+ "request_id": "...", "previous_request_id": "..."}
+```
+
+It checks each cell's source against the hash, clears the cells and
+queues them as one batch, and answers `200 null`; `409
+{"error": "source_mismatch", "cell_id"}` if a cell changed since the
+client hashed it, and `408` if `previous_request_id` wasn't queued within
+ten seconds. The server then writes outputs and execution counts into the
+room as the kernel sends them, so they reach every client, and the file,
+with no client connected. A cell that fails stops the rest of its batch.
+`POST /api/fileid/index?path=` gives a file's id, as
+`jupyter-server-documents` does; nb-cli takes a server that answers it
+for one that runs cells this way.
+
 Limits for now: notebooks only (a text file opened collaboratively fails
-to load), file ids are kept in memory and don't follow renames, the
-server polls each open file every second instead of watching it, and
-there is no forking, timeline, or chat.
+to load); two processes can each hold a room on one file (the Mac server
+and the iPad app on one iCloud file, say), and they merge through the
+file rather than one owning it; and there is no forking, timeline, or
+chat.
 
 ## What is usually missed
 
