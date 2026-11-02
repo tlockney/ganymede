@@ -257,9 +257,15 @@ if [ -n "${NB:-}" ]; then
 	step "nb-cli, the agents' notebook CLI, against ganymede serve"
 	# `nb create` asks python for jupyter_core's paths and falls back to
 	# the platform dirs when that fails. That probe is nb-cli's, not
-	# Ganymede's, so nb-cli runs without the recording shims: as on a
-	# machine with no Python, python isn't found at all.
-	PATH=${PATH#"$shims:"} NB=$NB "$repo/validation/nb-cli.sh" "$(command -v ganymede)" cdp-node ||
+	# Ganymede's, so `nb` runs through a wrapper without the recording
+	# shims on PATH (python isn't found, as on a machine without it). The
+	# server nb-cli.sh starts keeps the shims.
+	nb_bin=$(cd "$(dirname "$NB")" && pwd)/$(basename "$NB")
+	printf '#!/bin/sh\nPATH="%s" exec "%s" "$@"\n' "${PATH#"$shims:"}" "$nb_bin" >"$work/nb"
+	chmod 755 "$work/nb"
+	# Kept under OUT_DIR, so a failure uploads nb-cli.sh's server log.
+	mkdir -p "$out/nb-cli"
+	NB="$work/nb" KEEP=1 TMPDIR="$out/nb-cli" "$repo/validation/nb-cli.sh" "$(command -v ganymede)" cdp-node ||
 		fail "nb-cli against ganymede serve"
 fi
 

@@ -16,9 +16,13 @@ The workstation job now runs both, with Python hidden:
   (then `python`) to find kernelspecs, and falls back to the platform
   dirs when that fails. The first CI run caught it through the
   workstation script's shims and failed "No Python". That probe is
-  nb-cli's, so nb-cli runs with the shims left off `PATH`, where python
-  isn't found, as on a machine without it. Ganymede's own steps keep the
-  shims.
+  nb-cli's, so `nb` runs through a wrapper whose `PATH` leaves the shims
+  out, where python isn't found, as on a machine without it. The
+  `ganymede serve` that nb-cli.sh starts keeps the shims.
+- nb-cli 0.0.10 uses jupyter-server-documents' API when the server
+  answers `POST /api/fileid/index` (#284 added it), so on `main` it
+  edits through a document room and runs cells with
+  `POST /api/kernels/{id}/execute`, not the contents API.
 
 python3 isn't covered here because the workstation job has no Python;
 nb-cli on ipykernel stays a by-hand run.
