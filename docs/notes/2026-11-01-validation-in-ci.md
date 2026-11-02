@@ -22,7 +22,12 @@ The workstation job now runs both, with Python hidden:
 - nb-cli 0.0.10 uses jupyter-server-documents' API when the server
   answers `POST /api/fileid/index` (#284 added it), so on `main` it
   edits through a document room and runs cells with
-  `POST /api/kernels/{id}/execute`, not the contents API.
+  `POST /api/kernels/{id}/execute`, not the contents API. #284 changed
+  nb-cli.sh's header but not its checks, and no CI ran the script, so on
+  `main` it failed at once: it still expected `nb connect` to report
+  direct mode. It now expects `Mode: collaborative`. Its checks of the
+  file on disk poll for up to 5 s, since the room saves shortly after a
+  change rather than on each request.
 
 python3 isn't covered here because the workstation job has no Python;
 nb-cli on ipykernel stays a by-hand run.

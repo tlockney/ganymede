@@ -91,6 +91,16 @@ printf '%s\n' "$spec" >"$work/env/share/jupyter/kernels/$kernel/kernel.json"
 export VIRTUAL_ENV="$work/env"
 
 kernels() { api "$url/api/kernels" | json 'j.length'; }
+# The room saves the notebook to disk shortly after a change, so poll the
+# file: waits up to 5 s for `json "$1"` on it to match grep pattern $2.
+on_disk() {
+	i=0
+	until [ -f "$work/root/j.ipynb" ] && json "$1" <"$work/root/j.ipynb" | grep -q "$2"; do
+		i=$((i + 1))
+		[ $i -lt 50 ] || return 1
+		sleep 0.1
+	done
+}
 
 # --- Remote mode --------------------------------------------------------
 
@@ -98,13 +108,15 @@ cd "$work/agent"
 
 step "nb connect --server --token"
 "$NB" connect --server "$url" --token "$token" | tee "$work/connect.out"
-grep -q 'direct (no collaboration backend)' "$work/connect.out" ||
-	fail "expected direct mode (contents API + websocket)"
+# Ganymede answers jupyter-server-documents' `POST /api/fileid/index`, so
+# nb-cli edits through a document room (#284).
+grep -q 'Mode: collaborative' "$work/connect.out" ||
+	fail "expected collaborative mode (document rooms)"
 "$NB" status >/dev/null || fail "nb status"
 
 step "nb create"
 "$NB" create j.ipynb -k "$kernel"
-[ -f "$work/root/j.ipynb" ] || fail "j.ipynb not created in the server root"
+on_disk 'j.nbformat' 4 || fail "j.ipynb not created in the server root"
 [ ! -e "$work/agent/j.ipynb" ] || fail "j.ipynb written locally in remote mode"
 
 step "nb cell update/add/delete"
@@ -113,15 +125,15 @@ step "nb cell update/add/delete"
 "$NB" cell add j.ipynb --source "$READ_CODE"
 "$NB" cell add j.ipynb --source 'scratch'
 "$NB" cell delete j.ipynb --cell-index -1
-n=$(json 'j.cells.length' <"$work/root/j.ipynb")
-[ "$n" = 3 ] || fail "expected 3 cells on disk, got $n"
+on_disk 'j.cells.length' '^3$' ||
+	fail "expected 3 cells on disk, got $(json 'j.cells.length' <"$work/root/j.ipynb")"
 
 step "nb execute (whole notebook)"
 "$NB" execute j.ipynb >"$work/exec1.out" || fail "execute: $(cat "$work/exec1.out")"
 "$NB" read j.ipynb >"$work/read1.out"
 grep -q '42' "$work/read1.out" || fail "no 42 in outputs: $(cat "$work/read1.out")"
 grep -q '"execution_count":2' "$work/read1.out" || fail "no execution_count 2"
-json "JSON.stringify(j.cells[2].outputs)" <"$work/root/j.ipynb" | grep -q 42 ||
+on_disk 'JSON.stringify(j.cells[2].outputs)' 42 ||
 	fail "output not saved to the file on the server"
 [ "$(kernels)" = 1 ] || fail "expected one kernel, got $(kernels)"
 
