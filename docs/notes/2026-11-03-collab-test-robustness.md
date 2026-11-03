@@ -12,8 +12,11 @@ Follow-ups from #288's review, all in the `jupyter_ydoc` interop test:
 - The cancelled tasks are awaited, so asyncio doesn't warn about tasks
   destroyed while pending.
 - `collab.rs` prints its skip notice to stderr, fails when
-  `GANYMEDE_E2E_PYTHON` is set but can't import the modules (a CI
-  misconfiguration then shows instead of skipping), and wraps the server
+  `GANYMEDE_E2E_PYTHON` is set but can't import the modules, and wraps the server
   in `KillOnDrop` before reading its first line, so a failed read still
   stops it. `KillOnDrop` moved into `tests/common`; `lab.rs`, `ui.rs` and
   `lab_start.rs` had their own copies.
+- The three CI jobs that install the oracle set `GANYMEDE_E2E_PYTHON` to
+  the `python` they installed it into, so a broken install fails with the
+  import error instead of a skip (which the e2e job's "Nothing skipped"
+  step would also catch, without saying why).
