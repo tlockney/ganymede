@@ -224,6 +224,7 @@ GET /files/images/plot.png?download=1
 HTTP/1.1 200 OK
 content-type: image/png
 content-disposition: attachment; filename*=utf-8''plot.png
+content-security-policy: sandbox allow-scripts
 
 <the file's bytes>
 ```
@@ -234,3 +235,12 @@ browser, and for relative images and links in Markdown. The path is a
 contents path, with the same root and hidden-file rules as
 `/api/contents`. Without `download`, there is no `Content-Disposition`. A
 directory gets `400`.
+
+Every response carries `Content-Security-Policy: sandbox allow-scripts`,
+as jupyter_server's does. An HTML or SVG file opened from `/files` runs
+its scripts in an opaque origin, so it can't read the UI's token or
+storage.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.

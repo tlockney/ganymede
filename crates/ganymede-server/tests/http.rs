@@ -2532,6 +2532,7 @@ async fn files_serves_raw_bytes() {
     )
     .unwrap();
     std::fs::write(dir.path().join("notes.txt"), "hello").unwrap();
+    std::fs::write(dir.path().join("page.html"), "<script>1</script>").unwrap();
     std::fs::write(dir.path().join("a.ipynb"), "{\"cells\": []}").unwrap();
     std::fs::write(dir.path().join("blob"), [0xff, 0xfe]).unwrap();
     std::fs::write(dir.path().join(".secret"), "no").unwrap();
@@ -2555,9 +2556,15 @@ async fn files_serves_raw_bytes() {
         "attachment; filename*=utf-8''my%20pic.png"
     );
 
+    // HTML runs sandboxed in an opaque origin, as jupyter_server's.
+    let (st, h, _) = raw(&app, get("/files/page.html")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(h[header::CONTENT_SECURITY_POLICY], "sandbox allow-scripts");
+
     let (st, h, body) = raw(&app, get("/files/notes.txt")).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(h[header::CONTENT_TYPE], "text/plain; charset=UTF-8");
+    assert_eq!(h[header::CONTENT_SECURITY_POLICY], "sandbox allow-scripts");
     assert_eq!(body, b"hello");
 
     let (st, h, body) = raw(&app, get("/files/a.ipynb")).await;
