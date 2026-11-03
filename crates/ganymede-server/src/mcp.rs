@@ -177,6 +177,8 @@ pub struct ReadArgs {
     pub path: Option<String>,
     /// A read mark from an earlier read's `@@read` line: return only the
     /// cells others added, edited, deleted or moved since that read.
+    /// Without `path`, the mark's notebook. The mark becomes this
+    /// connection's for that notebook, so its own edits move it.
     pub since: Option<String>,
 }
 
@@ -349,13 +351,34 @@ impl Notebooks {
         &self,
         Parameters(a): Parameters<ReadArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let path = self.path(a.path)?;
+        // With a mark and no path, the mark's own notebook.
+        let mark_path = match (&a.path, &a.since) {
+            (None, Some(since)) => self
+                .marks
+                .lock()
+                .expect("marks")
+                .get(since)
+                .map(|m| m.path.clone()),
+            _ => None,
+        };
+        let path = match mark_path {
+            Some(p) => p,
+            None => self.path(a.path)?,
+        };
         let Some(since) = a.since else {
             let (nb, token) = self.read_marked(&path).await?;
             return text(format!("{}@@read {token}\n", self.render(&nb, true)));
         };
         match self.read_since(&path, &since).await? {
-            Some((nb, changes)) => text(self.render_changes(&nb, &changes, &since)),
+            Some((nb, changes)) => {
+                // The mark is this connection's now, so its own edits
+                // move it (as after `ganymede mcp` starts a new session).
+                self.tokens
+                    .lock()
+                    .expect("tokens")
+                    .insert(path.clone(), since.clone());
+                text(self.render_changes(&nb, &changes, &since))
+            }
             None => {
                 let (nb, token) = self.read_marked(&path).await?;
                 text(format!(
@@ -442,21 +465,24 @@ impl Notebooks {
         let id = a.id.clone();
         let source = a.source;
         let found = self
-            .own_edit(&path, vec![a.id.clone()], false, move |room| {
-                room.edit(|txn, roots| {
-                    let Some(cell) = schema::find_cell(txn, roots, &id) else {
-                        return false;
-                    };
-                    let previous = match cell.get(txn, "source") {
-                        Some(Out::YText(t)) => {
-                            let previous = t.get_string(txn);
-                            schema::set_text(txn, &t, &source);
-                            Some(previous)
-                        }
-                        other => {
-                            // Not a shared string: keep its text if it has any.
-                            let previous =
-                                other
+            .own_edit(
+                &path,
+                vec![a.id.clone()],
+                marks::Aspect::Source,
+                move |room| {
+                    room.edit(|txn, roots| {
+                        let Some(cell) = schema::find_cell(txn, roots, &id) else {
+                            return false;
+                        };
+                        let previous = match cell.get(txn, "source") {
+                            Some(Out::YText(t)) => {
+                                let previous = t.get_string(txn);
+                                schema::set_text(txn, &t, &source);
+                                Some(previous)
+                            }
+                            other => {
+                                // Not a shared string: keep its text if it has any.
+                                let previous = other
                                     .map(|o| schema::out_to_json(txn, &o))
                                     .and_then(|v| match v {
                                         Value::String(s) => Some(s),
@@ -465,23 +491,24 @@ impl Notebooks {
                                         ),
                                         _ => None,
                                     });
-                            cell.insert(
-                                txn,
-                                "source",
-                                ganymede_documents::yrs::TextPrelim::new(source.clone()),
-                            );
-                            previous
+                                cell.insert(
+                                    txn,
+                                    "source",
+                                    ganymede_documents::yrs::TextPrelim::new(source.clone()),
+                                );
+                                previous
+                            }
+                        };
+                        // An unchanged source is no edit: the cell keeps its
+                        // provenance. An empty one replaced is no revision.
+                        if previous.as_deref() != Some(source.as_str()) {
+                            let superseded = previous.filter(|p| !p.is_empty());
+                            stamp(txn, &cell, &by, superseded);
                         }
-                    };
-                    // An unchanged source is no edit: the cell keeps its
-                    // provenance. An empty one replaced is no revision.
-                    if previous.as_deref() != Some(source.as_str()) {
-                        let superseded = previous.filter(|p| !p.is_empty());
-                        stamp(txn, &cell, &by, superseded);
-                    }
-                    true
-                })
-            })
+                        true
+                    })
+                },
+            )
             .await?;
         if !found {
             return Err(err(format!("no cell {}", a.id)));
@@ -503,7 +530,7 @@ impl Notebooks {
         let path = self.path(a.path)?;
         let id = a.id.clone();
         let found = self
-            .own_edit(&path, vec![a.id.clone()], false, move |room| {
+            .own_edit(&path, vec![a.id.clone()], marks::Aspect::All, move |room| {
                 room.edit(|txn, roots| match schema::cell_index(txn, roots, &id) {
                     Some(i) => {
                         roots.cells.remove(txn, i);
@@ -528,34 +555,39 @@ impl Notebooks {
         let path = self.path(a.path)?;
         let (id, after) = (a.id.clone(), a.after.clone());
         let moved = self
-            .own_edit(&path, vec![a.id.clone()], true, move |room| {
-                room.edit(|txn, roots| {
-                    let Some(from) = schema::cell_index(txn, roots, &id) else {
-                        return Err(format!("no cell {id}"));
-                    };
-                    // Where it goes, as an index before the cell is taken
-                    // out; checked first, so a bad `after` changes nothing.
-                    let to = match &after {
-                        None => 0,
-                        Some(a) if *a == id => return Ok(false),
-                        Some(a) => match schema::cell_index(txn, roots, a) {
-                            Some(i) if i < from => i + 1,
-                            Some(i) => i,
-                            None => return Err(format!("no cell {a}")),
-                        },
-                    };
-                    if to == from {
-                        return Ok(false);
-                    }
-                    let Some(Out::YMap(cell)) = roots.cells.get(txn, from) else {
-                        return Err(format!("no cell {id}"));
-                    };
-                    let value = schema::out_to_json(txn, &Out::YMap(cell));
-                    roots.cells.remove(txn, from);
-                    schema::insert_cell(txn, &roots.cells, to, value);
-                    Ok(true)
-                })
-            })
+            .own_edit(
+                &path,
+                vec![a.id.clone()],
+                marks::Aspect::Place,
+                move |room| {
+                    room.edit(|txn, roots| {
+                        let Some(from) = schema::cell_index(txn, roots, &id) else {
+                            return Err(format!("no cell {id}"));
+                        };
+                        // Where it goes, as an index before the cell is taken
+                        // out; checked first, so a bad `after` changes nothing.
+                        let to = match &after {
+                            None => 0,
+                            Some(a) if *a == id => return Ok(false),
+                            Some(a) => match schema::cell_index(txn, roots, a) {
+                                Some(i) if i < from => i + 1,
+                                Some(i) => i,
+                                None => return Err(format!("no cell {a}")),
+                            },
+                        };
+                        if to == from {
+                            return Ok(false);
+                        }
+                        let Some(Out::YMap(cell)) = roots.cells.get(txn, from) else {
+                            return Err(format!("no cell {id}"));
+                        };
+                        let value = schema::out_to_json(txn, &Out::YMap(cell));
+                        roots.cells.remove(txn, from);
+                        schema::insert_cell(txn, &roots.cells, to, value);
+                        Ok(true)
+                    })
+                },
+            )
             .await?;
         if moved.map_err(err)? {
             text(format!("Moved cell {}", a.id))
@@ -970,28 +1002,32 @@ impl Notebooks {
 
     /// Edit the notebook's room with `f`, moving this connection's read
     /// mark past the change to cells `ids`, so the change isn't reported
-    /// to it as someone else's. With `moved_only` (`cell_move`), only
-    /// their places move: a source someone else changed stays a change.
+    /// to it as someone else's: only the `aspect` the tool changes, and
+    /// only when `f` changed the document (a failed or no-op edit adopts
+    /// nothing, so someone else's change to the cell is still reported).
     async fn own_edit<R: Send + 'static>(
         &self,
         path: &str,
         ids: Vec<String>,
-        moved_only: bool,
+        aspect: marks::Aspect,
         f: impl FnOnce(&mut Room) -> (R, Effects) + Send + 'static,
     ) -> Result<R, McpError> {
         let token = self.tokens.lock().expect("tokens").get(path).cloned();
         let marks = self.marks.clone();
         self.room(path, move |room| {
-            let r = f(room);
-            if let (Some(token), Some(Ok(nb))) = (token, room.notebook_with_ids()) {
+            let (r, fx) = f(room);
+            let Some(token) = token.filter(|_| fx.changed) else {
+                return (r, fx);
+            };
+            if let Some(Ok(nb)) = room.notebook_with_ids() {
                 let now = marks::snapshot(&nb);
                 if let Some(m) = marks.lock().expect("marks").get(&token) {
                     for id in &ids {
-                        marks::adopt(&mut m.cells, &now, id, moved_only);
+                        marks::adopt(&mut m.cells, &now, id, aspect);
                     }
                 }
             }
-            r
+            (r, fx)
         })
         .await
     }
@@ -1106,7 +1142,7 @@ impl Notebooks {
     async fn insert(&self, path: &str, cell: Value, after: Option<String>) -> Result<(), McpError> {
         let id = cell["id"].as_str().unwrap_or_default().to_string();
         let r = self
-            .own_edit(path, vec![id], false, move |room| {
+            .own_edit(path, vec![id], marks::Aspect::All, move |room| {
                 room.edit(|txn, roots: &Roots| {
                     let at = match &after {
                         None => roots.cells.len(txn),
