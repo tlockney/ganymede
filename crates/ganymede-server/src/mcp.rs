@@ -26,6 +26,12 @@
 //! (`cell_run` with `record: false`) run in the kernel, sharing its state,
 //! and leave nothing in the notebook. `cell_edit` keeps the source it
 //! replaces in `history` (the last [`HISTORY_LIMIT`] of them).
+//!
+//! `notebook_read` and `notebook_open` end with a read mark, which
+//! `notebook_read(since)` takes to list only what others changed since
+//! (see [`marks`]).
+
+mod marks;
 
 use crate::collab::{hold_notebook, notebook_room_id, with_notebook, Hold};
 use crate::svg;
@@ -73,15 +79,17 @@ pub struct McpOptions {
     pub outputs_dir: Option<PathBuf>,
 }
 
-/// A server's `/mcp`: its options.
+/// A server's `/mcp`: its options, and its connections' read marks.
 pub struct McpState {
     opts: Arc<McpOptions>,
+    marks: Arc<Mutex<marks::Marks>>,
 }
 
 impl McpState {
     pub fn new(opts: McpOptions) -> Self {
         McpState {
             opts: Arc::new(opts),
+            marks: Arc::default(),
         }
     }
 }
@@ -97,6 +105,7 @@ pub fn router(state: AppState, mcp: &McpState) -> axum::Router {
         session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
     };
     let opts = mcp.opts.clone();
+    let marks = mcp.marks.clone();
     let app_state = state.clone();
     // rmcp ends a session after 5 idle minutes; an agent often waits
     // longer on its user. A session holds its notebooks' rooms open, so
@@ -104,7 +113,13 @@ pub fn router(state: AppState, mcp: &McpState) -> axum::Router {
     let mut sessions = LocalSessionManager::default();
     sessions.session_config.keep_alive = Some(SESSION_IDLE);
     let service: StreamableHttpService<Notebooks, LocalSessionManager> = StreamableHttpService::new(
-        move || Ok(Notebooks::new(app_state.clone(), opts.clone())),
+        move || {
+            Ok(Notebooks::new(
+                app_state.clone(),
+                opts.clone(),
+                marks.clone(),
+            ))
+        },
         Arc::new(sessions),
         StreamableHttpServerConfig::default().disable_allowed_hosts(),
     );
@@ -129,6 +144,10 @@ pub struct Notebooks {
     /// while it lasts so cell ids stay the same: a notebook without ids
     /// (nbformat 4.4 and older) gets new ones each time its room opens.
     holds: Arc<Mutex<HashMap<String, Hold>>>,
+    /// Every connection's read marks, shared across the server.
+    marks: Arc<Mutex<marks::Marks>>,
+    /// This connection's read mark token for each notebook it read.
+    tokens: Arc<Mutex<HashMap<String, String>>>,
     tool_router: ToolRouter<Self>,
     prompt_router: PromptRouter<Self>,
 }
@@ -153,9 +172,12 @@ pub struct OpenArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct PathArgs {
+pub struct ReadArgs {
     /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
+    /// A read mark from an earlier read's `@@read` line: return only the
+    /// cells others added, edited, deleted or moved since that read.
+    pub since: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -258,12 +280,14 @@ pub struct ListArgs {
 
 #[tool_router]
 impl Notebooks {
-    pub fn new(state: AppState, opts: Arc<McpOptions>) -> Self {
+    pub fn new(state: AppState, opts: Arc<McpOptions>, marks: Arc<Mutex<marks::Marks>>) -> Self {
         Notebooks {
             state,
             opts,
             current: Arc::default(),
             holds: Arc::default(),
+            marks,
+            tokens: Arc::default(),
             tool_router: Self::tool_router(),
             prompt_router: Self::prompt_router(),
         }
@@ -300,7 +324,7 @@ impl Notebooks {
         } else {
             Some(self.kernel_for(&path, a.kernel.as_deref()).await?)
         };
-        let nb = self.notebook(&path).await?;
+        let (nb, token) = self.read_marked(&path).await?;
         let root = match self.state.collab.root() {
             Some(r) => format!(" (server root {})", r.display()),
             None => String::new(),
@@ -314,17 +338,33 @@ impl Notebooks {
             }
         );
         out.push_str(&self.render(&nb, true));
+        out.push_str(&format!("@@read {token}\n"));
         text(out)
     }
 
-    #[tool(description = "Read a notebook as text: cells with their ids, sources and outputs.")]
+    #[tool(
+        description = "Read a notebook as text: cells with their ids, sources and outputs, then an `@@read <mark>` line. With `since: <mark>`, return only the cells others (a person, another agent) added, edited, deleted or moved since the read that gave the mark; your own edits through these tools are left out. Outputs are not compared."
+    )]
     async fn notebook_read(
         &self,
-        Parameters(a): Parameters<PathArgs>,
+        Parameters(a): Parameters<ReadArgs>,
     ) -> Result<CallToolResult, McpError> {
         let path = self.path(a.path)?;
-        let nb = self.notebook(&path).await?;
-        text(self.render(&nb, true))
+        let Some(since) = a.since else {
+            let (nb, token) = self.read_marked(&path).await?;
+            return text(format!("{}@@read {token}\n", self.render(&nb, true)));
+        };
+        match self.read_since(&path, &since).await? {
+            Some((nb, changes)) => text(self.render_changes(&nb, &changes, &since)),
+            None => {
+                let (nb, token) = self.read_marked(&path).await?;
+                text(format!(
+                    "Read mark {since} is unknown here (the server restarted, or it was \
+                     dropped); the whole notebook follows.\n\n{}@@read {token}\n",
+                    self.render(&nb, true)
+                ))
+            }
+        }
     }
 
     #[tool(
@@ -402,7 +442,7 @@ impl Notebooks {
         let id = a.id.clone();
         let source = a.source;
         let found = self
-            .room(&path, move |room| {
+            .own_edit(&path, vec![a.id.clone()], move |room| {
                 room.edit(|txn, roots| {
                     let Some(cell) = schema::find_cell(txn, roots, &id) else {
                         return false;
@@ -463,7 +503,7 @@ impl Notebooks {
         let path = self.path(a.path)?;
         let id = a.id.clone();
         let found = self
-            .room(&path, move |room| {
+            .own_edit(&path, vec![a.id.clone()], move |room| {
                 room.edit(|txn, roots| match schema::cell_index(txn, roots, &id) {
                     Some(i) => {
                         roots.cells.remove(txn, i);
@@ -488,7 +528,7 @@ impl Notebooks {
         let path = self.path(a.path)?;
         let (id, after) = (a.id.clone(), a.after.clone());
         let moved = self
-            .room(&path, move |room| {
+            .own_edit(&path, vec![a.id.clone()], move |room| {
                 room.edit(|txn, roots| {
                     let Some(from) = schema::cell_index(txn, roots, &id) else {
                         return Err(format!("no cell {id}"));
@@ -670,6 +710,7 @@ Keep a notebook as the record of this analysis while you work, not as a write-up
 - Use `cell_run` with `record: false` for checks that don't belong in the record (peeking at a value, trying a call).
 - When a step happens outside the kernel (a shell command, a file you wrote), add it with `cell_add` and `mode: recorded`.
 - After a result, add a Markdown note with what it shows. Fix a wrong cell with `cell_edit` rather than adding another.
+- A person may edit the notebook while you work. Before building on it again, call `notebook_read` with `since` set to the mark from your last `@@read` line, and work from what they changed.
 - End with a Markdown summary of what was found. `notebook_run_all` checks that the notebook runs top to bottom.";
 
 #[tool_handler(router = self.tool_router)]
@@ -860,6 +901,102 @@ impl Notebooks {
             .map_err(|e| err(e.to_string()))
     }
 
+    /// The notebook, and this connection's read mark moved to it.
+    async fn read_marked(&self, path: &str) -> Result<(Notebook, String), McpError> {
+        let token = self
+            .tokens
+            .lock()
+            .expect("tokens")
+            .entry(path.to_string())
+            .or_insert_with(marks::token)
+            .clone();
+        let (marks, t, p) = (self.marks.clone(), token.clone(), path.to_string());
+        // In the room, so no edit lands between the read and the mark.
+        let nb = self
+            .room(path, move |room| {
+                let nb = room.notebook_with_ids();
+                if let Some(Ok(nb)) = &nb {
+                    marks
+                        .lock()
+                        .expect("marks")
+                        .set(&t, &p, marks::snapshot(nb));
+                }
+                (nb, Effects::default())
+            })
+            .await?
+            .ok_or_else(|| err(format!("{path} is not a notebook")))?
+            .map_err(|e| err(e.to_string()))?;
+        Ok((nb, token))
+    }
+
+    /// The notebook and what changed since read mark `since`, which then
+    /// moves to it. `None` when the server has no such mark.
+    async fn read_since(
+        &self,
+        path: &str,
+        since: &str,
+    ) -> Result<Option<(Notebook, marks::Changes)>, McpError> {
+        match self.marks.lock().expect("marks").get(since) {
+            None => return Ok(None),
+            Some(m) if m.path != path => {
+                return Err(err(format!(
+                    "read mark {since} is for {}, not {path}",
+                    m.path
+                )))
+            }
+            Some(_) => {}
+        }
+        let (marks, t) = (self.marks.clone(), since.to_string());
+        let r = self
+            .room(path, move |room| {
+                let r = match room.notebook_with_ids() {
+                    Some(Ok(nb)) => {
+                        let now = marks::snapshot(&nb);
+                        let mut marks = marks.lock().expect("marks");
+                        match marks.get(&t) {
+                            Some(m) => {
+                                let changes = marks::diff(&m.cells, &now);
+                                m.cells = now;
+                                Ok(Some((nb, changes)))
+                            }
+                            None => Ok(None),
+                        }
+                    }
+                    Some(Err(e)) => Err(e.to_string()),
+                    None => Err("not a notebook".to_string()),
+                };
+                (r, Effects::default())
+            })
+            .await?;
+        r.map_err(|e| err(format!("{path}: {e}")))
+    }
+
+    /// Edit the notebook's room with `f`, moving this connection's read
+    /// mark past the change to cells `ids`, so the change isn't reported
+    /// to it as someone else's.
+    async fn own_edit<R: Send + 'static>(
+        &self,
+        path: &str,
+        ids: Vec<String>,
+        f: impl FnOnce(&mut Room) -> (R, Effects) + Send + 'static,
+    ) -> Result<R, McpError> {
+        let token = self.tokens.lock().expect("tokens").get(path).cloned();
+        let marks = self.marks.clone();
+        self.room(path, move |room| {
+            let r = f(room);
+            if let (Some(token), Some(Ok(nb))) = (token, room.notebook_with_ids()) {
+                let now = marks::snapshot(&nb);
+                if let Some(m) = marks.lock().expect("marks").get(&token) {
+                    for id in &ids {
+                        marks::adopt(&mut m.cells, &now, id);
+                    }
+                }
+            }
+            r
+        })
+        .await
+    }
+
     async fn create(
         &self,
         path: &str,
@@ -968,8 +1105,9 @@ impl Notebooks {
     }
 
     async fn insert(&self, path: &str, cell: Value, after: Option<String>) -> Result<(), McpError> {
+        let id = cell["id"].as_str().unwrap_or_default().to_string();
         let r = self
-            .room(path, move |room| {
+            .own_edit(path, vec![id], move |room| {
                 room.edit(|txn, roots: &Roots| {
                     let at = match &after {
                         None => roots.cells.len(txn),
@@ -1118,7 +1256,56 @@ impl Notebooks {
         out
     }
 
+    /// What [`Notebooks::read_since`] found: the changed cells as
+    /// `@@cell` blocks whose head says how they changed, and an
+    /// `@@deleted` line per deleted cell.
+    fn render_changes(&self, nb: &Notebook, c: &marks::Changes, token: &str) -> String {
+        if c.is_empty() {
+            return format!("No changes by others since that read.\n@@read {token}\n");
+        }
+        let mut out = format!(
+            "Changed by others since that read: {} added, {} edited, {} moved, {} deleted.\n\n",
+            c.added.len(),
+            c.edited.len(),
+            c.moved.len(),
+            c.deleted.len()
+        );
+        for (index, cell) in nb.cells.iter().enumerate() {
+            let Some(id) = cell.id() else { continue };
+            let has = |v: &[String]| v.iter().any(|i| i == id);
+            let mut how = Vec::new();
+            if has(&c.added) {
+                how.push("added");
+            }
+            if has(&c.edited) {
+                how.push("edited");
+            }
+            if has(&c.moved) {
+                how.push("moved");
+            }
+            if !how.is_empty() {
+                out.push_str(&self.render_cell_as(index, cell, true, Some(&how)));
+                out.push('\n');
+            }
+        }
+        for id in &c.deleted {
+            out.push_str(&format!("@@deleted {}\n", json!({"id": id})));
+        }
+        out.push_str(&format!("@@read {token}\n"));
+        out
+    }
+
     fn render_cell(&self, index: usize, cell: &Cell, outputs: bool) -> String {
+        self.render_cell_as(index, cell, outputs, None)
+    }
+
+    fn render_cell_as(
+        &self,
+        index: usize,
+        cell: &Cell,
+        outputs: bool,
+        change: Option<&[&str]>,
+    ) -> String {
         let (kind, count, source, outs) = match cell {
             Cell::Code(c) => (
                 "code",
@@ -1133,6 +1320,9 @@ impl Notebooks {
         let mut head = json!({"index": index, "id": cell.id(), "cell_type": kind});
         if let Some(n) = count {
             head["execution_count"] = json!(n);
+        }
+        if let Some(how) = change {
+            head["change"] = json!(how);
         }
         let mut s = format!("@@cell {head}\n");
         if kind == "code" {

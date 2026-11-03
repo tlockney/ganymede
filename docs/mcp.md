@@ -44,7 +44,7 @@ a URL instead of starting a command.
 | Tool | Does |
 | --- | --- |
 | `notebook_open` | Open a notebook, creating it (and its directories) when missing, with an optional title cell; start or join its kernel. Later calls may leave out `path`. |
-| `notebook_read` | The notebook as text: cells with ids, sources and outputs. A notebook in nbformat 4.4 or older has no cell ids on disk; the server makes them up when it opens the notebook, and they stay the same while the MCP session lasts. A session ends after an hour without a request, or when the server stops; after that, read the notebook again for new ids. `ganymede mcp` starts a new session by itself. A new session has no notebook open either, so open or read the notebook again, with its `path`, before calls that leave `path` out. |
+| `notebook_read` | The notebook as text: cells with ids, sources and outputs, then a read mark. With `since: <mark>`, only what others changed since that read (see [Changes by others](#changes-by-others)). A notebook in nbformat 4.4 or older has no cell ids on disk; the server makes them up when it opens the notebook, and they stay the same while the MCP session lasts. A session ends after an hour without a request, or when the server stops; after that, read the notebook again for new ids. `ganymede mcp` starts a new session by itself. A new session has no notebook open either, so open or read the notebook again, with its `path`, before calls that leave `path` out. |
 | `cell_run` | Run code and return its outputs. Recorded as a new code cell by default; `record: false` runs it as scratch work that leaves nothing in the notebook but shares the kernel's state. |
 | `cell_add` | Add a Markdown note; `mode: recorded` records a step that ran outside the kernel, such as a shell command. |
 | `cell_edit` | Replace a cell's source, keeping the replaced text in the cell's history; `run: true` runs it after. |
@@ -73,6 +73,39 @@ Cells run through the server, as the
 [execute endpoint](protocol.md#document-model-and-collaboration) runs
 them: outputs go into the document as they arrive, and a person watching
 the notebook sees them live.
+
+## Changes by others
+
+A person may edit the notebook in JupyterLab or ganymede-ui while the
+agent works. `notebook_open` and `notebook_read` end with a read mark:
+
+```text
+@@read 3f2a9c0d1b7e4a65
+```
+
+`notebook_read` with `since: "3f2a9c0d1b7e4a65"` returns only the
+cells others added, edited or moved since that read, each as an
+`@@cell` block whose head has `"change": ["added"]`, `["edited"]`,
+`["moved"]` or more than one, and an `@@deleted {"id": ...}` line per
+deleted cell. With no changes it says so. Cell sources and types are
+compared, not outputs or metadata. A cell is moved when it left the
+longest run of cells that kept their order.
+
+Each MCP connection has one mark per notebook, and it keeps its name.
+Reading the notebook moves the mark to what was read, and the
+connection's own edits (`cell_add`, `cell_run`, `cell_edit`,
+`cell_delete`, `cell_move`) move it too, so they are not reported
+back. Another connection to the same server can read with the mark, as
+a hook outside the agent would; that read moves the mark as well, so
+the agent isn't told the same change twice.
+
+Marks are kept in the server's memory. After a restart, or once more
+than 4,096 marks are in use, a mark may be unknown: the read then says
+so and returns the whole notebook with a mark to use next.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
 
 ## What the agent sees
 

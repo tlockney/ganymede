@@ -3998,3 +3998,191 @@ async fn mcp_connections_and_kernel_control() {
     let out = mcp_text(&mcp_tool(&app, &a, "kernel_control", json!({"action": "restart"})).await);
     assert!(out.starts_with("Restarted"), "{out}");
 }
+
+/// The `@@read <mark>` line of a read.
+fn read_mark(out: &str) -> String {
+    out.lines()
+        .rev()
+        .find_map(|l| l.strip_prefix("@@read "))
+        .unwrap_or_else(|| panic!("no @@read line: {out}"))
+        .to_string()
+}
+
+/// `notebook_read(since)` lists what a person changed through the room
+/// between two agent reads, and not the agent's own edits (#313).
+#[tokio::test]
+async fn mcp_read_since_lists_changes_by_others() {
+    use ganymede_documents::schema::{self, Roots};
+    use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
+    use ganymede_documents::yrs::updates::decoder::Decode;
+    use ganymede_documents::yrs::updates::encoder::Encode;
+    use ganymede_documents::yrs::{Array, Doc, Map, Out, ReadTxn, Transact, Update};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+
+    let dir = tempfile::tempdir().unwrap();
+    let nb = json!({"cells": [
+        {"cell_type": "markdown", "id": "a", "metadata": {}, "source": "A"},
+        {"cell_type": "code", "id": "b", "execution_count": null, "metadata": {},
+         "outputs": [], "source": "src_b"},
+        {"cell_type": "markdown", "id": "d", "metadata": {}, "source": "D"}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.path().join("j.ipynb"), nb.to_string()).unwrap();
+    let app = mcp_app(dir.path());
+    let agent = mcp_connect(&app, "agent").await;
+    let read = |sid: String, args: Value| {
+        let app = app.clone();
+        async move { mcp_text(&mcp_tool(&app, &sid, "notebook_read", args).await) }
+    };
+    let out = read(agent.clone(), json!({"path": "j.ipynb"})).await;
+    let mark = read_mark(&out);
+    // Nothing changed yet.
+    let out = read(agent.clone(), json!({"path": "j.ipynb", "since": mark})).await;
+    assert!(out.starts_with("No changes by others"), "{out}");
+    assert_eq!(read_mark(&out), mark, "the mark keeps its name");
+
+    // The agent's own edits: a note added, and cell a edited.
+    mcp_text(
+        &mcp_tool(
+            &app,
+            &agent,
+            "cell_add",
+            json!({"path": "j.ipynb", "source": "my note", "after": "a"}),
+        )
+        .await,
+    );
+    mcp_text(
+        &mcp_tool(
+            &app,
+            &agent,
+            "cell_edit",
+            json!({"path": "j.ipynb", "id": "a", "source": "A2"}),
+        )
+        .await,
+    );
+
+    // A person, through the room: edits b, adds p at the end, deletes d.
+    let (_, session) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/j.ipynb",
+        Some(json!({"format": "json", "type": "notebook"})),
+        Some(TOKEN),
+    )
+    .await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app2 = app.clone();
+    tokio::spawn(async move { axum::serve(listener, app2).await.unwrap() });
+    let mut req = format!(
+        "ws://{addr}/api/collaboration/room/json:notebook:{}?sessionId={}",
+        session["fileId"].as_str().unwrap(),
+        session["sessionId"].as_str().unwrap()
+    )
+    .into_client_request()
+    .unwrap();
+    req.headers_mut()
+        .insert("Authorization", format!("token {TOKEN}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let doc = Doc::new();
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::SyncStep1(doc.transact().state_vector()))
+            .encode_v1()
+            .into(),
+    ))
+    .await
+    .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while Roots::get(&doc).cells.len(&doc.transact()) < 4 {
+        let msg = tokio::time::timeout_at(deadline, ws.next())
+            .await
+            .expect("room synced")
+            .unwrap()
+            .unwrap();
+        let TMsg::Binary(b) = msg else { continue };
+        if let Ok(YMsg::Sync(SyncMessage::SyncStep2(u) | SyncMessage::Update(u))) =
+            YMsg::decode_v1(&b)
+        {
+            doc.transact_mut()
+                .apply_update(Update::decode_v1(&u).unwrap())
+                .unwrap();
+        }
+    }
+    let before = doc.transact().state_vector();
+    {
+        let roots = Roots::get(&doc);
+        let mut txn = doc.transact_mut();
+        let b = schema::find_cell(&txn, &roots, "b").unwrap();
+        let Some(Out::YText(src)) = b.get(&txn, "source") else {
+            panic!("source is text")
+        };
+        schema::set_text(&mut txn, &src, "src_b2");
+        let d = schema::cell_index(&txn, &roots, "d").unwrap();
+        roots.cells.remove(&mut txn, d);
+        let end = roots.cells.len(&txn);
+        schema::insert_cell(
+            &mut txn,
+            &roots.cells,
+            end,
+            json!({"cell_type": "markdown", "id": "p", "metadata": {}, "source": "P"}),
+        );
+    }
+    let update = doc.transact().encode_state_as_update_v1(&before);
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::Update(update)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+
+    // Wait, from another connection, for the room to have the edit.
+    let watcher = mcp_connect(&app, "watcher").await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !read(watcher.clone(), json!({"path": "j.ipynb"}))
+        .await
+        .contains("src_b2")
+    {
+        assert!(std::time::Instant::now() < deadline, "edit never arrived");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // A hook's connection asks with the agent's mark.
+    let hook = mcp_connect(&app, "hook").await;
+    let out = read(hook, json!({"path": "j.ipynb", "since": mark})).await;
+    assert!(
+        out.starts_with(
+            "Changed by others since that read: 1 added, 1 edited, 0 moved, 1 deleted."
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains(r#""change":["edited"]"#) && out.contains("src_b2"),
+        "{out}"
+    );
+    assert!(
+        out.contains(r#""change":["added"]"#) && out.contains("\nP\n"),
+        "{out}"
+    );
+    assert!(out.contains(r#"@@deleted {"id":"d"}"#), "{out}");
+    assert!(
+        !out.contains("my note") && !out.contains("A2"),
+        "own edits: {out}"
+    );
+    // That read moved the mark: the agent sees nothing new.
+    let out = read(agent.clone(), json!({"path": "j.ipynb", "since": mark})).await;
+    assert!(out.starts_with("No changes by others"), "{out}");
+
+    // An unknown mark gives the whole notebook and a mark to use next.
+    let out = read(agent.clone(), json!({"path": "j.ipynb", "since": "nope"})).await;
+    assert!(out.starts_with("Read mark nope is unknown"), "{out}");
+    assert!(out.contains("my note") && out.contains("src_b2"), "{out}");
+    assert_eq!(read_mark(&out), mark);
+    // A mark names one notebook.
+    mcp_text(&mcp_tool(&app, &agent, "notebook_open", json!({"path": "k.ipynb"})).await);
+    let v = mcp_tool(
+        &app,
+        &agent,
+        "notebook_read",
+        json!({"path": "k.ipynb", "since": mark}),
+    )
+    .await;
+    assert!(v.to_string().contains("is for j.ipynb"), "{v}");
+}
