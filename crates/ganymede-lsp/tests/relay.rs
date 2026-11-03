@@ -202,8 +202,10 @@ async fn two_clients_on_one_document_apply_each_edit_once() {
             break;
         }
     }
-    // Anything else `a` or `b` sent arrives before a marker sent now.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Each tab's cleanup sends what it sends at once, under the documents
+    // lock, and the close is the last of them, from whichever ran second.
+    // So both have sent everything by now, and a marker sent now comes
+    // after it all.
     c.send(ping.into()).await;
     loop {
         let m = next(&mut c).await.unwrap();
@@ -218,7 +220,8 @@ async fn two_clients_on_one_document_apply_each_edit_once() {
 }
 
 /// Answers each request with `{"id": <its id>, "result": <the request as
-/// it arrived>}` and echoes anything else. Perl, which both CI runners
+/// it arrived>}`, exits on an `exit` notification, and echoes anything
+/// else. Perl, which both CI runners
 /// have, because `cat` can't answer.
 const ANSWERS: &str = r#"
 $| = 1; binmode STDIN; binmode STDOUT;
@@ -231,6 +234,7 @@ while (1) {
     }
     last unless defined $len;
     read(STDIN, my $body, $len) == $len or last;
+    last if $body =~ /"method":"exit"/;
     my $out = $body;
     if ($body =~ /"method"/ && $body =~ /"id":(\d+|"[^"]*")/) {
         $out = qq({"id":$1,"jsonrpc":"2.0","result":$body});
@@ -305,4 +309,62 @@ async fn stopping_a_server_ends_what_it_started() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+/// A client of a server that has exited and been started again can still
+/// send, and leaves: none of it reaches the new server's documents.
+#[tokio::test]
+async fn a_client_of_an_ended_server_leaves_the_new_ones_documents_alone() {
+    let root = tempfile::tempdir().unwrap();
+    let m = manager(root.path(), &[("answers", &["perl", "-e", ANSWERS], true)]);
+    let vd = ganymede_lsp::virtual_documents_uri(root.path());
+    let uri = format!("{vd}/nb.ipynb");
+    let open = |text: &str| {
+        json!({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+            "textDocument": {"uri": uri, "languageId": "fake", "version": 0, "text": text}}})
+        .to_string()
+    };
+    let edit = json!({"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
+        "textDocument": {"uri": uri, "version": 1},
+        "contentChanges": [{"range": {"start": {"line": 0, "character": 0},
+            "end": {"line": 0, "character": 0}}, "text": "# x\n"}]}})
+    .to_string();
+    let ping = r#"{"jsonrpc":"2.0","method":"ping"}"#;
+
+    // The first server ends; its client stays connected.
+    let mut old = m.connect("answers").unwrap();
+    old.send(r#"{"jsonrpc":"2.0","method":"exit"}"#.into())
+        .await;
+    assert_eq!(next(&mut old).await, None);
+
+    // A second server, and a client that opens the document.
+    let mut new = m.connect("answers").unwrap();
+    new.send(open("a = 1\n")).await;
+    assert!(next(&mut new).await.unwrap().contains("didOpen"));
+
+    // The old client opens other text, edits, and leaves.
+    old.send(open("stale\n")).await;
+    old.send(edit.clone()).await;
+    drop(old);
+
+    // The new client's edit fits the server's text, so it goes as sent,
+    // and the file on disk is its text.
+    new.send(edit).await;
+    new.send(ping.into()).await;
+    let mut got = Vec::new();
+    loop {
+        let m = next(&mut new).await.unwrap();
+        if m == ping {
+            break;
+        }
+        got.push(serde_json::from_str::<serde_json::Value>(&m).unwrap());
+    }
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0]["method"], "textDocument/didChange");
+    assert!(
+        got[0]["params"]["contentChanges"][0]["range"].is_object(),
+        "{got:?}"
+    );
+    let file = root.path().join(VIRTUAL_DOCUMENTS_DIR).join("nb.ipynb");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "# x\na = 1\n");
 }

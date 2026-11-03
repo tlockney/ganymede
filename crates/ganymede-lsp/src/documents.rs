@@ -10,14 +10,16 @@
 //!   a full-text `didChange` when its text differs, and is dropped when
 //!   it doesn't;
 //! - a `didChange` that leaves the server's text as it is (the second
-//!   copy of an edit) is dropped. One made against the server's text goes
-//!   through as sent; one made against a client's older text goes as the
-//!   full text, since its ranges no longer fit;
+//!   copy of an edit), or leaves the client's own text as it is, is
+//!   dropped. One made against the server's text goes through as sent;
+//!   one made against a client's older text goes as the full text, since
+//!   its ranges no longer fit. A change whose range can't be read is
+//!   skipped, as a server would skip it;
 //! - versions are the relay's own, one more per change the server gets;
 //! - `didClose` goes through when the last client closes the document,
 //!   and a client that disconnects closes what it had open. When the
-//!   client whose text the server has leaves, the server gets another
-//!   client's text;
+//!   client whose text the server has leaves, the server gets the text of
+//!   the remaining client that opened or changed it last;
 //! - a `didChange` from a client that has the document open only through
 //!   other clients is dropped, since there is no text to apply it to.
 //!
@@ -81,12 +83,17 @@ struct Doc {
     version: i64,
     /// Each client's text, by client id.
     views: BTreeMap<u64, String>,
+    /// When each client last opened or changed it, in `Documents::clock`
+    /// ticks.
+    touched: BTreeMap<u64, u64>,
 }
 
 /// The open documents of one server process.
 #[derive(Default)]
 pub(crate) struct Documents {
     docs: HashMap<String, Doc>,
+    /// Counts opens and changes, to order clients' writes.
+    clock: u64,
     /// What the server's positions count.
     pub(crate) encoding: Encoding,
 }
@@ -138,6 +145,8 @@ impl Documents {
         text: &str,
         doc: Option<&Value>,
     ) -> (Relay, Option<String>) {
+        self.clock += 1;
+        let now = self.clock;
         let Some(d) = self.docs.get_mut(uri) else {
             let version = doc
                 .and_then(|d| d.get("version"))
@@ -149,11 +158,13 @@ impl Documents {
                     text: text.to_string(),
                     version,
                     views: BTreeMap::from([(client, text.to_string())]),
+                    touched: BTreeMap::from([(client, now)]),
                 },
             );
             return (Relay::AsIs, Some(uri.to_string()));
         };
         d.views.insert(client, text.to_string());
+        d.touched.insert(client, now);
         if d.text == text {
             return (Relay::Drop, None);
         }
@@ -173,6 +184,8 @@ impl Documents {
         message: &Value,
     ) -> (Relay, Option<String>) {
         let encoding = self.encoding;
+        self.clock += 1;
+        let now = self.clock;
         let Some(d) = self.docs.get_mut(uri) else {
             return (Relay::AsIs, None);
         };
@@ -183,20 +196,42 @@ impl Documents {
             return (Relay::Drop, None);
         };
         let mut after = before.clone();
+        let mut skipped = false;
         for c in changes {
             let Some(text) = c.get("text").and_then(Value::as_str) else {
+                skipped = true;
                 continue;
             };
-            after = apply_change(&after, text, c.get("range").and_then(range), encoding);
+            let r = match c.get("range") {
+                None | Some(Value::Null) => None,
+                Some(v) => match range(v) {
+                    Some(r) => Some(r),
+                    // Not a range: there's no telling what it would
+                    // replace.
+                    None => {
+                        skipped = true;
+                        continue;
+                    }
+                },
+            };
+            after = apply_change(&after, text, r, encoding);
+        }
+        if after == *before {
+            // Nothing changed for this client (an empty change, or one
+            // from a client behind the server): the server's text stays.
+            return (Relay::Drop, None);
         }
         let in_step = *before == d.text;
         d.views.insert(client, after.clone());
+        d.touched.insert(client, now);
         if after == d.text {
             return (Relay::Drop, None);
         }
         d.version += 1;
         d.text = after;
-        let relay = if in_step {
+        // A skipped change goes as the text the relay applied, so the
+        // server can't read it differently.
+        let relay = if in_step && !skipped {
             let mut m = message.clone();
             m["params"]["textDocument"]["version"] = d.version.into();
             Relay::Replace(m)
@@ -211,6 +246,7 @@ impl Documents {
             return (Relay::AsIs, None);
         };
         d.views.remove(&client);
+        d.touched.remove(&client);
         if d.views.is_empty() {
             self.docs.remove(uri);
             return (Relay::AsIs, None);
@@ -230,6 +266,7 @@ impl Documents {
             if d.views.remove(&client).is_none() {
                 return true;
             }
+            d.touched.remove(&client);
             if d.views.is_empty() {
                 send.push(json!({
                     "jsonrpc": "2.0",
@@ -250,12 +287,17 @@ impl Documents {
 
 impl Doc {
     /// When no remaining client has the server's text, the full-text
-    /// change that gives the server the first one's.
+    /// change that gives the server the text of the client that opened or
+    /// changed it last.
     fn resync(&mut self, uri: &str) -> Option<Value> {
         if self.views.values().any(|v| *v == self.text) {
             return None;
         }
-        let text = self.views.values().next()?.clone();
+        let last = self
+            .views
+            .keys()
+            .max_by_key(|c| self.touched.get(c).copied().unwrap_or(0))?;
+        let text = self.views[last].clone();
         self.version += 1;
         self.text = text;
         Some(full_change(uri, self.version, &self.text))
@@ -495,6 +537,62 @@ mod tests {
             (Relay::Drop, None)
         );
         assert_eq!(d.text(URI), Some("a\n"));
+    }
+
+    #[test]
+    fn a_change_that_leaves_the_clients_text_is_dropped() {
+        let mut d = Documents::default();
+        d.client_message(1, &open("a\n"));
+        d.client_message(2, &open("a\n"));
+        d.client_message(1, &edit(1, ((0, 1), (0, 1)), "b"));
+        // Client 2 is behind and sends an empty change: the server keeps
+        // client 1's text rather than going back to client 2's.
+        let empty = json!({"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
+            "textDocument": {"uri": URI, "version": 2}, "contentChanges": []}});
+        assert_eq!(d.client_message(2, &empty), (Relay::Drop, None));
+        assert_eq!(d.text(URI), Some("ab\n"));
+    }
+
+    #[test]
+    fn a_change_whose_range_cant_be_read_is_skipped() {
+        let mut d = Documents::default();
+        d.client_message(1, &open("a = 1\n"));
+        let bad = |changes: Value| {
+            json!({"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
+                "textDocument": {"uri": URI, "version": 1}, "contentChanges": changes}})
+        };
+        // Not applied as a full replacement.
+        let only_bad = bad(json!([{"range": {"start": "x"}, "text": "zzz"}]));
+        assert_eq!(d.client_message(1, &only_bad), (Relay::Drop, None));
+        assert_eq!(d.text(URI), Some("a = 1\n"));
+        // The readable change beside it still applies.
+        let mixed = bad(json!([
+            {"range": {"start": "x"}, "text": "zzz"},
+            {"range": {"start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 5}},
+                "text": "2"}
+        ]));
+        // It goes to the server as the text the relay applied, so the
+        // server can't read the bad range its own way.
+        let (relay, _) = d.client_message(1, &mixed);
+        assert_eq!(relay, Relay::Replace(full_change(URI, 1, "a = 2\n")));
+        assert_eq!(d.text(URI), Some("a = 2\n"));
+    }
+
+    #[test]
+    fn the_server_gets_the_text_of_the_client_that_changed_it_last() {
+        let mut d = Documents::default();
+        for c in [1, 2, 3] {
+            d.client_message(c, &open("a\n"));
+        }
+        // Tabs that don't share edits: 2 changes, then 3 changes its older
+        // text, so the server has 3's.
+        d.client_message(2, &edit(1, ((0, 0), (0, 0)), "2"));
+        d.client_message(3, &edit(1, ((0, 0), (0, 0)), "3"));
+        assert_eq!(d.text(URI), Some("3a\n"));
+        // 3 leaves: the server gets 2's text, the one changed last, not
+        // 1's, the lowest id.
+        let (send, _) = d.disconnect(3);
+        assert_eq!(send, vec![full_change(URI, 3, "2a\n")]);
     }
 
     #[test]
