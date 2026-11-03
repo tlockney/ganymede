@@ -352,18 +352,44 @@ async fn exchange_step(
     let mut reply = None;
     let mut idle = false;
     let mut others: std::collections::BTreeMap<String, usize> = Default::default();
+    let report = |why: String,
+                  reply: bool,
+                  idle: bool,
+                  iopub: &[Value],
+                  others: &std::collections::BTreeMap<String, usize>|
+     -> ! {
+        let mine: Vec<&Value> = iopub.iter().map(|m| &m[0]).collect();
+        panic!(
+            "{step}: {why} (reply: {reply}, idle: {idle}, this request's iopub: {mine:?}, \
+             other messages: {others:?})"
+        )
+    };
     while reply.is_none() || !idle {
+        // Checked before each read, so a steady stream of other frames
+        // can't keep the deadline from firing.
+        if let (Some(d), Some(t)) = (deadline, total) {
+            if tokio::time::Instant::now() >= d {
+                report(
+                    format!("no reply and idle in {} s", t.as_secs()),
+                    reply.is_some(),
+                    idle,
+                    &iopub,
+                    &others,
+                );
+            }
+        }
         let mut wait = Duration::from_secs(60);
         if let Some(d) = deadline {
             wait = wait.min(d.saturating_duration_since(tokio::time::Instant::now()));
         }
         let Ok(frame) = tokio::time::timeout(wait, ws.next()).await else {
-            let mine: Vec<&Value> = iopub.iter().map(|m: &Value| &m[0]).collect();
-            panic!(
-                "{step}: no reply and idle (reply: {}, idle: {idle}, this request's iopub: {mine:?}, \
-                 other messages: {others:?})",
-                reply.is_some()
-            );
+            let why = match (deadline, total) {
+                (Some(d), Some(t)) if tokio::time::Instant::now() >= d => {
+                    format!("no reply and idle in {} s", t.as_secs())
+                }
+                _ => "no frame in 60 s".to_string(),
+            };
+            report(why, reply.is_some(), idle, &iopub, &others);
         };
         let frame = frame.unwrap().unwrap();
         let WsMessage::Text(text) = frame else {
@@ -1118,7 +1144,7 @@ async fn crash(server: &str, base: &str, c: &Code, wait_idle: bool) -> Option<Va
         cl.call(M::POST, "api/kernels", Some(json!({"name": c.kernel}))),
     )
     .await;
-    assert_eq!(s, 201, "{k}");
+    assert_eq!(s, 201, "{server}: {k}");
     let kid = k["id"].as_str().unwrap().to_string();
     let ws_url = |session: &str| {
         format!(
@@ -1145,7 +1171,7 @@ async fn crash(server: &str, base: &str, c: &Code, wait_idle: bool) -> Option<Va
         ),
     )
     .await;
-    assert_eq!(r["reply"]["content"]["status"], "ok", "{r}");
+    assert_eq!(r["reply"]["content"]["status"], "ok", "{server}: {r}");
 
     let cell = request(
         "execute_request",
@@ -1191,7 +1217,7 @@ async fn crash(server: &str, base: &str, c: &Code, wait_idle: bool) -> Option<Va
         cl.call(M::GET, &format!("api/kernels/{kid}"), None),
     )
     .await;
-    assert_eq!(s, 200, "kernel removed instead of restarted: {v}");
+    assert_eq!(s, 200, "{server}: kernel removed instead of restarted: {v}");
     if wait_idle {
         let mut state = Value::Null;
         for _ in 0..300 {
@@ -1207,7 +1233,7 @@ async fn crash(server: &str, base: &str, c: &Code, wait_idle: bool) -> Option<Va
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        assert_eq!(state, "idle");
+        assert_eq!(state, "idle", "{server}: restarted kernel never idle");
     }
     let (mut ws, _) = within(
         30,
@@ -1230,7 +1256,7 @@ async fn crash(server: &str, base: &str, c: &Code, wait_idle: bool) -> Option<Va
     .await;
     assert_eq!(
         r["reply"]["content"]["status"], "error",
-        "state survived: {r}"
+        "{server}: state survived: {r}"
     );
     drop(ws);
     let (s, _) = within(
@@ -1239,7 +1265,7 @@ async fn crash(server: &str, base: &str, c: &Code, wait_idle: bool) -> Option<Va
         cl.call(M::DELETE, &format!("api/kernels/{kid}"), None),
     )
     .await;
-    assert_eq!(s, 204);
+    assert_eq!(s, 204, "{server}: deleting the kernel");
     reply
 }
 

@@ -84,8 +84,8 @@ against `jupyter lab` with jupyter-lsp, and checks both show the same
 diagnostics from typescript-language-server and pyright
 ([`scripts/test-lsp.sh`](../scripts/test-lsp.sh)). Its `coverage` job
 runs the whole suite on Linux under `cargo llvm-cov`, kernels included
-but not the `lab install`/`ui install` download tests (the workstation
-job runs those), and puts line coverage in the job summary, with a row for each `.rs`
+but not the `lab install`/`ui install` download tests (the e2e job runs
+those), and puts line coverage in the job summary, with a row for each `.rs`
 file the pull request changes. It is informational and never fails on a
 number. Locally: `cargo llvm-cov --workspace --open`.
 
