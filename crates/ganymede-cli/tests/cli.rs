@@ -1242,3 +1242,67 @@ fn mcp_on_stdio_finishes_requests_and_saves_on_sigterm() {
     mcp.child.wait().unwrap();
     assert_eq!(sources("b.ipynb"), ["kept"]);
 }
+
+/// `ganymede mcp call` calls a tool on an agent's own server, found by
+/// its announcement file, for hooks; with no server it fails (#315).
+#[test]
+fn mcp_call_reaches_an_agents_own_server() {
+    let root = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let env = |c: &mut std::process::Command| {
+        c.env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
+            .env("JUPYTER_CONFIG_DIR", state.path().join("config"))
+            .env("JUPYTER_DATA_DIR", state.path().join("data"))
+            .env_remove("JUPYTER_TOKEN");
+    };
+    let call = |args: &[&str]| {
+        let mut c = ganymede(&["mcp", "call"]);
+        c.args(args).current_dir(root.path());
+        env(&mut c);
+        c.output().unwrap()
+    };
+    let out = call(&["notebooks_list"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no server"),
+        "{out:?}"
+    );
+
+    let mut cmd = ganymede(&["mcp", "--no-execute", "--root-dir"]);
+    cmd.arg(root.path());
+    env(&mut cmd);
+    let mut mcp = McpClient::start(cmd);
+    let opened = mcp.tool(
+        "notebook_open",
+        serde_json::json!({"path": "j.ipynb", "title": "J"}),
+    );
+    let mark = opened
+        .lines()
+        .find_map(|l| l.strip_prefix("@@read "))
+        .unwrap()
+        .to_string();
+    // A hook records a step for the agent, then asks what changed.
+    let args = serde_json::json!({"path": "j.ipynb", "source": "$ ls", "mode": "recorded",
+                                  "mark": mark});
+    let out = call(&["cell_add", &args.to_string(), "--client", "hook"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("Added cell"));
+    let args = serde_json::json!({"path": "j.ipynb", "since": mark});
+    let out = call(&["notebook_read", &args.to_string()]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).starts_with("No changes by others"),
+        "{out:?}"
+    );
+    // A tool's error exits 1 with its message.
+    let out = call(&["cell_delete", r#"{"path": "j.ipynb", "id": "nope"}"#]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("no cell nope"));
+    assert!(mcp.finish().success());
+    // The announcement goes with the server.
+    let left: Vec<_> = std::fs::read_dir(state.path().join("runtime"))
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("ganymede-mcp-"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}

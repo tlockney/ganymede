@@ -1,0 +1,34 @@
+{
+  "description": "ganymede-journal: report the server, pass on others' notebook edits, record marked Bash steps, check the journal re-runs before stopping.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/journal.mjs", "session-start"], "timeout": 15 }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/journal.mjs", "prompt"], "timeout": 25 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|mcp__plugin_ganymede-journal_ganymede__.*|mcp__ganymede__.*",
+        "hooks": [
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/journal.mjs", "post-tool"], "timeout": 25 }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/journal.mjs", "stop"], "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}
