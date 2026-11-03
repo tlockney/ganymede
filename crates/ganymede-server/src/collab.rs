@@ -718,20 +718,19 @@ async fn run_room(
                     first_disk_event = None;
                     last_poll = Instant::now();
                     let needs_save = reload(contents.as_ref(), &mut room, d, &clients).await.needs_save;
-                    if settled {
-                        if needs_save { last_edit = Some(Instant::now()) }
-                    } else if needs_save || last_edit.is_some() {
-                        // The file never settles, so autosave below would
-                        // wait for good: save now, just after taking in
-                        // the file, so the save rarely meets a newer one.
+                    // Save the room's edits now, just after taking in the
+                    // file, so the save rarely meets a newer one. Waiting
+                    // for autosave instead starves it while the file keeps
+                    // changing: each reload would push it back, and the
+                    // next file event holds it off again.
+                    if needs_save || (!settled && last_edit.is_some()) {
                         save_room(contents.as_ref(), &mut room, d, &clients, false).await;
                         last_edit = None;
                     }
                 } else if last_poll.elapsed() >= poll_every && disk_event.is_none() {
                     last_poll = Instant::now();
                     if poll(contents.as_ref(), &mut room, d, &clients).await {
-                        // As after a bounded reload: a file that changes
-                        // at every poll would hold off autosave for good.
+                        // As after a reload.
                         save_room(contents.as_ref(), &mut room, d, &clients, false).await;
                         last_edit = None;
                     }
