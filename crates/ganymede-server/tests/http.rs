@@ -3138,6 +3138,7 @@ async fn mcp_journals_into_a_notebook() {
                 let nb: Value = serde_json::from_str(&s).unwrap();
                 if nb["cells"].as_array().map(Vec::len) == Some(4)
                     && nb["cells"][3]["outputs"].as_array().map(Vec::len) == Some(1)
+                    && nb["cells"][3]["execution_count"].is_number()
                 {
                     return nb;
                 }

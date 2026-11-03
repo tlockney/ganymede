@@ -7,7 +7,9 @@ counts.
 
 `ganymede_exec::Options` now has `store_history` (default true, as
 `nbclient`), and scratch runs set it to false. The fake test kernel now
-follows ipykernel: only stored runs advance its counter. Before, it
+counts like ipykernel for stored runs: only they advance its counter
+(for unstored runs it reports the last count, where ipykernel reports
+the next one; nothing reads that number). Before, it
 counted every request, so it could not show the bug.
 
 `store_history: false` is not a full sandbox: IPython's displayhook

@@ -23,8 +23,8 @@
 //! Cells an agent writes carry `metadata.ganymede.agent = {"by", "mode",
 //! "at"}`: `by` is the client's name, `mode` is `executed` (ran in the
 //! kernel), `recorded` (a step that ran elsewhere) or `note`. Scratch runs
-//! (`cell_run` with `record: false`) run in the kernel and leave nothing in
-//! the notebook.
+//! (`cell_run` with `record: false`) run in the kernel, sharing its state,
+//! and leave nothing in the notebook.
 
 use crate::collab::{hold_notebook, notebook_room_id, with_notebook, Hold};
 use crate::AppState;
