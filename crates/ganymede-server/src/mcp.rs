@@ -382,7 +382,9 @@ impl Notebooks {
         text(format!("Added cell {id}"))
     }
 
-    #[tool(description = "Replace a cell's source; with `run: true`, run it after.")]
+    #[tool(
+        description = "Replace a cell's source; with `run: true`, run it after. The replaced source is kept in the cell's metadata.ganymede.agent.history; to remove a secret, delete the cell instead."
+    )]
     async fn cell_edit(
         &self,
         Parameters(a): Parameters<EditArgs>,
@@ -429,8 +431,12 @@ impl Notebooks {
                             previous
                         }
                     };
-                    let superseded = previous.filter(|p| *p != source);
-                    stamp(txn, &cell, &by, superseded);
+                    // An unchanged source is no edit: the cell keeps its
+                    // provenance. An empty one replaced is no revision.
+                    if previous.as_deref() != Some(source.as_str()) {
+                        let superseded = previous.filter(|p| !p.is_empty());
+                        stamp(txn, &cell, &by, superseded);
+                    }
                     true
                 })
             })

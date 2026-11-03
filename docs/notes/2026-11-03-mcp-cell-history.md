@@ -9,7 +9,9 @@ a correction (#311, the Ganymede Journal design). To keep that honest,
   bytes: a finding is short, and a code cell large enough to matter is
   better kept in git than in metadata.
 - An edit that leaves the source unchanged adds nothing, so `cell_edit`
-  with `run: true` used only to re-run a cell leaves no noise.
+  with `run: true` used only to re-run a cell leaves no noise: it doesn't
+  touch the cell's provenance either. Replacing an empty source records
+  no revision.
 - `by`/`at` on an entry name the edit that replaced the text, not the
   author of the old text. The cell's own `by` stays its first author,
   and its `at` moves to the latest edit, as before.

@@ -3349,7 +3349,8 @@ async fn mcp_cell_edit_keeps_superseded_sources() {
         .iter()
         .map(|h| h["source"].as_str().unwrap())
         .collect();
-    let want: Vec<String> = (3..=12).map(|n| format!("v{n}")).collect();
+    let limit = ganymede_server::mcp::HISTORY_LIMIT;
+    let want: Vec<String> = (13 - limit..13).map(|n| format!("v{n}")).collect();
     assert_eq!(sources, want);
     assert_eq!(history.len(), ganymede_server::mcp::HISTORY_LIMIT);
     for h in history {
