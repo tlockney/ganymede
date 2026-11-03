@@ -219,7 +219,7 @@ code.
 
 | Function | Contract |
 |---|---|
-| `GanymedeServer *ganymede_server_start(const char *config_json, char **error_out)` | Starts a server on loopback and blocks until it listens. On failure returns NULL and, if `error_out` isn't NULL, sets `*error_out` to a message. |
+| `GanymedeServer *ganymede_server_start(const char *config_json, char **error_out)` | Starts a server on loopback and blocks until it listens, or for at most 30 seconds, then fails. On failure returns NULL and, if `error_out` isn't NULL, sets `*error_out` to a message. |
 | `const char *ganymede_server_url(const GanymedeServer *server)` | The URL with its token. The server owns it: don't free it or use it after stop. |
 | `void ganymede_server_stop(GanymedeServer *server)` | Gives open requests a moment, shuts down every kernel, stops the server and frees it. Blocks until done. NULL is ignored. |
 | `void ganymede_string_free(char *s)` | Frees a string the library returned, such as the error. NULL is ignored. |
