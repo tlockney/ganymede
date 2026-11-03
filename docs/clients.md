@@ -82,7 +82,13 @@ so nb-cli's remote mode edits notebooks through a document room and runs
 cells with `POST /api/kernels/{id}/execute`, the server writing outputs
 into the room; see
 [Document model and collaboration](protocol.md#document-model-and-collaboration).
-The test above predates this and used the contents API.
+`validation/nb-cli.sh` passes on this path too, on cdp-kernel in CI (the
+`workstation` job) and on ipykernel by hand, 2026-11-03. Two nb-cli
+0.0.10 quirks show on it: it reads cell indexes and counts from the file
+while editing the room, so edits within the room's one-second save delay
+can land at a stale index, and it drops `execute_result` outputs it
+reads from a room ([#296](https://github.com/tlockney/ganymede/issues/296));
+see [Agents](agents.md#connect-nb-cli).
 
 ### Embeddable / libraries
 
