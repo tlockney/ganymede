@@ -22,16 +22,53 @@ pub struct FileIds {
     store: Mutex<Store>,
 }
 
-enum Store {
-    Memory {
-        by_path: HashMap<String, String>,
-        by_id: HashMap<String, String>,
-    },
+struct Store {
+    /// Ids for this process: all of them without a database, and with
+    /// one, those handed out when it failed, so they still resolve.
+    memory: Memory,
     #[cfg(feature = "sqlite")]
-    Sqlite {
-        db: rusqlite::Connection,
-        root: String,
-    },
+    db: Option<(rusqlite::Connection, String)>,
+}
+
+#[derive(Default)]
+struct Memory {
+    by_path: HashMap<String, String>,
+    by_id: HashMap<String, String>,
+}
+
+impl Memory {
+    fn index(&mut self, path: &str) -> (String, bool) {
+        match self.by_path.get(path) {
+            Some(id) => (id.clone(), false),
+            None => {
+                let id = uuid::Uuid::new_v4().to_string();
+                self.by_path.insert(path.to_string(), id.clone());
+                self.by_id.insert(id.clone(), path.to_string());
+                (id, true)
+            }
+        }
+    }
+
+    fn moved(&mut self, old: &str, new: &str) {
+        let moving: Vec<(String, String)> = self
+            .by_path
+            .iter()
+            .filter_map(|(p, id)| under(p, old).map(|rest| (format!("{new}{rest}"), id.clone())))
+            .collect();
+        self.by_path
+            .retain(|p, _| under(p, old).is_none() && under(p, new).is_none());
+        self.by_id
+            .retain(|_, p| under(p, old).is_none() && under(p, new).is_none());
+        for (p, id) in moving {
+            self.by_path.insert(p.clone(), id.clone());
+            self.by_id.insert(id, p);
+        }
+    }
+
+    fn removed(&mut self, path: &str) {
+        self.by_path.retain(|p, _| under(p, path).is_none());
+        self.by_id.retain(|_, p| under(p, path).is_none());
+    }
 }
 
 impl Default for FileIds {
@@ -63,25 +100,28 @@ impl FileIds {
     /// Ids for this process only.
     pub fn in_memory() -> Self {
         FileIds {
-            store: Mutex::new(Store::Memory {
-                by_path: HashMap::new(),
-                by_id: HashMap::new(),
+            store: Mutex::new(Store {
+                memory: Memory::default(),
+                #[cfg(feature = "sqlite")]
+                db: None,
             }),
         }
     }
 
     /// Ids kept in the database at `db` for the files under `root`. Falls
     /// back to [`FileIds::in_memory`], with a warning, when the database
-    /// can't be opened or the crate was built without `sqlite`.
+    /// can't be opened or the crate was built without `sqlite`. An id
+    /// handed out while the database fails is kept in memory, so it
+    /// resolves for the life of the process.
     pub fn open(db: &Path, root: &Path) -> Self {
         #[cfg(feature = "sqlite")]
         {
             match sqlite::connect(db) {
                 Ok(conn) => {
                     return FileIds {
-                        store: Mutex::new(Store::Sqlite {
-                            db: conn,
-                            root: root.to_string_lossy().into_owned(),
+                        store: Mutex::new(Store {
+                            memory: Memory::default(),
+                            db: Some((conn, root.to_string_lossy().into_owned())),
                         }),
                     }
                 }
@@ -108,71 +148,69 @@ impl FileIds {
 
     /// The id for `path`, made the first time; and whether it was new.
     pub fn index(&self, path: &str) -> (String, bool) {
-        match &mut *self.lock() {
-            Store::Memory { by_path, by_id } => match by_path.get(path) {
-                Some(id) => (id.clone(), false),
-                None => {
-                    let id = uuid::Uuid::new_v4().to_string();
-                    by_path.insert(path.to_string(), id.clone());
-                    by_id.insert(id.clone(), path.to_string());
-                    (id, true)
-                }
-            },
-            #[cfg(feature = "sqlite")]
-            Store::Sqlite { db, root } => sqlite::index(db, root, path).unwrap_or_else(|e| {
-                tracing::warn!("file id for {path}: {e}");
-                (uuid::Uuid::new_v4().to_string(), true)
-            }),
+        let store = &mut *self.lock();
+        if let Some(id) = store.memory.by_path.get(path) {
+            return (id.clone(), false);
         }
+        #[cfg(feature = "sqlite")]
+        if let Some((db, root)) = &store.db {
+            match sqlite::index(db, root, path) {
+                Ok(r) => return r,
+                // A path the database already has keeps that id; only a
+                // path it lacks gets one in memory.
+                Err(e) => match sqlite::id(db, root, path) {
+                    Ok(Some(id)) => {
+                        tracing::warn!("file id for {path}: {e}");
+                        return (id, false);
+                    }
+                    _ => tracing::warn!("file id for {path}, kept in memory: {e}"),
+                },
+            }
+        }
+        store.memory.index(path)
     }
 
     /// The id `path` has, without making one.
     pub fn get(&self, path: &str) -> Option<String> {
-        match &*self.lock() {
-            Store::Memory { by_path, .. } => by_path.get(path).cloned(),
-            #[cfg(feature = "sqlite")]
-            Store::Sqlite { db, root } => sqlite::id(db, root, path).unwrap_or_else(|e| {
+        let store = &*self.lock();
+        if let Some(id) = store.memory.by_path.get(path) {
+            return Some(id.clone());
+        }
+        #[cfg(feature = "sqlite")]
+        if let Some((db, root)) = &store.db {
+            return sqlite::id(db, root, path).unwrap_or_else(|e| {
                 tracing::warn!("file id for {path}: {e}");
                 None
-            }),
+            });
         }
+        None
     }
 
     /// The path an id names now.
     pub fn path(&self, id: &str) -> Option<String> {
-        match &*self.lock() {
-            Store::Memory { by_id, .. } => by_id.get(id).cloned(),
-            #[cfg(feature = "sqlite")]
-            Store::Sqlite { db, root } => sqlite::path(db, root, id).unwrap_or_else(|e| {
+        let store = &*self.lock();
+        if let Some(path) = store.memory.by_id.get(id) {
+            return Some(path.clone());
+        }
+        #[cfg(feature = "sqlite")]
+        if let Some((db, root)) = &store.db {
+            return sqlite::path(db, root, id).unwrap_or_else(|e| {
                 tracing::warn!("file id {id}: {e}");
                 None
-            }),
+            });
         }
+        None
     }
 
     /// `old` (a file, or a directory and everything under it) is now
     /// `new`; ids follow.
     pub fn moved(&self, old: &str, new: &str) {
-        match &mut *self.lock() {
-            Store::Memory { by_path, by_id } => {
-                let moving: Vec<(String, String)> = by_path
-                    .iter()
-                    .filter_map(|(p, id)| {
-                        under(p, old).map(|rest| (format!("{new}{rest}"), id.clone()))
-                    })
-                    .collect();
-                by_path.retain(|p, _| under(p, old).is_none() && under(p, new).is_none());
-                by_id.retain(|_, p| under(p, old).is_none() && under(p, new).is_none());
-                for (p, id) in moving {
-                    by_path.insert(p.clone(), id.clone());
-                    by_id.insert(id, p);
-                }
-            }
-            #[cfg(feature = "sqlite")]
-            Store::Sqlite { db, root } => {
-                if let Err(e) = sqlite::moved(db, root, old, new) {
-                    tracing::warn!("moving file ids from {old} to {new}: {e}");
-                }
+        let store = &mut *self.lock();
+        store.memory.moved(old, new);
+        #[cfg(feature = "sqlite")]
+        if let Some((db, root)) = &mut store.db {
+            if let Err(e) = sqlite::moved(db, root, old, new) {
+                tracing::warn!("moving file ids from {old} to {new}: {e}");
             }
         }
     }
@@ -180,16 +218,12 @@ impl FileIds {
     /// `path` (a file, or a directory and everything under it) was
     /// deleted.
     pub fn removed(&self, path: &str) {
-        match &mut *self.lock() {
-            Store::Memory { by_path, by_id } => {
-                by_path.retain(|p, _| under(p, path).is_none());
-                by_id.retain(|_, p| under(p, path).is_none());
-            }
-            #[cfg(feature = "sqlite")]
-            Store::Sqlite { db, root } => {
-                if let Err(e) = sqlite::removed(db, root, path) {
-                    tracing::warn!("dropping file ids under {path}: {e}");
-                }
+        let store = &mut *self.lock();
+        store.memory.removed(path);
+        #[cfg(feature = "sqlite")]
+        if let Some((db, root)) = &store.db {
+            if let Err(e) = sqlite::removed(db, root, path) {
+                tracing::warn!("dropping file ids under {path}: {e}");
             }
         }
     }
@@ -220,23 +254,25 @@ mod sqlite {
         Ok(db)
     }
 
+    /// Another server on the same root may insert the path first: the
+    /// insert then does nothing, and its id is the one read back.
     pub fn index(db: &Connection, root: &str, path: &str) -> rusqlite::Result<(String, bool)> {
-        let found: Option<String> = db
-            .query_row(
-                "SELECT id FROM file_ids WHERE root = ?1 AND path = ?2",
-                params![root, path],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(id) = found {
+        // Most paths have an id already: read it without taking the
+        // write lock.
+        if let Some(id) = self::id(db, root, path)? {
             return Ok((id, false));
         }
         let id = uuid::Uuid::new_v4().to_string();
-        db.execute(
-            "INSERT INTO file_ids (id, root, path) VALUES (?1, ?2, ?3)",
+        let inserted = db.execute(
+            "INSERT OR IGNORE INTO file_ids (id, root, path) VALUES (?1, ?2, ?3)",
             params![id, root, path],
         )?;
-        Ok((id, true))
+        let stored: String = db.query_row(
+            "SELECT id FROM file_ids WHERE root = ?1 AND path = ?2",
+            params![root, path],
+            |r| r.get(0),
+        )?;
+        Ok((stored, inserted == 1))
     }
 
     pub fn id(db: &Connection, root: &str, path: &str) -> rusqlite::Result<Option<String>> {
@@ -341,5 +377,70 @@ mod tests {
         let other = FileIds::open(&db, Path::new("/root2"));
         assert_eq!(other.path(&id), None);
         assert!(other.index("x.ipynb").1);
+    }
+
+    /// Two servers on one root index the same new path: both get the id
+    /// the first stored.
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_index_takes_the_stored_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ids.db");
+        let a = sqlite::connect(&db).unwrap();
+        let b = sqlite::connect(&db).unwrap();
+        let (id, new) = sqlite::index(&a, "/r", "x.ipynb").unwrap();
+        assert!(new);
+        assert_eq!(sqlite::index(&b, "/r", "x.ipynb").unwrap(), (id, false));
+    }
+
+    /// When the database fails, an id handed out still resolves, and
+    /// follows moves and deletes.
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_errors_keep_ids_in_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ids.db");
+        let ids = FileIds::open(&db, Path::new("/root"));
+        let (stored, _) = ids.index("stored.ipynb");
+        sqlite::connect(&db)
+            .unwrap()
+            .execute_batch("DROP TABLE file_ids")
+            .unwrap();
+        let (id, new) = ids.index("a.ipynb");
+        assert!(new);
+        assert_eq!(ids.index("a.ipynb"), (id.clone(), false));
+        assert_eq!(ids.path(&id).as_deref(), Some("a.ipynb"));
+        assert_eq!(ids.get("a.ipynb"), Some(id.clone()));
+        ids.moved("a.ipynb", "b.ipynb");
+        assert_eq!(ids.path(&id).as_deref(), Some("b.ipynb"));
+        ids.removed("b.ipynb");
+        assert_eq!(ids.path(&id), None);
+        // What the database held is out of reach while it fails.
+        assert_eq!(ids.path(&stored), None);
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn a_failed_write_keeps_the_stored_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ids.db");
+        let ids = FileIds::open(&db, Path::new("/root"));
+        let (stored, _) = ids.index("stored.ipynb");
+        // Writes fail (as when another server holds the lock past the
+        // busy timeout); reads still work.
+        sqlite::connect(&db)
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER no_insert BEFORE INSERT ON file_ids
+                BEGIN SELECT RAISE(FAIL, 'busy'); END;",
+            )
+            .unwrap();
+        let fresh = FileIds::open(&db, Path::new("/root"));
+        assert_eq!(fresh.index("stored.ipynb"), (stored.clone(), false));
+        let (id, new) = fresh.index("a.ipynb");
+        assert!(new);
+        assert_ne!(id, stored);
+        assert_eq!(fresh.index("a.ipynb"), (id, false));
+        assert_eq!(fresh.index("stored.ipynb"), (stored, false));
     }
 }
