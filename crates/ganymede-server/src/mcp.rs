@@ -997,8 +997,7 @@ impl Notebooks {
             record_timing: false,
             store_widget_state: false,
             coalesce_streams: true,
-            // Scratch work leaves no trace, in the kernel's counter and
-            // output history as in the notebook.
+            // Scratch runs don't advance the kernel's execution count.
             store_history: false,
             ..Default::default()
         };
