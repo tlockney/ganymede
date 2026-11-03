@@ -3298,8 +3298,10 @@ async fn mcp_cell_ids_outlive_an_idle_room() {
 #[tokio::test]
 async fn mcp_cell_edit_keeps_superseded_sources() {
     let dir = tempfile::tempdir().unwrap();
-    let nb = json!({"cells": [{"cell_type": "markdown", "id": "f", "metadata": {},
-        "source": "v0"}], "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    let nb = json!({"cells": [
+        {"cell_type": "markdown", "id": "f", "metadata": {}, "source": "v0"},
+        {"cell_type": "markdown", "id": "g", "metadata": {}, "source": ""}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
     std::fs::write(dir.path().join("h.ipynb"), nb.to_string()).unwrap();
     let app = mcp_app(dir.path());
     let sid = mcp_connect(&app, "editor").await;
@@ -3317,6 +3319,11 @@ async fn mcp_cell_edit_keeps_superseded_sources() {
             )
         }
     };
+    // Cell g: an empty source replaced records no revision, and an edit
+    // by another client that changes nothing doesn't re-attribute it.
+    edit_by(&app, &sid, "g", "x").await;
+    let other = mcp_connect(&app, "other").await;
+    edit_by(&app, &other, "g", "x").await;
     // v0 -> v1 ... v12, an edit that changes nothing, then v13. Waiting
     // for v13 on disk means the no-op edit is in the saved file too.
     for n in 1..=12 {
@@ -3359,8 +3366,28 @@ async fn mcp_cell_edit_keeps_superseded_sources() {
     }
     // A person's cell edited by an agent becomes an agent note.
     assert_eq!(agent["mode"], "note");
+    let g = &nb["cells"][1];
+    assert_eq!(g["source"], json!(["x"]));
+    assert_eq!(g["metadata"]["ganymede"]["agent"]["by"], "editor", "{g}");
+    assert!(
+        g["metadata"]["ganymede"]["agent"]["history"].is_null(),
+        "{g}"
+    );
     // The file still reads as nbformat 4.
     ganymede_nbformat::Notebook::from_str(&raw).expect("valid notebook");
+}
+
+async fn edit_by(app: &axum::Router, sid: &str, id: &str, src: &str) {
+    let out = mcp_text(
+        &mcp_tool(
+            app,
+            sid,
+            "cell_edit",
+            json!({"path": "h.ipynb", "id": id, "source": src}),
+        )
+        .await,
+    );
+    assert_eq!(out, format!("Edited cell {id}"));
 }
 
 /// cell_move checks `after` before it touches the cell, and moves both

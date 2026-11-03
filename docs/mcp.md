@@ -47,7 +47,7 @@ a URL instead of starting a command.
 | `notebook_read` | The notebook as text: cells with ids, sources and outputs. A notebook in nbformat 4.4 or older has no cell ids on disk; the server makes them up when it opens the notebook, and they stay the same while the MCP session lasts. A session ends after an hour without a request, or when the server stops; after that, read the notebook again for new ids. `ganymede mcp` starts a new session by itself. A new session has no notebook open either, so open or read the notebook again, with its `path`, before calls that leave `path` out. |
 | `cell_run` | Run code and return its outputs. Recorded as a new code cell by default; `record: false` runs it as scratch work that leaves nothing in the notebook. |
 | `cell_add` | Add a Markdown note; `mode: recorded` records a step that ran outside the kernel, such as a shell command. |
-| `cell_edit` | Replace a cell's source; `run: true` runs it after. |
+| `cell_edit` | Replace a cell's source, keeping the replaced text in the cell's history; `run: true` runs it after. |
 | `cell_delete`, `cell_move` | Delete a cell, or move it after another. |
 | `kernel_control` | Interrupt, restart, or shut down the kernel. |
 | `notebook_run_all` | Restart the kernel and run every code cell in order. |
