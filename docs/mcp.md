@@ -77,11 +77,14 @@ content. Kernels can't ask for input.
 Cells an agent writes carry
 `metadata.ganymede.agent = {"by": "<client name>", "mode": "executed" | "recorded" | "note", "at": "<time>"}`,
 where the name is the one the MCP client gave when it connected. Scratch
-runs leave no cells and run with `store_history: false`, so they don't
-advance the kernel's execution count. Whether they change the kernel's
-output history depends on the kernel: ipykernel still sets `_` to a
-scratch run's result. They share the kernel's state: a variable a
-scratch run assigns stays defined.
+runs leave no cells and run with `store_history: false`, so a kernel
+that honours it, as ipykernel and cdp-kernel do, doesn't advance its
+execution count. They share the kernel's state: a variable a scratch run
+assigns stays defined. Other history is kernel-dependent. With
+ipykernel, a scratch result still sets `_`, and `Out[N]`/`_N` for the
+next recorded cell's number N, which keeps the scratch value if that
+cell has no result. A function a scratch run defines shows as
+`Cell In[N]` in tracebacks.
 
 ## Options
 

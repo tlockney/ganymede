@@ -3112,11 +3112,14 @@ async fn mcp_journals_into_a_notebook() {
     // Scratch runs don't store history, so the next recorded cell's
     // count follows the previous one's.
     let v = tool("cell_run", json!({"source": "scratch", "record": false})).await;
-    mcp_text(&v);
+    assert!(mcp_text(&v).contains("scratch"), "{v}");
     let v = tool("cell_run", json!({"source": "raise"})).await;
     let out = mcp_text(&v);
     assert!(out.contains("FakeError: raised"), "{out}");
     assert!(!out.contains('\u{1b}'), "ANSI is stripped: {out:?}");
+    // A scratch run still works after a recorded cell failed.
+    let v = tool("cell_run", json!({"source": "scratch", "record": false})).await;
+    assert!(mcp_text(&v).contains("scratch"), "{v}");
 
     let v = tool("notebook_read", json!({})).await;
     let read = mcp_text(&v);
