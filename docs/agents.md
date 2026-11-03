@@ -14,7 +14,7 @@ API, so it works against `ganymede serve` with no changes on either
 side. It was tested with nb-cli 0.0.10 on cdp-kernel and ipykernel
 ([`validation/nb-cli.sh`](https://github.com/tlockney/ganymede/blob/main/validation/nb-cli.sh)).
 
-![An agent journaling into a notebook. A coding agent such as Claude Code runs nb (nb-cli), which adds and edits cells through ganymede serve's contents API and runs them through the kernel websocket. ganymede serve writes the notebook file in the root dir and keeps one kernel per notebook, so state carries across nb execute calls. You open the same notebook in JupyterLab, VS Code or ganymede-ui and see the agent's cells after a reload.](images/agents/journaling.svg)
+![An agent journaling into a notebook. A coding agent such as Claude Code runs nb (nb-cli), which adds and edits cells through ganymede serve's document room (or, on a server without rooms, its contents API) and runs them through the execute API (or the kernel websocket). ganymede serve writes the notebook file in the root dir and keeps one kernel per notebook, so state carries across nb execute calls. You open the same notebook in JupyterLab, VS Code or ganymede-ui: with document rooms you see the agent's cells arrive live, otherwise after a reload.](images/agents/journaling.svg)
 
 ## Connect nb-cli
 
@@ -52,10 +52,31 @@ and runs them on a kernel through the server; outputs are saved in the
 notebook on the server.
 
 > [!NOTE]
-> **Unreleased.** A build of `main` serves collaboration rooms, which
-> nb-cli looks for and would use to edit cells instead of the contents
-> API. That path hasn't been tested yet
-> ([#278](https://github.com/tlockney/ganymede/issues/278)).
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+A build of `main` serves document rooms and jupyter-server-documents'
+API, and nb-cli uses them: `nb connect` reports `Mode: collaborative`.
+Each `nb cell add`, `update` or `delete` edits the notebook's room, which
+saves the file about a second later, and `nb execute` asks the server
+to run cells (`POST /api/kernels/{id}/execute`), which writes outputs
+into the room and the file. A JupyterLab tab with the collaboration
+extensions, or ganymede-ui, open on the same notebook shows the agent's
+cells and outputs as they arrive. This path is tested in CI on
+cdp-kernel and by hand on ipykernel. Two nb-cli 0.0.10 quirks on it:
+
+- nb-cli reads cell counts and indexes such as `--cell-index -1` from
+  the file, not the room. Commands run back to back within the room's
+  one-second save delay see the notebook as it was before the last
+  edit, so a second `nb cell add` can land above the first. An agent
+  that runs one command per step is slow enough; a script should check
+  the file between edits, as `validation/nb-cli.sh` does.
+- `nb execute` leaves out `execute_result` outputs (a cell's last
+  expression), because nb-cli reads their integer `execution_count` as
+  a float and drops the output
+  ([#296](https://github.com/tlockney/ganymede/issues/296)). The output
+  is in the notebook, and `nb read` shows it once the file is saved.
+  Printed output is not affected.
 
 `nb create` looks up the kernel on local disk, not on the server, and
 only under `VIRTUAL_ENV` and the platform's Jupyter data dirs (not
@@ -191,14 +212,16 @@ ganymede execute ~/analysis/fares.ipynb
 
 ## What doesn't work yet
 
-- **No live view.** Without collaboration rooms (see the note under
-  [Connect nb-cli](#connect-nb-cli)), the agent's edits go to the file, and
+- **No live view without document rooms.** On the latest release, or in
+  JupyterLab without the collaboration extensions (see the note under
+  [Connect nb-cli](#connect-nb-cli)), the agent's edits reach you only through the file, and
   JupyterLab doesn't watch it: it notices only when you save, and then
   asks whether to overwrite. Overwrite replaces the agent's cells with
   your stale copy. Reload first (File, Reload Notebook from Disk), and
-  don't edit a notebook while the agent works in it. Watching cells
-  arrive needs shared documents on the server
-  ([#244](https://github.com/tlockney/ganymede/issues/244)).
+  don't edit a notebook while the agent works in it. A build of `main`
+  has the rooms; JupyterLab needs the collaboration extensions
+  (`ganymede lab extension install jupyter-docprovider
+  jupyter-collaboration-ui`) to use them.
 - **A cell timeout doesn't stop the cell.** `nb execute` waits 30
   seconds per cell by default (`-t` sets it; raise it for slow
   downloads). On a timeout it gives up before saving, so outputs of
