@@ -23,6 +23,7 @@
 use crate::documents::{self, Encoding};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// The key, in an item's `data`, of the router's number for the document
 /// the request that returned the item named.
@@ -35,7 +36,6 @@ struct Mark {
     doc: u64,
     one: bool,
 }
-use std::sync::Arc;
 
 /// Where a message from the server goes.
 #[derive(Debug, PartialEq)]
@@ -170,7 +170,7 @@ impl Router {
                 if let (Some(m), Some(result)) = (mark, obj.get_mut("result")) {
                     if m.one {
                         if let Some(item) = result.as_object_mut() {
-                            mark_item(item, m.doc, None);
+                            mark_item(item, m.doc);
                         }
                     } else {
                         mark_items(result, m.doc);
@@ -189,11 +189,7 @@ impl Router {
         if !documents::resolves_item(method) {
             return None;
         }
-        let doc = message
-            .get("params")?
-            .get("data")?
-            .get(ITEM_DOC)?
-            .as_u64()?;
+        let doc = mark_of(message.get("params")?)?;
         self.documents
             .get(usize::try_from(doc).ok()?)
             .map(String::as_str)
@@ -240,12 +236,17 @@ impl Router {
 /// the elements of an array result or of a completion list's `items`; a
 /// `Command` (whose `command` is a string) is left as it is, since it is
 /// never resolved. An item without `data` of its own takes a completion
-/// list's `itemDefaults.data`, as the client would.
+/// list's `itemDefaults.data`, which is marked in its place: the client
+/// fills it into those items, so they come back marked.
 fn mark_items(result: &mut Value, doc: u64) {
     let default = result
-        .get("itemDefaults")
-        .and_then(|d| d.get("data"))
-        .cloned();
+        .get_mut("itemDefaults")
+        .and_then(Value::as_object_mut)
+        .filter(|d| d.contains_key("data"));
+    let has_default = default.is_some();
+    if let Some(d) = default {
+        mark_item(d, doc);
+    }
     let items = match result {
         Value::Array(items) => items,
         Value::Object(list) => match list.get_mut("items") {
@@ -258,25 +259,34 @@ fn mark_items(result: &mut Value, doc: u64) {
         if item.get("command").is_some_and(Value::is_string) {
             continue;
         }
-        mark_item(item, doc, default.as_ref());
+        if has_default && !item.contains_key("data") {
+            continue;
+        }
+        mark_item(item, doc);
     }
 }
 
-fn mark_item(item: &mut serde_json::Map<String, Value>, doc: u64, default: Option<&Value>) {
+/// Wraps `item`'s `data` (or none) in a mark naming document `doc`.
+fn mark_item(item: &mut serde_json::Map<String, Value>, doc: u64) {
     let mut mark = serde_json::Map::new();
     mark.insert(ITEM_DOC.into(), doc.into());
-    if let Some(data) = item.remove("data").or_else(|| default.cloned()) {
+    if let Some(data) = item.remove("data") {
         mark.insert("data".into(), data);
     }
     item.insert("data".into(), Value::Object(mark));
+}
+
+/// The document number in the mark on a resolve's item (`params`).
+fn mark_of(params: &Value) -> Option<u64> {
+    params.get("data")?.get(ITEM_DOC)?.as_u64()
 }
 
 /// Takes the mark off a resolve's item, giving the server its own `data`
 /// back, and returns the document number it held. `data` the router
 /// didn't mark is left as it is.
 fn unmark(params: &mut Value) -> Option<u64> {
+    let doc = mark_of(params)?;
     let item = params.as_object_mut()?;
-    let doc = item.get("data")?.get(ITEM_DOC)?.as_u64()?;
     let Some(Value::Object(mut mark)) = item.remove("data") else {
         unreachable!("an object holds the mark")
     };
@@ -347,8 +357,10 @@ mod tests {
             items[0]["data"],
             json!({"ganymede.doc": 0, "data": {"k": 1}})
         );
+        // An item without data inherits the marked default.
+        assert_eq!(items[1].get("data"), None);
         assert_eq!(
-            items[1]["data"],
+            m["result"]["itemDefaults"]["data"],
             json!({"ganymede.doc": 0, "data": "default"})
         );
         let resolve = json!({"id": 2, "method": "completionItem/resolve", "params": items[0]});
