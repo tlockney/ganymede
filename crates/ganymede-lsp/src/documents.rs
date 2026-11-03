@@ -146,9 +146,12 @@ impl Documents {
     /// the server the client's text, and the document's URI. `None` when
     /// the server already has it, or for any other message.
     ///
-    /// Only tabs that don't share edits differ, so this sends nothing
-    /// while they agree. It doesn't count as the client's change: when a
-    /// client leaves, the server still gets the text changed last.
+    /// Sends nothing while the tabs agree. Tabs that don't share edits
+    /// differ until one changes; tabs that share edits differ only until
+    /// an edit reaches both, so a request in that gap sends the older
+    /// text, and the requester's own copy of the edit then goes through
+    /// in step. It doesn't count as the client's change: when a client
+    /// leaves, the server still gets the text changed last.
     pub(crate) fn before_request(
         &mut self,
         client: u64,
