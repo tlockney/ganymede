@@ -181,6 +181,61 @@ jobs:
             exit 1
           fi
 
+  # Line coverage of the whole test suite, kernels and Jupyter included as
+  # in e2e, in the job summary, with a row per changed file on a pull
+  # request. Informational: nothing fails on a number (#255).
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GANYMEDE_E2E_KERNELS: cdp-node,python3
+      GANYMEDE_E2E_REQUIRE_JUPYTER: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        with:
+          tool: cargo-llvm-cov
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: .github/workflows/ci.yml
+      - name: Install kernels and the reference implementation
+        run: |
+          npm install -g "@tlockney/cdp-kernel@$CDP_KERNEL_VERSION"
+          cdp-kernel install --runtime node
+          # shellcheck disable=SC2086
+          python -m pip install $E2E_PYTHON_PACKAGES
+          python -m ipykernel install --user --name python3
+          echo "GANYMEDE_E2E_JUPYTER=$(command -v jupyter)" >> "$GITHUB_ENV"
+      - name: cargo llvm-cov --workspace
+        run: |
+          cargo llvm-cov --workspace --no-report
+          cargo llvm-cov report --json --summary-only --output-path "$RUNNER_TEMP/cov.json"
+          cargo llvm-cov report --summary-only
+      - name: Coverage summary
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed=
+          if [ -n "$BASE_SHA" ]; then
+            changed=$(git diff --name-only "$BASE_SHA"...HEAD -- '*.rs')
+          fi
+          # Word splitting is wanted: one argument per changed path.
+          # shellcheck disable=SC2086
+          node scripts/coverage-summary.mjs "$RUNNER_TEMP/cov.json" $changed >> "$GITHUB_STEP_SUMMARY"
+
   # cdp-kernel's main branch instead of a release, weekly and on request,
   # so a change on either side shows up before cdp-kernel releases it:
   # the kernel scenarios and the jupyter_server comparison on cdp-node.
