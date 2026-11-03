@@ -134,10 +134,6 @@ restart: restart needs a kernel this engine launched
 
 ### Streaming a notebook run
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 `run_notebook_with` takes an `exec::NotebookHandler`. Its `on_event`
 gets `CellStarted`, `CellFinished`, and an `Output` for each iopub
 message once it is written into the notebook's cells. `Output` names
@@ -205,10 +201,6 @@ and a `KernelspecSource` listing the kernel to `.kernelspecs`, and
 embedding the server passes its own `kernelspecs`, `provisioner` and
 `transports` in `serve::Startup`; built without a feature and given
 none, `run_with` fails at startup.
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 `ganymede-ffi` has the same three features, on by default. The
 XCFramework's macOS slice keeps them; its iOS slices are built with

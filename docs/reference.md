@@ -23,7 +23,7 @@ same flags. The guides show them in use:
 | `lab install`, `list`, `remove`, `clean`, `uninstall` | Manage JupyterLab bundles |
 | `lab extension install`, `list`, `enable`, `disable`, `remove` | Manage prebuilt JupyterLab extensions |
 | `ui`, `ui install`, `list`, `remove` | `serve` with [ganymede-ui](app.md#in-a-browser-from-ganymede) |
-| `mcp` | Notebook tools for coding agents over MCP on stdio; see [Agents over MCP](mcp.md) (**Unreleased.** A build of `main` only) |
+| `mcp` | Notebook tools for coding agents over MCP on stdio; see [Agents over MCP](mcp.md) |
 | `info` | Versions and the directories in use |
 | `completions <shell>` | Shell completions for bash, zsh, fish, powershell, elvish |
 
@@ -71,10 +71,6 @@ same name in snake case, except where the last column says otherwise.
 | `--mcp` | Serve notebook tools for coding agents at `/mcp`, behind the token; see [Agents over MCP](mcp.md). | `mcp_enabled` |
 | `--config <file>` | The config file to read. | |
 | `--log-level`, `--log-file` | See [Logging](#logging). | |
-
-> [!NOTE]
-> **Unreleased.** `--kernel-restart-limit` and `--mcp` are available
-> only from a build of `main` (HEAD), not in the latest release.
 
 `serve` prints the URL, with its token, as the only line on stdout.
 [Security](security.md) covers what `--ip 0.0.0.0` and `--token ""`
@@ -140,13 +136,6 @@ mcp_images = false               # /mcp sends images in outputs to the model
 # mime_types = ["text/x-python"]
 ```
 
-> [!NOTE]
-> **Unreleased.** `terminals_enabled`, `terminal_shell`,
-> `language_servers` ([Language servers](frontends.md#language-servers)), and the
-> `mcp_` keys ([Agents over MCP](mcp.md)) are available
-> only from a build of `main` (HEAD), not in the latest release, which
-> rejects them as unknown keys.
-
 Three keys have no flag:
 
 | Key | Effect |
@@ -156,10 +145,6 @@ Three keys have no flag:
 | `max_body_size` | Largest request body, in bytes, which caps a notebook's size. Default 512 MiB. |
 
 ## Kernel crashes
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 A kernel that exits without being shut down or restarted, through the
 API or by a client's `shutdown_request`, is restarted under the same id, in the same directory, as `jupyter_server`'s
@@ -197,10 +182,6 @@ through its REST API, and kernel messages through its websocket. HTTPS is
 checked against the system's trust store.
 
 ## Server info file
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 While it runs, `serve`, `lab` and `ui` write `jpserver-<pid>.json` in the
 Jupyter runtime dir, as `jupyter_server` does, so tools that look for a

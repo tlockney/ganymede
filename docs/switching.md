@@ -37,9 +37,6 @@ missing, so you can judge the switch before making it.
   as it is.
 - **The default kernel** is `--default-kernel`, or else the first
   kernelspec found, not `python3`.
-- **A kernel that crashes** is reported and removed, not restarted, in
-  the latest release. A build of `main` restarts it as `jupyter_server`
-  does ([Kernel crashes](reference.md#kernel-crashes)).
 - **Configuration** is one TOML file instead of `jupyter_server_config.py`
   ([CLI and configuration](reference.md#config-file)). The settings that
   carry over:

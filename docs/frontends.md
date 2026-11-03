@@ -134,10 +134,6 @@ commas.
 
 ### Extension Manager
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 JupyterLab's Extension Manager panel lists the installed prebuilt
 extensions and whether each is enabled, from `GET /lab/api/extensions`.
 It is read-only, as JupyterLab's own `read-only` manager is: searching
@@ -152,20 +148,12 @@ first.
 
 ## Terminals
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 JupyterLab's Terminal launcher works: Ganymede serves `/api/terminals` and
 reports `terminalsAvailable` in the page config. The terminal runs your
 login shell. Set `terminals_enabled = false` to turn terminals off; see
 [Open a terminal](api.md#open-a-terminal).
 
 ## Language servers
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 With the [`jupyterlab-lsp`](https://github.com/jupyter-lsp/jupyterlab-lsp)
 extension, JupyterLab gets diagnostics, go to definition, hover, rename,

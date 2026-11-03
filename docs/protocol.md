@@ -60,10 +60,6 @@ multiplexes clients onto them. Responsibilities:
 - Launch: subprocess with env, cwd, process group (POSIX) or job object
   (Windows) so interrupt and kill reach children. On Windows only kill
   does: there are no signal interrupts, and the Windows build is untested.
-
-  > [!NOTE]
-  > **Unreleased.** Available only from a build of `main` (HEAD), not in
-  > the latest release. The latest release has no job object on Windows.
 - Startup handshake: send `kernel_info_request` on shell and control
   repeatedly until both reply. This "nudge" exists because PUB/SUB has a
   slow-joiner problem: iopub messages sent before the subscriber connects
@@ -152,10 +148,6 @@ source of truth: a room loads it, autosaves it a second after the last
 edit (with an `If-Match` on the hash it last read), and reloads it when it
 changes on disk. See [the iPad use case](ipados.md) for why the file comes
 first.
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 `ganymede serve` answers `jupyter-collaboration`'s
 `PUT /api/collaboration/session/{path}` and its room websocket
