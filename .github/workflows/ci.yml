@@ -166,6 +166,9 @@ jobs:
           python -m pip list | grep -Ei '^(ipykernel|nbclient|jupyter.server|jupyter.ydoc|pycrdt|websockets) '
           python -m ipykernel install --user --name python3
           echo "GANYMEDE_E2E_JUPYTER=$(command -v jupyter)" >> "$GITHUB_ENV"
+          # The Python that has the rooms oracle; collab.rs fails if it can't
+          # import it, rather than skipping.
+          echo "GANYMEDE_E2E_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
       - run: cargo run -q -p ganymede-cli -- kernelspec list
       # The whole workspace, so the unit tests also run on macOS.
       - name: cargo test --workspace
@@ -219,6 +222,9 @@ jobs:
           python -m pip install $E2E_PYTHON_PACKAGES
           python -m ipykernel install --user --name python3
           echo "GANYMEDE_E2E_JUPYTER=$(command -v jupyter)" >> "$GITHUB_ENV"
+          # The Python that has the rooms oracle; collab.rs fails if it can't
+          # import it, rather than skipping.
+          echo "GANYMEDE_E2E_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
       - name: cargo llvm-cov --workspace
         run: |
           cargo llvm-cov --workspace --no-report
@@ -272,6 +278,9 @@ jobs:
           # shellcheck disable=SC2086
           python -m pip install $E2E_PYTHON_PACKAGES
           echo "GANYMEDE_E2E_JUPYTER=$(command -v jupyter)" >> "$GITHUB_ENV"
+          # The Python that has the rooms oracle; collab.rs fails if it can't
+          # import it, rather than skipping.
+          echo "GANYMEDE_E2E_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
       - run: cargo test -p ganymede-cli
 
   # Targets the desktop CI cannot run: the core libraries must build for

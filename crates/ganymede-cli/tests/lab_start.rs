@@ -119,13 +119,3 @@ fn lab_without_bundle_says_how_to_install() {
         stderr(&out)
     );
 }
-
-/// Stops the server even when an assertion fails.
-struct KillOnDrop(std::process::Child);
-
-impl Drop for KillOnDrop {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}

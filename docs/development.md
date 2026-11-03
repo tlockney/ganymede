@@ -40,7 +40,7 @@ These variables make the end-to-end tests strict or add to them:
 | `GANYMEDE_E2E_JUPYTER=/path/to/jupyter` | The reference `jupyter` (needs `nbclient` and `jupyter_server`). Defaults to `PATH`. |
 | `GANYMEDE_E2E_REQUIRE_JUPYTER=1` | Fail instead of skipping when it is missing. |
 | `E2E_DUMP=1` | Print both server transcripts. |
-| `GANYMEDE_E2E_PYTHON=/path/to/python` | The Python for `collab.rs` (needs `jupyter_ydoc`, `pycrdt`, `websockets`). Defaults to `python3`, then `python`. |
+| `GANYMEDE_E2E_PYTHON=/path/to/python` | The Python for `collab.rs` (needs `jupyter_ydoc`, `pycrdt`, `websockets` 15 or later). When set, it must have them or the test fails. Defaults to `python3`, then `python`, skipping when neither has them. |
 | `GANYMEDE_E2E_LAB=1` | Run `lab.rs`, which downloads JupyterLab and the widget extensions from PyPI (about 18 MB). |
 
 - `kernels.rs`: the same scenarios on every kernel, through the engine and
