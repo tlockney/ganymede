@@ -2,7 +2,8 @@
 //! session state machine and to demonstrate the in-process seam the iPad
 //! profile uses. It speaks the protocol, not any language.
 //!
-//! Cells: `sleep <ms>` (interruptible), `raise`, `input`, `die` (the
+//! Cells: `sleep <ms>` (interruptible), `quiet <ms>` (`sleep` without
+//! `execute_input`), `raise`, `input`, `die` (the
 //! process vanishes, nothing replies), `exit` (prints, then vanishes
 //! mid-cell), `display` (display, update, clear, stream), `lines <n>`
 //! (prints n lines, one stream message each), `progress` (clear with wait
@@ -294,18 +295,22 @@ impl FakeKernel {
         }
         let n = self.execution_count;
         self.status(msg, ExecutionState::Busy).await;
-        self.iopub(
-            msg,
-            "execute_input",
-            &ExecuteInput {
-                code: req.code.clone(),
-                execution_count: Some(n),
-                extra: Default::default(),
-            },
-        )
-        .await;
-
         let code = req.code.trim();
+        // `quiet` is `sleep` without `execute_input`, which the protocol
+        // doesn't require.
+        if !code.starts_with("quiet ") {
+            self.iopub(
+                msg,
+                "execute_input",
+                &ExecuteInput {
+                    code: req.code.clone(),
+                    execution_count: Some(n),
+                    extra: Default::default(),
+                },
+            )
+            .await;
+        }
+
         let mut status = ReplyStatus::Ok;
         let mut error: Option<(&str, &str)> = None;
         // `hang` is `sleep` for a cell that ignores interrupts.
@@ -313,6 +318,7 @@ impl FakeKernel {
         if let Some(ms) = code
             .strip_prefix("sleep ")
             .or_else(|| code.strip_prefix("hang "))
+            .or_else(|| code.strip_prefix("quiet "))
         {
             let ms: u64 = ms.parse().unwrap_or(0);
             let deadline = tokio::time::Instant::now() + Duration::from_millis(ms);

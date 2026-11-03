@@ -1050,22 +1050,14 @@ impl Notebooks {
             store_history: false,
             ..Default::default()
         };
-        // Whether the kernel took the request up: it sends
-        // `execute_input`, or an output, only for the request it runs.
-        let mut started = false;
+        // Whether the kernel took the request up: it sends `busy` for the
+        // request, and `execute_input` or an output, only once it runs it.
+        let mut started = Started(false);
         let mut cells = vec![Cell::Code(cell)];
         let r = ganymede_exec::NotebookRun::new(opts)
-            .execute_cell_with(
-                &kernel.session(),
-                &mut cells,
-                0,
-                &mut |e: ganymede_exec::Event<'_>| {
-                    if let ganymede_exec::Event::Output { .. } = e {
-                        started = true;
-                    }
-                },
-            )
+            .execute_cell_with(&kernel.session(), &mut cells, 0, &mut started)
             .await;
+        let started = started.0;
         let Some(Cell::Code(cell)) = cells.pop() else {
             unreachable!("one code cell went in")
         };
@@ -1270,6 +1262,20 @@ fn strip_html(s: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&amp;", "&")
+}
+
+/// Whether a scratch run's request was taken up by the kernel (#340).
+struct Started(bool);
+
+impl ganymede_exec::NotebookHandler for Started {
+    fn on_event(&mut self, e: ganymede_exec::Event<'_>) {
+        if let ganymede_exec::Event::Output { .. } = e {
+            self.0 = true;
+        }
+    }
+    fn on_busy(&mut self, _index: usize) {
+        self.0 = true;
+    }
 }
 
 /// [`images`] on a blocking thread: drawing an SVG loads the system fonts
