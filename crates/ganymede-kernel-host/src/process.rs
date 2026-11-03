@@ -115,11 +115,22 @@ fn reserve_port(port: u16) -> bool {
     if reserved.contains_key(&port) {
         return false;
     }
-    if shared_reservations().is_some_and(|dir| !reserve_port_in(dir, port)) {
+    if shared_reservations().is_some_and(|dir| !reserve_port_in(&dir, port)) {
         return false;
     }
     reserved.insert(port, now);
     true
+}
+
+#[cfg(all(feature = "subprocess", test))]
+/// Where this crate's unit tests reserve ports: nowhere unless a test
+/// sets it, so test runs don't fill the user's real directory, which
+/// running ganymede processes share.
+static TEST_RESERVATIONS: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+#[cfg(all(feature = "subprocess", test))]
+fn shared_reservations() -> Option<PathBuf> {
+    TEST_RESERVATIONS.lock().unwrap().clone()
 }
 
 #[cfg(feature = "subprocess")]
@@ -129,7 +140,8 @@ fn reserve_port(port: u16) -> bool {
 /// both kernels were starting: the second kernel to bind it waited five
 /// seconds and died (#327). Stale files are removed the first time a
 /// process uses the directory.
-fn shared_reservations() -> Option<&'static Path> {
+#[cfg(not(test))]
+fn shared_reservations() -> Option<PathBuf> {
     static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
         #[cfg(unix)]
@@ -139,15 +151,42 @@ fn shared_reservations() -> Option<&'static Path> {
         let dir = std::env::temp_dir().join(name);
         let made = private_dir(&dir).ok()?;
         if !made {
-            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-                if reservation_is_stale(&entry.path()) {
-                    let _ = std::fs::remove_file(entry.path());
-                }
-            }
+            sweep(&dir);
         }
         Some(dir)
     })
-    .as_deref()
+    .clone()
+}
+
+#[cfg(feature = "subprocess")]
+/// Hold the directory's lock while checking and replacing or removing an
+/// expired reservation, so two processes can't both take it over, or one
+/// remove what another just renewed. Creating a fresh one needs no lock.
+fn locked<T>(dir: &Path, f: impl FnOnce() -> T) -> Option<T> {
+    let lock = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("lock"))
+        .ok()?;
+    lock.lock().ok()?;
+    Some(f())
+}
+
+#[cfg(feature = "subprocess")]
+/// Remove expired reservations.
+fn sweep(dir: &Path) {
+    locked(dir, || {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let port = entry
+                .file_name()
+                .to_str()
+                .and_then(|n| n.parse::<u16>().ok());
+            if port.is_some() && reservation_is_stale(&entry.path()) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    });
 }
 
 #[cfg(feature = "subprocess")]
@@ -212,10 +251,13 @@ fn reserve_port_in(dir: &Path, port: u16) -> bool {
         Ok(_) => true,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             // An expired reservation: take it over, renewing its time.
-            reservation_is_stale(&file)
-                && std::fs::File::create(&file)
-                    .and_then(|f| f.set_modified(std::time::SystemTime::now()))
-                    .is_ok()
+            locked(dir, || {
+                reservation_is_stale(&file)
+                    && std::fs::File::create(&file)
+                        .and_then(|f| f.set_modified(std::time::SystemTime::now()))
+                        .is_ok()
+            })
+            .unwrap_or(false)
         }
         Err(_) => true,
     }
@@ -1006,19 +1048,62 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    /// `reserve_port` refuses a port another process reserved in the
+    /// shared directory, and leaves a file of its own there (#327).
+    #[test]
+    fn reserve_port_consults_the_shared_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        *TEST_RESERVATIONS.lock().unwrap() = Some(dir.path().into());
+        // Ports no other test reserves: outside allocate_ports' range.
+        std::fs::write(dir.path().join("40001"), "").unwrap();
+        let theirs = reserve_port(40001);
+        let mine = reserve_port(40002);
+        *TEST_RESERVATIONS.lock().unwrap() = None;
+        assert!(!theirs, "reserved by another process");
+        assert!(mine, "a free port");
+        assert!(dir.path().join("40002").exists());
+    }
+
+    /// The sweep removes expired reservations and nothing else.
+    #[test]
+    fn the_sweep_removes_only_expired_reservations() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["20001", "20002", "notes"] {
+            std::fs::write(dir.path().join(name), "").unwrap();
+        }
+        let old = std::time::SystemTime::now() - PORT_RESERVATION;
+        for name in ["20001", "notes"] {
+            std::fs::File::options()
+                .write(true)
+                .open(dir.path().join(name))
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+        sweep(dir.path());
+        assert!(!dir.path().join("20001").exists(), "expired");
+        assert!(dir.path().join("20002").exists(), "fresh");
+        assert!(dir.path().join("notes").exists(), "not a port");
+    }
+
     #[test]
     fn a_shared_directory_others_can_write_is_not_used() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let ports = dir.path().join("ports");
         assert!(private_dir(&ports).unwrap(), "made");
         assert!(!private_dir(&ports).unwrap(), "already there");
-        std::fs::set_permissions(&ports, std::fs::Permissions::from_mode(0o777)).unwrap();
-        assert!(private_dir(&ports).is_err(), "writable by others");
-        let link = dir.path().join("link");
-        std::os::unix::fs::symlink(&ports, &link).unwrap();
-        assert!(private_dir(&link).is_err(), "a symlink");
+        let file = dir.path().join("file");
+        std::fs::write(&file, "").unwrap();
+        assert!(private_dir(&file).is_err(), "not a directory");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&ports, std::fs::Permissions::from_mode(0o777)).unwrap();
+            assert!(private_dir(&ports).is_err(), "writable by others");
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(&ports, &link).unwrap();
+            assert!(private_dir(&link).is_err(), "a symlink");
+        }
     }
 
     #[tokio::test]

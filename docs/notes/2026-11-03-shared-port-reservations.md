@@ -12,9 +12,16 @@ Each reservation is now also an empty file named for the port in
 `<temp>/ganymede-ports-<uid>` (mode 0700, checked to be this user's own
 directory, not a symlink). A file younger than five minutes keeps other
 ganymede processes off the port; an older one is taken over. A process
-removes the expired files the first time it uses the directory. If the
-directory can't be made or written, only the in-process map applies, as
-before.
+removes the expired files the first time it uses the directory. Taking
+over or removing an expired file happens under a lock on `lock` in the
+directory, so two processes can't both win one; creating a fresh file
+needs no lock. If the directory can't be made or written, only the
+in-process map applies, as before.
+
+The crate's own unit tests don't use the directory unless a test points
+them at one: `concurrent_allocations_never_share_a_port` hands out 2,000
+ports, and a few runs within five minutes filled the range for every
+ganymede process of the user.
 
 cdp-kernel's report of the port's holders reads `/proc`, so it says
 `unknown` on macOS.
