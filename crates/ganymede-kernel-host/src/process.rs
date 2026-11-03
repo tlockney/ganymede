@@ -106,7 +106,8 @@ static RESERVED_PORTS: std::sync::Mutex<std::collections::BTreeMap<u16, std::tim
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 #[cfg(feature = "subprocess")]
-/// Reserve `port` unless this process handed it out recently.
+/// Reserve `port` unless this process, or another of this user's
+/// ganymede processes, handed it out recently.
 fn reserve_port(port: u16) -> bool {
     let now = std::time::Instant::now();
     let mut reserved = RESERVED_PORTS.lock().unwrap();
@@ -114,8 +115,110 @@ fn reserve_port(port: u16) -> bool {
     if reserved.contains_key(&port) {
         return false;
     }
+    if shared_reservations().is_some_and(|dir| !reserve_port_in(dir, port)) {
+        return false;
+    }
     reserved.insert(port, now);
     true
+}
+
+#[cfg(feature = "subprocess")]
+/// The directory where this user's ganymede processes reserve ports, one
+/// empty file per port, or `None` when it can't be made private. The
+/// in-process map alone let two processes hand out the same port while
+/// both kernels were starting: the second kernel to bind it waited five
+/// seconds and died (#327). Stale files are removed the first time a
+/// process uses the directory.
+fn shared_reservations() -> Option<&'static Path> {
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        #[cfg(unix)]
+        let name = format!("ganymede-ports-{}", uid());
+        #[cfg(not(unix))]
+        let name = "ganymede-ports".to_string();
+        let dir = std::env::temp_dir().join(name);
+        let made = private_dir(&dir).ok()?;
+        if !made {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                if reservation_is_stale(&entry.path()) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        Some(dir)
+    })
+    .as_deref()
+}
+
+#[cfg(feature = "subprocess")]
+/// Make `dir` readable only by this user, or check that it already is and
+/// that it is this user's own directory, not a symlink. True when this
+/// call made it.
+fn private_dir(dir: &Path) -> std::io::Result<bool> {
+    #[cfg(unix)]
+    let builder = {
+        let mut b = std::fs::DirBuilder::new();
+        std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+        b
+    };
+    #[cfg(not(unix))]
+    let builder = std::fs::DirBuilder::new();
+    match builder.create(dir) {
+        Ok(()) => return Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    let meta = std::fs::symlink_metadata(dir)?;
+    let not_ours = || std::io::Error::other("not this user's private directory");
+    if !meta.is_dir() {
+        return Err(not_ours());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if meta.uid() != uid() || meta.mode() & 0o077 != 0 {
+            return Err(not_ours());
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(all(feature = "subprocess", unix))]
+fn uid() -> u32 {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    unsafe { libc::getuid() }
+}
+
+#[cfg(feature = "subprocess")]
+fn reservation_is_stale(file: &Path) -> bool {
+    std::fs::metadata(file)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age >= PORT_RESERVATION)
+}
+
+#[cfg(feature = "subprocess")]
+/// Reserve `port` in `dir` unless a file there says another process
+/// reserved it in the last five minutes. A directory that can't be
+/// written doesn't block a port: the in-process map still applies.
+fn reserve_port_in(dir: &Path, port: u16) -> bool {
+    let file = dir.join(port.to_string());
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&file)
+    {
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // An expired reservation: take it over, renewing its time.
+            reservation_is_stale(&file)
+                && std::fs::File::create(&file)
+                    .and_then(|f| f.set_modified(std::time::SystemTime::now()))
+                    .is_ok()
+        }
+        Err(_) => true,
+    }
 }
 
 #[cfg(feature = "subprocess")]
@@ -125,9 +228,10 @@ fn reserve_port(port: u16) -> bool {
 /// source ports from: while the kernel starts, a client reconnecting to
 /// that port can be given it as its own source port and connect to
 /// itself, and the kernel then fails to bind. No port is handed out twice
-/// within five minutes, so kernels this process starts at once
-/// never share one. Still racy against other processes binding the same
-/// port; `ipc` transport avoids this on POSIX.
+/// within five minutes, by this process or (through files in a private
+/// temp directory) another of this user's ganymede processes, so kernels
+/// started at once never share one. Still racy against other programs
+/// binding the same port; `ipc` transport avoids this on POSIX.
 pub async fn allocate_ports(ip: &str) -> Result<[u16; 5]> {
     const RANGE: std::ops::Range<u16> = 20000..32768;
     let mut listeners = Vec::new();
@@ -872,6 +976,49 @@ mod tests {
                 assert!(seen.insert(port), "port {port} handed out twice");
             }
         }
+    }
+
+    /// Another process's recent reservation keeps a port from being
+    /// handed out again; an expired one doesn't (#327).
+    #[test]
+    fn reservations_are_shared_through_files() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(reserve_port_in(dir.path(), 20001), "a free port");
+        assert!(
+            !reserve_port_in(dir.path(), 20001),
+            "reserved by another process"
+        );
+        assert!(reserve_port_in(dir.path(), 20002), "another port");
+        let old = std::time::SystemTime::now() - PORT_RESERVATION;
+        std::fs::File::options()
+            .write(true)
+            .open(dir.path().join("20001"))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert!(
+            reserve_port_in(dir.path(), 20001),
+            "the reservation expired"
+        );
+        assert!(
+            !reserve_port_in(dir.path(), 20001),
+            "taking it over renews it"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_shared_directory_others_can_write_is_not_used() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let ports = dir.path().join("ports");
+        assert!(private_dir(&ports).unwrap(), "made");
+        assert!(!private_dir(&ports).unwrap(), "already there");
+        std::fs::set_permissions(&ports, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(private_dir(&ports).is_err(), "writable by others");
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&ports, &link).unwrap();
+        assert!(private_dir(&link).is_err(), "a symlink");
     }
 
     #[tokio::test]
