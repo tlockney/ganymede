@@ -330,11 +330,12 @@ fn uuid() -> String {
 /// what a frontend sees for it: each iopub message's type and content,
 /// stdin requests (answered with `answer`), and the reply.
 async fn exchange(ws: &mut Ws, msg: Value, answer: Option<&str>) -> Value {
-    exchange_step("exchange", ws, msg, answer, None).await
+    exchange_step("exchange", ws, msg, answer, None, true).await
 }
 
 /// [`exchange`], failing with `step` in the message if 60 s pass with no
-/// frame, or if `total` passes without the reply and `idle`. The failure
+/// frame, or if `total` passes without the reply (and `idle`, when
+/// `need_idle`). The failure
 /// says what did arrive: this request's iopub messages, and a count of
 /// the other parents' messages by channel and type.
 async fn exchange_step(
@@ -343,6 +344,7 @@ async fn exchange_step(
     msg: Value,
     answer: Option<&str>,
     total: Option<Duration>,
+    need_idle: bool,
 ) -> Value {
     let id = msg["header"]["msg_id"].as_str().unwrap().to_string();
     ws.send(WsMessage::text(msg.to_string())).await.unwrap();
@@ -364,7 +366,7 @@ async fn exchange_step(
              other messages: {others:?})"
         )
     };
-    while reply.is_none() || !idle {
+    while reply.is_none() || (need_idle && !idle) {
         // Checked before each read, so a steady stream of other frames
         // can't keep the deadline from firing.
         if let (Some(d), Some(t)) = (deadline, total) {
@@ -1168,6 +1170,7 @@ async fn crash(server: &str, base: &str, c: &Code, wait_idle: bool) -> Option<Va
             request("execute_request", "shell", json!({"code": c.set_state})),
             None,
             Some(Duration::from_secs(180)),
+            true,
         ),
     )
     .await;
@@ -1251,6 +1254,13 @@ async fn crash(server: &str, base: &str, c: &Code, wait_idle: bool) -> Option<Va
             request("execute_request", "shell", json!({"code": c.read_state})),
             None,
             Some(Duration::from_secs(180)),
+            // jupyter_server sometimes forwards none of the restarted
+            // kernel's iopub to a new websocket: in #285 the reply came
+            // but no iopub message at all (not even `busy`) in 180 s.
+            // That is the oracle's restart path, not what this test
+            // checks, so there the reply is enough. Ganymede must send
+            // `idle` too.
+            wait_idle,
         ),
     )
     .await;

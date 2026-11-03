@@ -13,4 +13,15 @@ an overall deadline, and when it or the 60 s per-frame limit runs out it
 reports whether the reply and `idle` came, this request's iopub message
 types, and a count of the other parents' messages by channel, type and
 execution state. The outer `within` bound is 200 s so the 180 s deadline
-inside fires first with that report. #285 stays open for the cause.
+inside fires first with that report.
+
+The first CI run with the report caught it on macOS, under
+jupyter_server: `running a cell on the restarted kernel: no reply and
+idle in 180 s (reply: true, idle: false, this request's iopub: [], other
+messages: {})`. The shell reply came; not one iopub message did, for
+this request or any other, so the new websocket got none of the
+restarted kernel's iopub. That is the oracle's restart path. The test
+already doesn't wait for `idle` from jupyter_server after the crash (it
+can leave the kernel `busy`), so on that side the exchange now ends at
+the reply, and Ganymede still has to send `idle`. If Ganymede ever
+stalls the same way, the report names it.
