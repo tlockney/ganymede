@@ -143,6 +143,11 @@ pub trait Handler: Send {
     /// Every iopub message for the request except `status`: streams,
     /// displays, results, errors, clears, comms.
     fn on_iopub(&mut self, _msg: &Message) {}
+    /// The kernel took the request up: its `busy` status for the request
+    /// arrived. The one message the protocol requires of every request,
+    /// so it tells a run apart from one still queued even when the code
+    /// prints nothing and the kernel sends no `execute_input`.
+    fn on_busy(&mut self) {}
     /// The kernel asked for input. `None` answers with an empty string.
     /// Async, so a UI can wait for the user without blocking the runtime.
     async fn on_input(&mut self, _prompt: &str, _password: bool) -> Option<String> {
@@ -160,6 +165,8 @@ impl Handler for NoHandler {}
 #[async_trait::async_trait]
 pub trait NotebookHandler: Send {
     fn on_event(&mut self, _event: Event<'_>) {}
+    /// The kernel took up cell `index`'s request (see [`Handler::on_busy`]).
+    fn on_busy(&mut self, _index: usize) {}
     /// Cell `index` asked for input, which [`Options::allow_stdin`]
     /// allowed. `None` answers with an empty string.
     async fn on_input(&mut self, _index: usize, _prompt: &str, _password: bool) -> Option<String> {
@@ -199,7 +206,12 @@ pub async fn execute_streaming(
             biased;
             r = sub.recv() => match r {
                 Ok((ch, m)) if m.parent_id() == Some(id.as_str()) => match ch {
-                    Channel::IoPub if m.msg_type() != "status" => {
+                    Channel::IoPub if m.msg_type() == "status" => {
+                        if m.content["execution_state"] == "busy" {
+                            handler.on_busy();
+                        }
+                    }
+                    Channel::IoPub => {
                         handler.on_iopub(&m);
                         streamed.insert(m.header.msg_id.clone());
                     }
@@ -673,6 +685,10 @@ impl Handler for CellHandler<'_> {
             changed: &changed,
             cells: self.cells,
         });
+    }
+
+    fn on_busy(&mut self) {
+        self.handler.on_busy(self.index);
     }
 
     async fn on_input(&mut self, prompt: &str, password: bool) -> Option<String> {

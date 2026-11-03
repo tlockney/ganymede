@@ -3645,6 +3645,39 @@ async fn mcp_scratch_timeout_interrupts_the_kernel() {
     assert!(out.contains("after"), "{out}");
 }
 
+/// A kernel that sends no `execute_input` is running the scratch code once
+/// its `busy` arrives, so a timeout still interrupts it (#340).
+#[tokio::test]
+async fn mcp_scratch_timeout_without_execute_input_interrupts_the_kernel() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = mcp_app(dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    mcp_text(&mcp_tool(&app, &sid, "notebook_open", json!({"path": "t.ipynb"})).await);
+
+    let out = mcp_text(
+        &mcp_tool(
+            &app,
+            &sid,
+            "cell_run",
+            json!({"source": "quiet 30000", "record": false, "timeout": 1}),
+        )
+        .await,
+    );
+    assert!(out.contains("timed out"), "{out}");
+    assert!(out.contains("Interrupted the kernel."), "{out}");
+    let out = mcp_text(
+        &mcp_tool(
+            &app,
+            &sid,
+            "cell_run",
+            json!({"source": "after", "record": false, "timeout": 10}),
+        )
+        .await,
+    );
+    assert!(!out.contains("timed out"), "{out}");
+    assert!(out.contains("after"), "{out}");
+}
+
 /// A scratch run that times out still queued behind another run leaves
 /// that run alone: the interrupt would stop it, not the scratch code.
 #[tokio::test]
