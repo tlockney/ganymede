@@ -36,8 +36,7 @@ const MAX_SUMS_BYTES: u64 = 64 << 10;
 
 #[derive(Subcommand)]
 pub enum UiCmd {
-    /// Download a ganymede-ui release from GitHub and install it for
-    /// `ganymede ui`.
+    /// Download a ganymede-ui release from GitHub and install it.
     ///
     /// `GANYMEDE_UI_URL` points at a mirror of the release downloads.
     Install {
@@ -48,8 +47,9 @@ pub enum UiCmd {
         #[arg(long)]
         force: bool,
     },
-    /// List installed versions, newest first. `ganymede ui` serves the
-    /// first.
+    /// List installed versions, newest first.
+    ///
+    /// `ganymede ui` serves the first.
     List {
         /// Print a JSON array of `{"version", "dir"}` objects instead.
         #[arg(long)]

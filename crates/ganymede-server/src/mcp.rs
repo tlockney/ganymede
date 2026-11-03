@@ -23,9 +23,9 @@
 //! Cells an agent writes carry `metadata.ganymede.agent = {"by", "mode",
 //! "at"}`: `by` is the client's name, `mode` is `executed` (ran in the
 //! kernel), `recorded` (a step that ran elsewhere) or `note`. Scratch runs
-//! (`cell_run` with `record: false`) run in the kernel and leave nothing in
-//! the notebook. `cell_edit` keeps the source it replaces in `history`
-//! (the last [`HISTORY_LIMIT`] of them).
+//! (`cell_run` with `record: false`) run in the kernel, sharing its state,
+//! and leave nothing in the notebook. `cell_edit` keeps the source it
+//! replaces in `history` (the last [`HISTORY_LIMIT`] of them).
 
 use crate::collab::{hold_notebook, notebook_room_id, with_notebook, Hold};
 use crate::AppState;
@@ -164,7 +164,8 @@ pub struct RunArgs {
     /// Insert after this cell id (default: at the end).
     pub after: Option<String>,
     /// Record the run as a cell (default true). `false` is a scratch run:
-    /// it runs in the kernel and leaves nothing in the notebook.
+    /// it runs in the kernel and leaves nothing in the notebook, but its
+    /// variables stay defined in the kernel.
     pub record: Option<bool>,
     /// Seconds to wait for the result (default 600). The cell keeps
     /// running after a timeout.
@@ -326,7 +327,7 @@ impl Notebooks {
     }
 
     #[tool(
-        description = "Run code in the notebook's kernel and return its outputs. By default the code is recorded as a new code cell (at the end, or after `after`); `record: false` runs it as scratch work that leaves nothing in the notebook."
+        description = "Run code in the notebook's kernel and return its outputs. By default the code is recorded as a new code cell (at the end, or after `after`); `record: false` runs it as scratch work that leaves nothing in the notebook and doesn't advance the execution count; it shares the kernel's state, so variables it assigns stay defined."
     )]
     async fn cell_run(
         &self,
@@ -1043,6 +1044,8 @@ impl Notebooks {
             record_timing: false,
             store_widget_state: false,
             coalesce_streams: true,
+            // Scratch runs don't advance the kernel's execution count.
+            store_history: false,
             ..Default::default()
         };
         let r = ganymede_exec::execute_cell(&kernel.session(), &mut cell, &opts).await;
