@@ -76,8 +76,9 @@ With `--images`, an SVG output (what Observable Plot, Vega-Lite and
 most chart libraries draw) that has no PNG or JPEG of its own goes to
 the agent as a PNG, white background, at most 1,600 pixels on its
 longer side. The notebook keeps the SVG. Text uses the fonts installed
-on the server's machine. An SVG over 2 MB, or one that can't be drawn,
-is left out, as before.
+on the server's machine. Images inside the SVG are drawn only from
+`data:` URLs; the server reads no files an SVG names. An SVG over 2 MB,
+or one that can't be drawn, is left out, as before.
 
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in

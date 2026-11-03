@@ -35,6 +35,13 @@ fn render(svg: &str) -> Option<Vec<u8>> {
         .clone();
     let options = usvg::Options {
         fontdb,
+        // usvg reads any local file an `<image href>` names (`/dev/zero`
+        // would never end, and other files would be drawn for the agent).
+        // Images inside the SVG come only from `data:` URLs.
+        image_href_resolver: usvg::ImageHrefResolver {
+            resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
+            resolve_string: Box::new(|_, _| None),
+        },
         ..usvg::Options::default()
     };
     let tree = usvg::Tree::from_str(svg, &options).ok()?;
@@ -95,6 +102,47 @@ mod tests {
             let (w, h) = png_size(&png);
             assert!(w <= MAX_SIDE && h >= 1, "{w}x{h}");
         }
+    }
+
+    #[test]
+    fn reads_no_local_files() {
+        let dir = std::env::temp_dir().join(format!("ganymede-svg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let inner = dir.join("secret.svg");
+        std::fs::write(
+            &inner,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+                <rect width="10" height="10" fill="black"/></svg>"#,
+        )
+        .unwrap();
+        let blank = |png: &[u8]| {
+            let p = resvg::tiny_skia::Pixmap::decode_png(png).unwrap();
+            p.pixels()
+                .iter()
+                .all(|c| c.red() == 255 && c.green() == 255 && c.blue() == 255)
+        };
+        for href in [inner.to_str().unwrap(), "/dev/zero"] {
+            let svg = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+                <image href="{href}" width="10" height="10"/></svg>"#
+            );
+            let png = to_png(&svg).expect("a PNG");
+            assert!(blank(&png), "{href} was drawn");
+        }
+        // A `data:` image still draws.
+        let data = format!(
+            "data:image/svg+xml;base64,{}",
+            base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                std::fs::read(&inner).unwrap()
+            )
+        );
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+            <image href="{data}" width="10" height="10"/></svg>"#
+        );
+        assert!(!blank(&to_png(&svg).unwrap()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -18,6 +18,16 @@ own; the notebook keeps the SVG.
 - **Caps.** SVG sources over 2 MB are skipped before parsing. The PNG is
   scaled to at most 1,600 px on its longer side, which bounds the
   pixmap: a `width="1e9"` SVG can't allocate gigabytes.
+- **No local files.** usvg's default `<image href>` resolver reads any
+  local path that exists, so an SVG output could make the server read
+  `/dev/zero` until it ran out of memory, hang on a FIFO, or draw a
+  local file into the agent's image. The renderer takes images only from
+  `data:` URLs. Turning off resvg's `raster-images` feature doesn't stop
+  the read; it only skips drawing raster formats.
+- **Off the runtime.** The first SVG scans the system's fonts and each
+  one rasterizes up to 1,600 px square, so the tool calls build their
+  image blocks in `spawn_blocking`; under `serve --mcp` the runtime also
+  serves the server's websockets.
 - **White background.** Charts usually leave the background
   transparent, which many viewers show as black; a notebook shows white.
 - An SVG that doesn't parse, or has no size, adds no image; the text

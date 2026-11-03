@@ -998,7 +998,7 @@ impl Notebooks {
                 .await
                 .map_err(err)?;
         let nb = self.notebook(path).await?;
-        let mut blocks = Vec::new();
+        let mut shown = Vec::new();
         let mut out = String::new();
         if !finished {
             out.push_str("Timed out; the cell is still running. Outputs so far:\n\n");
@@ -1009,11 +1009,12 @@ impl Notebooks {
                 out.push('\n');
                 if self.opts.images {
                     if let Cell::Code(c) = cell {
-                        blocks.extend(images(&c.outputs));
+                        shown.extend(c.outputs.iter().cloned());
                     }
                 }
             }
         }
+        let mut blocks = images_off_runtime(shown).await;
         blocks.insert(0, ContentBlock::text(out));
         Ok(CallToolResult::success(blocks))
     }
@@ -1061,7 +1062,7 @@ impl Notebooks {
         }
         let mut blocks = vec![ContentBlock::text(out)];
         if self.opts.images {
-            blocks.extend(images(&cell.outputs));
+            blocks.extend(images_off_runtime(cell.outputs.clone()).await);
         }
         Ok(CallToolResult::success(blocks))
     }
@@ -1230,6 +1231,18 @@ fn strip_html(s: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&amp;", "&")
+}
+
+/// [`images`] on a blocking thread: drawing an SVG loads the system fonts
+/// the first time and rasterizes up to 1,600 px square, which would hold
+/// up the runtime's other work (under `serve --mcp`, the whole server).
+async fn images_off_runtime(outputs: Vec<Output>) -> Vec<ContentBlock> {
+    if outputs.is_empty() {
+        return Vec::new();
+    }
+    tokio::task::spawn_blocking(move || images(&outputs))
+        .await
+        .unwrap_or_default()
 }
 
 /// The image blocks for `outputs`: raster images as they are, and an SVG
