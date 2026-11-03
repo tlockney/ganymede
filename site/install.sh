@@ -4,6 +4,7 @@
 #
 #   curl -fsSL https://ganymede-server.com/install.sh | sh
 #   curl -fsSL https://ganymede-server.com/install.sh | sh -s -- --version 0.1.0 --no-kernel
+#   curl -fsSL https://ganymede-server.com/install.sh | sh -s -- --main
 #
 # The steps are the ones on https://ganymede-server.com/docs/install.
 # Everything runs inside main(), so a download cut short runs nothing.
@@ -29,6 +30,7 @@ Install Ganymede from a GitHub release.
 Usage: install.sh [options]
 
   --version X.Y.Z   Install this release instead of the latest.
+  --main            Install the latest build of main instead of a release.
   --bin-dir DIR     Where to put the binary (default: ~/.local/bin).
   --no-kernel       Skip installing cdp-kernel.
   --runtime NAME    cdp-kernel target runtime: node (default), deno, bun,
@@ -149,6 +151,7 @@ install_kernel() { # runtime
 
 main() {
 	version=
+	main=
 	bin_dir=$HOME/.local/bin
 	kernel=1
 	runtime=node
@@ -156,6 +159,7 @@ main() {
 		case $1 in
 		--version) version=${2:?--version needs a value}; shift 2 ;;
 		--version=*) version=${1#*=}; shift ;;
+		--main) main=1; shift ;;
 		--bin-dir) bin_dir=${2:?--bin-dir needs a value}; shift 2 ;;
 		--bin-dir=*) bin_dir=${1#*=}; shift ;;
 		--no-kernel) kernel=; shift ;;
@@ -166,21 +170,35 @@ main() {
 		esac
 	done
 	version=${version#v}
+	[ -z "$main" ] || [ -z "$version" ] || err "use --version or --main, not both"
 
 	has tar || err "needs tar"
 	tgt=$(target)
-	[ -n "$version" ] || version=$(latest_version)
-	name=ganymede-$version-$tgt
+	if [ -n "$main" ]; then
+		# The rolling prerelease release.yml updates on every push to main.
+		tag="main-build"
+		name=ganymede-main-$tgt
+		what="the latest main build"
+	else
+		[ -n "$version" ] || version=$(latest_version)
+		tag=v$version
+		name=ganymede-$version-$tgt
+		what="Ganymede $version"
+	fi
 
 	tmp=$(mktemp -d)
 	trap 'rm -rf "$tmp"' EXIT
 	trap 'exit 1' INT TERM
-	say "Downloading Ganymede $version for $tgt"
-	fetch "$BASE/v$version/$name.tar.gz" "$tmp/$name.tar.gz" ||
-		err "download failed: $BASE/v$version/$name.tar.gz"
-	fetch "$BASE/v$version/$name.tar.gz.sha256" "$tmp/$name.tar.gz.sha256" ||
-		err "download failed: $BASE/v$version/$name.tar.gz.sha256"
-	(cd "$tmp" && verify "$name.tar.gz.sha256") || err "checksum mismatch for $name.tar.gz"
+	say "Downloading $what for $tgt"
+	# A main build replaces its files one at a time, so a download can
+	# miss one or get a mismatched pair while a new build uploads.
+	retry=
+	[ -z "$main" ] || retry="; a new main build may be uploading, try again in a minute"
+	fetch "$BASE/$tag/$name.tar.gz" "$tmp/$name.tar.gz" ||
+		err "download failed: $BASE/$tag/$name.tar.gz$retry"
+	fetch "$BASE/$tag/$name.tar.gz.sha256" "$tmp/$name.tar.gz.sha256" ||
+		err "download failed: $BASE/$tag/$name.tar.gz.sha256$retry"
+	(cd "$tmp" && verify "$name.tar.gz.sha256") || err "checksum mismatch for $name.tar.gz$retry"
 	tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
 
 	mkdir -p "$bin_dir"
@@ -189,6 +207,10 @@ main() {
 	chmod 755 "$bin_dir/.ganymede.new"
 	mv -f "$bin_dir/.ganymede.new" "$bin_dir/ganymede"
 	say "Installed $("$bin_dir/ganymede" --version) to $bin_dir/ganymede"
+	if [ -n "$main" ]; then
+		say "This is a build of main, not a release. Rerun with --main to update"
+		say "it, or without --main to go back to the latest release."
+	fi
 
 	if [ -n "$kernel" ]; then
 		install_kernel "$runtime"

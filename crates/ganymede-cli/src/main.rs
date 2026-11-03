@@ -26,7 +26,7 @@ use std::time::Duration;
 #[derive(Parser)]
 #[command(
     name = "ganymede",
-    version,
+    version = env!("GANYMEDE_VERSION"),
     about = "Language-agnostic Jupyter engine: kernels, notebooks, and a server",
     styles = help::STYLES
 )]

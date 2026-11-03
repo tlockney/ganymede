@@ -32,7 +32,7 @@ pub fn collect(engine: &Engine, extra_roots: &[PathBuf]) -> Result<Value> {
         .collect();
     let commit = env!("GANYMEDE_BUILD_COMMIT");
     Ok(json!({
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": env!("GANYMEDE_VERSION"),
         "protocol_version": ganymede_engine::protocol::PROTOCOL_VERSION,
         "build": {
             "commit": (!commit.is_empty()).then_some(commit),

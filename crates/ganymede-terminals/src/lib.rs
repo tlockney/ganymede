@@ -685,9 +685,24 @@ mod tests {
             let mut c = m.connect("1").unwrap();
             c.write("echo $((6*7))\n");
             read_until(&mut c, "42").await;
-            c.resize(40, 132);
-            c.write("stty size\n");
-            read_until(&mut c, "40 132").await;
+            // TerminalClient::resize only logs a failure; check it here, so a
+            // failed resize isn't mistaken for a slow one.
+            c.term.process.resize(40, 132).expect("resize the pty");
+            // On macOS a `stty size` typed right after the resize has read
+            // the old size (#345). Resize once, and ask again until the new
+            // size shows; `done-N` in the output, not in the echoed input,
+            // marks the end of each try.
+            let mut resized = false;
+            for i in 1..=20 {
+                c.write(&format!("stty size; echo done-$(({i}+0))\n"));
+                let out = read_until(&mut c, &format!("done-{i}")).await;
+                if out.contains("40 132") {
+                    resized = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(resized, "stty never reported 40 132");
             c.write("pwd\n");
             let root_name = root
                 .path()
