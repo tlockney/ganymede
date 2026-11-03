@@ -80,8 +80,9 @@ pub struct Options {
     /// Off, as in `nbclient`, so a cell that asks for input fails instead
     /// of waiting.
     pub allow_stdin: bool,
-    /// Send `store_history`, so the kernel counts the cell and keeps its
-    /// result in its output history (`_`, `Out`). Off for scratch runs.
+    /// Send `store_history`: the kernel counts the cell in its execution
+    /// count and history (what else it skips is kernel-dependent). Off for
+    /// scratch runs.
     pub store_history: bool,
 }
 

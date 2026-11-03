@@ -78,9 +78,10 @@ Cells an agent writes carry
 `metadata.ganymede.agent = {"by": "<client name>", "mode": "executed" | "recorded" | "note", "at": "<time>"}`,
 where the name is the one the MCP client gave when it connected. Scratch
 runs leave no cells and run with `store_history: false`, so they don't
-advance the kernel's execution count or output history (`_` in Python).
-They still share the kernel's state: a variable a scratch run assigns
-stays defined.
+advance the kernel's execution count. Whether they change the kernel's
+output history depends on the kernel: ipykernel still sets `_` to a
+scratch run's result. They share the kernel's state: a variable a
+scratch run assigns stays defined.
 
 ## Options
 

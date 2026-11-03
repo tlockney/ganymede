@@ -163,7 +163,8 @@ pub struct RunArgs {
     /// Insert after this cell id (default: at the end).
     pub after: Option<String>,
     /// Record the run as a cell (default true). `false` is a scratch run:
-    /// it runs in the kernel and leaves nothing in the notebook.
+    /// it runs in the kernel and leaves nothing in the notebook, but its
+    /// variables stay defined in the kernel.
     pub record: Option<bool>,
     /// Seconds to wait for the result (default 600). The cell keeps
     /// running after a timeout.
@@ -325,7 +326,7 @@ impl Notebooks {
     }
 
     #[tool(
-        description = "Run code in the notebook's kernel and return its outputs. By default the code is recorded as a new code cell (at the end, or after `after`); `record: false` runs it as scratch work that leaves nothing in the notebook."
+        description = "Run code in the notebook's kernel and return its outputs. By default the code is recorded as a new code cell (at the end, or after `after`); `record: false` runs it as scratch work that leaves nothing in the notebook and doesn't advance the execution count; it shares the kernel's state, so variables it assigns stay defined."
     )]
     async fn cell_run(
         &self,
