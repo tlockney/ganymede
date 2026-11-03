@@ -212,13 +212,16 @@ ganymede execute ~/analysis/fares.ipynb
 
 ## What doesn't work yet
 
-- **No live view on the latest release.** Without document rooms (see
-  the note under [Connect nb-cli](#connect-nb-cli)), the agent's edits go to the file, and
+- **No live view without document rooms.** On the latest release, or in
+  JupyterLab without the collaboration extensions (see the note under
+  [Connect nb-cli](#connect-nb-cli)), the agent's edits reach you only through the file, and
   JupyterLab doesn't watch it: it notices only when you save, and then
   asks whether to overwrite. Overwrite replaces the agent's cells with
   your stale copy. Reload first (File, Reload Notebook from Disk), and
   don't edit a notebook while the agent works in it. A build of `main`
-  has the rooms.
+  has the rooms; JupyterLab needs the collaboration extensions
+  (`ganymede lab extension install jupyter-docprovider
+  jupyter-collaboration-ui`) to use them.
 - **A cell timeout doesn't stop the cell.** `nb execute` waits 30
   seconds per cell by default (`-t` sets it; raise it for slow
   downloads). On a timeout it gives up before saving, so outputs of
