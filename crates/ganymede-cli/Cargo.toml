@@ -15,6 +15,11 @@ path = "src/main.rs"
 # hook lives on one crate so it runs once per release, not once per crate.
 [package.metadata.release]
 pre-release-hook = ["sh", "-c", "cd \"$WORKSPACE_ROOT\" && if [ \"$DRY_RUN\" = true ]; then git cliff --tag \"v$NEW_VERSION\" --unreleased; else git cliff --tag \"v$NEW_VERSION\" -o CHANGELOG.md; fi"]
+# Docs that name the current release.
+pre-release-replacements = [
+  { file = "../../docs/embedding.md", search = 'tag = "v[0-9][^"]*" \}', replace = 'tag = "v{{version}}" }', exactly = 1 },
+  { file = "../../docs/reference.md", search = '"ganymede_version": "[^"]*"', replace = '"ganymede_version": "{{version}}"', exactly = 1 },
+]
 
 [dependencies]
 ganymede-engine = { path = "../ganymede-engine" }
