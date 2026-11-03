@@ -4,7 +4,8 @@
 //!
 //! Cells: `sleep <ms>` (interruptible), `raise`, `input`, `die` (the
 //! process vanishes, nothing replies), `exit` (prints, then vanishes
-//! mid-cell), `display` (display, update, clear, stream), `comm` (opens
+//! mid-cell), `display` (display, update, clear, stream), `lines <n>`
+//! (prints n lines, one stream message each), `comm` (opens
 //! a comm from the kernel side); anything else is echoed. Comms: target
 //! `echo` sends every message back with its buffers; any other target is
 //! closed at once, as ipykernel does. After an error with
@@ -396,6 +397,10 @@ impl FakeKernel {
             self.comms.insert(id.clone(), "fake.target".into());
             let open = serde_json::json!({"comm_id": id, "target_name": "fake.target", "data": {}});
             self.iopub(msg, "comm_open", &open).await;
+        } else if let Some(n) = code.strip_prefix("lines ") {
+            for i in 0..n.parse::<usize>().unwrap_or(0) {
+                self.stream(msg, &format!("line {i}\n")).await;
+            }
         } else if code == "raise" {
             status = ReplyStatus::Error;
             error = Some(("FakeError", "raised"));

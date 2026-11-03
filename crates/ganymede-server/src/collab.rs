@@ -571,9 +571,11 @@ async fn run_room(
     let mut disk_event: Option<Instant> = None;
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     let mut last_poll = Instant::now();
+    // A command taken off the queue while merging appends, to handle next.
+    let mut next: Option<Cmd> = None;
     loop {
         tokio::select! {
-            cmd = rx.recv() => {
+            cmd = async { match next.take() { Some(c) => Some(c), None => rx.recv().await } } => {
                 let Some(cmd) = cmd else { break };
                 match cmd {
                     Cmd::Join(conn, out) => {
@@ -621,6 +623,23 @@ async fn run_room(
                         if fx.changed { last_edit = Some(Instant::now()) }
                         dispatch(&clients, fx.send);
                     }
+                    Cmd::Exec(crate::execute::RoomCmd::Append { cell_id, mut outputs }) => {
+                        // Outputs queued for the same cell go in one edit, so
+                        // a fast print loop makes few document edits when the
+                        // room falls behind.
+                        loop {
+                            match rx.try_recv() {
+                                Ok(Cmd::Exec(crate::execute::RoomCmd::Append { cell_id: c, outputs: more }))
+                                    if c == cell_id => outputs.extend(more),
+                                Ok(other) => { next = Some(other); break }
+                                Err(_) => break,
+                            }
+                        }
+                        let cmd = crate::execute::RoomCmd::Append { cell_id, outputs };
+                        let fx = exec.handle(&mut room, cmd);
+                        if fx.changed { last_edit = Some(Instant::now()) }
+                        dispatch(&clients, fx.send);
+                    }
                     Cmd::Exec(cmd) => {
                         let fx = exec.handle(&mut room, cmd);
                         if fx.changed { last_edit = Some(Instant::now()) }
@@ -642,7 +661,7 @@ async fn run_room(
             }
             _ = tick.tick() => {
                 let Some(d) = disk.as_mut() else {
-                    if clients.is_empty() && retire(&collab, &room_id, &mut rx) { break }
+                    if clients.is_empty() && next.is_none() && retire(&collab, &room_id, &mut rx) { break }
                     continue;
                 };
                 let poll_every = if watch.is_some() { WATCHED_POLL_INTERVAL } else { POLL_INTERVAL };
@@ -666,7 +685,7 @@ async fn run_room(
                     if room.is_dirty() {
                         save_room(contents.as_ref(), &mut room, d, &clients, false).await;
                     }
-                    if retire(&collab, &room_id, &mut rx) { break }
+                    if next.is_none() && retire(&collab, &room_id, &mut rx) { break }
                     empty_since = Some(Instant::now());
                 }
             }

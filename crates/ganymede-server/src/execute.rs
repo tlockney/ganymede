@@ -90,6 +90,13 @@ pub(crate) enum RoomCmd {
         outputs: Vec<Value>,
         only_if: Option<(u32, Option<i64>)>,
     },
+    /// Outputs the running cell added since the last `Outputs` or
+    /// `Append`: appended as a frontend shows them, a stream merged into
+    /// the stream before it. Costs what it adds, not what the cell shows.
+    Append {
+        cell_id: String,
+        outputs: Vec<Value>,
+    },
     /// A cell finished (or was skipped): its final outputs, if it ran, and
     /// the kernel's execution count.
     Done {
@@ -196,6 +203,14 @@ impl RoomExec {
                         }
                     }
                     schema::set_outputs(txn, &cell, outputs);
+                })
+                .1
+            }
+            RoomCmd::Append { cell_id, outputs } => {
+                room.edit(|txn, roots| {
+                    if let Some(cell) = schema::find_cell(txn, roots, &cell_id) {
+                        schema::append_outputs(txn, &cell, outputs);
+                    }
                 })
                 .1
             }
@@ -364,6 +379,7 @@ impl Run {
         let mut count: Option<i64> = None;
         let ids = self.ids.clone();
         let counts = self.counts.clone();
+        let mut live = LiveOutputs::default();
         let mut handler = |event: Event<'_>| {
             if let Event::Output {
                 msg,
@@ -372,15 +388,30 @@ impl Run {
                 ..
             } = event
             {
-                if msg.msg_type() == "execute_input" {
+                let msg_type = msg.msg_type();
+                if msg_type == "execute_input" {
                     count = msg.content["execution_count"].as_i64();
                 }
+                let clear = msg_type == "clear_output";
+                let display = msg.content["transient"]["display_id"].is_string();
                 for &i in changed {
                     let (Some(Cell::Code(c)), Some(id)) = (cells.get(i), ids.get(i)) else {
                         continue;
                     };
                     if id.is_empty() {
                         continue;
+                    }
+                    if i == index {
+                        if let Some(from) = live.next(clear, display, c.outputs.len()) {
+                            let outputs = live_outputs(&c.outputs[from..]);
+                            if !outputs.is_empty() {
+                                let _ = room.send(Cmd::Exec(RoomCmd::Append {
+                                    cell_id: id.clone(),
+                                    outputs,
+                                }));
+                            }
+                            continue;
+                        }
                     }
                     let outputs = live_outputs(&c.outputs);
                     // An update to an earlier cell (`update_display`) changes
@@ -415,6 +446,32 @@ impl Run {
         };
         done(room, cell_id, outputs, count);
         ok
+    }
+}
+
+/// Which of the running cell's outputs the room already has. Outputs that
+/// only add to them go as an `Append` of the new ones; a message that may
+/// change what is there (a clear, a display with an id) resends them all.
+#[derive(Default)]
+struct LiveOutputs {
+    sent: usize,
+    /// A clear was seen. A clear with `wait` happens at the next output,
+    /// so the clear and the output after it both resend.
+    resync: bool,
+}
+
+impl LiveOutputs {
+    /// The cell now has `len` outputs after a message that was a `clear`,
+    /// or carried a `display` id. `Some(from)`: append the outputs from
+    /// `from` on. `None`: resend them all.
+    fn next(&mut self, clear: bool, display: bool, len: usize) -> Option<usize> {
+        self.resync |= clear;
+        let append = (!self.resync && !display && len >= self.sent).then_some(self.sent);
+        if append.is_none() {
+            self.resync = clear;
+        }
+        self.sent = len;
+        append
     }
 }
 
@@ -618,6 +675,30 @@ pub(crate) async fn run_and_wait(
 #[cfg(test)]
 mod request_tests {
     use super::*;
+
+    #[test]
+    fn live_outputs_append_until_something_may_change_them() {
+        let mut l = LiveOutputs::default();
+        // Streams and results add outputs: each sends only the new ones.
+        assert_eq!(l.next(false, false, 1), Some(0));
+        assert_eq!(l.next(false, false, 2), Some(1));
+        assert_eq!(l.next(false, false, 3), Some(2));
+        // A display with an id may update earlier outputs.
+        assert_eq!(l.next(false, true, 4), None);
+        assert_eq!(l.next(false, false, 5), Some(4));
+        // clear_output(wait): nothing changes yet, then the next output
+        // clears and adds; both resend, then appends resume.
+        assert_eq!(l.next(true, false, 5), None);
+        assert_eq!(l.next(false, false, 1), None);
+        assert_eq!(l.next(false, false, 2), Some(1));
+        // clear_output without wait: cleared now; the next one resends too.
+        assert_eq!(l.next(true, false, 0), None);
+        assert_eq!(l.next(false, false, 1), None);
+        assert_eq!(l.next(false, false, 2), Some(1));
+        // Fewer outputs than sent, without a clear seen: resend.
+        assert_eq!(l.next(false, false, 1), None);
+        assert_eq!(l.next(false, false, 2), Some(1));
+    }
 
     #[test]
     fn queued_ids_outlive_the_minute_until_a_successor_waits() {
