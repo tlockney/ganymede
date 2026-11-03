@@ -361,6 +361,12 @@ async fn get_file(
         header::HeaderValue::from_str(&content_type)
             .unwrap_or(header::HeaderValue::from_static("application/octet-stream")),
     );
+    // As `FilesHandler.content_security_policy`: run HTML and SVG in an
+    // opaque origin, so a file in the notebook folder can't act as the UI.
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        header::HeaderValue::from_static(FILES_CSP),
+    );
     // Tornado's `get_argument("download", False)`: any non-empty value.
     if q.download.is_some_and(|d| !d.is_empty()) {
         let disposition = format!("attachment; filename*=utf-8''{}", url_escape(&model.name));
@@ -370,6 +376,10 @@ async fn get_file(
     }
     Ok((headers, bytes).into_response())
 }
+
+/// The `Content-Security-Policy` on every `/files` response, as
+/// jupyter_server's `FilesHandler` appends to its policy.
+const FILES_CSP: &str = "sandbox allow-scripts";
 
 /// `FilesHandler`'s `Content-Type`: `.ipynb` is `application/x-ipynb+json`;
 /// otherwise the type guessed from the name, with a compression suffix
