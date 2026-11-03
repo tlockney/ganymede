@@ -1,0 +1,15 @@
+{
+  "name": "ganymede",
+  "owner": {
+    "name": "Thomas Lockney",
+    "url": "https://github.com/tlockney"
+  },
+  "description": "Claude Code plugins for Ganymede, a Jupyter server in Rust.",
+  "plugins": [
+    {
+      "name": "ganymede-journal",
+      "source": "./plugins/ganymede-journal",
+      "description": "Keep a live Jupyter notebook as the record of an analysis while the agent does it: the ganymede MCP tools, a journaling skill, hooks that keep the record honest, and a reviewer agent."
+    }
+  ]
+}

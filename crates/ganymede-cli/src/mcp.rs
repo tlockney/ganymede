@@ -7,6 +7,14 @@
 //! `--server`, else a running one (from its `jpserver-<pid>.json`) whose
 //! root holds the root dir and that serves `/mcp`, else one started in this
 //! process on a loopback port with a token of its own.
+//!
+//! A server of its own is announced in `ganymede-mcp-<pid>.json` in the
+//! Jupyter runtime dir while it runs, for `ganymede mcp call` only: other
+//! `ganymede mcp` processes don't use it, since it stops with its agent.
+//!
+//! `ganymede mcp call TOOL [ARGS]` calls one tool on the server
+//! `ganymede mcp` would use, for scripts and agent hooks, and prints its
+//! text.
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -15,16 +23,19 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 #[derive(clap::Args)]
+#[command(args_conflicts_with_subcommands = false)]
 pub struct McpArgs {
+    #[command(subcommand)]
+    pub cmd: Option<McpCmd>,
     /// The notebooks' directory. Default: the current directory.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub root_dir: Option<PathBuf>,
     /// Use this server (its URL with the base URL, such as
     /// `http://localhost:8888/`) instead of finding one.
-    #[arg(long, value_name = "URL")]
+    #[arg(long, value_name = "URL", global = true)]
     pub server: Option<String>,
     /// The token for `--server`.
-    #[arg(long, env = "JUPYTER_TOKEN", hide_env_values = true)]
+    #[arg(long, env = "JUPYTER_TOKEN", hide_env_values = true, global = true)]
     pub token: Option<String>,
     /// Start a server in this process even when one is running.
     #[arg(long)]
@@ -41,6 +52,29 @@ pub struct McpArgs {
     /// Kernelspec for new notebooks, on a server this command starts.
     #[arg(long, value_name = "NAME")]
     pub default_kernel: Option<String>,
+}
+
+#[derive(clap::Subcommand)]
+pub enum McpCmd {
+    /// Call one tool and print its text, for scripts and agent hooks.
+    ///
+    /// Uses `--server`, else a running `ganymede serve --mcp` whose root
+    /// holds the root dir, else a server a `ganymede mcp` started for
+    /// itself there (the most recent). Starts none: with no server it
+    /// fails. Exits 1 when the tool reports an error.
+    Call(CallArgs),
+}
+
+#[derive(clap::Args)]
+pub struct CallArgs {
+    /// The tool, such as `notebook_read`.
+    pub tool: String,
+    /// Its arguments, as a JSON object.
+    #[arg(default_value = "{}")]
+    pub args: String,
+    /// The client name the server records in provenance.
+    #[arg(long, default_value = "ganymede-mcp-call")]
+    pub client: String,
 }
 
 /// A server's `/mcp` endpoint and token.
@@ -62,6 +96,41 @@ pub async fn run(
     let root = root
         .canonicalize()
         .with_context(|| format!("root dir {}", root.display()))?;
+    if let Some(McpCmd::Call(call_args)) = &args.cmd {
+        let ep = match &args.server {
+            Some(server) => Some(Endpoint {
+                url: mcp_url(server),
+                token: args.token.clone(),
+            }),
+            None => {
+                let root = root.clone();
+                tokio::task::spawn_blocking(move || find_server(&root).or_else(|| find_own(&root)))
+                    .await?
+            }
+        };
+        let Some(ep) = ep else {
+            bail!(
+                "no server for {}: start `ganymede serve --mcp`, or an agent's `ganymede mcp`",
+                root.display()
+            );
+        };
+        let (tool, client) = (call_args.tool.clone(), call_args.client.clone());
+        let tool_args: Value =
+            serde_json::from_str(&call_args.args).context("ARGS must be a JSON object")?;
+        if !tool_args.is_object() {
+            bail!("ARGS must be a JSON object");
+        }
+        let (text, is_error) =
+            tokio::task::spawn_blocking(move || call(&ep, &client, &tool, tool_args)).await??;
+        print!("{text}");
+        if !text.ends_with('\n') {
+            println!();
+        }
+        if is_error {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     let own = args.own_server || args.read_only || args.no_execute || args.images;
     if let Some(server) = &args.server {
         if own {
@@ -87,7 +156,7 @@ pub async fn run(
 
     // A server of our own, stopped when stdin closes.
     let mut cfg = ganymede_server::serve::ServeArgs {
-        root_dir: Some(root),
+        root_dir: Some(root.clone()),
         default_kernel: args.default_kernel.clone(),
         kernelspec_root: kernelspec_roots.to_vec(),
         ..Default::default()
@@ -130,6 +199,7 @@ pub async fn run(
         url: mcp_url(&base),
         token,
     };
+    let announced = announce(&base, ep.token.as_deref(), root);
     let proxying = tokio::task::spawn_blocking(move || proxy(ep));
     // Ctrl-C or SIGTERM stops the server too, which saves open notebooks
     // and shuts its kernels down; stdin closing does the same.
@@ -137,6 +207,9 @@ pub async fn run(
         r = proxying => Some(r?),
         () = stop_signal() => None,
     };
+    if let Some(f) = &announced {
+        let _ = std::fs::remove_file(f);
+    }
     let _ = stop_tx.send(()).await;
     server.await??;
     match r {
@@ -170,6 +243,126 @@ async fn stop_signal() {
             std::future::pending::<()>().await;
         }
     }
+}
+
+/// Writes `ganymede-mcp-<pid>.json` (`url`, `token`, `root_dir`, `pid`),
+/// readable only by the user, for [`find_own`]. Best effort.
+fn announce(base: &str, token: Option<&str>, root: PathBuf) -> Option<PathBuf> {
+    let dir = ganymede_engine::host::kernelspec::jupyter_runtime_dir();
+    let path = dir.join(format!("ganymede-mcp-{}.json", std::process::id()));
+    let info = json!({"url": base, "token": token, "root_dir": root, "pid": std::process::id()});
+    let write = || -> std::io::Result<()> {
+        std::fs::create_dir_all(&dir)?;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+        opts.open(&path)?.write_all(info.to_string().as_bytes())
+    };
+    match write() {
+        Ok(()) => Some(path),
+        Err(e) => {
+            tracing::debug!("announcing the server in {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// A server a `ganymede mcp` started for itself, whose root holds `root`
+/// and that still answers: the deepest root, then the newest.
+fn find_own(root: &Path) -> Option<Endpoint> {
+    let dir = ganymede_engine::host::kernelspec::jupyter_runtime_dir();
+    let mut found: Vec<((usize, std::time::SystemTime), Endpoint)> = Vec::new();
+    for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("ganymede-mcp-") && name.ends_with(".json")) {
+            continue;
+        }
+        let Ok(info) = std::fs::read_to_string(entry.path())
+            .map_err(|_| ())
+            .and_then(|t| serde_json::from_str::<Value>(&t).map_err(|_| ()))
+        else {
+            continue;
+        };
+        let (Some(url), Some(server_root)) = (info["url"].as_str(), info["root_dir"].as_str())
+        else {
+            continue;
+        };
+        let Ok(server_root) = Path::new(server_root).canonicalize() else {
+            continue;
+        };
+        if !root.starts_with(&server_root) {
+            continue;
+        }
+        let ep = Endpoint {
+            url: mcp_url(url),
+            token: info["token"].as_str().map(String::from),
+        };
+        let modified = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        if serves_mcp(&ep) {
+            found.push(((server_root.components().count(), modified), ep));
+        }
+    }
+    found.sort_by_key(|(key, _)| std::cmp::Reverse(*key));
+    found.into_iter().next().map(|(_, ep)| ep)
+}
+
+/// Calls `tool` in a session of its own: its text, and whether the tool
+/// reported an error.
+fn call(ep: &Endpoint, client: &str, tool: &str, args: Value) -> Result<(String, bool)> {
+    let agent = agent();
+    let init = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": {"name": client, "version": env!("CARGO_PKG_VERSION")}}});
+    let id = start(&agent, ep, &init, None)?;
+    let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                     "params": {"name": tool, "arguments": args}});
+    let answer = (|| -> Result<Value> {
+        let mut resp = send_with(&agent, ep, &msg, Some(&id), None)?;
+        let status = resp.status();
+        let is_sse = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.starts_with("text/event-stream"));
+        let reader = resp.body_mut().as_reader();
+        if is_sse {
+            let mut answer = None;
+            relay_events(reader, Some(&json!(1)), |v| {
+                if v["id"] == 1 && v.get("method").is_none() {
+                    answer = Some(v.clone());
+                }
+            })?;
+            return answer.context("no answer");
+        }
+        let mut body = String::new();
+        reader.take(64 << 20).read_to_string(&mut body)?;
+        serde_json::from_str::<Value>(&body).with_context(|| format!("{status}: {}", body.trim()))
+    })();
+    let mut req = agent.delete(&ep.url).header("Mcp-Session-Id", &id);
+    if let Some(t) = &ep.token {
+        req = req.header("Authorization", &format!("token {t}"));
+    }
+    let _ = req.call();
+    let answer = answer?;
+    if let Some(e) = answer.get("error") {
+        return Ok((e["message"].as_str().unwrap_or("error").to_string(), true));
+    }
+    let result = &answer["result"];
+    let text = result["content"]
+        .as_array()
+        .map(|c| {
+            c.iter()
+                .filter_map(|b| b["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    Ok((text, result["isError"] == true))
 }
 
 fn mcp_url(base: &str) -> String {

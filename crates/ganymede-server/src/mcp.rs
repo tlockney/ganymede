@@ -224,6 +224,10 @@ pub struct AddArgs {
     /// Insert after this cell id (default: at the end).
     pub after: Option<String>,
     pub path: Option<String>,
+    /// A read mark (from an `@@read` line) to move past the new cell, as
+    /// if its reader had added it: for a hook adding a cell on an agent's
+    /// behalf, so the agent isn't told of it as someone else's.
+    pub mark: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -389,7 +393,7 @@ impl Notebooks {
             "metadata": provenance(&context.peer, "executed"),
             "outputs": [], "source": a.source,
         });
-        self.insert(&path, cell, a.after).await?;
+        self.insert(&path, cell, a.after, None).await?;
         self.run_cells(&path, &kernel_id, vec![id.clone()], timeout)
             .await
     }
@@ -420,7 +424,7 @@ impl Notebooks {
                 json!({"cell_type": "raw", "id": id, "metadata": metadata, "source": a.source})
             }
         };
-        self.insert(&path, cell, a.after).await?;
+        self.insert(&path, cell, a.after, a.mark).await?;
         text(format!("Added cell {id}"))
     }
 
@@ -442,7 +446,7 @@ impl Notebooks {
         let id = a.id.clone();
         let source = a.source;
         let found = self
-            .own_edit(&path, vec![a.id.clone()], move |room| {
+            .own_edit(&path, vec![a.id.clone()], None, move |room| {
                 room.edit(|txn, roots| {
                     let Some(cell) = schema::find_cell(txn, roots, &id) else {
                         return false;
@@ -503,7 +507,7 @@ impl Notebooks {
         let path = self.path(a.path)?;
         let id = a.id.clone();
         let found = self
-            .own_edit(&path, vec![a.id.clone()], move |room| {
+            .own_edit(&path, vec![a.id.clone()], None, move |room| {
                 room.edit(|txn, roots| match schema::cell_index(txn, roots, &id) {
                     Some(i) => {
                         roots.cells.remove(txn, i);
@@ -528,7 +532,7 @@ impl Notebooks {
         let path = self.path(a.path)?;
         let (id, after) = (a.id.clone(), a.after.clone());
         let moved = self
-            .own_edit(&path, vec![a.id.clone()], move |room| {
+            .own_edit(&path, vec![a.id.clone()], None, move |room| {
                 room.edit(|txn, roots| {
                     let Some(from) = schema::cell_index(txn, roots, &id) else {
                         return Err(format!("no cell {id}"));
@@ -974,21 +978,35 @@ impl Notebooks {
     /// Edit the notebook's room with `f`, moving this connection's read
     /// mark past the change to cells `ids`, so the change isn't reported
     /// to it as someone else's.
+    /// `also` is another read mark to move the same way (`cell_add`'s
+    /// `mark`), when it is for this notebook.
     async fn own_edit<R: Send + 'static>(
         &self,
         path: &str,
         ids: Vec<String>,
+        also: Option<String>,
         f: impl FnOnce(&mut Room) -> (R, Effects) + Send + 'static,
     ) -> Result<R, McpError> {
-        let token = self.tokens.lock().expect("tokens").get(path).cloned();
-        let marks = self.marks.clone();
+        let tokens: Vec<String> = self
+            .tokens
+            .lock()
+            .expect("tokens")
+            .get(path)
+            .cloned()
+            .into_iter()
+            .chain(also)
+            .collect();
+        let (marks, p) = (self.marks.clone(), path.to_string());
         self.room(path, move |room| {
             let r = f(room);
-            if let (Some(token), Some(Ok(nb))) = (token, room.notebook_with_ids()) {
+            if let (false, Some(Ok(nb))) = (tokens.is_empty(), room.notebook_with_ids()) {
                 let now = marks::snapshot(&nb);
-                if let Some(m) = marks.lock().expect("marks").get(&token) {
-                    for id in &ids {
-                        marks::adopt(&mut m.cells, &now, id);
+                let mut marks = marks.lock().expect("marks");
+                for token in &tokens {
+                    if let Some(m) = marks.get(token).filter(|m| m.path == p) {
+                        for id in &ids {
+                            marks::adopt(&mut m.cells, &now, id);
+                        }
                     }
                 }
             }
@@ -1104,10 +1122,16 @@ impl Notebooks {
         Ok((s.kernel.id, s.kernel.name))
     }
 
-    async fn insert(&self, path: &str, cell: Value, after: Option<String>) -> Result<(), McpError> {
+    async fn insert(
+        &self,
+        path: &str,
+        cell: Value,
+        after: Option<String>,
+        mark: Option<String>,
+    ) -> Result<(), McpError> {
         let id = cell["id"].as_str().unwrap_or_default().to_string();
         let r = self
-            .own_edit(path, vec![id], move |room| {
+            .own_edit(path, vec![id], mark, move |room| {
                 room.edit(|txn, roots: &Roots| {
                     let at = match &after {
                         None => roots.cells.len(txn),
