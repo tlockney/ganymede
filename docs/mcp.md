@@ -173,9 +173,10 @@ connection's own edits (`cell_add`, `cell_run`, `cell_edit`,
 back. An edit moves only what it changed (`cell_edit` the source,
 `cell_move` the place), and a failed edit moves nothing, so someone
 else's change to the same cell is still reported. Reading with a mark
-makes it the reading connection's mark for that notebook, so after
-`ganymede mcp` starts a new session the agent's mark keeps following
-its edits. Another connection to the same server can read with the mark, as
+makes it the reading connection's mark for that notebook, replacing
+any mark the connection had there: the mark it last read with is the
+one its edits move. So after `ganymede mcp` starts a new session the
+agent's mark keeps following its edits. Another connection to the same server can read with the mark, as
 a hook outside the agent would; that read moves the mark as well, so
 the agent isn't told the same change twice.
 
