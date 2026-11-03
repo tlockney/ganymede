@@ -11,8 +11,12 @@ has (`LiveOutputs` in execute.rs) and sends only the new ones as
 `RoomCmd::Append`. `schema::append_outputs` merges a stream into the
 stream before it by reading only that output's `output_type` and `name`,
 then appends to its `YText`. A clear or a display with an id still
-resends the whole list, as before; a `clear_output(wait)` resends at the
-clear and at the output after it, since the clear happens then.
+resends the whole list, as before. A `clear_output(wait)` changes no
+output when it arrives, so ganymede-exec reports no changed cell for it;
+the handler has to note every clear itself, or the next output (one
+output replacing one) looks like nothing new and the live view freezes
+until the cell ends. The first update of each run also resends, since
+the room may still show outputs from before it.
 
 yrs has its own quadratic term: `Text::insert` walks the text's blocks
 from the start, and each insert in its own transaction adds a block, so

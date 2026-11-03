@@ -393,6 +393,9 @@ impl Run {
                     count = msg.content["execution_count"].as_i64();
                 }
                 let clear = msg_type == "clear_output";
+                if clear {
+                    live.cleared();
+                }
                 let display = msg.content["transient"]["display_id"].is_string();
                 for &i in changed {
                     let (Some(Cell::Code(c)), Some(id)) = (cells.get(i), ids.get(i)) else {
@@ -452,15 +455,33 @@ impl Run {
 /// Which of the running cell's outputs the room already has. Outputs that
 /// only add to them go as an `Append` of the new ones; a message that may
 /// change what is there (a clear, a display with an id) resends them all.
-#[derive(Default)]
 struct LiveOutputs {
     sent: usize,
-    /// A clear was seen. A clear with `wait` happens at the next output,
-    /// so the clear and the output after it both resend.
+    /// Resend everything at the next update. Set at the start, since the
+    /// room may show outputs from before this run (the same cell queued
+    /// twice, a client's edit), and by a clear: a clear with `wait`
+    /// changes nothing until the next output, so the clear and the output
+    /// after it both resend.
     resync: bool,
 }
 
+impl Default for LiveOutputs {
+    fn default() -> Self {
+        LiveOutputs {
+            sent: 0,
+            resync: true,
+        }
+    }
+}
+
 impl LiveOutputs {
+    /// A `clear_output` arrived for the running cell. Called for every
+    /// clear, including a `wait` one that changes no output yet and so
+    /// never reaches [`LiveOutputs::next`].
+    fn cleared(&mut self) {
+        self.resync = true;
+    }
+
     /// The cell now has `len` outputs after a message that was a `clear`,
     /// or carried a `display` id. `Some(from)`: append the outputs from
     /// `from` on. `None`: resend them all.
@@ -678,20 +699,27 @@ mod request_tests {
 
     #[test]
     fn live_outputs_append_until_something_may_change_them() {
+        // The calls follow what the handler does for each message:
+        // `cleared` for every clear, `next` when the running cell changed.
         let mut l = LiveOutputs::default();
+        // The first update resends: the room may show older outputs.
+        assert_eq!(l.next(false, false, 1), None);
         // Streams and results add outputs: each sends only the new ones.
-        assert_eq!(l.next(false, false, 1), Some(0));
         assert_eq!(l.next(false, false, 2), Some(1));
         assert_eq!(l.next(false, false, 3), Some(2));
         // A display with an id may update earlier outputs.
         assert_eq!(l.next(false, true, 4), None);
         assert_eq!(l.next(false, false, 5), Some(4));
-        // clear_output(wait): nothing changes yet, then the next output
-        // clears and adds; both resend, then appends resume.
-        assert_eq!(l.next(true, false, 5), None);
+        // clear_output(wait) changes no output, so only `cleared`; the
+        // next output clears and adds one: same count as before for one
+        // output, so only the resync flag can tell.
+        l.cleared();
+        assert_eq!(l.next(false, false, 1), None);
+        l.cleared();
         assert_eq!(l.next(false, false, 1), None);
         assert_eq!(l.next(false, false, 2), Some(1));
         // clear_output without wait: cleared now; the next one resends too.
+        l.cleared();
         assert_eq!(l.next(true, false, 0), None);
         assert_eq!(l.next(false, false, 1), None);
         assert_eq!(l.next(false, false, 2), Some(1));
