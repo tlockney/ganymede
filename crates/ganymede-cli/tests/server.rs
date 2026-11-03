@@ -769,8 +769,8 @@ async fn scenario(base: &str, c: &Code) -> Vec<(String, Value)> {
             tokio::time::sleep(Duration::from_millis(1500)).await;
             within(
                 CALL_SECS,
-                "POST api/kernels/{id}/interrupt",
-                http.post(url)
+                &format!("POST {url}"),
+                http.post(&url)
                     .header("Authorization", format!("token {TOKEN}"))
                     .send(),
             )
@@ -1139,9 +1139,11 @@ fn restart_failure_on_a_real_kernel_reports_it_dead() {
 }
 
 /// The bound on one HTTP call, and on waiting for a server to answer.
-/// Shorter than the `within` limits `crash` puts around its calls, so
-/// a stalled call fails here, naming the method and path.
-const CALL_SECS: u64 = 50;
+/// Longer than the servers' 60 s kernel startup timeout, so a slow start
+/// fails with the server's own error; shorter than the `within` limits
+/// `crash` puts around its calls, so a stalled call fails here, naming
+/// the method and path.
+const CALL_SECS: u64 = 75;
 
 /// The bound on one websocket connect or send.
 const CONNECT_SECS: u64 = 20;
@@ -1183,10 +1185,10 @@ async fn crash(server: &str, base: &str, c: &Code, wait_idle: bool) -> Option<Va
         base: base.to_string(),
         transcript: vec![],
     };
-    within(60, &st("waiting for the server"), cl.wait_ready()).await;
+    within(90, &st("waiting for the server"), cl.wait_ready()).await;
     use reqwest::Method as M;
     let (s, k) = within(
-        60,
+        90,
         &st("starting the kernel"),
         cl.call(M::POST, "api/kernels", Some(json!({"name": c.kernel}))),
     )
@@ -1235,8 +1237,11 @@ async fn crash(server: &str, base: &str, c: &Code, wait_idle: bool) -> Option<Va
     .await
     .unwrap();
     let mut reply = None;
+    // One deadline for the whole wait, so frames that are skipped (pings)
+    // can't keep it open.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
-        let frame = tokio::time::timeout(Duration::from_secs(30), ws.next())
+        let frame = tokio::time::timeout_at(deadline, ws.next())
             .await
             .unwrap_or_else(|_| panic!("{}", st("no restarting status in 30 s")));
         let text = match frame {
@@ -1263,7 +1268,7 @@ async fn crash(server: &str, base: &str, c: &Code, wait_idle: bool) -> Option<Va
     // crashed cell, when the new kernel publishes no status of its own
     // (cdp-kernel), so there the next cell is what shows it is back.
     let (s, v) = within(
-        60,
+        90,
         &st("reading the kernel after the crash"),
         cl.call(M::GET, &format!("api/kernels/{kid}"), None),
     )
@@ -1273,7 +1278,7 @@ async fn crash(server: &str, base: &str, c: &Code, wait_idle: bool) -> Option<Va
         let mut state = Value::Null;
         for _ in 0..300 {
             let (_, v) = within(
-                60,
+                90,
                 &st("polling the restarted kernel"),
                 cl.call(M::GET, &format!("api/kernels/{kid}"), None),
             )
@@ -1318,7 +1323,7 @@ async fn crash(server: &str, base: &str, c: &Code, wait_idle: bool) -> Option<Va
     );
     drop(ws);
     let (s, _) = within(
-        60,
+        90,
         &st("deleting the kernel"),
         cl.call(M::DELETE, &format!("api/kernels/{kid}"), None),
     )
