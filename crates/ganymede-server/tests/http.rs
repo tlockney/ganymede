@@ -4170,6 +4170,20 @@ async fn mcp_read_since_lists_changes_by_others() {
     let out = read(agent.clone(), json!({"path": "j.ipynb", "since": mark})).await;
     assert!(out.starts_with("No changes by others"), "{out}");
 
+    // A hook adds a cell for the agent, passing its mark: not reported.
+    let hook = mcp_connect(&app, "hook").await;
+    mcp_text(
+        &mcp_tool(
+            &app,
+            &hook,
+            "cell_add",
+            json!({"path": "j.ipynb", "source": "recorded step", "mode": "recorded", "mark": mark}),
+        )
+        .await,
+    );
+    let out = read(agent.clone(), json!({"path": "j.ipynb", "since": mark})).await;
+    assert!(out.starts_with("No changes by others"), "{out}");
+
     // An unknown mark gives the whole notebook and a mark to use next.
     let out = read(agent.clone(), json!({"path": "j.ipynb", "since": "nope"})).await;
     assert!(out.starts_with("Read mark nope is unknown"), "{out}");

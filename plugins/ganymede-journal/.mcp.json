@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ganymede": {
+      "command": "ganymede",
+      "args": ["mcp"]
+    }
+  }
+}
