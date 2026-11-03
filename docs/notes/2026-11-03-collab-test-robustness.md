@@ -6,6 +6,8 @@ Follow-ups from #288's review, all in the `jupyter_ydoc` interop test:
   and websocket open (`open_timeout`), and both skip `http_proxy`: an
   opener with an empty `ProxyHandler`, and `proxy=None` on `connect`
   (websockets 15 and later read proxy settings from the environment).
+  Older websockets reject `proxy=`, so the module probe in `collab.rs`
+  also requires websockets 15 or later.
 - `until()` stops as soon as the pump or send task has died, and says
   why: the task's exception, or the websocket's close code and reason.
   Before, a dead pump showed only as a timeout 20 s later.

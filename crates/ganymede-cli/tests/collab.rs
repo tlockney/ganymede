@@ -6,7 +6,7 @@
 //! oracle here, as elsewhere in the e2e suite.
 //!
 //! Skips (printing `skipping:` to stderr) unless a Python with
-//! `jupyter_ydoc`, `pycrdt` and `websockets` is found: `python3`, else
+//! `jupyter_ydoc`, `pycrdt` and `websockets` (15 or later) is found: `python3`, else
 //! `python`. The e2e job installs them. When `GANYMEDE_E2E_PYTHON` names
 //! a Python, that one is used and must have them: the test fails if it
 //! can't import them.
@@ -19,7 +19,11 @@ use std::process::{Command, Stdio};
 
 const TOKEN: &str = "e2e-token";
 
-const MODULES: &str = "import jupyter_ydoc, pycrdt, websockets";
+/// The client's imports, and websockets 15 or later: `ydoc_client.py`
+/// passes `proxy=None`, which older versions reject.
+const MODULES: &str = "import jupyter_ydoc, pycrdt, websockets; \
+    assert int(websockets.__version__.split('.')[0]) >= 15, \
+    f'websockets {websockets.__version__} is older than 15'";
 
 fn has_modules(python: &str) -> bool {
     Command::new(python)
@@ -53,7 +57,7 @@ fn python() -> Option<String> {
 #[test]
 fn jupyter_ydoc_client_converges_with_a_room_and_the_file() {
     let Some(py) = python() else {
-        eprintln!("skipping: no Python with jupyter_ydoc, pycrdt and websockets");
+        eprintln!("skipping: no Python with jupyter_ydoc, pycrdt and websockets >= 15");
         return;
     };
     let root = tempfile::tempdir().unwrap();
