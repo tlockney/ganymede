@@ -72,6 +72,17 @@ its path. Images are left out unless the agent's
 server was started with `--images`, which sends them as MCP image
 content. Kernels can't ask for input.
 
+With `--images`, an SVG output (what Observable Plot, Vega-Lite and
+most chart libraries draw) that has no PNG or JPEG of its own goes to
+the agent as a PNG, white background, at most 1,600 pixels on its
+longer side. The notebook keeps the SVG. Text uses the fonts installed
+on the server's machine. An SVG over 2 MB, or one that can't be drawn,
+is left out, as before.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
 ## Provenance
 
 Cells an agent writes carry

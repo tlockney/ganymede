@@ -12,13 +12,15 @@ name = "ganymede-server"
 path = "src/main.rs"
 
 [features]
-default = ["zmq", "subprocess", "gateway"]
+default = ["zmq", "subprocess", "gateway", "svg"]
 # The kernels `run_with` makes when `Startup` names none: ZeroMQ transports
 # and subprocess launches. An app that brings its own builds without them.
 zmq = ["ganymede-api/zmq"]
 subprocess = ["ganymede-api/subprocess"]
 # `gateway_url`: kernels on another Jupyter server.
 gateway = ["dep:ganymede-gateway"]
+# `ganymede mcp` shows SVG outputs to the agent as PNG (resvg, pure Rust).
+svg = ["dep:resvg"]
 
 [dependencies]
 ganymede-protocol = { path = "../ganymede-protocol" }
@@ -31,6 +33,8 @@ ganymede-nbformat = { path = "../ganymede-nbformat" }
 ganymede-gateway = { path = "../ganymede-gateway", optional = true }
 ganymede-terminals = { path = "../ganymede-terminals" }
 ganymede-lsp = { path = "../ganymede-lsp" }
+# No memory-mapped fonts (unsafe) and no raster images inside SVGs.
+resvg = { version = "0.49", default-features = false, features = ["text", "system-fonts"], optional = true }
 axum.workspace = true
 tower-http.workspace = true
 tower.workspace = true
