@@ -712,14 +712,20 @@ async fn run_room(
                     continue;
                 };
                 let poll_every = if watch.is_some() { WATCHED_POLL_INTERVAL } else { POLL_INTERVAL };
-                if disk_event.is_some_and(|t| t.elapsed() >= DEBOUNCE)
-                    || first_disk_event.is_some_and(|t| t.elapsed() >= MAX_DEBOUNCE)
-                {
+                let settled = disk_event.is_some_and(|t| t.elapsed() >= DEBOUNCE);
+                if settled || first_disk_event.is_some_and(|t| t.elapsed() >= MAX_DEBOUNCE) {
                     disk_event = None;
                     first_disk_event = None;
                     last_poll = Instant::now();
-                    if reload(contents.as_ref(), &mut room, d, &clients).await.needs_save {
-                        last_edit = Some(Instant::now());
+                    let needs_save = reload(contents.as_ref(), &mut room, d, &clients).await.needs_save;
+                    if settled {
+                        if needs_save { last_edit = Some(Instant::now()) }
+                    } else if needs_save || last_edit.is_some() {
+                        // The file never settles, so autosave below would
+                        // wait for good: save now, just after taking in
+                        // the file, so the save rarely meets a newer one.
+                        save_room(contents.as_ref(), &mut room, d, &clients, false).await;
+                        last_edit = None;
                     }
                 } else if last_poll.elapsed() >= poll_every && disk_event.is_none() {
                     last_poll = Instant::now();

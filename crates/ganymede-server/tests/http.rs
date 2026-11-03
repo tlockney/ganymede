@@ -2470,20 +2470,19 @@ async fn collaboration_room_syncs_saves_and_reloads() {
 /// once the first unsettled event is 5 s old (#279).
 #[tokio::test]
 async fn collaboration_room_reloads_a_file_that_never_settles() {
+    use ganymede_documents::schema::Roots;
     use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
     use ganymede_documents::yrs::updates::decoder::Decode;
     use ganymede_documents::yrs::updates::encoder::Encode;
-    use ganymede_documents::yrs::StateVector;
+    use ganymede_documents::yrs::{Array, Doc, Map, Out, ReadTxn, Text, Transact, Update};
     use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
 
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("busy.ipynb");
-    let nb = |text: &str| {
-        json!({"cells": [{"cell_type": "markdown", "id": "a", "metadata": {}, "source": text}],
-            "metadata": {}, "nbformat": 4, "nbformat_minor": 5})
-        .to_string()
-    };
-    std::fs::write(&file, nb("start")).unwrap();
+    let cell = |id: &str, text: &str| json!({"cell_type": "markdown", "id": id, "metadata": {}, "source": text});
+    let nb = json!({"cells": [cell("a", "start"), cell("b", "keep")],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(&file, nb.to_string()).unwrap();
     let app = build_router(state(dir.path()));
     let (s, v) = call(
         &app,
@@ -2507,33 +2506,78 @@ async fn collaboration_room_reloads_a_file_that_never_settles() {
     req.headers_mut()
         .insert("Authorization", format!("token {TOKEN}").parse().unwrap());
     let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let doc = Doc::new();
+    let roots = Roots::get(&doc);
     ws.send(TMsg::Binary(
-        YMsg::Sync(SyncMessage::SyncStep1(StateVector::default()))
+        YMsg::Sync(SyncMessage::SyncStep1(doc.transact().state_vector()))
             .encode_v1()
             .into(),
     ))
     .await
     .unwrap();
+    // Take in the room's notebook.
+    while roots.cells.len(&doc.transact()) < 2 {
+        let msg = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .expect("timed out waiting for the room")
+            .unwrap()
+            .unwrap();
+        let TMsg::Binary(b) = msg else { continue };
+        if let Ok(YMsg::Sync(SyncMessage::SyncStep2(u) | SyncMessage::Update(u))) =
+            YMsg::decode_v1(&b)
+        {
+            doc.transact_mut()
+                .apply_update(Update::decode_v1(&u).unwrap())
+                .unwrap();
+        }
+    }
 
-    // Rewrite the file every 100 ms for 8 s: events never settle for the
-    // 500 ms debounce.
+    // Another program rewrites cell `a` every 100 ms for 8 s, keeping
+    // the rest of the file: events never settle for the 500 ms debounce.
+    // It notes whether the room's edit to cell `b` reached the file while
+    // it was writing.
     let writing = Duration::from_secs(8);
     let writer = {
         let file = file.clone();
         std::thread::spawn(move || {
             let start = std::time::Instant::now();
+            let mut saved = false;
             let mut i = 0;
             while start.elapsed() < writing {
                 i += 1;
+                let mut nb: Value =
+                    serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+                saved |= nb["cells"][1]["source"].to_string().contains("room: ");
+                nb["cells"][0]["source"] = json!(format!("write {i}"));
                 // Whole files only: a reload never reads a half-written one.
                 let tmp = file.with_extension("tmp");
-                std::fs::write(&tmp, nb(&format!("write {i}"))).unwrap();
+                std::fs::write(&tmp, nb.to_string()).unwrap();
                 std::fs::rename(&tmp, &file).unwrap();
                 std::thread::sleep(Duration::from_millis(100));
             }
+            saved
         })
     };
     let start = std::time::Instant::now();
+    // Edit cell `b` while the file is busy.
+    let before = doc.transact().state_vector();
+    {
+        let mut txn = doc.transact_mut();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 1) else {
+            panic!()
+        };
+        let Some(Out::YText(t)) = cell.get(&txn, "source") else {
+            panic!()
+        };
+        t.insert(&mut txn, 0, "room: ");
+    }
+    let u = doc.transact().encode_state_as_update_v1(&before);
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::Update(u)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+
     let deadline = tokio::time::Instant::now() + writing + Duration::from_secs(5);
     loop {
         let msg = tokio::time::timeout_at(deadline, ws.next())
@@ -2551,7 +2595,10 @@ async fn collaboration_room_reloads_a_file_that_never_settles() {
         "the room waited for the writes to stop ({:?})",
         start.elapsed()
     );
-    writer.join().unwrap();
+    assert!(
+        writer.join().unwrap(),
+        "the room's edit wasn't saved while the file kept changing"
+    );
 }
 
 #[tokio::test]

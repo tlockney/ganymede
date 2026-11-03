@@ -13,10 +13,9 @@ are left for a later PR.
 - **Debounce bound.** File events under 500 ms apart reset the debounce,
   so a file rewritten constantly (a log-like notebook an agent appends
   to) never reached the room, and the room held off autosave too. The
-  room now reloads once the first unsettled event is 5 s old. Autosave
-  still waits for the file to settle, on purpose: writing over a file
-  another program is writing would race it. A client's `save` writes at
-  once.
+  room now reloads once the first unsettled event is 5 s old, and when
+  it has edits of its own it saves them right after that reload, so the
+  save rarely meets a newer file (and merges if it does).
 - **Lost forced save.** When a client's `save` met a newer file (412),
   merged, and the disk won the cell the client had edited, the reply was
   `success`. It is now `failed`; the merge is still saved. The room
