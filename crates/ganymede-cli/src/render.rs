@@ -1,6 +1,6 @@
 //! Showing kernel output in a terminal, or as JSON for scripts.
 
-use ganymede_engine::nbformat::Output;
+use ganymede_engine::nbformat::{strip_ansi, Output};
 use ganymede_engine::protocol::Message;
 use ganymede_engine::{ExecuteResult, Handler};
 use std::io::{IsTerminal, Write};
@@ -139,41 +139,6 @@ fn for_stderr(s: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// Remove ANSI escape sequences (CSI and OSC), for output that is not a
-/// terminal.
-pub fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '\u{1b}' {
-            out.push(c);
-            continue;
-        }
-        match chars.next() {
-            Some('[') => {
-                for c in chars.by_ref() {
-                    if ('@'..='~').contains(&c) {
-                        break;
-                    }
-                }
-            }
-            Some(']') => {
-                while let Some(c) = chars.next() {
-                    if c == '\u{7}' {
-                        break;
-                    }
-                    if c == '\u{1b}' && chars.peek() == Some(&'\\') {
-                        chars.next();
-                        break;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
 /// One JSON line per executed cell: status, count, and nbformat outputs.
 pub fn json_line(index: usize, r: &ExecuteResult) -> serde_json::Value {
     let outputs: Vec<serde_json::Value> = r
@@ -192,17 +157,4 @@ pub fn json_line(index: usize, r: &ExecuteResult) -> serde_json::Value {
         v["evalue"] = evalue.into();
     }
     v
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn strips_csi_and_osc() {
-        assert_eq!(
-            super::strip_ansi(
-                "\u{1b}[31mError\u{1b}[0m: x \u{1b}]8;;http://a\u{7}link\u{1b}]8;;\u{7}"
-            ),
-            "Error: x link"
-        );
-    }
 }
