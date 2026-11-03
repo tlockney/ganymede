@@ -202,6 +202,15 @@ answers to its own requests (hover, completion) and not another tab's,
 diagnostics go to every editor, and a question from the server (its
 configuration) is put to one editor.
 
+A request about a document from a tab whose text the server doesn't
+have (hover or completion in one of two tabs that don't share edits)
+first gives the server that tab's text, so the answer's positions fit
+the tab that asked.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
 `typescript-language-server` needs TypeScript 5: TypeScript 7 has no
 `tsserver.js`. For TypeScript notebooks on cdp-kernel, completion and
 hover also come from the kernel itself, and `jupyterlab-lsp` 5.3 doesn't

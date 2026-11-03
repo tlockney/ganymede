@@ -444,6 +444,14 @@ impl LspClient {
         // Only `didOpen`, `didChange` and `didClose` are parsed here, and
         // messages with an id, which `router.rs` rewrites.
         if !message.contains("textDocument/did") {
+            // A request about a document waits for the document lock, so
+            // the requester's text (when the server has another tab's)
+            // goes first and no other tab's change comes between.
+            let _docs = if message.contains("\"id\"") && message.contains("\"textDocument\"") {
+                self.resync_for_request(&message).await
+            } else {
+                None
+            };
             let mut st = self.session.state.lock().unwrap();
             st.last_handler_message_at = Some(now_iso());
             let message = if message.contains("\"id\"") && st.generation == self.generation {
@@ -490,6 +498,27 @@ impl LspClient {
             }
             documents::Relay::Drop => {}
         }
+    }
+
+    /// Before a request about a document, sends the server this client's
+    /// text if it has another's (see `Documents::before_request`).
+    /// Returns the document lock, to hold until the request is sent.
+    async fn resync_for_request(
+        &self,
+        message: &str,
+    ) -> Option<tokio::sync::MutexGuard<'_, (u64, documents::Documents)>> {
+        let value = serde_json::from_str::<Value>(message).ok()?;
+        let mut docs = self.session.documents.lock().await;
+        if docs.0 != self.generation {
+            return None;
+        }
+        if let Some((change, uri)) = docs.1.before_request(self.id, &value) {
+            if let Some(shadow) = &self.shadow {
+                write_shadow(&self.session.name, shadow, &uri, docs.1.text(&uri)).await;
+            }
+            let _ = self.to_server.send(change.to_string());
+        }
+        Some(docs)
     }
 
     /// The next message from the server; `None` once the server has
