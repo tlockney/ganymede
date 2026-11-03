@@ -51,11 +51,7 @@ contents API (each `nb cell add` reads and writes the whole notebook)
 and runs them on a kernel through the server; outputs are saved in the
 notebook on the server.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
-A build of `main` serves document rooms and jupyter-server-documents'
+Ganymede serves document rooms and jupyter-server-documents'
 API, and nb-cli uses them: `nb connect` reports `Mode: collaborative`.
 Each `nb cell add`, `update` or `delete` edits the notebook's room, which
 saves the file about a second later, and `nb execute` asks the server
@@ -86,10 +82,6 @@ on Linux, `~/Library/Jupyter/kernels/` on macOS), or create the notebook
 from JupyterLab or ganymede-ui.
 
 ### Finding the server's URL and token
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 While it runs, `ganymede serve` writes `jpserver-<pid>.json` in the
 Jupyter runtime dir (see [Server info file](reference.md#server-info-file)),
@@ -212,14 +204,14 @@ ganymede execute ~/analysis/fares.ipynb
 
 ## What doesn't work yet
 
-- **No live view without document rooms.** On the latest release, or in
-  JupyterLab without the collaboration extensions (see the note under
-  [Connect nb-cli](#connect-nb-cli)), the agent's edits reach you only through the file, and
-  JupyterLab doesn't watch it: it notices only when you save, and then
+- **No live view without document rooms.** In JupyterLab without the
+  collaboration extensions (see [Connect nb-cli](#connect-nb-cli)), the
+  agent's edits reach you only through the file, and JupyterLab doesn't
+  watch it: it notices only when you save, and then
   asks whether to overwrite. Overwrite replaces the agent's cells with
   your stale copy. Reload first (File, Reload Notebook from Disk), and
-  don't edit a notebook while the agent works in it. A build of `main`
-  has the rooms; JupyterLab needs the collaboration extensions
+  don't edit a notebook while the agent works in it. Ganymede serves
+  the rooms; JupyterLab needs the collaboration extensions
   (`ganymede lab extension install jupyter-docprovider
   jupyter-collaboration-ui`) to use them.
 - **A cell timeout doesn't stop the cell.** `nb execute` waits 30

@@ -31,6 +31,9 @@ filter_unconventional = false
 commit_preprocessors = [
   { pattern = '(?s)^Merge pull request #(\d+) from \S+\s*\n\s*([^\n]+).*', replace = "${2} (#${1})" },
   { pattern = '\(#(\d+)\)\s*$', replace = "([#${1}](https://github.com/tlockney/ganymede/pull/${1}))" },
+  # The docs site renders CHANGELOG.md through Vue, which reads a bare
+  # "<pid>" in a title as an unclosed tag and fails the build.
+  { pattern = '<', replace = "&lt;" },
 ]
 commit_parsers = [
   { message = '\(\[#\d+\]\(https://github.com/tlockney/ganymede/pull/\d+\)\)$', group = "Changes" },

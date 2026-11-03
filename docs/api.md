@@ -96,11 +96,6 @@ that never answers is launched again, up to three times, and is then
 reported `status: dead` and removed. `POST /api/sessions` does the same
 for a notebook path, and is what JupyterLab and VS Code call.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. The latest release answers only after the kernel's
-> first reply, with `execution_state: idle`.
-
 ## Run code over the websocket
 
 Connect to `/api/kernels/<id>/channels?session_id=<your session>` and
@@ -140,10 +135,6 @@ Clients that offer the `v1.kernel.websocket.jupyter.org` subprotocol get
 the same messages in its binary framing instead.
 
 ## Open a terminal
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 `POST /api/terminals` starts a shell in a pseudo-terminal and returns its
 name:
@@ -243,7 +234,3 @@ browser, and for relative images and links in Markdown. The path is a
 contents path, with the same root and hidden-file rules as
 `/api/contents`. Without `download`, there is no `Content-Disposition`. A
 directory gets `400`.
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.

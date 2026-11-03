@@ -1,9 +1,5 @@
 # Agents over MCP
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 `ganymede mcp` gives a coding agent (Claude Code, Codex, Cursor, or any
 other MCP client) tools to open, edit and run notebooks. It is meant for
 journaling: the agent records an analysis in a notebook as it works,

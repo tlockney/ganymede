@@ -14,11 +14,6 @@ covers problems with the install itself.
   so shutdown kills it and every process it started, and they die with
   the server.
 
-  > [!NOTE]
-  > **Unreleased.** Available only from a build of `main` (HEAD), not in
-  > the latest release. In the latest release, killing a kernel is not
-  > implemented on Windows, and a kernel may outlive its shutdown.
-
 - **Linux** binaries need glibc 2.35 or newer. There is no musl build for
   Alpine; [install from source](install.md#from-source) there.
 - **macOS** binaries are not signed or notarized. A browser download is
@@ -29,8 +24,6 @@ covers problems with the install itself.
 
 - JupyterLab **server extensions**, which are Python, don't run. Prebuilt
   frontend extensions do; see [JupyterLab and VS Code](frontends.md#extensions).
-- No language server endpoints (`/lsp/*`). **Unreleased.** Terminals
-  are served from a build of `main` (HEAD); the latest release has none.
 - `/api/nbconvert` reports no exporters: there is no export to HTML, PDF,
   or other formats.
 - No JupyterHub single-user mode.
@@ -46,9 +39,6 @@ covers problems with the install itself.
 
 ## Kernels
 
-- In the latest release, a kernel that crashes is reported and removed,
-  not restarted automatically as `jupyter_server`'s restarter does. A
-  build of `main` restarts it ([Kernel crashes](reference.md#kernel-crashes)).
 - Kernels are found only in the platform Jupyter directories and
   `$JUPYTER_PATH`, not under a Python `sys.prefix`. For a kernel installed
   into a conda or virtual environment, add its prefix with
@@ -67,10 +57,6 @@ covers problems with the install itself.
   collaboration extensions; see
   [Document model and collaboration](protocol.md#document-model-and-collaboration)).
   Other frontends see the change on the next open.
-
-  > [!NOTE]
-  > **Unreleased.** Available only from a build of `main` (HEAD), not in
-  > the latest release.
 
 ## The app
 
