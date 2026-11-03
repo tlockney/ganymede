@@ -935,7 +935,7 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
                         for o in &c.outputs {
                             if let ganymede_engine::nbformat::Output::Error(err) = o {
                                 for line in &err.traceback {
-                                    eprintln!("{}", render::strip_ansi(line));
+                                    eprintln!("{}", ganymede_engine::nbformat::strip_ansi(line));
                                 }
                             }
                         }

@@ -1075,7 +1075,12 @@ impl Notebooks {
                     head["evalue"] = v["evalue"].clone();
                     let frames: Vec<String> = v["traceback"]
                         .as_array()
-                        .map(|t| t.iter().filter_map(Value::as_str).map(strip_ansi).collect())
+                        .map(|t| {
+                            t.iter()
+                                .filter_map(Value::as_str)
+                                .map(ganymede_nbformat::strip_ansi)
+                                .collect()
+                        })
                         .unwrap_or_default();
                     let skip = frames.len().saturating_sub(TRACEBACK_FRAMES);
                     let mut b = String::new();
@@ -1176,24 +1181,6 @@ fn strip_html(s: &str) -> String {
         .replace("&amp;", "&")
 }
 
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::new();
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' && chars.peek() == Some(&'[') {
-            chars.next();
-            for c in chars.by_ref() {
-                if c.is_ascii_alphabetic() {
-                    break;
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
 fn images(outputs: &[Output]) -> Vec<ContentBlock> {
     let mut blocks = Vec::new();
     for o in outputs {
@@ -1219,7 +1206,6 @@ mod tests {
 
     #[test]
     fn text_helpers() {
-        assert_eq!(strip_ansi("\u{1b}[31mErr\u{1b}[0m: x"), "Err: x");
         assert_eq!(strip_html("<b>a &amp; b</b><br/>c"), "a & bc");
         let (m, t) = best_text(&json!({"text/html": "<p>x</p>", "text/plain": "y"}));
         assert_eq!((m, t.as_str()), (Some("text/plain"), "y"));

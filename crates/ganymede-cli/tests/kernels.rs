@@ -145,21 +145,7 @@ fn rt() -> tokio::runtime::Runtime {
 }
 
 fn plain(r: &ganymede_engine::ExecuteResult) -> String {
-    strip_ansi(&r.text())
-}
-
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::new();
-    let mut esc = false;
-    for c in s.chars() {
-        match (esc, c) {
-            (false, '\u{1b}') => esc = true,
-            (true, c) if c.is_ascii_alphabetic() => esc = false,
-            (true, _) => {}
-            (false, c) => out.push(c),
-        }
-    }
-    out
+    ganymede_nbformat::strip_ansi(&r.text())
 }
 
 #[test]
@@ -791,7 +777,12 @@ fn parallel_starts() {
 fn cli_run_reports_and_exits_by_status() {
     for l in langs() {
         let out = run_ok(ganymede(&["run", "-q", "-k", l.kernel, l.answer, l.stdout]));
-        assert_eq!(strip_ansi(&stdout(&out)), "42\nout\n", "{}", l.kernel);
+        assert_eq!(
+            ganymede_nbformat::strip_ansi(&stdout(&out)),
+            "42\nout\n",
+            "{}",
+            l.kernel
+        );
 
         let out = ganymede(&["run", "-q", "-k", l.kernel, l.raise, l.stdout])
             .output()
@@ -829,7 +820,7 @@ fn cli_console_runs_piped_multiline_input() {
             .unwrap();
         let out = child.wait_with_output().unwrap();
         assert!(out.status.success(), "{}: {}", l.kernel, stderr(&out));
-        let text = strip_ansi(&stdout(&out))
+        let text = ganymede_nbformat::strip_ansi(&stdout(&out))
             .replace("line 0", "line_0")
             .replace("line 1", "line_1");
         assert!(
@@ -860,7 +851,11 @@ fn cli_standalone_kernel_and_attach() {
         run_ok(ganymede(&["run", "--existing", &cf, l.set_state]));
         // A second client sees the first one's state: same kernel.
         let out = run_ok(ganymede(&["run", "--existing", &cf, l.read_state]));
-        assert!(strip_ansi(&stdout(&out)).contains("state"), "{}", l.kernel);
+        assert!(
+            ganymede_nbformat::strip_ansi(&stdout(&out)).contains("state"),
+            "{}",
+            l.kernel
+        );
 
         unsafe {
             libc_kill(child.id() as i32, 15);

@@ -22,6 +22,7 @@
 //! The crate does no I/O beyond the `read_file`/`write_file` conveniences
 //! and [`atomic_write`], which `write_file` uses.
 
+mod ansi;
 mod atomic;
 mod multiline;
 mod reader;
@@ -29,6 +30,7 @@ mod types;
 mod upgrade;
 mod writer;
 
+pub use ansi::strip_ansi;
 pub use atomic::atomic_write;
 pub use multiline::{splitlines, MultilineString};
 pub use reader::{from_json_slice, read_file, ReadIssue, ReadReport};
