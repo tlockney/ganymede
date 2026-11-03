@@ -2484,6 +2484,82 @@ async fn collaboration_room_saves_between_settled_reloads() {
 /// Another program rewrites cell `a` every `every` for `writing`; the
 /// room must reload while it does, and its own edit to cell `b` must
 /// reach the file before the writes stop.
+/// Contents that note whether a save wrote the room's edit (`room: `).
+struct SaveLog {
+    inner: Arc<dyn ganymede_contents::Contents>,
+    room_saved: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl ganymede_contents::Contents for SaveLog {
+    async fn get(
+        &self,
+        path: &str,
+        options: ganymede_contents::GetOptions,
+    ) -> ganymede_contents::Result<ganymede_contents::ContentsModel> {
+        self.inner.get(path, options).await
+    }
+    async fn save(
+        &self,
+        path: &str,
+        request: ganymede_contents::SaveRequest,
+    ) -> ganymede_contents::Result<ganymede_contents::ContentsModel> {
+        let room = request
+            .content
+            .as_ref()
+            .is_some_and(|c| c.to_string().contains("room: "));
+        let r = self.inner.save(path, request).await;
+        if room && r.is_ok() {
+            self.room_saved
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        r
+    }
+    async fn delete(&self, path: &str) -> ganymede_contents::Result<()> {
+        self.inner.delete(path).await
+    }
+    async fn rename(
+        &self,
+        old: &str,
+        new: &str,
+    ) -> ganymede_contents::Result<ganymede_contents::ContentsModel> {
+        self.inner.rename(old, new).await
+    }
+    async fn new_untitled(
+        &self,
+        dir: &str,
+        kind: ganymede_contents::ContentType,
+        ext: Option<&str>,
+    ) -> ganymede_contents::Result<ganymede_contents::ContentsModel> {
+        self.inner.new_untitled(dir, kind, ext).await
+    }
+    async fn copy(
+        &self,
+        from: &str,
+        to: Option<&str>,
+    ) -> ganymede_contents::Result<ganymede_contents::ContentsModel> {
+        self.inner.copy(from, to).await
+    }
+    async fn list_checkpoints(
+        &self,
+        path: &str,
+    ) -> ganymede_contents::Result<Vec<ganymede_contents::Checkpoint>> {
+        self.inner.list_checkpoints(path).await
+    }
+    async fn create_checkpoint(
+        &self,
+        path: &str,
+    ) -> ganymede_contents::Result<ganymede_contents::Checkpoint> {
+        self.inner.create_checkpoint(path).await
+    }
+    async fn restore_checkpoint(&self, path: &str, id: &str) -> ganymede_contents::Result<()> {
+        self.inner.restore_checkpoint(path, id).await
+    }
+    async fn delete_checkpoint(&self, path: &str, id: &str) -> ganymede_contents::Result<()> {
+        self.inner.delete_checkpoint(path, id).await
+    }
+}
+
 async fn room_keeps_up_with_a_busy_file(every: Duration, writing: Duration) {
     use ganymede_documents::schema::Roots;
     use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
@@ -2498,7 +2574,13 @@ async fn room_keeps_up_with_a_busy_file(every: Duration, writing: Duration) {
     let nb = json!({"cells": [cell("a", "start"), cell("b", "keep")],
         "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
     std::fs::write(&file, nb.to_string()).unwrap();
-    let app = build_router(state(dir.path()));
+    let mut st = state(dir.path());
+    let room_saved = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    st.contents = Arc::new(SaveLog {
+        inner: st.contents.clone(),
+        room_saved: room_saved.clone(),
+    });
+    let app = build_router(st);
     let (s, v) = call(
         &app,
         "PUT",
@@ -2547,30 +2629,26 @@ async fn room_keeps_up_with_a_busy_file(every: Duration, writing: Duration) {
         }
     }
 
-    // The writer keeps the rest of the file, and notes whether the room's
-    // edit to cell `b` reached it.
+    // The writer rewrites cell `a`, keeping the rest of the file. Its
+    // read-modify-write can overwrite a room save that lands in between,
+    // as any such program would, so the room's saves are counted where
+    // it makes them, not read back from the file.
     let writer = {
         let file = file.clone();
         std::thread::spawn(move || {
             let start = std::time::Instant::now();
-            let mut saved = false;
             let mut i = 0;
             while start.elapsed() < writing {
                 i += 1;
                 let mut nb: Value =
                     serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-                saved |= nb["cells"][1]["source"].to_string().contains("room: ");
                 nb["cells"][0]["source"] = json!(format!("write {i}"));
                 // Whole files only: a reload never reads a half-written one.
                 let tmp = file.with_extension("tmp");
                 std::fs::write(&tmp, nb.to_string()).unwrap();
-                // A save since the read would be overwritten: look again
-                // just before replacing the file.
-                saved |= std::fs::read_to_string(&file).unwrap().contains("room: ");
                 std::fs::rename(&tmp, &file).unwrap();
                 std::thread::sleep(every);
             }
-            saved
         })
     };
     let start = std::time::Instant::now();
@@ -2610,8 +2688,13 @@ async fn room_keeps_up_with_a_busy_file(every: Duration, writing: Duration) {
         "the room waited for the writes to stop ({:?})",
         start.elapsed()
     );
+    // Wait without blocking the runtime the room runs on.
+    while !writer.is_finished() {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    writer.join().unwrap();
     assert!(
-        writer.join().unwrap(),
+        room_saved.load(std::sync::atomic::Ordering::SeqCst),
         "the room's edit wasn't saved while the file kept changing"
     );
 }

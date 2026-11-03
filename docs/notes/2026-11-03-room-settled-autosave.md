@@ -7,9 +7,10 @@
 - The room now saves right after any reload from disk when it has edits
   of its own, settled or forced by the five-second cap. Saving just
   after taking in the file makes a 412 from a newer write unlikely.
-- The busy-file test helper now also looks at the file just before each
-  rename, so it notices a room save that lands between its read and its
-  write. The rename still overwrites that save (the writer wins, as a
-  program rewriting the file would); the test checks only that the room
-  saved while the file kept changing. A second test writes every 0.7 s,
-  so each change settles.
+- The busy-file tests count the room's saves in a wrapper around the
+  contents manager instead of reading them back from the file: the
+  writer's read-modify-write overwrites a save that lands between its
+  read and its rename (as any such program would), and under load that
+  hid the save. They also wait for the writer without blocking the
+  runtime the room runs on; `JoinHandle::join` there stalled the room.
+  A second test writes every 0.7 s, so each change settles.
