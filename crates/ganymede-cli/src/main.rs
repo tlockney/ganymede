@@ -33,16 +33,16 @@ use std::time::Duration;
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
-    /// Search this kernelspec root first (repeatable)
+    /// Search this kernelspec root (a dir holding kernels/) first
     #[arg(long, global = true, value_name = "DIR")]
     kernelspec_root: Vec<PathBuf>,
     /// Discard kernel processes' own stdout and stderr, not cell output
     #[arg(long, short, global = true)]
     quiet: bool,
-    /// Report kernel details and cell status; servers log at debug
+    /// Report kernel and cell status on stderr; servers log at debug
     #[arg(long, short, global = true)]
     verbose: bool,
-    /// Seconds a new kernel has to answer [default: 60]
+    /// Seconds for a new kernel to answer; default 60 or config file
     #[arg(long, global = true, value_name = "SECS", alias = "startup_timeout")]
     startup_timeout: Option<u64>,
 }
