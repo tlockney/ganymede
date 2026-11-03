@@ -30,8 +30,9 @@ const APP_DIRS: &[&str] = &["static", "schemas", "themes"];
 
 #[derive(Subcommand)]
 pub enum LabCmd {
-    /// Download JupyterLab's static bundle from PyPI and install it for
-    /// `ganymede serve`.
+    /// Download JupyterLab from PyPI and install it.
+    ///
+    /// Installs JupyterLab's static bundle for `ganymede serve`.
     ///
     /// `GANYMEDE_PYPI_URL` points at a mirror of PyPI's JSON API, and
     /// `GANYMEDE_PYPI_HOSTS` lists more hosts wheels may come from.
@@ -52,8 +53,9 @@ pub enum LabCmd {
         #[command(subcommand)]
         cmd: extension::ExtensionCmd,
     },
-    /// List installed versions, newest first. `ganymede serve` uses the
-    /// first unless told otherwise.
+    /// List installed versions, newest first.
+    ///
+    /// `ganymede serve` uses the first unless told otherwise.
     List {
         /// Print a JSON array of `{"version", "dir"}` objects instead.
         #[arg(long)]
@@ -65,11 +67,14 @@ pub enum LabCmd {
         #[arg(required = true)]
         versions: Vec<String>,
     },
-    /// Delete what interrupted installs left behind: partial downloads and
-    /// unpacked staging directories.
+    /// Delete what interrupted installs left behind.
+    ///
+    /// That is partial downloads and unpacked staging directories.
     Clean,
-    /// Remove every installed JupyterLab version and extension, and the
-    /// records of them, leaving nothing of `ganymede lab install` behind.
+    /// Remove every installed version and extension.
+    ///
+    /// Also removes the records of them, leaving nothing of `ganymede lab
+    /// install` behind.
     Uninstall,
 }
 

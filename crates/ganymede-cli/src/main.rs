@@ -2,6 +2,7 @@
 //! layer over `ganymede-engine` (or `ganymede-server` for `serve`).
 
 mod console;
+mod help;
 mod info;
 mod lab;
 mod lab_start;
@@ -27,27 +28,21 @@ use std::time::Duration;
     name = "ganymede",
     version,
     about = "Language-agnostic Jupyter engine: kernels, notebooks, and a server",
-    after_help = "The kernel name `fake` is a built-in in-process kernel for trying things out.\n\n\
-Exit status: 0 on success; 1 when a cell fails, a kernel dies or times out, or a file or \
-download fails (as `jupyter execute`); 2 for a usage error; 128+N after signal N \
-(130 Ctrl-C, 143 SIGTERM, 129 SIGHUP)."
+    styles = help::STYLES
 )]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
-    /// Extra kernelspec roots (directories holding `kernels/`), searched
-    /// before the Jupyter data dirs. Repeatable.
+    /// Search this kernelspec root first (repeatable)
     #[arg(long, global = true, value_name = "DIR")]
     kernelspec_root: Vec<PathBuf>,
-    /// Discard kernel processes' own stdout and stderr (not cell output).
+    /// Discard kernel processes' own stdout and stderr, not cell output
     #[arg(long, short, global = true)]
     quiet: bool,
-    /// Report kernel details and per-cell status on stderr. For `serve`
-    /// and `lab`, log at debug level.
+    /// Report kernel details and cell status; servers log at debug
     #[arg(long, short, global = true)]
     verbose: bool,
-    /// Seconds a new kernel has to answer. Default 60, or for `serve` and
-    /// `lab`, `startup_timeout_secs` from the config file.
+    /// Seconds a new kernel has to answer [default: 60]
     #[arg(long, global = true, value_name = "SECS", alias = "startup_timeout")]
     startup_timeout: Option<u64>,
 }
@@ -117,26 +112,29 @@ enum Cmd {
         #[command(subcommand)]
         cmd: KernelspecCmd,
     },
-    /// Run code on a kernel and print what it outputs.
+    /// Run code on a kernel and print its output.
     ///
     /// Each CODE argument and each --file is one cell, run in order. With
     /// neither, stdin is read as one cell. Exits 1 if a cell fails.
     Run(RunArgs),
-    /// Interactive console on a kernel. Reads stdin as a script when it is
-    /// not a terminal.
+    /// Interactive console on a kernel.
+    ///
+    /// Reads stdin as a script when it is not a terminal.
     Console {
         #[command(flatten)]
         target: Target,
     },
-    /// Execute notebooks as `jupyter execute` (nbclient) does.
+    /// Execute notebooks, as jupyter execute does.
     ///
     /// Outputs, execution counts, timings, and `language_info` are written
     /// as nbclient writes them. Without --output or --inplace the result
     /// is not saved, which checks that the notebook runs.
     #[command(alias = "exec")]
     Execute(ExecuteArgs),
-    /// Start a kernel and keep it running until Ctrl-C, for other clients
-    /// to attach to by its connection file (`jupyter kernel`).
+    /// Start a kernel for other clients, as jupyter kernel does.
+    ///
+    /// The kernel keeps running until Ctrl-C. Other clients attach to it by
+    /// the connection file this prints.
     Kernel {
         /// Kernelspec name, as `ganymede kernelspec list` shows it.
         #[arg(long, short)]
@@ -145,9 +143,11 @@ enum Cmd {
         #[arg(long)]
         cwd: Option<PathBuf>,
     },
-    /// Run code on a kernel that is already running: `run --existing
-    /// CONNECTION_FILE CODE...`, but waiting at most 60 seconds per cell
-    /// by default. The kernel keeps running afterwards.
+    /// Run code on a kernel that is already running.
+    ///
+    /// The same as `run --existing CONNECTION_FILE CODE...`, but waiting at
+    /// most 60 seconds per cell by default. The kernel keeps running
+    /// afterwards.
     Attach {
         /// The kernel's connection file, such as the path `ganymede kernel`
         /// printed.
@@ -158,9 +158,10 @@ enum Cmd {
         #[arg(long, default_value_t = 60)]
         timeout: u64,
     },
-    /// Print a shell completion script, for example
-    /// `ganymede completions bash > ~/.local/share/bash-completion/completions/ganymede`
-    /// or `ganymede completions zsh > ~/.zfunc/_ganymede`.
+    /// Print a shell completion script.
+    #[command(after_long_help = "Examples:\n  \
+        ganymede completions bash > ~/.local/share/bash-completion/completions/ganymede\n  \
+        ganymede completions zsh > ~/.zfunc/_ganymede")]
     Completions {
         /// The shell to complete for.
         shell: clap_complete::Shell,
@@ -170,7 +171,7 @@ enum Cmd {
         #[command(subcommand)]
         cmd: NbCmd,
     },
-    /// Trust notebooks' HTML and JavaScript output, as `jupyter trust` does.
+    /// Trust notebooks' HTML and JavaScript, as jupyter trust does.
     ///
     /// Records each notebook's signature with the key and database Jupyter
     /// uses (`notebook_secret` and `nbsignatures.db` in the Jupyter data
@@ -188,8 +189,11 @@ enum Cmd {
         #[arg(long, value_name = "DIR")]
         notary_dir: Option<PathBuf>,
     },
-    /// Serve JupyterLab in the current directory and open it in the
-    /// browser; or install, list, and remove JupyterLab's frontend.
+    /// Serve JupyterLab here and open it; install and remove its builds.
+    ///
+    /// With no subcommand, serves the current directory with JupyterLab
+    /// and opens it in the browser. The subcommands install, list, and
+    /// remove JupyterLab's frontend and its extensions.
     #[command(args_conflicts_with_subcommands = true)]
     Lab {
         #[command(subcommand)]
@@ -197,9 +201,11 @@ enum Cmd {
         #[command(flatten)]
         start: Box<lab_start::StartArgs>,
     },
-    /// Serve ganymede-ui, Ganymede's own notebook app, in the current
-    /// directory and open it in the browser; or install, list, and remove
-    /// it.
+    /// Serve ganymede-ui here and open it; install and remove its builds.
+    ///
+    /// ganymede-ui is Ganymede's own notebook app. With no subcommand,
+    /// serves the current directory with it and opens it in the browser.
+    /// The subcommands install, list, and remove it.
     #[command(args_conflicts_with_subcommands = true)]
     Ui {
         #[command(subcommand)]
@@ -215,12 +221,17 @@ enum Cmd {
     /// the agent's edits show live in JupyterLab or ganymede-ui, else
     /// starts a server of its own.
     Mcp(mcp::McpArgs),
-    /// Serve the Jupyter REST and websocket API (JupyterLab, VS Code, ...).
+    /// Serve the Jupyter REST and websocket API.
+    ///
+    /// Clients such as JupyterLab and VS Code connect to it as a Jupyter
+    /// server.
     Serve(Box<ganymede_server::serve::ServeArgs>),
-    /// Show versions, build details, and every directory Ganymede uses:
-    /// Jupyter's runtime, config, and data dirs, Ganymede's data dir with
-    /// its JupyterLab installs and extensions, kernelspec roots, and where
-    /// notebook trust and console history are kept.
+    /// Show versions and every directory Ganymede uses.
+    ///
+    /// Prints build details; Jupyter's runtime, config, and data dirs;
+    /// Ganymede's data dir with its JupyterLab installs and extensions;
+    /// kernelspec roots; and where notebook trust and console history are
+    /// kept.
     Info {
         /// Print one JSON object instead.
         #[arg(long)]
@@ -238,7 +249,7 @@ enum KernelspecCmd {
     },
     /// Print the directories searched, in order.
     Paths,
-    /// Install a kernelspec directory (one holding `kernel.json`).
+    /// Install a kernelspec directory (one holding kernel.json).
     Install {
         /// Directory holding `kernel.json` (and any logos or resources).
         source: PathBuf,
@@ -400,7 +411,10 @@ impl Dest {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = {
+        use clap::FromArgMatches;
+        Cli::from_arg_matches(&help::command().get_matches()).unwrap_or_else(|e| e.exit())
+    };
     if let Err(e) = ganymede_server::serve::init_logging(cli.log_filter(), cli.serve_args()) {
         eprintln!("ganymede: {}", error_chain(&e));
         return ExitCode::FAILURE;

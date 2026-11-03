@@ -43,8 +43,9 @@ const EXTENSIONS: &str = "Framework :: Jupyter :: JupyterLab :: Extensions";
 
 #[derive(Subcommand)]
 pub enum ExtensionCmd {
-    /// Install packages' prebuilt extensions from their PyPI wheels, with
-    /// the extension packages they depend on.
+    /// Install prebuilt extensions from PyPI wheels.
+    ///
+    /// Also installs the extension packages they depend on.
     ///
     /// An extension runs as JavaScript on the server's origin with the
     /// user's access to files and kernels: install only packages you
@@ -72,14 +73,17 @@ pub enum ExtensionCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Remove packages' extensions. Dependencies installed with them stay.
+    /// Remove packages' extensions.
+    ///
+    /// Dependencies installed with them stay.
     Remove {
         /// Package names, as `ganymede lab extension list` shows them.
         #[arg(required = true)]
         packages: Vec<String>,
     },
-    /// Stop JupyterLab loading extensions or plugins, as `jupyter
-    /// labextension disable` does: recorded in
+    /// Stop JupyterLab loading extensions or plugins.
+    ///
+    /// As `jupyter labextension disable` does, this is recorded in
     /// `labconfig/page_config.json` under the Jupyter config dir, which
     /// `ganymede serve` reads on each page load. Any extension can be
     /// disabled, however it was installed.
