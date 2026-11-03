@@ -285,7 +285,10 @@ impl FakeKernel {
 
     /// Run a cell; `true` when it failed.
     async fn execute(&mut self, msg: &Message, req: &ExecuteRequest) -> bool {
-        self.execution_count += 1;
+        // As ipykernel: only stored runs advance the counter.
+        if req.store_history {
+            self.execution_count += 1;
+        }
         let n = self.execution_count;
         self.status(msg, ExecutionState::Busy).await;
         self.iopub(

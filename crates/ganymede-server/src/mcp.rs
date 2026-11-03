@@ -996,6 +996,9 @@ impl Notebooks {
             record_timing: false,
             store_widget_state: false,
             coalesce_streams: true,
+            // Scratch work leaves no trace, in the kernel's counter and
+            // output history as in the notebook.
+            store_history: false,
             ..Default::default()
         };
         let r = ganymede_exec::execute_cell(&kernel.session(), &mut cell, &opts).await;

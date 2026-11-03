@@ -3109,12 +3109,14 @@ async fn mcp_journals_into_a_notebook() {
     mcp_text(&v);
     let v = tool("cell_run", json!({"source": "hello"})).await;
     assert!(mcp_text(&v).contains("hello"), "{v}");
+    // Scratch runs don't store history, so the next recorded cell's
+    // count follows the previous one's.
+    let v = tool("cell_run", json!({"source": "scratch", "record": false})).await;
+    mcp_text(&v);
     let v = tool("cell_run", json!({"source": "raise"})).await;
     let out = mcp_text(&v);
     assert!(out.contains("FakeError: raised"), "{out}");
     assert!(!out.contains('\u{1b}'), "ANSI is stripped: {out:?}");
-    let v = tool("cell_run", json!({"source": "scratch", "record": false})).await;
-    mcp_text(&v);
 
     let v = tool("notebook_read", json!({})).await;
     let read = mcp_text(&v);
@@ -3151,6 +3153,8 @@ async fn mcp_journals_into_a_notebook() {
         "test-agent"
     );
     assert_eq!(cells[3]["outputs"][0]["output_type"], "error");
+    assert_eq!(cells[2]["execution_count"], 1);
+    assert_eq!(cells[3]["execution_count"], 2);
     assert_eq!(nb["metadata"]["kernelspec"]["name"], "fake");
 }
 

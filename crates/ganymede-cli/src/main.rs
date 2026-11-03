@@ -847,6 +847,7 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
         store_widget_state: !args.no_widget_state,
         // As `jupyter execute`: a cell that asks for input fails.
         allow_stdin: false,
+        store_history: true,
     };
     let mut stop = StopSignals::new()?;
     let mut status = ExitCode::SUCCESS;

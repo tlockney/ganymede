@@ -77,9 +77,10 @@ content. Kernels can't ask for input.
 Cells an agent writes carry
 `metadata.ganymede.agent = {"by": "<client name>", "mode": "executed" | "recorded" | "note", "at": "<time>"}`,
 where the name is the one the MCP client gave when it connected. Scratch
-runs leave no cells, but they run on the notebook's kernel as any cell
-does: they advance its execution count and its output history (`_` in
-Python).
+runs leave no cells and run with `store_history: false`, so they don't
+advance the kernel's execution count or output history (`_` in Python).
+They still share the kernel's state: a variable a scratch run assigns
+stays defined.
 
 ## Options
 
