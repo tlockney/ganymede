@@ -747,7 +747,10 @@ fn display_and_update_in_order() {
 fn parallel_starts() {
     for l in langs() {
         rt().block_on(async {
-            let e = Arc::new(engine());
+            // The kernels' own output goes to stderr, each line marked with
+            // its kernel's id, so a kernel that dies leaves its last words
+            // in the log (#327).
+            let e = Arc::new(Engine::builder().prefix_output(true).build());
             let starts = (0..4).map(|_| {
                 let e = e.clone();
                 tokio::spawn(async move { e.start(l.kernel).await })
@@ -758,10 +761,17 @@ fn parallel_starts() {
                 .map(|r| r.unwrap().unwrap_or_else(|e| panic!("{}: {e}", l.kernel)))
                 .collect();
             for (i, k) in kernels.iter().enumerate() {
-                let r = k
-                    .execute(l.answer)
-                    .await
-                    .unwrap_or_else(|e| panic!("{} #{i}: {e}", l.kernel));
+                let r = k.execute(l.answer).await.unwrap_or_else(|e| {
+                    // `kernel-<id>.json`: its output above carries
+                    // `[kernel <first 8 of id>]`.
+                    let file = k.connection_file().unwrap_or_default();
+                    panic!(
+                        "{} #{i} ({}, alive: {}): {e}; its output is in stderr above",
+                        l.kernel,
+                        file.display(),
+                        k.is_alive()
+                    )
+                });
                 assert_eq!(plain(&r).trim(), "42", "{}", l.kernel);
             }
             for k in kernels {

@@ -27,6 +27,7 @@ pub struct Engine {
     transports: Option<Arc<dyn TransportFactory>>,
     startup_timeout: Duration,
     quiet: bool,
+    prefix_output: bool,
 }
 
 impl Default for Engine {
@@ -95,7 +96,7 @@ impl Engine {
                 env: opts.env,
                 kernel_id: None,
                 quiet: self.quiet,
-                prefix_output: false,
+                prefix_output: self.prefix_output,
             },
         };
         let (session, launched, info) = relaunch.start(self.startup_timeout).await?;
@@ -203,6 +204,7 @@ pub struct EngineBuilder {
     transports: Option<Arc<dyn TransportFactory>>,
     startup_timeout: Option<Duration>,
     quiet: bool,
+    prefix_output: bool,
 }
 
 impl EngineBuilder {
@@ -244,6 +246,14 @@ impl EngineBuilder {
         self
     }
 
+    /// Unless quiet, start each line of a kernel process's own stdout and
+    /// stderr with `[kernel <first 8 of its id>] `, so the output of
+    /// several kernels can be told apart.
+    pub fn prefix_output(mut self, prefix: bool) -> Self {
+        self.prefix_output = prefix;
+        self
+    }
+
     pub fn build(self) -> Engine {
         Engine {
             specs: self
@@ -253,6 +263,7 @@ impl EngineBuilder {
             transports: self.transports.or_else(default_transports),
             startup_timeout: self.startup_timeout.unwrap_or(Duration::from_secs(60)),
             quiet: self.quiet,
+            prefix_output: self.prefix_output,
         }
     }
 }
