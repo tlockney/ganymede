@@ -7,8 +7,8 @@
 //                   agent's last read, as context
 //   post-tool       (PostToolUse) follow the agent's notebook tools;
 //                   record a Bash command that ends in `# journal`
-//   stop            block stopping, once, while the journal has edits
-//                   since its last clean run-all
+//   stop            block stopping, once per round of edits, while the
+//                   journal has edits since its last clean run-all
 //
 // It reaches the server with `ganymede mcp call`, which finds the server
 // the agent's `ganymede mcp` uses. State per Claude Code session (the open
@@ -156,7 +156,7 @@ export function handle(event, input, env = process.env) {
           }
         } else if (path && path === state.path) {
           if (EDITS.has(tool) || (tool === "cell_run" && args.record !== false)) {
-            state.dirty = true;
+            Object.assign(state, { dirty: true, nagged: false });
           } else if (tool === "notebook_run_all") {
             state.dirty = !cleanRun(text);
             state.nagged = false;
@@ -176,7 +176,7 @@ export function handle(event, input, env = process.env) {
           ...(state.mark ? { mark: state.mark } : {}),
         });
         if (out === null) return "";
-        state.dirty = true;
+        Object.assign(state, { dirty: true, nagged: false });
         save(env, sid, state);
         return context(
           "PostToolUse",
@@ -198,7 +198,7 @@ export function handle(event, input, env = process.env) {
             "Read the notebook again before building on it.",
         );
       }
-      state.dirty = true;
+      Object.assign(state, { dirty: true, nagged: false });
       save(env, sid, state);
       return context(
         "UserPromptSubmit",

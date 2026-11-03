@@ -396,7 +396,6 @@ jobs:
       - run: container/smoke-test.sh ganymede
         timeout-minutes: 5
 
-  # jupyterlab-lsp against `ganymede serve`, with jupyter-lsp on
   # The ganymede-journal Claude Code plugin (#315): its hooks' tests,
   # end to end against this build's `ganymede mcp`, and its JSON files
   # parse.
@@ -426,6 +425,7 @@ jobs:
         env:
           GANYMEDE_E2E_BIN: ${{ github.workspace }}/target/debug/ganymede
 
+  # jupyterlab-lsp against `ganymede serve`, with jupyter-lsp on
   # `jupyter lab` as the oracle: the same diagnostics from
   # typescript-language-server and pyright on both (#257).
   lsp:

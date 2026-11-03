@@ -173,7 +173,7 @@ test("post-tool records marked Bash commands into the open journal", () => {
   assert.equal(f.calls().length, 2);
 });
 
-test("stop blocks once while the journal has edits since a clean run-all", () => {
+test("stop blocks once per round of edits since a clean run-all", () => {
   const f = fake({});
   const post = (tool, input, text) =>
     handle(
@@ -195,6 +195,9 @@ test("stop blocks once while the journal has edits since a clean run-all", () =>
   assert.equal(blocked.decision, "block");
   assert.match(blocked.reason, /notebook_run_all/);
   assert.equal(stop(), "", "only once");
+  post("cell_edit", { id: "a", source: "more" }, "Edited cell a");
+  assert.equal(stop().decision, "block", "edits after a block are a new round");
+  assert.equal(stop(), "", "once for that round too");
   post("notebook_run_all", {}, '@@output {"output_type":"error"}\n');
   assert.equal(stop().decision, "block", "a failing run-all isn't clean");
   post("notebook_run_all", {}, "@@cell {}\n");
