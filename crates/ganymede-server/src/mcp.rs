@@ -28,6 +28,7 @@
 //! replaces in `history` (the last [`HISTORY_LIMIT`] of them).
 
 use crate::collab::{hold_notebook, notebook_room_id, with_notebook, Hold};
+use crate::svg;
 use crate::AppState;
 use base64::Engine as _;
 use ganymede_api::sessions::KernelRef;
@@ -997,7 +998,7 @@ impl Notebooks {
                 .await
                 .map_err(err)?;
         let nb = self.notebook(path).await?;
-        let mut blocks = Vec::new();
+        let mut shown = Vec::new();
         let mut out = String::new();
         if !finished {
             out.push_str("Timed out; the cell is still running. Outputs so far:\n\n");
@@ -1008,11 +1009,12 @@ impl Notebooks {
                 out.push('\n');
                 if self.opts.images {
                     if let Cell::Code(c) = cell {
-                        blocks.extend(images(&c.outputs));
+                        shown.extend(c.outputs.iter().cloned());
                     }
                 }
             }
         }
+        let mut blocks = images_off_runtime(shown).await;
         blocks.insert(0, ContentBlock::text(out));
         Ok(CallToolResult::success(blocks))
     }
@@ -1060,7 +1062,7 @@ impl Notebooks {
         }
         let mut blocks = vec![ContentBlock::text(out)];
         if self.opts.images {
-            blocks.extend(images(&cell.outputs));
+            blocks.extend(images_off_runtime(cell.outputs.clone()).await);
         }
         Ok(CallToolResult::success(blocks))
     }
@@ -1231,23 +1233,52 @@ fn strip_html(s: &str) -> String {
         .replace("&amp;", "&")
 }
 
+/// [`images`] on a blocking thread: drawing an SVG loads the system fonts
+/// the first time and rasterizes up to 1,600 px square, which would hold
+/// up the runtime's other work (under `serve --mcp`, the whole server).
+async fn images_off_runtime(outputs: Vec<Output>) -> Vec<ContentBlock> {
+    if outputs.is_empty() {
+        return Vec::new();
+    }
+    tokio::task::spawn_blocking(move || images(&outputs))
+        .await
+        .unwrap_or_default()
+}
+
+/// The image blocks for `outputs`: raster images as they are, and an SVG
+/// as a PNG when the output has no raster image of its own. An SVG that
+/// can't be drawn adds nothing; the text reply still names it.
 fn images(outputs: &[Output]) -> Vec<ContentBlock> {
+    let b64 = &base64::engine::general_purpose::STANDARD;
     let mut blocks = Vec::new();
     for o in outputs {
         let v = serde_json::to_value(o).unwrap_or_default();
+        let before = blocks.len();
         for mime in ["image/png", "image/jpeg", "image/gif", "image/webp"] {
-            if let Some(b64) = v["data"][mime].as_str() {
-                let clean: String = b64.chars().filter(|c| !c.is_whitespace()).collect();
-                if base64::engine::general_purpose::STANDARD
-                    .decode(&clean)
-                    .is_ok()
-                {
+            if let Some(data) = v["data"][mime].as_str() {
+                let clean: String = data.chars().filter(|c| !c.is_whitespace()).collect();
+                if b64.decode(&clean).is_ok() {
                     blocks.push(ContentBlock::image(clean, mime));
                 }
             }
         }
+        if blocks.len() == before {
+            if let Some(png) = svg_source(&v["data"]["image/svg+xml"]).and_then(|s| svg::to_png(&s))
+            {
+                blocks.push(ContentBlock::image(b64.encode(png), "image/png"));
+            }
+        }
     }
     blocks
+}
+
+/// An SVG mime bundle value: one string, or lines as nbformat stores them.
+fn svg_source(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(lines) => lines.iter().map(Value::as_str).collect(),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -1259,5 +1290,45 @@ mod tests {
         assert_eq!(strip_html("<b>a &amp; b</b><br/>c"), "a & bc");
         let (m, t) = best_text(&json!({"text/html": "<p>x</p>", "text/plain": "y"}));
         assert_eq!((m, t.as_str()), (Some("text/plain"), "y"));
+    }
+
+    #[cfg(feature = "svg")]
+    #[test]
+    fn svg_outputs_go_to_the_agent_as_png() {
+        let output = |data: Value| -> Output {
+            serde_json::from_value(json!({
+                "output_type": "display_data", "metadata": {}, "data": data
+            }))
+            .unwrap()
+        };
+        let svg = [
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"20\">\n",
+            "<rect width=\"40\" height=\"20\" fill=\"red\"/></svg>",
+        ];
+        // Lines, as nbformat stores them; and with a PNG of its own, the
+        // output's PNG goes instead.
+        let png = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG");
+        let outputs = [
+            output(json!({"image/svg+xml": svg, "text/plain": "<Figure>"})),
+            output(json!({"image/svg+xml": svg.concat(), "image/png": png})),
+            output(json!({"image/svg+xml": "<svg", "text/plain": "broken"})),
+        ];
+        let blocks = images(&outputs);
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        let image = |b: &ContentBlock| {
+            let v = serde_json::to_value(b).unwrap();
+            (
+                v["mimeType"].as_str().unwrap().to_string(),
+                v["data"].as_str().unwrap().to_string(),
+            )
+        };
+        let (mime, data) = image(&blocks[0]);
+        assert_eq!(mime, "image/png");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .unwrap();
+        assert_eq!(&bytes[..4], b"\x89PNG");
+        assert!(bytes.len() > 8, "a whole PNG, not the second output's");
+        assert_eq!(image(&blocks[1]), ("image/png".to_string(), png));
     }
 }

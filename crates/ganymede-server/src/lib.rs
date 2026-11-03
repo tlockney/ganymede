@@ -16,6 +16,7 @@ pub mod mcp;
 pub mod routes;
 pub mod serve;
 pub mod server_info;
+mod svg;
 pub mod watch;
 pub mod ws;
 
