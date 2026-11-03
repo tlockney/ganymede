@@ -29,7 +29,7 @@ running kernel. The crates underneath are re-exported as
 | Call | What it does |
 |---|---|
 | `Engine::new()` | Kernelspecs from the Jupyter data dirs, kernels as subprocesses over ZeroMQ. |
-| `Engine::builder()` | `.kernelspec_root(dir)`, `.kernelspecs(source)`, `.provisioner(p)`, `.startup_timeout(d)` (60 s), `.quiet(bool)`, `.build()`. |
+| `Engine::builder()` | `.kernelspec_root(dir)`, `.kernelspecs(source)`, `.provisioner(p)`, `.startup_timeout(d)` (60 s), `.quiet(bool)`, `.prefix_output(bool)`, `.build()`. |
 | `kernelspecs()`, `kernelspec(name)` | List, or look one up ignoring case. |
 | `start(name)`, `start_with(name, StartOptions { cwd, env })` | Launch a kernelspec and wait for `kernel_info_reply`. |
 | `attach(path)`, `connect(info)` | Use a running kernel by connection file or `ConnectionInfo`, as `jupyter console --existing`. A bare name is looked up in the Jupyter runtime dir; an empty path picks the newest. |
@@ -43,6 +43,15 @@ running kernel. The crates underneath are re-exported as
 | `restart()` | Relaunch from the kernelspec, keeping the working directory and environment. Only for kernels from `start`. |
 | `shutdown()` | Ask the kernel to exit, then kill it if the engine launched it. Idempotent. |
 | `run_notebook(&mut nb, &opts)`, `run_notebook_with(.., &mut handler)` | Run a `Notebook` in memory with `nbclient`'s semantics; the second reports progress and outputs to a `NotebookHandler`. |
+
+Unless `quiet`, a kernel process's own stdout and stderr (not its cell
+output) go to the app's stderr. `prefix_output(true)` starts each of
+those lines with `[kernel <first 8 of its id>] `, so several kernels'
+output can be told apart.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
 
 `ExecuteResult` has `status`, `execution_count`, `outputs` as a notebook
 stores them, the `execute_reply` content, and every iopub message.
