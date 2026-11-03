@@ -285,7 +285,11 @@ impl FakeKernel {
 
     /// Run a cell; `true` when it failed.
     async fn execute(&mut self, msg: &Message, req: &ExecuteRequest) -> bool {
-        self.execution_count += 1;
+        // Only stored runs advance the counter; `silent` implies not
+        // stored, as the protocol says.
+        if req.store_history && !req.silent {
+            self.execution_count += 1;
+        }
         let n = self.execution_count;
         self.status(msg, ExecutionState::Busy).await;
         self.iopub(

@@ -45,7 +45,7 @@ a URL instead of starting a command.
 | --- | --- |
 | `notebook_open` | Open a notebook, creating it (and its directories) when missing, with an optional title cell; start or join its kernel. Later calls may leave out `path`. |
 | `notebook_read` | The notebook as text: cells with ids, sources and outputs. A notebook in nbformat 4.4 or older has no cell ids on disk; the server makes them up when it opens the notebook, and they stay the same while the MCP session lasts. A session ends after an hour without a request, or when the server stops; after that, read the notebook again for new ids. `ganymede mcp` starts a new session by itself. A new session has no notebook open either, so open or read the notebook again, with its `path`, before calls that leave `path` out. |
-| `cell_run` | Run code and return its outputs. Recorded as a new code cell by default; `record: false` runs it as scratch work that leaves nothing in the notebook. |
+| `cell_run` | Run code and return its outputs. Recorded as a new code cell by default; `record: false` runs it as scratch work that leaves nothing in the notebook but shares the kernel's state. |
 | `cell_add` | Add a Markdown note; `mode: recorded` records a step that ran outside the kernel, such as a shell command. |
 | `cell_edit` | Replace a cell's source; `run: true` runs it after. |
 | `cell_delete`, `cell_move` | Delete a cell, or move it after another. |
@@ -77,9 +77,14 @@ content. Kernels can't ask for input.
 Cells an agent writes carry
 `metadata.ganymede.agent = {"by": "<client name>", "mode": "executed" | "recorded" | "note", "at": "<time>"}`,
 where the name is the one the MCP client gave when it connected. Scratch
-runs leave no cells, but they run on the notebook's kernel as any cell
-does: they advance its execution count and its output history (`_` in
-Python).
+runs leave no cells and run with `store_history: false`, so a kernel
+that honours it, as ipykernel and cdp-kernel do, doesn't advance its
+execution count. They share the kernel's state: a variable a scratch run
+assigns stays defined. Other history is kernel-dependent. With
+ipykernel, a scratch result still sets `_`, and `Out[N]`/`_N` for the
+next recorded cell's number N, which keeps the scratch value if that
+cell has no result. A function a scratch run defines shows as
+`Cell In[N]` in tracebacks.
 
 ## Options
 

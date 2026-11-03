@@ -80,6 +80,10 @@ pub struct Options {
     /// Off, as in `nbclient`, so a cell that asks for input fails instead
     /// of waiting.
     pub allow_stdin: bool,
+    /// Send `store_history`: the kernel counts the cell in its execution
+    /// count and history (what else it skips is kernel-dependent). Off for
+    /// scratch runs.
+    pub store_history: bool,
 }
 
 impl Default for Options {
@@ -94,6 +98,7 @@ impl Default for Options {
             record_timing: true,
             store_widget_state: true,
             allow_stdin: false,
+            store_history: true,
         }
     }
 }
@@ -373,6 +378,7 @@ impl NotebookRun {
         }
         let mut req = ExecuteRequest::new(cell.source.as_str().to_string());
         req.allow_stdin = self.opts.allow_stdin;
+        req.store_history = self.opts.store_history;
         req.stop_on_error = !allows_errors;
         cell.outputs.clear();
         self.executed += 1;
