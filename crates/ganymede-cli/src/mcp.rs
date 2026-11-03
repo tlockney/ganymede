@@ -401,7 +401,7 @@ fn post(
     if msg["method"] == "initialize" {
         session.lock().expect("session").init = Some(msg.clone());
     }
-    let (resp, sent) = send(agent, ep, session, msg);
+    let (resp, sent) = send(agent, ep, session, msg, true);
     // Accepted (its headers are back), or failed: the next may go.
     ticket.release();
     let mut resp = resp?;
@@ -409,7 +409,7 @@ fn post(
     // restarted server knows none): start a new one and try once more.
     if resp.status().as_u16() == 404 && sent.is_some() && msg["method"] != "initialize" {
         reinitialize(agent, ep, session, sent.as_deref())?;
-        resp = send(agent, ep, session, msg).0?;
+        resp = send(agent, ep, session, msg, true).0?;
     }
     let status = resp.status();
     if let Some(id) = resp.headers().get("mcp-session-id") {
@@ -446,13 +446,14 @@ fn post(
     }
 }
 
-/// Posts `msg` with the session's headers; also returns the session id
-/// it went with.
+/// Posts `msg`, with the session's headers when `in_session`; also
+/// returns the session id it went with.
 fn send(
     agent: &ureq::Agent,
     ep: &Endpoint,
     session: &Mutex<Session>,
     msg: &Value,
+    in_session: bool,
 ) -> (
     Result<ureq::http::Response<ureq::Body>, ureq::Error>,
     Option<String>,
@@ -463,6 +464,9 @@ fn send(
         .header("Accept", "application/json, text/event-stream");
     if let Some(t) = &ep.token {
         req = req.header("Authorization", &format!("token {t}"));
+    }
+    if !in_session {
+        return (req.send(msg.to_string()), None);
     }
     let sent = {
         let s = session.lock().expect("session");
@@ -480,6 +484,10 @@ fn send(
 /// Starts a new session in place of `stale` with the client's own
 /// `initialize`, unless another message already did. The answers stay
 /// here: the client still has the first ones.
+///
+/// The stale id stays in place until the new one is known: messages sent
+/// meanwhile get a 404 and wait here for the new session, and if starting
+/// it fails, the next message's 404 tries again.
 fn reinitialize(
     agent: &ureq::Agent,
     ep: &Endpoint,
@@ -489,17 +497,16 @@ fn reinitialize(
     static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
     let _one = ONE_AT_A_TIME.lock().expect("reinitialize");
     let init = {
-        let mut s = session.lock().expect("session");
+        let s = session.lock().expect("session");
         if s.id.as_deref() != stale {
             return Ok(());
         }
-        s.id = None;
         s.init
             .clone()
             .context("the server ended the session before it began")?
     };
     tracing::info!("the server ended the MCP session; starting a new one");
-    let mut resp = send(agent, ep, session, &init).0?;
+    let mut resp = send(agent, ep, session, &init, false).0?;
     if !resp.status().is_success() {
         bail!("starting a new session: {}", resp.status());
     }
@@ -522,7 +529,7 @@ fn reinitialize(
         std::io::copy(&mut reader.take(1 << 20), &mut std::io::sink())?;
     }
     let initialized = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
-    let resp = send(agent, ep, session, &initialized).0?;
+    let resp = send(agent, ep, session, &initialized, true).0?;
     if !resp.status().is_success() {
         bail!("starting a new session: {}", resp.status());
     }
