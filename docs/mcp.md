@@ -56,6 +56,16 @@ a URL instead of starting a command.
 Each notebook is also a `notebook://<path>` resource, and the `journal`
 prompt gives the agent conventions for keeping the record.
 
+`cell_run` waits up to `timeout` seconds (600 by default). A recorded
+cell that runs longer keeps running, and its outputs keep arriving in
+the notebook. A scratch run that runs longer is interrupted, since its
+outputs go nowhere and later runs on the shared kernel would wait
+behind it.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
 Cells run through the server, as the
 [execute endpoint](protocol.md#document-model-and-collaboration) runs
 them: outputs go into the document as they arrive, and a person watching

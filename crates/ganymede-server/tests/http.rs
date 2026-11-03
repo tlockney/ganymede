@@ -3390,6 +3390,40 @@ fn mcp_app(dir: &std::path::Path) -> axum::Router {
     build_router(st)
 }
 
+/// A scratch run that times out interrupts the kernel, so the next run
+/// doesn't queue behind it (#323).
+#[tokio::test]
+async fn mcp_scratch_timeout_interrupts_the_kernel() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = mcp_app(dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    mcp_text(&mcp_tool(&app, &sid, "notebook_open", json!({"path": "t.ipynb"})).await);
+
+    let out = mcp_text(
+        &mcp_tool(
+            &app,
+            &sid,
+            "cell_run",
+            json!({"source": "sleep 30000", "record": false, "timeout": 1}),
+        )
+        .await,
+    );
+    assert!(out.contains("timed out"), "{out}");
+    assert!(out.contains("Interrupted the kernel."), "{out}");
+    // Without the interrupt, this would wait out the 30 s sleep.
+    let out = mcp_text(
+        &mcp_tool(
+            &app,
+            &sid,
+            "cell_run",
+            json!({"source": "after", "record": false, "timeout": 10}),
+        )
+        .await,
+    );
+    assert!(!out.contains("timed out"), "{out}");
+    assert!(out.contains("after"), "{out}");
+}
+
 /// nbformat 4.4 notebooks keep no cell ids on disk, but the tools address
 /// cells by the ids the document gives them.
 #[tokio::test]

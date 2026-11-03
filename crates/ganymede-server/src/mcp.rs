@@ -167,8 +167,8 @@ pub struct RunArgs {
     /// it runs in the kernel and leaves nothing in the notebook, but its
     /// variables stay defined in the kernel.
     pub record: Option<bool>,
-    /// Seconds to wait for the result (default 600). The cell keeps
-    /// running after a timeout.
+    /// Seconds to wait for the result (default 600). A recorded cell
+    /// keeps running after a timeout; a scratch run is interrupted.
     pub timeout: Option<u64>,
     pub path: Option<String>,
 }
@@ -1049,11 +1049,23 @@ impl Notebooks {
             ..Default::default()
         };
         let r = ganymede_exec::execute_cell(&kernel.session(), &mut cell, &opts).await;
-        kernel.touch();
         let mut out = String::new();
-        if let Err(e) = r {
+        if let Err(e) = &r {
             out.push_str(&format!("{e}\n"));
         }
+        // Stop a timed-out scratch run rather than leave the shared kernel
+        // busy: its outputs go nowhere, and later runs would queue behind
+        // it.
+        if let Err(ganymede_exec::Error::CellTimeout { .. }) = r {
+            match self.state.kernels.interrupt(kernel_id).await {
+                Ok(_) => out.push_str("Interrupted the kernel.\n"),
+                Err(e) => out.push_str(&format!(
+                    "Interrupting the kernel failed ({}); it may still be running the code.\n",
+                    e.message
+                )),
+            }
+        }
+        kernel.touch();
         out.push_str(&self.render_outputs(&cell.outputs));
         if out.is_empty() {
             out.push_str("(no output)");
