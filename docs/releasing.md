@@ -17,6 +17,12 @@ partway through.
    ```sh
    grep -rn 'Unreleased\.' README.md docs/*.md site/index.html
    ```
+
+   The bump also updates the docs that name the current release: the git
+   `tag` in [Embedding](embedding.md) and the sample `ganymede_version` in
+   [CLI and configuration](reference.md#server-info-file). The list is
+   `pre-release-replacements` in `crates/ganymede-cli/Cargo.toml`; add a
+   doc there when it starts naming the release.
 2. Merging that pull request (with CI green; branch protection on `main`
    is what guarantees this, since `tag-release.yml` does not check CI
    itself) runs `tag-release.yml`. It sees a workspace version that has a
