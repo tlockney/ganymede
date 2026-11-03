@@ -28,9 +28,11 @@
 //!   A request that follows up on an earlier answer and names no
 //!   `textDocument` (`completionItem/resolve`, `codeAction/resolve`, and
 //!   the other `*/resolve` methods in [`FOLLOW_UPS`]) is treated as one
-//!   about the document the client's last request of the kind that
-//!   produced it named (its last `textDocument/completion` for a
-//!   completion item); a call or type hierarchy request, about the
+//!   about the document the request that returned its item named: the
+//!   router marks each item in the answer with it (see `router.rs`).
+//!   An item that comes back unmarked goes by the client's last request
+//!   of that kind (its last `textDocument/completion` for a completion
+//!   item). A call or type hierarchy request is about the
 //!   document its `item` names, and a workspace symbol, its `location`'s.
 //!   Other requests that name no document (`workspace/symbol`) go as
 //!   they are.
@@ -108,6 +110,17 @@ const FOLLOW_UPS: &[(&str, Option<&str>)] = &[
     ("workspaceSymbol/resolve", None),
 ];
 
+/// Whether answers to `method` hold items a [`FOLLOW_UPS`] request
+/// resolves.
+pub(crate) fn returns_items(method: &str) -> bool {
+    FOLLOW_UPS.iter().any(|(_, o)| *o == Some(method))
+}
+
+/// Whether `method` resolves an item an earlier answer returned.
+pub(crate) fn resolves_item(method: &str) -> bool {
+    FOLLOW_UPS.iter().any(|(m, o)| *m == method && o.is_some())
+}
+
 /// Whether `message` (unparsed) may be a request `before_request` acts
 /// on: a cheap test, so other messages aren't parsed.
 pub(crate) fn may_name_document(message: &str) -> bool {
@@ -181,9 +194,10 @@ impl Documents {
     }
 
     /// Before a client's request about a document it has open (one it
-    /// names, or for a follow-up in [`FOLLOW_UPS`], the one it carries or
-    /// the client's last request it follows up named): when the server's text isn't the
-    /// client's, the full-text change that gives the server the client's
+    /// names, or for a follow-up in [`FOLLOW_UPS`], the one it carries,
+    /// `item_document` (the document the router's mark on a resolved item
+    /// names), or else the one the client's last request it follows up
+    /// named): when the server's text isn't the client's, the full-text change that gives the server the client's
     /// text, and the document's URI. `None` when the server already has
     /// it, or for any other message.
     ///
@@ -197,6 +211,7 @@ impl Documents {
         &mut self,
         client: u64,
         message: &Value,
+        item_document: Option<&str>,
     ) -> Option<(Value, String)> {
         // As the router: a null id is no id.
         message.get("id").filter(|id| !id.is_null())?;
@@ -214,7 +229,12 @@ impl Documents {
         } else {
             let (_, origin) = FOLLOW_UPS.iter().find(|(m, _)| *m == method)?;
             match origin {
-                Some(origin) => self.named.get(&(client, *origin))?.clone(),
+                // The document its item came from, or failing that, the one
+                // the client's last request of that kind named.
+                Some(origin) => match item_document {
+                    Some(uri) => uri.to_string(),
+                    None => self.named.get(&(client, *origin))?.clone(),
+                },
                 // A hierarchy item or workspace symbol carries its document.
                 None => {
                     let p = params?;
@@ -700,30 +720,30 @@ mod tests {
             "params": {"textDocument": {"uri": URI}, "position": {"line": 0, "character": 0}}});
         let mut d = Documents::default();
         // Nothing open: nothing to send first.
-        assert_eq!(d.before_request(1, &hover), None);
+        assert_eq!(d.before_request(1, &hover, None), None);
         d.client_message(1, &open("a\n"));
         d.client_message(2, &open("a\n"));
         // In step: nothing to send.
-        assert_eq!(d.before_request(2, &hover), None);
+        assert_eq!(d.before_request(2, &hover, None), None);
         // Tabs that don't share edits: the server has client 1's text.
         d.client_message(1, &edit(1, ((0, 1), (0, 1)), "b"));
-        assert_eq!(d.before_request(1, &hover), None);
+        assert_eq!(d.before_request(1, &hover, None), None);
         // Client 2 asks: the server gets client 2's text first.
         assert_eq!(
-            d.before_request(2, &hover),
+            d.before_request(2, &hover, None),
             Some((full_change(URI, 2, "a\n"), URI.to_string()))
         );
         assert_eq!(d.text(URI), Some("a\n"));
-        assert_eq!(d.before_request(2, &hover), None);
+        assert_eq!(d.before_request(2, &hover, None), None);
         // A notification, a request with no document, and a client that
         // never opened it send nothing.
         let mut note = hover.clone();
         note.as_object_mut().unwrap().remove("id");
-        assert_eq!(d.before_request(1, &note), None);
+        assert_eq!(d.before_request(1, &note, None), None);
         let symbols = json!({"jsonrpc": "2.0", "id": 2, "method": "workspace/symbol",
             "params": {"query": "a"}});
-        assert_eq!(d.before_request(1, &symbols), None);
-        assert_eq!(d.before_request(3, &hover), None);
+        assert_eq!(d.before_request(1, &symbols, None), None);
+        assert_eq!(d.before_request(3, &hover, None), None);
         // Client 1's next edit, against its own text, goes in full.
         let (r, _) = d.client_message(1, &edit(2, ((0, 2), (0, 2)), "c"));
         assert_eq!(r, Relay::Replace(full_change(URI, 3, "abc\n")));
@@ -734,7 +754,7 @@ mod tests {
         leave_2.client_message(1, &open("a\n"));
         leave_2.client_message(2, &open("a\n"));
         leave_2.client_message(1, &edit(1, ((0, 1), (0, 1)), "b"));
-        leave_2.before_request(2, &hover);
+        leave_2.before_request(2, &hover, None);
         let (send, _) = leave_2.disconnect(2);
         assert_eq!(send, vec![full_change(URI, 3, "ab\n")]);
     }
@@ -749,31 +769,31 @@ mod tests {
         d.client_message(1, &open("a\n"));
         d.client_message(2, &open("a\n"));
         // No request named a document yet: nothing to send.
-        assert_eq!(d.before_request(2, &resolve), None);
+        assert_eq!(d.before_request(2, &resolve, None), None);
         d.client_message(1, &edit(1, ((0, 1), (0, 1)), "b"));
         // Client 2 completes, then client 1 edits, then client 2 resolves.
         assert_eq!(
-            d.before_request(2, &complete),
+            d.before_request(2, &complete, None),
             Some((full_change(URI, 2, "a\n"), URI.to_string()))
         );
         d.client_message(1, &edit(2, ((0, 2), (0, 2)), "c"));
         assert_eq!(d.text(URI), Some("abc\n"));
         assert_eq!(
-            d.before_request(2, &resolve),
+            d.before_request(2, &resolve, None),
             Some((full_change(URI, 4, "a\n"), URI.to_string()))
         );
         // A hierarchy request goes by its item's document.
         let calls = json!({"jsonrpc": "2.0", "id": 3, "method": "callHierarchy/incomingCalls",
             "params": {"item": {"uri": URI, "name": "f"}}});
         assert_eq!(
-            d.before_request(1, &calls),
+            d.before_request(1, &calls, None),
             Some((full_change(URI, 5, "abc\n"), URI.to_string()))
         );
         // So does a workspace symbol, by its location's.
         let symbol = json!({"jsonrpc": "2.0", "id": 4, "method": "workspaceSymbol/resolve",
             "params": {"name": "f", "location": {"uri": URI}}});
         assert_eq!(
-            d.before_request(2, &symbol),
+            d.before_request(2, &symbol, None),
             Some((full_change(URI, 6, "a\n"), URI.to_string()))
         );
         // A client that leaves forgets what it named.
@@ -799,13 +819,42 @@ mod tests {
         let mut other = open("x\n");
         other["params"]["textDocument"]["uri"] = json!(OTHER);
         d.client_message(2, &other);
-        d.before_request(2, &at(1, "textDocument/completion", URI));
-        d.before_request(2, &at(2, "textDocument/hover", OTHER));
+        d.before_request(2, &at(1, "textDocument/completion", URI), None);
+        d.before_request(2, &at(2, "textDocument/hover", OTHER), None);
         // Client 1 edits URI between client 2's completion and its resolve.
         d.client_message(1, &edit(1, ((0, 1), (0, 1)), "b"));
         assert_eq!(d.text(URI), Some("ab\n"));
         assert_eq!(
-            d.before_request(2, &resolve),
+            d.before_request(2, &resolve, None),
+            Some((full_change(URI, 2, "a\n"), URI.to_string()))
+        );
+    }
+
+    /// A resolve for an item from a completion on one document, sent
+    /// after a completion on another, gets the first document's text
+    /// (#339).
+    #[test]
+    fn a_resolve_goes_by_its_items_document() {
+        const OTHER: &str = "file:///other.ipynb";
+        let complete = |id: i64, uri: &str| {
+            json!({"jsonrpc": "2.0", "id": id, "method": "textDocument/completion",
+                "params": {"textDocument": {"uri": uri}, "position": {"line": 0, "character": 0}}})
+        };
+        let resolve = json!({"jsonrpc": "2.0", "id": 9, "method": "completionItem/resolve",
+            "params": {"label": "abc"}});
+        let mut d = Documents::default();
+        d.client_message(1, &open("a\n"));
+        d.client_message(2, &open("a\n"));
+        let mut other = open("x\n");
+        other["params"]["textDocument"]["uri"] = json!(OTHER);
+        d.client_message(2, &other);
+        d.before_request(2, &complete(1, URI), None);
+        d.before_request(2, &complete(2, OTHER), None);
+        // Client 1 edits URI between client 2's completions and its resolve.
+        d.client_message(1, &edit(1, ((0, 1), (0, 1)), "b"));
+        assert_eq!(d.text(URI), Some("ab\n"));
+        assert_eq!(
+            d.before_request(2, &resolve, Some(URI)),
             Some((full_change(URI, 2, "a\n"), URI.to_string()))
         );
     }
