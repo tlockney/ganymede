@@ -274,6 +274,71 @@ async fn a_request_from_a_tab_behind_follows_its_text() {
     );
 }
 
+/// A `completionItem/resolve` names no document: it reaches the server
+/// after the text of the document the tab last asked about, even when
+/// the other tab changed it in between (#334).
+#[tokio::test]
+async fn a_resolve_from_a_tab_behind_follows_its_text() {
+    let root = tempfile::tempdir().unwrap();
+    let m = manager(root.path(), &[("disk", &["cat"], true)]);
+    let vd = ganymede_lsp::virtual_documents_uri(root.path());
+    let uri = format!("{vd}/nb.ipynb");
+    let open = json!({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": uri, "languageId": "fake", "version": 0, "text": "a\n"}}})
+    .to_string();
+    let edit = |version: i64, at: i64, text: &str| {
+        json!({"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
+            "textDocument": {"uri": uri, "version": version},
+            "contentChanges": [{"range": {"start": {"line": 0, "character": at},
+                "end": {"line": 0, "character": at}}, "text": text}]}})
+        .to_string()
+    };
+    let complete = json!({"jsonrpc": "2.0", "id": 1, "method": "textDocument/completion",
+        "params": {"textDocument": {"uri": uri}, "position": {"line": 0, "character": 1}}})
+    .to_string();
+    let resolve = json!({"jsonrpc": "2.0", "id": 2, "method": "completionItem/resolve",
+        "params": {"label": "abc"}})
+    .to_string();
+    let ping = r#"{"jsonrpc":"2.0","method":"ping"}"#;
+
+    let mut a = m.connect("disk").unwrap();
+    let b = m.connect("disk").unwrap();
+    a.send(open.clone()).await;
+    b.send(open).await;
+    a.send(edit(1, 1, "b")).await;
+    b.send(complete).await;
+    a.send(edit(2, 2, "c")).await;
+    let file = root.path().join(VIRTUAL_DOCUMENTS_DIR).join("nb.ipynb");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "abc\n");
+    b.send(resolve).await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "a\n");
+    b.send(ping.into()).await;
+    let mut got = Vec::new();
+    loop {
+        let m = next(&mut a).await.unwrap();
+        if m == ping {
+            break;
+        }
+        let v: serde_json::Value = serde_json::from_str(&m).unwrap();
+        got.push((
+            v["method"].clone(),
+            v["params"]["contentChanges"][0]["text"].clone(),
+        ));
+    }
+    assert_eq!(
+        got,
+        [
+            (json!("textDocument/didOpen"), json!(null)),
+            (json!("textDocument/didChange"), json!("b")),
+            (json!("textDocument/didChange"), json!("a\n")),
+            (json!("textDocument/completion"), json!(null)),
+            (json!("textDocument/didChange"), json!("abc\n")),
+            (json!("textDocument/didChange"), json!("a\n")),
+            (json!("completionItem/resolve"), json!(null)),
+        ]
+    );
+}
+
 /// Answers each request with `{"id": <its id>, "result": <the request as
 /// it arrived>}`, exits on an `exit` notification, and echoes anything
 /// else. Perl, which both CI runners
