@@ -101,7 +101,11 @@ the agent isn't told the same change twice.
 
 Marks are kept in the server's memory. After a restart, or once more
 than 4,096 marks are in use, a mark may be unknown: the read then says
-so and returns the whole notebook with a mark to use next.
+so and returns the whole notebook with a mark to use next. A mark names
+one notebook path, so after a rename the old mark is treated the same
+way. When the agent moves a cell, its mark takes the new place but not
+the cell's source, so an edit someone else made to that cell is still
+reported.
 
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
