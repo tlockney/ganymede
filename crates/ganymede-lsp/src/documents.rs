@@ -25,6 +25,9 @@
 //! - a request about a document (hover, completion, rename, ...) from a
 //!   client whose text the server doesn't have is preceded by that
 //!   client's full text, so the answer's positions fit the requester.
+//!   Requests that name no `textDocument` (`completionItem/resolve`,
+//!   `codeAction/resolve`, call and type hierarchy) go as they are, so
+//!   they are answered against whichever text the server has.
 //!
 //! Tabs that share edits (collaboration) converge, so the server gets
 //! each edit once. Tabs that don't send different texts: the server has
@@ -157,7 +160,8 @@ impl Documents {
         client: u64,
         message: &Value,
     ) -> Option<(Value, String)> {
-        message.get("id")?;
+        // As the router: a null id is no id.
+        message.get("id").filter(|id| !id.is_null())?;
         let method = message.get("method")?.as_str()?;
         if !method.starts_with("textDocument/") {
             return None;
