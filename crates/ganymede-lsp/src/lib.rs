@@ -508,11 +508,22 @@ impl LspClient {
         message: &str,
     ) -> Option<tokio::sync::MutexGuard<'_, (u64, documents::Documents)>> {
         let value = serde_json::from_str::<Value>(message).ok()?;
+        // Read the router's mark on a resolve's item here: the router
+        // takes it off when the request goes on to the server.
+        let item_document = {
+            let st = self.session.state.lock().unwrap();
+            (st.generation == self.generation)
+                .then(|| st.router.item_document(&value).map(str::to_owned))
+                .flatten()
+        };
         let mut docs = self.session.documents.lock().await;
         if docs.0 != self.generation {
             return None;
         }
-        if let Some((change, uri)) = docs.1.before_request(self.id, &value) {
+        if let Some((change, uri)) =
+            docs.1
+                .before_request(self.id, &value, item_document.as_deref())
+        {
             if let Some(shadow) = &self.shadow {
                 write_shadow(&self.session.name, shadow, &uri, docs.1.text(&uri)).await;
             }

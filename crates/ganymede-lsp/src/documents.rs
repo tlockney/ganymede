@@ -29,7 +29,7 @@
 //!   `textDocument` (`completionItem/resolve`, `codeAction/resolve`, and
 //!   the other `*/resolve` methods in [`FOLLOW_UPS`]) is treated as one
 //!   about the document the request that returned its item named: the
-//!   relay marks each item in the answer with it (see [`tag_items`]).
+//!   router marks each item in the answer with it (see `router.rs`).
 //!   An item that comes back unmarked goes by the client's last request
 //!   of that kind (its last `textDocument/completion` for a completion
 //!   item). A call or type hierarchy request is about the
@@ -110,13 +110,6 @@ const FOLLOW_UPS: &[(&str, Option<&str>)] = &[
     ("workspaceSymbol/resolve", None),
 ];
 
-/// The key, in an item's `data`, of the document the request that
-/// returned the item named. The relay wraps each item's `data` as
-/// `{"ganymede.uri": <uri>, "data": <the server's data>}` on its way to the
-/// client, which sends it back unchanged when it resolves the item; the
-/// relay reads the document from it and restores the server's `data`.
-const ITEM_URI: &str = "ganymede.uri";
-
 /// Whether answers to `method` hold items a [`FOLLOW_UPS`] request
 /// resolves.
 pub(crate) fn returns_items(method: &str) -> bool {
@@ -126,59 +119,6 @@ pub(crate) fn returns_items(method: &str) -> bool {
 /// Whether `method` resolves an item an earlier answer returned.
 pub(crate) fn resolves_item(method: &str) -> bool {
     FOLLOW_UPS.iter().any(|(m, o)| *m == method && o.is_some())
-}
-
-/// Marks each item in `result` (an answer to a request that
-/// [`returns_items`]) with `uri`, the document the request named. Items
-/// are the elements of an array result or of a completion list's
-/// `items`; a `Command` (whose `command` is a string) is left as it is,
-/// since it is never resolved. An item without `data` of its own takes a
-/// completion list's `itemDefaults.data`, as the client would.
-pub(crate) fn tag_items(result: &mut Value, uri: &str) {
-    let default = result
-        .get("itemDefaults")
-        .and_then(|d| d.get("data"))
-        .cloned();
-    let items = match result {
-        Value::Array(items) => items,
-        Value::Object(list) => match list.get_mut("items") {
-            Some(Value::Array(items)) => items,
-            _ => return,
-        },
-        _ => return,
-    };
-    for item in items.iter_mut().filter_map(Value::as_object_mut) {
-        if item.get("command").is_some_and(Value::is_string) {
-            continue;
-        }
-        let mut tag = serde_json::Map::new();
-        tag.insert(ITEM_URI.into(), uri.into());
-        if let Some(data) = item.remove("data").or_else(|| default.clone()) {
-            tag.insert("data".into(), data);
-        }
-        item.insert("data".into(), Value::Object(tag));
-    }
-}
-
-/// The document a resolve's item was returned for, from its tag.
-fn item_uri(params: Option<&Value>) -> Option<&str> {
-    params?.get("data")?.get(ITEM_URI)?.as_str()
-}
-
-/// Removes the tag [`tag_items`] put on a resolve's item, so the server
-/// gets its own `data` back.
-pub(crate) fn untag_item(params: &mut Value) {
-    let Some(item) = params.as_object_mut() else {
-        return;
-    };
-    let Some(Value::Object(mut tag)) = item.remove("data") else {
-        return;
-    };
-    if !tag.contains_key(ITEM_URI) {
-        item.insert("data".into(), Value::Object(tag));
-    } else if let Some(data) = tag.remove("data") {
-        item.insert("data".into(), data);
-    }
 }
 
 /// Whether `message` (unparsed) may be a request `before_request` acts
@@ -254,9 +194,10 @@ impl Documents {
     }
 
     /// Before a client's request about a document it has open (one it
-    /// names, or for a follow-up in [`FOLLOW_UPS`], the one it carries or
-    /// the client's last request it follows up named): when the server's text isn't the
-    /// client's, the full-text change that gives the server the client's
+    /// names, or for a follow-up in [`FOLLOW_UPS`], the one it carries,
+    /// `item_document` (the document the router's mark on a resolved item
+    /// names), or else the one the client's last request it follows up
+    /// named): when the server's text isn't the client's, the full-text change that gives the server the client's
     /// text, and the document's URI. `None` when the server already has
     /// it, or for any other message.
     ///
@@ -270,6 +211,7 @@ impl Documents {
         &mut self,
         client: u64,
         message: &Value,
+        item_document: Option<&str>,
     ) -> Option<(Value, String)> {
         // As the router: a null id is no id.
         message.get("id").filter(|id| !id.is_null())?;
@@ -289,7 +231,7 @@ impl Documents {
             match origin {
                 // The document its item came from, or failing that, the one
                 // the client's last request of that kind named.
-                Some(origin) => match item_uri(params) {
+                Some(origin) => match item_document {
                     Some(uri) => uri.to_string(),
                     None => self.named.get(&(client, *origin))?.clone(),
                 },
@@ -778,30 +720,30 @@ mod tests {
             "params": {"textDocument": {"uri": URI}, "position": {"line": 0, "character": 0}}});
         let mut d = Documents::default();
         // Nothing open: nothing to send first.
-        assert_eq!(d.before_request(1, &hover), None);
+        assert_eq!(d.before_request(1, &hover, None), None);
         d.client_message(1, &open("a\n"));
         d.client_message(2, &open("a\n"));
         // In step: nothing to send.
-        assert_eq!(d.before_request(2, &hover), None);
+        assert_eq!(d.before_request(2, &hover, None), None);
         // Tabs that don't share edits: the server has client 1's text.
         d.client_message(1, &edit(1, ((0, 1), (0, 1)), "b"));
-        assert_eq!(d.before_request(1, &hover), None);
+        assert_eq!(d.before_request(1, &hover, None), None);
         // Client 2 asks: the server gets client 2's text first.
         assert_eq!(
-            d.before_request(2, &hover),
+            d.before_request(2, &hover, None),
             Some((full_change(URI, 2, "a\n"), URI.to_string()))
         );
         assert_eq!(d.text(URI), Some("a\n"));
-        assert_eq!(d.before_request(2, &hover), None);
+        assert_eq!(d.before_request(2, &hover, None), None);
         // A notification, a request with no document, and a client that
         // never opened it send nothing.
         let mut note = hover.clone();
         note.as_object_mut().unwrap().remove("id");
-        assert_eq!(d.before_request(1, &note), None);
+        assert_eq!(d.before_request(1, &note, None), None);
         let symbols = json!({"jsonrpc": "2.0", "id": 2, "method": "workspace/symbol",
             "params": {"query": "a"}});
-        assert_eq!(d.before_request(1, &symbols), None);
-        assert_eq!(d.before_request(3, &hover), None);
+        assert_eq!(d.before_request(1, &symbols, None), None);
+        assert_eq!(d.before_request(3, &hover, None), None);
         // Client 1's next edit, against its own text, goes in full.
         let (r, _) = d.client_message(1, &edit(2, ((0, 2), (0, 2)), "c"));
         assert_eq!(r, Relay::Replace(full_change(URI, 3, "abc\n")));
@@ -812,7 +754,7 @@ mod tests {
         leave_2.client_message(1, &open("a\n"));
         leave_2.client_message(2, &open("a\n"));
         leave_2.client_message(1, &edit(1, ((0, 1), (0, 1)), "b"));
-        leave_2.before_request(2, &hover);
+        leave_2.before_request(2, &hover, None);
         let (send, _) = leave_2.disconnect(2);
         assert_eq!(send, vec![full_change(URI, 3, "ab\n")]);
     }
@@ -827,31 +769,31 @@ mod tests {
         d.client_message(1, &open("a\n"));
         d.client_message(2, &open("a\n"));
         // No request named a document yet: nothing to send.
-        assert_eq!(d.before_request(2, &resolve), None);
+        assert_eq!(d.before_request(2, &resolve, None), None);
         d.client_message(1, &edit(1, ((0, 1), (0, 1)), "b"));
         // Client 2 completes, then client 1 edits, then client 2 resolves.
         assert_eq!(
-            d.before_request(2, &complete),
+            d.before_request(2, &complete, None),
             Some((full_change(URI, 2, "a\n"), URI.to_string()))
         );
         d.client_message(1, &edit(2, ((0, 2), (0, 2)), "c"));
         assert_eq!(d.text(URI), Some("abc\n"));
         assert_eq!(
-            d.before_request(2, &resolve),
+            d.before_request(2, &resolve, None),
             Some((full_change(URI, 4, "a\n"), URI.to_string()))
         );
         // A hierarchy request goes by its item's document.
         let calls = json!({"jsonrpc": "2.0", "id": 3, "method": "callHierarchy/incomingCalls",
             "params": {"item": {"uri": URI, "name": "f"}}});
         assert_eq!(
-            d.before_request(1, &calls),
+            d.before_request(1, &calls, None),
             Some((full_change(URI, 5, "abc\n"), URI.to_string()))
         );
         // So does a workspace symbol, by its location's.
         let symbol = json!({"jsonrpc": "2.0", "id": 4, "method": "workspaceSymbol/resolve",
             "params": {"name": "f", "location": {"uri": URI}}});
         assert_eq!(
-            d.before_request(2, &symbol),
+            d.before_request(2, &symbol, None),
             Some((full_change(URI, 6, "a\n"), URI.to_string()))
         );
         // A client that leaves forgets what it named.
@@ -877,13 +819,13 @@ mod tests {
         let mut other = open("x\n");
         other["params"]["textDocument"]["uri"] = json!(OTHER);
         d.client_message(2, &other);
-        d.before_request(2, &at(1, "textDocument/completion", URI));
-        d.before_request(2, &at(2, "textDocument/hover", OTHER));
+        d.before_request(2, &at(1, "textDocument/completion", URI), None);
+        d.before_request(2, &at(2, "textDocument/hover", OTHER), None);
         // Client 1 edits URI between client 2's completion and its resolve.
         d.client_message(1, &edit(1, ((0, 1), (0, 1)), "b"));
         assert_eq!(d.text(URI), Some("ab\n"));
         assert_eq!(
-            d.before_request(2, &resolve),
+            d.before_request(2, &resolve, None),
             Some((full_change(URI, 2, "a\n"), URI.to_string()))
         );
     }
@@ -898,23 +840,21 @@ mod tests {
             json!({"jsonrpc": "2.0", "id": id, "method": "textDocument/completion",
                 "params": {"textDocument": {"uri": uri}, "position": {"line": 0, "character": 0}}})
         };
-        let mut item = json!([{"label": "abc"}]);
-        tag_items(&mut item, URI);
         let resolve = json!({"jsonrpc": "2.0", "id": 9, "method": "completionItem/resolve",
-            "params": item[0]});
+            "params": {"label": "abc"}});
         let mut d = Documents::default();
         d.client_message(1, &open("a\n"));
         d.client_message(2, &open("a\n"));
         let mut other = open("x\n");
         other["params"]["textDocument"]["uri"] = json!(OTHER);
         d.client_message(2, &other);
-        d.before_request(2, &complete(1, URI));
-        d.before_request(2, &complete(2, OTHER));
+        d.before_request(2, &complete(1, URI), None);
+        d.before_request(2, &complete(2, OTHER), None);
         // Client 1 edits URI between client 2's completions and its resolve.
         d.client_message(1, &edit(1, ((0, 1), (0, 1)), "b"));
         assert_eq!(d.text(URI), Some("ab\n"));
         assert_eq!(
-            d.before_request(2, &resolve),
+            d.before_request(2, &resolve, Some(URI)),
             Some((full_change(URI, 2, "a\n"), URI.to_string()))
         );
     }

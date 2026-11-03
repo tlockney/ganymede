@@ -5,14 +5,17 @@ client's latest request of the matching kind, which isn't the one that
 returned the item when a tab completes in one document and then
 another (one connection serves every notebook in a browser tab).
 
-The router now remembers the document a `textDocument/completion`,
+The router now numbers the document a `textDocument/completion`,
 `codeAction`, `codeLens`, `inlayHint` or `documentLink` request named,
 and wraps each item's `data` in the answer as
-`{"ganymede.uri": <uri>, "data": <server's data>}`. A client sends the
-item back unchanged when it resolves it, so `Documents::before_request`
-reads the document from the mark, and the router puts the server's own
-`data` back before the request goes on. An item without `data` takes a
-completion list's `itemDefaults.data`, since the wrapped item no longer
-inherits it. `Command`s in a code action list are left unmarked. An
-item that comes back unmarked falls back to the client's last request
-of that kind, as before.
+`{"ganymede.doc": <n>, "data": <server's data>}`. A number, not the URI,
+because a completion list can hold thousands of items. A client sends
+the item back unchanged when it resolves it; the session reads the
+document from the mark before the router takes it off and puts the
+server's own `data` back. A resolve's answer is marked too, so a
+resolved item resolved again keeps its document. An item without
+`data` takes a completion list's `itemDefaults.data`, since the wrapped
+item no longer inherits it. `Command`s in a code action list are left
+unmarked, and `data` the router didn't mark passes through as it is.
+An item that comes back unmarked falls back to the client's last
+request of that kind, as before.
