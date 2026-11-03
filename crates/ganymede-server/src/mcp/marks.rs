@@ -102,8 +102,11 @@ fn fingerprint(cell: &Cell) -> u64 {
 /// Take the reader's own change to cell `id` into `mark`, so it isn't
 /// reported as someone else's: the cell's entry becomes what `now` has
 /// (gone when `now` has no such cell), placed after the nearest cell
-/// before it in `now` that the mark also has.
-pub fn adopt(mark: &mut Vec<(String, u64)>, now: &[(String, u64)], id: &str) {
+/// before it in `now` that the mark also has. With `place_only` (the
+/// reader moved the cell), a cell the mark had keeps its fingerprint, so
+/// someone else's edit to it is still reported.
+pub fn adopt(mark: &mut Vec<(String, u64)>, now: &[(String, u64)], id: &str, place_only: bool) {
+    let old = mark.iter().find(|(i, _)| i == id).map(|(_, f)| *f);
     mark.retain(|(i, _)| i != id);
     let Some(at) = now.iter().position(|(i, _)| i == id) else {
         return;
@@ -113,7 +116,11 @@ pub fn adopt(mark: &mut Vec<(String, u64)>, now: &[(String, u64)], id: &str) {
         .rev()
         .find_map(|(prev, _)| mark.iter().position(|(i, _)| i == prev))
         .map_or(0, |p| p + 1);
-    mark.insert(index, now[at].clone());
+    let fp = match (place_only, old) {
+        (true, Some(f)) => f,
+        _ => now[at].1,
+    };
+    mark.insert(index, (id.to_string(), fp));
 }
 
 /// What changed between a mark and the notebook now, as cell ids.
@@ -243,7 +250,7 @@ mod tests {
         // The reader added x after a; someone else added y at the end and
         // edited b.
         let now = cells(&[("a", 1), ("x", 7), ("b", 9), ("y", 8)]);
-        adopt(&mut mark, &now, "x");
+        adopt(&mut mark, &now, "x", false);
         assert_eq!(mark, cells(&[("a", 1), ("x", 7), ("b", 2)]));
         let c = diff(&mark, &now);
         assert_eq!(c.added, ids(&["y"]));
@@ -251,10 +258,16 @@ mod tests {
         assert!(c.moved.is_empty() && c.deleted.is_empty());
         // The reader deleted a, and moved b to the top.
         let now = cells(&[("b", 2), ("x", 7)]);
-        adopt(&mut mark, &now, "a");
-        adopt(&mut mark, &now, "b");
+        adopt(&mut mark, &now, "a", false);
+        adopt(&mut mark, &now, "b", true);
         assert_eq!(mark, cells(&[("b", 2), ("x", 7)]));
         assert!(diff(&mark, &now).is_empty());
+        // Someone else edited x, then the reader moved it: still an edit.
+        let now = cells(&[("x", 9), ("b", 2)]);
+        adopt(&mut mark, &now, "x", true);
+        let c = diff(&mark, &now);
+        assert_eq!(c.edited, ids(&["x"]));
+        assert!(c.moved.is_empty());
     }
 
     #[test]

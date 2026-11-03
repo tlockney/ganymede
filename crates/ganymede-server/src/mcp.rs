@@ -363,8 +363,8 @@ impl Notebooks {
             None => {
                 let (nb, token) = self.read_marked(&path).await?;
                 text(format!(
-                    "Read mark {since} is unknown here (the server restarted, or it was \
-                     dropped); the whole notebook follows.\n\n{}@@read {token}\n",
+                    "Read mark {since} is unknown here for {path} (the server restarted, \
+                     it was dropped, or it is for another path); the whole notebook follows.\n\n{}@@read {token}\n",
                     self.render(&nb, true)
                 ))
             }
@@ -446,7 +446,7 @@ impl Notebooks {
         let id = a.id.clone();
         let source = a.source;
         let found = self
-            .own_edit(&path, vec![a.id.clone()], None, move |room| {
+            .own_edit(&path, vec![a.id.clone()], false, None, move |room| {
                 room.edit(|txn, roots| {
                     let Some(cell) = schema::find_cell(txn, roots, &id) else {
                         return false;
@@ -507,7 +507,7 @@ impl Notebooks {
         let path = self.path(a.path)?;
         let id = a.id.clone();
         let found = self
-            .own_edit(&path, vec![a.id.clone()], None, move |room| {
+            .own_edit(&path, vec![a.id.clone()], false, None, move |room| {
                 room.edit(|txn, roots| match schema::cell_index(txn, roots, &id) {
                     Some(i) => {
                         roots.cells.remove(txn, i);
@@ -532,7 +532,7 @@ impl Notebooks {
         let path = self.path(a.path)?;
         let (id, after) = (a.id.clone(), a.after.clone());
         let moved = self
-            .own_edit(&path, vec![a.id.clone()], None, move |room| {
+            .own_edit(&path, vec![a.id.clone()], true, None, move |room| {
                 room.edit(|txn, roots| {
                     let Some(from) = schema::cell_index(txn, roots, &id) else {
                         return Err(format!("no cell {id}"));
@@ -941,23 +941,20 @@ impl Notebooks {
         since: &str,
     ) -> Result<Option<(Notebook, marks::Changes)>, McpError> {
         match self.marks.lock().expect("marks").get(since) {
-            None => return Ok(None),
-            Some(m) if m.path != path => {
-                return Err(err(format!(
-                    "read mark {since} is for {}, not {path}",
-                    m.path
-                )))
-            }
-            Some(_) => {}
+            // A mark for another path (the notebook was renamed, or the
+            // caller mixed them up) is as good as none: the whole
+            // notebook follows.
+            Some(m) if m.path == path => {}
+            _ => return Ok(None),
         }
-        let (marks, t) = (self.marks.clone(), since.to_string());
+        let (marks, t, p) = (self.marks.clone(), since.to_string(), path.to_string());
         let r = self
             .room(path, move |room| {
                 let r = match room.notebook_with_ids() {
                     Some(Ok(nb)) => {
                         let now = marks::snapshot(&nb);
                         let mut marks = marks.lock().expect("marks");
-                        match marks.get(&t) {
+                        match marks.get(&t).filter(|m| m.path == p) {
                             Some(m) => {
                                 let changes = marks::diff(&m.cells, &now);
                                 m.cells = now;
@@ -977,13 +974,15 @@ impl Notebooks {
 
     /// Edit the notebook's room with `f`, moving this connection's read
     /// mark past the change to cells `ids`, so the change isn't reported
-    /// to it as someone else's.
+    /// to it as someone else's. With `moved_only` (`cell_move`), only
+    /// their places move: a source someone else changed stays a change.
     /// `also` is another read mark to move the same way (`cell_add`'s
     /// `mark`), when it is for this notebook.
     async fn own_edit<R: Send + 'static>(
         &self,
         path: &str,
         ids: Vec<String>,
+        moved_only: bool,
         also: Option<String>,
         f: impl FnOnce(&mut Room) -> (R, Effects) + Send + 'static,
     ) -> Result<R, McpError> {
@@ -1005,7 +1004,7 @@ impl Notebooks {
                 for token in &tokens {
                     if let Some(m) = marks.get(token).filter(|m| m.path == p) {
                         for id in &ids {
-                            marks::adopt(&mut m.cells, &now, id);
+                            marks::adopt(&mut m.cells, &now, id, moved_only);
                         }
                     }
                 }
@@ -1131,7 +1130,7 @@ impl Notebooks {
     ) -> Result<(), McpError> {
         let id = cell["id"].as_str().unwrap_or_default().to_string();
         let r = self
-            .own_edit(path, vec![id], mark, move |room| {
+            .own_edit(path, vec![id], false, mark, move |room| {
                 room.edit(|txn, roots: &Roots| {
                     let at = match &after {
                         None => roots.cells.len(txn),

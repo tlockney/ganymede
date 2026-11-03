@@ -4189,7 +4189,7 @@ async fn mcp_read_since_lists_changes_by_others() {
     assert!(out.starts_with("Read mark nope is unknown"), "{out}");
     assert!(out.contains("my note") && out.contains("src_b2"), "{out}");
     assert_eq!(read_mark(&out), mark);
-    // A mark names one notebook.
+    // A mark for another notebook (as after a rename) is as good as none.
     mcp_text(&mcp_tool(&app, &agent, "notebook_open", json!({"path": "k.ipynb"})).await);
     let v = mcp_tool(
         &app,
@@ -4198,5 +4198,7 @@ async fn mcp_read_since_lists_changes_by_others() {
         json!({"path": "k.ipynb", "since": mark}),
     )
     .await;
-    assert!(v.to_string().contains("is for j.ipynb"), "{v}");
+    let out = mcp_text(&v);
+    assert!(out.starts_with("Read mark"), "{out}");
+    assert_ne!(read_mark(&out), mark, "k.ipynb has its own mark");
 }
