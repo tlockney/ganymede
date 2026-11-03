@@ -69,6 +69,8 @@ On the iPad, notebooks live in the app's Documents folder (On My iPad in
 the Files app) or a folder you pick, such as one in iCloud Drive. iOS
 doesn't let an app start kernel processes, so the page runs cdp-kernel's
 TypeScript kernel itself, in a Worker.
+TypeScript cells there get a `device` global for native features such
+as the clipboard; see [Device API](ganymede-ui/device.md).
 
 ### Kernels on another machine
 
