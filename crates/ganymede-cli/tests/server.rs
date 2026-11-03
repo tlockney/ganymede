@@ -193,7 +193,10 @@ impl Client {
         self.transcript.push((step.to_string(), v));
     }
 
+    /// A request with the token, failing the test if no answer comes in
+    /// [`CALL_SECS`].
     async fn call(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> (u16, Value) {
+        let step = format!("{method} {path}");
         let mut r = self
             .http
             .request(method, format!("{}{path}", self.base))
@@ -201,14 +204,17 @@ impl Client {
         if let Some(b) = body {
             r = r.json(&b);
         }
-        let resp = r.send().await.unwrap();
-        let status = resp.status().as_u16();
-        let text = resp.text().await.unwrap();
-        (status, serde_json::from_str(&text).unwrap_or(Value::Null))
+        within(CALL_SECS, &step, async {
+            let resp = r.send().await.unwrap();
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap();
+            (status, serde_json::from_str(&text).unwrap_or(Value::Null))
+        })
+        .await
     }
 
     /// A request with only the given headers: no token unless they carry
-    /// one, and no redirects followed.
+    /// one, and no redirects followed. Bounded as [`Client::call`].
     async fn raw(
         &self,
         method: reqwest::Method,
@@ -216,6 +222,7 @@ impl Client {
         headers: &[(&str, &str)],
         body: Option<(&str, String)>,
     ) -> (u16, reqwest::header::HeaderMap, String) {
+        let step = format!("{method} {path}");
         let mut r = self.http.request(method, format!("{}{path}", self.base));
         for (k, v) in headers {
             r = r.header(*k, *v);
@@ -223,10 +230,13 @@ impl Client {
         if let Some((content_type, b)) = body {
             r = r.header("Content-Type", content_type).body(b);
         }
-        let resp = r.send().await.unwrap();
-        let status = resp.status().as_u16();
-        let headers = resp.headers().clone();
-        (status, headers, resp.text().await.unwrap())
+        within(CALL_SECS, &step, async {
+            let resp = r.send().await.unwrap();
+            let status = resp.status().as_u16();
+            let headers = resp.headers().clone();
+            (status, headers, resp.text().await.unwrap())
+        })
+        .await
     }
 
     /// `username-<host>`, the login cookie's name for this server.
@@ -266,16 +276,20 @@ impl Client {
         json!(out)
     }
 
+    /// Poll `api` until the server answers, for [`CALL_SECS`] at most;
+    /// an attempt that hangs is given up after 5 s.
     async fn wait_ready(&self) {
-        for _ in 0..200 {
-            if let Ok(r) = self.http.get(format!("{}api", self.base)).send().await {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(CALL_SECS);
+        while tokio::time::Instant::now() < deadline {
+            let attempt = self.http.get(format!("{}api", self.base)).send();
+            if let Ok(Ok(r)) = tokio::time::timeout(Duration::from_secs(5), attempt).await {
                 if r.status().is_success() {
                     return;
                 }
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        panic!("server at {} did not come up", self.base);
+        panic!("server at {} did not come up in {CALL_SECS} s", self.base);
     }
 }
 
@@ -347,7 +361,13 @@ async fn exchange_step(
     need_idle: bool,
 ) -> Value {
     let id = msg["header"]["msg_id"].as_str().unwrap().to_string();
-    ws.send(WsMessage::text(msg.to_string())).await.unwrap();
+    within(
+        CONNECT_SECS,
+        &format!("{step}: sending the request"),
+        ws.send(WsMessage::text(msg.to_string())),
+    )
+    .await
+    .unwrap();
     let deadline = total.map(|t| tokio::time::Instant::now() + t);
     let mut iopub = Vec::new();
     let mut stdin = Vec::new();
@@ -427,7 +447,13 @@ async fn exchange_step(
                     json!({"value": answer.unwrap_or_default()}),
                 );
                 r["parent_header"] = m["header"].clone();
-                ws.send(WsMessage::text(r.to_string())).await.unwrap();
+                within(
+                    CONNECT_SECS,
+                    &format!("{step}: answering stdin"),
+                    ws.send(WsMessage::text(r.to_string())),
+                )
+                .await
+                .unwrap();
             }
             ch => {
                 reply = Some(json!({"channel": ch, "msg_type": msg_type, "content": m["content"]}));
@@ -691,7 +717,7 @@ async fn scenario(base: &str, c: &Code) -> Vec<(String, Value)> {
     ws_req
         .headers_mut()
         .insert("Cookie", login.parse().unwrap());
-    let (mut ws, _) = tokio_tungstenite::connect_async(ws_req).await.unwrap();
+    let mut ws = ws_connect("connecting the cookie websocket", ws_req).await;
 
     let info = exchange(
         &mut ws,
@@ -741,13 +767,17 @@ async fn scenario(base: &str, c: &Code) -> Vec<(String, Value)> {
         let url = format!("{base}api/kernels/{kid}/interrupt");
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(1500)).await;
-            http.post(url)
-                .header("Authorization", format!("token {TOKEN}"))
-                .send()
-                .await
-                .unwrap()
-                .status()
-                .as_u16()
+            within(
+                CALL_SECS,
+                &format!("POST {url}"),
+                http.post(&url)
+                    .header("Authorization", format!("token {TOKEN}"))
+                    .send(),
+            )
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
         })
     };
     let r = exchange(&mut ws, sleep, None).await;
@@ -787,7 +817,7 @@ async fn scenario(base: &str, c: &Code) -> Vec<(String, Value)> {
         "{}api/kernels/{kid}/channels?session_id=e2e-session-2&token={TOKEN}",
         base.replacen("http://", "ws://", 1)
     );
-    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url).await.unwrap();
+    let mut ws = ws_connect("connecting the websocket after restart", ws_url).await;
     let r = exchange(
         &mut ws,
         request("execute_request", "shell", json!({"code": c.read_state})),
@@ -966,9 +996,8 @@ fn parallel_starts_through_serve() {
                 .collect();
             let base = &s.base;
             let answers = futures::future::join_all(ids.iter().map(|kid| async move {
-                let (mut ws, _) = tokio_tungstenite::connect_async(ws_url(base, kid, kid))
-                    .await
-                    .unwrap();
+                let mut ws =
+                    ws_connect("connecting a kernel's websocket", ws_url(base, kid, kid)).await;
                 let r = exchange(
                     &mut ws,
                     request("execute_request", "shell", json!({"code": c.answer})),
@@ -1053,9 +1082,8 @@ fn restart_failure_on_a_real_kernel_reports_it_dead() {
                 .await;
             assert_eq!(st, 201, "{name}: {k}");
             let kid = k["id"].as_str().unwrap().to_string();
-            let (mut ws, _) = tokio_tungstenite::connect_async(ws_url(&s.base, &kid, "flaky"))
-                .await
-                .unwrap();
+            let mut ws =
+                ws_connect("connecting the websocket", ws_url(&s.base, &kid, "flaky")).await;
             let r = exchange(
                 &mut ws,
                 request("execute_request", "shell", json!({"code": c.answer})),
@@ -1110,6 +1138,25 @@ fn restart_failure_on_a_real_kernel_reports_it_dead() {
     }
 }
 
+/// The bound on one HTTP call, and on waiting for a server to answer.
+/// Longer than the servers' 60 s kernel startup timeout, so a slow start
+/// fails with the server's own error; shorter than the `within` limits
+/// `crash` puts around its calls, so a stalled call fails here, naming
+/// the method and path.
+const CALL_SECS: u64 = 75;
+
+/// The bound on one websocket connect or send.
+const CONNECT_SECS: u64 = 20;
+
+/// Open a kernel websocket, failing the test naming `step` if the
+/// connect stalls for [`CONNECT_SECS`] or fails.
+async fn ws_connect(step: &str, req: impl IntoClientRequest + Unpin) -> Ws {
+    within(CONNECT_SECS, step, tokio_tungstenite::connect_async(req))
+        .await
+        .unwrap_or_else(|e| panic!("{step}: {e}"))
+        .0
+}
+
 /// Await `f`, or fail the test naming the step that stalled.
 async fn within<T>(secs: u64, step: &str, f: impl std::future::Future<Output = T>) -> T {
     tokio::time::timeout(Duration::from_secs(secs), f)
@@ -1138,10 +1185,10 @@ async fn crash(server: &str, base: &str, c: &Code, wait_idle: bool) -> Option<Va
         base: base.to_string(),
         transcript: vec![],
     };
-    within(60, &st("waiting for the server"), cl.wait_ready()).await;
+    within(90, &st("waiting for the server"), cl.wait_ready()).await;
     use reqwest::Method as M;
     let (s, k) = within(
-        60,
+        90,
         &st("starting the kernel"),
         cl.call(M::POST, "api/kernels", Some(json!({"name": c.kernel}))),
     )
@@ -1190,12 +1237,18 @@ async fn crash(server: &str, base: &str, c: &Code, wait_idle: bool) -> Option<Va
     .await
     .unwrap();
     let mut reply = None;
+    // One deadline for the whole wait, so frames that are skipped (pings)
+    // can't keep it open.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
-        let frame = tokio::time::timeout(Duration::from_secs(30), ws.next())
+        let frame = tokio::time::timeout_at(deadline, ws.next())
             .await
             .unwrap_or_else(|_| panic!("{}", st("no restarting status in 30 s")));
-        let Some(Ok(WsMessage::Text(text))) = frame else {
-            panic!("{server}: websocket closed before the kernel restarted: {frame:?}");
+        let text = match frame {
+            Some(Ok(WsMessage::Text(text))) => text,
+            // Pings, pongs and binary frames don't end the socket.
+            Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_) | WsMessage::Binary(_))) => continue,
+            _ => panic!("{server}: websocket closed before the kernel restarted: {frame:?}"),
         };
         let m: Value = serde_json::from_str(&text).unwrap();
         if m["channel"] == "shell" && m["parent_header"]["msg_id"] == cell_id {
@@ -1215,7 +1268,7 @@ async fn crash(server: &str, base: &str, c: &Code, wait_idle: bool) -> Option<Va
     // crashed cell, when the new kernel publishes no status of its own
     // (cdp-kernel), so there the next cell is what shows it is back.
     let (s, v) = within(
-        60,
+        90,
         &st("reading the kernel after the crash"),
         cl.call(M::GET, &format!("api/kernels/{kid}"), None),
     )
@@ -1225,7 +1278,7 @@ async fn crash(server: &str, base: &str, c: &Code, wait_idle: bool) -> Option<Va
         let mut state = Value::Null;
         for _ in 0..300 {
             let (_, v) = within(
-                60,
+                90,
                 &st("polling the restarted kernel"),
                 cl.call(M::GET, &format!("api/kernels/{kid}"), None),
             )
@@ -1270,7 +1323,7 @@ async fn crash(server: &str, base: &str, c: &Code, wait_idle: bool) -> Option<Va
     );
     drop(ws);
     let (s, _) = within(
-        60,
+        90,
         &st("deleting the kernel"),
         cl.call(M::DELETE, &format!("api/kernels/{kid}"), None),
     )
