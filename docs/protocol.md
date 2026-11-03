@@ -170,6 +170,21 @@ cell the other changed, the file on disk wins that cell, and the server
 logs it. Notebooks older than nbformat 4.5 have no cell ids, so for them
 the file wins outright, as in `jupyter-collaboration`.
 
+A room looks at its file once events have settled for half a second, and
+at most five seconds after the first unsettled event, so a file that a
+program rewrites constantly still reaches the room. A client's `save`
+whose merge lets the file win a cell the room had changed saves the
+merge and answers `failed`, since the client's edit to that cell isn't
+in the file. A delete through the contents API closes the clients of
+rooms on the deleted file with code 4404, the code a reconnect gets
+for the dropped file id; the room doesn't write the file back. When the
+file id database can't be read or written, ids handed out meanwhile are
+kept in memory, so they still resolve until the server stops.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
 File ids are kept in `ganymede_file_ids.db` in the Jupyter data dir, so
 a client keeps its room across a server restart, and a rename or delete
 through the contents API moves or drops them; a room open on a renamed

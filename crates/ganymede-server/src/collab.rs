@@ -16,13 +16,15 @@
 //! edit, with an `If-Match` on the hash it last read or wrote, so it never
 //! overwrites a file that changed since. It learns of changes made by other
 //! programs from a [`Watcher`] on the file's directory, debounced by half a
-//! second, and polls every ten seconds besides; where there are no file
+//! second (at most five, for a file that never settles), and polls every
+//! ten seconds besides; where there are no file
 //! events, it polls every second. A change whose hash is the room's own
 //! last save is ignored. Any other change is merged into the room (see
 //! [`ganymede_documents::merge`]): a clean room just reloads; a room with
 //! unsaved edits keeps them, takes the disk's changes to other cells, and
 //! saves the merge. Where both changed the same cell, the disk wins that
-//! cell. A room with no clients is saved and dropped after a minute.
+//! cell. A room with no clients is saved and dropped after a minute. A
+//! delete through the contents API closes the rooms on the deleted file.
 //!
 //! File ids come from [`FileIds`]: kept in a database when the server has
 //! one, so they survive restarts, and moved by renames through the
@@ -56,6 +58,9 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const WATCHED_POLL_INTERVAL: Duration = Duration::from_secs(10);
 /// How long file events must settle before a room looks at the file.
 const DEBOUNCE: Duration = Duration::from_millis(500);
+/// How long a room waits for events to settle at most: a file written
+/// more often than [`DEBOUNCE`] is still looked at this often.
+const MAX_DEBOUNCE: Duration = Duration::from_secs(5);
 /// How long a room with no clients is kept, in case one reconnects.
 const CLEANUP_DELAY: Duration = Duration::from_secs(60);
 
@@ -121,9 +126,13 @@ impl Collab {
         self.root.as_deref()
     }
 
-    /// `path` was deleted through the contents API.
+    /// `path` (a file or directory) was deleted through the contents
+    /// API: its ids go, and rooms on it close their clients.
     pub fn removed(&self, path: &str) {
         self.ids.removed(path);
+        for room in self.rooms.lock().expect("rooms").values() {
+            let _ = room.send(Cmd::Removed(path.to_string()));
+        }
     }
 
     /// Saves every room with unsaved edits, as the server stops, so edits
@@ -156,6 +165,8 @@ pub(crate) enum Cmd {
     Leave(ConnId),
     /// A rename through the contents API: old and new path.
     Moved(String, String),
+    /// A delete through the contents API: the path (a file or directory).
+    Removed(String),
     /// Server-side execution; see [`crate::execute`].
     Exec(crate::execute::RoomCmd),
     /// Run a function on the room, as `ganymede mcp` does to read and edit
@@ -567,8 +578,9 @@ async fn run_room(
     // clients left.
     let mut empty_since: Option<Instant> = Some(Instant::now());
     let mut exec = crate::execute::RoomExec::new(me);
-    // When file events last arrived and are not yet looked at.
+    // When file events last and first arrived, not yet looked at.
     let mut disk_event: Option<Instant> = None;
+    let mut first_disk_event: Option<Instant> = None;
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     let mut last_poll = Instant::now();
     // A command taken off the queue while merging appends, to handle next.
@@ -618,6 +630,18 @@ async fn run_room(
                         drop(watch.take());
                         watch = collab.watch(&d.path);
                     }
+                    Cmd::Removed(gone) => {
+                        let Some(d) = disk.as_ref() else { continue };
+                        if moved_path(&d.path, &gone, "").is_none() { continue }
+                        // As a reconnect would find: the file id is gone.
+                        tracing::info!(room = %room_id, "{} deleted; closing the room", d.path);
+                        let reason = format!("File deleted: {}", d.path);
+                        for out in clients.values() {
+                            let _ = out.send(Out::Close(4404, reason.clone()));
+                        }
+                        close_room(&collab, &room_id, &mut rx, &reason);
+                        break;
+                    }
                     Cmd::With(f) => {
                         let fx = f(&mut room);
                         if fx.changed { last_edit = Some(Instant::now()) }
@@ -657,7 +681,9 @@ async fn run_room(
                 }
             }
             Some(()) = changed(&mut watch) => {
-                disk_event = Some(Instant::now());
+                let now = Instant::now();
+                disk_event = Some(now);
+                first_disk_event.get_or_insert(now);
             }
             _ = tick.tick() => {
                 let Some(d) = disk.as_mut() else {
@@ -665,10 +691,13 @@ async fn run_room(
                     continue;
                 };
                 let poll_every = if watch.is_some() { WATCHED_POLL_INTERVAL } else { POLL_INTERVAL };
-                if disk_event.is_some_and(|t| t.elapsed() >= DEBOUNCE) {
+                if disk_event.is_some_and(|t| t.elapsed() >= DEBOUNCE)
+                    || first_disk_event.is_some_and(|t| t.elapsed() >= MAX_DEBOUNCE)
+                {
                     disk_event = None;
+                    first_disk_event = None;
                     last_poll = Instant::now();
-                    if reload(contents.as_ref(), &mut room, d, &clients).await {
+                    if reload(contents.as_ref(), &mut room, d, &clients).await.needs_save {
                         last_edit = Some(Instant::now());
                     }
                 } else if last_poll.elapsed() >= poll_every && disk_event.is_none() {
@@ -711,6 +740,26 @@ fn moved_path(path: &str, old: &str, new: &str) -> Option<String> {
     Some(format!("{new}/{rest}"))
 }
 
+/// Remove a room whose file was deleted from the map, and turn away
+/// what was queued for it: clients joining close with 4404, as the file
+/// id is gone.
+fn close_room(collab: &Collab, room_id: &str, rx: &mut mpsc::UnboundedReceiver<Cmd>, reason: &str) {
+    collab.rooms.lock().expect("rooms").remove(room_id);
+    rx.close();
+    while let Ok(cmd) = rx.try_recv() {
+        match cmd {
+            Cmd::Join(_, out) => {
+                let _ = out.send(Out::Close(4404, reason.to_string()));
+            }
+            Cmd::Exec(cmd) => cmd.unavailable(reason),
+            Cmd::Flush(done) => {
+                let _ = done.send(());
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Remove the room from the map, unless a client is on its way in.
 fn retire(collab: &Collab, room_id: &str, rx: &mut mpsc::UnboundedReceiver<Cmd>) -> bool {
     let mut rooms = collab.rooms.lock().expect("rooms");
@@ -738,6 +787,9 @@ fn dispatch(clients: &HashMap<ConnId, mpsc::UnboundedSender<Out>>, send: Vec<(Ta
 
 /// Write the room to its file, if it changed or `force`. When the file
 /// changed since it was last read, merge it in first and save the merge.
+/// A forced save (a client's `save`) whose merge let the file win a cell
+/// the room had changed saves the merge but answers `Failed`, since the
+/// client's edit to that cell didn't make it into the file.
 async fn save_room(
     contents: &dyn Contents,
     room: &mut Room,
@@ -747,6 +799,7 @@ async fn save_room(
 ) -> SaveStatus {
     // Each round either saves or merges a newer file; give up if another
     // program keeps writing.
+    let mut lost = false;
     for _ in 0..3 {
         if !room.is_dirty() && !force {
             return SaveStatus::Skipped;
@@ -771,11 +824,14 @@ async fn save_room(
                 let fx = room.saved(generation, &disk.hash);
                 dispatch(clients, fx.send);
                 tracing::debug!(path = %disk.path, "room saved");
+                if force && lost {
+                    return SaveStatus::Failed;
+                }
                 return SaveStatus::Success;
             }
             Err(e) if e.status() == 412 => {
                 tracing::info!(path = %disk.path, "file changed on disk; merging before saving");
-                reload(contents, room, disk, clients).await;
+                lost |= reload(contents, room, disk, clients).await.lost;
             }
             Err(e) => {
                 tracing::warn!(path = %disk.path, "room save failed: {e}");
@@ -800,22 +856,31 @@ async fn poll(
     if model.last_modified == disk.last_modified {
         return false;
     }
-    reload(contents, room, disk, clients).await
+    reload(contents, room, disk, clients).await.needs_save
+}
+
+/// What [`reload`] did.
+#[derive(Default)]
+struct Reloaded {
+    /// The room holds a merge that needs saving.
+    needs_save: bool,
+    /// The file won a cell the room had changed.
+    lost: bool,
 }
 
 /// Read the file and merge it into the room, unless it is what we last
-/// read or wrote. True when the room holds a merge that needs saving.
+/// read or wrote.
 async fn reload(
     contents: &dyn Contents,
     room: &mut Room,
     disk: &mut Disk,
     clients: &HashMap<ConnId, mpsc::UnboundedSender<Out>>,
-) -> bool {
+) -> Reloaded {
     match load(contents, &disk.path).await {
         Ok((nb, fresh)) => {
             disk.last_modified = fresh.last_modified;
             if fresh.hash == disk.hash {
-                return false; // touched, not changed (or our own write)
+                return Reloaded::default(); // touched, not changed (or our own write)
             }
             disk.hash = fresh.hash;
             let (fx, conflicts) = room.merge_disk(&disk.base, &nb, &disk.hash);
@@ -830,11 +895,14 @@ async fn reload(
                 );
             }
             dispatch(clients, fx.send);
-            room.is_dirty()
+            Reloaded {
+                needs_save: room.is_dirty(),
+                lost: !conflicts.is_empty(),
+            }
         }
         Err(e) => {
             tracing::warn!(path = %disk.path, "cannot reload: {e}");
-            false
+            Reloaded::default()
         }
     }
 }

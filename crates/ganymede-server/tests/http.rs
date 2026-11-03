@@ -2321,6 +2321,59 @@ async fn collaboration_room_syncs_saves_and_reloads() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
+    // A client's save whose merge lets the disk win the cell it edited
+    // saves the merge and answers `failed` (#279).
+    let before = doc.transact().state_vector();
+    {
+        let mut txn = doc.transact_mut();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+            panic!()
+        };
+        let Some(Out::YText(t)) = cell.get(&txn, "source") else {
+            panic!()
+        };
+        t.insert(&mut txn, 0, "lost: ");
+    }
+    let u = doc.transact().encode_state_as_update_v1(&before);
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::Update(u)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+    // Written before the save, inside the debounce: the save meets it.
+    std::fs::write(&file, two_cells("disk wins", "second, on disk")).unwrap();
+    ws.send(TMsg::Binary(vec![2, 4, b's', b'a', b'v', b'e', 10].into()))
+        .await
+        .unwrap();
+    let mut reply = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while reply.is_none() || source(&doc).as_deref() != Some("disk wins") {
+        let msg = tokio::time::timeout_at(deadline, ws.next())
+            .await
+            .expect("timed out waiting for the save")
+            .unwrap()
+            .unwrap();
+        let TMsg::Binary(b) = msg else { continue };
+        if b.first() == Some(&2) {
+            reply = Some(serde_json::from_slice::<Value>(&b[2..]).unwrap());
+            continue;
+        }
+        if let Ok(YMsg::Sync(SyncMessage::SyncStep2(u) | SyncMessage::Update(u))) =
+            YMsg::decode_v1(&b)
+        {
+            doc.transact_mut()
+                .apply_update(Update::decode_v1(&u).unwrap())
+                .unwrap();
+        }
+    }
+    let reply = reply.unwrap();
+    assert_eq!(reply["responseTo"], 10);
+    assert_eq!(reply["status"], "failed", "{reply}");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        two_cells("disk wins", "second, on disk")
+    );
+
     // A rename through the contents API keeps the file id, and the room
     // follows the file.
     let (s, _) = call(
@@ -2378,6 +2431,124 @@ async fn collaboration_room_syncs_saves_and_reloads() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(!file.exists());
+
+    // A delete through the contents API closes the room's clients with
+    // 4404, as a reconnect would find (#279).
+    let (s, _) = call(
+        &app2,
+        "DELETE",
+        "/api/contents/moved.ipynb",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    loop {
+        let msg = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .expect("the room closes after a delete");
+        match msg {
+            Some(Ok(TMsg::Close(Some(frame)))) => {
+                assert_eq!(u16::from(frame.code), 4404);
+                break;
+            }
+            Some(Ok(_)) => continue,
+            other => panic!("expected a close, got {other:?}"),
+        }
+    }
+    let (mut again, _) = tokio_tungstenite::connect_async(url(v["sessionId"].as_str().unwrap()))
+        .await
+        .unwrap();
+    match again.next().await {
+        Some(Ok(TMsg::Close(Some(frame)))) => assert_eq!(u16::from(frame.code), 4404),
+        other => panic!("expected a close, got {other:?}"),
+    }
+    assert!(!moved_file.exists(), "the room doesn't save the file back");
+}
+
+/// A file rewritten more often than the debounce still reaches the room,
+/// once the first unsettled event is 5 s old (#279).
+#[tokio::test]
+async fn collaboration_room_reloads_a_file_that_never_settles() {
+    use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
+    use ganymede_documents::yrs::updates::decoder::Decode;
+    use ganymede_documents::yrs::updates::encoder::Encode;
+    use ganymede_documents::yrs::StateVector;
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("busy.ipynb");
+    let nb = |text: &str| {
+        json!({"cells": [{"cell_type": "markdown", "id": "a", "metadata": {}, "source": text}],
+            "metadata": {}, "nbformat": 4, "nbformat_minor": 5})
+        .to_string()
+    };
+    std::fs::write(&file, nb("start")).unwrap();
+    let app = build_router(state(dir.path()));
+    let (s, v) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/busy.ipynb",
+        Some(json!({"format": "json", "type": "notebook"})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut req = format!(
+        "ws://{addr}/api/collaboration/room/json:notebook:{}?sessionId={}",
+        v["fileId"].as_str().unwrap(),
+        v["sessionId"].as_str().unwrap()
+    )
+    .into_client_request()
+    .unwrap();
+    req.headers_mut()
+        .insert("Authorization", format!("token {TOKEN}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::SyncStep1(StateVector::default()))
+            .encode_v1()
+            .into(),
+    ))
+    .await
+    .unwrap();
+
+    // Rewrite the file every 100 ms for 8 s: events never settle for the
+    // 500 ms debounce.
+    let writing = Duration::from_secs(8);
+    let writer = {
+        let file = file.clone();
+        std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            let mut i = 0;
+            while start.elapsed() < writing {
+                i += 1;
+                std::fs::write(&file, nb(&format!("write {i}"))).unwrap();
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        })
+    };
+    let start = std::time::Instant::now();
+    let deadline = tokio::time::Instant::now() + writing + Duration::from_secs(5);
+    loop {
+        let msg = tokio::time::timeout_at(deadline, ws.next())
+            .await
+            .expect("timed out waiting for a reload")
+            .unwrap()
+            .unwrap();
+        let TMsg::Binary(b) = msg else { continue };
+        if let Ok(YMsg::Sync(SyncMessage::Update(_))) = YMsg::decode_v1(&b) {
+            break;
+        }
+    }
+    assert!(
+        start.elapsed() < writing,
+        "the room waited for the writes to stop ({:?})",
+        start.elapsed()
+    );
+    writer.join().unwrap();
 }
 
 #[tokio::test]
