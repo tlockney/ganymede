@@ -176,7 +176,7 @@ main() {
 	tgt=$(target)
 	if [ -n "$main" ]; then
 		# The rolling prerelease release.yml updates on every push to main.
-		tag=main-build
+		tag="main-build"
 		name=ganymede-main-$tgt
 		what="the latest main build"
 	else
