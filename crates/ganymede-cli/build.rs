@@ -1,5 +1,8 @@
 //! Build details for `ganymede info`: the target
 //! triple, the profile, and the git commit when built from a checkout.
+//! Also the version `--version` prints: the crate version, plus
+//! `+<GANYMEDE_VERSION_BUILD>` when that is set, which release.yml does
+//! for main builds (`0.5.0+main.<commit>`).
 
 use std::process::Command;
 
@@ -25,6 +28,14 @@ fn main() {
         .or_else(|| git(&["rev-parse", "--short=12", "HEAD"]))
         .unwrap_or_default();
     println!("cargo:rustc-env=GANYMEDE_BUILD_COMMIT={commit}");
+    let mut version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
+    if let Some(build) = std::env::var("GANYMEDE_VERSION_BUILD")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        version = format!("{version}+{build}");
+    }
+    println!("cargo:rustc-env=GANYMEDE_VERSION={version}");
     // Rebuild when HEAD moves, not only when this crate's files change.
     if let Some(head) = git(&["rev-parse", "--path-format=absolute", "--git-path", "HEAD"]) {
         println!("cargo:rerun-if-changed={head}");
@@ -35,4 +46,5 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=GANYMEDE_BUILD_COMMIT");
+    println!("cargo:rerun-if-env-changed=GANYMEDE_VERSION_BUILD");
 }

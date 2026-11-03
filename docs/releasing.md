@@ -50,6 +50,22 @@ curl -fsSL https://ganymede-server.com/install.sh | sh -s -- --version X.Y.Z --n
 docker run --rm ghcr.io/tlockney/ganymede:X.Y.Z ganymede --version
 ```
 
+## Main builds
+
+Besides releases, `release.yml` runs on every push to `main` that
+changes more than docs, and on a manual run on `main`. It builds the
+same five targets with `GANYMEDE_VERSION_BUILD=main.<commit>`, so
+`ganymede --version` prints `X.Y.Z+main.<commit>`, packages them as
+`ganymede-main-<target>`, attests them, and replaces the assets of the
+`main-build` prerelease, which `install.sh --main` installs. A newer push
+cancels a main build in progress. Being a prerelease, `main-build` is
+never the "latest" release that the plain install fetches. The job moves
+the `main-build` tag to the commit when GitHub lets the workflow token do
+so; when it can't (a ref update across commits that change workflow
+files), the tag lags and the run warns, but the assets, notes, and
+attestation still name the right commit. A failed main build changes
+nothing; the next push or a manual run on `main` replaces it.
+
 ## When it fails
 
 Find the failed `release.yml` run under the tag in the Actions tab. The

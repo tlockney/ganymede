@@ -41,6 +41,21 @@ chmod 755 "$work/$name/ganymede"
 		shasum -a 256 "$name.tar.gz" >"$name.tar.gz.sha256"
 	fi
 )
+# A main build, as release.yml publishes it to the main-build prerelease.
+main=ganymede-main-$target
+mkdir -p "$work/dl/main-build" "$work/$main"
+printf '#!/bin/sh\necho "ganymede %s+main.0123456789ab"\n' "$version" >"$work/$main/ganymede"
+chmod 755 "$work/$main/ganymede"
+(
+	cd "$work"
+	tar -czf "dl/main-build/$main.tar.gz" "$main"
+	cd dl/main-build
+	if command -v sha256sum >/dev/null; then
+		sha256sum "$main.tar.gz" >"$main.tar.gz.sha256"
+	else
+		shasum -a 256 "$main.tar.gz" >"$main.tar.gz.sha256"
+	fi
+)
 export GANYMEDE_DOWNLOAD_BASE="file://$work/dl"
 
 fail() {
@@ -58,6 +73,16 @@ echo "$out" | grep -q "is not on your PATH" || fail "PATH hint"
 "$sh" -s -- --version="$version" --bin-dir="$work/bin2" --no-kernel <"$script" >/dev/null ||
 	fail "piped install"
 [ -x "$work/bin2/ganymede" ] || fail "piped install binary"
+
+# --main installs the main build, and says it isn't a release.
+out=$("$sh" "$script" --main --bin-dir "$work/binm" --no-kernel)
+echo "$out"
+[ "$("$work/binm/ganymede" --version)" = "ganymede $version+main.0123456789ab" ] || fail "main build binary"
+echo "$out" | grep -q "build of main, not a release" || fail "main build note"
+if "$sh" "$script" --main --version "$version" --bin-dir "$work/binm2" --no-kernel 2>"$work/err"; then
+	fail "accepted --main with --version"
+fi
+grep -q "not both" "$work/err" || fail "--main --version message: $(cat "$work/err")"
 
 # Without Node 24 the kernel step is skipped with instructions, not an error.
 PATH=/nonexistent:/usr/bin:/bin "$sh" "$script" --version "$version" --bin-dir "$work/bin5" >"$work/out" 2>&1 ||
@@ -134,6 +159,12 @@ if "$sh" "$script" --version "$version" --bin-dir "$work/bin3" --no-kernel 2>"$w
 fi
 grep -q "checksum mismatch" "$work/err" || fail "checksum message: $(cat "$work/err")"
 [ ! -e "$work/bin3/ganymede" ] || fail "installed despite a bad checksum"
+
+printf 'x' >>"$work/dl/main-build/$main.tar.gz"
+if "$sh" "$script" --main --bin-dir "$work/binm3" --no-kernel 2>"$work/err"; then
+	fail "accepted a bad main-build checksum"
+fi
+grep -q "may be uploading" "$work/err" || fail "main-build checksum message: $(cat "$work/err")"
 
 # A missing release fails with the URL.
 if "$sh" "$script" --version 0.0.0 --bin-dir "$work/bin4" --no-kernel 2>"$work/err"; then

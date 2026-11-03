@@ -342,6 +342,7 @@ Options go after `sh -s --`:
 | Option | Effect |
 | --- | --- |
 | `--version X.Y.Z` | Install that release instead of the latest. |
+| `--main` | Install the latest build of `main` instead of a release (unreleased; see [Latest main build](#latest-main-build)). |
 | `--bin-dir DIR` | Install into `DIR` instead of `~/.local/bin`. |
 | `--no-kernel` | Skip cdp-kernel. |
 | `--runtime NAME` | cdp-kernel's target runtime: `node` (default), `deno`, `bun`, `workerd`, or `celld`. |
@@ -354,6 +355,33 @@ If the cdp-kernel step fails, the script says so and still exits 0, since
 `ganymede` is installed. The script is
 [`site/install.sh`](../site/install.sh); it needs only `sh`, `curl` or
 `wget`, `tar`, and `sha256sum` or `shasum`.
+
+### Latest main build
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+To try a change that isn't released yet without building from source,
+install the latest build of `main` with `--main`:
+
+```sh
+curl -fsSL https://ganymede-server.com/install.sh | sh -s -- --main
+```
+
+Every push to `main` that changes code builds the release targets and
+replaces the files of the
+[`main-build`](https://github.com/tlockney/ganymede/releases/tag/main-build)
+prerelease. Its `ganymede --version` names the commit, such as
+`ganymede 0.5.0+main.0123456789ab`. The archives are named
+`ganymede-main-<target>` and carry checksums and a build provenance
+attestation like a release's ([Verify a download](#verify-a-download)).
+It installs only `ganymede` (and cdp-kernel's latest release, as
+usual), not the apps. Run the plain install command to go back to the
+latest release.
+
+A main build is untested beyond CI. If the download fails its checksum
+while a new build is uploading, run the command again.
 
 ### By hand
 
