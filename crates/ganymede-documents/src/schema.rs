@@ -388,6 +388,54 @@ pub fn set_outputs(txn: &mut TransactionMut, ycell: &MapRef, outputs: Vec<Value>
     }
 }
 
+/// Append `outputs` to a code cell's outputs, as a frontend shows them
+/// while a cell runs: a stream that follows a stream of the same name is
+/// appended to its text. Costs what it adds, not what the cell already
+/// shows, so a kernel printing line by line stays linear.
+pub fn append_outputs(txn: &mut TransactionMut, ycell: &MapRef, outputs: Vec<Value>) {
+    let youtputs = match ycell.get(txn, "outputs") {
+        Some(Out::YArray(a)) => a,
+        _ => ycell.insert(txn, "outputs", ArrayPrelim::default()),
+    };
+    for output in outputs {
+        let len = youtputs.len(txn);
+        if let (Some(text), Some(last)) = (output_text(&output), len.checked_sub(1)) {
+            if let Some(Out::YMap(old)) = youtputs.get(txn, last) {
+                if let Some(ytext) = stream_text(txn, &old, &output) {
+                    let at = ytext.len(txn);
+                    ytext.insert(txn, at, text);
+                    continue;
+                }
+            }
+        }
+        insert_output(txn, &youtputs, len, output);
+    }
+}
+
+/// A stream output's text.
+fn output_text(output: &Value) -> Option<&str> {
+    (output.get("output_type")?.as_str()? == "stream")
+        .then(|| output.get("text")?.as_str())
+        .flatten()
+}
+
+/// The text of `old` when it is a stream with `new`'s name and its text is
+/// a shared string, so `new` can be appended to it. Reads only the keys it
+/// compares, not the text.
+fn stream_text<T: ReadTxn>(txn: &T, old: &MapRef, new: &Value) -> Option<TextRef> {
+    let key = |k: &str| match old.get(txn, k) {
+        Some(Out::Any(Any::String(s))) => Some(s.to_string()),
+        _ => None,
+    };
+    if key("output_type")? != "stream" || key("name").as_deref() != new.get("name")?.as_str() {
+        return None;
+    }
+    match old.get(txn, "text") {
+        Some(Out::YText(t)) => Some(t),
+        _ => None,
+    }
+}
+
 /// The text `new` adds to the stream `old`, when `new` is `old` with more
 /// text and nothing else changed.
 fn stream_growth<T: ReadTxn>(txn: &T, old: &MapRef, new: &Value) -> Option<String> {

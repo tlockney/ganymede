@@ -2864,6 +2864,181 @@ async fn execute_endpoint_runs_cells_into_the_document() {
     );
 }
 
+/// A progress-style cell (clear with wait, then print) updates a
+/// connected client live, before the cell finishes.
+#[tokio::test]
+async fn execute_clear_wait_updates_live() {
+    use ganymede_documents::schema::Roots;
+    use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
+    use ganymede_documents::yrs::updates::decoder::Decode;
+    use ganymede_documents::yrs::updates::encoder::Encode;
+    use ganymede_documents::yrs::{Array, Doc, Map, Out, ReadTxn, Transact, Update};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+
+    let dir = tempfile::tempdir().unwrap();
+    let nb = json!({
+        "cells": [{"cell_type": "code", "execution_count": null, "id": "p", "metadata": {},
+                   "outputs": [], "source": "progress"}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5
+    });
+    std::fs::write(dir.path().join("p.ipynb"), nb.to_string()).unwrap();
+    let app = build_router(state(dir.path()));
+    let (_, kernel) = call(&app, "POST", "/api/kernels", Some(json!({})), Some(TOKEN)).await;
+    let kid = kernel["id"].as_str().unwrap().to_string();
+    let (_, session) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/p.ipynb",
+        Some(json!({"format": "json", "type": "notebook"})),
+        Some(TOKEN),
+    )
+    .await;
+    let file_id = session["fileId"].as_str().unwrap().to_string();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app2 = app.clone();
+    tokio::spawn(async move { axum::serve(listener, app2).await.unwrap() });
+    let mut req = format!(
+        "ws://{addr}/api/collaboration/room/json:notebook:{file_id}?sessionId={}",
+        session["sessionId"].as_str().unwrap()
+    )
+    .into_client_request()
+    .unwrap();
+    req.headers_mut()
+        .insert("Authorization", format!("token {TOKEN}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let doc = Doc::new();
+    let sv = doc.transact().state_vector();
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::SyncStep1(sv)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+
+    // The cell's outputs as JSON, and whether it is still running.
+    let seen = |doc: &Doc| -> (Value, bool) {
+        let roots = Roots::get(doc);
+        let txn = doc.transact();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+            return (Value::Null, false);
+        };
+        let outputs = cell
+            .get(&txn, "outputs")
+            .map(|o| ganymede_documents::schema::out_to_json(&txn, &o))
+            .unwrap_or(Value::Null);
+        let running = matches!(
+            cell.get(&txn, "execution_state"),
+            Some(Out::Any(ganymede_documents::yrs::Any::String(s))) if &*s == "running"
+        );
+        (outputs, running)
+    };
+    let mut ran = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let (outputs, running) = seen(&doc);
+        if running && outputs.as_array().map(Vec::len) == Some(1) && outputs[0]["text"] == "2\n" {
+            break;
+        }
+        if !ran && Roots::get(&doc).cells.len(&doc.transact()) > 0 {
+            // Synced: run the cell.
+            let hash = ganymede_documents::murmur2(b"progress", 0).to_string();
+            let (s, _) = call(
+                &app,
+                "POST",
+                &format!("/api/kernels/{kid}/execute"),
+                Some(json!({"document_id": format!("json:notebook:{file_id}"),
+                    "cells": [{"cell_id": "p", "source_hash": hash}]})),
+                Some(TOKEN),
+            )
+            .await;
+            assert_eq!(s, StatusCode::OK);
+            ran = true;
+        }
+        let msg = tokio::time::timeout_at(deadline, ws.next())
+            .await
+            .unwrap_or_else(|_| panic!("no live progress: {:?}", seen(&doc)))
+            .unwrap()
+            .unwrap();
+        let TMsg::Binary(b) = msg else { continue };
+        match YMsg::decode_v1(&b) {
+            Ok(YMsg::Sync(SyncMessage::SyncStep1(sv))) => {
+                let u = doc.transact().encode_state_as_update_v1(&sv);
+                ws.send(TMsg::Binary(
+                    YMsg::Sync(SyncMessage::SyncStep2(u)).encode_v1().into(),
+                ))
+                .await
+                .unwrap();
+            }
+            Ok(YMsg::Sync(SyncMessage::SyncStep2(u) | SyncMessage::Update(u))) => {
+                doc.transact_mut()
+                    .apply_update(Update::decode_v1(&u).unwrap())
+                    .unwrap();
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A cell that prints many lines, one message each, ends with one stream
+/// holding all of them, live updates and the final outputs agreeing.
+#[tokio::test]
+async fn execute_many_stream_messages_into_one_output() {
+    const LINES: usize = 5_000;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("many.ipynb");
+    let src = format!("lines {LINES}");
+    let nb = json!({
+        "cells": [{"cell_type": "code", "execution_count": null, "id": "a", "metadata": {},
+                   "outputs": [], "source": src}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5
+    });
+    std::fs::write(&file, serde_json::to_string_pretty(&nb).unwrap()).unwrap();
+    let app = build_router(state(dir.path()));
+    let (_, kernel) = call(&app, "POST", "/api/kernels", Some(json!({})), Some(TOKEN)).await;
+    let kid = kernel["id"].as_str().unwrap().to_string();
+    let (_, session) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/many.ipynb",
+        Some(json!({"format": "json", "type": "notebook"})),
+        Some(TOKEN),
+    )
+    .await;
+    let doc = format!("json:notebook:{}", session["fileId"].as_str().unwrap());
+    let hash = ganymede_documents::murmur2(src.as_bytes(), 0).to_string();
+    let started = std::time::Instant::now();
+    let (s, _) = call(
+        &app,
+        "POST",
+        &format!("/api/kernels/{kid}/execute"),
+        Some(json!({"document_id": doc, "cells": [{"cell_id": "a", "source_hash": hash}]})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let saved = loop {
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        if v["cells"][0]["execution_count"].is_number() {
+            break v;
+        }
+        assert!(std::time::Instant::now() < deadline, "not run");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    eprintln!("{LINES} lines in {:?}", started.elapsed());
+    let outputs = saved["cells"][0]["outputs"].as_array().unwrap();
+    assert_eq!(outputs.len(), 1);
+    let text: String = outputs[0]["text"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l.as_str().unwrap())
+        .collect();
+    assert_eq!(text.lines().count(), LINES);
+    assert!(text.ends_with(&format!("line {}\n", LINES - 1)));
+}
+
 /// A display update reaches the cell that shows the display, and only
 /// while it still does: not after the cell ran again.
 #[tokio::test]

@@ -4,7 +4,9 @@
 //!
 //! Cells: `sleep <ms>` (interruptible), `raise`, `input`, `die` (the
 //! process vanishes, nothing replies), `exit` (prints, then vanishes
-//! mid-cell), `display` (display, update, clear, stream), `comm` (opens
+//! mid-cell), `display` (display, update, clear, stream), `lines <n>`
+//! (prints n lines, one stream message each), `progress` (clear with wait
+//! and print, three times, then holds 1.5 s), `comm` (opens
 //! a comm from the kernel side); anything else is echoed. Comms: target
 //! `echo` sends every message back with its buffers; any other target is
 //! closed at once, as ipykernel does. After an error with
@@ -400,6 +402,19 @@ impl FakeKernel {
             self.comms.insert(id.clone(), "fake.target".into());
             let open = serde_json::json!({"comm_id": id, "target_name": "fake.target", "data": {}});
             self.iopub(msg, "comm_open", &open).await;
+        } else if code == "progress" {
+            // A progress bar: clear (wait) and print, three times, then
+            // hold the cell open for a while.
+            for i in 0..3 {
+                self.iopub(msg, "clear_output", &serde_json::json!({"wait": true}))
+                    .await;
+                self.stream(msg, &format!("{i}\n")).await;
+            }
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+        } else if let Some(n) = code.strip_prefix("lines ") {
+            for i in 0..n.parse::<usize>().unwrap_or(0) {
+                self.stream(msg, &format!("line {i}\n")).await;
+            }
         } else if code == "raise" {
             status = ReplyStatus::Error;
             error = Some(("FakeError", "raised"));

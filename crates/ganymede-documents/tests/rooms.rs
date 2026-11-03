@@ -502,3 +502,61 @@ fn set_outputs_appends_to_a_growing_stream() {
     };
     assert!(c.outputs.is_empty());
 }
+
+/// `append_outputs` merges a stream into the stream before it, keeps
+/// other outputs separate, and its cost doesn't grow with what the cell
+/// already shows.
+#[test]
+fn append_outputs_merges_streams_and_stays_small() {
+    let nb = Notebook::from_str(&fixture("code_outputs.ipynb")).unwrap();
+    let mut room = Room::notebook_room(&nb, "x.ipynb");
+    let client = client_of(&room);
+    let id = nb.cells[1].id().unwrap().to_string();
+    let out = |name: &str, text: &str| serde_json::json!({"name": name, "output_type": "stream", "text": text});
+    let edit = |room: &mut Room, outputs: Vec<serde_json::Value>| {
+        let (_, fx) = room.edit(|txn, roots| {
+            let cell = schema::find_cell(txn, roots, &id).unwrap();
+            schema::append_outputs(txn, &cell, outputs);
+        });
+        for (_, f) in &fx.send {
+            apply_frame(&client, f);
+        }
+        fx.send.iter().map(|(_, f)| f.len()).sum::<usize>()
+    };
+    let (_, fx) = room.edit(|txn, roots| {
+        let cell = schema::find_cell(txn, roots, &id).unwrap();
+        schema::set_outputs(txn, &cell, vec![]);
+    });
+    for (_, f) in &fx.send {
+        apply_frame(&client, f);
+    }
+    let big = "x".repeat(50_000);
+    edit(&mut room, vec![out("stdout", &big)]);
+    // A line appended to a long stream sends about a line.
+    let sent = edit(&mut room, vec![out("stdout", "tail\n")]);
+    assert!(sent < 200, "sent {sent} bytes");
+    let result = serde_json::json!({"data": {"text/plain": "2"}, "execution_count": 1,
+        "metadata": {}, "output_type": "execute_result"});
+    edit(
+        &mut room,
+        vec![
+            out("stderr", "warn\n"),
+            out("stderr", "more\n"),
+            result,
+            out("stdout", "after\n"),
+        ],
+    );
+
+    let roots = Roots::get(&client);
+    let seen = schema::get(&client.transact(), &roots).unwrap();
+    let ganymede_nbformat::Cell::Code(c) = &seen.cells[1] else {
+        panic!()
+    };
+    let v = serde_json::to_value(&c.outputs).unwrap();
+    assert_eq!(c.outputs.len(), 4, "{v}");
+    assert_eq!(v[0]["text"], format!("{big}tail\n"));
+    assert_eq!(v[1]["name"], "stderr");
+    assert_eq!(v[1]["text"], "warn\nmore\n");
+    assert_eq!(v[2]["output_type"], "execute_result");
+    assert_eq!(v[3]["text"], "after\n");
+}
