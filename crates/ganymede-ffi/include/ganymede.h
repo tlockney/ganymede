@@ -9,7 +9,8 @@ extern "C" {
 
 typedef struct GanymedeServer GanymedeServer;
 
-/* Starts a server on loopback and returns once it listens. config_json is
+/* Starts a server on loopback and returns once it listens, or after 30
+ * seconds with an error if it has not. config_json is
  * a JSON object with ganymede.toml's keys, or NULL. Returns NULL on
  * failure and sets *error_out (if error_out is not NULL) to a message to
  * free with ganymede_string_free. */

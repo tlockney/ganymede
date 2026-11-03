@@ -17,6 +17,7 @@
 use std::ffi::{c_char, CStr, CString};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use ganymede_api::StaticKernelspecs;
@@ -40,6 +41,9 @@ pub struct GanymedeServer {
 /// for the defaults. `port` defaults to 0 here, so the OS picks a free
 /// one; `ip` defaults to `127.0.0.1` and `token` to a random one, as in
 /// `ganymede serve`.
+///
+/// Gives up after [`START_TIMEOUT`] if the server has not listened by
+/// then, and asks it to stop when it does.
 ///
 /// Returns NULL on failure, and then, if `error_out` is not NULL, sets
 /// `*error_out` to a message to free with [`ganymede_string_free`].
@@ -217,7 +221,7 @@ fn start(json: Option<&str>) -> anyhow::Result<GanymedeServer> {
                 let _ = url_tx.send(Err(e));
             }
         })?;
-    match url_rx.recv() {
+    match wait_for_url(&url_rx, START_TIMEOUT) {
         Ok(Ok(url)) => Ok(GanymedeServer {
             url: CString::new(url)?,
             stop: stop_tx,
@@ -227,16 +231,60 @@ fn start(json: Option<&str>) -> anyhow::Result<GanymedeServer> {
             let _ = thread.join();
             Err(e)
         }
-        Err(_) => {
+        Err(Waited::Exited) => {
             let _ = thread.join();
             anyhow::bail!("the server thread exited before listening")
+        }
+        Err(Waited::TimedOut) => {
+            // The thread is stuck before it listens, so it can't be
+            // joined. The stop message waits in the channel: should the
+            // server listen after all, it stops at once.
+            let _ = stop_tx.try_send(());
+            tracing::error!("the server did not listen within {START_TIMEOUT:?}");
+            anyhow::bail!(
+                "the server did not start listening within {} seconds",
+                START_TIMEOUT.as_secs()
+            )
         }
     }
 }
 
+/// How long [`ganymede_server_start`] waits for the server to listen.
+/// It reads the root dir, opens its databases and binds a port first,
+/// which takes well under a second unless something is stuck.
+pub const START_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Why no URL came.
+#[derive(Debug, PartialEq)]
+enum Waited {
+    Exited,
+    TimedOut,
+}
+
+/// The server thread's first report, within `timeout`.
+fn wait_for_url<T>(rx: &mpsc::Receiver<T>, timeout: Duration) -> Result<T, Waited> {
+    rx.recv_timeout(timeout).map_err(|e| match e {
+        mpsc::RecvTimeoutError::Timeout => Waited::TimedOut,
+        mpsc::RecvTimeoutError::Disconnected => Waited::Exited,
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{config, startup};
+    use super::{config, startup, wait_for_url, Waited};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn start_gives_up() {
+        let (tx, rx) = mpsc::channel::<()>();
+        let short = Duration::from_millis(10);
+        assert_eq!(wait_for_url(&rx, short), Err(Waited::TimedOut));
+        tx.send(()).unwrap();
+        assert_eq!(wait_for_url(&rx, short), Ok(()));
+        drop(tx);
+        assert_eq!(wait_for_url(&rx, short), Err(Waited::Exited));
+    }
 
     #[test]
     fn port_defaults_to_any() {
