@@ -99,27 +99,43 @@ fn fingerprint(cell: &Cell) -> u64 {
     h.finish()
 }
 
+/// What the reader's own edit changed about a cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Aspect {
+    /// The cell came or went (`cell_add`, `cell_run`, `cell_delete`).
+    All,
+    /// Its source (`cell_edit`).
+    Source,
+    /// Its place (`cell_move`).
+    Place,
+}
+
 /// Take the reader's own change to cell `id` into `mark`, so it isn't
-/// reported as someone else's: the cell's entry becomes what `now` has
-/// (gone when `now` has no such cell), placed after the nearest cell
-/// before it in `now` that the mark also has. With `place_only` (the
-/// reader moved the cell), a cell the mark had keeps its fingerprint, so
-/// someone else's edit to it is still reported.
-pub fn adopt(mark: &mut Vec<(String, u64)>, now: &[(String, u64)], id: &str, place_only: bool) {
-    let old = mark.iter().find(|(i, _)| i == id).map(|(_, f)| *f);
-    mark.retain(|(i, _)| i != id);
+/// reported as someone else's. Only the `aspect` the reader changed is
+/// taken from `now`; the rest of the mark's entry stays, so someone
+/// else's change to the other aspect is still reported. A cell `now`
+/// lacks leaves the mark; a cell the mark lacks comes in whole, after
+/// the nearest cell before it in `now` that the mark also has.
+pub fn adopt(mark: &mut Vec<(String, u64)>, now: &[(String, u64)], id: &str, aspect: Aspect) {
     let Some(at) = now.iter().position(|(i, _)| i == id) else {
+        mark.retain(|(i, _)| i != id);
         return;
     };
+    let had = mark.iter().position(|(i, _)| i == id);
+    if let (Aspect::Source, Some(h)) = (aspect, had) {
+        mark[h].1 = now[at].1;
+        return;
+    }
+    let fp = match (aspect, had) {
+        (Aspect::Place, Some(h)) => mark[h].1,
+        _ => now[at].1,
+    };
+    mark.retain(|(i, _)| i != id);
     let index = now[..at]
         .iter()
         .rev()
         .find_map(|(prev, _)| mark.iter().position(|(i, _)| i == prev))
         .map_or(0, |p| p + 1);
-    let fp = match (place_only, old) {
-        (true, Some(f)) => f,
-        _ => now[at].1,
-    };
     mark.insert(index, (id.to_string(), fp));
 }
 
@@ -250,7 +266,7 @@ mod tests {
         // The reader added x after a; someone else added y at the end and
         // edited b.
         let now = cells(&[("a", 1), ("x", 7), ("b", 9), ("y", 8)]);
-        adopt(&mut mark, &now, "x", false);
+        adopt(&mut mark, &now, "x", Aspect::All);
         assert_eq!(mark, cells(&[("a", 1), ("x", 7), ("b", 2)]));
         let c = diff(&mark, &now);
         assert_eq!(c.added, ids(&["y"]));
@@ -258,16 +274,24 @@ mod tests {
         assert!(c.moved.is_empty() && c.deleted.is_empty());
         // The reader deleted a, and moved b to the top.
         let now = cells(&[("b", 2), ("x", 7)]);
-        adopt(&mut mark, &now, "a", false);
-        adopt(&mut mark, &now, "b", true);
+        adopt(&mut mark, &now, "a", Aspect::All);
+        adopt(&mut mark, &now, "b", Aspect::Place);
         assert_eq!(mark, cells(&[("b", 2), ("x", 7)]));
         assert!(diff(&mark, &now).is_empty());
         // Someone else edited x, then the reader moved it: still an edit.
         let now = cells(&[("x", 9), ("b", 2)]);
-        adopt(&mut mark, &now, "x", true);
+        adopt(&mut mark, &now, "x", Aspect::Place);
         let c = diff(&mark, &now);
         assert_eq!(c.edited, ids(&["x"]));
         assert!(c.moved.is_empty());
+        // Someone else moved b to the end; the reader edited x: the move
+        // is still reported, and the edit isn't.
+        let mut mark = cells(&[("a", 1), ("b", 2), ("x", 3)]);
+        let now = cells(&[("a", 1), ("x", 4), ("b", 2)]);
+        adopt(&mut mark, &now, "x", Aspect::Source);
+        let c = diff(&mark, &now);
+        assert!(c.edited.is_empty());
+        assert_eq!(c.moved.len(), 1);
     }
 
     #[test]

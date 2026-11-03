@@ -4202,3 +4202,63 @@ async fn mcp_read_since_lists_changes_by_others() {
     assert!(out.starts_with("Read mark"), "{out}");
     assert_ne!(read_mark(&out), mark, "k.ipynb has its own mark");
 }
+
+/// A mark read from a new session (as after `ganymede mcp` reconnects)
+/// becomes that session's: its edits move it. A failed edit moves
+/// nothing, so someone else's change to that cell is still reported
+/// (#313).
+#[tokio::test]
+async fn mcp_read_mark_follows_a_new_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let nb = json!({"cells": [
+        {"cell_type": "markdown", "id": "a", "metadata": {}, "source": "A"},
+        {"cell_type": "markdown", "id": "b", "metadata": {}, "source": "B"}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.path().join("n.ipynb"), nb.to_string()).unwrap();
+    let app = mcp_app(dir.path());
+    let first = mcp_connect(&app, "agent").await;
+    let out = mcp_text(&mcp_tool(&app, &first, "notebook_read", json!({"path": "n.ipynb"})).await);
+    let mark = read_mark(&out);
+
+    // A new session reads with the mark and no path, then edits.
+    let agent = mcp_connect(&app, "agent").await;
+    let since = |sid: String| {
+        let (app, mark) = (app.clone(), mark.clone());
+        async move { mcp_text(&mcp_tool(&app, &sid, "notebook_read", json!({"since": mark})).await) }
+    };
+    let out = since(agent.clone()).await;
+    assert!(out.starts_with("No changes by others"), "{out}");
+    mcp_text(
+        &mcp_tool(
+            &app,
+            &agent,
+            "cell_add",
+            json!({"path": "n.ipynb", "source": "mine"}),
+        )
+        .await,
+    );
+    let out = since(agent.clone()).await;
+    assert!(out.starts_with("No changes by others"), "{out}");
+
+    // A person deletes b; the agent's edit of b fails and hides nothing.
+    let person = mcp_connect(&app, "person").await;
+    mcp_text(
+        &mcp_tool(
+            &app,
+            &person,
+            "cell_delete",
+            json!({"path": "n.ipynb", "id": "b"}),
+        )
+        .await,
+    );
+    let v = mcp_tool(
+        &app,
+        &agent,
+        "cell_edit",
+        json!({"path": "n.ipynb", "id": "b", "source": "B2"}),
+    )
+    .await;
+    assert!(v.to_string().contains("no cell b"), "{v}");
+    let out = since(agent).await;
+    assert!(out.contains(r#"@@deleted {"id":"b"}"#), "{out}");
+}
