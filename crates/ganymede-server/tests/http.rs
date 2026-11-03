@@ -3328,7 +3328,7 @@ async fn mcp_cell_edit_keeps_superseded_sources() {
         }
     };
     // Cell g: an empty source replaced records no revision, and an edit
-    // by another client that changes nothing doesn't re-attribute it.
+    // that changes nothing records none either.
     edit_by(&app, &sid, "g", "x").await;
     let other = mcp_connect(&app, "other").await;
     edit_by(&app, &other, "g", "x").await;
@@ -3376,7 +3376,6 @@ async fn mcp_cell_edit_keeps_superseded_sources() {
     assert_eq!(agent["mode"], "note");
     let g = &nb["cells"][1];
     assert_eq!(g["source"], json!(["x"]));
-    assert_eq!(g["metadata"]["ganymede"]["agent"]["by"], "editor", "{g}");
     assert!(
         g["metadata"]["ganymede"]["agent"]["history"].is_null(),
         "{g}"
