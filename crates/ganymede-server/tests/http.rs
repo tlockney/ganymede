@@ -3476,6 +3476,102 @@ async fn mcp_cell_ids_outlive_an_idle_room() {
     assert_eq!(read, again, "same ids after the room sat idle");
 }
 
+/// cell_edit keeps the sources it replaced, bounded, and a no-op edit
+/// adds none.
+#[tokio::test]
+async fn mcp_cell_edit_keeps_superseded_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    let nb = json!({"cells": [
+        {"cell_type": "markdown", "id": "f", "metadata": {}, "source": "v0"},
+        {"cell_type": "markdown", "id": "g", "metadata": {}, "source": ""}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.path().join("h.ipynb"), nb.to_string()).unwrap();
+    let app = mcp_app(dir.path());
+    let sid = mcp_connect(&app, "editor").await;
+    let edit = |src: String| {
+        let (app, sid) = (app.clone(), sid.clone());
+        async move {
+            mcp_text(
+                &mcp_tool(
+                    &app,
+                    &sid,
+                    "cell_edit",
+                    json!({"path": "h.ipynb", "id": "f", "source": src}),
+                )
+                .await,
+            )
+        }
+    };
+    // Cell g: an empty source replaced records no revision, and an edit
+    // that changes nothing records none either.
+    edit_by(&app, &sid, "g", "x").await;
+    let other = mcp_connect(&app, "other").await;
+    edit_by(&app, &other, "g", "x").await;
+    // v0 -> v1 ... v12, an edit that changes nothing, then v13. Waiting
+    // for v13 on disk means the no-op edit is in the saved file too.
+    for n in 1..=12 {
+        let out = edit(format!("v{n}")).await;
+        assert_eq!(out, "Edited cell f");
+    }
+    edit("v12".into()).await;
+    edit("v13".into()).await;
+
+    let file = dir.path().join("h.ipynb");
+    let nb = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(s) = std::fs::read_to_string(&file) {
+                let nb: Value = serde_json::from_str(&s).unwrap();
+                if nb["cells"][0]["source"] == json!(["v13"]) {
+                    return (s, nb);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("edits saved");
+    let (raw, nb) = nb;
+    let agent = &nb["cells"][0]["metadata"]["ganymede"]["agent"];
+    let history = agent["history"].as_array().expect("history");
+    // Thirteen replaced sources, the last ten kept; the no-op edit adds
+    // none (no second v12).
+    let sources: Vec<&str> = history
+        .iter()
+        .map(|h| h["source"].as_str().unwrap())
+        .collect();
+    let limit = ganymede_server::mcp::HISTORY_LIMIT;
+    let want: Vec<String> = (13 - limit..13).map(|n| format!("v{n}")).collect();
+    assert_eq!(sources, want);
+    assert_eq!(history.len(), ganymede_server::mcp::HISTORY_LIMIT);
+    for h in history {
+        assert_eq!(h["by"], "editor", "{h}");
+        assert!(h["at"].is_string(), "{h}");
+    }
+    // A person's cell edited by an agent becomes an agent note.
+    assert_eq!(agent["mode"], "note");
+    let g = &nb["cells"][1];
+    assert_eq!(g["source"], json!(["x"]));
+    assert!(
+        g["metadata"]["ganymede"]["agent"]["history"].is_null(),
+        "{g}"
+    );
+    // The file still reads as nbformat 4.
+    ganymede_nbformat::Notebook::from_str(&raw).expect("valid notebook");
+}
+
+async fn edit_by(app: &axum::Router, sid: &str, id: &str, src: &str) {
+    let out = mcp_text(
+        &mcp_tool(
+            app,
+            sid,
+            "cell_edit",
+            json!({"path": "h.ipynb", "id": id, "source": src}),
+        )
+        .await,
+    );
+    assert_eq!(out, format!("Edited cell {id}"));
+}
+
 /// cell_move checks `after` before it touches the cell, and moves both
 /// ways; resource URIs name the same room as the tools' paths.
 #[tokio::test]

@@ -47,7 +47,7 @@ a URL instead of starting a command.
 | `notebook_read` | The notebook as text: cells with ids, sources and outputs. A notebook in nbformat 4.4 or older has no cell ids on disk; the server makes them up when it opens the notebook, and they stay the same while the MCP session lasts. A session ends after an hour without a request, or when the server stops; after that, read the notebook again for new ids. `ganymede mcp` starts a new session by itself. A new session has no notebook open either, so open or read the notebook again, with its `path`, before calls that leave `path` out. |
 | `cell_run` | Run code and return its outputs. Recorded as a new code cell by default; `record: false` runs it as scratch work that leaves nothing in the notebook but shares the kernel's state. |
 | `cell_add` | Add a Markdown note; `mode: recorded` records a step that ran outside the kernel, such as a shell command. |
-| `cell_edit` | Replace a cell's source; `run: true` runs it after. |
+| `cell_edit` | Replace a cell's source, keeping the replaced text in the cell's history; `run: true` runs it after. |
 | `cell_delete`, `cell_move` | Delete a cell, or move it after another. |
 | `kernel_control` | Interrupt, restart, or shut down the kernel. |
 | `notebook_run_all` | Restart the kernel and run every code cell in order. |
@@ -85,6 +85,20 @@ ipykernel, a scratch result still sets `_`, and `Out[N]`/`_N` for the
 next recorded cell's number N, which keeps the scratch value if that
 cell has no result. A function a scratch run defines shows as
 `Cell In[N]` in tracebacks.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+When `cell_edit` changes a cell's source, the source it replaced is kept
+in `metadata.ganymede.agent.history`, oldest first, as
+`{"source": "<old text>", "by": "<client name>", "at": "<time>"}`: the
+replaced text, who replaced it and when. A cell keeps the last 10; an
+edit that leaves the source as it was adds none. So a finding the agent
+revised in place still shows what it said before, and a UI can show the
+revisions. The replaced text is saved in the `.ipynb`: editing a secret
+out of a cell with `cell_edit` leaves it in `history` until the metadata
+is cleared.
 
 ## Options
 
