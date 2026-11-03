@@ -25,9 +25,12 @@
 //! - a request about a document (hover, completion, rename, ...) from a
 //!   client whose text the server doesn't have is preceded by that
 //!   client's full text, so the answer's positions fit the requester.
-//!   Requests that name no `textDocument` (`completionItem/resolve`,
-//!   `codeAction/resolve`, call and type hierarchy) go as they are, so
-//!   they are answered against whichever text the server has.
+//!   A request that follows up on an earlier answer and names no
+//!   `textDocument` (`completionItem/resolve`, `codeAction/resolve`, and
+//!   the other `*/resolve` methods in [`FOLLOW_UPS`]) is treated as one
+//!   about the document the client's last request named; a call or type
+//!   hierarchy request, about the document its `item` names. Other
+//!   requests that name no document (`workspace/symbol`) go as they are.
 //!
 //! Tabs that share edits (collaboration) converge, so the server gets
 //! each edit once. Tabs that don't send different texts: the server has
@@ -83,6 +86,28 @@ pub(crate) enum Relay {
     Drop,
 }
 
+/// Requests that name no `textDocument` but follow up on an answer about
+/// one: resolving a completion item, code action, code lens, inlay hint or
+/// document link, and walking a call or type hierarchy.
+const FOLLOW_UPS: &[&str] = &[
+    "completionItem/resolve",
+    "codeAction/resolve",
+    "codeLens/resolve",
+    "inlayHint/resolve",
+    "documentLink/resolve",
+    "callHierarchy/incomingCalls",
+    "callHierarchy/outgoingCalls",
+    "typeHierarchy/supertypes",
+    "typeHierarchy/subtypes",
+];
+
+/// Whether `message` (unparsed) may be a request `before_request` acts
+/// on: a cheap test, so other messages aren't parsed.
+pub(crate) fn may_name_document(message: &str) -> bool {
+    message.contains("\"id\"")
+        && (message.contains("\"textDocument\"") || FOLLOW_UPS.iter().any(|m| message.contains(m)))
+}
+
 struct Doc {
     /// The text and version the server has.
     text: String,
@@ -100,6 +125,9 @@ pub(crate) struct Documents {
     docs: HashMap<String, Doc>,
     /// Counts opens and changes, to order clients' writes.
     clock: u64,
+    /// The document each client's last request named, for the follow-ups
+    /// that don't name one.
+    named: HashMap<u64, String>,
     /// What the server's positions count.
     pub(crate) encoding: Encoding,
 }
@@ -144,10 +172,12 @@ impl Documents {
         }
     }
 
-    /// Before a client's request about a document it has open: when the
-    /// server's text isn't the client's, the full-text change that gives
-    /// the server the client's text, and the document's URI. `None` when
-    /// the server already has it, or for any other message.
+    /// Before a client's request about a document it has open (one it
+    /// names, or for a follow-up in [`FOLLOW_UPS`], the one its item or the
+    /// client's last request named): when the server's text isn't the
+    /// client's, the full-text change that gives the server the client's
+    /// text, and the document's URI. `None` when the server already has
+    /// it, or for any other message.
     ///
     /// Sends nothing while the tabs agree. Tabs that don't share edits
     /// differ until one changes; tabs that share edits differ only until
@@ -163,22 +193,32 @@ impl Documents {
         // As the router: a null id is no id.
         message.get("id").filter(|id| !id.is_null())?;
         let method = message.get("method")?.as_str()?;
-        if !method.starts_with("textDocument/") {
+        let params = message.get("params");
+        let uri = if method.starts_with("textDocument/") {
+            let uri = params?.get("textDocument")?.get("uri")?.as_str()?;
+            self.named.insert(client, uri.to_string());
+            uri.to_string()
+        } else if FOLLOW_UPS.contains(&method) {
+            // A hierarchy item carries its document; a resolve doesn't.
+            match params
+                .and_then(|p| p.get("item"))
+                .and_then(|i| i.get("uri"))
+                .and_then(Value::as_str)
+            {
+                Some(uri) => uri.to_string(),
+                None => self.named.get(&client)?.clone(),
+            }
+        } else {
             return None;
-        }
-        let uri = message
-            .get("params")?
-            .get("textDocument")?
-            .get("uri")?
-            .as_str()?;
-        let d = self.docs.get_mut(uri)?;
+        };
+        let d = self.docs.get_mut(&uri)?;
         let view = d.views.get(&client)?;
         if *view == d.text {
             return None;
         }
         d.text = view.clone();
         d.version += 1;
-        Some((full_change(uri, d.version, &d.text), uri.to_string()))
+        Some((full_change(&uri, d.version, &d.text), uri))
     }
 
     fn open(
@@ -304,6 +344,7 @@ impl Documents {
     /// document only it had open, a full text for each whose server text
     /// was its), and the URIs whose server text changed.
     pub(crate) fn disconnect(&mut self, client: u64) -> (Vec<Value>, Vec<String>) {
+        self.named.remove(&client);
         let (mut send, mut changed) = (Vec::new(), Vec::new());
         self.docs.retain(|uri, d| {
             if d.views.remove(&client).is_none() {
@@ -681,6 +722,57 @@ mod tests {
         leave_2.before_request(2, &hover);
         let (send, _) = leave_2.disconnect(2);
         assert_eq!(send, vec![full_change(URI, 3, "ab\n")]);
+    }
+
+    #[test]
+    fn a_follow_up_goes_against_the_text_the_requester_last_asked_about() {
+        let complete = json!({"jsonrpc": "2.0", "id": 1, "method": "textDocument/completion",
+            "params": {"textDocument": {"uri": URI}, "position": {"line": 0, "character": 1}}});
+        let resolve = json!({"jsonrpc": "2.0", "id": 2, "method": "completionItem/resolve",
+            "params": {"label": "abc"}});
+        let mut d = Documents::default();
+        d.client_message(1, &open("a\n"));
+        d.client_message(2, &open("a\n"));
+        // No request named a document yet: nothing to send.
+        assert_eq!(d.before_request(2, &resolve), None);
+        d.client_message(1, &edit(1, ((0, 1), (0, 1)), "b"));
+        // Client 2 completes, then client 1 edits, then client 2 resolves.
+        assert_eq!(
+            d.before_request(2, &complete),
+            Some((full_change(URI, 2, "a\n"), URI.to_string()))
+        );
+        d.client_message(1, &edit(2, ((0, 2), (0, 2)), "c"));
+        assert_eq!(d.text(URI), Some("abc\n"));
+        assert_eq!(
+            d.before_request(2, &resolve),
+            Some((full_change(URI, 4, "a\n"), URI.to_string()))
+        );
+        // A hierarchy request goes by its item's document.
+        let calls = json!({"jsonrpc": "2.0", "id": 3, "method": "callHierarchy/incomingCalls",
+            "params": {"item": {"uri": URI, "name": "f"}}});
+        assert_eq!(
+            d.before_request(1, &calls),
+            Some((full_change(URI, 5, "abc\n"), URI.to_string()))
+        );
+        // A client that leaves forgets what it named.
+        d.disconnect(2);
+        assert!(!d.named.contains_key(&2));
+    }
+
+    #[test]
+    fn may_name_document_picks_out_requests_about_documents() {
+        assert!(may_name_document(
+            r#"{"id":1,"method":"textDocument/hover","params":{"textDocument":{}}}"#
+        ));
+        assert!(may_name_document(
+            r#"{"id":1,"method":"completionItem/resolve","params":{}}"#
+        ));
+        assert!(!may_name_document(
+            r#"{"method":"completionItem/resolve","params":{}}"#
+        ));
+        assert!(!may_name_document(
+            r#"{"id":1,"method":"workspace/symbol","params":{}}"#
+        ));
     }
 
     #[test]

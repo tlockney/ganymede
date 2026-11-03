@@ -447,7 +447,7 @@ impl LspClient {
             // A request about a document waits for the document lock, so
             // the requester's text (when the server has another tab's)
             // goes first and no other tab's change comes between.
-            let _docs = if message.contains("\"id\"") && message.contains("\"textDocument\"") {
+            let _docs = if documents::may_name_document(&message) {
                 self.resync_for_request(&message).await
             } else {
                 None
