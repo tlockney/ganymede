@@ -15,7 +15,9 @@ are left for a later PR.
   to) never reached the room, and the room held off autosave too. The
   room now reloads once the first unsettled event is 5 s old, and when
   it has edits of its own it saves them right after that reload, so the
-  save rarely meets a newer file (and merges if it does).
+  save rarely meets a newer file (and merges if it does). An unwatched
+  room had the same starvation: each 1 s poll that merged a change reset
+  the autosave timer. It now saves right after such a poll too.
 - **Lost forced save.** When a client's `save` met a newer file (412),
   merged, and the disk won the cell the client had edited, the reply was
   `success`. It is now `failed`; the merge is still saved. The room

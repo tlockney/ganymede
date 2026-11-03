@@ -730,7 +730,10 @@ async fn run_room(
                 } else if last_poll.elapsed() >= poll_every && disk_event.is_none() {
                     last_poll = Instant::now();
                     if poll(contents.as_ref(), &mut room, d, &clients).await {
-                        last_edit = Some(Instant::now());
+                        // As after a bounded reload: a file that changes
+                        // at every poll would hold off autosave for good.
+                        save_room(contents.as_ref(), &mut room, d, &clients, false).await;
+                        last_edit = None;
                     }
                 }
                 if last_edit.is_some_and(|t| t.elapsed() >= SAVE_DELAY) && disk_event.is_none() {

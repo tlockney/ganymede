@@ -172,8 +172,9 @@ the file wins outright, as in `jupyter-collaboration`.
 
 A room looks at its file once events have settled for half a second, and
 at most five seconds after the first unsettled event, so a file that a
-program rewrites constantly still reaches the room; the room saves its
-own edits right after taking in such a file. A client's `save` whose merge
+program rewrites constantly still reaches the room. After taking in a
+change it found this way, or by polling a file it can't watch, the room
+saves its own edits at once. A client's `save` whose merge
 lets the file win a cell the room had changed (by any client, or by
 execution outputs) saves the merge and answers `failed`, since that
 change isn't in the file. A delete through the contents API closes the clients of
