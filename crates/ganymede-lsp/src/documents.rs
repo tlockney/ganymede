@@ -21,7 +21,13 @@
 //!   client whose text the server has leaves, the server gets the text of
 //!   the remaining client that opened or changed it last;
 //! - a `didChange` from a client that has the document open only through
-//!   other clients is dropped, since there is no text to apply it to.
+//!   other clients is dropped, since there is no text to apply it to;
+//! - a request about a document (hover, completion, rename, ...) from a
+//!   client whose text the server doesn't have is preceded by that
+//!   client's full text, so the answer's positions fit the requester.
+//!   Requests that name no `textDocument` (`completionItem/resolve`,
+//!   `codeAction/resolve`, call and type hierarchy) go as they are, so
+//!   they are answered against whichever text the server has.
 //!
 //! Tabs that share edits (collaboration) converge, so the server gets
 //! each edit once. Tabs that don't send different texts: the server has
@@ -136,6 +142,43 @@ impl Documents {
             Some("textDocument/didClose") => self.close(client, uri),
             _ => (Relay::AsIs, None),
         }
+    }
+
+    /// Before a client's request about a document it has open: when the
+    /// server's text isn't the client's, the full-text change that gives
+    /// the server the client's text, and the document's URI. `None` when
+    /// the server already has it, or for any other message.
+    ///
+    /// Sends nothing while the tabs agree. Tabs that don't share edits
+    /// differ until one changes; tabs that share edits differ only until
+    /// an edit reaches both, so a request in that gap sends the older
+    /// text, and the requester's own copy of the edit then goes through
+    /// in step. It doesn't count as the client's change: when a client
+    /// leaves, the server still gets the text changed last.
+    pub(crate) fn before_request(
+        &mut self,
+        client: u64,
+        message: &Value,
+    ) -> Option<(Value, String)> {
+        // As the router: a null id is no id.
+        message.get("id").filter(|id| !id.is_null())?;
+        let method = message.get("method")?.as_str()?;
+        if !method.starts_with("textDocument/") {
+            return None;
+        }
+        let uri = message
+            .get("params")?
+            .get("textDocument")?
+            .get("uri")?
+            .as_str()?;
+        let d = self.docs.get_mut(uri)?;
+        let view = d.views.get(&client)?;
+        if *view == d.text {
+            return None;
+        }
+        d.text = view.clone();
+        d.version += 1;
+        Some((full_change(uri, d.version, &d.text), uri.to_string()))
     }
 
     fn open(
@@ -593,6 +636,51 @@ mod tests {
         // 1's, the lowest id.
         let (send, _) = d.disconnect(3);
         assert_eq!(send, vec![full_change(URI, 3, "2a\n")]);
+    }
+
+    #[test]
+    fn a_request_goes_against_the_requesters_text() {
+        let hover = json!({"jsonrpc": "2.0", "id": 1, "method": "textDocument/hover",
+            "params": {"textDocument": {"uri": URI}, "position": {"line": 0, "character": 0}}});
+        let mut d = Documents::default();
+        // Nothing open: nothing to send first.
+        assert_eq!(d.before_request(1, &hover), None);
+        d.client_message(1, &open("a\n"));
+        d.client_message(2, &open("a\n"));
+        // In step: nothing to send.
+        assert_eq!(d.before_request(2, &hover), None);
+        // Tabs that don't share edits: the server has client 1's text.
+        d.client_message(1, &edit(1, ((0, 1), (0, 1)), "b"));
+        assert_eq!(d.before_request(1, &hover), None);
+        // Client 2 asks: the server gets client 2's text first.
+        assert_eq!(
+            d.before_request(2, &hover),
+            Some((full_change(URI, 2, "a\n"), URI.to_string()))
+        );
+        assert_eq!(d.text(URI), Some("a\n"));
+        assert_eq!(d.before_request(2, &hover), None);
+        // A notification, a request with no document, and a client that
+        // never opened it send nothing.
+        let mut note = hover.clone();
+        note.as_object_mut().unwrap().remove("id");
+        assert_eq!(d.before_request(1, &note), None);
+        let symbols = json!({"jsonrpc": "2.0", "id": 2, "method": "workspace/symbol",
+            "params": {"query": "a"}});
+        assert_eq!(d.before_request(1, &symbols), None);
+        assert_eq!(d.before_request(3, &hover), None);
+        // Client 1's next edit, against its own text, goes in full.
+        let (r, _) = d.client_message(1, &edit(2, ((0, 2), (0, 2)), "c"));
+        assert_eq!(r, Relay::Replace(full_change(URI, 3, "abc\n")));
+        // The request didn't count as client 2's change: when client 1
+        // leaves, the server gets client 2's text, and when client 2
+        // leaves instead, it keeps client 1's.
+        let mut leave_2 = Documents::default();
+        leave_2.client_message(1, &open("a\n"));
+        leave_2.client_message(2, &open("a\n"));
+        leave_2.client_message(1, &edit(1, ((0, 1), (0, 1)), "b"));
+        leave_2.before_request(2, &hover);
+        let (send, _) = leave_2.disconnect(2);
+        assert_eq!(send, vec![full_change(URI, 3, "ab\n")]);
     }
 
     #[test]

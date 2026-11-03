@@ -219,6 +219,61 @@ async fn two_clients_on_one_document_apply_each_edit_once() {
     assert_eq!(closes, 1);
 }
 
+/// Tabs that don't share edits: a hover from the tab whose text the
+/// server doesn't have reaches the server after that tab's full text,
+/// and the virtual document on disk follows it.
+#[tokio::test]
+async fn a_request_from_a_tab_behind_follows_its_text() {
+    let root = tempfile::tempdir().unwrap();
+    let m = manager(root.path(), &[("disk", &["cat"], true)]);
+    let vd = ganymede_lsp::virtual_documents_uri(root.path());
+    let uri = format!("{vd}/nb.ipynb");
+    let open = json!({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": uri, "languageId": "fake", "version": 0, "text": "a\n"}}})
+    .to_string();
+    let edit = json!({"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
+        "textDocument": {"uri": uri, "version": 1},
+        "contentChanges": [{"range": {"start": {"line": 0, "character": 1},
+            "end": {"line": 0, "character": 1}}, "text": "b"}]}})
+    .to_string();
+    let hover = json!({"jsonrpc": "2.0", "id": 1, "method": "textDocument/hover", "params": {
+        "textDocument": {"uri": uri}, "position": {"line": 0, "character": 0}}})
+    .to_string();
+    let ping = r#"{"jsonrpc":"2.0","method":"ping"}"#;
+
+    let mut a = m.connect("disk").unwrap();
+    let b = m.connect("disk").unwrap();
+    a.send(open.clone()).await;
+    b.send(open).await;
+    a.send(edit).await;
+    let file = root.path().join(VIRTUAL_DOCUMENTS_DIR).join("nb.ipynb");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "ab\n");
+    b.send(hover).await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "a\n");
+    b.send(ping.into()).await;
+    let mut got = Vec::new();
+    loop {
+        let m = next(&mut a).await.unwrap();
+        if m == ping {
+            break;
+        }
+        let v: serde_json::Value = serde_json::from_str(&m).unwrap();
+        got.push((
+            v["method"].clone(),
+            v["params"]["contentChanges"][0]["text"].clone(),
+        ));
+    }
+    assert_eq!(
+        got,
+        [
+            (json!("textDocument/didOpen"), json!(null)),
+            (json!("textDocument/didChange"), json!("b")),
+            (json!("textDocument/didChange"), json!("a\n")),
+            (json!("textDocument/hover"), json!(null)),
+        ]
+    );
+}
+
 /// Answers each request with `{"id": <its id>, "result": <the request as
 /// it arrived>}`, exits on an `exit` notification, and echoes anything
 /// else. Perl, which both CI runners
