@@ -177,11 +177,11 @@ change from the file, the room saves its own edits at once. A client's
 `save` whose merge lets the file win a cell the room had changed (by any
 client, or by execution outputs) saves the merge and answers `failed`,
 since that change isn't in the file. A delete through the contents API
-closes the clients of
-rooms on the deleted file with code 4404, the code a reconnect gets
-for the dropped file id; the room doesn't write the file back. When the
-file id database can't be read or written, ids handed out meanwhile are
-kept in memory, so they still resolve until the server stops.
+closes the clients of rooms on the deleted file with code 4404, the code
+a reconnect gets for the dropped file id; the room doesn't write the
+file back. When the file id database can't be read or written, ids
+handed out meanwhile are kept in memory, so they still resolve until
+the server stops.
 
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in

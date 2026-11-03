@@ -7,6 +7,9 @@
 - The room now saves right after any reload from disk when it has edits
   of its own, settled or forced by the five-second cap. Saving just
   after taking in the file makes a 412 from a newer write unlikely.
-- The busy-file test helper now re-reads the file just before each
-  rename, so its read-modify-write no longer overwrites a room save and
-  hides it. A second test writes every 0.7 s, so each change settles.
+- The busy-file test helper now also looks at the file just before each
+  rename, so it notices a room save that lands between its read and its
+  write. The rename still overwrites that save (the writer wins, as a
+  program rewriting the file would); the test checks only that the room
+  saved while the file kept changing. A second test writes every 0.7 s,
+  so each change settles.
