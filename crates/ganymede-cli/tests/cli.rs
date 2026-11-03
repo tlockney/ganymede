@@ -979,6 +979,8 @@ fn mcp_on_stdio_starts_a_new_session_when_the_server_ends_one() {
 struct FakeMcp {
     sessions: Vec<String>,
     started: usize,
+    /// `initialize`s received, refused ones too.
+    inits: usize,
     refuse_init: usize,
     slow_init: bool,
 }
@@ -1030,6 +1032,12 @@ impl FakeMcp {
             read.read_exact(&mut body)?;
             let (status, headers, body) = if start.starts_with("POST") {
                 let msg: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                // Slow outside the lock, so other calls get their 404 while
+                // the new session is starting.
+                let slow = msg["method"] == "initialize" && state.lock().unwrap().slow_init;
+                if slow {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
                 state.lock().unwrap().answer(&msg, session)
             } else {
                 (200, String::new(), String::new())
@@ -1053,9 +1061,7 @@ impl FakeMcp {
         match msg["method"].as_str().unwrap() {
             "initialize" => {
                 assert!(session.is_none(), "initialize sent in a session");
-                if self.slow_init {
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                }
+                self.inits += 1;
                 if self.refuse_init > 0 {
                     self.refuse_init -= 1;
                     return (503, String::new(), String::new());
@@ -1133,6 +1139,45 @@ fn mcp_on_stdio_calls_during_a_reconnect_wait_for_it() {
     for v in &answers {
         assert_eq!(v["result"]["content"][0]["text"], "in s2", "{v}");
     }
+    assert_eq!(fake.lock().unwrap().started, 2);
+    assert!(mcp.finish().success());
+}
+
+/// When starting a new session fails, the calls that were waiting for it
+/// fail too, rather than each trying again in turn; a later call tries
+/// again.
+#[test]
+fn mcp_on_stdio_calls_waiting_on_a_failed_reconnect_fail_together() {
+    let fake = std::sync::Arc::new(std::sync::Mutex::new(FakeMcp::default()));
+    let mut cmd = ganymede(&["mcp", "--server"]);
+    cmd.arg(FakeMcp::serve(fake.clone()));
+    let mut mcp = McpClient::start(cmd);
+    {
+        let mut f = fake.lock().unwrap();
+        f.sessions.clear();
+        f.slow_init = true;
+        f.refuse_init = 10;
+    }
+    for id in 100..103 {
+        mcp.send(
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {"name": "notebooks_list", "arguments": {}}}),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    for _ in 0..3 {
+        let line = mcp.lines.next().expect("an answer").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert!(v.get("error").is_some(), "{v}");
+    }
+    // The client's initialize, then one try for all three calls.
+    assert_eq!(fake.lock().unwrap().inits, 2);
+    {
+        let mut f = fake.lock().unwrap();
+        f.slow_init = false;
+        f.refuse_init = 0;
+    }
+    assert_eq!(mcp.tool("notebooks_list", serde_json::json!({})), "in s2");
     assert!(mcp.finish().success());
 }
 
