@@ -3293,8 +3293,8 @@ async fn mcp_cell_ids_outlive_an_idle_room() {
     assert_eq!(read, again, "same ids after the room sat idle");
 }
 
-/// cell_move checks `after` before it touches the cell, and moves both
-/// ways; resource URIs name the same room as the tools' paths.
+/// cell_edit keeps the sources it replaced, bounded, and a no-op edit
+/// adds none.
 #[tokio::test]
 async fn mcp_cell_edit_keeps_superseded_sources() {
     let dir = tempfile::tempdir().unwrap();
@@ -3317,19 +3317,21 @@ async fn mcp_cell_edit_keeps_superseded_sources() {
             )
         }
     };
-    // v0 -> v1 ... v12, then an edit that changes nothing.
+    // v0 -> v1 ... v12, an edit that changes nothing, then v13. Waiting
+    // for v13 on disk means the no-op edit is in the saved file too.
     for n in 1..=12 {
         let out = edit(format!("v{n}")).await;
         assert_eq!(out, "Edited cell f");
     }
     edit("v12".into()).await;
+    edit("v13".into()).await;
 
     let file = dir.path().join("h.ipynb");
     let nb = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(s) = std::fs::read_to_string(&file) {
                 let nb: Value = serde_json::from_str(&s).unwrap();
-                if nb["cells"][0]["source"] == json!(["v12"]) {
+                if nb["cells"][0]["source"] == json!(["v13"]) {
                     return (s, nb);
                 }
             }
@@ -3341,12 +3343,13 @@ async fn mcp_cell_edit_keeps_superseded_sources() {
     let (raw, nb) = nb;
     let agent = &nb["cells"][0]["metadata"]["ganymede"]["agent"];
     let history = agent["history"].as_array().expect("history");
-    // Twelve replaced sources, the last ten kept; the no-op edit adds none.
+    // Thirteen replaced sources, the last ten kept; the no-op edit adds
+    // none (no second v12).
     let sources: Vec<&str> = history
         .iter()
         .map(|h| h["source"].as_str().unwrap())
         .collect();
-    let want: Vec<String> = (2..=11).map(|n| format!("v{n}")).collect();
+    let want: Vec<String> = (3..=12).map(|n| format!("v{n}")).collect();
     assert_eq!(sources, want);
     assert_eq!(history.len(), ganymede_server::mcp::HISTORY_LIMIT);
     for h in history {
@@ -3359,6 +3362,8 @@ async fn mcp_cell_edit_keeps_superseded_sources() {
     ganymede_nbformat::Notebook::from_str(&raw).expect("valid notebook");
 }
 
+/// cell_move checks `after` before it touches the cell, and moves both
+/// ways; resource URIs name the same room as the tools' paths.
 #[tokio::test]
 async fn mcp_cell_move_and_resource_paths() {
     let dir = tempfile::tempdir().unwrap();

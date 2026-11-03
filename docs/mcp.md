@@ -81,13 +81,19 @@ runs leave no cells, but they run on the notebook's kernel as any cell
 does: they advance its execution count and its output history (`_` in
 Python).
 
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
 When `cell_edit` changes a cell's source, the source it replaced is kept
 in `metadata.ganymede.agent.history`, oldest first, as
 `{"source": "<old text>", "by": "<client name>", "at": "<time>"}`: the
 replaced text, who replaced it and when. A cell keeps the last 10; an
 edit that leaves the source as it was adds none. So a finding the agent
 revised in place still shows what it said before, and a UI can show the
-revisions.
+revisions. The replaced text is saved in the `.ipynb`: editing a secret
+out of a cell with `cell_edit` leaves it in `history` until the metadata
+is cleared.
 
 ## Options
 

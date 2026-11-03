@@ -403,19 +403,33 @@ impl Notebooks {
                     let Some(cell) = schema::find_cell(txn, roots, &id) else {
                         return false;
                     };
-                    let previous = if let Some(Out::YText(t)) = cell.get(txn, "source") {
-                        let previous = t.get_string(txn);
-                        schema::set_text(txn, &t, &source);
-                        previous
-                    } else {
-                        cell.insert(
-                            txn,
-                            "source",
-                            ganymede_documents::yrs::TextPrelim::new(source.clone()),
-                        );
-                        String::new()
+                    let previous = match cell.get(txn, "source") {
+                        Some(Out::YText(t)) => {
+                            let previous = t.get_string(txn);
+                            schema::set_text(txn, &t, &source);
+                            Some(previous)
+                        }
+                        other => {
+                            // Not a shared string: keep its text if it has any.
+                            let previous =
+                                other
+                                    .map(|o| schema::out_to_json(txn, &o))
+                                    .and_then(|v| match v {
+                                        Value::String(s) => Some(s),
+                                        Value::Array(a) => Some(
+                                            a.iter().filter_map(Value::as_str).collect::<String>(),
+                                        ),
+                                        _ => None,
+                                    });
+                            cell.insert(
+                                txn,
+                                "source",
+                                ganymede_documents::yrs::TextPrelim::new(source.clone()),
+                            );
+                            previous
+                        }
                     };
-                    let superseded = (previous != source).then_some(previous);
+                    let superseded = previous.filter(|p| *p != source);
                     stamp(txn, &cell, &by, superseded);
                     true
                 })
