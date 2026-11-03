@@ -168,8 +168,8 @@ pub struct RunArgs {
     /// it runs in the kernel and leaves nothing in the notebook, but its
     /// variables stay defined in the kernel.
     pub record: Option<bool>,
-    /// Seconds to wait for the result (default 600). The cell keeps
-    /// running after a timeout.
+    /// Seconds to wait for the result (default 600). A recorded cell
+    /// keeps running after a timeout; a scratch run is interrupted.
     pub timeout: Option<u64>,
     pub path: Option<String>,
 }
@@ -1036,7 +1036,7 @@ impl Notebooks {
             .get(kernel_id)
             .map_err(|e| err(e.message))?;
         kernel.touch();
-        let mut cell = ganymede_nbformat::CodeCell {
+        let cell = ganymede_nbformat::CodeCell {
             source: source.into(),
             ..Default::default()
         };
@@ -1050,12 +1050,51 @@ impl Notebooks {
             store_history: false,
             ..Default::default()
         };
-        let r = ganymede_exec::execute_cell(&kernel.session(), &mut cell, &opts).await;
-        kernel.touch();
+        // Whether the kernel took the request up: it sends
+        // `execute_input`, or an output, only for the request it runs.
+        let mut started = false;
+        let mut cells = vec![Cell::Code(cell)];
+        let r = ganymede_exec::NotebookRun::new(opts)
+            .execute_cell_with(
+                &kernel.session(),
+                &mut cells,
+                0,
+                &mut |e: ganymede_exec::Event<'_>| {
+                    if let ganymede_exec::Event::Output { .. } = e {
+                        started = true;
+                    }
+                },
+            )
+            .await;
+        let Some(Cell::Code(cell)) = cells.pop() else {
+            unreachable!("one code cell went in")
+        };
         let mut out = String::new();
-        if let Err(e) = r {
+        if let Err(e) = &r {
             out.push_str(&format!("{e}\n"));
         }
+        // Stop a timed-out scratch run rather than leave the shared kernel
+        // busy: its outputs go nowhere, and later runs would queue behind
+        // it. Only when the kernel is running it: still queued, it waits
+        // behind another run (a recorded cell that timed out, a cell a
+        // person ran), which an interrupt would stop instead.
+        if let Err(ganymede_exec::Error::CellTimeout { .. }) = r {
+            if !started {
+                out.push_str(
+                    "The kernel hadn't started it: it is busy with another run, and this \
+                     code runs when that finishes. Interrupt the kernel to stop that run.\n",
+                );
+            } else {
+                match self.state.kernels.interrupt(kernel_id).await {
+                    Ok(_) => out.push_str("Interrupted the kernel.\n"),
+                    Err(e) => out.push_str(&format!(
+                        "Interrupting the kernel failed ({}); it may still be running the code.\n",
+                        e.message
+                    )),
+                }
+            }
+        }
+        kernel.touch();
         out.push_str(&self.render_outputs(&cell.outputs));
         if out.is_empty() {
             out.push_str("(no output)");
