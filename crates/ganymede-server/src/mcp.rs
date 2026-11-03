@@ -29,7 +29,7 @@
 //!
 //! `notebook_read` and `notebook_open` end with a read mark, which
 //! `notebook_read(since)` takes to list only what others changed since
-//! (see [`marks`]).
+//! (see the `marks` module).
 
 mod marks;
 
