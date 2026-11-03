@@ -28,9 +28,11 @@
 //!   A request that follows up on an earlier answer and names no
 //!   `textDocument` (`completionItem/resolve`, `codeAction/resolve`, and
 //!   the other `*/resolve` methods in [`FOLLOW_UPS`]) is treated as one
-//!   about the document the client's last request of the kind that
-//!   produced it named (its last `textDocument/completion` for a
-//!   completion item); a call or type hierarchy request, about the
+//!   about the document the request that returned its item named: the
+//!   relay marks each item in the answer with it (see [`tag_items`]).
+//!   An item that comes back unmarked goes by the client's last request
+//!   of that kind (its last `textDocument/completion` for a completion
+//!   item). A call or type hierarchy request is about the
 //!   document its `item` names, and a workspace symbol, its `location`'s.
 //!   Other requests that name no document (`workspace/symbol`) go as
 //!   they are.
@@ -107,6 +109,77 @@ const FOLLOW_UPS: &[(&str, Option<&str>)] = &[
     ("typeHierarchy/subtypes", None),
     ("workspaceSymbol/resolve", None),
 ];
+
+/// The key, in an item's `data`, of the document the request that
+/// returned the item named. The relay wraps each item's `data` as
+/// `{"ganymede.uri": <uri>, "data": <the server's data>}` on its way to the
+/// client, which sends it back unchanged when it resolves the item; the
+/// relay reads the document from it and restores the server's `data`.
+const ITEM_URI: &str = "ganymede.uri";
+
+/// Whether answers to `method` hold items a [`FOLLOW_UPS`] request
+/// resolves.
+pub(crate) fn returns_items(method: &str) -> bool {
+    FOLLOW_UPS.iter().any(|(_, o)| *o == Some(method))
+}
+
+/// Whether `method` resolves an item an earlier answer returned.
+pub(crate) fn resolves_item(method: &str) -> bool {
+    FOLLOW_UPS.iter().any(|(m, o)| *m == method && o.is_some())
+}
+
+/// Marks each item in `result` (an answer to a request that
+/// [`returns_items`]) with `uri`, the document the request named. Items
+/// are the elements of an array result or of a completion list's
+/// `items`; a `Command` (whose `command` is a string) is left as it is,
+/// since it is never resolved. An item without `data` of its own takes a
+/// completion list's `itemDefaults.data`, as the client would.
+pub(crate) fn tag_items(result: &mut Value, uri: &str) {
+    let default = result
+        .get("itemDefaults")
+        .and_then(|d| d.get("data"))
+        .cloned();
+    let items = match result {
+        Value::Array(items) => items,
+        Value::Object(list) => match list.get_mut("items") {
+            Some(Value::Array(items)) => items,
+            _ => return,
+        },
+        _ => return,
+    };
+    for item in items.iter_mut().filter_map(Value::as_object_mut) {
+        if item.get("command").is_some_and(Value::is_string) {
+            continue;
+        }
+        let mut tag = serde_json::Map::new();
+        tag.insert(ITEM_URI.into(), uri.into());
+        if let Some(data) = item.remove("data").or_else(|| default.clone()) {
+            tag.insert("data".into(), data);
+        }
+        item.insert("data".into(), Value::Object(tag));
+    }
+}
+
+/// The document a resolve's item was returned for, from its tag.
+fn item_uri(params: Option<&Value>) -> Option<&str> {
+    params?.get("data")?.get(ITEM_URI)?.as_str()
+}
+
+/// Removes the tag [`tag_items`] put on a resolve's item, so the server
+/// gets its own `data` back.
+pub(crate) fn untag_item(params: &mut Value) {
+    let Some(item) = params.as_object_mut() else {
+        return;
+    };
+    let Some(Value::Object(mut tag)) = item.remove("data") else {
+        return;
+    };
+    if !tag.contains_key(ITEM_URI) {
+        item.insert("data".into(), Value::Object(tag));
+    } else if let Some(data) = tag.remove("data") {
+        item.insert("data".into(), data);
+    }
+}
 
 /// Whether `message` (unparsed) may be a request `before_request` acts
 /// on: a cheap test, so other messages aren't parsed.
@@ -214,7 +287,12 @@ impl Documents {
         } else {
             let (_, origin) = FOLLOW_UPS.iter().find(|(m, _)| *m == method)?;
             match origin {
-                Some(origin) => self.named.get(&(client, *origin))?.clone(),
+                // The document its item came from, or failing that, the one
+                // the client's last request of that kind named.
+                Some(origin) => match item_uri(params) {
+                    Some(uri) => uri.to_string(),
+                    None => self.named.get(&(client, *origin))?.clone(),
+                },
                 // A hierarchy item or workspace symbol carries its document.
                 None => {
                     let p = params?;
@@ -802,6 +880,37 @@ mod tests {
         d.before_request(2, &at(1, "textDocument/completion", URI));
         d.before_request(2, &at(2, "textDocument/hover", OTHER));
         // Client 1 edits URI between client 2's completion and its resolve.
+        d.client_message(1, &edit(1, ((0, 1), (0, 1)), "b"));
+        assert_eq!(d.text(URI), Some("ab\n"));
+        assert_eq!(
+            d.before_request(2, &resolve),
+            Some((full_change(URI, 2, "a\n"), URI.to_string()))
+        );
+    }
+
+    /// A resolve for an item from a completion on one document, sent
+    /// after a completion on another, gets the first document's text
+    /// (#339).
+    #[test]
+    fn a_resolve_goes_by_its_items_document() {
+        const OTHER: &str = "file:///other.ipynb";
+        let complete = |id: i64, uri: &str| {
+            json!({"jsonrpc": "2.0", "id": id, "method": "textDocument/completion",
+                "params": {"textDocument": {"uri": uri}, "position": {"line": 0, "character": 0}}})
+        };
+        let mut item = json!([{"label": "abc"}]);
+        tag_items(&mut item, URI);
+        let resolve = json!({"jsonrpc": "2.0", "id": 9, "method": "completionItem/resolve",
+            "params": item[0]});
+        let mut d = Documents::default();
+        d.client_message(1, &open("a\n"));
+        d.client_message(2, &open("a\n"));
+        let mut other = open("x\n");
+        other["params"]["textDocument"]["uri"] = json!(OTHER);
+        d.client_message(2, &other);
+        d.before_request(2, &complete(1, URI));
+        d.before_request(2, &complete(2, OTHER));
+        // Client 1 edits URI between client 2's completions and its resolve.
         d.client_message(1, &edit(1, ((0, 1), (0, 1)), "b"));
         assert_eq!(d.text(URI), Some("ab\n"));
         assert_eq!(

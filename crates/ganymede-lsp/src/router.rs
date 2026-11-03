@@ -10,8 +10,13 @@
 //!
 //! The answer to `initialize` also says which position encoding the server
 //! chose, which the relay's document copy counts in (see `documents.rs`).
+//!
+//! Items in an answer that a later request resolves (completion items,
+//! code actions, ...) are marked with the document their request named,
+//! and the mark is taken off again when the client resolves one, so the
+//! relay knows which document the resolve is about (#339).
 
-use crate::documents::Encoding;
+use crate::documents::{self, Encoding};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -30,8 +35,10 @@ pub enum Route {
 #[derive(Default)]
 pub struct Router {
     next: u64,
-    /// The relay's id for a client request, to the client and its own id.
-    pending: HashMap<u64, (u64, Value)>,
+    /// The relay's id for a client request, to the client, its own id,
+    /// and for a request whose answer holds items to resolve, the document
+    /// it named.
+    pending: HashMap<u64, (u64, Value, Option<String>)>,
     /// A server request's id (as JSON text), to the client asked and the
     /// request, so it can be asked of another client if that one leaves.
     asked: HashMap<String, (u64, Arc<str>)>,
@@ -57,7 +64,21 @@ impl Router {
             // A request: give it the relay's own id.
             (Some(id), Some(method)) => {
                 self.next += 1;
-                self.pending.insert(self.next, (client, id));
+                let named = documents::returns_items(&method)
+                    .then(|| {
+                        obj.get("params")?
+                            .get("textDocument")?
+                            .get("uri")?
+                            .as_str()
+                            .map(str::to_owned)
+                    })
+                    .flatten();
+                if documents::resolves_item(&method) {
+                    if let Some(params) = obj.get_mut("params") {
+                        documents::untag_item(params);
+                    }
+                }
+                self.pending.insert(self.next, (client, id, named));
                 if method == "initialize" {
                     self.initializing.insert(self.next);
                 }
@@ -80,7 +101,7 @@ impl Router {
                 let ours = self
                     .pending
                     .iter()
-                    .find(|(_, (c, id))| *c == client && *id == theirs)
+                    .find(|(_, (c, id, _))| *c == client && *id == theirs)
                     .map(|(ours, _)| *ours)?;
                 v["params"]["id"] = ours.into();
                 Some(v.to_string())
@@ -123,11 +144,15 @@ impl Router {
                         .and_then(Value::as_str);
                     self.encoding = Encoding::from_lsp(chosen);
                 }
-                let Some((client, theirs)) = ours.and_then(|ours| self.pending.remove(&ours))
+                let Some((client, theirs, named)) =
+                    ours.and_then(|ours| self.pending.remove(&ours))
                 else {
                     return Route::Nowhere;
                 };
                 obj.insert("id".into(), theirs);
+                if let (Some(uri), Some(result)) = (named, obj.get_mut("result")) {
+                    documents::tag_items(result, &uri);
+                }
                 Route::To(client, v.to_string().into())
             }
             _ => Route::All,
@@ -142,7 +167,7 @@ impl Router {
     /// `client` left: answers to its requests go nowhere, and what the
     /// server asked of it is asked of the next client in `remaining`.
     pub fn disconnect(&mut self, client: u64, remaining: &[u64]) -> Vec<(u64, Arc<str>)> {
-        self.pending.retain(|_, (c, _)| *c != client);
+        self.pending.retain(|_, (c, _, _)| *c != client);
         let Some(&next) = remaining.first() else {
             self.asked.retain(|_, (c, _)| *c != client);
             return Vec::new();
@@ -200,6 +225,55 @@ mod tests {
             r.server_message(&reply(&a["id"], "a"), &[1, 2]),
             Route::Nowhere
         );
+    }
+
+    /// Items in an answer carry the document their request named, and
+    /// the server gets its own `data` back when one is resolved (#339).
+    #[test]
+    fn items_carry_their_document_through_a_resolve() {
+        let mut r = Router::default();
+        let complete = json!({"id": 1, "method": "textDocument/completion",
+            "params": {"textDocument": {"uri": "file:///a.ipynb"}}});
+        let ours = sent(r.client_message(1, complete.to_string()));
+        let answer = json!({"id": ours["id"], "result": {
+            "itemDefaults": {"data": "default"},
+            "items": [{"label": "x", "data": {"k": 1}}, {"label": "y"}]}});
+        let (_, m) = to(r.server_message(&answer.to_string(), &[1]));
+        let items = &m["result"]["items"];
+        assert_eq!(
+            items[0]["data"],
+            json!({"ganymede.uri": "file:///a.ipynb", "data": {"k": 1}})
+        );
+        assert_eq!(
+            items[1]["data"],
+            json!({"ganymede.uri": "file:///a.ipynb", "data": "default"})
+        );
+        let resolve = json!({"id": 2, "method": "completionItem/resolve", "params": items[0]});
+        let ours = sent(r.client_message(1, resolve.to_string()));
+        assert_eq!(ours["params"], json!({"label": "x", "data": {"k": 1}}));
+
+        // A code action list: commands are left alone, and an action
+        // without data gets none back.
+        let actions = json!({"id": 3, "method": "textDocument/codeAction",
+            "params": {"textDocument": {"uri": "file:///b.ipynb"}}});
+        let ours = sent(r.client_message(1, actions.to_string()));
+        let answer = json!({"id": ours["id"], "result": [
+            {"title": "run", "command": "x.run"},
+            {"title": "fix", "kind": "quickfix"}]});
+        let (_, m) = to(r.server_message(&answer.to_string(), &[1]));
+        assert_eq!(m["result"][0], json!({"title": "run", "command": "x.run"}));
+        assert_eq!(
+            m["result"][1]["data"],
+            json!({"ganymede.uri": "file:///b.ipynb"})
+        );
+        let resolve = json!({"id": 4, "method": "codeAction/resolve", "params": m["result"][1]});
+        let ours = sent(r.client_message(1, resolve.to_string()));
+        assert_eq!(ours["params"], json!({"title": "fix", "kind": "quickfix"}));
+
+        // Data the relay didn't mark passes through.
+        let resolve = json!({"id": 5, "method": "codeLens/resolve", "params": {"data": {"k": 2}}});
+        let ours = sent(r.client_message(1, resolve.to_string()));
+        assert_eq!(ours["params"], json!({"data": {"k": 2}}));
     }
 
     #[test]

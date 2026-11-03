@@ -207,9 +207,10 @@ have (hover or completion in one of two tabs that don't share edits)
 first gives the server that tab's text, so the answer's positions fit
 the tab that asked. A request that follows up on an answer without
 naming the document (resolving a completion item or code action) counts
-as one about the document of the request it follows up (the tab's last
-completion, for a completion item), and a call or type hierarchy
-request as one about the document its item names. The server
+as one about the document of the request that returned the item: the
+relay marks each item's `data` with it on the way to the editor and
+removes the mark on the way back. A call or type hierarchy request
+counts as one about the document its item names. The server
 then keeps that text: diagnostics, which
 go to every editor, follow it until another tab edits, and a request
 from the other tab still being answered may come back against it.
