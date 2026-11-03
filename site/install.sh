@@ -190,15 +190,15 @@ main() {
 	trap 'rm -rf "$tmp"' EXIT
 	trap 'exit 1' INT TERM
 	say "Downloading $what for $tgt"
+	# A main build replaces its files one at a time, so a download can
+	# miss one or get a mismatched pair while a new build uploads.
+	retry=
+	[ -z "$main" ] || retry="; a new main build may be uploading, try again in a minute"
 	fetch "$BASE/$tag/$name.tar.gz" "$tmp/$name.tar.gz" ||
-		err "download failed: $BASE/$tag/$name.tar.gz"
+		err "download failed: $BASE/$tag/$name.tar.gz$retry"
 	fetch "$BASE/$tag/$name.tar.gz.sha256" "$tmp/$name.tar.gz.sha256" ||
-		err "download failed: $BASE/$tag/$name.tar.gz.sha256"
-	if ! (cd "$tmp" && verify "$name.tar.gz.sha256"); then
-		# A main build replaces its files one at a time.
-		[ -z "$main" ] || err "checksum mismatch for $name.tar.gz; a new main build may be uploading, try again in a minute"
-		err "checksum mismatch for $name.tar.gz"
-	fi
+		err "download failed: $BASE/$tag/$name.tar.gz.sha256$retry"
+	(cd "$tmp" && verify "$name.tar.gz.sha256") || err "checksum mismatch for $name.tar.gz$retry"
 	tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
 
 	mkdir -p "$bin_dir"

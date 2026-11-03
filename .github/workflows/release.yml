@@ -26,11 +26,12 @@ on:
 permissions:
   contents: read
 
-# One run per ref; a release in progress is never cancelled, a main build
-# is replaced by the next push's.
+# One run per ref; a release in progress is never cancelled. Runs on main
+# are not grouped here: a newer push cancels an older one's builds (the
+# build job's group), never its upload (the main-build job's group).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: false
 
 jobs:
   version:
@@ -82,6 +83,9 @@ jobs:
           - { target: x86_64-pc-windows-msvc, os: windows-latest }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    concurrency:
+      group: ${{ github.workflow }}-build-${{ github.ref }}-${{ matrix.target }}-${{ github.ref == 'refs/heads/main' && 'main' || github.run_id }}
+      cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
     env:
       NAME: ganymede-${{ needs.version.outputs.label }}-${{ matrix.target }}
       TARGET: ${{ matrix.target }}
@@ -220,8 +224,10 @@ jobs:
         run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main
 
   # A main build: the archives replace the assets of the `main-build`
-  # prerelease, so its download URLs never change and never 404 between
-  # builds. The tag is moved to the build's commit when GitHub allows it:
+  # prerelease, so its download URLs never change. `--clobber` deletes
+  # each asset before uploading its replacement, so a download during an
+  # upload can 404 or fail its checksum; install.sh says to retry. Runs
+  # queue rather than cancel, so an upload always finishes. The tag is moved to the build's commit when GitHub allows it:
   # GITHUB_TOKEN may not move a ref across commits that change workflow
   # files, and then the tag lags; the notes and the attestation name the
   # commit either way.
@@ -230,6 +236,9 @@ jobs:
     needs: [version, build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    concurrency:
+      group: ${{ github.workflow }}-main-build
+      cancel-in-progress: false
     permissions:
       contents: write
       id-token: write

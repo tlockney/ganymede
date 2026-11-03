@@ -380,8 +380,8 @@ It installs only `ganymede` (and cdp-kernel's latest release, as
 usual), not the apps. Run the plain install command to go back to the
 latest release.
 
-A main build is untested beyond CI. If the download fails its checksum
-while a new build is uploading, run the command again.
+A main build is untested beyond CI. If the download fails or fails its
+checksum while a new build is uploading, run the command again.
 
 ### By hand
 

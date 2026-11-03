@@ -165,6 +165,11 @@ if "$sh" "$script" --main --bin-dir "$work/binm3" --no-kernel 2>"$work/err"; the
 	fail "accepted a bad main-build checksum"
 fi
 grep -q "may be uploading" "$work/err" || fail "main-build checksum message: $(cat "$work/err")"
+rm "$work/dl/main-build/$main.tar.gz.sha256"
+if "$sh" "$script" --main --bin-dir "$work/binm4" --no-kernel 2>"$work/err"; then
+	fail "installed a main build without its checksum"
+fi
+grep -q "download failed.*may be uploading" "$work/err" || fail "main-build download message: $(cat "$work/err")"
 
 # A missing release fails with the URL.
 if "$sh" "$script" --version 0.0.0 --bin-dir "$work/bin4" --no-kernel 2>"$work/err"; then

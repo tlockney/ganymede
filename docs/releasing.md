@@ -58,7 +58,7 @@ same five targets with `GANYMEDE_VERSION_BUILD=main.<commit>`, so
 `ganymede --version` prints `X.Y.Z+main.<commit>`, packages them as
 `ganymede-main-<target>`, attests them, and replaces the assets of the
 `main-build` prerelease, which `install.sh --main` installs. A newer push
-cancels a main build in progress. Being a prerelease, `main-build` is
+cancels the older run's builds, but not its upload, which finishes first. Being a prerelease, `main-build` is
 never the "latest" release that the plain install fetches. The job moves
 the `main-build` tag to the commit when GitHub lets the workflow token do
 so; when it can't (a ref update across commits that change workflow
