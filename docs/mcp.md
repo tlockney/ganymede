@@ -60,7 +60,10 @@ prompt gives the agent conventions for keeping the record.
 cell that runs longer keeps running, and its outputs keep arriving in
 the notebook. A scratch run that runs longer is interrupted, since its
 outputs go nowhere and later runs on the shared kernel would wait
-behind it.
+behind it. A scratch run that times out before the kernel started it
+(queued behind a recorded cell still running, or a cell run from
+JupyterLab) interrupts nothing, so that other run isn't stopped; the
+reply says the code runs when the kernel is free.
 
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in

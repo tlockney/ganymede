@@ -1034,7 +1034,7 @@ impl Notebooks {
             .get(kernel_id)
             .map_err(|e| err(e.message))?;
         kernel.touch();
-        let mut cell = ganymede_nbformat::CodeCell {
+        let cell = ganymede_nbformat::CodeCell {
             source: source.into(),
             ..Default::default()
         };
@@ -1048,21 +1048,48 @@ impl Notebooks {
             store_history: false,
             ..Default::default()
         };
-        let r = ganymede_exec::execute_cell(&kernel.session(), &mut cell, &opts).await;
+        // Whether the kernel took the request up: it sends
+        // `execute_input`, or an output, only for the request it runs.
+        let mut started = false;
+        let mut cells = vec![Cell::Code(cell)];
+        let r = ganymede_exec::NotebookRun::new(opts)
+            .execute_cell_with(
+                &kernel.session(),
+                &mut cells,
+                0,
+                &mut |e: ganymede_exec::Event<'_>| {
+                    if let ganymede_exec::Event::Output { .. } = e {
+                        started = true;
+                    }
+                },
+            )
+            .await;
+        let Some(Cell::Code(cell)) = cells.pop() else {
+            unreachable!("one code cell went in")
+        };
         let mut out = String::new();
         if let Err(e) = &r {
             out.push_str(&format!("{e}\n"));
         }
         // Stop a timed-out scratch run rather than leave the shared kernel
         // busy: its outputs go nowhere, and later runs would queue behind
-        // it.
+        // it. Only when the kernel is running it: still queued, it waits
+        // behind another run (a recorded cell that timed out, a cell a
+        // person ran), which an interrupt would stop instead.
         if let Err(ganymede_exec::Error::CellTimeout { .. }) = r {
-            match self.state.kernels.interrupt(kernel_id).await {
-                Ok(_) => out.push_str("Interrupted the kernel.\n"),
-                Err(e) => out.push_str(&format!(
-                    "Interrupting the kernel failed ({}); it may still be running the code.\n",
-                    e.message
-                )),
+            if !started {
+                out.push_str(
+                    "The kernel hadn't started it: it is busy with another run, and this \
+                     code runs when that finishes. Interrupt the kernel to stop that run.\n",
+                );
+            } else {
+                match self.state.kernels.interrupt(kernel_id).await {
+                    Ok(_) => out.push_str("Interrupted the kernel.\n"),
+                    Err(e) => out.push_str(&format!(
+                        "Interrupting the kernel failed ({}); it may still be running the code.\n",
+                        e.message
+                    )),
+                }
             }
         }
         kernel.touch();

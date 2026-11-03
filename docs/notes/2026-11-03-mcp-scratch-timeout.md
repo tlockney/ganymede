@@ -14,3 +14,13 @@ Recorded runs are unchanged: they keep running after the timeout,
 since their outputs still land in the notebook. The fake kernel's
 `sleep <ms>` honours interrupts, which makes the test quick: without
 the interrupt, the second run would wait out a 30 s sleep.
+
+The kernel is shared, and the timeout counts from sending the request,
+so a scratch run can time out still queued behind another run: a
+recorded cell that timed out and kept running, or a cell run from
+JupyterLab. An interrupt then stops that run instead (the review of
+#336 caught it). The scratch path now runs through
+`NotebookRun::execute_cell_with` and interrupts only when an iopub
+message for its own request arrived (`execute_input` is the first a
+kernel sends when it takes a request up); otherwise the reply says the
+code is queued.
