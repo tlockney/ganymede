@@ -330,29 +330,57 @@ fn uuid() -> String {
 /// what a frontend sees for it: each iopub message's type and content,
 /// stdin requests (answered with `answer`), and the reply.
 async fn exchange(ws: &mut Ws, msg: Value, answer: Option<&str>) -> Value {
-    exchange_step("exchange", ws, msg, answer).await
+    exchange_step("exchange", ws, msg, answer, None).await
 }
 
 /// [`exchange`], failing with `step` in the message if 60 s pass with no
-/// frame.
-async fn exchange_step(step: &str, ws: &mut Ws, msg: Value, answer: Option<&str>) -> Value {
+/// frame, or if `total` passes without the reply and `idle`. The failure
+/// says what did arrive: this request's iopub messages, and a count of
+/// the other parents' messages by channel and type.
+async fn exchange_step(
+    step: &str,
+    ws: &mut Ws,
+    msg: Value,
+    answer: Option<&str>,
+    total: Option<Duration>,
+) -> Value {
     let id = msg["header"]["msg_id"].as_str().unwrap().to_string();
     ws.send(WsMessage::text(msg.to_string())).await.unwrap();
+    let deadline = total.map(|t| tokio::time::Instant::now() + t);
     let mut iopub = Vec::new();
     let mut stdin = Vec::new();
     let mut reply = None;
     let mut idle = false;
+    let mut others: std::collections::BTreeMap<String, usize> = Default::default();
     while reply.is_none() || !idle {
-        let frame = tokio::time::timeout(Duration::from_secs(60), ws.next())
-            .await
-            .unwrap_or_else(|_| panic!("{step}: no message in 60 s"))
-            .unwrap()
-            .unwrap();
+        let mut wait = Duration::from_secs(60);
+        if let Some(d) = deadline {
+            wait = wait.min(d.saturating_duration_since(tokio::time::Instant::now()));
+        }
+        let Ok(frame) = tokio::time::timeout(wait, ws.next()).await else {
+            let mine: Vec<&Value> = iopub.iter().map(|m: &Value| &m[0]).collect();
+            panic!(
+                "{step}: no reply and idle (reply: {}, idle: {idle}, this request's iopub: {mine:?}, \
+                 other messages: {others:?})",
+                reply.is_some()
+            );
+        };
+        let frame = frame.unwrap().unwrap();
         let WsMessage::Text(text) = frame else {
             continue;
         };
         let m: Value = serde_json::from_str(&text).unwrap();
         if m["parent_header"]["msg_id"] != id.as_str() {
+            let key = format!(
+                "{}/{}{}",
+                m["channel"].as_str().unwrap_or("?"),
+                m["header"]["msg_type"].as_str().unwrap_or("?"),
+                m["content"]["execution_state"]
+                    .as_str()
+                    .map(|s| format!(" {s}"))
+                    .unwrap_or_default(),
+            );
+            *others.entry(key).or_default() += 1;
             continue;
         }
         let msg_type = m["header"]["msg_type"].as_str().unwrap().to_string();
@@ -1074,18 +1102,19 @@ fn crash_code(kernel: &str) -> &'static str {
 /// What a client sees when its kernel crashes mid-cell: `status:
 /// restarting`, then the same kernel id runs again with its state gone.
 /// Returns the crashed cell's reply, if one came.
-async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
+async fn crash(server: &str, base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
+    let st = |step: &str| format!("{server}: {step}");
     let cl = Client {
         // No client timeout: `within` bounds each call and names the step.
         http: reqwest::Client::new(),
         base: base.to_string(),
         transcript: vec![],
     };
-    within(60, "waiting for the server", cl.wait_ready()).await;
+    within(60, &st("waiting for the server"), cl.wait_ready()).await;
     use reqwest::Method as M;
     let (s, k) = within(
         60,
-        "starting the kernel",
+        &st("starting the kernel"),
         cl.call(M::POST, "api/kernels", Some(json!({"name": c.kernel}))),
     )
     .await;
@@ -1099,19 +1128,20 @@ async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
     };
     let (mut ws, _) = within(
         30,
-        "connecting the first websocket",
+        &st("connecting the first websocket"),
         tokio_tungstenite::connect_async(ws_url("crash-1")),
     )
     .await
     .unwrap();
     let r = within(
-        180,
-        "running the cell that sets state",
+        200,
+        &st("running the cell that sets state"),
         exchange_step(
-            "running the cell that sets state",
+            &st("running the cell that sets state"),
             &mut ws,
             request("execute_request", "shell", json!({"code": c.set_state})),
             None,
+            Some(Duration::from_secs(180)),
         ),
     )
     .await;
@@ -1125,7 +1155,7 @@ async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
     let cell_id = cell["header"]["msg_id"].clone();
     within(
         30,
-        "sending the crash cell",
+        &st("sending the crash cell"),
         ws.send(WsMessage::text(cell.to_string())),
     )
     .await
@@ -1134,9 +1164,9 @@ async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
     loop {
         let frame = tokio::time::timeout(Duration::from_secs(30), ws.next())
             .await
-            .expect("no restarting status in 30 s");
+            .unwrap_or_else(|_| panic!("{}", st("no restarting status in 30 s")));
         let Some(Ok(WsMessage::Text(text))) = frame else {
-            panic!("websocket closed before the kernel restarted: {frame:?}");
+            panic!("{server}: websocket closed before the kernel restarted: {frame:?}");
         };
         let m: Value = serde_json::from_str(&text).unwrap();
         if m["channel"] == "shell" && m["parent_header"]["msg_id"] == cell_id {
@@ -1157,7 +1187,7 @@ async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
     // (cdp-kernel), so there the next cell is what shows it is back.
     let (s, v) = within(
         60,
-        "reading the kernel after the crash",
+        &st("reading the kernel after the crash"),
         cl.call(M::GET, &format!("api/kernels/{kid}"), None),
     )
     .await;
@@ -1167,7 +1197,7 @@ async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
         for _ in 0..300 {
             let (_, v) = within(
                 60,
-                "polling the restarted kernel",
+                &st("polling the restarted kernel"),
                 cl.call(M::GET, &format!("api/kernels/{kid}"), None),
             )
             .await;
@@ -1181,19 +1211,20 @@ async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
     }
     let (mut ws, _) = within(
         30,
-        "connecting the second websocket",
+        &st("connecting the second websocket"),
         tokio_tungstenite::connect_async(ws_url("crash-2")),
     )
     .await
     .unwrap();
     let r = within(
-        180,
-        "running a cell on the restarted kernel",
+        200,
+        &st("running a cell on the restarted kernel"),
         exchange_step(
-            "running a cell on the restarted kernel",
+            &st("running a cell on the restarted kernel"),
             &mut ws,
             request("execute_request", "shell", json!({"code": c.read_state})),
             None,
+            Some(Duration::from_secs(180)),
         ),
     )
     .await;
@@ -1204,7 +1235,7 @@ async fn crash(base: &str, c: &Code, wait_idle: bool) -> Option<Value> {
     drop(ws);
     let (s, _) = within(
         60,
-        "deleting the kernel",
+        &st("deleting the kernel"),
         cl.call(M::DELETE, &format!("api/kernels/{kid}"), None),
     )
     .await;
@@ -1220,13 +1251,13 @@ fn crash_both(c: &Code) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     {
         let s = start_jupyter(&jupyter);
-        rt.block_on(crash(&s.base, c, false));
+        rt.block_on(crash("jupyter_server", &s.base, c, false));
     }
     let s = start_ganymede();
     // jupyter_server leaves the crashed cell unanswered; Ganymede answers
     // it, so the client stops waiting.
     let reply = rt
-        .block_on(crash(&s.base, c, true))
+        .block_on(crash("ganymede", &s.base, c, true))
         .expect("the crashed cell is answered");
     assert_eq!(
         (&reply["status"], &reply["ename"]),
