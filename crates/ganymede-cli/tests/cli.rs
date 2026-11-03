@@ -972,6 +972,215 @@ fn mcp_on_stdio_starts_a_new_session_when_the_server_ends_one() {
     stop(server);
 }
 
+/// A stand-in MCP server for the proxy's reconnects: it hands out session
+/// ids, forgets them all on `end_sessions`, and can refuse the next
+/// `initialize`s or answer them slowly.
+#[derive(Default)]
+struct FakeMcp {
+    sessions: Vec<String>,
+    started: usize,
+    /// `initialize`s received, refused ones too.
+    inits: usize,
+    refuse_init: usize,
+    slow_init: bool,
+}
+
+impl FakeMcp {
+    /// Serves on a loopback port; returns its `/` URL.
+    fn serve(state: std::sync::Arc<std::sync::Mutex<FakeMcp>>) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let state = state.clone();
+                std::thread::spawn(move || {
+                    let _ = FakeMcp::connection(conn.unwrap(), &state);
+                });
+            }
+        });
+        url
+    }
+
+    fn connection(
+        conn: std::net::TcpStream,
+        state: &std::sync::Mutex<FakeMcp>,
+    ) -> std::io::Result<()> {
+        use std::io::Read;
+        let mut write = conn.try_clone()?;
+        let mut read = std::io::BufReader::new(conn);
+        loop {
+            let mut start = String::new();
+            if read.read_line(&mut start)? == 0 {
+                return Ok(());
+            }
+            let (mut len, mut session) = (0usize, None::<String>);
+            loop {
+                let mut h = String::new();
+                read.read_line(&mut h)?;
+                let h = h.trim_end();
+                if h.is_empty() {
+                    break;
+                }
+                let (k, v) = h.split_once(':').unwrap();
+                match k.to_ascii_lowercase().as_str() {
+                    "content-length" => len = v.trim().parse().unwrap(),
+                    "mcp-session-id" => session = Some(v.trim().to_string()),
+                    _ => {}
+                }
+            }
+            let mut body = vec![0; len];
+            read.read_exact(&mut body)?;
+            let (status, headers, body) = if start.starts_with("POST") {
+                let msg: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                // Slow outside the lock, so other calls get their 404 while
+                // the new session is starting.
+                let slow = msg["method"] == "initialize" && state.lock().unwrap().slow_init;
+                if slow {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+                state.lock().unwrap().answer(&msg, session)
+            } else {
+                (200, String::new(), String::new())
+            };
+            write!(
+                write,
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n{headers}Content-Length: {}\r\n\r\n{body}",
+                body.len()
+            )?;
+        }
+    }
+
+    fn answer(
+        &mut self,
+        msg: &serde_json::Value,
+        session: Option<String>,
+    ) -> (u16, String, String) {
+        let reply = |result: serde_json::Value| {
+            serde_json::json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}).to_string()
+        };
+        match msg["method"].as_str().unwrap() {
+            "initialize" => {
+                assert!(session.is_none(), "initialize sent in a session");
+                self.inits += 1;
+                if self.refuse_init > 0 {
+                    self.refuse_init -= 1;
+                    return (503, String::new(), String::new());
+                }
+                self.started += 1;
+                let id = format!("s{}", self.started);
+                self.sessions.push(id.clone());
+                let result = serde_json::json!({"protocolVersion": "2025-06-18",
+                    "capabilities": {}, "serverInfo": {"name": "ganymede", "version": "0"}});
+                (200, format!("Mcp-Session-Id: {id}\r\n"), reply(result))
+            }
+            _ => match session {
+                None => (400, String::new(), "no session".into()),
+                Some(s) if !self.sessions.contains(&s) => (404, String::new(), String::new()),
+                Some(_) if msg.get("id").is_none() => (202, String::new(), String::new()),
+                Some(s) => {
+                    let text = format!("in {s}");
+                    let result = serde_json::json!({"content": [{"type": "text", "text": text}]});
+                    (200, String::new(), reply(result))
+                }
+            },
+        }
+    }
+}
+
+/// A failed start of a new session doesn't leave the proxy without one:
+/// the next call starts it again.
+#[test]
+fn mcp_on_stdio_recovers_when_a_new_session_fails_to_start() {
+    let fake = std::sync::Arc::new(std::sync::Mutex::new(FakeMcp::default()));
+    let mut cmd = ganymede(&["mcp", "--server"]);
+    cmd.arg(FakeMcp::serve(fake.clone()));
+    let mut mcp = McpClient::start(cmd);
+    assert_eq!(mcp.tool("notebooks_list", serde_json::json!({})), "in s1");
+    {
+        let mut f = fake.lock().unwrap();
+        f.sessions.clear();
+        f.refuse_init = 1;
+    }
+    let v = mcp.request(
+        "tools/call",
+        serde_json::json!({"name": "notebooks_list", "arguments": {}}),
+    );
+    assert!(v.to_string().contains("503"), "{v}");
+    assert_eq!(mcp.tool("notebooks_list", serde_json::json!({})), "in s2");
+    assert!(mcp.finish().success());
+}
+
+/// Calls sent while the proxy starts a new session wait for it instead of
+/// going without one, and only one new session is started.
+#[test]
+fn mcp_on_stdio_calls_during_a_reconnect_wait_for_it() {
+    let fake = std::sync::Arc::new(std::sync::Mutex::new(FakeMcp::default()));
+    let mut cmd = ganymede(&["mcp", "--server"]);
+    cmd.arg(FakeMcp::serve(fake.clone()));
+    let mut mcp = McpClient::start(cmd);
+    {
+        let mut f = fake.lock().unwrap();
+        f.sessions.clear();
+        f.slow_init = true;
+    }
+    for id in 100..103 {
+        mcp.send(
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {"name": "notebooks_list", "arguments": {}}}),
+        );
+        // The first call is in its reconnect by the time the others go.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let mut answers = Vec::new();
+    while answers.len() < 3 {
+        let line = mcp.lines.next().expect("an answer").unwrap();
+        answers.push(serde_json::from_str::<serde_json::Value>(&line).unwrap());
+    }
+    for v in &answers {
+        assert_eq!(v["result"]["content"][0]["text"], "in s2", "{v}");
+    }
+    assert_eq!(fake.lock().unwrap().started, 2);
+    assert!(mcp.finish().success());
+}
+
+/// When starting a new session fails, the calls that were waiting for it
+/// fail too, rather than each trying again in turn; a later call tries
+/// again.
+#[test]
+fn mcp_on_stdio_calls_waiting_on_a_failed_reconnect_fail_together() {
+    let fake = std::sync::Arc::new(std::sync::Mutex::new(FakeMcp::default()));
+    let mut cmd = ganymede(&["mcp", "--server"]);
+    cmd.arg(FakeMcp::serve(fake.clone()));
+    let mut mcp = McpClient::start(cmd);
+    {
+        let mut f = fake.lock().unwrap();
+        f.sessions.clear();
+        f.slow_init = true;
+        f.refuse_init = 10;
+    }
+    for id in 100..103 {
+        mcp.send(
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {"name": "notebooks_list", "arguments": {}}}),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    for _ in 0..3 {
+        let line = mcp.lines.next().expect("an answer").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert!(v.get("error").is_some(), "{v}");
+    }
+    // The client's initialize, then one try for all three calls.
+    assert_eq!(fake.lock().unwrap().inits, 2);
+    {
+        let mut f = fake.lock().unwrap();
+        f.slow_init = false;
+        f.refuse_init = 0;
+    }
+    assert_eq!(mcp.tool("notebooks_list", serde_json::json!({})), "in s2");
+    assert!(mcp.finish().success());
+}
+
 /// Requests still running when stdin closes are answered, and
 /// SIGTERM saves open notebooks as stdin closing does.
 #[test]
