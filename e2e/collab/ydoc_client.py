@@ -34,6 +34,9 @@ from websockets.asyncio.client import connect
 
 TIMEOUT = 20.0
 
+# Loopback calls skip any `http_proxy` in the environment.
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 
 def fail(msg):
     print(f"FAIL: {msg}", file=sys.stderr)
@@ -62,7 +65,7 @@ async def main(server, token, root, nb_path):
         method="PUT",
         headers={"Authorization": f"token {token}", "Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req) as r:
+    with OPENER.open(req, timeout=TIMEOUT) as r:
         session = json.load(r)
     ws_url = (
         server.replace("http", "ws", 1)
@@ -81,7 +84,7 @@ async def main(server, token, root, nb_path):
 
     doc.observe(on_update)
 
-    async with connect(ws_url, max_size=None) as ws:
+    async with connect(ws_url, max_size=None, proxy=None, open_timeout=TIMEOUT) as ws:
         await ws.send(create_sync_message(doc))
 
         async def pump():
@@ -101,11 +104,30 @@ async def main(server, token, root, nb_path):
             while True:
                 await ws.send(await outgoing.get())
 
-        tasks = [asyncio.create_task(pump()), asyncio.create_task(send())]
+        tasks = [
+            asyncio.create_task(pump(), name="pump"),
+            asyncio.create_task(send(), name="send"),
+        ]
+
+        def died():
+            """Why the pump or send task stopped, if one has."""
+            for t in tasks:
+                if not t.done():
+                    continue
+                if not t.cancelled() and t.exception() is not None:
+                    return f"{t.get_name()} failed: {t.exception()!r}"
+                return (
+                    f"{t.get_name()} stopped: websocket closed "
+                    f"({ws.close_code} {ws.close_reason!r})"
+                )
+            return None
 
         async def until(check, what):
             deadline = time.monotonic() + TIMEOUT
             while not check():
+                why = died()
+                if why is not None:
+                    fail(f"{why}, waiting for {what}")
                 if time.monotonic() > deadline:
                     fail(f"timed out waiting for {what}")
                 await asyncio.sleep(0.05)
@@ -145,6 +167,7 @@ async def main(server, token, root, nb_path):
         await until(converged, "both sides to hold every change")
         for t in tasks:
             t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
     print(json.dumps({"ok": True, "cells": doc_sources(ynb)}))
 
 

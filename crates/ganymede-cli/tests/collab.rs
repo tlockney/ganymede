@@ -5,9 +5,11 @@
 //! sides converge and the saved file holds every change. Python is a test
 //! oracle here, as elsewhere in the e2e suite.
 //!
-//! Skips (printing `skipping:`) unless a Python with `jupyter_ydoc`,
-//! `pycrdt` and `websockets` is found: `GANYMEDE_E2E_PYTHON`, else
-//! `python3`, else `python`. The e2e job installs them.
+//! Skips (printing `skipping:` to stderr) unless a Python with
+//! `jupyter_ydoc`, `pycrdt` and `websockets` is found: `python3`, else
+//! `python`. The e2e job installs them. When `GANYMEDE_E2E_PYTHON` names
+//! a Python, that one is used and must have them: the test fails if it
+//! can't import them.
 
 mod common;
 
@@ -17,34 +19,41 @@ use std::process::{Command, Stdio};
 
 const TOKEN: &str = "e2e-token";
 
-fn python() -> Option<String> {
-    let candidates = match std::env::var("GANYMEDE_E2E_PYTHON") {
-        Ok(p) => vec![p],
-        Err(_) => vec!["python3".into(), "python".into()],
-    };
-    candidates.into_iter().find(|p| {
-        Command::new(p)
-            .args(["-c", "import jupyter_ydoc, pycrdt, websockets"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    })
+const MODULES: &str = "import jupyter_ydoc, pycrdt, websockets";
+
+fn has_modules(python: &str) -> bool {
+    Command::new(python)
+        .args(["-c", MODULES])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
-struct Serve(std::process::Child);
-
-impl Drop for Serve {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+/// The Python to run the client with. `GANYMEDE_E2E_PYTHON` must have the
+/// modules; without it, a `python3` or `python` that has them, if any.
+fn python() -> Option<String> {
+    if let Ok(p) = std::env::var("GANYMEDE_E2E_PYTHON") {
+        let out = Command::new(&p).args(["-c", MODULES]).output();
+        match out {
+            Ok(o) if o.status.success() => return Some(p),
+            Ok(o) => panic!(
+                "GANYMEDE_E2E_PYTHON={p} can't `{MODULES}`:\n{}",
+                String::from_utf8_lossy(&o.stderr)
+            ),
+            Err(e) => panic!("GANYMEDE_E2E_PYTHON={p} doesn't run: {e}"),
+        }
     }
+    ["python3", "python"]
+        .into_iter()
+        .find(|p| has_modules(p))
+        .map(str::to_string)
 }
 
 #[test]
 fn jupyter_ydoc_client_converges_with_a_room_and_the_file() {
     let Some(py) = python() else {
-        println!("skipping: no Python with jupyter_ydoc, pycrdt and websockets");
+        eprintln!("skipping: no Python with jupyter_ydoc, pycrdt and websockets");
         return;
     };
     let root = tempfile::tempdir().unwrap();
@@ -62,24 +71,25 @@ fn jupyter_ydoc_client_converges_with_a_room_and_the_file() {
     )
     .unwrap();
 
-    let mut child = ganymede(&["serve", "--port", "0", "--token", TOKEN])
-        .arg("--root-dir")
-        .arg(root.path())
-        .arg("--config-dir")
-        .arg(state.path())
-        .arg("--notary-dir")
-        .arg(state.path().join("notary"))
-        .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
-        .env("JUPYTER_DATA_DIR", state.path().join("data"))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut serve = KillOnDrop(
+        ganymede(&["serve", "--port", "0", "--token", TOKEN])
+            .arg("--root-dir")
+            .arg(root.path())
+            .arg("--config-dir")
+            .arg(state.path())
+            .arg("--notary-dir")
+            .arg(state.path().join("notary"))
+            .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
+            .env("JUPYTER_DATA_DIR", state.path().join("data"))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     let mut line = String::new();
-    std::io::BufReader::new(child.stdout.take().unwrap())
+    std::io::BufReader::new(serve.0.stdout.take().unwrap())
         .read_line(&mut line)
         .unwrap();
-    let _serve = Serve(child);
     let base = line.trim().split('?').next().unwrap().trim_end_matches('/');
 
     let out = Command::new(&py)

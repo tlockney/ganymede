@@ -18,6 +18,17 @@ pub fn bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ganymede"))
 }
 
+/// Kills and reaps a child process when dropped, so a server stops even
+/// when an assertion fails.
+pub struct KillOnDrop(pub std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 pub fn ganymede(args: &[&str]) -> Command {
     let mut c = Command::new(bin());
     c.args(args);
