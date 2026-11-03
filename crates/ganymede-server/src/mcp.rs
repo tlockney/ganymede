@@ -24,7 +24,8 @@
 //! "at"}`: `by` is the client's name, `mode` is `executed` (ran in the
 //! kernel), `recorded` (a step that ran elsewhere) or `note`. Scratch runs
 //! (`cell_run` with `record: false`) run in the kernel and leave nothing in
-//! the notebook.
+//! the notebook. `cell_edit` keeps the source it replaces in `history`
+//! (the last [`HISTORY_LIMIT`] of them).
 
 use crate::collab::{hold_notebook, notebook_room_id, with_notebook, Hold};
 use crate::AppState;
@@ -33,7 +34,7 @@ use ganymede_api::sessions::KernelRef;
 use ganymede_api::SessionCreate;
 use ganymede_contents::{ContentType, GetOptions, SaveRequest};
 use ganymede_documents::schema::{self, Roots};
-use ganymede_documents::yrs::{Array, Map, Out, TransactionMut};
+use ganymede_documents::yrs::{Array, GetString, Map, Out, TransactionMut};
 use ganymede_documents::{Effects, Room};
 use ganymede_nbformat::{Cell, Notebook, Output};
 use rmcp::handler::server::router::prompt::PromptRouter;
@@ -402,16 +403,20 @@ impl Notebooks {
                     let Some(cell) = schema::find_cell(txn, roots, &id) else {
                         return false;
                     };
-                    if let Some(Out::YText(t)) = cell.get(txn, "source") {
+                    let previous = if let Some(Out::YText(t)) = cell.get(txn, "source") {
+                        let previous = t.get_string(txn);
                         schema::set_text(txn, &t, &source);
+                        previous
                     } else {
                         cell.insert(
                             txn,
                             "source",
-                            ganymede_documents::yrs::TextPrelim::new(source),
+                            ganymede_documents::yrs::TextPrelim::new(source.clone()),
                         );
-                    }
-                    stamp(txn, &cell, &by);
+                        String::new()
+                    };
+                    let superseded = (previous != source).then_some(previous);
+                    stamp(txn, &cell, &by, superseded);
                     true
                 })
             })
@@ -727,9 +732,20 @@ fn provenance(peer: &Peer<RoleServer>, mode: &str) -> Value {
     json!({"ganymede": {"agent": {"by": client_name(peer), "mode": mode, "at": now()}}})
 }
 
+/// How many superseded sources a cell's `metadata.ganymede.agent.history`
+/// keeps; older ones are dropped.
+pub const HISTORY_LIMIT: usize = 10;
+
 /// Update an existing cell's provenance after an edit: `at`, and `by` when
-/// the cell had none.
-fn stamp(txn: &mut TransactionMut, cell: &ganymede_documents::yrs::MapRef, by: &str) {
+/// the cell had none. A `superseded` source is appended to `history` as
+/// `{"source", "by", "at"}`: the text the edit replaced, who replaced it
+/// and when.
+fn stamp(
+    txn: &mut TransactionMut,
+    cell: &ganymede_documents::yrs::MapRef,
+    by: &str,
+    superseded: Option<String>,
+) {
     let meta = match cell.get(txn, "metadata") {
         Some(Out::YMap(m)) => m,
         _ => cell.insert(
@@ -752,7 +768,18 @@ fn stamp(txn: &mut TransactionMut, cell: &ganymede_documents::yrs::MapRef, by: &
         agent["by"] = json!(by);
         agent["mode"] = json!("note");
     }
-    agent["at"] = json!(now());
+    let at = now();
+    if let Some(source) = superseded {
+        let mut history = match agent["history"].take() {
+            Value::Array(h) => h,
+            _ => Vec::new(),
+        };
+        history.push(json!({"source": source, "by": by, "at": at}));
+        let excess = history.len().saturating_sub(HISTORY_LIMIT);
+        history.drain(..excess);
+        agent["history"] = Value::Array(history);
+    }
+    agent["at"] = json!(at);
     meta.insert(txn, "ganymede", schema::json_to_any(&g));
 }
 

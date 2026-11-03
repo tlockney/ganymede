@@ -3296,6 +3296,70 @@ async fn mcp_cell_ids_outlive_an_idle_room() {
 /// cell_move checks `after` before it touches the cell, and moves both
 /// ways; resource URIs name the same room as the tools' paths.
 #[tokio::test]
+async fn mcp_cell_edit_keeps_superseded_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    let nb = json!({"cells": [{"cell_type": "markdown", "id": "f", "metadata": {},
+        "source": "v0"}], "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.path().join("h.ipynb"), nb.to_string()).unwrap();
+    let app = mcp_app(dir.path());
+    let sid = mcp_connect(&app, "editor").await;
+    let edit = |src: String| {
+        let (app, sid) = (app.clone(), sid.clone());
+        async move {
+            mcp_text(
+                &mcp_tool(
+                    &app,
+                    &sid,
+                    "cell_edit",
+                    json!({"path": "h.ipynb", "id": "f", "source": src}),
+                )
+                .await,
+            )
+        }
+    };
+    // v0 -> v1 ... v12, then an edit that changes nothing.
+    for n in 1..=12 {
+        let out = edit(format!("v{n}")).await;
+        assert_eq!(out, "Edited cell f");
+    }
+    edit("v12".into()).await;
+
+    let file = dir.path().join("h.ipynb");
+    let nb = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(s) = std::fs::read_to_string(&file) {
+                let nb: Value = serde_json::from_str(&s).unwrap();
+                if nb["cells"][0]["source"] == json!(["v12"]) {
+                    return (s, nb);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("edits saved");
+    let (raw, nb) = nb;
+    let agent = &nb["cells"][0]["metadata"]["ganymede"]["agent"];
+    let history = agent["history"].as_array().expect("history");
+    // Twelve replaced sources, the last ten kept; the no-op edit adds none.
+    let sources: Vec<&str> = history
+        .iter()
+        .map(|h| h["source"].as_str().unwrap())
+        .collect();
+    let want: Vec<String> = (2..=11).map(|n| format!("v{n}")).collect();
+    assert_eq!(sources, want);
+    assert_eq!(history.len(), ganymede_server::mcp::HISTORY_LIMIT);
+    for h in history {
+        assert_eq!(h["by"], "editor", "{h}");
+        assert!(h["at"].is_string(), "{h}");
+    }
+    // A person's cell edited by an agent becomes an agent note.
+    assert_eq!(agent["mode"], "note");
+    // The file still reads as nbformat 4.
+    ganymede_nbformat::Notebook::from_str(&raw).expect("valid notebook");
+}
+
+#[tokio::test]
 async fn mcp_cell_move_and_resource_paths() {
     let dir = tempfile::tempdir().unwrap();
     let cells: Vec<Value> = ["a", "b", "c"]

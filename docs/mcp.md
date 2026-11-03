@@ -81,6 +81,14 @@ runs leave no cells, but they run on the notebook's kernel as any cell
 does: they advance its execution count and its output history (`_` in
 Python).
 
+When `cell_edit` changes a cell's source, the source it replaced is kept
+in `metadata.ganymede.agent.history`, oldest first, as
+`{"source": "<old text>", "by": "<client name>", "at": "<time>"}`: the
+replaced text, who replaced it and when. A cell keeps the last 10; an
+edit that leaves the source as it was adds none. So a finding the agent
+revised in place still shows what it said before, and a UI can show the
+revisions.
+
 ## Options
 
 These apply to a server `ganymede mcp` starts itself, so each makes it
