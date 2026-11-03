@@ -2470,6 +2470,21 @@ async fn collaboration_room_syncs_saves_and_reloads() {
 /// once the first unsettled event is 5 s old (#279).
 #[tokio::test]
 async fn collaboration_room_reloads_a_file_that_never_settles() {
+    // Events never settle for the 500 ms debounce.
+    room_keeps_up_with_a_busy_file(Duration::from_millis(100), Duration::from_secs(8)).await;
+}
+
+/// A file rewritten every 0.7 s: each change settles and reloads, and
+/// the room's own edit still gets saved in between (#347).
+#[tokio::test]
+async fn collaboration_room_saves_between_settled_reloads() {
+    room_keeps_up_with_a_busy_file(Duration::from_millis(700), Duration::from_secs(6)).await;
+}
+
+/// Another program rewrites cell `a` every `every` for `writing`; the
+/// room must reload while it does, and its own edit to cell `b` must
+/// reach the file before the writes stop.
+async fn room_keeps_up_with_a_busy_file(every: Duration, writing: Duration) {
     use ganymede_documents::schema::Roots;
     use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
     use ganymede_documents::yrs::updates::decoder::Decode;
@@ -2532,11 +2547,8 @@ async fn collaboration_room_reloads_a_file_that_never_settles() {
         }
     }
 
-    // Another program rewrites cell `a` every 100 ms for 8 s, keeping
-    // the rest of the file: events never settle for the 500 ms debounce.
-    // It notes whether the room's edit to cell `b` reached the file while
-    // it was writing.
-    let writing = Duration::from_secs(8);
+    // The writer keeps the rest of the file, and notes whether the room's
+    // edit to cell `b` reached it.
     let writer = {
         let file = file.clone();
         std::thread::spawn(move || {
@@ -2552,8 +2564,11 @@ async fn collaboration_room_reloads_a_file_that_never_settles() {
                 // Whole files only: a reload never reads a half-written one.
                 let tmp = file.with_extension("tmp");
                 std::fs::write(&tmp, nb.to_string()).unwrap();
+                // A save since the read would be overwritten: look again
+                // just before replacing the file.
+                saved |= std::fs::read_to_string(&file).unwrap().contains("room: ");
                 std::fs::rename(&tmp, &file).unwrap();
-                std::thread::sleep(Duration::from_millis(100));
+                std::thread::sleep(every);
             }
             saved
         })
