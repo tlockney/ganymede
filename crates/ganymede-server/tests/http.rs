@@ -2525,7 +2525,10 @@ async fn collaboration_room_reloads_a_file_that_never_settles() {
             let mut i = 0;
             while start.elapsed() < writing {
                 i += 1;
-                std::fs::write(&file, nb(&format!("write {i}"))).unwrap();
+                // Whole files only: a reload never reads a half-written one.
+                let tmp = file.with_extension("tmp");
+                std::fs::write(&tmp, nb(&format!("write {i}"))).unwrap();
+                std::fs::rename(&tmp, &file).unwrap();
                 std::thread::sleep(Duration::from_millis(100));
             }
         })

@@ -156,7 +156,15 @@ impl FileIds {
         if let Some((db, root)) = &store.db {
             match sqlite::index(db, root, path) {
                 Ok(r) => return r,
-                Err(e) => tracing::warn!("file id for {path}, kept in memory: {e}"),
+                // A path the database already has keeps that id; only a
+                // path it lacks gets one in memory.
+                Err(e) => match sqlite::id(db, root, path) {
+                    Ok(Some(id)) => {
+                        tracing::warn!("file id for {path}: {e}");
+                        return (id, false);
+                    }
+                    _ => tracing::warn!("file id for {path}, kept in memory: {e}"),
+                },
             }
         }
         store.memory.index(path)
@@ -249,6 +257,11 @@ mod sqlite {
     /// Another server on the same root may insert the path first: the
     /// insert then does nothing, and its id is the one read back.
     pub fn index(db: &Connection, root: &str, path: &str) -> rusqlite::Result<(String, bool)> {
+        // Most paths have an id already: read it without taking the
+        // write lock.
+        if let Some(id) = self::id(db, root, path)? {
+            return Ok((id, false));
+        }
         let id = uuid::Uuid::new_v4().to_string();
         let inserted = db.execute(
             "INSERT OR IGNORE INTO file_ids (id, root, path) VALUES (?1, ?2, ?3)",
@@ -259,8 +272,7 @@ mod sqlite {
             params![root, path],
             |r| r.get(0),
         )?;
-        let new = inserted == 1 && stored == id;
-        Ok((stored, new))
+        Ok((stored, inserted == 1))
     }
 
     pub fn id(db: &Connection, root: &str, path: &str) -> rusqlite::Result<Option<String>> {
@@ -405,5 +417,30 @@ mod tests {
         assert_eq!(ids.path(&id), None);
         // What the database held is out of reach while it fails.
         assert_eq!(ids.path(&stored), None);
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn a_failed_write_keeps_the_stored_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ids.db");
+        let ids = FileIds::open(&db, Path::new("/root"));
+        let (stored, _) = ids.index("stored.ipynb");
+        // Writes fail (as when another server holds the lock past the
+        // busy timeout); reads still work.
+        sqlite::connect(&db)
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER no_insert BEFORE INSERT ON file_ids
+                BEGIN SELECT RAISE(FAIL, 'busy'); END;",
+            )
+            .unwrap();
+        let fresh = FileIds::open(&db, Path::new("/root"));
+        assert_eq!(fresh.index("stored.ipynb"), (stored.clone(), false));
+        let (id, new) = fresh.index("a.ipynb");
+        assert!(new);
+        assert_ne!(id, stored);
+        assert_eq!(fresh.index("a.ipynb"), (id, false));
+        assert_eq!(fresh.index("stored.ipynb"), (stored, false));
     }
 }

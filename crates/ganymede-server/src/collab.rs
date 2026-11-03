@@ -508,7 +508,20 @@ struct Disk {
     base: Notebook,
 }
 
-async fn load(contents: &dyn Contents, path: &str) -> Result<(Notebook, Disk), String> {
+/// Why a notebook didn't load.
+struct LoadError {
+    /// The file isn't there (deleted, perhaps just now).
+    missing: bool,
+    message: String,
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+async fn load(contents: &dyn Contents, path: &str) -> Result<(Notebook, Disk), LoadError> {
     let model = contents
         .get(
             path,
@@ -520,9 +533,14 @@ async fn load(contents: &dyn Contents, path: &str) -> Result<(Notebook, Disk), S
             },
         )
         .await
-        .map_err(|e| e.to_string())?;
-    let nb =
-        Notebook::from_value(model.content.unwrap_or(Value::Null)).map_err(|e| e.to_string())?;
+        .map_err(|e| LoadError {
+            missing: matches!(e, ganymede_contents::Error::NotFound(_)),
+            message: e.to_string(),
+        })?;
+    let nb = Notebook::from_value(model.content.unwrap_or(Value::Null)).map_err(|e| LoadError {
+        missing: false,
+        message: e.to_string(),
+    })?;
     Ok((
         nb.clone(),
         Disk {
@@ -553,19 +571,22 @@ async fn run_room(
             }
             Err(e) => {
                 tracing::warn!(room = %room_id, "cannot load {path}: {e}");
-                let mut rooms = collab.rooms.lock().expect("rooms");
-                rooms.remove(&room_id);
-                rx.close();
-                while let Ok(cmd) = rx.try_recv() {
-                    match cmd {
-                        Cmd::Join(_, out) => {
-                            let _ =
-                                out.send(Out::Close(4500, format!("Error initializing: {path}.")));
-                        }
-                        Cmd::Exec(cmd) => cmd.unavailable(&format!("cannot load {path}: {e}")),
-                        _ => {}
-                    }
-                }
+                // A file deleted between resolving its id and opening the
+                // room answers as the deleted file's room does.
+                let code = if e.missing { 4404 } else { 4500 };
+                let reason = if e.missing {
+                    format!("File deleted: {path}")
+                } else {
+                    format!("Error initializing: {path}.")
+                };
+                close_room(
+                    &collab,
+                    &room_id,
+                    &mut rx,
+                    code,
+                    &reason,
+                    &format!("cannot load {path}: {e}"),
+                );
                 return;
             }
         },
@@ -632,14 +653,14 @@ async fn run_room(
                     }
                     Cmd::Removed(gone) => {
                         let Some(d) = disk.as_ref() else { continue };
-                        if moved_path(&d.path, &gone, "").is_none() { continue }
+                        if !is_under(&d.path, &gone) { continue }
                         // As a reconnect would find: the file id is gone.
                         tracing::info!(room = %room_id, "{} deleted; closing the room", d.path);
                         let reason = format!("File deleted: {}", d.path);
                         for out in clients.values() {
                             let _ = out.send(Out::Close(4404, reason.clone()));
                         }
-                        close_room(&collab, &room_id, &mut rx, &reason);
+                        close_room(&collab, &room_id, &mut rx, 4404, &reason, &reason);
                         break;
                     }
                     Cmd::With(f) => {
@@ -740,18 +761,30 @@ fn moved_path(path: &str, old: &str, new: &str) -> Option<String> {
     Some(format!("{new}/{rest}"))
 }
 
-/// Remove a room whose file was deleted from the map, and turn away
-/// what was queued for it: clients joining close with 4404, as the file
-/// id is gone.
-fn close_room(collab: &Collab, room_id: &str, rx: &mut mpsc::UnboundedReceiver<Cmd>, reason: &str) {
+/// `path` is `dir` or under it.
+fn is_under(path: &str, dir: &str) -> bool {
+    moved_path(path, dir, "").is_some()
+}
+
+/// Remove a room that can't go on (its file failed to load or was
+/// deleted) from the map, and turn away what was queued for it: clients
+/// joining close with `code`, executions get `exec_reason`.
+fn close_room(
+    collab: &Collab,
+    room_id: &str,
+    rx: &mut mpsc::UnboundedReceiver<Cmd>,
+    code: u16,
+    reason: &str,
+    exec_reason: &str,
+) {
     collab.rooms.lock().expect("rooms").remove(room_id);
     rx.close();
     while let Ok(cmd) = rx.try_recv() {
         match cmd {
             Cmd::Join(_, out) => {
-                let _ = out.send(Out::Close(4404, reason.to_string()));
+                let _ = out.send(Out::Close(code, reason.to_string()));
             }
-            Cmd::Exec(cmd) => cmd.unavailable(reason),
+            Cmd::Exec(cmd) => cmd.unavailable(exec_reason),
             Cmd::Flush(done) => {
                 let _ = done.send(());
             }
