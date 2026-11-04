@@ -2471,14 +2471,41 @@ async fn collaboration_room_syncs_saves_and_reloads() {
 #[tokio::test]
 async fn collaboration_room_reloads_a_file_that_never_settles() {
     // Events never settle for the 500 ms debounce.
-    room_keeps_up_with_a_busy_file(Duration::from_millis(100), Duration::from_secs(8)).await;
+    room_keeps_up_with_a_busy_file(
+        Duration::from_millis(100),
+        Duration::from_secs(8),
+        true,
+        false,
+    )
+    .await;
+}
+
+/// The same with the room unwatched, as where file watching fails, and a
+/// client that keeps typing, so the room never goes the 1 s without an
+/// edit that its autosave waits for. Each 1 s poll merges the change and
+/// the room saves right after, which is then the only save (#279, #341).
+#[tokio::test]
+async fn collaboration_room_saves_a_never_settling_file_while_polling() {
+    room_keeps_up_with_a_busy_file(
+        Duration::from_millis(100),
+        Duration::from_secs(8),
+        false,
+        true,
+    )
+    .await;
 }
 
 /// A file rewritten every 0.7 s: each change settles and reloads, and
 /// the room's own edit still gets saved in between (#347).
 #[tokio::test]
 async fn collaboration_room_saves_between_settled_reloads() {
-    room_keeps_up_with_a_busy_file(Duration::from_millis(700), Duration::from_secs(6)).await;
+    room_keeps_up_with_a_busy_file(
+        Duration::from_millis(700),
+        Duration::from_secs(6),
+        true,
+        false,
+    )
+    .await;
 }
 
 /// Contents that note whether a save wrote the room's edit (`room: `),
@@ -2568,8 +2595,15 @@ impl ganymede_contents::Contents for SaveLog {
 
 /// Another program rewrites cell `a` every `every` for `writing`; the
 /// room must reload while it does, and its own edit to cell `b` must
-/// reach the file before the writes stop.
-async fn room_keeps_up_with_a_busy_file(every: Duration, writing: Duration) {
+/// reach the file before the writes stop. An unwatched room (`watched`
+/// false) has no contents root to watch, so it polls. With `typing`, the
+/// client edits cell `b` again every 300 ms until the writes stop.
+async fn room_keeps_up_with_a_busy_file(
+    every: Duration,
+    writing: Duration,
+    watched: bool,
+    typing: bool,
+) {
     use ganymede_documents::schema::Roots;
     use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
     use ganymede_documents::yrs::updates::decoder::Decode;
@@ -2584,6 +2618,10 @@ async fn room_keeps_up_with_a_busy_file(every: Duration, writing: Duration) {
         "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
     std::fs::write(&file, nb.to_string()).unwrap();
     let mut st = state(dir.path());
+    if !watched {
+        // No root, so nothing to watch.
+        st.collab = Arc::default();
+    }
     let room_saved = Arc::new(std::sync::atomic::AtomicBool::new(false));
     st.contents = Arc::new(SaveLog {
         inner: st.contents.clone(),
@@ -2662,29 +2700,37 @@ async fn room_keeps_up_with_a_busy_file(every: Duration, writing: Duration) {
         })
     };
     let start = std::time::Instant::now();
+    // An edit to the start of cell `b`, as an update for the room.
+    let edit = |text: &str| {
+        let before = doc.transact().state_vector();
+        {
+            let mut txn = doc.transact_mut();
+            let Some(Out::YMap(cell)) = roots.cells.get(&txn, 1) else {
+                panic!()
+            };
+            let Some(Out::YText(t)) = cell.get(&txn, "source") else {
+                panic!()
+            };
+            t.insert(&mut txn, 0, text);
+        }
+        let u = doc.transact().encode_state_as_update_v1(&before);
+        TMsg::Binary(YMsg::Sync(SyncMessage::Update(u)).encode_v1().into())
+    };
     // Edit cell `b` while the file is busy.
-    let before = doc.transact().state_vector();
-    {
-        let mut txn = doc.transact_mut();
-        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 1) else {
-            panic!()
-        };
-        let Some(Out::YText(t)) = cell.get(&txn, "source") else {
-            panic!()
-        };
-        t.insert(&mut txn, 0, "room: ");
-    }
-    let u = doc.transact().encode_state_as_update_v1(&before);
-    ws.send(TMsg::Binary(
-        YMsg::Sync(SyncMessage::Update(u)).encode_v1().into(),
-    ))
-    .await
-    .unwrap();
+    ws.send(edit("room: ")).await.unwrap();
+    let mut keys = tokio::time::interval(Duration::from_millis(300));
+    keys.tick().await;
 
     let deadline = tokio::time::Instant::now() + writing + Duration::from_secs(5);
     loop {
-        let msg = tokio::time::timeout_at(deadline, ws.next())
-            .await
+        let msg = tokio::select! {
+            msg = tokio::time::timeout_at(deadline, ws.next()) => msg,
+            _ = keys.tick(), if typing => {
+                ws.send(edit(".")).await.unwrap();
+                continue;
+            }
+        };
+        let msg = msg
             .expect("timed out waiting for a reload")
             .unwrap()
             .unwrap();
@@ -2700,7 +2746,12 @@ async fn room_keeps_up_with_a_busy_file(every: Duration, writing: Duration) {
     );
     // Wait without blocking the runtime the room runs on.
     while !writer.is_finished() {
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        if typing {
+            keys.tick().await;
+            ws.send(edit(".")).await.unwrap();
+        } else {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
     writer.join().unwrap();
     assert!(
