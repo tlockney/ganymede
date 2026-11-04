@@ -63,6 +63,9 @@ const DEBOUNCE: Duration = Duration::from_millis(500);
 const MAX_DEBOUNCE: Duration = Duration::from_secs(5);
 /// How long a room with no clients is kept, in case one reconnects.
 const CLEANUP_DELAY: Duration = Duration::from_secs(60);
+/// Failed saves in a row after which a room with no clients closes with
+/// its edits unsaved: about five minutes of #353's backoff.
+const GIVE_UP_AFTER: u32 = 10;
 
 /// Rooms and file ids for one server.
 pub struct Collab {
@@ -102,6 +105,11 @@ impl Collab {
             cleanup_delay: CLEANUP_DELAY,
             requests: Default::default(),
         }
+    }
+
+    /// How many rooms are open.
+    pub fn open_rooms(&self) -> usize {
+        self.rooms.lock().expect("rooms").len()
     }
 
     /// Keep rooms with no clients for `delay` instead of a minute, so
@@ -743,22 +751,43 @@ async fn run_room(
                     after_save(status, &mut last_edit, &mut save_failures);
                 }
                 if empty_since.is_some_and(|t| t.elapsed() >= collab.cleanup_delay) && exec.is_idle() {
-                    if room.is_dirty() {
+                    // Save now unless the autosave already has one due, so a
+                    // failing save keeps one retry clock: #353's backoff.
+                    if room.is_dirty() && last_edit.is_none() {
                         let status = save_room(contents.as_ref(), &mut room, d, &clients, false).await;
                         after_save(status, &mut last_edit, &mut save_failures);
                     }
-                    // A failed save leaves the edits only in the room, so
-                    // it stays open and the autosave keeps retrying (#359).
-                    if room.is_dirty() {
+                    // A failed save leaves the edits only in the room, so it
+                    // stays open while the autosave retries (#359), unless
+                    // its file is gone or the saves keep failing.
+                    if room.is_dirty() && save_failures > 0 {
+                        let gone = matches!(
+                            contents.get(&d.path, GetOptions::default()).await,
+                            Err(ganymede_contents::Error::NotFound(_))
+                        );
+                        if !gone && save_failures < GIVE_UP_AFTER {
+                            tracing::warn!(
+                                room = %room_id,
+                                path = %d.path,
+                                failures = save_failures,
+                                "no clients left, but the room's edits aren't saved; keeping it open"
+                            );
+                            empty_since = Some(Instant::now());
+                            continue;
+                        }
                         tracing::warn!(
                             room = %room_id,
                             path = %d.path,
                             failures = save_failures,
-                            "no clients left, but the room's edits aren't saved; keeping it open"
+                            "closing the room with unsaved edits: {}",
+                            if gone { "its file is gone" } else { "its saves keep failing" }
                         );
-                    } else if next.is_none() && retire(&collab, &room_id, &mut rx) {
-                        break;
+                    } else if room.is_dirty() {
+                        // An edit the autosave hasn't reached yet.
+                        empty_since = Some(Instant::now());
+                        continue;
                     }
+                    if next.is_none() && retire(&collab, &room_id, &mut rx) { break }
                     empty_since = Some(Instant::now());
                 }
             }
