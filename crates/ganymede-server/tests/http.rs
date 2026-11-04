@@ -4730,3 +4730,42 @@ async fn kernel_usage_says_when_there_is_no_process() {
     .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn kernel_usage_cpu_holds_for_requests_close_together() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state_with(
+        dir.path(),
+        Arc::new(OwnProcessProvisioner),
+        Arc::new(FakeTransports),
+    );
+    st.metrics = Arc::new(ganymede_server::metrics::Metrics::with_probe_timeout(
+        Duration::from_millis(200),
+    ));
+    let app = build_router(st);
+    let (path, _) = start_and_get_usage(&app).await;
+    // Keep the "kernel" (this process) busy on one core.
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let spin = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                std::hint::spin_loop();
+            }
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let (_, first) = call(&app, "GET", &path, None, Some(TOKEN)).await;
+    let (_, server) = call(&app, "GET", "/api/metrics/v1", None, Some(TOKEN)).await;
+    let (_, second) = call(&app, "GET", &path, None, Some(TOKEN)).await;
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    spin.join().unwrap();
+    for (what, cpu) in [
+        ("first", &first["content"]["kernel_cpu"]),
+        ("server", &server["cpu_percent"]),
+        ("second", &second["content"]["kernel_cpu"]),
+    ] {
+        let cpu = cpu.as_f64().unwrap();
+        assert!(cpu > 30.0, "{what} reading of a busy process: {cpu}");
+    }
+}

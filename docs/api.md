@@ -288,7 +288,8 @@ ipykernel does, is asked first, and its whole `usage_reply` message comes
 back with `kernel_id` added: a kernel can hold memory outside its own
 process (cdp-kernel runs code in a separate browser target). One that
 doesn't answer within two seconds is measured from the host, its process
-and that process's descendants, until it restarts. A kernel the host has
+and that process's descendants, and asked again after a minute; one that
+replies with an error is measured from the host until it restarts. A kernel the host has
 no process for, an attached or in-process one, gets
 `{"content": {"reason": "no_process"}, "kernel_id": ...}`, and one that
 answered before but not within ten seconds now gets `"reason": "timeout"`.

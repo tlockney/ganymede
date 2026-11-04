@@ -27,14 +27,29 @@ use std::time::Duration;
 /// jupyter-resource-usage waits.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long a kernel that missed its probe is measured from the host
+/// before it is asked again: a kernel busy in native code can miss one.
+const REPROBE_AFTER: Duration = Duration::from_secs(60);
+
+/// What a session's kernel did with `usage_request`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Answer {
+    Answers,
+    /// Replied with an error or something other than `usage_reply`.
+    Refuses,
+    /// Said nothing within the probe timeout, at this time.
+    Missed(std::time::Instant),
+}
+
 pub struct Metrics {
     /// How long a kernel gets to answer its first `usage_request`. One
-    /// that doesn't is measured from the host until it restarts.
+    /// that refuses is measured from the host until it restarts; one that
+    /// says nothing, for a minute before it is asked again.
     pub probe_timeout: Duration,
-    /// Kernel id to (session id, whether that session's kernel answers
+    /// Kernel id to (session id, what that session's kernel did with
     /// `usage_request`). A restart starts a new session, which is asked
     /// again.
-    answers: Mutex<HashMap<String, (String, bool)>>,
+    answers: Mutex<HashMap<String, (String, Answer)>>,
     /// `None` where sysinfo could not start, which then measures nothing.
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     system: Mutex<Option<Scans>>,
@@ -69,10 +84,14 @@ impl Default for Metrics {
             probe_timeout: Duration::from_secs(2),
             answers: Mutex::default(),
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-            system: Mutex::new(sysinfo::System::new().ok().map(|sys| Scans {
-                sys,
-                processes_at: None,
-                host_at: None,
+            system: Mutex::new(sysinfo::System::new().ok().map(|mut sys| {
+                // The first host CPU figure is then since now, not boot.
+                sys.refresh_cpu_usage();
+                Scans {
+                    sys,
+                    processes_at: None,
+                    host_at: None,
+                }
             })),
         }
     }
@@ -111,17 +130,16 @@ impl Metrics {
             scans.sys.refresh_processes_specifics(
                 ProcessesToUpdate::All,
                 true,
-                ProcessRefreshKind::nothing().with_memory().with_cpu(),
+                ProcessRefreshKind::nothing()
+                    .with_memory()
+                    .with_cpu()
+                    .without_tasks(),
             );
         }
         let processes = scans.sys.processes();
         processes.get(&root)?;
         let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
         for (id, p) in processes {
-            // Linux lists threads too; they share their process's memory.
-            if p.thread_kind().is_some() {
-                continue;
-            }
             if let Some(parent) = p.parent() {
                 children.entry(parent).or_default().push(*id);
             }
@@ -183,26 +201,35 @@ impl Metrics {
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     fn host(&self, _content: &mut serde_json::Map<String, Value>) {}
 
-    /// Whether the kernel's current session answers `usage_request`, if
-    /// known. Forgets kernels no longer running.
+    /// Whether to ask the kernel's current session: `Some(true)` when it
+    /// answers, `Some(false)` when it refuses or missed a probe within the
+    /// last minute, `None` when it is to be probed. Forgets kernels no
+    /// longer running.
     fn answers(&self, kernels: &[String], id: &str, session: &str) -> Option<bool> {
         let mut answers = self.answers.lock().unwrap();
         answers.retain(|k, _| kernels.iter().any(|id| id == k));
         match answers.get(id) {
-            Some((s, yes)) if s == session => Some(*yes),
+            Some((s, a)) if s == session => match a {
+                Answer::Answers => Some(true),
+                Answer::Refuses => Some(false),
+                Answer::Missed(at) if at.elapsed() < REPROBE_AFTER => Some(false),
+                Answer::Missed(_) => None,
+            },
             _ => None,
         }
     }
 
-    /// Record whether the session answers. A miss never overwrites an
-    /// answer: a request that timed out while another got a reply (two
-    /// first requests at once, or one slow probe) says nothing new.
-    fn set_answers(&self, id: &str, session: &str, yes: bool) {
+    /// Record what the session did. A miss never overwrites an answer: a
+    /// request that timed out while another got a reply (two first
+    /// requests at once) says nothing new.
+    fn set_answers(&self, id: &str, session: &str, answer: Answer) {
         let mut answers = self.answers.lock().unwrap();
-        if !yes && matches!(answers.get(id), Some((s, true)) if s == session) {
+        if matches!(answer, Answer::Missed(_))
+            && matches!(answers.get(id), Some((s, Answer::Answers)) if s == session)
+        {
             return;
         }
-        answers.insert(id.to_string(), (session.to_string(), yes));
+        answers.insert(id.to_string(), (session.to_string(), answer));
     }
 
     /// Ask the kernel for its `usage_reply`. `Ok(None)` when it does not
@@ -282,7 +309,7 @@ async fn kernel_usage(
         };
         match m.ask(session, timeout).await {
             Ok(Some(mut reply)) => {
-                m.set_answers(id, &sid, true);
+                m.set_answers(id, &sid, Answer::Answers);
                 reply["kernel_id"] = id.into();
                 if let Some(content) = reply["content"].as_object_mut() {
                     content.insert("host_usage_flag".into(), true.into());
@@ -293,7 +320,8 @@ async fn kernel_usage(
                 let ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
                 return no_usage(id, json!({ "reason": "timeout", "timeout_ms": ms }));
             }
-            Ok(None) | Err(()) => m.set_answers(id, &sid, false),
+            Ok(None) => m.set_answers(id, &sid, Answer::Refuses),
+            Err(()) => m.set_answers(id, &sid, Answer::Missed(std::time::Instant::now())),
         }
     }
     let Some(pid) = session.pid() else {
