@@ -56,7 +56,9 @@ pub struct Router {
     /// them.
     pending: HashMap<u64, (u64, Value, Option<Mark>)>,
     /// Documents that marked items name, by number, and the numbers by
-    /// document. Kept when the server restarts (see [`Router::restart`]).
+    /// document. Kept when the server restarts (see [`Router::restart`]),
+    /// so they last as long as the session: one short entry per document
+    /// ever completed on, which the notebooks a person opens bound.
     documents: Vec<String>,
     numbers: HashMap<String, u64>,
     /// A server request's id (as JSON text), to the client asked and the

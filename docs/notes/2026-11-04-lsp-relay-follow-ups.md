@@ -4,8 +4,9 @@
 so a request whose text merely mentioned a document notification (an
 `executeCommand` argument, a completion's label) skipped the router: no
 id of the relay's own, so two tabs' ids could clash, and no unmarking of
-a resolve's item. It now parses the message once and routes by its
-`method`.
+a resolve's item. It now parses the message and routes by its `method`.
+(A request is still parsed again by `resync_for_request` and the router;
+passing the value down would save that, but requests are small.)
 
 Document numbers in item marks (#339) lived in the router, which was
 replaced whenever the server restarted. A completion item from before a
