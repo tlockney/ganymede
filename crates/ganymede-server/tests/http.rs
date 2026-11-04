@@ -2709,15 +2709,25 @@ async fn room_keeps_up_with_a_busy_file(every: Duration, writing: Duration) {
     );
 }
 
-/// A room whose save fails tries again without a further edit (#353).
-#[tokio::test]
-async fn collaboration_room_retries_a_failed_save() {
+/// A room on `fail.ipynb` (cell `a`, "keep") whose first `fail` saves of
+/// its own edit fail, with one client that has typed "room: " into the
+/// cell. Returns the client's socket with the file and the count of
+/// failures left.
+async fn room_edit_with_failing_saves(
+    fail: usize,
+    cleanup_delay: Option<Duration>,
+) -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    Arc<std::sync::atomic::AtomicUsize>,
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+) {
     use ganymede_documents::schema::Roots;
     use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
     use ganymede_documents::yrs::updates::decoder::Decode;
     use ganymede_documents::yrs::updates::encoder::Encode;
     use ganymede_documents::yrs::{Array, Doc, Map, Out, ReadTxn, Text, Transact, Update};
-    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    use std::sync::atomic::AtomicUsize;
     use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
 
     let dir = tempfile::tempdir().unwrap();
@@ -2726,7 +2736,16 @@ async fn collaboration_room_retries_a_failed_save() {
         "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
     std::fs::write(&file, nb.to_string()).unwrap();
     let mut st = state(dir.path());
-    let fail = Arc::new(AtomicUsize::new(1));
+    if let Some(delay) = cleanup_delay {
+        st.collab = Arc::new(
+            ganymede_server::collab::Collab::new(
+                ganymede_contents::FileIds::in_memory(),
+                dir.path().canonicalize().ok(),
+            )
+            .with_cleanup_delay(delay),
+        );
+    }
+    let fail = Arc::new(AtomicUsize::new(fail));
     st.contents = Arc::new(SaveLog {
         inner: st.contents.clone(),
         room_saved: Default::default(),
@@ -2799,8 +2818,14 @@ async fn collaboration_room_retries_a_failed_save() {
     .await
     .unwrap();
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !std::fs::read_to_string(&file)
+    (dir, file, fail, ws)
+}
+
+/// Wait for the room's edit to reach `file`.
+async fn wait_for_room_edit(file: &std::path::Path, fail: &std::sync::atomic::AtomicUsize) {
+    use std::sync::atomic::Ordering::SeqCst;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !std::fs::read_to_string(file)
         .unwrap()
         .contains("room: keep")
     {
@@ -2811,8 +2836,25 @@ async fn collaboration_room_retries_a_failed_save() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert_eq!(fail.load(SeqCst), 0, "the first save didn't fail");
+    assert_eq!(fail.load(SeqCst), 0, "the saves didn't fail");
+}
+
+/// A room whose save fails tries again without a further edit (#353).
+#[tokio::test]
+async fn collaboration_room_retries_a_failed_save() {
+    let (_dir, file, fail, ws) = room_edit_with_failing_saves(1, None).await;
+    wait_for_room_edit(&file, &fail).await;
     drop(ws);
+}
+
+/// A room whose clients left keeps its unsaved edits while its saves
+/// fail, instead of retiring with them (#359).
+#[tokio::test]
+async fn collaboration_room_outlives_cleanup_while_its_save_fails() {
+    let (_dir, file, fail, ws) =
+        room_edit_with_failing_saves(2, Some(Duration::from_millis(100))).await;
+    drop(ws);
+    wait_for_room_edit(&file, &fail).await;
 }
 
 #[tokio::test]

@@ -744,9 +744,21 @@ async fn run_room(
                 }
                 if empty_since.is_some_and(|t| t.elapsed() >= collab.cleanup_delay) && exec.is_idle() {
                     if room.is_dirty() {
-                        save_room(contents.as_ref(), &mut room, d, &clients, false).await;
+                        let status = save_room(contents.as_ref(), &mut room, d, &clients, false).await;
+                        after_save(status, &mut last_edit, &mut save_failures);
                     }
-                    if next.is_none() && retire(&collab, &room_id, &mut rx) { break }
+                    // A failed save leaves the edits only in the room, so
+                    // it stays open and the autosave keeps retrying (#359).
+                    if room.is_dirty() {
+                        tracing::warn!(
+                            room = %room_id,
+                            path = %d.path,
+                            failures = save_failures,
+                            "no clients left, but the room's edits aren't saved; keeping it open"
+                        );
+                    } else if next.is_none() && retire(&collab, &room_id, &mut rx) {
+                        break;
+                    }
                     empty_since = Some(Instant::now());
                 }
             }
