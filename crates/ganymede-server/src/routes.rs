@@ -456,7 +456,7 @@ async fn kernel_log(
         .lines
         .unwrap_or(KERNEL_LOG_DEFAULT_LINES)
         .min(ganymede_api::kernel_log::LOG_LINES);
-    Ok(Json(s.kernels.log(&id, q.after.unwrap_or(0), lines)?))
+    Ok(Json(s.kernels.log(&id, q.after, lines)?))
 }
 
 async fn delete_kernel(

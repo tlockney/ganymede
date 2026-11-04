@@ -332,7 +332,8 @@ read why it died.
 
 Without `after`, `lines` (default 200, at most 1000) returns the newest
 lines. With `after`, it returns the oldest lines whose `seq` is above
-it. To follow the log, pass the `seq` of the last line you got as
-`after`; when a page ends before `last_seq`, ask again. A kernel the
+it, so `after=0` starts from the oldest line kept. To follow the log,
+pass the `seq` of the last line you got as `after` (0 before any); when
+a page ends before `last_seq`, ask again. A kernel the
 server runs no process for, an in-process one or one on a gateway, gets
 `{"kernel_id": ..., "lines": [], "last_seq": 0, "reason": "no_process"}`.

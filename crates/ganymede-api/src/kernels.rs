@@ -570,12 +570,12 @@ impl KernelManager {
         Ok(())
     }
 
-    /// Up to `limit` lines of `id`'s log: the newest when `after` is 0,
+    /// Up to `limit` lines of `id`'s log: the newest without `after`,
     /// otherwise the oldest with `seq` above `after` (see
     /// [`KernelLog::read`]). A kernel with no process of its own
     /// (in-process, or on a gateway) has none, and says why. The logs of
     /// the last kernels shut down or left dead stay readable.
-    pub fn log(&self, id: &str, after: u64, limit: usize) -> Result<KernelLogModel> {
+    pub fn log(&self, id: &str, after: Option<u64>, limit: usize) -> Result<KernelLogModel> {
         let kernel = match self.get(id) {
             Ok(kernel) => kernel,
             // A kernel shut down or left dead keeps its log for a while:
