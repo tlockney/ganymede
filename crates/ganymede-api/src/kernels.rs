@@ -256,7 +256,7 @@ impl RunningKernel {
             return;
         }
         if self.asked_to_exit.load(Ordering::SeqCst) {
-            self.remove_dead(&core.kernels);
+            self.remove_dead(core);
             return;
         }
         tokio::spawn(core.clone().crashed(self.clone(), session_id.to_string()));
@@ -305,15 +305,16 @@ impl RunningKernel {
     /// Drop a dead kernel from the map, tell clients `status: dead`, and
     /// close them, as `jupyter_server` does when a kernel dies and is not
     /// restarted.
-    fn remove_dead(self: &Arc<Self>, kernels: &KernelMap) {
+    fn remove_dead(self: &Arc<Self>, core: &Core) {
         {
-            let mut map = kernels.write().unwrap();
+            let mut map = core.kernels.write().unwrap();
             match map.get(&self.id) {
                 Some(k) if Arc::ptr_eq(k, self) => map.remove(&self.id),
                 // Already removed by `shutdown`, which reports it.
                 _ => return,
             };
         }
+        core.keep_log(self);
         tracing::warn!(kernel = %self.id, "kernel died");
         self.set_state("dead");
         self.announce("status", serde_json::json!({"execution_state": "dead"}));
@@ -341,6 +342,32 @@ struct Core {
     transports: Arc<dyn TransportFactory>,
     kernels: KernelMap,
     config: KernelManagerConfig,
+    /// The logs of the last [`ENDED_LOGS`] kernels to leave the map, newest
+    /// last, so a client can still read why a kernel died.
+    ended: Mutex<VecDeque<(String, Arc<KernelLog>)>>,
+}
+
+/// Logs kept for kernels that have been shut down or left dead.
+const ENDED_LOGS: usize = 32;
+
+impl Core {
+    /// Keep `kernel`'s log readable after it leaves the map.
+    fn keep_log(&self, kernel: &RunningKernel) {
+        let mut ended = self.ended.lock().unwrap();
+        ended.retain(|(id, _)| *id != kernel.id);
+        if ended.len() == ENDED_LOGS {
+            ended.pop_front();
+        }
+        ended.push_back((kernel.id.clone(), kernel.log.clone()));
+    }
+
+    fn ended_log(&self, id: &str) -> Option<Arc<KernelLog>> {
+        let ended = self.ended.lock().unwrap();
+        ended
+            .iter()
+            .find(|(i, _)| i == id)
+            .map(|(_, log)| log.clone())
+    }
 }
 
 pub struct KernelManager {
@@ -363,6 +390,7 @@ impl KernelManager {
                 transports,
                 kernels: RwLock::new(HashMap::new()),
                 config,
+                ended: Mutex::default(),
             }),
             started: now_iso(),
         }
@@ -512,8 +540,9 @@ impl KernelManager {
         let kernel = self.get(id)?;
         let _guard = kernel.lifecycle.lock().await;
         self.core.ensure_listed(&kernel)?;
-        self.core.kernels.write().unwrap().remove(id);
         kernel.log.host("shutting down at a client's request");
+        self.core.kernels.write().unwrap().remove(id);
+        self.core.keep_log(&kernel);
         let result = kernel
             .session()
             .shutdown(false, self.core.config.shutdown_grace)
@@ -531,11 +560,27 @@ impl KernelManager {
         Ok(())
     }
 
-    /// The newest `limit` lines of `id`'s log with `seq` above `after`.
-    /// A kernel with no process of its own (in-process, or on a gateway)
-    /// has none, and says why.
+    /// Up to `limit` lines of `id`'s log: the newest when `after` is 0,
+    /// otherwise the oldest with `seq` above `after` (see
+    /// [`KernelLog::read`]). A kernel with no process of its own
+    /// (in-process, or on a gateway) has none, and says why. The logs of
+    /// the last kernels shut down or left dead stay readable.
     pub fn log(&self, id: &str, after: u64, limit: usize) -> Result<KernelLogModel> {
-        let kernel = self.get(id)?;
+        let kernel = match self.get(id) {
+            Ok(kernel) => kernel,
+            // A kernel shut down or left dead keeps its log for a while:
+            // the reason it died is what a client wants to read.
+            Err(e) => {
+                let log = self.core.ended_log(id).ok_or(e)?;
+                let (lines, last_seq) = log.read(after, limit);
+                return Ok(KernelLogModel {
+                    kernel_id: id.to_string(),
+                    lines,
+                    last_seq,
+                    reason: None,
+                });
+            }
+        };
         if kernel.session().pid().is_none() {
             return Ok(KernelLogModel {
                 kernel_id: kernel.id.clone(),
@@ -583,7 +628,7 @@ impl KernelManager {
         if let Err(e) = self.core.relaunch(&kernel).await {
             tracing::error!(kernel = %id, "kernel failed to restart: {e}");
             kernel.booting.store(false, Ordering::SeqCst);
-            kernel.remove_dead(&self.core.kernels);
+            kernel.remove_dead(&self.core);
             return Err(e);
         }
         self.core.boot(&kernel).await?;
@@ -688,7 +733,7 @@ impl Core {
                 kernel.log.host("the kernel died; restarts are off");
             }
             kernel.answer_for_crashed_kernel("The kernel died.");
-            kernel.remove_dead(&self.kernels);
+            kernel.remove_dead(&self);
             return;
         }
         tracing::warn!(kernel = %kernel.id, "kernel died; restarting it ({count}/{limit})");
@@ -706,7 +751,7 @@ impl Core {
         if let Err(e) = self.relaunch(&kernel).await {
             tracing::error!(kernel = %kernel.id, "kernel failed to restart: {e}");
             kernel.booting.store(false, Ordering::SeqCst);
-            kernel.remove_dead(&self.kernels);
+            kernel.remove_dead(&self);
             return;
         }
         // On failure `boot` reports the kernel dead and removes it.
@@ -769,7 +814,7 @@ impl Core {
             Err(e) => {
                 tracing::error!(kernel = %kernel.id, "kernel failed to start: {e}");
                 kernel.log.host(&format!("the kernel failed to start: {e}"));
-                kernel.remove_dead(&self.kernels);
+                kernel.remove_dead(self);
                 Err(e)
             }
         }

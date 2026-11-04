@@ -107,13 +107,23 @@ impl KernelLog {
         })
     }
 
-    /// The newest `limit` lines with `seq` above `after`, oldest first,
-    /// and the newest `seq` kept.
+    /// Up to `limit` lines, oldest first, and the newest `seq` kept. With
+    /// `after` 0, the newest lines; otherwise the oldest with `seq` above
+    /// `after`, so a client paging forward with the last `seq` it read
+    /// misses none still kept.
     pub fn read(&self, after: u64, limit: usize) -> (Vec<KernelLogLine>, u64) {
         let l = self.0.lock().unwrap();
-        let newer = l.lines.iter().filter(|line| line.seq > after);
-        let skip = newer.clone().count().saturating_sub(limit);
-        (newer.skip(skip).cloned().collect(), l.last_seq)
+        let lines = if after == 0 {
+            let skip = l.lines.len().saturating_sub(limit);
+            l.lines.iter().skip(skip).cloned().collect()
+        } else {
+            // `seq`s are consecutive, so the first line after `after` is
+            // found by arithmetic.
+            let first = l.lines.front().map_or(0, |line| line.seq);
+            let skip = usize::try_from((after + 1).saturating_sub(first)).unwrap_or(usize::MAX);
+            l.lines.iter().skip(skip).take(limit).cloned().collect()
+        };
+        (lines, l.last_seq)
     }
 }
 
@@ -154,7 +164,17 @@ mod tests {
         };
         assert_eq!(texts(log.read(0, 2)), ["c", "d"]);
         assert_eq!(texts(log.read(2, 10)), ["c", "d"]);
+        // Paging forward takes the oldest lines after `after`, so none
+        // are skipped.
+        assert_eq!(texts(log.read(1, 2)), ["b", "c"]);
         assert_eq!(texts(log.read(4, 10)), Vec::<String>::new());
         assert_eq!(log.read(4, 10).1, 4);
+        // Lines dropped from the front: `after` before the oldest kept
+        // starts at the oldest.
+        let log = KernelLog::default();
+        for i in 0..LOG_LINES + 10 {
+            log.host(&i.to_string());
+        }
+        assert_eq!(texts(log.read(3, 1)), ["10"]);
     }
 }

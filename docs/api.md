@@ -324,10 +324,15 @@ GET /api/kernels/5b140482-3d46-486f-8a0c-637e047675f2/log?after=0&lines=200
  "last_seq": 4}
 ```
 
-`source` is `stdout`, `stderr` or `host`. The log lasts as long as the
-kernel's id, across restarts, and keeps its last 1000 lines or 256 KiB,
-with longer lines cut at 8 KiB. `lines` (default 200, at most 1000)
-returns the newest lines. To follow the log, pass the last `last_seq`
-seen as `after` and get only newer lines. A kernel the server runs no
-process for, an in-process one or one on a gateway, gets
+`source` is `stdout`, `stderr` or `host`. The log lasts across
+restarts and keeps its last 1000 lines or 256 KiB, with longer lines cut
+at 8 KiB. After a kernel is shut down or left dead, its log stays
+readable under its id for the last 32 such kernels, so a client can
+read why it died.
+
+Without `after`, `lines` (default 200, at most 1000) returns the newest
+lines. With `after`, it returns the oldest lines whose `seq` is above
+it. To follow the log, pass the `seq` of the last line you got as
+`after`; when a page ends before `last_seq`, ask again. A kernel the
+server runs no process for, an in-process one or one on a gateway, gets
 `{"kernel_id": ..., "lines": [], "last_seq": 0, "reason": "no_process"}`.

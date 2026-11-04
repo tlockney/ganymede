@@ -4826,7 +4826,7 @@ async fn kernel_usage_cpu_holds_for_requests_close_together() {
 /// Runs each kernel as a `sh` process that writes to stdout and stderr,
 /// with its messages answered by an in-process fake kernel.
 #[cfg(unix)]
-struct ShProvisioner(std::path::PathBuf);
+struct ShProvisioner(std::path::PathBuf, &'static str);
 #[cfg(unix)]
 #[async_trait]
 impl Provisioner for ShProvisioner {
@@ -4836,7 +4836,7 @@ impl Provisioner for ShProvisioner {
         opts: LaunchOptions,
     ) -> ganymede_kernel_host::Result<LaunchedKernel> {
         let mut spec: Kernelspec = serde_json::from_value(json!({
-            "argv": ["sh", "-c", "echo hello; echo trouble >&2; exec sleep 30"],
+            "argv": ["sh", "-c", self.1],
             "display_name": "",
             "language": "",
         }))
@@ -4887,7 +4887,10 @@ async fn kernel_log_has_the_process_output_across_restarts() {
     let runtime = tempfile::tempdir().unwrap();
     let app = build_router(state_with(
         dir.path(),
-        Arc::new(ShProvisioner(runtime.path().into())),
+        Arc::new(ShProvisioner(
+            runtime.path().into(),
+            "echo hello; echo trouble >&2; exec sleep 30",
+        )),
         Arc::new(FakeTransports),
     ));
     let (s, kernel) = call(&app, "POST", "/api/kernels", Some(json!({})), Some(TOKEN)).await;
@@ -4959,6 +4962,78 @@ async fn kernel_log_has_the_process_output_across_restarts() {
     )
     .await;
     assert_eq!(s, StatusCode::NO_CONTENT);
+    // Shut down, it is gone, but its log can still be read.
+    // The process's exit line may follow the shutdown line.
+    let log = log_with(&app, &id, "?lines=2", 1).await;
+    assert!(
+        log_lines(&log)
+            .iter()
+            .any(|(_, t)| t == "shutting down at a client's request"),
+        "{log}"
+    );
+}
+
+/// A kernel that dies at every start is left dead and leaves the map; its
+/// log, the reason it died, stays readable (#366 review).
+#[cfg(unix)]
+#[tokio::test]
+async fn kernel_log_outlives_a_kernel_left_dead() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = tempfile::tempdir().unwrap();
+    let app = build_router(state_with(
+        dir.path(),
+        Arc::new(ShProvisioner(
+            runtime.path().into(),
+            "echo no module named oops >&2; exit 3",
+        )),
+        Arc::new(FakeTransports),
+    ));
+    let (s, kernel) = call(&app, "POST", "/api/kernels", Some(json!({})), Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let id = kernel["id"].as_str().unwrap().to_string();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let (s, _) = call(
+            &app,
+            "GET",
+            &format!("/api/kernels/{id}"),
+            None,
+            Some(TOKEN),
+        )
+        .await;
+        if s == StatusCode::NOT_FOUND {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the kernel was never left dead"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let (s, log) = call(
+        &app,
+        "GET",
+        &format!("/api/kernels/{id}/log?lines=1000"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{log}");
+    let lines = log_lines(&log);
+    assert!(
+        lines.contains(&("stderr".into(), "no module named oops".into())),
+        "{log}"
+    );
+    let last = lines.last().unwrap();
+    assert_eq!(last.0, "host", "{log}");
+    assert!(last.1.contains("leaving it dead"), "{log}");
+    // A process's stderr comes before its exit, and its exit before the
+    // restart that follows it.
+    let at = |pred: &dyn Fn(&(String, String)) -> bool| lines.iter().position(pred).unwrap();
+    let err = at(&|l| l.0 == "stderr");
+    let exit = at(&|l| l.1 == "exited with code 3");
+    let restart = at(&|l| l.1.starts_with("the kernel died; restarting"));
+    assert!(err < exit && exit < restart, "{log}");
 }
 
 #[tokio::test]

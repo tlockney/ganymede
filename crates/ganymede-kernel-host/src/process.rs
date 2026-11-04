@@ -658,16 +658,22 @@ impl Provisioner for SubprocessProvisioner {
             if let Some(job) = leftovers {
                 let _ = job.terminate();
             }
-            let _ = exit_tx.send(Some(code));
             if let Some(o) = output {
-                // What the kernel wrote before it exited goes first. Its
-                // pipes close with it, unless something it started still
-                // holds them.
-                for r in readers {
-                    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), r).await;
+                // What the kernel wrote before it exited goes first, and
+                // the exit line before anyone hears of the exit (a restart
+                // writes its own lines). The pipes close with the process
+                // group, unless something it started outside the group
+                // still holds them: that output is cut off after a second
+                // in all, so it can't run on into the next process's.
+                let deadline = tokio::time::Instant::now() + PIPE_DRAIN;
+                for mut r in readers {
+                    if tokio::time::timeout_at(deadline, &mut r).await.is_err() {
+                        r.abort();
+                    }
                 }
                 o.line(OutputSource::Host, &describe_exit(status));
             }
+            let _ = exit_tx.send(Some(code));
         });
 
         Ok(LaunchedKernel {
@@ -687,6 +693,16 @@ impl Provisioner for SubprocessProvisioner {
 #[cfg(feature = "subprocess")]
 type Pipe = std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>;
 
+/// How long a kernel's exit waits for its pipes to drain, with `output`.
+#[cfg(feature = "subprocess")]
+const PIPE_DRAIN: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Longest line [`prefix_lines`] holds; a longer one is passed on in
+/// pieces of this size, so a stream with no newlines (a `\r` progress
+/// bar, binary on stderr) can't grow the buffer without bound.
+#[cfg(feature = "subprocess")]
+const MAX_LINE: usize = 64 * 1024;
+
 /// Pass `r` to `out` line by line: each line after `prefix` and ending in
 /// a newline, and the line's own text, without prefix or line ending. The
 /// launcher's `out` writes one line at a time to stderr.
@@ -696,13 +712,14 @@ async fn prefix_lines(
     prefix: String,
     mut out: impl FnMut(&[u8], &[u8]),
 ) {
-    use tokio::io::AsyncBufReadExt;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt};
     let mut r = tokio::io::BufReader::new(r);
     let mut line = prefix.into_bytes();
     let start = line.len();
     loop {
         line.truncate(start);
-        match r.read_until(b'\n', &mut line).await {
+        let mut limited = (&mut r).take(MAX_LINE as u64);
+        match limited.read_until(b'\n', &mut line).await {
             Ok(0) | Err(_) => return,
             Ok(_) => {
                 if !line.ends_with(b"\n") {
@@ -1118,6 +1135,16 @@ mod tests {
             ]
         );
         assert_eq!(texts, ["one", "two", "", "last"]);
+    }
+
+    /// A stream with no newline is passed on in pieces of `MAX_LINE`
+    /// bytes, not held whole.
+    #[tokio::test]
+    async fn a_line_with_no_end_is_passed_on_in_pieces() {
+        let long = vec![b'x'; MAX_LINE * 2 + 5];
+        let mut sizes = Vec::new();
+        super::prefix_lines(&long[..], String::new(), |_, t| sizes.push(t.len())).await;
+        assert_eq!(sizes, [MAX_LINE, MAX_LINE, 5]);
     }
 
     /// With `output`, the process's stdout and stderr reach it line by
