@@ -351,8 +351,13 @@ struct Core {
 const ENDED_LOGS: usize = 32;
 
 impl Core {
-    /// Keep `kernel`'s log readable after it leaves the map.
+    /// Keep `kernel`'s log readable after it leaves the map. A kernel
+    /// with no process of its own has no log to keep: it goes on
+    /// answering `no_process` until it is forgotten (404).
     fn keep_log(&self, kernel: &RunningKernel) {
+        if kernel.session().pid().is_none() {
+            return;
+        }
         let mut ended = self.ended.lock().unwrap();
         ended.retain(|(id, _)| *id != kernel.id);
         if ended.len() == ENDED_LOGS {
@@ -537,10 +542,15 @@ impl KernelManager {
     }
 
     pub async fn shutdown(&self, id: &str) -> Result<()> {
+        self.shutdown_because(id, "at a client's request").await
+    }
+
+    /// [`Self::shutdown`], saying why in the kernel's log.
+    async fn shutdown_because(&self, id: &str, why: &str) -> Result<()> {
         let kernel = self.get(id)?;
         let _guard = kernel.lifecycle.lock().await;
         self.core.ensure_listed(&kernel)?;
-        kernel.log.host("shutting down at a client's request");
+        kernel.log.host(&format!("shutting down {why}"));
         self.core.kernels.write().unwrap().remove(id);
         self.core.keep_log(&kernel);
         let result = kernel
@@ -663,7 +673,7 @@ impl KernelManager {
         let mut culled = vec![];
         for id in candidates {
             tracing::info!(kernel = %id, "culling idle kernel");
-            if self.shutdown(&id).await.is_ok() {
+            if self.shutdown_because(&id, "after being idle").await.is_ok() {
                 culled.push(id);
             }
         }
@@ -674,7 +684,11 @@ impl KernelManager {
     /// period, not N, against a service manager's stop timeout.
     pub async fn shutdown_all(&self) {
         let ids: Vec<String> = self.core.kernels.read().unwrap().keys().cloned().collect();
-        futures::future::join_all(ids.iter().map(|id| self.shutdown(id))).await;
+        futures::future::join_all(
+            ids.iter()
+                .map(|id| self.shutdown_because(id, "as the server stops")),
+        )
+        .await;
     }
 
     pub fn connections(&self) -> usize {

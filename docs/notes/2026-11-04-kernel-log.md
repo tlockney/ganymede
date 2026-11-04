@@ -14,8 +14,11 @@ the launch is as before. On exit, the provisioner waits up to a second
 in all for the pipes to drain, writes the exit line, and only then
 reports the exit, so a crash's last stderr lines and its exit line come
 before the manager's "restarting" line. Output from something outside
-the process group that still holds a pipe is cut off at that point, so
-it can't run on into the next process's lines. A line is held to 64 KiB
+the process group that still holds a pipe is left out of the log from
+that point, so it can't run on into the next process's lines; its
+reader still runs to EOF, since dropping the pipe would SIGPIPE that
+writer. Signalling stops at the reap, not at the exit report, so the
+drain doesn't widen the reused-pgid window. A line is held to 64 KiB
 at most, so a quiet server reading a stream with no newlines doesn't
 buffer it whole.
 

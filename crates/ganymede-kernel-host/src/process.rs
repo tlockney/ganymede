@@ -5,6 +5,8 @@ use crate::{Error, Result};
 use async_trait::async_trait;
 use ganymede_protocol::ConnectionInfo;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "subprocess")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::watch;
 
@@ -406,6 +408,9 @@ fn is_file_name_token(s: &str) -> bool {
 struct ChildProcess {
     pid: u32,
     exit: watch::Receiver<Option<Option<i32>>>,
+    /// Set as soon as the process is reaped; `exit` is sent only after
+    /// its output is logged.
+    reaped: Arc<AtomicBool>,
     /// The job holding the kernel and everything it starts. `None` if the
     /// job could not be set up; the kernel then runs without one.
     #[cfg(windows)]
@@ -493,7 +498,7 @@ impl ChildProcess {
     /// Kill the kernel and every process in its job, the counterpart of
     /// SIGKILL to the process group. Without a job, only `Unsupported`.
     fn terminate_job(&self) -> Result<()> {
-        if !self.is_alive() {
+        if self.reaped.load(Ordering::SeqCst) {
             return Ok(());
         }
         match &self.job {
@@ -511,7 +516,7 @@ impl ChildProcess {
     /// remains between this check and the signal; the waiter task reaps
     /// as soon as the child exits.
     fn signal_group(&self, sig: libc::c_int) -> Result<()> {
-        if !self.is_alive() {
+        if self.reaped.load(Ordering::SeqCst) {
             return Err(Error::KernelDied);
         }
         let rc = unsafe { libc::kill(-(self.pid as i32), sig) };
@@ -610,6 +615,11 @@ impl Provisioner for SubprocessProvisioner {
             String::new()
         };
         let echo = !opts.quiet;
+        // Set once the exit has been logged: later output, from something
+        // the kernel started outside its group that still holds a pipe,
+        // stays out of the log (and out of the next process's lines), but
+        // is still read, so its writer gets no SIGPIPE.
+        let cut = Arc::new(AtomicBool::new(false));
         let mut readers = Vec::new();
         for (pipe, source) in [
             (
@@ -623,12 +633,15 @@ impl Provisioner for SubprocessProvisioner {
         ] {
             let Some(pipe) = pipe else { continue };
             let output = output.clone();
+            let cut = cut.clone();
             readers.push(tokio::spawn(prefix_lines(
                 pipe,
                 prefix.clone(),
                 move |line, text| {
                     if let Some(o) = &output {
-                        o.line(source, &String::from_utf8_lossy(text));
+                        if !cut.load(Ordering::SeqCst) {
+                            o.line(source, &String::from_utf8_lossy(text));
+                        }
                     }
                     if echo {
                         write_stderr(line);
@@ -638,10 +651,15 @@ impl Provisioner for SubprocessProvisioner {
         }
 
         let (exit_tx, exit_rx) = watch::channel(None);
+        let reaped = Arc::new(AtomicBool::new(false));
+        let reaped_tx = reaped.clone();
         #[cfg(windows)]
         let leftovers = job.clone();
         tokio::spawn(async move {
             let status = child.wait().await.ok();
+            // Before anything else, so `signal_group` stops at once even
+            // while the pipes drain below.
+            reaped_tx.store(true, Ordering::SeqCst);
             let code = status.and_then(|s| s.code());
             tracing::info!(pid, ?code, "kernel exited");
             // Whatever the kernel left in its process group (a background
@@ -663,14 +681,13 @@ impl Provisioner for SubprocessProvisioner {
                 // the exit line before anyone hears of the exit (a restart
                 // writes its own lines). The pipes close with the process
                 // group, unless something it started outside the group
-                // still holds them: that output is cut off after a second
-                // in all, so it can't run on into the next process's.
+                // still holds them: after a second in all, its output is
+                // left out of the log (the readers run on to EOF).
                 let deadline = tokio::time::Instant::now() + PIPE_DRAIN;
-                for mut r in readers {
-                    if tokio::time::timeout_at(deadline, &mut r).await.is_err() {
-                        r.abort();
-                    }
+                for r in readers {
+                    let _ = tokio::time::timeout_at(deadline, r).await;
                 }
+                cut.store(true, Ordering::SeqCst);
                 o.line(OutputSource::Host, &describe_exit(status));
             }
             let _ = exit_tx.send(Some(code));
@@ -682,6 +699,7 @@ impl Provisioner for SubprocessProvisioner {
             process: Arc::new(ChildProcess {
                 pid,
                 exit: exit_rx,
+                reaped,
                 #[cfg(windows)]
                 job,
             }),
@@ -1185,6 +1203,47 @@ mod tests {
         assert!(lines[1..3].contains(&(OutputSource::Stdout, "out".into())));
         assert!(lines[1..3].contains(&(OutputSource::Stderr, "err".into())));
         assert_eq!(lines[3], (OutputSource::Host, "exited with code 3".into()));
+    }
+
+    /// Output from something the kernel left outside its group, after the
+    /// exit is logged, stays out of the log but is still read: its writer
+    /// gets no SIGPIPE.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn late_output_is_read_but_not_logged() {
+        let dir = tempfile::tempdir().unwrap();
+        let prov = SubprocessProvisioner {
+            runtime_dir: dir.path().into(),
+            ip: "127.0.0.1".into(),
+        };
+        let lines = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let got = lines.clone();
+        let opts = LaunchOptions {
+            quiet: true,
+            output: Some(KernelOutput::new(move |_, text| {
+                got.lock().unwrap().push(text.to_string())
+            })),
+            ..Default::default()
+        };
+        // The pause lets `setsid` leave the group before the group is
+        // killed at the exit.
+        let marker = dir.path().join("wrote");
+        let script = format!(
+            "setsid sh -c 'sleep 2; echo late; echo ok > {}' & sleep 0.5; exit 0",
+            marker.display()
+        );
+        let k = prov.launch(&sh_spec(&script), opts).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), k.process.wait())
+            .await
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !marker.exists() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(marker.exists(), "the late writer was cut off");
+        let lines = lines.lock().unwrap().clone();
+        assert_eq!(lines.last().unwrap(), "exited with code 0", "{lines:?}");
+        assert!(!lines.contains(&"late".to_string()), "{lines:?}");
     }
 
     /// Kernels started at once must not share a port (#260): each port is

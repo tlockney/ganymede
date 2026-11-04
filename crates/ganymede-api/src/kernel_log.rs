@@ -120,7 +120,8 @@ impl KernelLog {
             // `seq`s are consecutive, so the first line after `after` is
             // found by arithmetic.
             let first = l.lines.front().map_or(0, |line| line.seq);
-            let skip = usize::try_from((after + 1).saturating_sub(first)).unwrap_or(usize::MAX);
+            let skip = usize::try_from(after.saturating_add(1).saturating_sub(first))
+                .unwrap_or(usize::MAX);
             l.lines.iter().skip(skip).take(limit).cloned().collect()
         };
         (lines, l.last_seq)
@@ -169,6 +170,8 @@ mod tests {
         assert_eq!(texts(log.read(1, 2)), ["b", "c"]);
         assert_eq!(texts(log.read(4, 10)), Vec::<String>::new());
         assert_eq!(log.read(4, 10).1, 4);
+        // An `after` past any seq, even the largest, finds nothing.
+        assert_eq!(texts(log.read(u64::MAX, 10)), Vec::<String>::new());
         // Lines dropped from the front: `after` before the oldest kept
         // starts at the oldest.
         let log = KernelLog::default();
