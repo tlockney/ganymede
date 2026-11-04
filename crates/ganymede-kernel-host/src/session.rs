@@ -171,6 +171,11 @@ impl KernelSession {
         &self.inner.session_id
     }
 
+    /// The kernel's process id, when it has a process the host started.
+    pub fn pid(&self) -> Option<u32> {
+        self.inner.process.as_ref().and_then(|p| p.pid())
+    }
+
     pub fn is_alive(&self) -> bool {
         *self.inner.alive.borrow()
     }

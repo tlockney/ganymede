@@ -244,3 +244,52 @@ storage.
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
 > the latest release.
+
+## Check memory and CPU
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+Ganymede answers [jupyter-resource-usage](https://github.com/jupyter-server/jupyter-resource-usage)'s
+two endpoints, which `jupyter_server` has only with that extension
+installed. The server's own, counting its child processes, which
+include subprocess kernels:
+
+```http
+GET /api/metrics/v1
+```
+
+```json
+{"rss": 104857600, "limits": {"memory": {"rss": 0, "pss": 0}},
+ "cpu_percent": 3.2, "cpu_count": 8}
+```
+
+One kernel's:
+
+```http
+GET /api/metrics/v1/kernel_usage/get_usage/5b140482-3d46-486f-8a0c-637e047675f2
+```
+
+```json
+{"kernel_id": "5b140482-3d46-486f-8a0c-637e047675f2",
+ "content": {"pid": 41234, "kernel_cpu": 0.0, "kernel_memory": 61865984, "cpu_count": 8,
+   "hostname": "studio", "host_virtual_memory": {"total": 34359738368, "available": 18253611008,
+   "percent": 46.9, "used": 16106127360, "free": 2147483648}, "host_usage_flag": true}}
+```
+
+Memory is resident bytes. CPU is the percent of one core since the
+server last measured, so it reads 0 the first time and can pass 100 on
+several cores. Requests less than sysinfo's minimum CPU interval apart
+(200 ms on most systems) share one measurement.
+
+A kernel that answers `usage_request` on its control channel, as
+ipykernel does, is asked first, and its whole `usage_reply` message comes
+back with `kernel_id` added: a kernel can hold memory outside its own
+process (cdp-kernel runs code in a separate browser target). One that
+doesn't answer within two seconds is measured from the host, its process
+and that process's descendants, and asked again after a minute; one that
+replies with an error is measured from the host until it restarts. A kernel the host has
+no process for, an attached or in-process one, gets
+`{"content": {"reason": "no_process"}, "kernel_id": ...}`, and one that
+answered before but not within ten seconds now gets `"reason": "timeout"`.

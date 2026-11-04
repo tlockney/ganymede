@@ -66,6 +66,9 @@ rmcp = { version = "3.8", default-features = false, features = ["server", "macro
 # (document rooms). Elsewhere, such as iOS, rooms poll.
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+# Kernel and server memory and CPU (/api/metrics/v1). Elsewhere, such as
+# iOS, kernels have no process to measure and replies say so.
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 
 [dev-dependencies]
 tokio-tungstenite.workspace = true

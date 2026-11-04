@@ -533,6 +533,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
                 outputs_dir: None,
             }))
         }),
+        metrics: Default::default(),
     };
 
     let mut app = crate::build_router(state);

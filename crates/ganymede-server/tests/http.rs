@@ -49,6 +49,14 @@ impl TransportFactory for FakeTransports {
 }
 
 fn state(root: &std::path::Path) -> AppState {
+    state_with(root, Arc::new(FakeProvisioner), Arc::new(FakeTransports))
+}
+
+fn state_with(
+    root: &std::path::Path,
+    provisioner: Arc<dyn Provisioner>,
+    transports: Arc<dyn TransportFactory>,
+) -> AppState {
     let spec = Kernelspec {
         name: "fake".into(),
         resource_dir: root.into(),
@@ -62,8 +70,8 @@ fn state(root: &std::path::Path) -> AppState {
     };
     let kernels = Arc::new(KernelManager::new(
         Arc::new(StaticKernelspecs(vec![spec])),
-        Arc::new(FakeProvisioner),
-        Arc::new(FakeTransports),
+        provisioner,
+        transports,
         KernelManagerConfig {
             startup_timeout: Duration::from_secs(5),
             root_dir: root.into(),
@@ -93,6 +101,7 @@ fn state(root: &std::path::Path) -> AppState {
         terminals: None,
         lsp: None,
         mcp: None,
+        metrics: Default::default(),
     }
 }
 
@@ -4630,4 +4639,184 @@ async fn mcp_read_mark_follows_a_new_session() {
     assert!(v.to_string().contains("no cell b"), "{v}");
     let out = since(agent).await;
     assert!(out.contains(r#"@@deleted {"id":"b"}"#), "{out}");
+}
+
+// ----- /api/metrics/v1 ------------------------------------------------------
+
+/// A kernel whose process is this test's own, so the host has a real one
+/// to measure.
+struct OwnProcess;
+#[async_trait]
+impl ganymede_kernel_host::KernelProcess for OwnProcess {
+    fn pid(&self) -> Option<u32> {
+        Some(std::process::id())
+    }
+    async fn interrupt(&self) -> ganymede_kernel_host::Result<()> {
+        Err(ganymede_kernel_host::Error::Unsupported("test"))
+    }
+    async fn kill(&self) -> ganymede_kernel_host::Result<()> {
+        Ok(())
+    }
+    async fn wait(&self) -> Option<i32> {
+        std::future::pending().await
+    }
+    fn is_alive(&self) -> bool {
+        true
+    }
+}
+
+struct OwnProcessProvisioner;
+#[async_trait]
+impl Provisioner for OwnProcessProvisioner {
+    async fn launch(
+        &self,
+        _: &Kernelspec,
+        _: LaunchOptions,
+    ) -> ganymede_kernel_host::Result<LaunchedKernel> {
+        let mut launched = ganymede_kernel_host::in_process();
+        launched.process = Arc::new(OwnProcess);
+        Ok(launched)
+    }
+}
+
+struct UsageTransports;
+#[async_trait]
+impl TransportFactory for UsageTransports {
+    async fn connect(&self, _: &LaunchedKernel) -> ganymede_kernel_host::Result<KernelTransport> {
+        let (host, side) = in_process_pair(256);
+        FakeKernel::spawn_with_usage(side, ReplyOrder::IdleThenReply);
+        Ok(host)
+    }
+}
+
+async fn start_and_get_usage(app: &axum::Router) -> (String, Value) {
+    let (s, kernel) = call(app, "POST", "/api/kernels", Some(json!({})), Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let id = kernel["id"].as_str().unwrap().to_string();
+    let path = format!("/api/metrics/v1/kernel_usage/get_usage/{id}");
+    let (s, usage) = call(app, "GET", &path, None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::OK, "{usage}");
+    assert_eq!(usage["kernel_id"], id.as_str());
+    (path, usage)
+}
+
+#[tokio::test]
+async fn metrics_report_the_server_process() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(state(dir.path()));
+    let (s, m) = call(&app, "GET", "/api/metrics/v1", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(m["rss"].as_u64().unwrap() > 0, "{m}");
+    assert!(m["cpu_count"].as_u64().unwrap() >= 1, "{m}");
+    assert!(m["cpu_percent"].is_number(), "{m}");
+    assert_eq!(m["limits"], json!({"memory": {"rss": 0, "pss": 0}}));
+    let (s, _) = call(&app, "GET", "/api/metrics/v1", None, None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn kernel_usage_passes_a_usage_reply_through() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(state_with(
+        dir.path(),
+        Arc::new(FakeProvisioner),
+        Arc::new(UsageTransports),
+    ));
+    let (_, usage) = start_and_get_usage(&app).await;
+    assert_eq!(usage["msg_type"], "usage_reply");
+    assert_eq!(usage["header"]["msg_type"], "usage_reply");
+    let mut expected = ganymede_kernel_host::testing::fake_usage();
+    expected["host_usage_flag"] = true.into();
+    assert_eq!(usage["content"], expected);
+}
+
+#[tokio::test]
+async fn kernel_usage_measures_a_kernel_process() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state_with(
+        dir.path(),
+        Arc::new(OwnProcessProvisioner),
+        Arc::new(FakeTransports),
+    );
+    st.metrics = Arc::new(ganymede_server::metrics::Metrics::with_probe_timeout(
+        Duration::from_secs(2),
+    ));
+    let app = build_router(st);
+    let (path, usage) = start_and_get_usage(&app).await;
+    let c = &usage["content"];
+    assert_eq!(c["pid"], std::process::id(), "{usage}");
+    assert!(c["kernel_memory"].as_u64().unwrap() > 0, "{usage}");
+    assert!(c["kernel_cpu"].is_number(), "{usage}");
+    assert!(c["cpu_count"].as_u64().unwrap() >= 1, "{usage}");
+    assert!(
+        c["host_virtual_memory"]["total"].as_u64().unwrap() > 0,
+        "{usage}"
+    );
+    assert_eq!(c["host_usage_flag"], true);
+    // The kernel did not answer `usage_request`, so it is not asked again:
+    // asking would take the whole probe timeout.
+    let started = std::time::Instant::now();
+    let (_, again) = call(&app, "GET", &path, None, Some(TOKEN)).await;
+    assert!(started.elapsed() < Duration::from_millis(1500));
+    assert_eq!(again["content"]["pid"], std::process::id());
+}
+
+#[tokio::test]
+async fn kernel_usage_says_when_there_is_no_process() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    st.metrics = Arc::new(ganymede_server::metrics::Metrics::with_probe_timeout(
+        Duration::from_millis(200),
+    ));
+    let app = build_router(st);
+    let (_, usage) = start_and_get_usage(&app).await;
+    assert_eq!(usage["content"], json!({"reason": "no_process"}));
+    let (s, _) = call(
+        &app,
+        "GET",
+        "/api/metrics/v1/kernel_usage/get_usage/nope",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn kernel_usage_cpu_holds_for_requests_close_together() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state_with(
+        dir.path(),
+        Arc::new(OwnProcessProvisioner),
+        Arc::new(FakeTransports),
+    );
+    st.metrics = Arc::new(ganymede_server::metrics::Metrics::with_probe_timeout(
+        Duration::from_millis(200),
+    ));
+    let app = build_router(st);
+    let (path, _) = start_and_get_usage(&app).await;
+    // Keep the "kernel" (this process) busy on one core.
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let spin = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                std::hint::spin_loop();
+            }
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let (_, first) = call(&app, "GET", &path, None, Some(TOKEN)).await;
+    let (_, server) = call(&app, "GET", "/api/metrics/v1", None, Some(TOKEN)).await;
+    let (_, second) = call(&app, "GET", &path, None, Some(TOKEN)).await;
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    spin.join().unwrap();
+    for (what, cpu) in [
+        ("first", &first["content"]["kernel_cpu"]),
+        ("server", &server["cpu_percent"]),
+        ("second", &second["content"]["kernel_cpu"]),
+    ] {
+        let cpu = cpu.as_f64().unwrap();
+        assert!(cpu > 30.0, "{what} reading of a busy process: {cpu}");
+    }
 }
