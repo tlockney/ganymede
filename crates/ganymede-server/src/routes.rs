@@ -660,7 +660,7 @@ async fn patch_contents(
         .ok_or_else(|| HttpError(400, "PATCH needs {\"path\": ...}".into()))?;
     let new_path = ganymede_contents::normalize_api_path(&new_path);
     let model = s.contents.rename(&p, &new_path).await?;
-    s.collab.moved(&p, &model.path);
+    s.collab.moved(&p, &model.path).await;
     Ok(Json(model))
 }
 
@@ -671,7 +671,7 @@ async fn delete_contents(
     match target(&path) {
         ContentsTarget::Path(p) => {
             s.contents.delete(&p).await?;
-            s.collab.removed(&p);
+            s.collab.removed(&p).await;
         }
         ContentsTarget::Checkpoint(p, id) => s.contents.delete_checkpoint(&p, &id).await?,
         ContentsTarget::Checkpoints(_) | ContentsTarget::Trust(_) => {

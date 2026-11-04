@@ -23,6 +23,23 @@ pub fn normalize_api_path(path: &str) -> String {
         .join("/")
 }
 
+/// Whether API path `path` is `dir` itself or under it, and if so the
+/// rest of `path` after `dir`: `""` for `dir` itself, otherwise starting
+/// with `/`. Everything is under the root, `""`; there the rest is all
+/// of `path`. File ids and document rooms share this rule for renames
+/// and deletes.
+pub fn path_under<'a>(path: &'a str, dir: &str) -> Option<&'a str> {
+    if path == dir {
+        return Some("");
+    }
+    if dir.is_empty() {
+        return Some(path);
+    }
+    path.strip_prefix(dir)?
+        .strip_prefix('/')
+        .map(|_| &path[dir.len()..])
+}
+
 /// A validated API path: a list of plain components, none of which is empty,
 /// `.`, `..`, or contains a slash or backslash.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -149,6 +166,15 @@ mod tests {
         assert_eq!(normalize_api_path("/"), "");
         assert_eq!(normalize_api_path(""), "");
         assert_eq!(normalize_api_path("../x"), "../x");
+    }
+
+    #[test]
+    fn under() {
+        assert_eq!(path_under("a/b", "a/b"), Some(""));
+        assert_eq!(path_under("a/b/c.ipynb", "a/b"), Some("/c.ipynb"));
+        assert_eq!(path_under("a/bc", "a/b"), None);
+        assert_eq!(path_under("a", "a/b"), None);
+        assert_eq!(path_under("a/b", ""), Some("a/b"));
     }
 
     #[test]

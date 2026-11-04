@@ -72,7 +72,9 @@ pub struct Collab {
     /// Changes every server run; clients holding another one are asked to
     /// reload, as `jupyter-collaboration` does after a restart.
     session_id: String,
-    ids: FileIds,
+    /// In an `Arc` so its calls, SQLite queries with a database, run on a
+    /// blocking thread ([`Collab::with_ids`]).
+    ids: Arc<FileIds>,
     /// The contents root on disk, for watching files; `None` when the
     /// contents are not a local directory, and rooms poll.
     root: Option<PathBuf>,
@@ -97,7 +99,7 @@ impl Collab {
     pub fn new(ids: FileIds, root: Option<PathBuf>) -> Self {
         Collab {
             session_id: uuid::Uuid::new_v4().to_string(),
-            ids,
+            ids: Arc::new(ids),
             root,
             watcher: Watcher::new(),
             rooms: Mutex::default(),
@@ -120,10 +122,36 @@ impl Collab {
         self
     }
 
+    /// Run `f` on the file ids off the async workers: with a database,
+    /// each call is a SQLite query, which can wait on another server's
+    /// lock.
+    async fn with_ids<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&FileIds) -> T + Send + 'static,
+    ) -> T {
+        let ids = self.ids.clone();
+        tokio::task::spawn_blocking(move || f(&ids))
+            .await
+            .expect("file ids task")
+    }
+
+    /// The id for `path`, made the first time; and whether it was new.
+    async fn index(&self, path: &str) -> (String, bool) {
+        let path = path.to_string();
+        self.with_ids(move |ids| ids.index(&path)).await
+    }
+
+    /// The path a file id names now.
+    async fn path_of(&self, id: &str) -> Option<String> {
+        let id = id.to_string();
+        self.with_ids(move |ids| ids.path(&id)).await
+    }
+
     /// `old` (a file or directory) was renamed to `new` through the
     /// contents API: ids follow, and open rooms take the new path.
-    pub fn moved(&self, old: &str, new: &str) {
-        self.ids.moved(old, new);
+    pub async fn moved(&self, old: &str, new: &str) {
+        let (o, n) = (old.to_string(), new.to_string());
+        self.with_ids(move |ids| ids.moved(&o, &n)).await;
         for room in self.rooms.lock().expect("rooms").values() {
             let _ = room.send(Cmd::Moved(old.to_string(), new.to_string()));
         }
@@ -136,8 +164,9 @@ impl Collab {
 
     /// `path` (a file or directory) was deleted through the contents
     /// API: its ids go, and rooms on it close their clients.
-    pub fn removed(&self, path: &str) {
-        self.ids.removed(path);
+    pub async fn removed(&self, path: &str) {
+        let p = path.to_string();
+        self.with_ids(move |ids| ids.removed(&p)).await;
         for room in self.rooms.lock().expect("rooms").values() {
             let _ = room.send(Cmd::Removed(path.to_string()));
         }
@@ -201,7 +230,7 @@ pub async fn session(
     Path(path): Path<String>,
     LenientJson(body): LenientJson<SessionBody>,
 ) -> Result<Response, HttpError> {
-    let path = path.trim_matches('/').to_string();
+    let path = ganymede_contents::normalize_api_path(&path);
     state
         .contents
         .get(&path, GetOptions::default())
@@ -210,7 +239,7 @@ pub async fn session(
             404 => HttpError(404, format!("File {path:?} does not exist")),
             _ => HttpError::from(e),
         })?;
-    let (id, new) = state.collab.ids.index(&path);
+    let (id, new) = state.collab.index(&path).await;
     let status = if new {
         StatusCode::CREATED
     } else {
@@ -250,7 +279,7 @@ pub async fn fileid_index(
     })?;
     let path = ganymede_contents::normalize_api_path(&path);
     state.contents.get(&path, GetOptions::default()).await?;
-    let (id, _) = state.collab.ids.index(&path);
+    let (id, _) = state.collab.index(&path).await;
     Ok(Json(json!({"id": id, "path": path})))
 }
 
@@ -267,10 +296,12 @@ pub async fn fileid_id(
         )
     })?;
     let path = ganymede_contents::normalize_api_path(&path);
-    let id =
-        state.collab.ids.get(&path).ok_or_else(|| {
-            HttpError(404, format!("The ID for file, {path}, could not be found."))
-        })?;
+    let p = path.clone();
+    let id = state
+        .collab
+        .with_ids(move |ids| ids.get(&p))
+        .await
+        .ok_or_else(|| HttpError(404, format!("The ID for file, {path}, could not be found.")))?;
     Ok(Json(json!({"id": id, "path": path})))
 }
 
@@ -286,7 +317,7 @@ pub async fn fileid_path(
         )
     })?;
     let path =
-        state.collab.ids.path(&id).ok_or_else(|| {
+        state.collab.path_of(&id).await.ok_or_else(|| {
             HttpError(404, format!("The path for file, {id}, could not be found."))
         })?;
     Ok(Json(json!({"id": id, "path": path})))
@@ -333,7 +364,7 @@ async fn serve_socket(
             close(&mut socket, 1003, reason.to_string()).await;
             return;
         }
-        let path = collab.ids.path(file_id);
+        let path = collab.path_of(file_id).await;
         let Some(path) = path else {
             close(&mut socket, 4404, format!("Unknown file id {file_id}")).await;
             return;
@@ -414,7 +445,7 @@ fn open_room(
 /// Send `cmd` to a notebook room, opening it if needed: for callers other
 /// than a websocket client, such as the execute endpoint. `None` when the
 /// room id names no known notebook. Returns the room's sender.
-pub(crate) fn send_to_notebook_room(
+pub(crate) async fn send_to_notebook_room(
     collab: &Arc<Collab>,
     contents: &Arc<dyn Contents>,
     room_id: &str,
@@ -424,11 +455,14 @@ pub(crate) fn send_to_notebook_room(
     let ["json", "notebook", file_id] = parts[..] else {
         return None;
     };
-    let mut rooms = collab.rooms.lock().expect("rooms");
-    let tx = match rooms.get(room_id) {
-        Some(tx) => tx.clone(),
+    let open = collab.rooms.lock().expect("rooms").get(room_id).cloned();
+    let tx = match open {
+        Some(tx) => tx,
         None => {
-            let path = collab.ids.path(file_id)?;
+            // Looked up without the rooms lock; another caller may open
+            // the room meanwhile, and `open_room` then returns that one.
+            let path = collab.path_of(file_id).await?;
+            let mut rooms = collab.rooms.lock().expect("rooms");
             open_room(collab, &mut rooms, contents, room_id, Some(path))
         }
     };
@@ -437,8 +471,8 @@ pub(crate) fn send_to_notebook_room(
 }
 
 /// The room id of the notebook at `path`.
-pub(crate) fn notebook_room_id(collab: &Collab, path: &str) -> String {
-    format!("json:notebook:{}", collab.ids.index(path).0)
+pub(crate) async fn notebook_room_id(collab: &Collab, path: &str) -> String {
+    format!("json:notebook:{}", collab.index(path).await.0)
 }
 
 /// Run `f` on the room of the notebook at `path`, opening it if needed.
@@ -456,7 +490,8 @@ pub(crate) async fn with_notebook<R: Send + 'static>(
         let _ = tx.send(r);
         fx
     }));
-    send_to_notebook_room(collab, contents, &notebook_room_id(collab, path), cmd)?;
+    let room_id = notebook_room_id(collab, path).await;
+    send_to_notebook_room(collab, contents, &room_id, cmd).await?;
     rx.await.ok()
 }
 
@@ -484,16 +519,16 @@ impl Drop for Hold {
 
 /// Join the room of the notebook at `path` as a client that never reads
 /// its frames. `None` when the path names no notebook room.
-pub(crate) fn hold_notebook(
+pub(crate) async fn hold_notebook(
     collab: &Arc<Collab>,
     contents: &Arc<dyn Contents>,
     path: &str,
 ) -> Option<Hold> {
-    let room_id = notebook_room_id(collab, path);
+    let room_id = notebook_room_id(collab, path).await;
     let conn = collab.next_conn.fetch_add(1, Ordering::Relaxed);
     // The receiver is dropped: frames sent to this client go nowhere.
     let (out, _) = mpsc::unbounded_channel();
-    let room = send_to_notebook_room(collab, contents, &room_id, Cmd::Join(conn, out))?;
+    let room = send_to_notebook_room(collab, contents, &room_id, Cmd::Join(conn, out)).await?;
     Some(Hold { room, conn })
 }
 
@@ -823,16 +858,12 @@ async fn changed(watch: &mut Option<(Watch, mpsc::UnboundedReceiver<()>)>) -> Op
 
 /// `path` after `old` was renamed to `new`, if it was `old` or under it.
 fn moved_path(path: &str, old: &str, new: &str) -> Option<String> {
-    if path == old {
-        return Some(new.to_string());
-    }
-    let rest = path.strip_prefix(old)?.strip_prefix('/')?;
-    Some(format!("{new}/{rest}"))
+    ganymede_contents::path_under(path, old).map(|rest| format!("{new}{rest}"))
 }
 
 /// `path` is `dir` or under it.
 fn is_under(path: &str, dir: &str) -> bool {
-    moved_path(path, dir, "").is_some()
+    ganymede_contents::path_under(path, dir).is_some()
 }
 
 /// Remove a room that can't go on (its file failed to load or was
@@ -978,6 +1009,18 @@ async fn reload(
     disk: &mut Disk,
     clients: &HashMap<ConnId, mpsc::UnboundedSender<Out>>,
 ) -> Reloaded {
+    // The hash first, so a file event for our own save, or a file touched
+    // but not changed, doesn't parse the notebook.
+    let stat = GetOptions {
+        hash: true,
+        ..GetOptions::default()
+    };
+    if let Ok(model) = contents.get(&disk.path, stat).await {
+        if model.hash.as_deref() == Some(disk.hash.as_str()) {
+            disk.last_modified = model.last_modified;
+            return Reloaded::default();
+        }
+    }
     match load(contents, &disk.path).await {
         Ok((nb, fresh)) => {
             disk.last_modified = fresh.last_modified;
