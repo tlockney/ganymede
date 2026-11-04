@@ -12,6 +12,8 @@
 //! `echo` sends every message back with its buffers; any other target is
 //! closed at once, as ipykernel does. After an error with
 //! `stop_on_error`, queued `execute_request`s are answered `aborted`.
+//! `usage_request` is answered only by a kernel from
+//! [`FakeKernel::spawn_with_usage`], with [`fake_usage`].
 
 use crate::transport::KernelSide;
 use ganymede_protocol::content::*;
@@ -44,11 +46,31 @@ pub struct FakeKernel {
     shell_ready_at: Option<tokio::time::Instant>,
     /// `kernel_info_request`s received on shell.
     shell_kernel_infos: Arc<AtomicUsize>,
+    /// Answer `usage_request` on control.
+    usage: bool,
+}
+
+/// The `usage_reply` content of a kernel from [`FakeKernel::spawn_with_usage`].
+pub fn fake_usage() -> serde_json::Value {
+    serde_json::json!({
+        "hostname": "fake",
+        "pid": 0,
+        "kernel_cpu": 1.5,
+        "kernel_memory": 4096,
+        "cpu_count": 1,
+    })
 }
 
 impl FakeKernel {
     pub fn spawn(side: KernelSide, order: ReplyOrder) -> tokio::task::JoinHandle<()> {
         Self::new(side, order, None).0.start()
+    }
+
+    /// A kernel that also answers `usage_request`, as ipykernel does.
+    pub fn spawn_with_usage(side: KernelSide, order: ReplyOrder) -> tokio::task::JoinHandle<()> {
+        let mut k = Self::new(side, order, None).0;
+        k.usage = true;
+        k.start()
     }
 
     /// A kernel whose shell channel answers nothing for `delay` after it
@@ -79,6 +101,7 @@ impl FakeKernel {
             backlog: VecDeque::new(),
             shell_ready_at: delay.map(|d| tokio::time::Instant::now() + d),
             shell_kernel_infos: count.clone(),
+            usage: false,
         };
         (k, count)
     }
@@ -198,6 +221,10 @@ impl FakeKernel {
                         .collect();
                     let reply = serde_json::json!({"status": "ok", "comms": comms});
                     self.reply(channel, &msg, "comm_info_reply", &reply).await;
+                }
+                (Channel::Control, "usage_request") if self.usage => {
+                    self.reply(channel, &msg, "usage_reply", &fake_usage())
+                        .await;
                 }
                 (Channel::Control, "interrupt_request") => {
                     self.interrupted = true;

@@ -13,6 +13,7 @@ pub mod config;
 pub mod execute;
 pub mod lab;
 pub mod mcp;
+pub mod metrics;
 pub mod routes;
 pub mod serve;
 pub mod server_info;
@@ -76,6 +77,8 @@ pub struct AppState {
     pub lsp: Option<Arc<ganymede_lsp::LspManager>>,
     /// `/mcp`; `None` unless `mcp_enabled`.
     pub mcp: Option<Arc<mcp::McpState>>,
+    /// `/api/metrics/v1`: memory and CPU of the server and its kernels.
+    pub metrics: Arc<metrics::Metrics>,
 }
 
 /// The API router, login pages, and JupyterLab or generic static assets
