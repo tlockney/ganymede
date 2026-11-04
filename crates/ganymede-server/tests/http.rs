@@ -2471,14 +2471,22 @@ async fn collaboration_room_syncs_saves_and_reloads() {
 #[tokio::test]
 async fn collaboration_room_reloads_a_file_that_never_settles() {
     // Events never settle for the 500 ms debounce.
-    room_keeps_up_with_a_busy_file(Duration::from_millis(100), Duration::from_secs(8)).await;
+    room_keeps_up_with_a_busy_file(Duration::from_millis(100), Duration::from_secs(8), true).await;
+}
+
+/// The same with the room unwatched, as where file watching fails: each
+/// 1 s poll merges the change, and the room saves right after (#279,
+/// #341).
+#[tokio::test]
+async fn collaboration_room_saves_a_never_settling_file_while_polling() {
+    room_keeps_up_with_a_busy_file(Duration::from_millis(100), Duration::from_secs(8), false).await;
 }
 
 /// A file rewritten every 0.7 s: each change settles and reloads, and
 /// the room's own edit still gets saved in between (#347).
 #[tokio::test]
 async fn collaboration_room_saves_between_settled_reloads() {
-    room_keeps_up_with_a_busy_file(Duration::from_millis(700), Duration::from_secs(6)).await;
+    room_keeps_up_with_a_busy_file(Duration::from_millis(700), Duration::from_secs(6), true).await;
 }
 
 /// Contents that note whether a save wrote the room's edit (`room: `),
@@ -2568,8 +2576,9 @@ impl ganymede_contents::Contents for SaveLog {
 
 /// Another program rewrites cell `a` every `every` for `writing`; the
 /// room must reload while it does, and its own edit to cell `b` must
-/// reach the file before the writes stop.
-async fn room_keeps_up_with_a_busy_file(every: Duration, writing: Duration) {
+/// reach the file before the writes stop. An unwatched room (`watched`
+/// false) has no contents root to watch, so it polls.
+async fn room_keeps_up_with_a_busy_file(every: Duration, writing: Duration, watched: bool) {
     use ganymede_documents::schema::Roots;
     use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
     use ganymede_documents::yrs::updates::decoder::Decode;
@@ -2584,6 +2593,12 @@ async fn room_keeps_up_with_a_busy_file(every: Duration, writing: Duration) {
         "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
     std::fs::write(&file, nb.to_string()).unwrap();
     let mut st = state(dir.path());
+    if !watched {
+        st.collab = Arc::new(ganymede_server::collab::Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            None,
+        ));
+    }
     let room_saved = Arc::new(std::sync::atomic::AtomicBool::new(false));
     st.contents = Arc::new(SaveLog {
         inner: st.contents.clone(),
