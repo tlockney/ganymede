@@ -2508,12 +2508,10 @@ impl ganymede_contents::Contents for SaveLog {
             .as_ref()
             .is_some_and(|c| c.to_string().contains("room: "));
         use std::sync::atomic::Ordering::SeqCst;
-        if room
-            && self
-                .fail_room_saves
-                .fetch_update(SeqCst, SeqCst, |n| n.checked_sub(1))
-                .is_ok()
-        {
+        // The room saves one at a time, so the check and the decrement
+        // can't race.
+        if room && self.fail_room_saves.load(SeqCst) > 0 {
+            self.fail_room_saves.fetch_sub(1, SeqCst);
             return Err(std::io::Error::other("disk full").into());
         }
         let r = self.inner.save(path, request).await;
