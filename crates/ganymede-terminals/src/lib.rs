@@ -546,6 +546,19 @@ mod pty {
                 .map_err(|e| e.to_string())
         }
 
+        /// The size the pseudo-terminal holds now, as `stty size` should
+        /// report it.
+        #[cfg(test)]
+        pub fn size(&self) -> std::result::Result<(u16, u16), String> {
+            let size = self
+                .master
+                .lock()
+                .unwrap()
+                .get_size()
+                .map_err(|e| e.to_string())?;
+            Ok((size.rows, size.cols))
+        }
+
         pub fn kill(&self) {
             let _ = self.killer.lock().unwrap().kill();
         }
@@ -688,21 +701,25 @@ mod tests {
             // TerminalClient::resize only logs a failure; check it here, so a
             // failed resize isn't mistaken for a slow one.
             c.term.process.resize(40, 132).expect("resize the pty");
+            // The pty itself holds the new size at once; a failure below
+            // is then in what the shell's `stty` sees, not in the ioctl.
+            assert_eq!(c.term.process.size(), Ok((40, 132)));
             // On macOS a `stty size` typed right after the resize has read
-            // the old size (#345). Resize once, and ask again until the new
-            // size shows; `done-N` in the output, not in the echoed input,
-            // marks the end of each try.
-            let mut resized = false;
+            // the old size (#345), and once never the new one (#368). Ask
+            // until the new size shows; `done-N` in the output, not in the
+            // echoed input, marks the end of each try. A failure names
+            // what each try printed and the size the pty held then.
+            let mut tries = Vec::new();
             for i in 1..=20 {
                 c.write(&format!("stty size; echo done-$(({i}+0))\n"));
                 let out = read_until(&mut c, &format!("done-{i}")).await;
                 if out.contains("40 132") {
-                    resized = true;
                     break;
                 }
+                tries.push((out, c.term.process.size()));
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            assert!(resized, "stty never reported 40 132");
+            assert!(tries.len() < 20, "stty never reported 40 132: {tries:#?}");
             c.write("pwd\n");
             let root_name = root
                 .path()
