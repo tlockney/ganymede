@@ -65,6 +65,9 @@ struct Scans {
     sys: sysinfo::System,
     processes_at: Option<std::time::Instant>,
     host_at: Option<std::time::Instant>,
+    /// Pids the last process scan was redone for and still lacked, so a
+    /// gone kernel doesn't force a scan on every request.
+    missing: Vec<u32>,
 }
 
 /// True, and `at` set to now, when the last refresh is old enough.
@@ -91,6 +94,7 @@ impl Default for Metrics {
                     sys,
                     processes_at: None,
                     host_at: None,
+                    missing: Vec::new(),
                 }
             })),
         }
@@ -124,9 +128,13 @@ impl Metrics {
         let mut scans = self.system.lock().unwrap();
         let scans = scans.as_mut()?;
         let root = Pid::from_u32(pid);
-        // A process started since the last scan is not in it: scan again.
-        if due(&mut scans.processes_at) || !scans.sys.processes().contains_key(&root) {
+        // A process started since the last scan is not in it: scan again,
+        // once per scan for each pid.
+        let started_since =
+            !scans.sys.processes().contains_key(&root) && !scans.missing.contains(&pid);
+        if due(&mut scans.processes_at) || started_since {
             scans.processes_at = Some(std::time::Instant::now());
+            scans.missing.clear();
             scans.sys.refresh_processes_specifics(
                 ProcessesToUpdate::All,
                 true,
@@ -136,8 +144,11 @@ impl Metrics {
                     .without_tasks(),
             );
         }
+        if !scans.sys.processes().contains_key(&root) {
+            scans.missing.push(pid);
+            return None;
+        }
         let processes = scans.sys.processes();
-        processes.get(&root)?;
         let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
         for (id, p) in processes {
             if let Some(parent) = p.parent() {
