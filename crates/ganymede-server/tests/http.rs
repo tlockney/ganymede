@@ -2481,13 +2481,12 @@ async fn collaboration_room_saves_between_settled_reloads() {
     room_keeps_up_with_a_busy_file(Duration::from_millis(700), Duration::from_secs(6)).await;
 }
 
-/// Another program rewrites cell `a` every `every` for `writing`; the
-/// room must reload while it does, and its own edit to cell `b` must
-/// reach the file before the writes stop.
-/// Contents that note whether a save wrote the room's edit (`room: `).
+/// Contents that note whether a save wrote the room's edit (`room: `),
+/// and fail the first `fail_room_saves` such saves.
 struct SaveLog {
     inner: Arc<dyn ganymede_contents::Contents>,
     room_saved: Arc<std::sync::atomic::AtomicBool>,
+    fail_room_saves: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[async_trait::async_trait]
@@ -2508,6 +2507,15 @@ impl ganymede_contents::Contents for SaveLog {
             .content
             .as_ref()
             .is_some_and(|c| c.to_string().contains("room: "));
+        use std::sync::atomic::Ordering::SeqCst;
+        if room
+            && self
+                .fail_room_saves
+                .fetch_update(SeqCst, SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+        {
+            return Err(std::io::Error::other("disk full").into());
+        }
         let r = self.inner.save(path, request).await;
         if room && r.is_ok() {
             self.room_saved
@@ -2560,6 +2568,9 @@ impl ganymede_contents::Contents for SaveLog {
     }
 }
 
+/// Another program rewrites cell `a` every `every` for `writing`; the
+/// room must reload while it does, and its own edit to cell `b` must
+/// reach the file before the writes stop.
 async fn room_keeps_up_with_a_busy_file(every: Duration, writing: Duration) {
     use ganymede_documents::schema::Roots;
     use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
@@ -2579,6 +2590,7 @@ async fn room_keeps_up_with_a_busy_file(every: Duration, writing: Duration) {
     st.contents = Arc::new(SaveLog {
         inner: st.contents.clone(),
         room_saved: room_saved.clone(),
+        fail_room_saves: Default::default(),
     });
     let app = build_router(st);
     let (s, v) = call(
@@ -2697,6 +2709,112 @@ async fn room_keeps_up_with_a_busy_file(every: Duration, writing: Duration) {
         room_saved.load(std::sync::atomic::Ordering::SeqCst),
         "the room's edit wasn't saved while the file kept changing"
     );
+}
+
+/// A room whose save fails tries again without a further edit (#353).
+#[tokio::test]
+async fn collaboration_room_retries_a_failed_save() {
+    use ganymede_documents::schema::Roots;
+    use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
+    use ganymede_documents::yrs::updates::decoder::Decode;
+    use ganymede_documents::yrs::updates::encoder::Encode;
+    use ganymede_documents::yrs::{Array, Doc, Map, Out, ReadTxn, Text, Transact, Update};
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("fail.ipynb");
+    let nb = json!({"cells": [{"cell_type": "markdown", "id": "a", "metadata": {}, "source": "keep"}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(&file, nb.to_string()).unwrap();
+    let mut st = state(dir.path());
+    let fail = Arc::new(AtomicUsize::new(1));
+    st.contents = Arc::new(SaveLog {
+        inner: st.contents.clone(),
+        room_saved: Default::default(),
+        fail_room_saves: fail.clone(),
+    });
+    let app = build_router(st);
+    let (s, v) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/fail.ipynb",
+        Some(json!({"format": "json", "type": "notebook"})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut req = format!(
+        "ws://{addr}/api/collaboration/room/json:notebook:{}?sessionId={}",
+        v["fileId"].as_str().unwrap(),
+        v["sessionId"].as_str().unwrap()
+    )
+    .into_client_request()
+    .unwrap();
+    req.headers_mut()
+        .insert("Authorization", format!("token {TOKEN}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let doc = Doc::new();
+    let roots = Roots::get(&doc);
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::SyncStep1(doc.transact().state_vector()))
+            .encode_v1()
+            .into(),
+    ))
+    .await
+    .unwrap();
+    while roots.cells.len(&doc.transact()) < 1 {
+        let msg = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .expect("timed out waiting for the room")
+            .unwrap()
+            .unwrap();
+        let TMsg::Binary(b) = msg else { continue };
+        if let Ok(YMsg::Sync(SyncMessage::SyncStep2(u) | SyncMessage::Update(u))) =
+            YMsg::decode_v1(&b)
+        {
+            doc.transact_mut()
+                .apply_update(Update::decode_v1(&u).unwrap())
+                .unwrap();
+        }
+    }
+
+    // One edit; its first autosave fails.
+    let before = doc.transact().state_vector();
+    {
+        let mut txn = doc.transact_mut();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+            panic!()
+        };
+        let Some(Out::YText(t)) = cell.get(&txn, "source") else {
+            panic!()
+        };
+        t.insert(&mut txn, 0, "room: ");
+    }
+    let u = doc.transact().encode_state_as_update_v1(&before);
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::Update(u)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !std::fs::read_to_string(&file)
+        .unwrap()
+        .contains("room: keep")
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the room didn't retry its failed save (failures left: {})",
+            fail.load(SeqCst)
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(fail.load(SeqCst), 0, "the first save didn't fail");
+    drop(ws);
 }
 
 #[tokio::test]

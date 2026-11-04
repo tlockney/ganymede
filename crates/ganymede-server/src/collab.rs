@@ -595,6 +595,8 @@ async fn run_room(
     tracing::info!(room = %room_id, path = ?path, watched = watch.is_some(), "room opened");
 
     let mut last_edit: Option<Instant> = None;
+    // Saves that failed in a row, for the retry's backoff.
+    let mut save_failures = 0;
     // A room opened for execution, with no client, retires like one whose
     // clients left.
     let mut empty_since: Option<Instant> = Some(Instant::now());
@@ -627,7 +629,7 @@ async fn run_room(
                                     Some(d) => save_room(contents.as_ref(), &mut room, d, &clients, true).await,
                                     None => SaveStatus::Skipped,
                                 };
-                                if status == SaveStatus::Success { last_edit = None }
+                                after_save(status, &mut last_edit, &mut save_failures);
                                 if let Some(out) = clients.get(&conn) {
                                     let _ = out.send(Out::Frame(Room::save_reply(id, status)));
                                 }
@@ -691,12 +693,13 @@ async fn run_room(
                         dispatch(&clients, fx.send);
                     }
                     Cmd::Flush(done) => {
-                        if let Some(d) = disk.as_mut() {
-                            if room.is_dirty() {
-                                save_room(contents.as_ref(), &mut room, d, &clients, false).await;
+                        let status = match disk.as_mut() {
+                            Some(d) if room.is_dirty() => {
+                                save_room(contents.as_ref(), &mut room, d, &clients, false).await
                             }
-                        }
-                        last_edit = None;
+                            _ => SaveStatus::Skipped,
+                        };
+                        after_save(status, &mut last_edit, &mut save_failures);
                         let _ = done.send(());
                     }
                 }
@@ -724,20 +727,20 @@ async fn run_room(
                     // changing: each reload would push it back, and the
                     // next file event holds it off again.
                     if needs_save || (!settled && last_edit.is_some()) {
-                        save_room(contents.as_ref(), &mut room, d, &clients, false).await;
-                        last_edit = None;
+                        let status = save_room(contents.as_ref(), &mut room, d, &clients, false).await;
+                        after_save(status, &mut last_edit, &mut save_failures);
                     }
                 } else if last_poll.elapsed() >= poll_every && disk_event.is_none() {
                     last_poll = Instant::now();
                     if poll(contents.as_ref(), &mut room, d, &clients).await {
                         // As after a reload.
-                        save_room(contents.as_ref(), &mut room, d, &clients, false).await;
-                        last_edit = None;
+                        let status = save_room(contents.as_ref(), &mut room, d, &clients, false).await;
+                        after_save(status, &mut last_edit, &mut save_failures);
                     }
                 }
                 if last_edit.is_some_and(|t| t.elapsed() >= SAVE_DELAY) && disk_event.is_none() {
-                    save_room(contents.as_ref(), &mut room, d, &clients, false).await;
-                    last_edit = None;
+                    let status = save_room(contents.as_ref(), &mut room, d, &clients, false).await;
+                    after_save(status, &mut last_edit, &mut save_failures);
                 }
                 if empty_since.is_some_and(|t| t.elapsed() >= collab.cleanup_delay) && exec.is_idle() {
                     if room.is_dirty() {
@@ -750,6 +753,23 @@ async fn run_room(
         }
     }
     tracing::info!(room = %room_id, "room closed");
+}
+
+/// Settle the pending autosave after a save. A failed save leaves the
+/// room's edits unsaved, so it schedules another try instead of waiting
+/// for the next edit (#353), later each time it keeps failing: 1 s, 2 s,
+/// 4 s, ... up to about a minute.
+fn after_save(status: SaveStatus, last_edit: &mut Option<Instant>, failures: &mut u32) {
+    if status == SaveStatus::Failed {
+        let backoff = SAVE_DELAY * ((1u32 << (*failures).min(6)) - 1);
+        *failures += 1;
+        // `elapsed` on an instant still ahead is zero, so the autosave
+        // waits out the backoff and then the save delay.
+        *last_edit = Some(Instant::now() + backoff);
+    } else {
+        *failures = 0;
+        *last_edit = None;
+    }
 }
 
 /// The next file event, or never when the room isn't watched.
