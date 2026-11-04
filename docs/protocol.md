@@ -170,8 +170,9 @@ outputs with the execution count, and each metadata key merge
 separately, so a source edit in the room survives an agent running that
 cell on disk. Where both changed the same part, or one deleted a cell
 the other changed, the file on disk wins that part, and the server logs
-the cell. Notebook metadata merges key by key the same way. Notebooks older than nbformat 4.5 have no cell ids, so for them
-the file wins outright, as in `jupyter-collaboration`.
+the cell. Notebook metadata merges key by key the same way. Notebooks
+older than nbformat 4.5 have no cell ids, so for them the file wins
+outright, as in `jupyter-collaboration`.
 
 A room looks at its file once events have settled for half a second, and
 at most five seconds after the first unsettled event, so a file that a

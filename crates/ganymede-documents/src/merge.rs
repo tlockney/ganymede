@@ -241,8 +241,9 @@ fn merge_by_key(
         let pick = three_way(base, ours, theirs);
         return (pick.value.cloned(), pick.conflict);
     };
-    // Deleted on one side and unchanged on the other: gone.
-    if ours.is_none() && t == b || theirs.is_none() && o == b {
+    // Deleted on one side and unchanged on the other: gone. Compared as
+    // given, so an empty map added where there was none is a change.
+    if ours.is_none() && theirs == base || theirs.is_none() && ours == base {
         return (None, false);
     }
     let mut out = JsonMap::new();
@@ -545,6 +546,23 @@ mod tests {
         let m = merge(&base, &ours, &theirs);
         assert_eq!(m.conflicts, ["cell a"]);
         assert_eq!(m.notebook, theirs);
+    }
+
+    #[test]
+    fn an_added_empty_map_is_kept() {
+        let empty = json!({});
+        assert_eq!(
+            merge_by_key(None, None, Some(&empty)),
+            (Some(json!({})), false)
+        );
+        assert_eq!(
+            merge_by_key(None, Some(&empty), None),
+            (Some(json!({})), false)
+        );
+        assert_eq!(
+            merge_by_key(Some(&empty), None, Some(&empty)),
+            (None, false)
+        );
     }
 
     #[test]
