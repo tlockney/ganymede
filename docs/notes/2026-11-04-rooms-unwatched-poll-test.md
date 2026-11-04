@@ -5,9 +5,14 @@ room without a file watch still writes its edits to a file that never
 settles. The existing never-settles test reached that branch only on
 runners where watching failed.
 
-No new knob was needed: a `Collab` built with no root watches nothing,
-so its rooms poll. `room_keeps_up_with_a_busy_file` takes a `watched`
-flag, and `collaboration_room_saves_a_never_settling_file_while_polling`
-swaps in `Collab::new(FileIds::in_memory(), None)`. With the poll-path
-save replaced by a plain edit mark, the test fails: the room never
-reaches a quiet second to save in.
+A `Collab` with no root watches nothing, so its rooms poll:
+`room_keeps_up_with_a_busy_file` takes a `watched` flag, and
+`collaboration_room_saves_a_never_settling_file_while_polling` uses
+`Arc::<Collab>::default()`.
+
+Unwatched, that alone didn't pin the save: an unwatched room never sees
+a disk event, so its ordinary autosave (1 s after the last edit) saved
+the edit with the poll-path save deleted. The test's client therefore
+keeps typing every 300 ms, so the autosave never comes due while the
+file is busy and the poll-path save is the only one. With that save
+deleted, or replaced by an edit mark, the test fails.
