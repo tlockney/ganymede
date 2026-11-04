@@ -55,8 +55,10 @@ pub struct Router {
     /// and for a request whose answer holds items to resolve, how to mark
     /// them.
     pending: HashMap<u64, (u64, Value, Option<Mark>)>,
-    /// Documents that marked items name, by number.
+    /// Documents that marked items name, by number, and the numbers by
+    /// document. Kept when the server restarts (see [`Router::restart`]).
     documents: Vec<String>,
+    numbers: HashMap<String, u64>,
     /// A server request's id (as JSON text), to the client asked and the
     /// request, so it can be asked of another client if that one leaves.
     asked: HashMap<String, (u64, Arc<str>)>,
@@ -197,14 +199,25 @@ impl Router {
 
     /// This router's number for `uri`.
     fn number(&mut self, uri: String) -> u64 {
-        let i = match self.documents.iter().position(|d| *d == uri) {
-            Some(i) => i,
-            None => {
-                self.documents.push(uri);
-                self.documents.len() - 1
-            }
+        if let Some(&n) = self.numbers.get(&uri) {
+            return n;
+        }
+        let n = self.documents.len() as u64;
+        self.documents.push(uri.clone());
+        self.numbers.insert(uri, n);
+        n
+    }
+
+    /// A new server process: forget the old one's requests and encoding,
+    /// but keep the document numbers, so an item marked before the
+    /// restart that a client resolves after it still names its own
+    /// document, not one numbered alike since (#356).
+    pub fn restart(&mut self) {
+        *self = Router {
+            documents: std::mem::take(&mut self.documents),
+            numbers: std::mem::take(&mut self.numbers),
+            ..Router::default()
         };
-        i as u64
     }
 
     /// The position encoding the server chose in its `initialize` result.
@@ -366,6 +379,14 @@ mod tests {
         let resolve = json!({"id": 2, "method": "completionItem/resolve", "params": items[0]});
         let ours = sent(r.client_message(1, resolve.to_string()));
         assert_eq!(ours["params"], json!({"label": "x", "data": {"k": 1}}));
+        // The client fills the marked default into `y`, which then
+        // resolves with the document and the server's default.
+        let mut y = items[1].clone();
+        y["data"] = m["result"]["itemDefaults"]["data"].clone();
+        let resolve = json!({"id": 6, "method": "completionItem/resolve", "params": y});
+        assert_eq!(r.item_document(&resolve), Some("file:///a.ipynb"));
+        let ours = sent(r.client_message(1, resolve.to_string()));
+        assert_eq!(ours["params"], json!({"label": "y", "data": "default"}));
 
         // A code action list: commands are left alone, and an action
         // without data gets none back.
@@ -412,6 +433,29 @@ mod tests {
         assert_eq!(m["result"]["data"], json!({"ganymede.doc": 0, "data": 3}));
         let again = json!({"id": 3, "method": "completionItem/resolve", "params": m["result"]});
         assert_eq!(r.item_document(&again), Some("file:///a.ipynb"));
+    }
+
+    /// A restart forgets requests but not document numbers, so an item
+    /// from before it still names its document (#356).
+    #[test]
+    fn a_restart_keeps_document_numbers() {
+        let mut r = Router::default();
+        let complete = |uri: &str| {
+            json!({"id": 1, "method": "textDocument/completion",
+                "params": {"textDocument": {"uri": uri}}})
+            .to_string()
+        };
+        let ours = sent(r.client_message(1, complete("file:///a.ipynb")));
+        let answer = json!({"id": ours["id"], "result": [{"label": "x"}]});
+        let (_, m) = to(r.server_message(&answer.to_string(), &[1]));
+        let stale = json!({"id": 2, "method": "completionItem/resolve", "params": m["result"][0]});
+        r.restart();
+        assert!(r.pending.is_empty());
+        let ours = sent(r.client_message(1, complete("file:///b.ipynb")));
+        let answer = json!({"id": ours["id"], "result": [{"label": "y"}]});
+        let (_, m) = to(r.server_message(&answer.to_string(), &[1]));
+        assert_eq!(m["result"][0]["data"], json!({"ganymede.doc": 1}));
+        assert_eq!(r.item_document(&stale), Some("file:///a.ipynb"));
     }
 
     #[test]

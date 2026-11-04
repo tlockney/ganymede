@@ -258,7 +258,7 @@ impl LspManager {
             st.generation += 1;
             let running = process::start(&session, st.generation, &self.root_dir)?;
             st.running = Some(running);
-            st.router = router::Router::default();
+            st.router.restart();
             st.status = Status::Started;
             tracing::info!(server = %session.name, argv = ?session.spec.argv, "language server started");
         }
@@ -384,7 +384,7 @@ impl Session {
         st.running = None;
         st.status = Status::Stopped;
         st.clients.clear();
-        st.router = router::Router::default();
+        st.router.restart();
         tracing::info!(server = %self.name, "language server exited");
     }
 
@@ -396,7 +396,7 @@ impl Session {
             tracing::info!(server = %self.name, "language server stopped");
         }
         st.clients.clear();
-        st.router = router::Router::default();
+        st.router.restart();
     }
 
     fn disconnect(&self, id: u64) {
@@ -441,9 +441,17 @@ impl LspClient {
     /// first reconciled with other clients' (see `documents.rs`), and the
     /// document written to disk if it is a virtual one.
     pub async fn send(&self, message: String) {
-        // Only `didOpen`, `didChange` and `didClose` are parsed here, and
-        // messages with an id, which `router.rs` rewrites.
-        if !message.contains("textDocument/did") {
+        let value = serde_json::from_str::<Value>(&message).ok();
+        let is_document = value
+            .as_ref()
+            .and_then(|v| v.get("method"))
+            .and_then(Value::as_str)
+            .is_some_and(|m| m.starts_with("textDocument/did"));
+        // Document notifications (`didOpen`, `didChange`, `didClose`)
+        // go through the document table, by their method rather than by
+        // text another message may also contain (#356); requests go
+        // through `router.rs`, which rewrites their ids.
+        let Some(value) = value.filter(|_| is_document) else {
             // A request about a document waits for the document lock, so
             // the requester's text (when the server has another tab's)
             // goes first and no other tab's change comes between.
@@ -464,15 +472,11 @@ impl LspClient {
                 let _ = self.to_server.send(message);
             }
             return;
-        }
+        };
         let encoding = {
             let mut st = self.session.state.lock().unwrap();
             st.last_handler_message_at = Some(now_iso());
             st.router.encoding()
-        };
-        let Ok(value) = serde_json::from_str::<Value>(&message) else {
-            let _ = self.to_server.send(message);
-            return;
         };
         let mut docs = self.session.documents.lock().await;
         if self.generation < docs.0 {
@@ -508,8 +512,9 @@ impl LspClient {
         message: &str,
     ) -> Option<tokio::sync::MutexGuard<'_, (u64, documents::Documents)>> {
         let value = serde_json::from_str::<Value>(message).ok()?;
-        // Read the router's mark on a resolve's item here: the router
-        // takes it off when the request goes on to the server.
+        // The mark on a resolve's item, read from this parse of the
+        // message: the router takes it off its own copy as it rewrites
+        // the request for the server.
         let item_document = {
             let st = self.session.state.lock().unwrap();
             (st.generation == self.generation)

@@ -339,6 +339,97 @@ async fn a_resolve_from_a_tab_behind_follows_its_text() {
     );
 }
 
+/// A resolve goes by the document its item was returned for, not the
+/// client's last request (#339, #356): complete on A, then on B, another
+/// tab edits A, and resolving A's item sends this tab's text of A first.
+#[tokio::test]
+async fn a_resolve_follows_its_items_document_through_the_relay() {
+    let root = tempfile::tempdir().unwrap();
+    let m = manager(root.path(), &[("answers", &["perl", "-e", ANSWERS], true)]);
+    let vd = ganymede_lsp::virtual_documents_uri(root.path());
+    let (doc_a, doc_b) = (format!("{vd}/a.ipynb"), format!("{vd}/b.ipynb"));
+    let open = |uri: &str| {
+        json!({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+            "textDocument": {"uri": uri, "languageId": "fake", "version": 0, "text": "a\n"}}})
+        .to_string()
+    };
+    // The server answers with the request, so `items` here come back as
+    // the completion list.
+    let complete = |id: u32, uri: &str| {
+        json!({"jsonrpc": "2.0", "id": id, "method": "textDocument/completion",
+            "params": {"textDocument": {"uri": uri}, "position": {"line": 0, "character": 1}},
+            "items": [{"label": "x", "data": 7}]})
+        .to_string()
+    };
+    let ping = r#"{"jsonrpc":"2.0","method":"ping"}"#;
+
+    let mut a = m.connect("answers").unwrap();
+    let b = m.connect("answers").unwrap();
+    a.send(open(&doc_a)).await;
+    a.send(open(&doc_b)).await;
+    b.send(open(&doc_a)).await;
+    a.send(complete(1, &doc_a)).await;
+    a.send(complete(2, &doc_b)).await;
+    let mut item = None;
+    while item.is_none() {
+        let v: serde_json::Value = serde_json::from_str(&next(&mut a).await.unwrap()).unwrap();
+        if v["id"] == 1 {
+            item = Some(v["result"]["items"][0].clone());
+        }
+    }
+    let item = item.unwrap();
+    assert_eq!(item["data"]["data"], 7, "marked: {item}");
+    b.send(
+        json!({"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
+            "textDocument": {"uri": doc_a, "version": 1},
+            "contentChanges": [{"text": "b edit\n"}]}})
+        .to_string(),
+    )
+    .await;
+    a.send(ping.into()).await;
+    while next(&mut a).await.as_deref() != Some(ping) {}
+
+    let resolve = json!({"jsonrpc": "2.0", "id": 3, "method": "completionItem/resolve",
+        "params": item});
+    a.send(resolve.to_string()).await;
+    a.send(ping.into()).await;
+    let mut got = Vec::new();
+    loop {
+        let m = next(&mut a).await.unwrap();
+        if m == ping {
+            break;
+        }
+        got.push(serde_json::from_str::<serde_json::Value>(&m).unwrap());
+    }
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!(got[0]["method"], "textDocument/didChange");
+    assert_eq!(got[0]["params"]["textDocument"]["uri"], doc_a);
+    assert_eq!(got[0]["params"]["contentChanges"][0]["text"], "a\n");
+    // The server got its own data back.
+    assert_eq!(got[1]["id"], 3);
+    assert_eq!(got[1]["result"]["params"], json!({"label": "x", "data": 7}));
+}
+
+/// A request is routed by its method, even when its text names a
+/// document notification (#356).
+#[tokio::test]
+async fn a_request_mentioning_a_document_notification_is_still_routed() {
+    let root = tempfile::tempdir().unwrap();
+    let m = manager(root.path(), &[("answers", &["perl", "-e", ANSWERS], false)]);
+    let mut a = m.connect("answers").unwrap();
+    let mut b = m.connect("answers").unwrap();
+    let run = json!({"jsonrpc": "2.0", "id": 1, "method": "workspace/executeCommand",
+        "params": {"command": "x", "arguments": ["textDocument/didOpen"]}})
+    .to_string();
+    a.send(run.clone()).await;
+    b.send(run).await;
+    let answer =
+        |m: Option<String>| serde_json::from_str::<serde_json::Value>(&m.unwrap()).unwrap();
+    let (got_a, got_b) = (answer(next(&mut a).await), answer(next(&mut b).await));
+    assert_eq!((&got_a["id"], &got_b["id"]), (&json!(1), &json!(1)));
+    assert_ne!(got_a["result"]["id"], got_b["result"]["id"]);
+}
+
 /// Answers each request with `{"id": <its id>, "result": <the request as
 /// it arrived>}`, exits on an `exit` notification, and echoes anything
 /// else. Perl, which both CI runners
