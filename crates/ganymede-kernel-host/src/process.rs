@@ -5,6 +5,8 @@ use crate::{Error, Result};
 use async_trait::async_trait;
 use ganymede_protocol::ConnectionInfo;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "subprocess")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::watch;
 
@@ -49,6 +51,41 @@ impl Drop for LaunchedKernel {
     }
 }
 
+/// Where a line of a kernel's [`KernelOutput`] came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputSource {
+    /// The kernel process's own stdout (not its cell output).
+    Stdout,
+    /// The kernel process's stderr.
+    Stderr,
+    /// The provisioner, about the process: its start and its exit.
+    Host,
+}
+
+/// Receives a kernel process's output a line at a time, without the line
+/// ending, and the provisioner's lines about the process. Called from the
+/// tasks reading the process's pipes, so it should return quickly.
+#[derive(Clone)]
+pub struct KernelOutput(Arc<OutputFn>);
+
+type OutputFn = dyn Fn(OutputSource, &str) + Send + Sync;
+
+impl KernelOutput {
+    pub fn new(f: impl Fn(OutputSource, &str) + Send + Sync + 'static) -> Self {
+        KernelOutput(Arc::new(f))
+    }
+
+    pub fn line(&self, source: OutputSource, text: &str) {
+        (self.0)(source, text)
+    }
+}
+
+impl std::fmt::Debug for KernelOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("KernelOutput")
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LaunchOptions {
     pub cwd: Option<PathBuf>,
@@ -61,6 +98,11 @@ pub struct LaunchOptions {
     /// Without `quiet`, start each line of that output with
     /// `[kernel <first 8 of kernel_id>] `, for a host running many kernels.
     pub prefix_output: bool,
+    /// Also hand the process's stdout and stderr here, line by line,
+    /// whether or not `quiet` discards them from the host's stderr, with
+    /// lines about the process's start and exit. Provisioners without a
+    /// process ignore it.
+    pub output: Option<KernelOutput>,
 }
 
 #[async_trait]
@@ -366,6 +408,9 @@ fn is_file_name_token(s: &str) -> bool {
 struct ChildProcess {
     pid: u32,
     exit: watch::Receiver<Option<Option<i32>>>,
+    /// Set as soon as the process is reaped; `exit` is sent only after
+    /// its output is logged.
+    reaped: Arc<AtomicBool>,
     /// The job holding the kernel and everything it starts. `None` if the
     /// job could not be set up; the kernel then runs without one.
     #[cfg(windows)]
@@ -453,7 +498,7 @@ impl ChildProcess {
     /// Kill the kernel and every process in its job, the counterpart of
     /// SIGKILL to the process group. Without a job, only `Unsupported`.
     fn terminate_job(&self) -> Result<()> {
-        if !self.is_alive() {
+        if self.reaped.load(Ordering::SeqCst) {
             return Ok(());
         }
         match &self.job {
@@ -471,7 +516,7 @@ impl ChildProcess {
     /// remains between this check and the signal; the waiter task reaps
     /// as soon as the child exits.
     fn signal_group(&self, sig: libc::c_int) -> Result<()> {
-        if !self.is_alive() {
+        if self.reaped.load(Ordering::SeqCst) {
             return Err(Error::KernelDied);
         }
         let rc = unsafe { libc::kill(-(self.pid as i32), sig) };
@@ -515,7 +560,11 @@ impl Provisioner for SubprocessProvisioner {
             cmd.current_dir(cwd);
         }
         cmd.stdin(std::process::Stdio::null());
-        if opts.quiet {
+        let output = opts.output.clone();
+        if output.is_some() {
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+        } else if opts.quiet {
             cmd.stdout(std::process::Stdio::null());
             cmd.stderr(std::process::Stdio::null());
         } else if opts.prefix_output {
@@ -553,19 +602,64 @@ impl Provisioner for SubprocessProvisioner {
             }
         };
         tracing::info!(kernel = %spec.name, kernel_id, pid, "launched kernel");
-        let prefix = format!("[kernel {}] ", kernel_id.get(..8).unwrap_or(&kernel_id));
-        if let Some(out) = child.stdout.take() {
-            tokio::spawn(prefix_lines(out, prefix.clone(), write_stderr));
+        if let Some(o) = &output {
+            o.line(
+                OutputSource::Host,
+                &format!("started process {pid}: {}", argv.join(" ")),
+            );
         }
-        if let Some(err) = child.stderr.take() {
-            tokio::spawn(prefix_lines(err, prefix, write_stderr));
+        // Echoed to the host's stderr as they would go without `output`.
+        let prefix = if opts.prefix_output {
+            format!("[kernel {}] ", kernel_id.get(..8).unwrap_or(&kernel_id))
+        } else {
+            String::new()
+        };
+        let echo = !opts.quiet;
+        // Set once the exit has been logged: later output, from something
+        // the kernel started outside its group that still holds a pipe,
+        // stays out of the log (and out of the next process's lines), but
+        // is still read, so its writer gets no SIGPIPE.
+        let cut = Arc::new(AtomicBool::new(false));
+        let mut readers = Vec::new();
+        for (pipe, source) in [
+            (
+                child.stdout.take().map(|p| Box::pin(p) as Pipe),
+                OutputSource::Stdout,
+            ),
+            (
+                child.stderr.take().map(|p| Box::pin(p) as Pipe),
+                OutputSource::Stderr,
+            ),
+        ] {
+            let Some(pipe) = pipe else { continue };
+            let output = output.clone();
+            let cut = cut.clone();
+            readers.push(tokio::spawn(prefix_lines(
+                pipe,
+                prefix.clone(),
+                move |line, text| {
+                    if let Some(o) = &output {
+                        if !cut.load(Ordering::SeqCst) {
+                            o.line(source, &String::from_utf8_lossy(text));
+                        }
+                    }
+                    if echo {
+                        write_stderr(line);
+                    }
+                },
+            )));
         }
 
         let (exit_tx, exit_rx) = watch::channel(None);
+        let reaped = Arc::new(AtomicBool::new(false));
+        let reaped_tx = reaped.clone();
         #[cfg(windows)]
         let leftovers = job.clone();
         tokio::spawn(async move {
             let status = child.wait().await.ok();
+            // Before anything else, so `signal_group` stops at once even
+            // while the pipes drain below.
+            reaped_tx.store(true, Ordering::SeqCst);
             let code = status.and_then(|s| s.code());
             tracing::info!(pid, ?code, "kernel exited");
             // Whatever the kernel left in its process group (a background
@@ -582,6 +676,20 @@ impl Provisioner for SubprocessProvisioner {
             if let Some(job) = leftovers {
                 let _ = job.terminate();
             }
+            if let Some(o) = output {
+                // What the kernel wrote before it exited goes first, and
+                // the exit line before anyone hears of the exit (a restart
+                // writes its own lines). The pipes close with the process
+                // group, unless something it started outside the group
+                // still holds them: after a second in all, its output is
+                // left out of the log (the readers run on to EOF).
+                let deadline = tokio::time::Instant::now() + PIPE_DRAIN;
+                for r in readers {
+                    let _ = tokio::time::timeout_at(deadline, r).await;
+                }
+                cut.store(true, Ordering::SeqCst);
+                o.line(OutputSource::Host, &describe_exit(status));
+            }
             let _ = exit_tx.send(Some(code));
         });
 
@@ -591,6 +699,7 @@ impl Provisioner for SubprocessProvisioner {
             process: Arc::new(ChildProcess {
                 pid,
                 exit: exit_rx,
+                reaped,
                 #[cfg(windows)]
                 job,
             }),
@@ -599,30 +708,68 @@ impl Provisioner for SubprocessProvisioner {
     }
 }
 
-/// Pass `r` to `out` line by line, each line after `prefix` and ending in
-/// a newline. The launcher's `out` writes one line at a time to stderr.
+#[cfg(feature = "subprocess")]
+type Pipe = std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>;
+
+/// How long a kernel's exit waits for its pipes to drain, with `output`.
+#[cfg(feature = "subprocess")]
+const PIPE_DRAIN: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Longest line [`prefix_lines`] holds; a longer one is passed on in
+/// pieces of this size, so a stream with no newlines (a `\r` progress
+/// bar, binary on stderr) can't grow the buffer without bound.
+#[cfg(feature = "subprocess")]
+const MAX_LINE: usize = 64 * 1024;
+
+/// Pass `r` to `out` line by line: each line after `prefix` and ending in
+/// a newline, and the line's own text, without prefix or line ending. The
+/// launcher's `out` writes one line at a time to stderr.
 #[cfg(feature = "subprocess")]
 async fn prefix_lines(
     r: impl tokio::io::AsyncRead + Unpin,
     prefix: String,
-    mut out: impl FnMut(&[u8]),
+    mut out: impl FnMut(&[u8], &[u8]),
 ) {
-    use tokio::io::AsyncBufReadExt;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt};
     let mut r = tokio::io::BufReader::new(r);
     let mut line = prefix.into_bytes();
     let start = line.len();
     loop {
         line.truncate(start);
-        match r.read_until(b'\n', &mut line).await {
+        let mut limited = (&mut r).take(MAX_LINE as u64);
+        match limited.read_until(b'\n', &mut line).await {
             Ok(0) | Err(_) => return,
             Ok(_) => {
                 if !line.ends_with(b"\n") {
                     line.push(b'\n');
                 }
-                out(&line);
+                let mut end = line.len() - 1;
+                if line[start..end].ends_with(b"\r") {
+                    end -= 1;
+                }
+                out(&line, &line[start..end]);
             }
         }
     }
+}
+
+/// "exited with code 1", or how else the process ended.
+#[cfg(feature = "subprocess")]
+fn describe_exit(status: Option<std::process::ExitStatus>) -> String {
+    let Some(status) = status else {
+        return "exited; its status could not be read".into();
+    };
+    if let Some(code) = status.code() {
+        return format!("exited with code {code}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return format!("killed by signal {signal}");
+        }
+    }
+    format!("exited: {status}")
 }
 
 #[cfg(feature = "subprocess")]
@@ -990,20 +1137,113 @@ mod tests {
 
     #[tokio::test]
     async fn kernel_output_lines_get_the_prefix() {
-        let mut got = Vec::new();
-        super::prefix_lines(&b"one\ntwo\n\nlast"[..], "[kernel ab] ".into(), |l| {
-            got.push(String::from_utf8_lossy(l).into_owned())
+        let (mut got, mut texts) = (Vec::new(), Vec::new());
+        super::prefix_lines(&b"one\ntwo\r\n\nlast"[..], "[kernel ab] ".into(), |l, t| {
+            got.push(String::from_utf8_lossy(l).into_owned());
+            texts.push(String::from_utf8_lossy(t).into_owned());
         })
         .await;
         assert_eq!(
             got,
             [
                 "[kernel ab] one\n",
-                "[kernel ab] two\n",
+                "[kernel ab] two\r\n",
                 "[kernel ab] \n",
                 "[kernel ab] last\n"
             ]
         );
+        assert_eq!(texts, ["one", "two", "", "last"]);
+    }
+
+    /// A stream with no newline is passed on in pieces of `MAX_LINE`
+    /// bytes, not held whole.
+    #[tokio::test]
+    async fn a_line_with_no_end_is_passed_on_in_pieces() {
+        let long = vec![b'x'; MAX_LINE * 2 + 5];
+        let mut sizes = Vec::new();
+        super::prefix_lines(&long[..], String::new(), |_, t| sizes.push(t.len())).await;
+        assert_eq!(sizes, [MAX_LINE, MAX_LINE, 5]);
+    }
+
+    /// With `output`, the process's stdout and stderr reach it line by
+    /// line, between a line about its start and one about its exit, even
+    /// when `quiet` keeps them off the host's stderr.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn output_gets_the_process_lines_and_its_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let prov = SubprocessProvisioner {
+            runtime_dir: dir.path().into(),
+            ip: "127.0.0.1".into(),
+        };
+        let lines = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let got = lines.clone();
+        let opts = LaunchOptions {
+            quiet: true,
+            output: Some(KernelOutput::new(move |source, text| {
+                got.lock().unwrap().push((source, text.to_string()))
+            })),
+            ..Default::default()
+        };
+        let k = prov
+            .launch(&sh_spec("echo out; echo err >&2; exit 3"), opts)
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), k.process.wait())
+            .await
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while lines.lock().unwrap().len() < 4 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let lines = lines.lock().unwrap().clone();
+        assert_eq!(lines.len(), 4, "{lines:?}");
+        assert_eq!(lines[0].0, OutputSource::Host);
+        assert!(lines[0].1.starts_with("started process "), "{lines:?}");
+        assert!(lines[1..3].contains(&(OutputSource::Stdout, "out".into())));
+        assert!(lines[1..3].contains(&(OutputSource::Stderr, "err".into())));
+        assert_eq!(lines[3], (OutputSource::Host, "exited with code 3".into()));
+    }
+
+    /// Output from something the kernel left outside its group, after the
+    /// exit is logged, stays out of the log but is still read: its writer
+    /// gets no SIGPIPE.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn late_output_is_read_but_not_logged() {
+        let dir = tempfile::tempdir().unwrap();
+        let prov = SubprocessProvisioner {
+            runtime_dir: dir.path().into(),
+            ip: "127.0.0.1".into(),
+        };
+        let lines = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let got = lines.clone();
+        let opts = LaunchOptions {
+            quiet: true,
+            output: Some(KernelOutput::new(move |_, text| {
+                got.lock().unwrap().push(text.to_string())
+            })),
+            ..Default::default()
+        };
+        // The pause lets `setsid` leave the group before the group is
+        // killed at the exit.
+        let marker = dir.path().join("wrote");
+        let script = format!(
+            "setsid sh -c 'sleep 2; echo late; echo ok > {}' & sleep 0.5; exit 0",
+            marker.display()
+        );
+        let k = prov.launch(&sh_spec(&script), opts).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), k.process.wait())
+            .await
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !marker.exists() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(marker.exists(), "the late writer was cut off");
+        let lines = lines.lock().unwrap().clone();
+        assert_eq!(lines.last().unwrap(), "exited with code 0", "{lines:?}");
+        assert!(!lines.contains(&"late".to_string()), "{lines:?}");
     }
 
     /// Kernels started at once must not share a port (#260): each port is

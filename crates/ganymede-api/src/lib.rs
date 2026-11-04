@@ -6,11 +6,13 @@
 //! to routes and frames; an in-app bridge can call them directly.
 
 pub mod bridge;
+pub mod kernel_log;
 pub mod kernels;
 pub mod models;
 pub mod sessions;
 
 pub use bridge::ClientConnection;
+pub use kernel_log::{KernelLogLine, KernelLogModel};
 #[cfg(feature = "zmq")]
 pub use kernels::ZmqTransportFactory;
 pub use kernels::{
