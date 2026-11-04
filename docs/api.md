@@ -279,8 +279,9 @@ GET /api/metrics/v1/kernel_usage/get_usage/5b140482-3d46-486f-8a0c-637e047675f2
 ```
 
 Memory is resident bytes. CPU is the percent of one core since the
-previous request, so it reads 0 the first time and can pass 100 on
-several cores.
+server last measured, so it reads 0 the first time and can pass 100 on
+several cores. Requests less than sysinfo's minimum CPU interval apart
+(200 ms on most systems) share one measurement.
 
 A kernel that answers `usage_request` on its control channel, as
 ipykernel does, is asked first, and its whole `usage_reply` message comes

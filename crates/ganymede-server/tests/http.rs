@@ -4688,7 +4688,7 @@ async fn kernel_usage_measures_a_kernel_process() {
         Arc::new(FakeTransports),
     );
     st.metrics = Arc::new(ganymede_server::metrics::Metrics::with_probe_timeout(
-        Duration::from_millis(200),
+        Duration::from_secs(2),
     ));
     let app = build_router(st);
     let (path, usage) = start_and_get_usage(&app).await;
@@ -4702,10 +4702,11 @@ async fn kernel_usage_measures_a_kernel_process() {
         "{usage}"
     );
     assert_eq!(c["host_usage_flag"], true);
-    // The kernel did not answer `usage_request`, so it is not asked again.
+    // The kernel did not answer `usage_request`, so it is not asked again:
+    // asking would take the whole probe timeout.
     let started = std::time::Instant::now();
     let (_, again) = call(&app, "GET", &path, None, Some(TOKEN)).await;
-    assert!(started.elapsed() < Duration::from_millis(150));
+    assert!(started.elapsed() < Duration::from_millis(1500));
     assert_eq!(again["content"]["pid"], std::process::id());
 }
 

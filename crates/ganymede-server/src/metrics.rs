@@ -37,7 +37,30 @@ pub struct Metrics {
     answers: Mutex<HashMap<String, (String, bool)>>,
     /// `None` where sysinfo could not start, which then measures nothing.
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-    system: Mutex<Option<sysinfo::System>>,
+    system: Mutex<Option<Scans>>,
+}
+
+/// One `System` for every request, and when its processes and host
+/// figures were last refreshed. A refresh sooner than sysinfo's minimum
+/// CPU interval after the last is skipped: its CPU figures would be noise,
+/// and requests close together (a client polling the server and its
+/// kernels) share one process scan.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+struct Scans {
+    sys: sysinfo::System,
+    processes_at: Option<std::time::Instant>,
+    host_at: Option<std::time::Instant>,
+}
+
+/// True, and `at` set to now, when the last refresh is old enough.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn due(at: &mut Option<std::time::Instant>) -> bool {
+    let now = std::time::Instant::now();
+    if at.is_some_and(|t| now.duration_since(t) < sysinfo::MINIMUM_CPU_UPDATE_INTERVAL) {
+        return false;
+    }
+    *at = Some(now);
+    true
 }
 
 impl Default for Metrics {
@@ -46,7 +69,11 @@ impl Default for Metrics {
             probe_timeout: Duration::from_secs(2),
             answers: Mutex::default(),
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-            system: Mutex::new(sysinfo::System::new().ok()),
+            system: Mutex::new(sysinfo::System::new().ok().map(|sys| Scans {
+                sys,
+                processes_at: None,
+                host_at: None,
+            })),
         }
     }
 }
@@ -75,15 +102,19 @@ impl Metrics {
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     fn measure(&self, pid: u32) -> Option<Usage> {
         use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
-        let mut sys = self.system.lock().unwrap();
-        let sys = sys.as_mut()?;
-        sys.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing().with_memory().with_cpu(),
-        );
-        let processes = sys.processes();
+        let mut scans = self.system.lock().unwrap();
+        let scans = scans.as_mut()?;
         let root = Pid::from_u32(pid);
+        // A process started since the last scan is not in it: scan again.
+        if due(&mut scans.processes_at) || !scans.sys.processes().contains_key(&root) {
+            scans.processes_at = Some(std::time::Instant::now());
+            scans.sys.refresh_processes_specifics(
+                ProcessesToUpdate::All,
+                true,
+                ProcessRefreshKind::nothing().with_memory().with_cpu(),
+            );
+        }
+        let processes = scans.sys.processes();
         processes.get(&root)?;
         let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
         for (id, p) in processes {
@@ -115,10 +146,13 @@ impl Metrics {
     /// The machine's CPU and memory, in `usage_reply`'s field names.
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     fn host(&self, content: &mut serde_json::Map<String, Value>) {
-        let mut sys = self.system.lock().unwrap();
-        let Some(sys) = sys.as_mut() else { return };
-        sys.refresh_memory();
-        sys.refresh_cpu_usage();
+        let mut scans = self.system.lock().unwrap();
+        let Some(scans) = scans.as_mut() else { return };
+        if due(&mut scans.host_at) {
+            scans.sys.refresh_memory();
+            scans.sys.refresh_cpu_usage();
+        }
+        let sys = &scans.sys;
         if let Ok(name) = sysinfo::System::host_name() {
             content.insert("hostname".into(), name.into());
         }
@@ -160,11 +194,15 @@ impl Metrics {
         }
     }
 
+    /// Record whether the session answers. A miss never overwrites an
+    /// answer: a request that timed out while another got a reply (two
+    /// first requests at once, or one slow probe) says nothing new.
     fn set_answers(&self, id: &str, session: &str, yes: bool) {
-        self.answers
-            .lock()
-            .unwrap()
-            .insert(id.to_string(), (session.to_string(), yes));
+        let mut answers = self.answers.lock().unwrap();
+        if !yes && matches!(answers.get(id), Some((s, true)) if s == session) {
+            return;
+        }
+        answers.insert(id.to_string(), (session.to_string(), yes));
     }
 
     /// Ask the kernel for its `usage_reply`. `Ok(None)` when it does not
