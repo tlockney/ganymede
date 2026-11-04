@@ -2,16 +2,20 @@
 //! room held unsaved edits.
 //!
 //! `base` is the file as the room last read or wrote it, `ours` the room's
-//! content, `theirs` the file now. Cells are matched by id. A cell changed
-//! on one side only takes that side's version; a cell added on either side
-//! is kept, after the cell it followed there; a cell deleted on one side
-//! and untouched on the other is dropped. Notebook-level fields (metadata,
-//! `nbformat_minor`) merge the same way, key by key.
+//! content, `theirs` the file now. Cells are matched by id. A cell added
+//! on either side is kept, after the cell it followed there; a cell deleted
+//! on one side and untouched on the other is dropped. A cell on all sides
+//! merges part by part: its source, its outputs with its execution count,
+//! each metadata key, and each other key. So a source edit in the room
+//! survives an agent's run that changed only that cell's outputs on disk.
+//! Notebook-level fields (`nbformat_minor`, each `metadata` key) merge the
+//! same way, key by key.
 //!
-//! When both sides changed the same cell or key differently, or deleted a
-//! cell the other changed, or both reordered cells, the disk wins for that
+//! When both sides changed the same part differently, or deleted a cell
+//! the other changed, or both reordered cells, the disk wins for that
 //! part, as `jupyter-collaboration` lets the disk win for the whole
-//! document. Each such part is listed in [`Merged::conflicts`].
+//! document. Each cell or top-level key with such a part is listed in
+//! [`Merged::conflicts`].
 //!
 //! Cells without ids (nbformat 4.4 and older) can't be matched; the disk
 //! wins for the whole document.
@@ -50,12 +54,17 @@ pub fn merge(base: &Value, ours: &Value, theirs: &Value) -> Merged {
             .collect()
     };
     for key in keys {
-        let pick = three_way(b.get(key), o.get(key), t.get(key));
-        if pick.conflict {
+        let (value, conflict) = if key == "metadata" {
+            merge_by_key(b.get(key), o.get(key), t.get(key))
+        } else {
+            let pick = three_way(b.get(key), o.get(key), t.get(key));
+            (pick.value.cloned(), pick.conflict)
+        };
+        if conflict {
             conflicts.push(key.clone());
         }
-        if let Some(v) = pick.value {
-            top.insert(key.clone(), v.clone());
+        if let Some(v) = value {
+            top.insert(key.clone(), v);
         }
     }
 
@@ -64,7 +73,7 @@ pub fn merge(base: &Value, ours: &Value, theirs: &Value) -> Merged {
     let theirs_by: HashMap<&str, &Value> = tc.iter().map(|(id, c)| (*id, *c)).collect();
 
     // Which cells survive, and with what content.
-    let mut kept: HashMap<&str, &Value> = HashMap::new();
+    let mut kept: HashMap<&str, Value> = HashMap::new();
     let all_ids: Vec<&str> = {
         let mut seen = HashSet::new();
         tc.iter()
@@ -75,15 +84,15 @@ pub fn merge(base: &Value, ours: &Value, theirs: &Value) -> Merged {
             .collect()
     };
     for id in all_ids {
-        let pick = three_way(
+        let (value, conflict) = merge_cell(
             base_by.get(id).copied(),
             ours_by.get(id).copied(),
             theirs_by.get(id).copied(),
         );
-        if pick.conflict {
+        if conflict {
             conflicts.push(format!("cell {id}"));
         }
-        if let Some(v) = pick.value {
+        if let Some(v) = value {
             kept.insert(id, v);
         }
     }
@@ -129,13 +138,127 @@ pub fn merge(base: &Value, ours: &Value, theirs: &Value) -> Merged {
             after = Some(id);
         }
     }
-    let cells: Vec<Value> = order.iter().map(|id| kept[id].clone()).collect();
+    let cells: Vec<Value> = order
+        .iter()
+        .map(|id| kept.remove(id).expect("kept"))
+        .collect();
     top.insert("cells".into(), Value::Array(cells));
     reorder_like(&mut top, t);
     Merged {
         notebook: Value::Object(top),
         conflicts,
     }
+}
+
+/// One cell's merge. A cell on all three sides merges part by part, so an
+/// edit to its source survives a disk change to only its outputs: the
+/// source; the outputs with the execution count (they change together
+/// when it runs); the metadata, key by key; and any other key on its own.
+/// A change of cell type, or a cell added or deleted, merges whole.
+fn merge_cell(
+    base: Option<&Value>,
+    ours: Option<&Value>,
+    theirs: Option<&Value>,
+) -> (Option<Value>, bool) {
+    let whole = || {
+        let pick = three_way(base, ours, theirs);
+        (pick.value.cloned(), pick.conflict)
+    };
+    let (Some(b), Some(o), Some(t)) = (
+        base.and_then(Value::as_object),
+        ours.and_then(Value::as_object),
+        theirs.and_then(Value::as_object),
+    ) else {
+        return whole();
+    };
+    if b.get("cell_type") != o.get("cell_type") || b.get("cell_type") != t.get("cell_type") {
+        return whole();
+    }
+    let mut cell = JsonMap::new();
+    let mut conflict = false;
+    // Outputs and execution count, as one part: the keys present of the two.
+    let run = |c: &JsonMap<String, Value>| -> Value {
+        let mut part = JsonMap::new();
+        for key in RUN {
+            if let Some(v) = c.get(key) {
+                part.insert(key.to_string(), v.clone());
+            }
+        }
+        Value::Object(part)
+    };
+    let (rb, ro, rt) = (run(b), run(o), run(t));
+    let pick = three_way(Some(&rb), Some(&ro), Some(&rt));
+    conflict |= pick.conflict;
+    if let Some(Value::Object(part)) = pick.value {
+        cell.extend(part.clone());
+    }
+    let mut seen = HashSet::new();
+    for key in t.keys().chain(o.keys()).chain(b.keys()) {
+        if RUN.contains(&key.as_str()) || !seen.insert(key.as_str()) {
+            continue;
+        }
+        let (value, c) = if key == "metadata" {
+            merge_by_key(b.get(key), o.get(key), t.get(key))
+        } else {
+            let pick = three_way(b.get(key), o.get(key), t.get(key));
+            (pick.value.cloned(), pick.conflict)
+        };
+        conflict |= c;
+        if let Some(v) = value {
+            cell.insert(key.clone(), v);
+        }
+    }
+    reorder_like(&mut cell, t);
+    (Some(Value::Object(cell)), conflict)
+}
+
+/// A cell's keys that change together when it runs.
+const RUN: [&str; 2] = ["outputs", "execution_count"];
+
+/// An object's merge, key by key (notebook and cell metadata). Anything
+/// but three objects merges whole.
+fn merge_by_key(
+    base: Option<&Value>,
+    ours: Option<&Value>,
+    theirs: Option<&Value>,
+) -> (Option<Value>, bool) {
+    let empty = JsonMap::new();
+    fn as_map<'a>(
+        v: Option<&'a Value>,
+        empty: &'a JsonMap<String, Value>,
+    ) -> Option<&'a JsonMap<String, Value>> {
+        match v {
+            None => Some(empty),
+            Some(Value::Object(m)) => Some(m),
+            Some(_) => None,
+        }
+    }
+    let (Some(b), Some(o), Some(t)) = (
+        as_map(base, &empty),
+        as_map(ours, &empty),
+        as_map(theirs, &empty),
+    ) else {
+        let pick = three_way(base, ours, theirs);
+        return (pick.value.cloned(), pick.conflict);
+    };
+    // Deleted on one side and unchanged on the other: gone.
+    if ours.is_none() && t == b || theirs.is_none() && o == b {
+        return (None, false);
+    }
+    let mut out = JsonMap::new();
+    let mut conflict = false;
+    let mut seen = HashSet::new();
+    for key in t.keys().chain(o.keys()).chain(b.keys()) {
+        if !seen.insert(key.as_str()) {
+            continue;
+        }
+        let pick = three_way(b.get(key), o.get(key), t.get(key));
+        conflict |= pick.conflict;
+        if let Some(v) = pick.value {
+            out.insert(key.clone(), v.clone());
+        }
+    }
+    (Some(Value::Object(out)), conflict)
 }
 
 fn disk_wins(theirs: &Value) -> Merged {
@@ -353,5 +476,101 @@ mod tests {
         let m = merge(&base, &ours, &theirs);
         assert_eq!(m.conflicts, ["all"]);
         assert_eq!(m.notebook, theirs);
+    }
+
+    fn code(id: &str, source: &str, out: &str, count: Value) -> Value {
+        json!({"cell_type": "code", "id": id, "metadata": {}, "source": source, "execution_count": count,
+               "outputs": [{"output_type": "stream", "name": "stdout", "text": out}]})
+    }
+
+    #[test]
+    fn a_source_edit_survives_a_run_on_disk() {
+        // The person types in the room; an agent runs the cell on disk.
+        let base = nb(vec![code("a", "print(1)", "", Value::Null)]);
+        let ours = nb(vec![code("a", "print(2)", "", Value::Null)]);
+        let theirs = nb(vec![code("a", "print(1)", "1\n", json!(3))]);
+        let m = merge(&base, &ours, &theirs);
+        assert!(m.conflicts.is_empty(), "{:?}", m.conflicts);
+        assert_eq!(
+            m.notebook["cells"][0],
+            code("a", "print(2)", "1\n", json!(3))
+        );
+
+        // And the other way round: the room ran it, the disk edited it.
+        let m = merge(&base, &theirs, &ours);
+        assert!(m.conflicts.is_empty(), "{:?}", m.conflicts);
+        assert_eq!(
+            m.notebook["cells"][0],
+            code("a", "print(2)", "1\n", json!(3))
+        );
+    }
+
+    #[test]
+    fn outputs_and_count_merge_as_one_part() {
+        // Both sides ran the cell: the disk's run wins whole, not a mix
+        // of one side's outputs and the other's count.
+        let base = nb(vec![code("a", "x", "", Value::Null)]);
+        let ours = nb(vec![code("a", "x", "ours", json!(1))]);
+        let theirs = nb(vec![code("a", "x", "disk", json!(7))]);
+        let m = merge(&base, &ours, &theirs);
+        assert_eq!(m.conflicts, ["cell a"]);
+        assert_eq!(m.notebook["cells"][0], code("a", "x", "disk", json!(7)));
+    }
+
+    #[test]
+    fn cell_metadata_merges_by_key() {
+        let mut base = cell("a", "1");
+        base["metadata"] = json!({"tags": ["t"]});
+        let mut ours = base.clone();
+        ours["metadata"]["collapsed"] = json!(true);
+        let mut theirs = base.clone();
+        theirs["metadata"]["tags"] = json!(["t", "u"]);
+        theirs["source"] = json!("1 disk");
+        let m = merge(&nb(vec![base]), &nb(vec![ours]), &nb(vec![theirs]));
+        assert!(m.conflicts.is_empty(), "{:?}", m.conflicts);
+        let merged = &m.notebook["cells"][0];
+        assert_eq!(
+            merged["metadata"],
+            json!({"tags": ["t", "u"], "collapsed": true})
+        );
+        assert_eq!(merged["source"], "1 disk");
+    }
+
+    #[test]
+    fn a_changed_cell_type_merges_whole() {
+        let base = nb(vec![cell("a", "1")]);
+        let mut ours = base.clone();
+        ours["cells"][0]["cell_type"] = json!("raw");
+        let theirs = nb(vec![cell("a", "1 disk")]);
+        let m = merge(&base, &ours, &theirs);
+        assert_eq!(m.conflicts, ["cell a"]);
+        assert_eq!(m.notebook, theirs);
+    }
+
+    #[test]
+    fn notebook_metadata_merges_by_key() {
+        let mut base = nb(vec![]);
+        base["metadata"] = json!({"kernelspec": {"name": "a"}});
+        let mut ours = base.clone();
+        ours["metadata"]["title"] = json!("ours");
+        let mut theirs = base.clone();
+        theirs["metadata"]["kernelspec"] = json!({"name": "b"});
+        let m = merge(&base, &ours, &theirs);
+        assert!(m.conflicts.is_empty(), "{:?}", m.conflicts);
+        assert_eq!(
+            m.notebook["metadata"],
+            json!({"kernelspec": {"name": "b"}, "title": "ours"})
+        );
+    }
+
+    #[test]
+    fn unchanged_cells_keep_their_key_order() {
+        let base = nb(vec![code("a", "x", "", Value::Null)]);
+        let mut ours = base.clone();
+        ours["cells"][0]["source"] = json!("y");
+        let m = merge(&base, &ours, &base);
+        let keys: Vec<&String> = m.notebook["cells"][0].as_object().unwrap().keys().collect();
+        let want: Vec<&String> = base["cells"][0].as_object().unwrap().keys().collect();
+        assert_eq!(keys, want);
     }
 }

@@ -165,9 +165,12 @@ change notifications; elsewhere it polls every second) and takes in
 changes other programs make. A change that arrives while the room has
 unsaved edits is merged, cell by cell: the room keeps its edits, takes
 the other program's changes to other cells, cells it added or deleted,
-and saves the result. Where both changed the same cell, or one deleted a
-cell the other changed, the file on disk wins that cell, and the server
-logs it. Notebooks older than nbformat 4.5 have no cell ids, so for them
+and saves the result. Within a cell both changed, the source, the
+outputs with the execution count, and each metadata key merge
+separately, so a source edit in the room survives an agent running that
+cell on disk. Where both changed the same part, or one deleted a cell
+the other changed, the file on disk wins that part, and the server logs
+the cell. Notebook metadata merges key by key the same way. Notebooks older than nbformat 4.5 have no cell ids, so for them
 the file wins outright, as in `jupyter-collaboration`.
 
 A room looks at its file once events have settled for half a second, and
