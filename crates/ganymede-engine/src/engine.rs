@@ -97,6 +97,7 @@ impl Engine {
                 kernel_id: None,
                 quiet: self.quiet,
                 prefix_output: self.prefix_output,
+                output: None,
             },
         };
         let (session, launched, info) = relaunch.start(self.startup_timeout).await?;

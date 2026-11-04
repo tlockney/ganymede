@@ -85,6 +85,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/kernels/{id}/restart", post(restart_kernel))
         .route("/api/kernels/{id}/execute", post(crate::execute::execute))
         .route("/api/kernels/{id}/channels", get(crate::ws::channels))
+        .route("/api/kernels/{id}/log", get(kernel_log))
         .route("/api/metrics/v1", get(crate::metrics::server))
         .route(
             "/api/metrics/v1/kernel_usage/get_usage/{id}",
@@ -433,6 +434,29 @@ async fn get_kernel(
     Path(id): Path<String>,
 ) -> HttpResult<Json<ganymede_api::KernelModel>> {
     Ok(Json(s.kernels.model(&id)?))
+}
+
+#[derive(Deserialize)]
+struct KernelLogQuery {
+    after: Option<u64>,
+    lines: Option<usize>,
+}
+
+/// Lines a log request returns when it names no `lines`.
+const KERNEL_LOG_DEFAULT_LINES: usize = 200;
+
+/// A Ganymede extension: the kernel's recent stdout and stderr and the
+/// server's lines about its process. Jupyter Server has no such route.
+async fn kernel_log(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<KernelLogQuery>,
+) -> HttpResult<Json<ganymede_api::KernelLogModel>> {
+    let lines = q
+        .lines
+        .unwrap_or(KERNEL_LOG_DEFAULT_LINES)
+        .min(ganymede_api::kernel_log::LOG_LINES);
+    Ok(Json(s.kernels.log(&id, q.after.unwrap_or(0), lines)?))
 }
 
 async fn delete_kernel(

@@ -49,6 +49,41 @@ impl Drop for LaunchedKernel {
     }
 }
 
+/// Where a line of a kernel's [`KernelOutput`] came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputSource {
+    /// The kernel process's own stdout (not its cell output).
+    Stdout,
+    /// The kernel process's stderr.
+    Stderr,
+    /// The provisioner, about the process: its start and its exit.
+    Host,
+}
+
+/// Receives a kernel process's output a line at a time, without the line
+/// ending, and the provisioner's lines about the process. Called from the
+/// tasks reading the process's pipes, so it should return quickly.
+#[derive(Clone)]
+pub struct KernelOutput(Arc<OutputFn>);
+
+type OutputFn = dyn Fn(OutputSource, &str) + Send + Sync;
+
+impl KernelOutput {
+    pub fn new(f: impl Fn(OutputSource, &str) + Send + Sync + 'static) -> Self {
+        KernelOutput(Arc::new(f))
+    }
+
+    pub fn line(&self, source: OutputSource, text: &str) {
+        (self.0)(source, text)
+    }
+}
+
+impl std::fmt::Debug for KernelOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("KernelOutput")
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LaunchOptions {
     pub cwd: Option<PathBuf>,
@@ -61,6 +96,11 @@ pub struct LaunchOptions {
     /// Without `quiet`, start each line of that output with
     /// `[kernel <first 8 of kernel_id>] `, for a host running many kernels.
     pub prefix_output: bool,
+    /// Also hand the process's stdout and stderr here, line by line,
+    /// whether or not `quiet` discards them from the host's stderr, with
+    /// lines about the process's start and exit. Provisioners without a
+    /// process ignore it.
+    pub output: Option<KernelOutput>,
 }
 
 #[async_trait]
@@ -515,7 +555,11 @@ impl Provisioner for SubprocessProvisioner {
             cmd.current_dir(cwd);
         }
         cmd.stdin(std::process::Stdio::null());
-        if opts.quiet {
+        let output = opts.output.clone();
+        if output.is_some() {
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+        } else if opts.quiet {
             cmd.stdout(std::process::Stdio::null());
             cmd.stderr(std::process::Stdio::null());
         } else if opts.prefix_output {
@@ -553,12 +597,44 @@ impl Provisioner for SubprocessProvisioner {
             }
         };
         tracing::info!(kernel = %spec.name, kernel_id, pid, "launched kernel");
-        let prefix = format!("[kernel {}] ", kernel_id.get(..8).unwrap_or(&kernel_id));
-        if let Some(out) = child.stdout.take() {
-            tokio::spawn(prefix_lines(out, prefix.clone(), write_stderr));
+        if let Some(o) = &output {
+            o.line(
+                OutputSource::Host,
+                &format!("started process {pid}: {}", argv.join(" ")),
+            );
         }
-        if let Some(err) = child.stderr.take() {
-            tokio::spawn(prefix_lines(err, prefix, write_stderr));
+        // Echoed to the host's stderr as they would go without `output`.
+        let prefix = if opts.prefix_output {
+            format!("[kernel {}] ", kernel_id.get(..8).unwrap_or(&kernel_id))
+        } else {
+            String::new()
+        };
+        let echo = !opts.quiet;
+        let mut readers = Vec::new();
+        for (pipe, source) in [
+            (
+                child.stdout.take().map(|p| Box::pin(p) as Pipe),
+                OutputSource::Stdout,
+            ),
+            (
+                child.stderr.take().map(|p| Box::pin(p) as Pipe),
+                OutputSource::Stderr,
+            ),
+        ] {
+            let Some(pipe) = pipe else { continue };
+            let output = output.clone();
+            readers.push(tokio::spawn(prefix_lines(
+                pipe,
+                prefix.clone(),
+                move |line, text| {
+                    if let Some(o) = &output {
+                        o.line(source, &String::from_utf8_lossy(text));
+                    }
+                    if echo {
+                        write_stderr(line);
+                    }
+                },
+            )));
         }
 
         let (exit_tx, exit_rx) = watch::channel(None);
@@ -583,6 +659,15 @@ impl Provisioner for SubprocessProvisioner {
                 let _ = job.terminate();
             }
             let _ = exit_tx.send(Some(code));
+            if let Some(o) = output {
+                // What the kernel wrote before it exited goes first. Its
+                // pipes close with it, unless something it started still
+                // holds them.
+                for r in readers {
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), r).await;
+                }
+                o.line(OutputSource::Host, &describe_exit(status));
+            }
         });
 
         Ok(LaunchedKernel {
@@ -599,13 +684,17 @@ impl Provisioner for SubprocessProvisioner {
     }
 }
 
-/// Pass `r` to `out` line by line, each line after `prefix` and ending in
-/// a newline. The launcher's `out` writes one line at a time to stderr.
+#[cfg(feature = "subprocess")]
+type Pipe = std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>;
+
+/// Pass `r` to `out` line by line: each line after `prefix` and ending in
+/// a newline, and the line's own text, without prefix or line ending. The
+/// launcher's `out` writes one line at a time to stderr.
 #[cfg(feature = "subprocess")]
 async fn prefix_lines(
     r: impl tokio::io::AsyncRead + Unpin,
     prefix: String,
-    mut out: impl FnMut(&[u8]),
+    mut out: impl FnMut(&[u8], &[u8]),
 ) {
     use tokio::io::AsyncBufReadExt;
     let mut r = tokio::io::BufReader::new(r);
@@ -619,10 +708,33 @@ async fn prefix_lines(
                 if !line.ends_with(b"\n") {
                     line.push(b'\n');
                 }
-                out(&line);
+                let mut end = line.len() - 1;
+                if line[start..end].ends_with(b"\r") {
+                    end -= 1;
+                }
+                out(&line, &line[start..end]);
             }
         }
     }
+}
+
+/// "exited with code 1", or how else the process ended.
+#[cfg(feature = "subprocess")]
+fn describe_exit(status: Option<std::process::ExitStatus>) -> String {
+    let Some(status) = status else {
+        return "exited; its status could not be read".into();
+    };
+    if let Some(code) = status.code() {
+        return format!("exited with code {code}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return format!("killed by signal {signal}");
+        }
+    }
+    format!("exited: {status}")
 }
 
 #[cfg(feature = "subprocess")]
@@ -990,20 +1102,62 @@ mod tests {
 
     #[tokio::test]
     async fn kernel_output_lines_get_the_prefix() {
-        let mut got = Vec::new();
-        super::prefix_lines(&b"one\ntwo\n\nlast"[..], "[kernel ab] ".into(), |l| {
-            got.push(String::from_utf8_lossy(l).into_owned())
+        let (mut got, mut texts) = (Vec::new(), Vec::new());
+        super::prefix_lines(&b"one\ntwo\r\n\nlast"[..], "[kernel ab] ".into(), |l, t| {
+            got.push(String::from_utf8_lossy(l).into_owned());
+            texts.push(String::from_utf8_lossy(t).into_owned());
         })
         .await;
         assert_eq!(
             got,
             [
                 "[kernel ab] one\n",
-                "[kernel ab] two\n",
+                "[kernel ab] two\r\n",
                 "[kernel ab] \n",
                 "[kernel ab] last\n"
             ]
         );
+        assert_eq!(texts, ["one", "two", "", "last"]);
+    }
+
+    /// With `output`, the process's stdout and stderr reach it line by
+    /// line, between a line about its start and one about its exit, even
+    /// when `quiet` keeps them off the host's stderr.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn output_gets_the_process_lines_and_its_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let prov = SubprocessProvisioner {
+            runtime_dir: dir.path().into(),
+            ip: "127.0.0.1".into(),
+        };
+        let lines = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let got = lines.clone();
+        let opts = LaunchOptions {
+            quiet: true,
+            output: Some(KernelOutput::new(move |source, text| {
+                got.lock().unwrap().push((source, text.to_string()))
+            })),
+            ..Default::default()
+        };
+        let k = prov
+            .launch(&sh_spec("echo out; echo err >&2; exit 3"), opts)
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), k.process.wait())
+            .await
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while lines.lock().unwrap().len() < 4 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let lines = lines.lock().unwrap().clone();
+        assert_eq!(lines.len(), 4, "{lines:?}");
+        assert_eq!(lines[0].0, OutputSource::Host);
+        assert!(lines[0].1.starts_with("started process "), "{lines:?}");
+        assert!(lines[1..3].contains(&(OutputSource::Stdout, "out".into())));
+        assert!(lines[1..3].contains(&(OutputSource::Stderr, "err".into())));
+        assert_eq!(lines[3], (OutputSource::Host, "exited with code 3".into()));
     }
 
     /// Kernels started at once must not share a port (#260): each port is

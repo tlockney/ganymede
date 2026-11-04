@@ -293,3 +293,41 @@ replies with an error is measured from the host until it restarts. A kernel the 
 no process for, an attached or in-process one, gets
 `{"content": {"reason": "no_process"}, "kernel_id": ...}`, and one that
 answered before but not within ten seconds now gets `"reason": "timeout"`.
+
+## Read a kernel's log
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+When a kernel dies, the reason is usually in its stderr, which no
+Jupyter API carries. This route is a Ganymede extension (`jupyter_server`
+answers it 404, so a client can probe for it): the kernel process's
+stdout and stderr, outside its cell output, and the server's lines about
+the process.
+
+```http
+GET /api/kernels/5b140482-3d46-486f-8a0c-637e047675f2/log?after=0&lines=200
+```
+
+```json
+{"kernel_id": "5b140482-3d46-486f-8a0c-637e047675f2",
+ "lines": [
+   {"seq": 1, "time": "2026-11-04T16:41:02.118230Z", "source": "host",
+    "text": "started process 41234: python -m ipykernel_launcher -f /run/kernel-5b14.json"},
+   {"seq": 2, "time": "2026-11-04T16:41:09.502117Z", "source": "stderr",
+    "text": "MemoryError"},
+   {"seq": 3, "time": "2026-11-04T16:41:09.517902Z", "source": "host",
+    "text": "exited with code 1"},
+   {"seq": 4, "time": "2026-11-04T16:41:09.518033Z", "source": "host",
+    "text": "the kernel died; restarting it (1/5)"}],
+ "last_seq": 4}
+```
+
+`source` is `stdout`, `stderr` or `host`. The log lasts as long as the
+kernel's id, across restarts, and keeps its last 1000 lines or 256 KiB,
+with longer lines cut at 8 KiB. `lines` (default 200, at most 1000)
+returns the newest lines. To follow the log, pass the last `last_seq`
+seen as `after` and get only newer lines. A kernel the server runs no
+process for, an in-process one or one on a gateway, gets
+`{"kernel_id": ..., "lines": [], "last_seq": 0, "reason": "no_process"}`.

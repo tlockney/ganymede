@@ -4820,3 +4820,169 @@ async fn kernel_usage_cpu_holds_for_requests_close_together() {
         assert!(cpu > 30.0, "{what} reading of a busy process: {cpu}");
     }
 }
+
+// ----- /api/kernels/{id}/log ------------------------------------------------
+
+/// Runs each kernel as a `sh` process that writes to stdout and stderr,
+/// with its messages answered by an in-process fake kernel.
+#[cfg(unix)]
+struct ShProvisioner(std::path::PathBuf);
+#[cfg(unix)]
+#[async_trait]
+impl Provisioner for ShProvisioner {
+    async fn launch(
+        &self,
+        _: &Kernelspec,
+        opts: LaunchOptions,
+    ) -> ganymede_kernel_host::Result<LaunchedKernel> {
+        let mut spec: Kernelspec = serde_json::from_value(json!({
+            "argv": ["sh", "-c", "echo hello; echo trouble >&2; exec sleep 30"],
+            "display_name": "",
+            "language": "",
+        }))
+        .unwrap();
+        spec.name = "sh".into();
+        let prov = ganymede_kernel_host::SubprocessProvisioner {
+            runtime_dir: self.0.clone(),
+            ip: "127.0.0.1".into(),
+        };
+        prov.launch(&spec, opts).await
+    }
+}
+
+/// `id`'s log once it has `n` lines, polling for them.
+#[cfg(unix)]
+async fn log_with(app: &axum::Router, id: &str, query: &str, n: usize) -> Value {
+    let path = format!("/api/kernels/{id}/log{query}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let (s, log) = call(app, "GET", &path, None, Some(TOKEN)).await;
+        assert_eq!(s, StatusCode::OK, "{log}");
+        if log["lines"].as_array().unwrap().len() >= n || std::time::Instant::now() > deadline {
+            return log;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[cfg(unix)]
+fn log_lines(log: &Value) -> Vec<(String, String)> {
+    log["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            (
+                l["source"].as_str().unwrap().to_string(),
+                l["text"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn kernel_log_has_the_process_output_across_restarts() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = tempfile::tempdir().unwrap();
+    let app = build_router(state_with(
+        dir.path(),
+        Arc::new(ShProvisioner(runtime.path().into())),
+        Arc::new(FakeTransports),
+    ));
+    let (s, kernel) = call(&app, "POST", "/api/kernels", Some(json!({})), Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let id = kernel["id"].as_str().unwrap().to_string();
+
+    let log = log_with(&app, &id, "", 3).await;
+    assert_eq!(log["kernel_id"], id.as_str());
+    assert!(log.get("reason").is_none(), "{log}");
+    let lines = log_lines(&log);
+    assert_eq!(lines.len(), 3, "{log}");
+    assert_eq!(lines[0].0, "host");
+    assert!(lines[0].1.starts_with("started process "), "{log}");
+    assert!(lines.contains(&("stdout".into(), "hello".into())), "{log}");
+    assert!(
+        lines.contains(&("stderr".into(), "trouble".into())),
+        "{log}"
+    );
+    assert!(log["lines"][0]["time"].as_str().unwrap().ends_with('Z'));
+    assert_eq!(log["last_seq"], 3);
+
+    // A restart keeps the log and counts on: the old process's exit,
+    // the restart, and the new process's lines follow.
+    let (s, _) = call(
+        &app,
+        "POST",
+        &format!("/api/kernels/{id}/restart"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let log = log_with(&app, &id, "?after=3", 5).await;
+    let lines = log_lines(&log);
+    assert_eq!(log["lines"][0]["seq"], 4, "{log}");
+    assert!(
+        lines.contains(&("host".into(), "restarting at a client's request".into())),
+        "{log}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|(s, t)| s == "host" && t.starts_with("killed by signal")),
+        "{log}"
+    );
+    assert!(
+        lines.contains(&("stderr".into(), "trouble".into())),
+        "{log}"
+    );
+
+    // `lines` keeps the newest.
+    let (_, log) = call(
+        &app,
+        "GET",
+        &format!("/api/kernels/{id}/log?lines=1"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(log["lines"].as_array().unwrap().len(), 1, "{log}");
+    assert_eq!(log["lines"][0]["seq"], log["last_seq"]);
+
+    let (s, _) = call(
+        &app,
+        "DELETE",
+        &format!("/api/kernels/{id}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn kernel_log_says_when_there_is_no_process() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(state(dir.path()));
+    let (s, kernel) = call(&app, "POST", "/api/kernels", Some(json!({})), Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let id = kernel["id"].as_str().unwrap();
+    let (s, log) = call(
+        &app,
+        "GET",
+        &format!("/api/kernels/{id}/log"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        log,
+        json!({"kernel_id": id, "lines": [], "last_seq": 0, "reason": "no_process"})
+    );
+    let (s, _) = call(&app, "GET", "/api/kernels/nope/log", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = call(&app, "GET", &format!("/api/kernels/{id}/log"), None, None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
