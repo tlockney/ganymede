@@ -18,7 +18,7 @@ use serde_json::Value;
 use crate::model::{
     Checkpoint, ContentType, ContentsModel, Format, GetOptions, IfMatch, SaveRequest,
 };
-use crate::paths::ApiPath;
+use crate::paths::{path_under, ApiPath};
 use crate::trust::{self, Notary};
 use crate::{Contents, Error, Result};
 
@@ -695,6 +695,12 @@ impl Inner {
             return Err(Error::Forbidden("cannot rename the contents root".into()));
         }
         let meta = fs::symlink_metadata(&from.os).map_err(|e| io_to_error(e, &from.api))?;
+        if meta.is_dir() && path_under(&to.api.to_string(), &from.api.to_string()).is_some() {
+            return Err(Error::BadRequest(format!(
+                "Cannot move {} into itself ({})",
+                from.api, to.api
+            )));
+        }
         rename_noreplace(&from.os, &to.os).map_err(|e| match e.kind() {
             io::ErrorKind::AlreadyExists => {
                 Error::Conflict(format!("File already exists: {}", to.api))

@@ -108,6 +108,12 @@ pub fn router(state: AppState) -> Router {
             "/api/contents",
             get(get_contents_root).post(post_contents_root),
         )
+        // jupyter_server's path pattern takes the root with or without the
+        // slash; `{*path}` below matches only a non-empty path.
+        .route(
+            "/api/contents/",
+            get(get_contents_root).post(post_contents_root),
+        )
         .route(
             "/api/contents/{*path}",
             get(get_contents)
