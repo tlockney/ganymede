@@ -13,6 +13,7 @@
 //! ([`FileIds::moved`], [`FileIds::removed`]); a file moved by another
 //! program gets a new id when it is next opened.
 
+use crate::path_under as under;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
@@ -81,19 +82,6 @@ impl std::fmt::Debug for FileIds {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileIds").finish_non_exhaustive()
     }
-}
-
-/// `old` itself or something under it, as `(rest)` after `old`.
-fn under<'a>(path: &'a str, old: &str) -> Option<&'a str> {
-    if path == old {
-        return Some("");
-    }
-    if old.is_empty() {
-        return Some(path);
-    }
-    path.strip_prefix(old)?
-        .strip_prefix('/')
-        .map(|_| &path[old.len()..])
 }
 
 impl FileIds {

@@ -922,15 +922,20 @@ impl Notebooks {
         path: &str,
         f: impl FnOnce(&mut Room) -> (R, Effects) + Send + 'static,
     ) -> Result<R, McpError> {
-        {
-            // By room id, so a file recreated at the same path (a new
-            // room) is held too; a room that stopped is held again.
-            let room_id = notebook_room_id(&self.state.collab, path);
-            let mut holds = self.holds.lock().expect("holds");
-            if !holds.get(&room_id).is_some_and(Hold::is_live) {
-                if let Some(h) = hold_notebook(&self.state.collab, &self.state.contents, path) {
-                    holds.insert(room_id, h);
-                }
+        // By room id, so a file recreated at the same path (a new room)
+        // is held too; a room that stopped is held again.
+        let room_id = notebook_room_id(&self.state.collab, path).await;
+        let held = self
+            .holds
+            .lock()
+            .expect("holds")
+            .get(&room_id)
+            .is_some_and(Hold::is_live);
+        if !held {
+            if let Some(h) = hold_notebook(&self.state.collab, &self.state.contents, path).await {
+                // A hold made meanwhile by another call is replaced; it
+                // leaves the room as this one joins it.
+                self.holds.lock().expect("holds").insert(room_id, h);
             }
         }
         with_notebook(&self.state.collab, &self.state.contents, path, f)

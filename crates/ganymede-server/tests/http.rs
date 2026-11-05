@@ -2130,6 +2130,18 @@ async fn collaboration_room_syncs_saves_and_reloads() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v["fileId"], again["fileId"]);
     assert_eq!(v["type"], "notebook");
+    // The same file however the path is spelled (#279), as the file-id
+    // routes normalize it.
+    let (s, spelled) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/./demo.ipynb",
+        Some(body.clone()),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(spelled["fileId"], v["fileId"]);
     let (s, _) = call(
         &app,
         "PUT",
