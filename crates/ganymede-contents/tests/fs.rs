@@ -545,8 +545,31 @@ async fn rename_and_copy() {
         .unwrap();
     assert_eq!(status(&c.rename("sub", "sub/x").await), 400);
     assert_eq!(status(&c.rename("sub", "sub/deeper/x").await), 400);
+    // The same through another spelling of `sub`: a symlink to it, or
+    // `SUB` on a case-insensitive volume (#374).
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("sub", dir.path().join("link")).unwrap();
+        assert_eq!(status(&c.rename("sub", "link/x").await), 400);
+        assert_eq!(status(&c.rename("sub", "link/deeper/x").await), 400);
+        fs::remove_file(dir.path().join("link")).unwrap();
+        // A symlink to a directory inside `sub` too; one to a sibling is fine.
+        std::os::unix::fs::symlink("sub/deeper", dir.path().join("l2")).unwrap();
+        assert_eq!(status(&c.rename("sub", "l2/x").await), 400);
+        fs::remove_file(dir.path().join("l2")).unwrap();
+        if dir.path().join("SUB").exists() {
+            assert_eq!(status(&c.rename("sub", "SUB/x").await), 400);
+        }
+    }
     assert!(dir.path().join("sub/c.txt").exists());
     c.save("subway", SaveRequest::directory()).await.unwrap();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("subway", dir.path().join("l3")).unwrap();
+        assert_eq!(c.rename("sub", "l3/sub").await.unwrap().path, "l3/sub");
+        assert_eq!(c.rename("l3/sub", "sub").await.unwrap().path, "sub");
+        fs::remove_file(dir.path().join("l3")).unwrap();
+    }
     assert_eq!(c.rename("subway", "sub2").await.unwrap().path, "sub2");
     // A name too long for the filesystem is the client's mistake, not a 500.
     let long = format!("{}.txt", "x".repeat(300));

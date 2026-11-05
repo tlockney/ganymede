@@ -240,6 +240,26 @@ impl Inner {
         Ok(r)
     }
 
+    /// Whether `to` lies inside the directory `from` once every alias is
+    /// resolved: `Sub` to `sub/x` on a case-insensitive volume, or to
+    /// `link/x` where `link` is a symlink to `Sub` or to a directory inside
+    /// it. `rename(2)` answers those with EINVAL. Canonicalizes the deepest
+    /// existing ancestor of `to`'s parent, then compares each directory
+    /// from there up to the root with `from`.
+    fn lands_in(&self, to: &Path, from: &Path, from_meta: &Metadata) -> bool {
+        let Some(existing) = to.ancestors().skip(1).find(|p| p.exists()) else {
+            return false;
+        };
+        let Ok(target) = existing.canonicalize() else {
+            return false;
+        };
+        let from_canonical = from.canonicalize().ok();
+        target
+            .ancestors()
+            .take_while(|p| *p != self.root && p.starts_with(&self.root))
+            .any(|p| same_dir(p, from_canonical.as_deref(), from_meta))
+    }
+
     /// `os` was built from the canonical root and validated components, so
     /// the only way it can point outside the root is through a symlink.
     /// Canonicalize the deepest existing ancestor (the path itself if it
@@ -695,7 +715,10 @@ impl Inner {
             return Err(Error::Forbidden("cannot rename the contents root".into()));
         }
         let meta = fs::symlink_metadata(&from.os).map_err(|e| io_to_error(e, &from.api))?;
-        if meta.is_dir() && path_under(&to.api.to_string(), &from.api.to_string()).is_some() {
+        if meta.is_dir()
+            && (path_under(&to.api.to_string(), &from.api.to_string()).is_some()
+                || self.lands_in(&to.os, &from.os, &meta))
+        {
             return Err(Error::BadRequest(format!(
                 "Cannot move {} into itself ({})",
                 from.api, to.api
@@ -1058,6 +1081,21 @@ fn created_time(meta: &Metadata) -> SystemTime {
         }
     }
     meta.modified().unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
+/// Whether the canonical directory `dir` is `from`: by device and inode
+/// on Unix, which holds however the volume folds case.
+#[cfg(unix)]
+fn same_dir(dir: &Path, _: Option<&Path>, from: &Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(dir).is_ok_and(|m| m.dev() == from.dev() && m.ino() == from.ino())
+}
+
+/// Elsewhere by canonical path: `std` has no stable file id on Windows,
+/// but its canonical paths carry the on-disk case.
+#[cfg(not(unix))]
+fn same_dir(dir: &Path, from: Option<&Path>, _: &Metadata) -> bool {
+    from == Some(dir)
 }
 
 /// `.txt` for `txt` or `.txt`; `""` for `None`.
