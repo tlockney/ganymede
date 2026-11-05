@@ -2,6 +2,7 @@
 //! layer over `ganymede-engine` (or `ganymede-server` for `serve`).
 
 mod console;
+mod crash;
 mod help;
 mod info;
 mod lab;
@@ -237,6 +238,10 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Panic, to check crash reporting. Debug builds only.
+    #[cfg(debug_assertions)]
+    #[command(hide = true)]
+    DebugPanic,
 }
 
 #[derive(Subcommand)]
@@ -415,9 +420,28 @@ fn main() -> ExitCode {
         use clap::FromArgMatches;
         Cli::from_arg_matches(&help::command().get_matches()).unwrap_or_else(|e| e.exit())
     };
-    if let Err(e) = ganymede_server::serve::init_logging(cli.log_filter(), cli.serve_args()) {
+    let config = crash::config_text(cli.serve_args().and_then(|a| a.config.as_deref()));
+    let opted_in = crash::opted_in(std::env::var_os(crash::ENV).as_deref(), config.as_deref());
+    #[cfg(feature = "crash-reporting")]
+    let (_reporting, extra) = match opted_in {
+        true => {
+            let (reporting, layer) = crash::start(crash::DSN);
+            (Some(reporting), Some(layer))
+        }
+        false => (None, None),
+    };
+    #[cfg(not(feature = "crash-reporting"))]
+    let extra = None;
+    if let Err(e) =
+        ganymede_server::serve::init_logging_with(cli.log_filter(), cli.serve_args(), extra)
+    {
         eprintln!("ganymede: {}", error_chain(&e));
         return ExitCode::FAILURE;
+    }
+    if opted_in && !cfg!(feature = "crash-reporting") {
+        tracing::warn!(
+            "crash reporting is on, but this build can't send reports (built without the crash-reporting feature)"
+        );
     }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -568,6 +592,8 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Info { json } => info::run(&engine, &cli.kernelspec_root, json),
+        #[cfg(debug_assertions)]
+        Cmd::DebugPanic => panic!("ganymede debug-panic: a test crash"),
     }
 }
 

@@ -121,9 +121,13 @@ pub fn command() -> Command {
     );
     after.push_str(&format!(
         "\nThe kernel {} is built in, for trying things out.\n\
-         Run {} for a command's flags and details.",
+         Run {} for a command's flags and details.\n\
+         Crash reports are off unless you set {} or {};\n\
+         see https://ganymede-server.com/docs/privacy for what they send.",
         styled(STYLES.get_literal(), "fake"),
         styled(STYLES.get_literal(), "ganymede help <COMMAND>"),
+        styled(STYLES.get_literal(), "GANYMEDE_CRASH_REPORTING=1"),
+        styled(STYLES.get_literal(), "crash_reporting = true"),
     ));
 
     let template = format!(
@@ -187,5 +191,6 @@ mod tests {
         assert!(help.contains("Examples:"), "{help}");
         assert!(help.contains("Exit status:"), "{help}");
         assert!(help.contains("--kernelspec-root"), "{help}");
+        assert!(help.contains("GANYMEDE_CRASH_REPORTING"), "{help}");
     }
 }

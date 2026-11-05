@@ -2,9 +2,9 @@
 
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. Crash reporting is being added
-> ([#384](https://github.com/tlockney/ganymede/issues/384)); until a
-> build has it, Ganymede sends nothing.
+> the latest release. The server and CLI can send crash reports from
+> `main` builds when you turn it on; the apps and cdp-kernel don't yet
+> ([#384](https://github.com/tlockney/ganymede/issues/384)).
 
 Ganymede is local-first. Your notebooks, files and kernel output stay on
 your machine. Nothing is sent anywhere unless you turn on crash
@@ -50,7 +50,9 @@ or set `GANYMEDE_CRASH_REPORTING=1` in the environment, which overrides
 the config file; `GANYMEDE_CRASH_REPORTING=0` turns it off. Only release
 binaries, from `install.sh` or a GitHub release, can send reports; a
 build from source can't unless it enables the `crash-reporting` cargo
-feature.
+feature. Reports are sent for panics and for errors Ganymede logs at
+error level, and a report that can't be sent within ten seconds is
+dropped.
 
 ### Mac, iPad and iPhone apps
 

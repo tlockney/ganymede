@@ -128,6 +128,7 @@ mcp_enabled = false              # true: notebook tools for agents at /mcp
 mcp_read_only = false            # /mcp reads notebooks only
 mcp_no_execute = false           # /mcp edits notebooks but runs no code
 mcp_images = false               # /mcp sends images in outputs to the model
+crash_reporting = false          # Unreleased. true: send crash reports (see Privacy)
 
 # Unreleased: extra response headers for files from a static_dir that
 # isn't JupyterLab, none by default (see Static headers). One table per path; "/assets/*" matches
@@ -143,13 +144,14 @@ mcp_images = false               # /mcp sends images in outputs to the model
 # mime_types = ["text/x-python"]
 ```
 
-Three keys have no flag:
+Four keys have no flag:
 
 | Key | Effect |
 | --- | --- |
 | `local_hostnames` | Host names accepted besides loopback addresses while remote access is off. Default `["localhost"]`. |
 | `trust_xheaders` | Trust `X-Forwarded-Proto` and `X-Scheme` from a reverse proxy, so login cookies sent over proxied HTTPS are marked `Secure`. |
 | `max_body_size` | Largest request body, in bytes, which caps a notebook's size. Default 512 MiB. |
+| `crash_reporting` | Unreleased. Send crash reports from `ganymede` to Sentry; see [Privacy and crash reporting](privacy.md). Default `false`. |
 
 ## Static headers
 
@@ -264,6 +266,7 @@ checks and cleans up. A server embedded in an app writes neither.
 | `GANYMEDE_DATA_DIR` | Where `lab install` and `ui install` put what they download. |
 | `GANYMEDE_PYPI_URL`, `GANYMEDE_PYPI_HOSTS` | A PyPI mirror, and more hosts allowed to serve wheels; see [What a download trusts](frontends.md#what-a-download-trusts). |
 | `GANYMEDE_UI_URL` | A mirror of ganymede-ui's release downloads. |
+| `GANYMEDE_CRASH_REPORTING` | Unreleased. `1` turns crash reporting on and `0` off, overriding `crash_reporting`; see [Privacy and crash reporting](privacy.md). |
 | `RUST_LOG` | The log filter, when `--log-level` isn't given. |
 | `HTTPS_PROXY` | Used for downloads. |
 

@@ -84,7 +84,7 @@ jobs:
         with:
           tool: cargo-about
       - name: Dependency licenses are all accepted in about.toml
-        run: cargo about generate --locked --fail -m crates/ganymede-cli/Cargo.toml about.hbs -o /dev/null
+        run: cargo about generate --locked --fail --features crash-reporting -m crates/ganymede-cli/Cargo.toml about.hbs -o /dev/null
 
   # The oldest Rust the workspace says it supports (rust-version in
   # Cargo.toml) still builds it.
