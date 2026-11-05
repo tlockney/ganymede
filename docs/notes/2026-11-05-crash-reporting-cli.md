@@ -21,3 +21,4 @@ Off, sentry is never initialized.
 - `ganymede debug-panic` (hidden, debug builds only) panics on purpose to
   check reporting end to end.
 - The container image is built without the feature.
+- When opted in, `main` sets `CDP_KERNEL_CRASH_REPORTS=1` before any thread starts, so kernels the server launches inherit it; cdp-kernel#423 reports only then.

@@ -70,5 +70,7 @@ Off unless you turn it on in the app's settings.
 
 ### cdp-kernel
 
-cdp-kernel's own documentation says how it reports crashes in the
-kernel itself.
+When crash reporting is on for the server, kernels it starts get
+`CDP_KERNEL_CRASH_REPORTS=1` in their environment, and cdp-kernel
+reports its own crashes only then. cdp-kernel's own documentation says
+what it sends.

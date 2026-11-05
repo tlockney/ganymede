@@ -422,6 +422,11 @@ fn main() -> ExitCode {
     };
     let config = crash::config_text(cli.serve_args().and_then(|a| a.config.as_deref()));
     let opted_in = crash::opted_in(std::env::var_os(crash::ENV).as_deref(), config.as_deref());
+    if opted_in {
+        // Before any thread starts: kernels the server launches inherit
+        // this, and cdp-kernel reports its own crashes only when it is set.
+        std::env::set_var(crash::KERNEL_ENV, "1");
+    }
     #[cfg(feature = "crash-reporting")]
     let (_reporting, extra) = match opted_in {
         true => {

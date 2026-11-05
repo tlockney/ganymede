@@ -14,6 +14,11 @@ use std::path::Path;
 /// on, `0` (or `false`, `no`, `off`) turns it off.
 pub const ENV: &str = "GANYMEDE_CRASH_REPORTING";
 
+/// Set in kernels' environment when the user opted in, so cdp-kernel
+/// (cdp-kernel#423) may report its own crashes; unset, it sends nothing.
+/// It names a kernel, not a language, and lives in the CLI, not the host.
+pub const KERNEL_ENV: &str = "CDP_KERNEL_CRASH_REPORTS";
+
 /// Whether the user opted in: [`ENV`] when it is set to a value it knows,
 /// else `crash_reporting` in `config` (the config file's text, if any).
 /// A config file that doesn't parse counts as not opted in; the command
