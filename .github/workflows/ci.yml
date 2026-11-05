@@ -317,7 +317,7 @@ jobs:
       - name: ganymede-ffi as the iOS slices build it (no ZeroMQ or subprocesses)
         run: cargo test -p ganymede-ffi --no-default-features --features gateway
       - name: Core libraries for browser wasm
-        run: cargo check -p ganymede-engine --no-default-features --target wasm32-unknown-unknown
+        run: cargo check -p ganymede-engine -p ganymede-api -p ganymede-contents --no-default-features --target wasm32-unknown-unknown
       - name: Engine runs a notebook under WASI
         working-directory: e2e/wasm-smoke
         run: |
