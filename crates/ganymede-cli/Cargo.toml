@@ -49,7 +49,8 @@ ureq = { version = "3", default-features = false, features = ["rustls", "platfor
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # `crash-reporting`: panics and errors to Sentry over the ureq/rustls stack
 # already used above. No default features: no breadcrumbs from logs, no
-# release-health sessions, no debug-image scan at startup.
+# release-health sessions. `debug-images` lists the loaded images once at
+# start, only when opted in, so Sentry can symbolicate stripped binaries.
 sentry = { version = "0.49", default-features = false, features = ["backtrace", "contexts", "debug-images", "panic", "tracing", "ureq", "rustls"], optional = true }
 
 [dev-dependencies]
