@@ -67,6 +67,8 @@ pub struct AppState {
     pub lab: Option<Arc<lab::Lab>>,
     /// Any other `--static-dir`, served at `/` behind the routes.
     pub static_dir: Option<PathBuf>,
+    /// Extra headers for some of `static_dir`'s paths (`static_headers`).
+    pub static_headers: Arc<StaticHeaders>,
     /// Document rooms behind `/api/collaboration`.
     pub collab: Arc<collab::Collab>,
     /// `/api/terminals`; `None` when `terminals_enabled` is off or the
@@ -152,4 +154,57 @@ fn cors(allow_origins: Vec<String>, allow_credentials: bool) -> tower_http::cors
             HeaderName::from_static("x-xsrftoken"),
         ])
         .expose_headers([header::ETAG])
+}
+
+/// Extra response headers for paths under a generic static dir, from the
+/// `static_headers` setting: each rule an exact path or a prefix ending in
+/// `*`, with the headers its responses get. Every matching rule applies,
+/// in order, a later one replacing a header an earlier one set.
+#[derive(Debug, Default)]
+pub struct StaticHeaders(Vec<(String, bool, axum::http::HeaderMap)>);
+
+impl StaticHeaders {
+    /// Parses the setting; an error names the path and header at fault.
+    pub fn parse(
+        rules: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    ) -> anyhow::Result<Self> {
+        use axum::http::{HeaderName, HeaderValue};
+        let mut out = Vec::new();
+        for (path, headers) in rules {
+            anyhow::ensure!(
+                path.starts_with('/'),
+                "static_headers: path {path:?} must start with /"
+            );
+            let (path, prefix) = match path.strip_suffix('*') {
+                Some(p) => (p.to_owned(), true),
+                None => (path.clone(), false),
+            };
+            let mut map = axum::http::HeaderMap::new();
+            for (name, value) in headers {
+                let name = HeaderName::try_from(name.as_str())
+                    .map_err(|e| anyhow::anyhow!("static_headers: {path}: header {name:?}: {e}"))?;
+                let value = HeaderValue::try_from(value.as_str())
+                    .map_err(|e| anyhow::anyhow!("static_headers: {path}: {name}: {e}"))?;
+                map.insert(name, value);
+            }
+            out.push((path, prefix, map));
+        }
+        Ok(StaticHeaders(out))
+    }
+
+    /// Adds the headers of every rule that matches `path` to `headers`.
+    pub(crate) fn apply(&self, path: &str, headers: &mut axum::http::HeaderMap) {
+        for (rule, prefix, extra) in &self.0 {
+            let hit = if *prefix {
+                path.starts_with(rule.as_str())
+            } else {
+                path == rule
+            };
+            if hit {
+                for (name, value) in extra {
+                    headers.insert(name, value.clone());
+                }
+            }
+        }
+    }
 }

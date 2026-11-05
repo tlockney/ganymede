@@ -94,6 +94,7 @@ fn state_with(
         config_dir: root.join(".jupyter-config"),
         lab: None,
         static_dir: None,
+        static_headers: Default::default(),
         collab: Arc::new(ganymede_server::collab::Collab::new(
             ganymede_contents::FileIds::in_memory(),
             root.canonicalize().ok(),
@@ -1406,6 +1407,78 @@ async fn generic_static_dir_pages_get_xsrf() {
         .body(Body::from(r#"{"type": "file"}"#))
         .unwrap();
     assert_eq!(send(&app, req).await.0, StatusCode::CREATED);
+}
+
+/// `static_headers` adds headers to the static paths it names, exact or by
+/// prefix, and to no others (#375).
+#[tokio::test]
+async fn static_headers_reach_only_the_paths_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let site = dir.path().join("site");
+    std::fs::create_dir_all(site.join("kernels")).unwrap();
+    std::fs::write(site.join("index.html"), "<!doctype html>").unwrap();
+    std::fs::write(site.join("kernel.html"), "<!doctype html>").unwrap();
+    std::fs::write(site.join("kernels/worker.js"), "w").unwrap();
+    let rules: std::collections::BTreeMap<_, _> = [
+        (
+            "/kernel.html".to_owned(),
+            [
+                (
+                    "Cross-Origin-Opener-Policy".to_owned(),
+                    "same-origin".to_owned(),
+                ),
+                (
+                    "Cross-Origin-Embedder-Policy".to_owned(),
+                    "require-corp".to_owned(),
+                ),
+            ]
+            .into(),
+        ),
+        (
+            "/kernels/*".to_owned(),
+            [(
+                "Cross-Origin-Resource-Policy".to_owned(),
+                "same-origin".to_owned(),
+            )]
+            .into(),
+        ),
+    ]
+    .into();
+    let mut st = state(dir.path());
+    st.static_dir = Some(site);
+    st.static_headers = Arc::new(ganymede_server::StaticHeaders::parse(&rules).unwrap());
+    let app = build_router(st);
+
+    let (code, h, _) = send(&app, get_req("/kernel.html", None)).await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(h["cross-origin-opener-policy"], "same-origin");
+    assert_eq!(h["cross-origin-embedder-policy"], "require-corp");
+    assert!(h.get("cross-origin-resource-policy").is_none());
+
+    let (_, h, _) = send(&app, get_req("/kernels/worker.js", None)).await;
+    assert_eq!(h["cross-origin-resource-policy"], "same-origin");
+    assert!(h.get("cross-origin-opener-policy").is_none());
+
+    let (code, h, _) = send(&app, get_req("/index.html", None)).await;
+    assert_eq!(code, StatusCode::OK);
+    assert!(h.get("cross-origin-opener-policy").is_none());
+    assert!(h.get("cross-origin-resource-policy").is_none());
+}
+
+#[test]
+fn static_headers_reject_bad_rules() {
+    let bad = |path: &str, name: &str, value: &str| {
+        let rules: std::collections::BTreeMap<_, _> = [(
+            path.to_owned(),
+            [(name.to_owned(), value.to_owned())].into(),
+        )]
+        .into();
+        ganymede_server::StaticHeaders::parse(&rules).is_err()
+    };
+    assert!(bad("kernel.html", "X-A", "b"), "path without /");
+    assert!(bad("/k", "bad name", "b"));
+    assert!(bad("/k", "X-A", "line\nbreak"));
+    assert!(!bad("/k", "X-A", "b"));
 }
 
 #[tokio::test]

@@ -451,14 +451,16 @@ fn safe_method(m: &Method) -> bool {
 /// For a generic `--static-dir` app: its HTML pages get an `_xsrf` cookie
 /// when the browser has none, as JupyterLab's page does, so an app signed
 /// in by the login cookie can pass the XSRF check on requests that change
-/// state.
+/// state. Paths named in `static_headers` get those headers.
 pub(crate) async fn static_page(
     State(state): State<AppState>,
     req: Request<Body>,
     next: Next,
 ) -> Response {
     let cookie = xsrf_cookie(&state, req.headers());
+    let path = req.uri().path().to_owned();
     let mut resp = next.run(req).await;
+    state.static_headers.apply(&path, resp.headers_mut());
     let html = resp
         .headers()
         .get(header::CONTENT_TYPE)

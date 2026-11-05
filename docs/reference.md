@@ -129,6 +129,12 @@ mcp_read_only = false            # /mcp reads notebooks only
 mcp_no_execute = false           # /mcp edits notebooks but runs no code
 mcp_images = false               # /mcp sends images in outputs to the model
 
+# Extra response headers for files from a static_dir that isn't JupyterLab,
+# none by default. One table per path: exact, or a prefix ending in *.
+# [static_headers."/kernel.html"]
+# Cross-Origin-Opener-Policy = "same-origin"
+# Cross-Origin-Embedder-Policy = "require-corp"
+
 # Language servers for jupyterlab-lsp, none by default. One table each:
 # [language_servers.pyright]
 # argv = ["pyright-langserver", "--stdio"]
@@ -136,13 +142,18 @@ mcp_images = false               # /mcp sends images in outputs to the model
 # mime_types = ["text/x-python"]
 ```
 
-Three keys have no flag:
+Four keys have no flag:
 
 | Key | Effect |
 | --- | --- |
 | `local_hostnames` | Host names accepted besides loopback addresses while remote access is off. Default `["localhost"]`. |
 | `trust_xheaders` | Trust `X-Forwarded-Proto` and `X-Scheme` from a reverse proxy, so login cookies sent over proxied HTTPS are marked `Secure`. |
 | `max_body_size` | Largest request body, in bytes, which caps a notebook's size. Default 512 MiB. |
+| `static_headers` | Extra response headers for paths under a `static_dir` that isn't JupyterLab, keyed by URL path below the base URL: exact (`/kernel.html`) or a prefix ending in `*` (`/kernels/*`). For example, cross-origin isolation for a page that needs `SharedArrayBuffer`. A header name or value that isn't valid stops the server at start. None by default. |
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. Applies to `static_headers`.
 
 ## Kernel crashes
 

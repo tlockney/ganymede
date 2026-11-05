@@ -399,6 +399,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         .config_dir
         .clone()
         .unwrap_or_else(ganymede_kernel_host::kernelspec::jupyter_config_dir);
+    let static_headers = crate::StaticHeaders::parse(&cfg.static_headers)?;
     let static_dir = match &cfg.static_dir {
         Some(d) => Some(d.clone()),
         None => installed_lab(cfg.lab_version.as_deref())?,
@@ -521,6 +522,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         base_url: base_url.clone(),
         config_dir,
         static_dir: if lab.is_some() { None } else { static_dir },
+        static_headers: Arc::new(static_headers),
         lab: lab.map(Arc::new),
         collab: state_collab.clone(),
         terminals: terminals.clone(),

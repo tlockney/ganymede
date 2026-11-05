@@ -34,6 +34,13 @@ pub struct Config {
     pub static_dir: Option<PathBuf>,
     /// Which installed JupyterLab to serve when `static_dir` is unset.
     pub lab_version: Option<String>,
+    /// Extra response headers for files served from a generic `static_dir`
+    /// (not JupyterLab), keyed by URL path below the base URL: an exact
+    /// path such as `/kernel.html`, or a prefix ending in `*` such as
+    /// `/kernels/*`. For example, cross-origin isolation for a page that
+    /// needs `SharedArrayBuffer`. None by default.
+    pub static_headers:
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     /// Extra directories of prebuilt JupyterLab extensions, searched before
     /// those from `ganymede lab extension install` and `labextensions` in
     /// the Jupyter data dirs.
@@ -117,6 +124,7 @@ impl Default for Config {
             notary_dir: None,
             static_dir: None,
             lab_version: None,
+            static_headers: Default::default(),
             labextensions_paths: vec![],
             config_dir: None,
             base_url: "/".into(),
@@ -173,6 +181,19 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::Config;
+
+    #[test]
+    fn toml_sets_static_headers_per_path() {
+        let cfg = Config::from_toml(
+            "[static_headers.\"/kernel.html\"]\nCross-Origin-Opener-Policy = \"same-origin\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.static_headers["/kernel.html"]["Cross-Origin-Opener-Policy"],
+            "same-origin"
+        );
+        assert!(Config::default().static_headers.is_empty());
+    }
 
     #[test]
     fn toml_sets_keys_and_defaults_the_rest() {
