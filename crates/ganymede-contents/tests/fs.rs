@@ -545,6 +545,18 @@ async fn rename_and_copy() {
         .unwrap();
     assert_eq!(status(&c.rename("sub", "sub/x").await), 400);
     assert_eq!(status(&c.rename("sub", "sub/deeper/x").await), 400);
+    // The same through another spelling of `sub`: a symlink to it, or
+    // `SUB` on a case-insensitive volume (#374).
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("sub", dir.path().join("link")).unwrap();
+        assert_eq!(status(&c.rename("sub", "link/x").await), 400);
+        assert_eq!(status(&c.rename("sub", "link/deeper/x").await), 400);
+        fs::remove_file(dir.path().join("link")).unwrap();
+        if dir.path().join("SUB").exists() {
+            assert_eq!(status(&c.rename("sub", "SUB/x").await), 400);
+        }
+    }
     assert!(dir.path().join("sub/c.txt").exists());
     c.save("subway", SaveRequest::directory()).await.unwrap();
     assert_eq!(c.rename("subway", "sub2").await.unwrap().path, "sub2");

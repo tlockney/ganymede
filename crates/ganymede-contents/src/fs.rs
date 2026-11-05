@@ -240,6 +240,21 @@ impl Inner {
         Ok(r)
     }
 
+    /// Whether an existing ancestor of `to`, below the root, is the
+    /// directory `dir`. Catches a move into itself that the API paths miss:
+    /// `Sub` to `sub/x` on a case-insensitive volume, or to `link/x` where
+    /// `link` is a symlink to `Sub`. `rename(2)` answers those with EINVAL.
+    fn lands_in(&self, to: &Path, dir: &Path) -> bool {
+        let Ok(dir) = fs::metadata(dir) else {
+            return false;
+        };
+        to.ancestors()
+            .skip(1)
+            .take_while(|p| *p != self.root && p.starts_with(&self.root))
+            .filter_map(|p| fs::metadata(p).ok())
+            .any(|m| same_file(&m, &dir))
+    }
+
     /// `os` was built from the canonical root and validated components, so
     /// the only way it can point outside the root is through a symlink.
     /// Canonicalize the deepest existing ancestor (the path itself if it
@@ -695,7 +710,10 @@ impl Inner {
             return Err(Error::Forbidden("cannot rename the contents root".into()));
         }
         let meta = fs::symlink_metadata(&from.os).map_err(|e| io_to_error(e, &from.api))?;
-        if meta.is_dir() && path_under(&to.api.to_string(), &from.api.to_string()).is_some() {
+        if meta.is_dir()
+            && (path_under(&to.api.to_string(), &from.api.to_string()).is_some()
+                || self.lands_in(&to.os, &from.os))
+        {
             return Err(Error::BadRequest(format!(
                 "Cannot move {} into itself ({})",
                 from.api, to.api
@@ -1058,6 +1076,21 @@ fn created_time(meta: &Metadata) -> SystemTime {
         }
     }
     meta.modified().unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
+/// Whether two entries are the same file on disk.
+#[cfg(unix)]
+fn same_file(a: &Metadata, b: &Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+/// Windows has no stable file id in `std`; its volumes are case-insensitive
+/// by default and junctions are out of scope, so this is left to the
+/// API-path check and `rename` itself.
+#[cfg(not(unix))]
+fn same_file(_: &Metadata, _: &Metadata) -> bool {
+    false
 }
 
 /// `.txt` for `txt` or `.txt`; `""` for `None`.
