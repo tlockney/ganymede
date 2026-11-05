@@ -59,16 +59,50 @@ impl StaticHeaders {
     }
 }
 
-/// Adds the headers of every rule that matches the request's path to the
-/// response, replacing any the file service set.
+/// The request path as the file service resolves it: percent-decoded,
+/// and with `index.html` appended to a directory, so `/kernel%2Ehtml` and
+/// `/k/` match the rules for `/kernel.html` and `/k/index.html`.
+fn file_path(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let hex = |b: u8| (b as char).to_digit(16);
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match (
+            bytes[i],
+            bytes.get(i + 1).copied().and_then(hex),
+            bytes.get(i + 2).copied().and_then(hex),
+        ) {
+            (b'%', Some(h), Some(l)) => {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+            }
+            (b, _, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    let mut path = String::from_utf8_lossy(&out).into_owned();
+    if path.ends_with('/') {
+        path.push_str("index.html");
+    }
+    path
+}
+
+/// Adds the headers of every rule that matches the request's path, raw or
+/// as the file service resolves it, to the response. A header the file
+/// service set is replaced; with several rules setting one name, the last
+/// in key order wins.
 pub async fn add(
     State(rules): State<std::sync::Arc<[StaticHeaders]>>,
     req: Request,
     next: Next,
 ) -> Response {
-    let path = req.uri().path().to_owned();
+    let raw = req.uri().path();
+    let paths = [raw.to_owned(), file_path(raw)];
     let mut res = next.run(req).await;
-    for rule in rules.iter().filter(|r| r.matches(&path)) {
+    for rule in rules.iter().filter(|r| paths.iter().any(|p| r.matches(p))) {
         for (name, value) in &rule.headers {
             res.headers_mut().insert(name.clone(), value.clone());
         }
@@ -100,6 +134,15 @@ mod tests {
         assert_eq!(hits("/assets/a.js"), 1);
         assert_eq!(hits("/assets"), 0);
         assert_eq!(hits("/index.html"), 0);
+    }
+
+    #[test]
+    fn paths_are_matched_as_the_file_service_resolves_them() {
+        assert_eq!(file_path("/kernel%2Ehtml"), "/kernel.html");
+        assert_eq!(file_path("/k/"), "/k/index.html");
+        assert_eq!(file_path("/"), "/index.html");
+        assert_eq!(file_path("/a%2"), "/a%2");
+        assert_eq!(file_path("/a%zz"), "/a%zz");
     }
 
     #[test]

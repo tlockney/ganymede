@@ -129,8 +129,8 @@ mcp_read_only = false            # /mcp reads notebooks only
 mcp_no_execute = false           # /mcp edits notebooks but runs no code
 mcp_images = false               # /mcp sends images in outputs to the model
 
-# Extra response headers for files from a static_dir that isn't
-# JupyterLab, none by default. One table per path; "/assets/*" matches
+# Unreleased: extra response headers for files from a static_dir that
+# isn't JupyterLab, none by default (see Static headers). One table per path; "/assets/*" matches
 # every path under /assets/:
 # [static_headers."/kernel.html"]
 # Cross-Origin-Opener-Policy = "same-origin"
@@ -160,8 +160,13 @@ Three keys have no flag:
 `static_headers` adds response headers to files served from a
 `static_dir` that isn't JupyterLab. Keys are paths under `base_url`; a
 key ending in `*` matches every path that starts with the rest of it.
-Nothing is added by default, and the API's responses never get these
-headers. A page that needs `SharedArrayBuffer`, such as one hosting a
+Keys match the request path, and also that path percent-decoded with
+`index.html` added to one ending in `/`, as the file is found. Nothing
+is added by default. Routes the server answers itself, such as
+`/api/status`, never get these headers; a request no route claims, such
+as an unknown `/api/` path, falls through to the static files and can.
+When several keys set the same header, the last key in sorted order
+wins, and a configured header replaces one the server set. A page that needs `SharedArrayBuffer`, such as one hosting a
 kernel in a web worker, must be cross-origin isolated:
 
 ```toml

@@ -1455,6 +1455,9 @@ async fn static_headers_reach_only_their_paths() {
     assert_eq!(h["cross-origin-opener-policy"], "same-origin");
     assert_eq!(h["cross-origin-embedder-policy"], "require-corp");
     assert!(!h.contains_key("cross-origin-resource-policy"));
+    let (status, h, _) = send(&app, get_req("/kernel%2Ehtml", Some(&login))).await;
+    assert_eq!(status, StatusCode::OK, "another spelling of the same file");
+    assert_eq!(h["cross-origin-opener-policy"], "same-origin");
 
     let (status, h, _) = send(&app, get_req("/assets/a.js", Some(&login))).await;
     assert_eq!(status, StatusCode::OK);

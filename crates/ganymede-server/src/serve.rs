@@ -427,7 +427,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         ),
         (Some(_), None) => {}
     }
-    if lab.is_some() && !static_headers.is_empty() {
+    if (lab.is_some() || static_dir.is_none()) && !static_headers.is_empty() {
         tracing::warn!("static_headers applies to a static_dir other than JupyterLab; ignored");
     }
     if let Some(lab) = &lab {
