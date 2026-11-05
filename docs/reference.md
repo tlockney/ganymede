@@ -129,6 +129,13 @@ mcp_read_only = false            # /mcp reads notebooks only
 mcp_no_execute = false           # /mcp edits notebooks but runs no code
 mcp_images = false               # /mcp sends images in outputs to the model
 
+# Unreleased: extra response headers for files from a static_dir that
+# isn't JupyterLab, none by default (see Static headers). One table per path; "/assets/*" matches
+# every path under /assets/:
+# [static_headers."/kernel.html"]
+# Cross-Origin-Opener-Policy = "same-origin"
+# Cross-Origin-Embedder-Policy = "require-corp"
+
 # Language servers for jupyterlab-lsp, none by default. One table each:
 # [language_servers.pyright]
 # argv = ["pyright-langserver", "--stdio"]
@@ -143,6 +150,36 @@ Three keys have no flag:
 | `local_hostnames` | Host names accepted besides loopback addresses while remote access is off. Default `["localhost"]`. |
 | `trust_xheaders` | Trust `X-Forwarded-Proto` and `X-Scheme` from a reverse proxy, so login cookies sent over proxied HTTPS are marked `Secure`. |
 | `max_body_size` | Largest request body, in bytes, which caps a notebook's size. Default 512 MiB. |
+
+## Static headers
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`static_headers` adds response headers to files served from a
+`static_dir` that isn't JupyterLab. Keys are paths under `base_url`; a
+key ending in `*` matches every path that starts with the rest of it.
+Keys match the request path, and also the path as the file is found:
+percent-decoded, without empty or `.` segments, and with `index.html`
+added to one ending in `/`. Nothing
+is added by default. Routes the server answers itself, such as
+`/api/status`, never get these headers; a request no route claims, such
+as an unknown `/api/` path, falls through to the static files and can.
+When several keys set the same header, the last key in sorted order
+wins, and a configured header replaces one the server set. A page that needs `SharedArrayBuffer`, such as one hosting a
+kernel in a web worker, must be cross-origin isolated:
+
+```toml
+[static_headers."/kernel.html"]
+Cross-Origin-Opener-Policy = "same-origin"
+Cross-Origin-Embedder-Policy = "require-corp"
+```
+
+An app embedding the server passes the same object in its JSON config
+(`"static_headers": {"/kernel.html": {...}}`). The server refuses to
+start when a key doesn't begin with `/` or a header name or value isn't
+valid HTTP.
 
 ## Kernel crashes
 

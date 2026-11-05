@@ -294,6 +294,18 @@ mod tests {
     }
 
     #[test]
+    fn static_headers_come_through_the_json_config() {
+        let cfg = config(Some(
+            r#"{"static_headers": {"/kernel.html": {"Cross-Origin-Opener-Policy": "same-origin"}}}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            cfg.static_headers["/kernel.html"]["Cross-Origin-Opener-Policy"],
+            "same-origin"
+        );
+    }
+
+    #[test]
     fn bad_config_is_an_error() {
         assert!(config(Some("[]")).is_err());
         assert!(config(Some(r#"{"no_such_key": 1}"#)).is_err());
