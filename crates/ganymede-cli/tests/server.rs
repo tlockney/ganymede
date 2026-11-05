@@ -460,7 +460,32 @@ async fn exchange_step(
             }
         }
     }
-    json!({"iopub": iopub, "stdin": stdin, "reply": reply})
+    json!({"iopub": merge_streams(iopub), "stdin": stdin, "reply": reply})
+}
+
+/// Joins consecutive `stream` messages to the same stream. How a kernel
+/// splits output into messages is its flush timing (ipykernel flushes on
+/// a timer, so `print` can send its text and newline apart), not
+/// something the server decides (#381).
+fn merge_streams(iopub: Vec<Value>) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for m in iopub {
+        if m[0] == "stream" {
+            if let Some(last) = out.last_mut() {
+                if last[0] == "stream" && last[1]["name"] == m[1]["name"] {
+                    let text = format!(
+                        "{}{}",
+                        last[1]["text"].as_str().unwrap_or_default(),
+                        m[1]["text"].as_str().unwrap_or_default()
+                    );
+                    last[1]["text"] = Value::String(text);
+                    continue;
+                }
+            }
+        }
+        out.push(m);
+    }
+    out
 }
 
 /// `name=value` of the `Set-Cookie` called `name`, to send back.
@@ -1363,4 +1388,24 @@ fn a_crashed_cdp_kernel_restarts_as_under_jupyter_server() {
 #[test]
 fn a_crashed_ipykernel_restarts_as_under_jupyter_server() {
     crash_both(&CODE[1]);
+}
+
+#[test]
+fn merge_streams_joins_runs_of_one_stream() {
+    let merged = merge_streams(vec![
+        json!(["stream", {"name": "stdout", "text": "hi Ada"}]),
+        json!(["stream", {"name": "stdout", "text": "\n"}]),
+        json!(["stream", {"name": "stderr", "text": "e"}]),
+        json!(["status", {"execution_state": "idle"}]),
+        json!(["stream", {"name": "stdout", "text": "x"}]),
+    ]);
+    assert_eq!(
+        merged,
+        vec![
+            json!(["stream", {"name": "stdout", "text": "hi Ada\n"}]),
+            json!(["stream", {"name": "stderr", "text": "e"}]),
+            json!(["status", {"execution_state": "idle"}]),
+            json!(["stream", {"name": "stdout", "text": "x"}]),
+        ]
+    );
 }
