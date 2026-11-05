@@ -105,12 +105,41 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.target }}
-      - run: cargo build --release --locked -p ganymede-cli --target "$TARGET"
+      # Release binaries can send crash reports, but only when the user
+      # opts in (docs/privacy.md). Debug info is kept for the upload to
+      # Sentry below and stripped before packaging.
+      - name: Build
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+          CARGO_PROFILE_RELEASE_STRIP: none
+          CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: ${{ contains(matrix.target, 'apple') && 'packed' || 'off' }}
+        run: cargo build --release --locked -p ganymede-cli --features crash-reporting --target "$TARGET"
+      - name: Upload debug files to Sentry
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: lockney-technologies
+          SENTRY_PROJECT: ganymede
+        run: |
+          if [[ -z "$SENTRY_AUTH_TOKEN" ]]; then
+            echo "SENTRY_AUTH_TOKEN is not set; skipping"
+            exit 0
+          fi
+          files=()
+          for f in ganymede ganymede.exe ganymede.pdb ganymede.dSYM; do
+            [[ -e "target/$TARGET/release/$f" ]] && files+=("target/$TARGET/release/$f")
+          done
+          npx --yes @sentry/cli@3.8.2 debug-files upload --wait "${files[@]}"
+      - name: Strip debug info
+        if: ${{ !contains(matrix.target, 'windows') }}
+        run: |
+          bin="target/$TARGET/release/ganymede"
+          if [[ "$TARGET" == *apple* ]]; then strip -x "$bin"; else strip "$bin"; fi
       - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
         with:
           tool: cargo-about
       - name: Third-party notices for this target's dependency tree
-        run: cargo about generate --locked --fail --target "$TARGET" -m crates/ganymede-cli/Cargo.toml about.hbs -o THIRD-PARTY-NOTICES
+        run: cargo about generate --locked --fail --target "$TARGET" --features crash-reporting -m crates/ganymede-cli/Cargo.toml about.hbs -o THIRD-PARTY-NOTICES
       - name: Check the binary reports the release version
         if: ${{ !matrix.cross }}
         run: |

@@ -2,11 +2,9 @@
 
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. No build has crash reporting yet
-> ([#384](https://github.com/tlockney/ganymede/issues/384)), so none
-> accepts the settings below: `crash_reporting` in `ganymede.toml` is
-> an unknown key and stops the server from starting. Until then,
-> Ganymede sends no crash reports.
+> the latest release. The server and CLI can send crash reports from
+> `main` builds when you turn it on; the apps and cdp-kernel don't yet
+> ([#384](https://github.com/tlockney/ganymede/issues/384)).
 
 Ganymede is local-first. Your notebooks, files and kernel output stay on
 your machine, and Ganymede sends no telemetry. Crash reporting is the
@@ -31,6 +29,9 @@ exits, are not crashes and are never reported.
 - The error's type and message.
 - The Ganymede version, and whether it is a release or a `main` build.
 - The operating system, its version, and the CPU architecture.
+- The names, IDs and memory addresses of the loaded program and
+  libraries (home rewritten to `~`), so the stack trace can be matched
+  to Ganymede's debug files.
 
 ## What is never sent
 
@@ -57,7 +58,9 @@ or set `GANYMEDE_CRASH_REPORTING=1` in the environment, which overrides
 the config file; `GANYMEDE_CRASH_REPORTING=0` turns it off. Only release
 binaries, from `install.sh` or a GitHub release, can send reports; a
 build from source can't unless it enables the `crash-reporting` cargo
-feature.
+feature. Reports are sent for panics and for errors Ganymede logs at
+error level, and a report that can't be sent within ten seconds is
+dropped.
 
 ### Mac, iPad and iPhone apps
 
@@ -70,5 +73,7 @@ Off unless you turn it on in the app's settings.
 
 ### cdp-kernel
 
-cdp-kernel's own documentation says how it reports crashes in the
-kernel itself.
+When crash reporting is on for the server, kernels it starts get
+`CDP_KERNEL_CRASH_REPORTS=1` in their environment, and cdp-kernel
+reports its own crashes only then. cdp-kernel's own documentation says
+what it sends.

@@ -111,6 +111,10 @@ pub struct Config {
     pub mcp_no_execute: bool,
     /// `/mcp` sends images in outputs to the model as image content.
     pub mcp_images: bool,
+    /// Send crash reports to Sentry (docs/privacy.md). Off by default.
+    /// Read by the `ganymede` binary, and only one built with its
+    /// `crash-reporting` feature; `GANYMEDE_CRASH_REPORTING` overrides it.
+    pub crash_reporting: bool,
 }
 
 impl Default for Config {
@@ -150,6 +154,7 @@ impl Default for Config {
             mcp_read_only: false,
             mcp_no_execute: false,
             mcp_images: false,
+            crash_reporting: false,
         }
     }
 }

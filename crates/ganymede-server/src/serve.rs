@@ -241,27 +241,44 @@ pub fn log_filter(level: tracing::Level) -> String {
 /// `--log-file` (appended, no colors) when given, else stderr. `args` is
 /// `None` for commands that do not serve.
 pub fn init_logging(default_filter: &str, args: Option<&ServeArgs>) -> Result<()> {
+    init_logging_with(default_filter, args, None)
+}
+
+/// A layer that sees events beside the log output, such as a crash
+/// reporter's. It gets every event its own filter lets through, not only
+/// those the log filter does.
+pub type ExtraLayer =
+    Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>;
+
+/// [`init_logging`], plus `extra` beside the log output.
+pub fn init_logging_with(
+    default_filter: &str,
+    args: Option<&ServeArgs>,
+    extra: Option<ExtraLayer>,
+) -> Result<()> {
     use tracing_subscriber::fmt::writer::BoxMakeWriter;
+    use tracing_subscriber::prelude::*;
     use tracing_subscriber::EnvFilter;
     let filter = match args.and_then(|a| a.log_level) {
         Some(level) => EnvFilter::new(log_filter(level)),
         None => EnvFilter::try_from_default_env().unwrap_or_else(|_| default_filter.into()),
     };
-    let builder = tracing_subscriber::fmt().with_env_filter(filter);
-    match args.and_then(|a| a.log_file.as_ref()) {
+    let (writer, ansi) = match args.and_then(|a| a.log_file.as_ref()) {
         Some(path) => {
             let file = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(path)
                 .with_context(|| format!("log file {}", path.display()))?;
-            builder
-                .with_ansi(false)
-                .with_writer(BoxMakeWriter::new(std::sync::Mutex::new(file)))
-                .init();
+            (BoxMakeWriter::new(std::sync::Mutex::new(file)), false)
         }
-        None => builder.with_writer(std::io::stderr).init(),
-    }
+        None => (BoxMakeWriter::new(std::io::stderr), true),
+    };
+    let log = tracing_subscriber::fmt::layer()
+        .with_writer(writer)
+        .with_ansi(ansi)
+        .with_filter(filter);
+    tracing_subscriber::registry().with(extra).with(log).init();
     Ok(())
 }
 

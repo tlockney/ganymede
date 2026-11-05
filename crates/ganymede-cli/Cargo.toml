@@ -21,6 +21,11 @@ pre-release-replacements = [
   { file = "../../docs/reference.md", search = '"ganymede_version": "[^"]*"', replace = '"ganymede_version": "{{version}}"', exactly = 1 },
 ]
 
+[features]
+# Opt-in crash reports to Sentry (docs/privacy.md). Release builds turn it
+# on; even then nothing is sent unless the user opts in at run time.
+crash-reporting = ["dep:sentry"]
+
 [dependencies]
 ganymede-engine = { path = "../ganymede-engine" }
 ganymede-server = { path = "../ganymede-server" }
@@ -42,6 +47,11 @@ uuid.workspace = true
 # the environment) and the wheel's zip format, all in Rust.
 ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier", "json"] }
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# `crash-reporting`: panics and errors to Sentry over the ureq/rustls stack
+# already used above. No default features: no breadcrumbs from logs, no
+# release-health sessions. `debug-images` lists the loaded images once at
+# start, only when opted in, so Sentry can symbolicate stripped binaries.
+sentry = { version = "0.49", default-features = false, features = ["backtrace", "contexts", "debug-images", "panic", "tracing", "ureq", "rustls"], optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
