@@ -94,6 +94,7 @@ fn state_with(
         config_dir: root.join(".jupyter-config"),
         lab: None,
         static_dir: None,
+        static_headers: Arc::new([]),
         collab: Arc::new(ganymede_server::collab::Collab::new(
             ganymede_contents::FileIds::in_memory(),
             root.canonicalize().ok(),
@@ -1406,6 +1407,71 @@ async fn generic_static_dir_pages_get_xsrf() {
         .body(Body::from(r#"{"type": "file"}"#))
         .unwrap();
     assert_eq!(send(&app, req).await.0, StatusCode::CREATED);
+}
+
+/// `static_headers` adds its headers to the static paths it names and to
+/// nothing else: other files, and the API, are as before.
+#[tokio::test]
+async fn static_headers_reach_only_their_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let site = dir.path().join("site");
+    std::fs::create_dir_all(site.join("assets")).unwrap();
+    std::fs::write(site.join("index.html"), "<!doctype html><title>app</title>").unwrap();
+    std::fs::write(site.join("kernel.html"), "<!doctype html><title>k</title>").unwrap();
+    std::fs::write(site.join("assets/a.js"), "a").unwrap();
+    let mut config = std::collections::BTreeMap::new();
+    config.insert(
+        "/kernel.html".to_string(),
+        std::collections::BTreeMap::from([
+            (
+                "Cross-Origin-Opener-Policy".to_string(),
+                "same-origin".to_string(),
+            ),
+            (
+                "Cross-Origin-Embedder-Policy".to_string(),
+                "require-corp".to_string(),
+            ),
+        ]),
+    );
+    config.insert(
+        "/assets/*".to_string(),
+        std::collections::BTreeMap::from([(
+            "Cross-Origin-Resource-Policy".to_string(),
+            "same-origin".to_string(),
+        )]),
+    );
+    let mut st = state(dir.path());
+    st.static_dir = Some(site);
+    st.static_headers = ganymede_server::static_headers::StaticHeaders::parse(&config)
+        .unwrap()
+        .into();
+    let app = build_router(st);
+    let (_, h, _) = send(&app, get_req(&format!("/?token={TOKEN}"), None)).await;
+    let (n, v, _) = set_cookies(&h).remove(0);
+    let login = format!("{n}={v}");
+
+    let (status, h, _) = send(&app, get_req("/kernel.html", Some(&login))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(h["cross-origin-opener-policy"], "same-origin");
+    assert_eq!(h["cross-origin-embedder-policy"], "require-corp");
+    assert!(!h.contains_key("cross-origin-resource-policy"));
+
+    let (status, h, _) = send(&app, get_req("/assets/a.js", Some(&login))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(h["cross-origin-resource-policy"], "same-origin");
+    assert!(!h.contains_key("cross-origin-opener-policy"));
+
+    for path in ["/", "/index.html", "/api/status"] {
+        let (status, h, _) = send(&app, get_req(path, Some(&login))).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        for name in [
+            "cross-origin-opener-policy",
+            "cross-origin-embedder-policy",
+            "cross-origin-resource-policy",
+        ] {
+            assert!(!h.contains_key(name), "{path} has {name}");
+        }
+    }
 }
 
 #[tokio::test]

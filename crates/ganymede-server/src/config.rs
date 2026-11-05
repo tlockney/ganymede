@@ -32,6 +32,14 @@ pub struct Config {
     /// Unset, the newest JupyterLab installed by `ganymede lab install` is
     /// served, or `lab_version` if set; with none installed, only the API.
     pub static_dir: Option<PathBuf>,
+    /// Extra response headers for files from a `static_dir` that isn't
+    /// JupyterLab, keyed by path under `base_url`: `/kernel.html`, or
+    /// `/assets/*` for every path starting with `/assets/`. None by
+    /// default. For example, `Cross-Origin-Opener-Policy: same-origin` and
+    /// `Cross-Origin-Embedder-Policy: require-corp` make a page
+    /// cross-origin isolated, which `SharedArrayBuffer` needs.
+    pub static_headers:
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     /// Which installed JupyterLab to serve when `static_dir` is unset.
     pub lab_version: Option<String>,
     /// Extra directories of prebuilt JupyterLab extensions, searched before
@@ -116,6 +124,7 @@ impl Default for Config {
             checkpoint_dir: None,
             notary_dir: None,
             static_dir: None,
+            static_headers: Default::default(),
             lab_version: None,
             labextensions_paths: vec![],
             config_dir: None,
@@ -215,6 +224,22 @@ workspace_configuration = { "python.analysis.typeCheckingMode" = "strict" }
         );
         assert!(cfg.language_servers["off"].argv.is_empty());
         assert!(Config::default().language_servers.is_empty());
+    }
+
+    #[test]
+    fn static_headers_are_tables_by_path() {
+        let cfg = Config::from_toml(
+            r#"
+[static_headers."/kernel.html"]
+Cross-Origin-Opener-Policy = "same-origin"
+Cross-Origin-Embedder-Policy = "require-corp"
+"#,
+        )
+        .unwrap();
+        let k = &cfg.static_headers["/kernel.html"];
+        assert_eq!(k["Cross-Origin-Opener-Policy"], "same-origin");
+        assert_eq!(k["Cross-Origin-Embedder-Policy"], "require-corp");
+        assert!(Config::default().static_headers.is_empty());
     }
 
     #[test]

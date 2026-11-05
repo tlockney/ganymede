@@ -17,6 +17,7 @@ pub mod metrics;
 pub mod routes;
 pub mod serve;
 pub mod server_info;
+pub mod static_headers;
 mod svg;
 pub mod watch;
 pub mod ws;
@@ -67,6 +68,8 @@ pub struct AppState {
     pub lab: Option<Arc<lab::Lab>>,
     /// Any other `--static-dir`, served at `/` behind the routes.
     pub static_dir: Option<PathBuf>,
+    /// Extra response headers for files from `static_dir`, by path.
+    pub static_headers: Arc<[static_headers::StaticHeaders]>,
     /// Document rooms behind `/api/collaboration`.
     pub collab: Arc<collab::Collab>,
     /// `/api/terminals`; `None` when `terminals_enabled` is off or the
@@ -93,9 +96,18 @@ pub fn build_router(state: AppState) -> axum::Router {
         (None, Some(dir)) => {
             let files =
                 tower_http::services::ServeDir::new(dir).append_index_html_on_directories(true);
-            app = app.fallback_service(axum::Router::new().fallback_service(files).layer(
-                axum::middleware::from_fn_with_state(state.clone(), auth::static_page),
-            ))
+            app = app.fallback_service(
+                axum::Router::new()
+                    .fallback_service(files)
+                    .layer(axum::middleware::from_fn_with_state(
+                        state.clone(),
+                        auth::static_page,
+                    ))
+                    .layer(axum::middleware::from_fn_with_state(
+                        state.static_headers.clone(),
+                        static_headers::add,
+                    )),
+            )
         }
         (None, None) => {}
     }

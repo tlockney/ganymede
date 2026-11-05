@@ -399,6 +399,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         .config_dir
         .clone()
         .unwrap_or_else(ganymede_kernel_host::kernelspec::jupyter_config_dir);
+    let static_headers = crate::static_headers::StaticHeaders::parse(&cfg.static_headers)?;
     let static_dir = match &cfg.static_dir {
         Some(d) => Some(d.clone()),
         None => installed_lab(cfg.lab_version.as_deref())?,
@@ -425,6 +426,9 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
             "no JupyterLab installed; serving the API only (`ganymede lab install` adds it)"
         ),
         (Some(_), None) => {}
+    }
+    if lab.is_some() && !static_headers.is_empty() {
+        tracing::warn!("static_headers applies to a static_dir other than JupyterLab; ignored");
     }
     if let Some(lab) = &lab {
         tracing::info!(
@@ -521,6 +525,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         base_url: base_url.clone(),
         config_dir,
         static_dir: if lab.is_some() { None } else { static_dir },
+        static_headers: static_headers.into(),
         lab: lab.map(Arc::new),
         collab: state_collab.clone(),
         terminals: terminals.clone(),
