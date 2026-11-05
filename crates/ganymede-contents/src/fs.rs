@@ -724,7 +724,15 @@ impl Inner {
                 from.api, to.api
             )));
         }
-        rename_noreplace(&from.os, &to.os).map_err(|e| match e.kind() {
+        // On a case-insensitive volume `to` exists when only the case
+        // changes, as the source itself; the no-replace rename would call
+        // that a conflict. jupyter_server allows it (`samefile`).
+        let moved = if is_case_change(&from, &to, &meta) {
+            fs::rename(&from.os, &to.os)
+        } else {
+            rename_noreplace(&from.os, &to.os)
+        };
+        moved.map_err(|e| match e.kind() {
             io::ErrorKind::AlreadyExists => {
                 Error::Conflict(format!("File already exists: {}", to.api))
             }
@@ -1081,6 +1089,38 @@ fn created_time(meta: &Metadata) -> SystemTime {
         }
     }
     meta.modified().unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
+/// Whether `to` is `from` under a name that differs only in case, in the
+/// same directory: what a case-insensitive volume shows for a case-only
+/// rename. On a case-sensitive volume `to` would be listed by its own
+/// name, a separate entry (or a hard link to `from`), and stays a conflict.
+fn is_case_change(from: &Resolved, to: &Resolved, from_meta: &Metadata) -> bool {
+    from.api.parent() == to.api.parent()
+        && from.api.name().to_lowercase() == to.api.name().to_lowercase()
+        && same_entry(&from.os, &to.os, from_meta)
+        && to.os.parent().is_some_and(|dir| !lists(dir, to.api.name()))
+}
+
+/// Whether `dir` has an entry spelled exactly `name`.
+fn lists(dir: &Path, name: &str) -> bool {
+    // Unreadable: assume it does, which keeps the rename a conflict.
+    let Ok(entries) = fs::read_dir(dir) else {
+        return true;
+    };
+    entries.flatten().any(|e| e.file_name() == name)
+}
+
+#[cfg(unix)]
+fn same_entry(_: &Path, to: &Path, from: &Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    // Not followed: a symlink named `to` is its own entry.
+    fs::symlink_metadata(to).is_ok_and(|m| m.dev() == from.dev() && m.ino() == from.ino())
+}
+
+#[cfg(not(unix))]
+fn same_entry(from: &Path, to: &Path, _: &Metadata) -> bool {
+    matches!((from.canonicalize(), to.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 
 /// Whether the canonical directory `dir` is `from`: by device and inode
