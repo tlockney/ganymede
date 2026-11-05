@@ -538,6 +538,19 @@ async fn rename_and_copy() {
         c.rename("sub/b.txt", "sub/b.txt").await.unwrap().path,
         "sub/b.txt"
     );
+    // A directory can't move into itself, at any depth (the OS says
+    // EINVAL, which was a 500); a sibling with the same prefix can.
+    c.save("sub/deeper", SaveRequest::directory())
+        .await
+        .unwrap();
+    assert_eq!(status(&c.rename("sub", "sub/x").await), 400);
+    assert_eq!(status(&c.rename("sub", "sub/deeper/x").await), 400);
+    assert!(dir.path().join("sub/c.txt").exists());
+    c.save("subway", SaveRequest::directory()).await.unwrap();
+    assert_eq!(c.rename("subway", "sub2").await.unwrap().path, "sub2");
+    // A name too long for the filesystem is the client's mistake, not a 500.
+    let long = format!("{}.txt", "x".repeat(300));
+    assert_eq!(status(&c.save(&long, SaveRequest::text("x")).await), 400);
 
     let c1 = c.copy("sub/b.txt", None).await.unwrap();
     assert_eq!(c1.path, "sub/b-Copy1.txt");

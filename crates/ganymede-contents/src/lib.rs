@@ -86,7 +86,8 @@ impl Error {
     /// `Io`, `Json` and `Nbformat` are 500 (unexpected), except that an I/O
     /// error whose kind is `NotFound`, `PermissionDenied` or `AlreadyExists`
     /// maps to 404, 403 or 409, since those are the same conditions the
-    /// explicit variants describe and can arise from races on disk.
+    /// explicit variants describe and can arise from races on disk, and
+    /// `InvalidFilename` (a name too long for the filesystem) to 400.
     pub fn status(&self) -> u16 {
         use std::io::ErrorKind;
         match self {
@@ -99,6 +100,9 @@ impl Error {
                 ErrorKind::NotFound => 404,
                 ErrorKind::PermissionDenied => 403,
                 ErrorKind::AlreadyExists => 409,
+                // A name the filesystem can't hold (too long, or a
+                // character it refuses): the client's input, not a fault.
+                ErrorKind::InvalidFilename => 400,
                 _ => 500,
             },
             Error::Json(_) | Error::Nbformat(_) => 500,

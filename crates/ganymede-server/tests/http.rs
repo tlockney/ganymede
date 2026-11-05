@@ -278,6 +278,12 @@ async fn contents_rest_round_trip() {
         (StatusCode::OK, Some("directory"))
     );
     assert_eq!(root["content"].as_array().unwrap().len(), 0);
+    // The root also answers with a trailing slash, as jupyter_server's does.
+    let (st, slash) = call(&app, "GET", "/api/contents/", None, t).await;
+    assert_eq!(
+        (st, slash["type"].as_str()),
+        (StatusCode::OK, Some("directory"))
+    );
 
     let (st, d) = call(
         &app,
