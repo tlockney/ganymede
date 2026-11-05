@@ -560,6 +560,13 @@ async fn rename_and_copy() {
         if dir.path().join("SUB").exists() {
             assert_eq!(status(&c.rename("sub", "SUB/x").await), 400);
         }
+        // Hard links whose names differ only in case are two entries on a
+        // case-sensitive volume: still a conflict.
+        if !dir.path().join("SUB").exists() {
+            fs::hard_link(dir.path().join("sub/c.txt"), dir.path().join("sub/C.txt")).unwrap();
+            assert_eq!(status(&c.rename("sub/c.txt", "sub/C.txt").await), 409);
+            fs::remove_file(dir.path().join("sub/C.txt")).unwrap();
+        }
     }
     assert!(dir.path().join("sub/c.txt").exists());
     c.save("subway", SaveRequest::directory()).await.unwrap();
@@ -1410,4 +1417,37 @@ async fn nbformat_3_is_upgraded_on_read_and_saved_as_4() {
     assert_eq!(on_disk["nbformat"], 4);
     assert!(on_disk["metadata"].get("orig_nbformat").is_none());
     assert!(on_disk.get("worksheets").is_none());
+}
+
+/// A case-only rename on a case-insensitive volume (default APFS, NTFS)
+/// succeeds, as jupyter_server's `samefile` check allows (#377). Runs only
+/// where the temp volume folds case; elsewhere `n.ipynb` and `N.ipynb` are
+/// two names and the rename is an ordinary one.
+#[tokio::test]
+async fn case_only_rename_on_a_case_insensitive_volume() {
+    let (dir, c) = setup();
+    c.save("n.ipynb", SaveRequest::notebook(sample_notebook()))
+        .await
+        .unwrap();
+    if !dir.path().join("N.IPYNB").exists() {
+        return;
+    }
+    c.create_checkpoint("n.ipynb").await.unwrap();
+    assert_eq!(
+        c.rename("n.ipynb", "N.ipynb").await.unwrap().path,
+        "N.ipynb"
+    );
+    let names: Vec<_> = fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(names.contains(&"N.ipynb".to_owned()), "{names:?}");
+    assert_eq!(c.list_checkpoints("N.ipynb").await.unwrap().len(), 1);
+
+    c.save("d", SaveRequest::directory()).await.unwrap();
+    assert_eq!(c.rename("d", "D").await.unwrap().path, "D");
+    // A different file under a case-folded name is still a conflict.
+    c.save("x.txt", SaveRequest::text("x")).await.unwrap();
+    assert_eq!(status(&c.rename("x.txt", "n.IPYNB").await), 409);
 }
