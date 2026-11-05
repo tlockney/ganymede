@@ -9,6 +9,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-13.0}
 export IPHONEOS_DEPLOYMENT_TARGET=${IPHONEOS_DEPLOYMENT_TARGET:-16.0}
+# Line tables in the static library: the app's link copies them into its
+# dSYM, so crash reports show Rust functions, files and lines
+# (ganymede-ui#318). The app's own release build strips its binary.
+export CARGO_PROFILE_RELEASE_DEBUG=${CARGO_PROFILE_RELEASE_DEBUG:-line-tables-only}
+export CARGO_PROFILE_RELEASE_STRIP=${CARGO_PROFILE_RELEASE_STRIP:-none}
 for t in aarch64-apple-darwin x86_64-apple-darwin; do
   cargo build --locked --release -p ganymede-ffi --target "$t"
 done

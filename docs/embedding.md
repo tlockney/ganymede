@@ -232,6 +232,8 @@ code.
 | `const char *ganymede_server_url(const GanymedeServer *server)` | The URL with its token. The server owns it: don't free it or use it after stop. |
 | `void ganymede_server_stop(GanymedeServer *server)` | Gives open requests a moment, shuts down every kernel, stops the server and frees it. Blocks until done. NULL is ignored. |
 | `void ganymede_string_free(char *s)` | Frees a string the library returned, such as the error. NULL is ignored. |
+| `void ganymede_set_panic_callback(GanymedePanicCallback cb)` | Calls `cb(message)` on the panicking thread after any panic in the library, with `panicked at <file>:<line>:<col>: <message>`, valid during the call. For the app's crash reporter: a panic in a server task doesn't end the app, so this is how it hears of one. NULL removes it. The library sends nothing itself. |
+| `void ganymede_debug_panic(void)` | Panics on the calling thread, which aborts the process. For testing crash reports. |
 
 `config_json` is a JSON object with the keys of
 [`ganymede.toml`](reference.md#config-file), or NULL. `port` defaults to
@@ -242,6 +244,11 @@ a build without `zmq` or `subprocess`, such as the iOS slices, has only
 the latter (see above).
 Strings passed in are UTF-8 and stay the caller's. The embedded server
 installs no signal handlers and prints nothing to stdout.
+
+> [!NOTE]
+> **Unreleased.** `ganymede_set_panic_callback` and `ganymede_debug_panic`
+> are available only from a build of `main` (HEAD), not in the latest
+> release.
 
 A call sequence, run on Linux against a release build of the library:
 
