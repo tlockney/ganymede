@@ -60,8 +60,9 @@ impl StaticHeaders {
 }
 
 /// The request path as the file service resolves it: percent-decoded,
-/// and with `index.html` appended to a directory, so `/kernel%2Ehtml` and
-/// `/k/` match the rules for `/kernel.html` and `/k/index.html`.
+/// without empty or `.` segments, and with `index.html` appended to a
+/// directory, so `/kernel%2Ehtml`, `//kernel.html` and `/k/` match the
+/// rules for `/kernel.html` and `/k/index.html`.
 fn file_path(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let hex = |b: u8| (b as char).to_digit(16);
@@ -83,9 +84,16 @@ fn file_path(raw: &str) -> String {
             }
         }
     }
-    let mut path = String::from_utf8_lossy(&out).into_owned();
-    if path.ends_with('/') {
-        path.push_str("index.html");
+    // As `ServeDir` does: empty and `.` segments don't count, so `//k` and
+    // `/./k` are `/k`.
+    let decoded = String::from_utf8_lossy(&out);
+    let mut path: String = decoded
+        .split('/')
+        .filter(|seg| !seg.is_empty() && *seg != ".")
+        .flat_map(|seg| ["/", seg])
+        .collect();
+    if decoded.ends_with('/') || path.is_empty() {
+        path.push_str("/index.html");
     }
     path
 }
@@ -143,6 +151,9 @@ mod tests {
         assert_eq!(file_path("/"), "/index.html");
         assert_eq!(file_path("/a%2"), "/a%2");
         assert_eq!(file_path("/a%zz"), "/a%zz");
+        assert_eq!(file_path("//kernel.html"), "/kernel.html");
+        assert_eq!(file_path("/./k//a.js"), "/k/a.js");
+        assert_eq!(file_path("/k/./"), "/k/index.html");
     }
 
     #[test]

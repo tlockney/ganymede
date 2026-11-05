@@ -160,8 +160,9 @@ Three keys have no flag:
 `static_headers` adds response headers to files served from a
 `static_dir` that isn't JupyterLab. Keys are paths under `base_url`; a
 key ending in `*` matches every path that starts with the rest of it.
-Keys match the request path, and also that path percent-decoded with
-`index.html` added to one ending in `/`, as the file is found. Nothing
+Keys match the request path, and also the path as the file is found:
+percent-decoded, without empty or `.` segments, and with `index.html`
+added to one ending in `/`. Nothing
 is added by default. Routes the server answers itself, such as
 `/api/status`, never get these headers; a request no route claims, such
 as an unknown `/api/` path, falls through to the static files and can.

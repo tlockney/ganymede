@@ -1458,6 +1458,11 @@ async fn static_headers_reach_only_their_paths() {
     let (status, h, _) = send(&app, get_req("/kernel%2Ehtml", Some(&login))).await;
     assert_eq!(status, StatusCode::OK, "another spelling of the same file");
     assert_eq!(h["cross-origin-opener-policy"], "same-origin");
+    for spelling in ["//kernel.html", "/./kernel.html"] {
+        let (status, h, _) = send(&app, get_req(spelling, Some(&login))).await;
+        assert_eq!(status, StatusCode::OK, "{spelling}");
+        assert_eq!(h["cross-origin-opener-policy"], "same-origin", "{spelling}");
+    }
 
     let (status, h, _) = send(&app, get_req("/assets/a.js", Some(&login))).await;
     assert_eq!(status, StatusCode::OK);

@@ -9,9 +9,10 @@
 - The headers are added by a layer on the static fallback router only,
   outside `auth::static_page`, so routes the server answers never match;
   an unclaimed path (an unknown `/api/...`) falls through to it and can.
-  Rules match the raw path and the path as `ServeDir` resolves it
-  (percent-decoded, `index.html` for a directory), so a header can't be
-  dodged by spelling. They replace a header of the same name the file service set.
+  Rules match the raw path and the path as `ServeDir` resolves it:
+  percent-decoded, without empty or `.` segments, with `index.html` for
+  a directory. So `/kernel%2Ehtml`, `//kernel.html` and `/./kernel.html`
+  get the headers of `/kernel.html`.
 - Patterns are a plain path or a `*` prefix, not globs, to avoid a new
   dependency; both cover the kernel page and an assets directory.
 - Bad names or values fail at startup rather than at the first request.
