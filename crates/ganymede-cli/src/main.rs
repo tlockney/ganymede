@@ -428,13 +428,7 @@ fn main() -> ExitCode {
         std::env::set_var(crash::KERNEL_ENV, "1");
     }
     #[cfg(feature = "crash-reporting")]
-    let (_reporting, extra) = match opted_in {
-        true => {
-            let (reporting, layer) = crash::start(crash::DSN);
-            (Some(reporting), Some(layer))
-        }
-        false => (None, None),
-    };
+    let (_reporting, extra) = crash::maybe_start(opted_in, crash::DSN).unzip();
     #[cfg(not(feature = "crash-reporting"))]
     let extra = None;
     if let Err(e) =

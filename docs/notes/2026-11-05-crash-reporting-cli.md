@@ -22,3 +22,4 @@ Off, sentry is never initialized.
   check reporting end to end.
 - The container image is built without the feature.
 - When opted in, `main` sets `CDP_KERNEL_CRASH_REPORTS=1` before any thread starts, so kernels the server launches inherit it; cdp-kernel#423 reports only then.
+- Review fix: sentry's `debug-images` feature sends the loaded images (debug id, load address; paths scrubbed) so Sentry can symbolicate frames from the stripped release binary against the uploaded debug files. CI's rust job now runs the crash tests and clippy with the feature. `crash::maybe_start` holds main's opt-in gate so the test covers it.

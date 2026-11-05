@@ -29,6 +29,9 @@ exits, are not crashes and are never reported.
 - The error's type and message.
 - The Ganymede version, and whether it is a release or a `main` build.
 - The operating system, its version, and the CPU architecture.
+- The names, IDs and memory addresses of the loaded program and
+  libraries (home rewritten to `~`), so the stack trace can be matched
+  to Ganymede's debug files.
 
 ## What is never sent
 

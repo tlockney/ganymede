@@ -76,7 +76,7 @@ pub use enabled::*;
 #[cfg(feature = "crash-reporting")]
 mod enabled {
     use super::scrub_text;
-    use sentry::protocol::{Event, Frame};
+    use sentry::protocol::{DebugImage, Event, Frame};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -87,6 +87,15 @@ mod enabled {
     /// Reporting, while this lives; dropping it flushes what is queued.
     pub struct Reporting {
         _guard: sentry::ClientInitGuard,
+    }
+
+    /// [`start`] when the user opted in; otherwise nothing, so sentry is
+    /// never initialized and no request can be made.
+    pub fn maybe_start(
+        opted_in: bool,
+        dsn: &str,
+    ) -> Option<(Reporting, ganymede_server::serve::ExtraLayer)> {
+        opted_in.then(|| start(dsn))
     }
 
     /// Starts reporting panics and errors to `dsn`. Returns the guard and
@@ -211,6 +220,21 @@ mod enabled {
         if let Some(st) = &mut event.stacktrace {
             st.frames.iter_mut().for_each(|f| scrub_frame(f, home));
         }
+        // The loaded binaries and libraries, which Sentry needs to
+        // symbolicate frames from a stripped release binary. Their paths
+        // lose the home directory like everything else.
+        let images = &mut event.debug_meta.to_mut().images;
+        images.retain(|i| matches!(i, DebugImage::Symbolic(_) | DebugImage::Apple(_)));
+        for image in images.iter_mut() {
+            match image {
+                DebugImage::Symbolic(i) => {
+                    i.name = scrub_text(&i.name, home);
+                    i.debug_file = i.debug_file.as_deref().map(|p| scrub_text(p, home));
+                }
+                DebugImage::Apple(i) => i.name = scrub_text(&i.name, home),
+                _ => {}
+            }
+        }
         event
     }
 
@@ -310,7 +334,31 @@ mod tests {
             ..Default::default()
         });
 
+        use sentry::protocol::{DebugImage, SymbolicDebugImage};
+        event
+            .debug_meta
+            .to_mut()
+            .images
+            .push(DebugImage::Symbolic(SymbolicDebugImage {
+                name: "/home/u/.local/bin/ganymede".into(),
+                arch: None,
+                image_addr: 0x1000.into(),
+                image_size: 0x100,
+                image_vmaddr: 0.into(),
+                id: Default::default(),
+                code_id: None,
+                debug_file: Some("/home/u/.local/bin/ganymede.debug".into()),
+            }));
+
         let e = enabled::scrub(event, Some("/home/u"));
+        match &e.debug_meta.images[..] {
+            [DebugImage::Symbolic(i)] => {
+                assert_eq!(i.name, "~/.local/bin/ganymede");
+                assert_eq!(i.debug_file.as_deref(), Some("~/.local/bin/ganymede.debug"));
+                assert_eq!(i.image_addr, 0x1000.into(), "kept for symbolication");
+            }
+            other => panic!("{other:?}"),
+        }
         assert_eq!(e.message.as_deref(), Some("at ~/nb.ipynb"));
         assert_eq!(e.server_name, None);
         assert!(e.breadcrumbs.values.is_empty());
@@ -356,16 +404,18 @@ mod tests {
             }
         });
 
-        // Not opted in: main never calls start, so a captured error goes
-        // nowhere.
-        assert!(!opted_in(Some(OsStr::new("0")), None));
+        // Not opted in: main's maybe_start starts nothing, so a captured
+        // error goes nowhere.
+        let off = maybe_start(opted_in(Some(OsStr::new("0")), None), &dsn);
+        assert!(off.is_none());
         sentry::capture_message("not sent", sentry::Level::Error);
         assert!(
             rx.recv_timeout(Duration::from_millis(500)).is_err(),
             "nothing without start"
         );
 
-        let (reporting, _layer) = start(&dsn);
+        let (reporting, _layer) =
+            maybe_start(opted_in(Some(OsStr::new("1")), None), &dsn).expect("opted in");
         sentry::capture_message("sent", sentry::Level::Error);
         drop(reporting);
         assert!(

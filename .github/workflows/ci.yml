@@ -52,6 +52,7 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo clippy -p ganymede-engine --no-default-features -- -D warnings
+      - run: cargo clippy -p ganymede-cli --all-targets --features crash-reporting -- -D warnings
       # No Windows test job (#60); this at least type-checks the Windows
       # process code (job objects) on every PR.
       - run: cargo clippy -p ganymede-kernel-host --all-targets --target x86_64-pc-windows-gnu -- -D warnings
@@ -70,6 +71,10 @@ jobs:
       # Android: notebook signatures are kept in memory.
       - name: cargo test -p ganymede-contents (without sqlite)
         run: cargo test -p ganymede-contents
+      # The scrubbing and opt-in tests guard docs/privacy.md and need the
+      # feature release builds turn on.
+      - name: cargo test crash reporting (with the crash-reporting feature)
+        run: cargo test -p ganymede-cli --features crash-reporting --bin ganymede crash
       - name: List skipped tests
         if: ${{ !cancelled() }}
         run: |
