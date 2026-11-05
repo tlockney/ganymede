@@ -7,8 +7,13 @@
 > ([#384](https://github.com/tlockney/ganymede/issues/384)).
 
 Ganymede is local-first. Your notebooks, files and kernel output stay on
-your machine. Nothing is sent anywhere unless you turn on crash
-reporting, which is off by default everywhere.
+your machine, and Ganymede sends no telemetry. Crash reporting is the
+only exception, and it is off by default everywhere.
+
+Features you set up yourself do talk to other machines: a remote kernel
+gateway (`--gateway-url`) gets the code you run and returns its output,
+`ganymede lab install` and `ganymede ui install` download from PyPI and
+GitHub, and an agent you connect over MCP sees what its tools return.
 
 ## What crash reporting is for
 
