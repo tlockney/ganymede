@@ -39,8 +39,9 @@ machine with no Python or Jupyter, then
   writes, and checkpoints outside the notebook folder.
 - One binary with a random token, loopback-only by default; see
   [Security](docs/security.md).
-- Local-first: notebooks never leave your machine, and crash reporting
-  is off unless you turn it on ([Privacy](docs/privacy.md)).
+- Local-first: no telemetry, notebooks stay on your machine unless you
+  connect a remote gateway, and crash reporting is off unless you turn
+  it on ([Privacy](docs/privacy.md)).
 - Its own notebook app, [ganymede-ui](docs/app.md), in a browser and as a
   Mac and iPad app.
 - `ganymede-engine`, a library for embedding, which builds for iOS,
