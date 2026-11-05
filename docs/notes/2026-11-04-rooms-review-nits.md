@@ -12,7 +12,11 @@ The four nits left in #279 after #338 and #362:
   database each is a SQLite query, which can wait on another server's
   lock and so held up an async worker. `send_to_notebook_room` looked a
   file id's path up while holding the rooms lock; it now looks it up
-  first and takes the lock to open the room. The helpers that name a
+  first, then takes the lock to open the room and send. It must still
+  send with the lock held, or a room at its cleanup delay can retire
+  between the two and drop the command. A rename or delete during the
+  lookup bumps a counter on `Collab` (under the rooms lock), and the
+  lookup runs again, so a room doesn't open on the old path. The helpers that name a
   room by path (`notebook_room_id`, `hold_notebook`) became async with
   it, and so did `Collab::moved` and `Collab::removed`.
 - One rule for "this path is that one or under it":

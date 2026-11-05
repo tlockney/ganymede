@@ -80,6 +80,9 @@ pub struct Collab {
     root: Option<PathBuf>,
     watcher: Arc<Watcher>,
     rooms: Mutex<HashMap<String, mpsc::UnboundedSender<Cmd>>>,
+    /// Bumped, under the rooms lock, by every rename or delete, so a path
+    /// looked up without the lock can be checked before a room opens on it.
+    moves: AtomicU64,
     next_conn: AtomicU64,
     /// How long a room with no clients is kept: [`CLEANUP_DELAY`].
     cleanup_delay: Duration,
@@ -103,6 +106,7 @@ impl Collab {
             root,
             watcher: Watcher::new(),
             rooms: Mutex::default(),
+            moves: AtomicU64::new(0),
             next_conn: AtomicU64::new(1),
             cleanup_delay: CLEANUP_DELAY,
             requests: Default::default(),
@@ -152,7 +156,9 @@ impl Collab {
     pub async fn moved(&self, old: &str, new: &str) {
         let (o, n) = (old.to_string(), new.to_string());
         self.with_ids(move |ids| ids.moved(&o, &n)).await;
-        for room in self.rooms.lock().expect("rooms").values() {
+        let rooms = self.rooms.lock().expect("rooms");
+        self.moves.fetch_add(1, Ordering::SeqCst);
+        for room in rooms.values() {
             let _ = room.send(Cmd::Moved(old.to_string(), new.to_string()));
         }
     }
@@ -167,7 +173,9 @@ impl Collab {
     pub async fn removed(&self, path: &str) {
         let p = path.to_string();
         self.with_ids(move |ids| ids.removed(&p)).await;
-        for room in self.rooms.lock().expect("rooms").values() {
+        let rooms = self.rooms.lock().expect("rooms");
+        self.moves.fetch_add(1, Ordering::SeqCst);
+        for room in rooms.values() {
             let _ = room.send(Cmd::Removed(path.to_string()));
         }
     }
@@ -455,19 +463,29 @@ pub(crate) async fn send_to_notebook_room(
     let ["json", "notebook", file_id] = parts[..] else {
         return None;
     };
-    let open = collab.rooms.lock().expect("rooms").get(room_id).cloned();
-    let tx = match open {
-        Some(tx) => tx,
-        None => {
-            // Looked up without the rooms lock; another caller may open
-            // the room meanwhile, and `open_room` then returns that one.
-            let path = collab.path_of(file_id).await?;
-            let mut rooms = collab.rooms.lock().expect("rooms");
-            open_room(collab, &mut rooms, contents, room_id, Some(path))
+    loop {
+        // Sends with the rooms lock held, so the room can't retire between
+        // the lookup and the send.
+        let moves = {
+            let rooms = collab.rooms.lock().expect("rooms");
+            if let Some(tx) = rooms.get(room_id) {
+                tx.send(cmd).ok()?;
+                return Some(tx.clone());
+            }
+            collab.moves.load(Ordering::SeqCst)
+        };
+        // Looked up without the rooms lock. Another caller may open the
+        // room meanwhile, and `open_room` then returns that one; a rename
+        // or delete meanwhile may have made the path stale, so look again.
+        let path = collab.path_of(file_id).await?;
+        let mut rooms = collab.rooms.lock().expect("rooms");
+        if collab.moves.load(Ordering::SeqCst) != moves {
+            continue;
         }
-    };
-    tx.send(cmd).ok()?;
-    Some(tx)
+        let tx = open_room(collab, &mut rooms, contents, room_id, Some(path));
+        tx.send(cmd).ok()?;
+        return Some(tx);
+    }
 }
 
 /// The room id of the notebook at `path`.
@@ -858,12 +876,16 @@ async fn changed(watch: &mut Option<(Watch, mpsc::UnboundedReceiver<()>)>) -> Op
 
 /// `path` after `old` was renamed to `new`, if it was `old` or under it.
 fn moved_path(path: &str, old: &str, new: &str) -> Option<String> {
+    // The root can't be renamed; `path_under` would match every path.
+    if old.is_empty() {
+        return None;
+    }
     ganymede_contents::path_under(path, old).map(|rest| format!("{new}{rest}"))
 }
 
 /// `path` is `dir` or under it.
 fn is_under(path: &str, dir: &str) -> bool {
-    ganymede_contents::path_under(path, dir).is_some()
+    !dir.is_empty() && ganymede_contents::path_under(path, dir).is_some()
 }
 
 /// Remove a room that can't go on (its file failed to load or was
@@ -1049,5 +1071,21 @@ async fn reload(
             tracing::warn!(path = %disk.path, "cannot reload: {e}");
             Reloaded::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::{is_under, moved_path};
+
+    #[test]
+    fn the_root_matches_nothing() {
+        assert_eq!(moved_path("a.ipynb", "", "b"), None);
+        assert!(!is_under("a.ipynb", ""));
+        assert_eq!(
+            moved_path("d/a.ipynb", "d", "e").as_deref(),
+            Some("e/a.ipynb")
+        );
+        assert!(is_under("d/a.ipynb", "d"));
     }
 }
