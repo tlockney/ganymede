@@ -15,8 +15,7 @@
 //! sets `gateway_url`, whose kernels it runs as usual.
 
 use std::ffi::{c_char, CStr, CString};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Once};
+use std::sync::{mpsc, Once, RwLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -131,9 +130,8 @@ pub unsafe extern "C" fn ganymede_string_free(s: *mut c_char) {
 /// The string is valid only during the call.
 pub type GanymedePanicCallback = extern "C" fn(message: *const c_char);
 
-/// The callback [`ganymede_set_panic_callback`] installed, as an address;
-/// 0 for none.
-static PANIC_CALLBACK: AtomicUsize = AtomicUsize::new(0);
+/// The callback [`ganymede_set_panic_callback`] installed.
+static PANIC_CALLBACK: RwLock<Option<GanymedePanicCallback>> = RwLock::new(None);
 static PANIC_HOOK: Once = Once::new();
 
 /// Calls `callback` on every panic in this library, after the default
@@ -144,16 +142,16 @@ static PANIC_HOOK: Once = Once::new();
 /// the callback. The library sends nothing itself.
 #[no_mangle]
 pub extern "C" fn ganymede_set_panic_callback(callback: Option<GanymedePanicCallback>) {
-    PANIC_CALLBACK.store(callback.map_or(0, |f| f as usize), Ordering::SeqCst);
+    if let Ok(mut slot) = PANIC_CALLBACK.write() {
+        *slot = callback;
+    }
     PANIC_HOOK.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             previous(info);
-            let address = PANIC_CALLBACK.load(Ordering::SeqCst);
-            if address != 0 {
-                // SAFETY: only `ganymede_set_panic_callback` stores
-                // addresses here, and they are `GanymedePanicCallback`s.
-                let callback: GanymedePanicCallback = unsafe { std::mem::transmute(address) };
+            // Copied out, so the lock isn't held during the call.
+            let callback = PANIC_CALLBACK.read().ok().and_then(|slot| *slot);
+            if let Some(callback) = callback {
                 let message =
                     CString::new(panic_message(info).replace('\0', " ")).expect("NULs replaced");
                 callback(message.as_ptr());
@@ -182,13 +180,16 @@ fn panic_message(info: &std::panic::PanicHookInfo<'_>) -> String {
     }
 }
 
-/// Panics on the calling thread, for checking crash reports: the panic
-/// can't unwind out of an `extern "C"` function, so the process aborts
-/// once the panic hook has run.
+/// Panics on the calling thread, for checking crash reports, then aborts
+/// the process. The panic is caught before it reaches the `extern "C"`
+/// boundary, where std would panic a second time ("panic in a function
+/// that cannot unwind") and run the hook again: so the callback runs once.
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn ganymede_debug_panic() {
-    panic!("ganymede_debug_panic: a test panic the app asked for");
+    let _ =
+        std::panic::catch_unwind(|| panic!("ganymede_debug_panic: a test panic the app asked for"));
+    std::process::abort();
 }
 
 fn into_c(s: String) -> *mut c_char {

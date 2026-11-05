@@ -8,12 +8,14 @@ For ganymede-ui#318 (Sentry in the Apple apps, #384).
   through the Rust frames, which the app's dSYM symbolicates. A panic in
   a tokio task is caught by tokio and the app runs on, so without the
   hook nobody would see it.
-- The callback is kept as an address in an `AtomicUsize`, so it can be
-  swapped or removed without a lock in the hook.
-- `ganymede_debug_panic` is `extern "C"`: a panic can't unwind out of
-  it, so after the hook runs the process aborts, which the app's crash
-  handler reports as a crash. The apps' Settings use it to check that
-  Rust frames arrive symbolicated.
+- The callback sits in a `RwLock<Option<…>>`, copied out before the
+  call so the lock isn't held while the app reports. No `unsafe`.
+- `ganymede_debug_panic` catches its own panic and then aborts. Letting
+  the panic reach the `extern "C"` boundary would make std panic again
+  ("panic in a function that cannot unwind") and run the hook twice, so
+  the app would send two events. The abort is the crash the app's crash
+  handler reports; the apps' Settings use it to check that Rust frames
+  arrive symbolicated.
 - No reporting code or dependency in Rust: the app owns the opt-in and
   the sending. The `crash-reporting` cargo feature (#386) is for the CLI
   and server.
