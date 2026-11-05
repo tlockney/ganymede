@@ -204,7 +204,7 @@ and a `KernelspecSource` listing the kernel to `.kernelspecs`, and
 | Desktop or server | on | kernelspecs as child processes, attached kernels, a gateway | everything |
 | iOS or Android app, with processes | on | as on desktop, where the platform allows them | the engine, api and contents build for `aarch64-apple-ios` and `aarch64-linux-android` |
 | iOS app, in-app kernel | off | the app's own provisioner and transport factory, or a gateway | the api builds for `aarch64-apple-ios`; the engine starts and restarts an in-process kernel; the server serves the app's own kernels |
-| Browser wasm, WASI | off | `in_process_pair` and `adopt` | the engine builds for `wasm32-unknown-unknown` and runs a notebook under WASI (`e2e/wasm-smoke`) |
+| Browser wasm, WASI | off | `in_process_pair` and `adopt` | the engine, api and contents build for `wasm32-unknown-unknown`; the engine runs a notebook under WASI (`e2e/wasm-smoke`) |
 
 `ganymede-server` has the same two features, plus `gateway`. An app
 embedding the server passes its own `kernelspecs`, `provisioner` and

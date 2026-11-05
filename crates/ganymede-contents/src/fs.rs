@@ -5,7 +5,7 @@ use std::fs::{self, Metadata};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -1049,6 +1049,7 @@ fn created_time(meta: &Metadata) -> SystemTime {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
+        use std::time::Duration;
         if let (Ok(secs), Ok(nanos)) = (
             u64::try_from(meta.ctime()),
             u32::try_from(meta.ctime_nsec()),
@@ -1240,6 +1241,7 @@ fn splitext(name: &str) -> (&str, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn rename_noreplace_refuses_an_existing_target() {

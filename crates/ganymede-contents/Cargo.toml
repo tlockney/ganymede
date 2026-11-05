@@ -35,3 +35,9 @@ mime_guess = "2"
 # No-replace rename (renameat2, renamex_np) for `rename`.
 [target.'cfg(any(target_os = "linux", target_os = "android", target_os = "macos", target_os = "ios"))'.dependencies]
 libc = "0.2"
+
+# Browser wasm has no OS randomness or clock; take both from JavaScript.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
+uuid = { workspace = true, features = ["js"] }
+chrono = { workspace = true, features = ["wasmbind"] }
