@@ -15,7 +15,8 @@
 //! sets `gateway_url`, whose kernels it runs as usual.
 
 use std::ffi::{c_char, CStr, CString};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Once};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -123,6 +124,71 @@ pub unsafe extern "C" fn ganymede_string_free(s: *mut c_char) {
         // SAFETY: the string was made by `CString::into_raw`.
         drop(unsafe { CString::from_raw(s) });
     }
+}
+
+/// Called with a panic's message and location, such as
+/// `panicked at crates/x/src/y.rs:10:5: oops`, on the panicking thread.
+/// The string is valid only during the call.
+pub type GanymedePanicCallback = extern "C" fn(message: *const c_char);
+
+/// The callback [`ganymede_set_panic_callback`] installed, as an address;
+/// 0 for none.
+static PANIC_CALLBACK: AtomicUsize = AtomicUsize::new(0);
+static PANIC_HOOK: Once = Once::new();
+
+/// Calls `callback` on every panic in this library, after the default
+/// hook (which prints the panic to stderr), on the panicking thread: the
+/// app's crash reporter can then report it with the thread's stack,
+/// Rust frames included (ganymede-ui#318). Panics in the server's tasks
+/// don't end the app, so this is how the app hears of them. NULL removes
+/// the callback. The library sends nothing itself.
+#[no_mangle]
+pub extern "C" fn ganymede_set_panic_callback(callback: Option<GanymedePanicCallback>) {
+    PANIC_CALLBACK.store(callback.map_or(0, |f| f as usize), Ordering::SeqCst);
+    PANIC_HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            previous(info);
+            let address = PANIC_CALLBACK.load(Ordering::SeqCst);
+            if address != 0 {
+                // SAFETY: only `ganymede_set_panic_callback` stores
+                // addresses here, and they are `GanymedePanicCallback`s.
+                let callback: GanymedePanicCallback = unsafe { std::mem::transmute(address) };
+                let message =
+                    CString::new(panic_message(info).replace('\0', " ")).expect("NULs replaced");
+                callback(message.as_ptr());
+            }
+        }));
+    });
+}
+
+/// `panicked at <file>:<line>:<column>: <payload>`, as the default hook
+/// prints it.
+fn panic_message(info: &std::panic::PanicHookInfo<'_>) -> String {
+    let payload = info
+        .payload()
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("Box<dyn Any>");
+    match info.location() {
+        Some(l) => format!(
+            "panicked at {}:{}:{}: {payload}",
+            l.file(),
+            l.line(),
+            l.column()
+        ),
+        None => format!("panicked: {payload}"),
+    }
+}
+
+/// Panics on the calling thread, for checking crash reports: the panic
+/// can't unwind out of an `extern "C"` function, so the process aborts
+/// once the panic hook has run.
+#[no_mangle]
+#[inline(never)]
+pub extern "C" fn ganymede_debug_panic() {
+    panic!("ganymede_debug_panic: a test panic the app asked for");
 }
 
 fn into_c(s: String) -> *mut c_char {
@@ -271,9 +337,36 @@ fn wait_for_url<T>(rx: &mpsc::Receiver<T>, timeout: Duration) -> Result<T, Waite
 
 #[cfg(test)]
 mod tests {
-    use super::{config, startup, wait_for_url, Waited};
-    use std::sync::mpsc;
+    use super::{config, ganymede_set_panic_callback, startup, wait_for_url, Waited};
+    use std::ffi::{c_char, CStr};
+    use std::sync::{mpsc, Mutex};
     use std::time::Duration;
+
+    static PANICS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    extern "C" fn record(message: *const c_char) {
+        // SAFETY: the hook passes a NUL-terminated string.
+        let message = unsafe { CStr::from_ptr(message) }
+            .to_string_lossy()
+            .into_owned();
+        PANICS.lock().unwrap().push(message);
+    }
+
+    #[test]
+    fn panic_callback_gets_the_message() {
+        ganymede_set_panic_callback(Some(record));
+        let _ = std::thread::spawn(|| panic!("test panic {}", 42)).join();
+        ganymede_set_panic_callback(None);
+        let _ = std::thread::spawn(|| panic!("after removing")).join();
+        let panics = PANICS.lock().unwrap();
+        assert_eq!(panics.len(), 1, "{panics:?}");
+        assert!(
+            panics[0].starts_with("panicked at crates/ganymede-ffi/src/lib.rs:"),
+            "{}",
+            panics[0]
+        );
+        assert!(panics[0].ends_with(": test panic 42"), "{}", panics[0]);
+    }
 
     #[test]
     fn start_gives_up() {

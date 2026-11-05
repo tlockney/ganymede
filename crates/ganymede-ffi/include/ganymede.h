@@ -25,6 +25,18 @@ void ganymede_server_stop(GanymedeServer *server);
 /* Frees a string returned by this library. NULL is ignored. */
 void ganymede_string_free(char *s);
 
+/* Called on the panicking thread with "panicked at <file>:<line>:<col>:
+ * <message>", valid only during the call. */
+typedef void (*GanymedePanicCallback)(const char *message);
+
+/* Calls callback on every panic in this library, after printing it to
+ * stderr, for the app's crash reporter. NULL removes it. */
+void ganymede_set_panic_callback(GanymedePanicCallback callback);
+
+/* Panics on the calling thread; the process aborts. For testing crash
+ * reports. */
+void ganymede_debug_panic(void);
+
 #ifdef __cplusplus
 }
 #endif
