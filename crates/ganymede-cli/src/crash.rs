@@ -4,7 +4,7 @@
 //! `crash_reporting` in `ganymede.toml`, and compiled in only with the
 //! `crash-reporting` feature. When it is off nothing is initialized, so no
 //! request is made. Reports carry the panic or error, its stack trace, the
-//! version and the OS; everything else is dropped in [`scrub`] before a
+//! version and the OS; everything else is dropped in `enabled::scrub` before a
 //! report leaves the machine.
 
 use std::ffi::OsStr;
