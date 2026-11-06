@@ -9,7 +9,9 @@
 // PATH (or set GANYMEDE_BIN), with the kernel the skill defaults to
 // (`cdp-node`) installed. CLAUDE_BIN and CLAUDE_ARGS override the
 // command; the default allows the ganymede tools and a few read-only
-// shell commands.
+// shell commands. A session that exits non-zero or runs past
+// EVAL_TIMEOUT_MS (default 30 minutes) is reported and left out of the
+// measures.
 //
 // The notebook each session leaves is saved twice under DIR: `<run>.end.ipynb`,
 // never touched again, and `<run>.ipynb`, for a person to read and edit.
@@ -67,9 +69,11 @@ function session(task, dir) {
     env,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "inherit"],
+    timeout: Number(process.env.EVAL_TIMEOUT_MS ?? 30 * 60 * 1000),
   });
-  if (r.error) throw r.error;
-  return r.stdout;
+  if (r.error && r.error.code !== "ETIMEDOUT") throw r.error;
+  const failed = r.error?.code === "ETIMEDOUT" ? "timed out" : r.status !== 0 ? `exited ${r.status ?? r.signal}` : null;
+  return { log: r.stdout ?? "", failed };
 }
 
 /** The notebook a session left: the newest .ipynb under journal/, else anywhere. */
@@ -89,6 +93,27 @@ function journalOf(dir) {
 
 const read = (p) => JSON.parse(fs.readFileSync(p, "utf8"));
 
+/**
+ * Saves a session's notebook as `<run>.end.ipynb` and the copy a person
+ * edits, `<run>.ipynb`, with the same mtime, so an edit is what makes the
+ * copy newer.
+ */
+export function saveJournal(nb, out, run) {
+  const end = path.join(out, `${run}.end.ipynb`);
+  const now = path.join(out, `${run}.ipynb`);
+  fs.copyFileSync(nb, end);
+  fs.copyFileSync(nb, now);
+  // Whole seconds, which every filesystem stores exactly.
+  const t = Math.floor(Date.now() / 1000);
+  fs.utimesSync(end, t, t);
+  fs.utimesSync(now, t, t);
+}
+
+/** Whether a person changed the editable copy since the session ended. */
+export function reviewed(end, now) {
+  return fs.existsSync(now) && fs.statSync(now).mtimeMs > fs.statSync(end).mtimeMs;
+}
+
 function report(results) {
   for (const r of results) {
     console.log(`${r.run}: ${r.error ?? JSON.stringify(r.score)}`);
@@ -96,18 +121,18 @@ function report(results) {
   console.log(JSON.stringify(measures(results.filter((r) => r.score).map((r) => r.score)), null, 2));
 }
 
-function rescore(out) {
+export function rescore(out) {
   const runs = JSON.parse(fs.readFileSync(path.join(out, "results.json"), "utf8"));
   const results = runs.map((r) => {
     const task = TASKS.find((t) => t.id === r.task);
     const end = path.join(out, `${r.run}.end.ipynb`);
-    if (!fs.existsSync(end)) return { ...r, score: null };
+    if (r.error || !fs.existsSync(end)) return { ...r, score: null };
     const now = path.join(out, `${r.run}.ipynb`);
-    const reviewed = fs.existsSync(now) && fs.statSync(now).mtimeMs > fs.statSync(end).mtimeMs;
-    return { ...r, score: score(read(end), reviewed ? read(now) : null, task) };
+    return { ...r, score: score(read(end), reviewed(end, now) ? read(now) : null, task) };
   });
   fs.writeFileSync(path.join(out, "results.json"), JSON.stringify(results, null, 2) + "\n");
   report(results);
+  return results;
 }
 
 function main() {
@@ -123,14 +148,14 @@ function main() {
       const run = `${task.id}-${n}`;
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${run}-`));
       console.error(`${run}: ${dir}`);
-      fs.writeFileSync(path.join(out, `${run}.log`), session(task, dir));
+      const { log, failed } = session(task, dir);
+      fs.writeFileSync(path.join(out, `${run}.log`), log);
       const nb = journalOf(dir);
-      if (!nb) {
-        results.push({ run, task: task.id, error: "no notebook", score: null });
+      if (nb) saveJournal(nb, out, run);
+      if (failed || !nb) {
+        results.push({ run, task: task.id, error: failed ?? "no notebook", score: null });
         continue;
       }
-      fs.copyFileSync(nb, path.join(out, `${run}.end.ipynb`));
-      fs.copyFileSync(nb, path.join(out, `${run}.ipynb`));
       results.push({ run, task: task.id, score: score(read(nb), null, task) });
     }
   }
@@ -139,4 +164,4 @@ function main() {
   report(results);
 }
 
-main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

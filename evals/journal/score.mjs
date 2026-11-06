@@ -58,7 +58,7 @@ export function recorded(nb) {
 }
 
 const CORRECTION =
-  /\b(correction|corrected|update:|actually|turns out|was wrong|i was wrong|earlier (?:finding|result|claim|number)s? (?:was|were|is|are) (?:wrong|incorrect|off))\b/i;
+  /\b(?:correction|corrected|actually|turns out|was wrong|earlier (?:finding|result|claim|number)s? (?:was|were|is|are) (?:wrong|incorrect|off))\b|\bupdate:/i;
 
 /**
  * Findings revised in place (Markdown cells with `history`, counting each

@@ -86,3 +86,61 @@ test("the tasks are fixed: same data and answers every load", async () => {
   }
   assert.ok(TASKS.some((t) => t.needsRecorded), "a task needs a recorded step");
 });
+
+test("a correction is found by its wording", () => {
+  for (const s of ["Update: Mar was counted twice.", "Correction: 196, not 197.", "Turns out the airport is in °F."]) {
+    assert.equal(revisions({ cells: [md(s)] }).appended, 1, s);
+  }
+  assert.equal(revisions({ cells: [md("Updated the chart.")] }).appended, 0);
+});
+
+test("the answers reject near misses", () => {
+  const [, logs, temps] = TASKS;
+  const says = (task, s) => answered({ cells: [md(s)] }, task.answer);
+  assert.equal(says(logs, "118 errors. The peak is 14:00, with 30 errors."), true);
+  assert.equal(says(logs, "118 errors. 30 of them at 14:00."), true);
+  assert.equal(says(logs, "118 errors.\n\nThe peak is 14:00.\n\nSome 30 lines are WARN."), false);
+  assert.equal(says(temps, "The airport averaged 12.8 °C."), true);
+  assert.equal(says(temps, "The airport averaged 112.8."), false);
+  assert.equal(says(temps, "The airport averaged 12.85."), false);
+  assert.equal(says(temps, "The airport averaged 1218."), false);
+});
+
+test("rescore counts a session as reviewed only once its copy is edited", async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const { rescore, saveJournal } = await import("./run.mjs");
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), "journal-rescore-"));
+  try {
+    const nb = path.join(out, "src.ipynb");
+    fs.writeFileSync(nb, JSON.stringify(journal(code(1))));
+    for (const run of ["a", "b"]) saveJournal(nb, out, run);
+    const edited = journal(code(1));
+    edited.cells[1] = md("1. Jun, by 196.");
+    fs.writeFileSync(path.join(out, "b.ipynb"), JSON.stringify(edited));
+    const later = new Date(Date.now() + 5000);
+    fs.utimesSync(path.join(out, "b.ipynb"), later, later);
+    fs.writeFileSync(
+      path.join(out, "results.json"),
+      JSON.stringify([
+        { run: "a", task: TASKS[0].id },
+        { run: "b", task: TASKS[0].id },
+        { run: "c", task: TASKS[0].id, error: "exited 1" },
+      ]),
+    );
+    const log = console.log;
+    console.log = () => {};
+    let results;
+    try {
+      results = rescore(out);
+    } finally {
+      console.log = log;
+    }
+    assert.equal(results[0].score.summaryRewritten, null, "untouched copy");
+    assert.equal(results[1].score.summaryRewritten, true);
+    assert.equal(results[2].score, null, "a failed session");
+  } finally {
+    fs.rmSync(out, { recursive: true });
+  }
+});

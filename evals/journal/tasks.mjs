@@ -124,7 +124,11 @@ export const TASKS = [
       "Journal this: first count the ERROR lines in logs/app.log with grep in the shell, " +
       "then, in the notebook, find the hour of the day with the most errors and how many it had.",
     files: l.files,
-    answer: [`\\b${l.total}\\b`, `\\b${l.peak}(:00)?\\b`, `\\b${l.peakCount}\\b`],
+    // The peak hour and its count in one line, either way round.
+    answer: [
+      `\\b${l.total}\\b`,
+      `\\b${l.peak}(:00)?\\b[^\\n]*\\b${l.peakCount}\\b|\\b${l.peakCount}\\b[^\\n]*\\b${l.peak}(:00)?\\b`,
+    ],
     needsRecorded: true,
   },
   {
@@ -133,7 +137,7 @@ export const TASKS = [
       "Journal this: from temps.csv, which station had the warmest average in April, and what " +
       "was its average in °C? stations.md describes the feeds.",
     files: t.files,
-    answer: [`\\b${t.warmest[0]}\\b`, `${t.warmest[1].toFixed(1)}`],
+    answer: [`\\b${t.warmest[0]}\\b`, `\\b${t.warmest[1].toFixed(1).replace(".", "\\.")}(?![\\d])`],
     notes: "The airport reports Fahrenheit; read as Celsius, its average comes out near 55.",
   },
 ];

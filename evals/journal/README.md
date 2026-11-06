@@ -16,7 +16,9 @@ node evals/journal/run.mjs --runs 3 --out evals-out
 
 `--task <id>` runs one task. `CLAUDE_BIN` and `CLAUDE_ARGS` replace the
 command and its extra arguments (the default `--allowedTools` allows the
-ganymede tools, the file tools and `grep`, `wc`, `head`, `ls`).
+ganymede tools, the file tools and `grep`, `wc`, `head`, `ls`). A session
+that exits non-zero, or runs past `EVAL_TIMEOUT_MS` (30 minutes by
+default), is reported and left out of the measures.
 
 Each session leaves `<task>-<n>.end.ipynb`, kept as the session left it,
 and `<task>-<n>.ipynb`, for a person to read and edit. After editing,
