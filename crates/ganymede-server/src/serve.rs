@@ -523,10 +523,14 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     if !cfg.language_servers.is_empty() && !LspManager::supported() {
         tracing::warn!("language servers are configured but cannot run on this platform");
     }
-    let state_collab = Arc::new(crate::collab::Collab::new(
-        file_ids(&root_dir),
-        Some(root_dir.clone()),
-    ));
+    // An embedding app has no runtime dir on iOS, so its rooms don't lock.
+    let mut collab = crate::collab::Collab::new(file_ids(&root_dir), Some(root_dir.clone()));
+    if startup.stop.is_none() {
+        collab = collab.with_room_locks(
+            ganymede_kernel_host::kernelspec::jupyter_runtime_dir().join("ganymede-rooms"),
+        );
+    }
+    let state_collab = Arc::new(collab);
     let state = AppState {
         kernels: kernels.clone(),
         sessions,

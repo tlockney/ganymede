@@ -583,7 +583,7 @@ async fn get_contents(
             let content = q.content.as_deref().map(|c| c != "0").unwrap_or(true);
             let hash = q.hash.as_deref().is_some_and(|h| h != "0");
             // With content, hash it too, for the ETag a later If-Match names.
-            let model = s
+            let mut model = s
                 .contents
                 .get(
                     &p,
@@ -595,6 +595,14 @@ async fn get_contents(
                     },
                 )
                 .await?;
+            // A notebook whose room another server owns can only be read
+            // here (#272): JupyterLab shows it as read-only.
+            if model.writable
+                && model.kind == ContentType::Notebook
+                && s.collab.owned_elsewhere(&model.path)
+            {
+                model.writable = false;
+            }
             Ok(with_etag(model, hash))
         }
     }

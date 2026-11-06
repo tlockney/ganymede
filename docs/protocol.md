@@ -187,6 +187,26 @@ file back. When the file id database can't be read or written, ids
 handed out meanwhile are kept in memory, so they still resolve until
 the server stops.
 
+### Two servers on one notebook
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. In the latest release, both servers' rooms save
+> the file and merge each other's saves.
+
+On one machine, the first server to open a room on a notebook owns it
+while the room is open: it holds a lock in the Jupyter runtime dir's
+`ganymede-rooms/`, named for the file's path (`flock`, or `LockFileEx`
+on Windows). Another server's room on the same file is read-only. Its
+contents API reports the notebook as not `writable`, which JupyterLab
+shows as read-only. The room takes in the owner's saves, never saves,
+and undoes any edit a client sends, for every client. Once the owner's
+room closes or its server exits, the other room takes the lock within a
+second and saves its own edits from then on. Across machines, as with a
+notebook in a synced folder, there is no lock, and rooms merge through
+the file as described above. An app that embeds the server takes no
+lock.
+
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
 > the latest release.

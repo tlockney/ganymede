@@ -26,6 +26,14 @@
 //! cell. A room with no clients is saved and dropped after a minute. A
 //! delete through the contents API closes the rooms on the deleted file.
 //!
+//! On one machine, a room owns its file while it is open: it holds a lock
+//! in the runtime dir (see `room_lock.rs`). A room opened on a file
+//! another server's room owns is read-only: it reloads the owner's saves,
+//! refuses edits, never saves, and the contents API reports the file as
+//! not `writable`. It takes the lock, and becomes writable, once the owner
+//! closes its room or exits. Across machines (a synced folder) there is no
+//! lock, and rooms merge through the file as above.
+//!
 //! File ids come from [`FileIds`]: kept in a database when the server has
 //! one, so they survive restarts, and moved by renames through the
 //! contents API, which also move open rooms.
@@ -86,6 +94,8 @@ pub struct Collab {
     next_conn: AtomicU64,
     /// How long a room with no clients is kept: [`CLEANUP_DELAY`].
     cleanup_delay: Duration,
+    /// Which rooms own their files on this machine (#272).
+    locks: crate::room_lock::Locks,
     /// Request ids the execute endpoint has queued.
     pub(crate) requests: crate::execute::Requests,
 }
@@ -109,8 +119,33 @@ impl Collab {
             moves: AtomicU64::new(0),
             next_conn: AtomicU64::new(1),
             cleanup_delay: CLEANUP_DELAY,
+            locks: Default::default(),
             requests: Default::default(),
         }
+    }
+
+    /// Rooms take a lock in `dir` (a directory in the Jupyter runtime dir)
+    /// to own their files, so another server's room on the same file is
+    /// read-only. Without this, as in an embedding app, rooms don't lock.
+    pub fn with_room_locks(mut self, dir: PathBuf) -> Self {
+        self.locks = crate::room_lock::Locks::new(Some(dir));
+        self
+    }
+
+    /// Try to own the notebook at `path` (relative to the root).
+    fn acquire(&self, path: &str) -> crate::room_lock::Acquire {
+        match &self.root {
+            Some(root) => self.locks.acquire(&root.join(path)),
+            None => crate::room_lock::Acquire::Unavailable,
+        }
+    }
+
+    /// Whether a room in another server owns `path`, so this server can
+    /// only read it.
+    pub(crate) fn owned_elsewhere(&self, path: &str) -> bool {
+        self.root
+            .as_ref()
+            .is_some_and(|root| self.locks.owned_elsewhere(&root.join(path)))
     }
 
     /// How many rooms are open.
@@ -653,7 +688,13 @@ async fn run_room(
         },
     };
     let mut watch = path.as_deref().and_then(|p| collab.watch(p));
-    tracing::info!(room = %room_id, path = ?path, watched = watch.is_some(), "room opened");
+    // Held while the room is open; `None` while read-only or not locking.
+    let mut lock = None;
+    if let Some(p) = &path {
+        take_lock(&collab, &room_id, p, &mut room, &mut lock);
+    }
+    let mut last_lock_try = Instant::now();
+    tracing::info!(room = %room_id, path = ?path, watched = watch.is_some(), read_only = room.is_read_only(), "room opened");
 
     let mut last_edit: Option<Instant> = None;
     // Saves that failed in a row, for the retry's backoff.
@@ -713,6 +754,9 @@ async fn run_room(
                         dispatch(&clients, fx.send);
                         drop(watch.take());
                         watch = collab.watch(&d.path);
+                        // The lock names the old path.
+                        drop(lock.take());
+                        take_lock(&collab, &room_id, &d.path, &mut room, &mut lock);
                     }
                     Cmd::Removed(gone) => {
                         let Some(d) = disk.as_ref() else { continue };
@@ -775,6 +819,10 @@ async fn run_room(
                     if clients.is_empty() && next.is_none() && retire(&collab, &room_id, &mut rx) { break }
                     continue;
                 };
+                if room.is_read_only() && last_lock_try.elapsed() >= POLL_INTERVAL {
+                    last_lock_try = Instant::now();
+                    take_lock(&collab, &room_id, &d.path, &mut room, &mut lock);
+                }
                 let poll_every = if watch.is_some() { WATCHED_POLL_INTERVAL } else { POLL_INTERVAL };
                 let settled = disk_event.is_some_and(|t| t.elapsed() >= DEBOUNCE);
                 if settled || first_disk_event.is_some_and(|t| t.elapsed() >= MAX_DEBOUNCE) {
@@ -847,6 +895,35 @@ async fn run_room(
         }
     }
     tracing::info!(room = %room_id, "room closed");
+}
+
+/// Own the room's file, or make the room read-only while another server's
+/// room does (#272).
+fn take_lock(
+    collab: &Collab,
+    room_id: &str,
+    path: &str,
+    room: &mut Room,
+    lock: &mut Option<crate::room_lock::RoomLock>,
+) {
+    use crate::room_lock::Acquire;
+    let was = room.is_read_only();
+    match collab.acquire(path) {
+        Acquire::Held(held) => {
+            *lock = Some(held);
+            room.set_read_only(false);
+        }
+        Acquire::Elsewhere => room.set_read_only(true),
+        Acquire::Unavailable => room.set_read_only(false),
+    }
+    match (was, room.is_read_only()) {
+        (false, true) => tracing::info!(
+            room = %room_id,
+            "{path} is open in another server, which saves it; this room is read-only"
+        ),
+        (true, false) => tracing::info!(room = %room_id, "{path} is this room's to save now"),
+        _ => {}
+    }
 }
 
 /// Settle the pending autosave after a save. A failed save leaves the
@@ -952,6 +1029,10 @@ async fn save_room(
     clients: &HashMap<ConnId, mpsc::UnboundedSender<Out>>,
     force: bool,
 ) -> SaveStatus {
+    // Another server's room saves this file (#272).
+    if room.is_read_only() {
+        return SaveStatus::Skipped;
+    }
     // Each round either saves or merges a newer file; give up if another
     // program keeps writing.
     let mut lost = false;

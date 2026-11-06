@@ -140,7 +140,7 @@ impl Drop for ServerInfoFiles {
 
 /// Creates `dir` and its parents; the last level is made owner-only on
 /// Unix, as `jupyter_core` makes the runtime dir.
-fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     if dir.is_dir() {
         return Ok(());
     }
