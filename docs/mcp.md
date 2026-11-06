@@ -234,5 +234,6 @@ are config keys.
 [nb-cli](clients.md#agent-clis) is another way in: a command-line tool
 for agents that talks to `ganymede serve` over the Jupyter API. It
 fits agents without MCP, or a person who wants the same commands in a
-terminal. [Agents](agents.md) sets it up with Claude Code and covers the
-journaling conventions, which apply to the MCP tools as well.
+terminal. [Agents with nb-cli](agents.md) sets it up with Claude Code.
+The journaling conventions are the same either way; the plugin's
+`journal` skill has them.

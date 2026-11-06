@@ -21,12 +21,11 @@ more installed kernelspec, not something the server needs.
   Ganymede.
 - [Ganymede's app](app.md): its own notebook app, in a browser and on the
   Mac and iPad.
-- [Agents](agents.md): a coding agent journaling an analysis into a
-  notebook with nb-cli.
+- [Agents over MCP](mcp.md): a coding agent journaling an analysis into
+  a notebook, with `ganymede mcp` and the ganymede-journal plugin for
+  Claude Code; [nb-cli](agents.md) for agents without MCP.
 - [CLI and configuration](reference.md): every command, flag, config key
   and environment variable.
-- [Agents over MCP](mcp.md): notebook tools for Claude Code and other
-  MCP clients, with `ganymede mcp`.
 - [Architecture](architecture.md): how Ganymede compares to the Jupyter
   stack it replaces, and how its crates fit together.
 - [Roadmap](roadmap.md): what is done and what comes next.

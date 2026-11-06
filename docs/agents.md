@@ -1,4 +1,11 @@
-# Agents
+# Agents with nb-cli
+
+> [!TIP]
+> For Claude Code, Codex, Cursor and other MCP clients, start with
+> [Agents over MCP](mcp.md): `ganymede mcp` and the ganymede-journal
+> plugin are Ganymede's own way in. This page is for nb-cli, which suits
+> agents without MCP or a person who wants the same commands in a
+> terminal.
 
 A coding agent that explores data usually runs code through its shell
 and, when asked, writes the work up as a notebook afterwards. That
@@ -124,27 +131,21 @@ notebook folder, where `.jupyter/cli.json` is.
 ```
 
 An agent that edits the JSON directly can break the file, and its edits
-don't run, so the notebook's outputs no longer match its code. The
-journaling conventions below can go in the same file.
+don't run, so the notebook's outputs no longer match its code.
 
 ## Journaling conventions
 
-These keep the notebook readable for a person and runnable from the top:
-
-- **Start with a title cell** in Markdown that states the goal: the
-  question being answered and where the data comes from.
-- **One question per section.** A `##` heading per question, so the
-  notebook reads as a sequence of steps, not one long cell.
-- **Say why, then what was found.** A short Markdown cell before the
-  code says why this step; a line after the output says what it showed.
-- **Keep cells small and re-runnable.** One step per cell, no state
-  kept outside the kernel, no cell that only works the second time.
-- **Fix a step in place.** When a cell fails, edit it (`nb cell update
-  --cell-index N`) and run it again, rather than appending a corrected
-  copy below the broken one.
-- **Finish with a clean run.** Restart the kernel and run everything
-  (`nb execute fares.ipynb --restart-kernel`), then check for errors
-  (below).
+The conventions that keep the notebook readable for a person and
+runnable from the top (a title that states the goal, one question per
+section, a finding after each result, fixing a step in place, recording
+steps outside the kernel, a clean run at the end) are written once, in
+the ganymede-journal plugin's
+[`journal` skill](https://github.com/tlockney/ganymede/blob/main/plugins/ganymede-journal/skills/journal/SKILL.md).
+The skill names the MCP tools; with nb-cli the same conventions hold. Fix
+a failed cell with `nb cell update --cell-index N` and run it again
+rather than appending a copy, record steps outside the kernel as below,
+and finish with `nb execute <notebook> --restart-kernel`, then
+[check the notebook](#check-the-notebook).
 
 A session looks like this:
 

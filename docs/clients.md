@@ -83,7 +83,7 @@ into the room; see
 while editing the room, so edits within the room's one-second save delay
 can land at a stale index, and it drops `execute_result` outputs it
 reads from a room ([#296](https://github.com/tlockney/ganymede/issues/296));
-see [Agents](agents.md#connect-nb-cli).
+see [Agents with nb-cli](agents.md#connect-nb-cli).
 
 ### Embeddable / libraries
 
