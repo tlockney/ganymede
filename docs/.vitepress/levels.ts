@@ -8,7 +8,7 @@ export const levels: Record<Level, { label: string; note: string }> = {
   guide: { label: "Guide", note: "Day-to-day use. Assumes you've run Ganymede once." },
   reference: { label: "Reference", note: "Look things up as you need them." },
   advanced: { label: "Advanced", note: "How the server works inside. Not needed to use it." },
-  background: { label: "Background", note: "Context: the Jupyter ecosystem Ganymede fits into." },
+  background: { label: "Background", note: "Context: the design notes Ganymede was built from, and the Jupyter ecosystem it fits into." },
   contributor: { label: "Contributors", note: "For working on Ganymede itself." },
 };
 
@@ -43,6 +43,7 @@ export function groups(): Group[] {
       level: "guide",
       items: [
         { text: "JupyterLab and VS Code", link: "/frontends" },
+        { text: "Live editing and document rooms", link: "/rooms" },
         { text: "Ganymede's app", link: "/app" },
         { text: "Agents", link: "/agents" },
         { text: "Switching from jupyter_server", link: "/switching" },
@@ -69,15 +70,15 @@ export function groups(): Group[] {
         { text: "Architecture", link: "/architecture" },
         { text: "Embedding", link: "/embedding" },
         { text: "Replacing Python", link: "/python-free" },
-        { text: "Protocol and kernel host", link: "/protocol" },
-        { text: "User interfaces", link: "/ui" },
-        { text: "The iPad use case", link: "/ipados" },
       ],
     },
     {
       text: "Background",
       level: "background",
       items: [
+        { text: "Protocol and kernel host", link: "/protocol" },
+        { text: "User interfaces", link: "/ui" },
+        { text: "The iPad use case", link: "/ipados" },
         { text: "Other Jupyter clients", link: "/clients" },
         { text: "Prior art", link: "/prior-art" },
       ],

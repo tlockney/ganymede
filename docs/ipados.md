@@ -4,9 +4,10 @@ The case that shaped Ganymede: TypeScript notebooks on an iPad, with no
 Python anywhere. It started as the
 [ts-on-ipados](https://github.com/tlockney/research/tree/main/ts-on-ipados)
 design: an iPad client in front of kernels on a home server over a
-tailnet, then a kernel on the iPad itself. This page says what that
-asked of Ganymede, what was built, and what is left. Using the app is
-covered in [Ganymede's app](app.md).
+tailnet, then a kernel on the iPad itself. This design note says what
+that asked of Ganymede, what was built, and what it decided. Using the
+app is covered in [Ganymede's app](app.md); what is still planned is on
+the [Roadmap](roadmap.md).
 
 ## What was built
 
@@ -36,19 +37,11 @@ covered in [Ganymede's app](app.md).
 - **Reloading notebooks changed on disk.** A notebook opened through a
   document room is reloaded when another device changes the file, and
   edits on both sides are merged cell by cell
-  ([Document model and collaboration](protocol.md#document-model-and-collaboration)).
+  ([Live editing and document rooms](rooms.md)).
 - **Distribution.** The Mac app is signed and notarized in each
   ganymede-ui release, and the iPad and iPhone app goes to TestFlight.
 
 ![Where each piece runs in four setups: on a workstation, the frontend, ganymede serve and each kernel are separate processes; in the Mac app, ganymede-ui and Ganymede run inside the app and kernels are the Mac's processes; in the iPad app everything runs inside the app and the kernel runs in the page; in a browser with no server, the UI, kernels and IndexedDB storage all stay in one tab.](images/architecture/where-kernels-run.svg)
-
-## What is left
-
-- **A native on-device kernel**: cdp-kernel in the app's process, behind
-  the `Provisioner` and `TransportFactory` seams that already accept a
-  kernel with no ZeroMQ.
-- **`tailscale serve` identity**: trusting the identity headers it adds,
-  so a tailnet client needs no token.
 
 ## Decisions that came out of it
 

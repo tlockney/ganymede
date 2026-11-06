@@ -130,7 +130,7 @@ JupyterLab) interrupts nothing, so that other run isn't stopped; the
 reply says the code runs when the kernel is free.
 
 Cells run through the server, as the
-[execute endpoint](protocol.md#document-model-and-collaboration) runs
+[execute endpoint](rooms.md#running-cells-into-a-room) runs
 them: outputs go into the document as they arrive, and a person watching
 the notebook sees them live.
 

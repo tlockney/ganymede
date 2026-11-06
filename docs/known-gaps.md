@@ -55,7 +55,7 @@ covers problems with the install itself.
 - A notebook changed on disk while it is open is not reloaded into the
   frontend, unless JupyterLab opened it through a document room (with the
   collaboration extensions; see
-  [Document model and collaboration](protocol.md#document-model-and-collaboration)).
+  [Live editing and document rooms](rooms.md)).
   Other frontends see the change on the next open.
 
 ## The app

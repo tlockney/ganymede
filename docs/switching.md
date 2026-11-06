@@ -69,7 +69,7 @@ Server extensions (the Python half of some JupyterLab extensions),
 nbconvert export, and JupyterHub's single-user mode. Terminals and
 language servers ([JupyterLab and VS Code](frontends.md#terminals)) and
 real-time collaboration
-([Document model and collaboration](protocol.md#document-model-and-collaboration))
+([Live editing and document rooms](rooms.md))
 do work, with no Python behind them. [Known gaps](known-gaps.md) has the
 full list and the details. If you depend on one of these, stay on `jupyter_server` for now,
 or run it for that one job: both servers share kernels, notebooks and
