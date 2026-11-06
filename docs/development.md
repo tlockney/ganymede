@@ -110,6 +110,12 @@ number. Locally: `cargo llvm-cov --workspace --open`.
   Dependabot (`.github/dependabot.yml`) opens weekly grouped bumps for
   Cargo, npm, and the actions; its pull requests are exempt from the
   linked-issue check.
+- **Docs-only pull requests.** A pull request that changes only `docs/`,
+  `site/` (other than `site/install.sh`), or Markdown builds nothing:
+  the `changes` job (`scripts/ci-changes.sh`) says so, and every job
+  reports success without running. The `pages` workflow still builds the
+  site. Anything else, and every push to `main`, runs the whole CI. Add
+  a path to the script's list only if no job can be affected by it.
 - **Actions** are pinned by full commit SHA, with the version in a
   comment. Let Dependabot move them; don't hand-edit a tag back in.
 - **Permissions.** Every workflow starts from `contents: read` (or
