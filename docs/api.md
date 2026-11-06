@@ -325,3 +325,32 @@ pass the `seq` of the last line you got as `after` (0 before any); when
 a page ends before `last_seq`, ask again. A kernel the
 server runs no process for, an in-process one or one on a gateway, gets
 `{"kernel_id": ..., "lines": [], "last_seq": 0, "reason": "no_process"}`.
+
+## Every route
+
+What `ganymede serve` answers, beyond the examples above:
+
+- `jupyter_server`'s: `/api` (public), `/api/status`, `/api/me`,
+  `/api/config/{section}`, `/api/nbconvert`, `/api/events/subscribe`,
+  `/login`, `/logout`, `/api/kernelspecs[/{name}]`,
+  `/kernelspecs/{name}/{file}`, `/api/kernels` with `interrupt`,
+  `restart` and the `channels` websocket, `/api/sessions`,
+  `/api/contents/{path}` with checkpoints and `trust`, `/files/{path}`,
+  `/api/terminals` and `/terminals/websocket/{name}`.
+- Extensions' routes, with no Python behind them: `jupyter-lsp`'s
+  `/lsp/status` and `/lsp/ws/{name}`; `jupyter-collaboration`'s
+  `/api/collaboration` rooms with `/api/fileid/*`, and
+  `jupyter-server-documents`' `/api/kernels/{id}/execute`
+  ([Document model and collaboration](protocol.md#document-model-and-collaboration)); `jupyter-resource-usage`'s
+  `/api/metrics/v1`.
+- Ganymede's own: `/api/kernels/{id}/log`, and `/mcp` with `--mcp`
+  ([Agents over MCP](mcp.md)).
+- With JupyterLab (`ganymede lab`): the page, `/static/lab`,
+  `/lab/extensions/{name}`, and `/lab/api/` `settings`, `workspaces`,
+  `translations`, `themes`, `listings`, `plugins`, `licenses`.
+
+The kernel websocket speaks `v1.kernel.websocket.jupyter.org` when the
+client offers it, and the legacy JSON framing otherwise. JSON bodies are
+parsed whatever their `Content-Type`, because `@jupyterlab/services`
+omits the header on some requests. [Security](security.md) has how
+requests are authenticated and which `Host` and `Origin` are accepted.

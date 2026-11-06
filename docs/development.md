@@ -131,6 +131,11 @@ number. Locally: `cargo llvm-cov --workspace --open`.
   [development log](notes.md) as its own file,
   `docs/notes/YYYY-MM-DD-<topic>.md`. Don't append to `docs/notes.md`:
   one shared file makes every pair of open PRs conflict.
+- Status lives in two pages: [Known gaps](known-gaps.md) (what doesn't
+  work) and the [Roadmap](roadmap.md) (what is done and planned). Other
+  pages and crate READMEs describe what is there and link to those two
+  instead of saying "not yet"; status repeated elsewhere went stale in
+  each docs review.
 
 ## Releases
 

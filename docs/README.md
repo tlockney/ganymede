@@ -36,5 +36,6 @@ more installed kernelspec, not something the server needs.
 Early software. The protocol, kernel host, notebook format, executor,
 contents, API, and server build and pass their tests, and an end-to-end
 suite compares Ganymede against `jupyter execute` and `jupyter server` on
-cdp-kernel and ipykernel. The [development log](notes.md) records what
-each step found.
+cdp-kernel and ipykernel. [Known gaps](known-gaps.md) lists what doesn't
+work yet, the [Roadmap](roadmap.md) what is planned, and the
+[development log](notes.md) what each step found.
