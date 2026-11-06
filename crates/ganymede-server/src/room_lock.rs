@@ -101,9 +101,26 @@ impl Locks {
     }
 
     /// Whether another process owns `file`, for the contents API's
-    /// `writable`. Takes and drops the lock to find out.
+    /// `writable`. Takes and drops the lock to find out, without marking
+    /// it held, so a room of this server opening at the same moment isn't
+    /// turned away. While the probe holds it, another server's room
+    /// opening on the file finds it owned and starts read-only; it takes
+    /// the lock on its next retry, within a second.
     pub(crate) fn owned_elsewhere(&self, file: &Path) -> bool {
-        matches!(self.acquire(file), Acquire::Elsewhere)
+        let Some(dir) = &self.dir else {
+            return false;
+        };
+        let Ok(canonical) = file.canonicalize() else {
+            return false;
+        };
+        if self.held.lock().expect("held locks").contains(&canonical) {
+            return false;
+        }
+        match open(dir, &canonical).map(|f| f.try_lock()) {
+            Ok(Err(TryLockError::WouldBlock)) => true,
+            // Ok(Ok(())): free; the lock drops with the file here.
+            _ => false,
+        }
     }
 }
 

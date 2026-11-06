@@ -5182,6 +5182,14 @@ async fn a_second_servers_room_is_read_only_until_the_owner_leaves() {
             .with_cleanup_delay(cleanup)
             .with_room_locks(locks.path().join("rooms")),
         );
+        s.mcp = Some(Arc::new(ganymede_server::mcp::McpState::new(
+            ganymede_server::mcp::McpOptions {
+                read_only: false,
+                no_execute: false,
+                images: false,
+                outputs_dir: None,
+            },
+        )));
         build_router(s)
     };
     let one = server(Duration::from_millis(200));
@@ -5304,6 +5312,22 @@ async fn a_second_servers_room_is_read_only_until_the_owner_leaves() {
     type_at_end(&mut ws2, &doc2, " from two").await;
     pump(&mut ws2, &doc2, |d| source(d).as_deref() == Some("hello")).await;
     tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
+    // So does the server's own MCP tool, with an error rather than a
+    // success that is quietly lost.
+    let sid = mcp_connect(&two, "agent").await;
+    let v = mcp_tool(
+        &two,
+        &sid,
+        "cell_edit",
+        json!({"path": "shared.ipynb", "id": "a", "source": "from an agent"}),
+    )
+    .await;
+    assert!(
+        v.get("error").is_some() || v["result"]["isError"] == true,
+        "{v}"
+    );
+    assert!(v.to_string().contains("read-only"), "{v}");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
 
     // The owner's edit is saved once and reaches the other server's client.

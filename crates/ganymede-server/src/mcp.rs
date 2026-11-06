@@ -1043,9 +1043,14 @@ impl Notebooks {
         tokens.extend(also.filter(|t| !tokens.contains(t)));
         let (marks, p) = (self.marks.clone(), path.to_string());
         self.room(path, move |room| {
+            // Another server owns the file (#272): its room would undo
+            // the edit and never save it, so refuse it here.
+            if room.is_read_only() {
+                return (None, Effects::default());
+            }
             let (r, fx) = f(room);
             if tokens.is_empty() || !fx.changed {
-                return (r, fx);
+                return (Some(r), fx);
             }
             if let Some(Ok(nb)) = room.notebook_with_ids() {
                 let now = marks::snapshot(&nb);
@@ -1058,9 +1063,14 @@ impl Notebooks {
                     }
                 }
             }
-            (r, fx)
+            (Some(r), fx)
         })
-        .await
+        .await?
+        .ok_or_else(|| {
+            err(format!(
+                "{path} is open in another server on this machine, so it is read-only here"
+            ))
+        })
     }
 
     async fn create(
