@@ -30,7 +30,9 @@ how the crates are arranged, see [Architecture](architecture.md).
   status, clear_output, comm_open/msg/close, input_request/reply, and the
   5.5 subshell messages (create/delete/list) plus `iopub_welcome`. Ganymede
   carries `subshell_id` in the header and passes subshell messages
-  through; it neither sends nor needs `iopub_welcome` yet.
+  through. It takes a kernel's `iopub_welcome` as proof that iopub is
+  live (see [Kernel lifecycle](architecture.md#kernel-lifecycle)) and
+  doesn't pass it on to clients.
 
 ZMQ options: the pure-Rust `zeromq` crate (used by `runtimelib` and Deno's
 built-in kernel) or `zmq` bindings to libzmq. Pure Rust avoids a C
@@ -74,8 +76,9 @@ multiplexes clients onto them. Responsibilities:
 - Shutdown: `shutdown_request` on control, wait, then SIGTERM, then
   SIGKILL. Remove the connection file.
 - Autorestart: poll the process; restart on unexpected exit, bounded
-  retries, with a `restarting` status broadcast to clients. Not yet:
-  Ganymede reports the kernel `dead` and removes it.
+  retries, with a `restarting` status broadcast to clients. Ganymede
+  does this under the same kernel id, up to `kernel_restart_limit`
+  crashes in a row ([Kernel crashes](reference.md#kernel-crashes)).
 - Multi-client: many websocket clients per kernel. iopub is broadcast;
   shell replies are routed back to the client whose `session` sent the
   request. `execute_input` on iopub is how other clients see executions.
@@ -97,7 +100,8 @@ nbclient, papermill, Quarto), the REST surface must match `jupyter_server`:
 - `/api/kernelspecs`, `/api/kernels` (list, start, get, delete, interrupt,
   restart), `/api/sessions` (notebook path to kernel mapping),
   `/api/contents` (get, put, patch, delete, checkpoints), `/api/status`,
-  `/api/terminals` (optional; Ganymede has none).
+  `/api/terminals` (optional; Ganymede serves them, see
+  [Open a terminal](api.md#open-a-terminal)).
 - `/api/kernels/{id}/channels` websocket. Two subprotocols: the default
   (JSON with a `channel` key, binary buffers in a separate frame layout)
   and `v1.kernel.websocket.jupyter.org` (single binary frame with offset
@@ -112,8 +116,13 @@ nbclient, papermill, Quarto), the REST surface must match `jupyter_server`:
   one.
 
 Stack: tokio, axum, tokio-tungstenite, serde, hmac/sha2, uuid, chrono.
-There are no terminals, and no file watching yet (the document model on
-the [roadmap](roadmap.md)).
+
+Beyond these, Ganymede serves `jupyter-lsp`'s `/lsp/status` and
+`/lsp/ws/<name>` ([Language servers](frontends.md#language-servers)),
+`jupyter-collaboration`'s rooms and `jupyter-server-documents`' execute
+endpoint (below), `jupyter-resource-usage`'s `/api/metrics/v1`, a
+kernel's log at `/api/kernels/{id}/log`, and, with `--mcp`, notebook
+tools for agents at `/mcp` ([Agents over MCP](mcp.md)).
 
 ## Notebook format
 
@@ -252,10 +261,10 @@ Ganymede stands on each.
 | Several clients, reconnects | Laptops sleep and iPads suspend | Kernels outlive connections; a client that reconnects with its session gets what it missed |
 | Security | The server runs code; localhost alone doesn't stop DNS rebinding or a malicious notebook | Token, login cookie, XSRF, `Host` and origin checks, notebook trust; see [Security](security.md) |
 | Windows | Interrupts, process groups and paths differ | Built, untested; job object for kill, no signal interrupts ([Known gaps](known-gaps.md#platforms)) |
-| Debugger (DAP over `debug_request`) | ipykernel advertises it | Passed through on control; not covered by tests yet |
+| Debugger (DAP over `debug_request`) | ipykernel advertises it | Passed through on control; a conformance test stops at a breakpoint, and JupyterLab's debugger panel is untested |
 | Subshells (5.5) | New kernels will use them | `subshell_id` and subshell messages passed through |
 | Headless execution | Useful alone, and the best conformance test | `ganymede run` and `ganymede execute`, compared against `jupyter execute` in CI |
 | Ecosystem contracts | Runtime dir, `jupyter --paths`, `base_url`, JupyterHub | Jupyter's directories and `base_url` match; no JupyterHub single-user mode |
 | Extensions | JupyterLab's adoption rests on them | Prebuilt frontend extensions; no server extensions, by design |
 | nbformat fidelity | Every save otherwise churns git | Byte-identical to Python's writer |
-| Language servers, terminals, export | Each depends on something outside the core | None of them |
+| Language servers, terminals, export | Each depends on something outside the core | Language servers from the config file and terminals over a pseudo-terminal; no export |

@@ -84,7 +84,7 @@ built on.
 | Contents manager | `ganymede-contents` | Atomic writes, modification-time conflict checks, checkpoints. |
 | Kernel and session managers | `ganymede-api` | Independent of HTTP, so an in-app bridge can call it too. |
 | tornado handlers, auth | `ganymede-server` | axum routes, token auth, origin checks, both websocket framings, JupyterLab's page and `/lab/api/*`. |
-| `jupyter` CLI | `ganymede` | `kernelspec`, `run`, `console`, `execute`, `kernel`, `serve`. |
+| `jupyter` CLI | `ganymede` | `kernelspec`, `run`, `console`, `execute`, `kernel`, `trust`, `serve`, `lab`; see [CLI and configuration](reference.md). |
 | traitlets config | TOML config file | One file plus command-line flags. |
 | Server extensions | none | Not compatible by design: they are Python. |
 
@@ -133,9 +133,9 @@ embedding them can fill differently.
 | `Provisioner` | How a kernel comes to exist | A subprocess from a kernelspec; attaching to a running kernel's connection file; a remote kernel through a gateway | A kernel inside the app's own process |
 | `TransportFactory` | How a launched kernel gets its transport | ZeroMQ from its connection info; the gateway's websocket | An app's own, for an in-process kernel (the seam allows it: `LaunchedKernel.connection` is `None`) |
 | `KernelspecSource` | Which kernels can be launched | The Jupyter data dirs plus `--kernelspec-root`, which is how conda and venv kernels are found without the host knowing what a venv is; a fixed list (`StaticKernelspecs`); a gateway's list | An environment scanner, as VS Code has |
-| `Contents` | Files, directories, checkpoints | The local filesystem, with atomic writes and mtime and hash checks; on the iPad, any folder the app can open | Reloading files changed on disk; passing through to a remote host |
+| `Contents` | Files, directories, checkpoints | The local filesystem, with atomic writes and mtime and hash checks; on the iPad, any folder the app can open | Passing through to a remote host |
 | Auth | Who may call the API | A token, traded for a login cookie | `tailscale serve` identity headers; OIDC or a JupyterHub contract |
-| Document | The live notebook model | The file, read and written per request | Reload on external change; a `yrs` CRDT for live multi-client sessions |
+| Document | The live notebook model | The file, read and written per request; or a document room, a `yrs` document that reloads and merges changes made on disk ([Document model and collaboration](protocol.md#document-model-and-collaboration)) | Rooms for files other than notebooks |
 
 The server uses kernelspec dirs, subprocesses and ZMQ unless an app
 embedding it passes its own `KernelspecSource`, `Provisioner` and
@@ -227,7 +227,7 @@ The same crates, in four setups:
   kernelspecs, or a kernel server set in the app.
 - **iPad app.** The same app built for iOS, which doesn't let an app
   launch processes. Ganymede serves notebooks from a folder the app can
-  open; cdp-kernel runs in a Worker in the web view, or kernels come from
+  open; cdp-kernel runs in a Worker in a hidden web view, or kernels come from
   a kernel server through the gateway.
 - **Any browser, no server.** ganymede-ui alone, with notebooks in
   IndexedDB and kernels in Workers. Ganymede isn't involved.

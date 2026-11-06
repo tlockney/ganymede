@@ -10,25 +10,19 @@ cargo run -p ganymede-server -- --root-dir ~/notebooks --port 8888
 # prints http://127.0.0.1:8888/?token=...
 ```
 
-Flags: `--config file.toml`, `--ip`, `--port`, `--token` (empty disables
-auth), `--root-dir`, `--static-dir` (frontend assets served at `/`, or
-JupyterLab at `/lab` when it is JupyterLab's `share/jupyter/lab/static`;
-default the newest from `ganymede lab install`), `--lab-version`,
-`--labextensions-path` (repeatable), `--config-dir` (frontend state;
-default `JUPYTER_CONFIG_DIR` or `~/.jupyter`), `--notary-dir`
-(`notebook_secret` and `nbsignatures.db`; default the Jupyter data dir,
-shared with Jupyter), `--kernelspec-root`
-(repeatable; a data dir containing `kernels/`), `--default-kernel`,
-`--cull-idle-secs`, `--checkpoint-dir` (for synced roots), `--base-url`
-(for a reverse proxy), `--allow-origin` (repeatable),
-`--allow-remote-access`, and `--cookie-secret-file`. `config.rs` lists the TOML keys; an unknown key is
-an error.
+Flags and config keys are listed in
+[CLI and configuration](../../docs/reference.md); `config.rs` has the
+TOML keys, and an unknown key is an error.
 
 Routes: `/api` (public), `/api/status`, `/api/me`, `/api/config/{section}`,
 `/api/nbconvert`, `/api/events/subscribe`, `/login`, `/logout`, `/api/kernelspecs[/{name}]`,
 `/kernelspecs/{name}/{file}`, `/api/kernels` with `interrupt`, `restart`,
 and the `channels` websocket, `/api/sessions`, `/api/contents/{path}` with
-checkpoints and `trust`. In JupyterLab mode (`lab.rs`): the page, `/static/lab`,
+checkpoints and `trust`, `/files/{path}`, `/api/terminals` and
+`/terminals/websocket/{name}`, `/lsp/status` and `/lsp/ws/{name}`,
+`/api/collaboration` rooms with `/api/fileid/*` and
+`/api/kernels/{id}/execute`, `/api/kernels/{id}/log`,
+`/api/metrics/v1`, and `/mcp` with `--mcp`. In JupyterLab mode (`lab.rs`): the page, `/static/lab`,
 `/lab/extensions/{name}`, and `/lab/api/` `settings`, `workspaces`,
 `translations`, `themes`, `listings`, `plugins`, `licenses`. The websocket speaks
 `v1.kernel.websocket.jupyter.org` when offered and legacy JSON otherwise.

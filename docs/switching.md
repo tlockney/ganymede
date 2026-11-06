@@ -66,10 +66,12 @@ missing, so you can judge the switch before making it.
 ## What is missing
 
 Server extensions (the Python half of some JupyterLab extensions),
-terminals, the language server endpoints, nbconvert export, JupyterHub's
-single-user mode, real-time collaboration, and reloading a notebook
-changed on disk. [Known gaps](known-gaps.md) has the full list and the
-details. If you depend on one of these, stay on `jupyter_server` for now,
+nbconvert export, and JupyterHub's single-user mode. Terminals and
+language servers ([JupyterLab and VS Code](frontends.md#terminals)) and
+real-time collaboration
+([Document model and collaboration](protocol.md#document-model-and-collaboration))
+do work, with no Python behind them. [Known gaps](known-gaps.md) has the
+full list and the details. If you depend on one of these, stay on `jupyter_server` for now,
 or run it for that one job: both servers share kernels, notebooks and
 signatures, so they can run side by side.
 
