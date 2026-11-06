@@ -560,3 +560,93 @@ fn append_outputs_merges_streams_and_stays_small() {
     assert_eq!(v[2]["output_type"], "execute_result");
     assert_eq!(v[3]["text"], "after\n");
 }
+
+/// Another process owns the file (#272): a client's edit is undone for
+/// everyone, the room stays clean, and the file's own changes still load.
+#[test]
+fn a_read_only_room_refuses_edits_and_takes_the_files() {
+    let nb = Notebook::from_str(&fixture("code_outputs.ipynb")).unwrap();
+    let text = nb.to_file_string();
+    let mut room = Room::notebook_room(&nb, "x.ipynb");
+    room.set_read_only(true);
+    let a = Doc::new();
+    let b = Doc::new();
+    sync(&mut room, 1, &a);
+    sync(&mut room, 2, &b);
+    let read = |d: &Doc| {
+        let roots = Roots::get(d);
+        let txn = d.transact();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+            panic!()
+        };
+        let Some(Out::YText(src)) = cell.get(&txn, "source") else {
+            panic!()
+        };
+        src.get_string(&txn)
+    };
+    let original = read(&a);
+
+    let before = a.transact().state_vector();
+    {
+        let roots = Roots::get(&a);
+        let mut txn = a.transact_mut();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+            panic!()
+        };
+        let Some(Out::YText(src)) = cell.get(&txn, "source") else {
+            panic!()
+        };
+        src.insert(&mut txn, 0, "# hi\n");
+    }
+    let update = a.transact().encode_state_as_update_v1(&before);
+    let fx = room
+        .receive(1, &Message::Sync(SyncMessage::Update(update)).encode_v1())
+        .unwrap();
+    assert!(!fx.changed);
+    assert!(!room.is_dirty());
+    assert!(!fx.send.is_empty());
+    for (to, frame) in fx.send {
+        assert_eq!(to, Target::All);
+        apply_frame(&a, &frame);
+        apply_frame(&b, &frame);
+    }
+    assert_eq!(read(&a), original, "the sender's edit is undone");
+    assert_eq!(read(&b), original);
+    assert_eq!(room.notebook().unwrap().unwrap().to_file_string(), text);
+
+    // Server-side edits don't make it dirty either.
+    let (_, fx) = room.edit(|txn, roots| {
+        roots.meta.insert(txn, "x", 1);
+    });
+    assert!(!fx.changed);
+    assert!(!room.is_dirty());
+
+    // The owner's save reaches it as a clean reload, with no conflict.
+    let changed = Notebook::from_str(&text.replace("import sys", "import os")).unwrap();
+    let (fx, conflicts) = room.merge_disk(&nb, &changed, "h2");
+    assert!(conflicts.is_empty());
+    for (_, frame) in fx.send {
+        apply_frame(&a, &frame);
+    }
+    assert!(read(&a).contains("import os"));
+
+    // Writable again once the room owns the file.
+    room.set_read_only(false);
+    let before = a.transact().state_vector();
+    {
+        let roots = Roots::get(&a);
+        let mut txn = a.transact_mut();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+            panic!()
+        };
+        let Some(Out::YText(src)) = cell.get(&txn, "source") else {
+            panic!()
+        };
+        src.insert(&mut txn, 0, "# hi\n");
+    }
+    let update = a.transact().encode_state_as_update_v1(&before);
+    let fx = room
+        .receive(1, &Message::Sync(SyncMessage::Update(update)).encode_v1())
+        .unwrap();
+    assert!(fx.changed);
+}

@@ -5153,3 +5153,223 @@ async fn kernel_log_says_when_there_is_no_process() {
     let (s, _) = call(&app, "GET", &format!("/api/kernels/{id}/log"), None, None).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
+
+/// Two servers on one root (#272): the first room on a notebook owns it;
+/// the other server's room is read-only, says so through `writable`,
+/// undoes its clients' edits and shows the owner's saves. Once the owner's
+/// room closes, the other takes over and saves.
+#[tokio::test]
+async fn a_second_servers_room_is_read_only_until_the_owner_leaves() {
+    use ganymede_documents::schema::Roots;
+    use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
+    use ganymede_documents::yrs::updates::decoder::Decode;
+    use ganymede_documents::yrs::updates::encoder::Encode;
+    use ganymede_documents::yrs::{Array, Doc, Map, Out, ReadTxn, Text, Transact, Update};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+
+    let dir = tempfile::tempdir().unwrap();
+    let locks = tempfile::tempdir().unwrap();
+    let file = dir.path().join("shared.ipynb");
+    let original = "{\n \"cells\": [\n  {\n   \"cell_type\": \"markdown\",\n   \"id\": \"a\",\n   \"metadata\": {},\n   \"source\": [\n    \"hello\"\n   ]\n  }\n ],\n \"metadata\": {},\n \"nbformat\": 4,\n \"nbformat_minor\": 5\n}\n";
+    std::fs::write(&file, original).unwrap();
+    let server = |cleanup: Duration| {
+        let mut s = state(dir.path());
+        s.collab = Arc::new(
+            ganymede_server::collab::Collab::new(
+                ganymede_contents::FileIds::in_memory(),
+                dir.path().canonicalize().ok(),
+            )
+            .with_cleanup_delay(cleanup)
+            .with_room_locks(locks.path().join("rooms")),
+        );
+        s.mcp = Some(Arc::new(ganymede_server::mcp::McpState::new(
+            ganymede_server::mcp::McpOptions {
+                read_only: false,
+                no_execute: false,
+                images: false,
+                outputs_dir: None,
+            },
+        )));
+        build_router(s)
+    };
+    let one = server(Duration::from_millis(200));
+    let two = server(Duration::from_secs(60));
+
+    type Ws = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+    async fn open(app: &axum::Router) -> Ws {
+        let body = json!({"format": "json", "type": "notebook"});
+        let (_, v) = call(
+            app,
+            "PUT",
+            "/api/collaboration/session/shared.ipynb",
+            Some(body),
+            Some(TOKEN),
+        )
+        .await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = app.clone();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut req = format!(
+            "ws://{addr}/api/collaboration/room/json:notebook:{}?sessionId={}",
+            v["fileId"].as_str().unwrap(),
+            v["sessionId"].as_str().unwrap()
+        )
+        .into_client_request()
+        .unwrap();
+        req.headers_mut()
+            .insert("Authorization", format!("token {TOKEN}").parse().unwrap());
+        tokio_tungstenite::connect_async(req).await.unwrap().0
+    }
+    // Apply frames until `until` holds, answering the server's step 1.
+    async fn pump(ws: &mut Ws, doc: &Doc, until: impl Fn(&Doc) -> bool) {
+        let sv = doc.transact().state_vector();
+        ws.send(TMsg::Binary(
+            YMsg::Sync(SyncMessage::SyncStep1(sv)).encode_v1().into(),
+        ))
+        .await
+        .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while !until(doc) {
+            let msg = tokio::time::timeout_at(deadline, ws.next())
+                .await
+                .expect("timed out waiting for the room")
+                .unwrap()
+                .unwrap();
+            let TMsg::Binary(b) = msg else { continue };
+            match YMsg::decode_v1(&b) {
+                Ok(YMsg::Sync(SyncMessage::SyncStep1(sv))) => {
+                    let u = doc.transact().encode_state_as_update_v1(&sv);
+                    ws.send(TMsg::Binary(
+                        YMsg::Sync(SyncMessage::SyncStep2(u)).encode_v1().into(),
+                    ))
+                    .await
+                    .unwrap();
+                }
+                Ok(YMsg::Sync(SyncMessage::SyncStep2(u) | SyncMessage::Update(u))) => {
+                    doc.transact_mut()
+                        .apply_update(Update::decode_v1(&u).unwrap())
+                        .unwrap();
+                }
+                _ => {}
+            }
+        }
+    }
+    fn source(doc: &Doc) -> Option<String> {
+        let roots = Roots::get(doc);
+        let txn = doc.transact();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+            return None;
+        };
+        let Some(Out::YText(t)) = cell.get(&txn, "source") else {
+            return None;
+        };
+        Some(ganymede_documents::yrs::GetString::get_string(&t, &txn))
+    }
+    async fn type_at_end(ws: &mut Ws, doc: &Doc, text: &str) {
+        let before = doc.transact().state_vector();
+        {
+            let roots = Roots::get(doc);
+            let mut txn = doc.transact_mut();
+            let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+                panic!()
+            };
+            let Some(Out::YText(t)) = cell.get(&txn, "source") else {
+                panic!()
+            };
+            let end = t.len(&txn);
+            t.insert(&mut txn, end, text);
+        }
+        let u = doc.transact().encode_state_as_update_v1(&before);
+        ws.send(TMsg::Binary(
+            YMsg::Sync(SyncMessage::Update(u)).encode_v1().into(),
+        ))
+        .await
+        .unwrap();
+    }
+    async fn writable(app: &axum::Router) -> bool {
+        let (_, m) = call(
+            app,
+            "GET",
+            "/api/contents/shared.ipynb?content=0",
+            None,
+            Some(TOKEN),
+        )
+        .await;
+        m["writable"].as_bool().unwrap()
+    }
+
+    let (mut ws1, doc1) = (open(&one).await, Doc::new());
+    pump(&mut ws1, &doc1, |d| source(d).is_some()).await;
+    let (mut ws2, doc2) = (open(&two).await, Doc::new());
+    pump(&mut ws2, &doc2, |d| source(d).is_some()).await;
+    assert!(writable(&one).await, "the owner can write");
+    assert!(!writable(&two).await, "the other server says it can't");
+
+    // The read-only room undoes its client's edit and saves nothing.
+    type_at_end(&mut ws2, &doc2, " from two").await;
+    pump(&mut ws2, &doc2, |d| source(d).as_deref() == Some("hello")).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
+    // So does the server's own MCP tool, with an error rather than a
+    // success that is quietly lost.
+    let sid = mcp_connect(&two, "agent").await;
+    let v = mcp_tool(
+        &two,
+        &sid,
+        "cell_edit",
+        json!({"path": "shared.ipynb", "id": "a", "source": "from an agent"}),
+    )
+    .await;
+    assert!(
+        v.get("error").is_some() || v["result"]["isError"] == true,
+        "{v}"
+    );
+    assert!(v.to_string().contains("read-only"), "{v}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
+
+    // The owner's edit is saved once and reaches the other server's client.
+    type_at_end(&mut ws1, &doc1, " from one").await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !std::fs::read_to_string(&file)
+        .unwrap()
+        .contains("hello from one")
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the owner's edit was not saved"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    pump(&mut ws2, &doc2, |d| {
+        source(d).as_deref() == Some("hello from one")
+    })
+    .await;
+
+    // The owner's room closes; the other takes the file over.
+    ws1.close(None).await.unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !writable(&two).await {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the owner's lock was never released"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // The read-only room tries the lock again every second.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    type_at_end(&mut ws2, &doc2, " and two").await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !std::fs::read_to_string(&file)
+        .unwrap()
+        .contains("hello from one and two")
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the new owner's edit was not saved"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}

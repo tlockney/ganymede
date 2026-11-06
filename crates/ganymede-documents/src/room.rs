@@ -101,6 +101,8 @@ pub struct Room {
     /// Set when a transaction touches `cells` or `meta` (not `state`,
     /// which clients write too: `document_id` on connect).
     content_changed: Arc<AtomicBool>,
+    /// Another process owns the file (#272): see [`Room::set_read_only`].
+    read_only: bool,
 }
 
 impl Room {
@@ -160,6 +162,7 @@ impl Room {
             saved_generation: 0,
             baseline: None,
             content_changed,
+            read_only: false,
         }
     }
 
@@ -179,6 +182,20 @@ impl Room {
     /// document dirty.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Make the room read-only, or writable again: another process owns
+    /// the file. A read-only room takes the file's changes but refuses
+    /// clients' edits, sending everyone the document as it was, and its
+    /// own edits ([`Room::edit`]) don't make it dirty, so the host never
+    /// saves it.
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
+
+    /// See [`Room::set_read_only`].
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
     }
 
     /// Content changed since the last save or load.
@@ -273,6 +290,20 @@ impl Room {
                     fx.send
                         .push((Target::One(conn), raw_message(&json!({"type": "conflict"}))));
                 }
+                if self.read_only && self.content_changed.swap(false, Ordering::Relaxed) {
+                    // Put the content back as it was loaded, and send that
+                    // to everyone: the edit and its undoing to the others,
+                    // the undoing to its sender.
+                    tracing::debug!("read-only room: edit from client {conn} refused");
+                    self.restore_baseline();
+                    for u in self.drain() {
+                        fx.send.push((
+                            Target::All,
+                            Message::Sync(SyncMessage::Update(u)).encode_v1(),
+                        ));
+                    }
+                    return Ok(fx);
+                }
                 let updates = self.drain();
                 if self.content_changed.swap(false, Ordering::Relaxed) {
                     self.generation += 1;
@@ -309,6 +340,18 @@ impl Room {
             Message::Auth(_) | Message::Custom(..) => {}
         }
         Ok(fx)
+    }
+
+    /// Set the content back to [`Room::baseline`], the file as last read.
+    fn restore_baseline(&mut self) {
+        let (Some(roots), Some(baseline)) = (self.roots.clone(), self.baseline.clone()) else {
+            return;
+        };
+        if let Ok(notebook) = Notebook::from_value(baseline) {
+            let mut txn = self.awareness.doc().transact_mut();
+            schema::set(&mut txn, &roots, &notebook);
+        }
+        self.content_changed.store(false, Ordering::Relaxed);
     }
 
     fn drain(&self) -> Vec<Vec<u8>> {
@@ -461,7 +504,7 @@ impl Room {
             f(&mut txn, &roots)
         };
         let mut fx = self.broadcast_own();
-        if self.content_changed.swap(false, Ordering::Relaxed) {
+        if self.content_changed.swap(false, Ordering::Relaxed) && !self.read_only {
             self.generation += 1;
             fx.changed = true;
         }
