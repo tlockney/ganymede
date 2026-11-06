@@ -45,11 +45,17 @@ export function groups(): Group[] {
         { text: "JupyterLab and VS Code", link: "/frontends" },
         { text: "Live editing and document rooms", link: "/rooms" },
         { text: "Ganymede's app", link: "/app" },
-        { text: "Agents", link: "/agents" },
         { text: "Switching from jupyter_server", link: "/switching" },
         { text: "Security", link: "/security" },
         { text: "Privacy and crash reporting", link: "/privacy" },
+      ],
+    },
+    {
+      text: "Agents",
+      level: "guide",
+      items: [
         { text: "Agents over MCP", link: "/mcp" },
+        { text: "Agents with nb-cli", link: "/agents" },
       ],
     },
     {
