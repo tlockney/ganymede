@@ -175,8 +175,11 @@ adds, next to it in the docs page, README, or landing page:
 ```
 
 Keep the words `**Unreleased.**` as they are: the release looks for them
-and removes the notes ([Releasing](releasing.md)). A change to a feature
-that is already released needs no note.
+and removes the notes ([Releasing](releasing.md)). Don't say it any other
+way, such as a word in parentheses after the feature: the release
+wouldn't find it. `npm run check-unreleased` in `docs/`, which the `pages`
+workflow runs, fails on one. A change to a feature that is already
+released needs no note.
 `site/install.sh` goes live on merge too, and must work with the latest
 release. Diagrams are SVG files in `docs/images/`, with their dark colours in a
 `@media (prefers-color-scheme: dark)` block, so they follow the OS on

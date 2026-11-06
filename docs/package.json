@@ -6,6 +6,7 @@
   "description": "The Ganymede docs site, built with VitePress.",
   "scripts": {
     "fetch-ui": "sh scripts/fetch-ganymede-ui.sh",
+    "check-unreleased": "node scripts/check-unreleased.mjs",
     "dev": "vitepress dev",
     "build": "vitepress build",
     "preview": "vitepress preview"
