@@ -235,7 +235,7 @@ The same crates, in four setups:
 Python appears in none of them except as a kernelspec someone installed.
 [Ganymede's app](app.md) covers the last three from a user's side. A
 native kernel inside the iPad app's process, so it can run more than the
-web view allows, is next on the [roadmap](roadmap.md).
+web view allows, is an open item on the [roadmap](roadmap.md#open).
 
 ## Fitting the Jupyter ecosystem
 
