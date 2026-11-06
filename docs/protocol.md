@@ -1,10 +1,10 @@
 # Protocol and kernel host
 
 What a Jupyter server has to get right, component by component: the
-requirements Ganymede was built against. Most are met; where Ganymede
-does something different or doesn't do it yet, the item says so ("Not
-yet", "Ganymede"). The [roadmap](roadmap.md) tracks what is planned. For
-how the crates are arranged, see [Architecture](architecture.md).
+requirements Ganymede was built against, and how it meets each. This is a
+design note; [Known gaps](known-gaps.md) has what doesn't work today and
+the [Roadmap](roadmap.md) what is planned. For how the crates are
+arranged, see [Architecture](architecture.md).
 
 ## Protocol crate
 
@@ -120,7 +120,7 @@ Stack: tokio, axum, tokio-tungstenite, serde, hmac/sha2, uuid, chrono.
 Beyond these, Ganymede serves `jupyter-lsp`'s `/lsp/status` and
 `/lsp/ws/<name>` ([Language servers](frontends.md#language-servers)),
 `jupyter-collaboration`'s rooms and `jupyter-server-documents`' execute
-endpoint (below), `jupyter-resource-usage`'s `/api/metrics/v1`, a
+endpoint ([Live editing and document rooms](rooms.md)), `jupyter-resource-usage`'s `/api/metrics/v1`, a
 kernel's log at `/api/kernels/{id}/log`, and, with `--mcp`, notebook
 tools for agents at `/mcp` ([Agents over MCP](mcp.md)).
 
@@ -153,99 +153,12 @@ CRDT, the file on disk, and the kernel connection.
 Retrofitting collaboration onto a non-CRDT model is a rewrite, so the
 server owns the live notebook as a `yrs` document, in the schema
 `jupyter_ydoc` and JupyterLab's `@jupyter/ydoc` share. The file stays the
-source of truth: a room loads it, autosaves it a second after the last
-edit (with an `If-Match` on the hash it last read), and reloads it when it
-changes on disk. See [the iPad use case](ipados.md) for why the file comes
-first.
-
-`ganymede serve` answers `jupyter-collaboration`'s
-`PUT /api/collaboration/session/{path}` and its room websocket
-(`/api/collaboration/room/json:notebook:{fileId}`: y-websocket sync,
-awareness, and the `save` message). With the collaboration extensions
-installed, JupyterLab opens notebooks through rooms, and two tabs or two
-people edit one notebook live:
-
-```sh
-ganymede lab extension install jupyter-docprovider jupyter-collaboration-ui
-```
-
-A room watches its file's directory (inotify, FSEvents, or Windows'
-change notifications; elsewhere it polls every second) and takes in
-changes other programs make. A change that arrives while the room has
-unsaved edits is merged, cell by cell: the room keeps its edits, takes
-the other program's changes to other cells, cells it added or deleted,
-and saves the result. Within a cell both changed, the source, the
-outputs with the execution count, and each metadata key merge
-separately, so a source edit in the room survives an agent running that
-cell on disk. Where both changed the same part, or one deleted a cell
-the other changed, the file on disk wins that part, and the server logs
-the cell. Notebook metadata merges key by key the same way. Notebooks
-older than nbformat 4.5 have no cell ids, so for them the file wins
-outright, as in `jupyter-collaboration`.
-
-A room looks at its file once events have settled for half a second, and
-at most five seconds after the first unsettled event, so a file that a
-program rewrites constantly still reaches the room. After taking in a
-change from the file, the room saves its own edits at once. A client's
-`save` whose merge lets the file win a cell the room had changed (by any
-client, or by execution outputs) saves the merge and answers `failed`,
-since that change isn't in the file. A delete through the contents API
-closes the clients of rooms on the deleted file with code 4404, the code
-a reconnect gets for the dropped file id; the room doesn't write the
-file back. When the file id database can't be read or written, ids
-handed out meanwhile are kept in memory, so they still resolve until
-the server stops.
-
-File ids are kept in `ganymede_file_ids.db` in the Jupyter data dir, so
-a client keeps its room across a server restart, and a rename or delete
-through the contents API moves or drops them; a room open on a renamed
-file follows it. A file moved by another program gets a new id.
-
-The server runs cells into a room too, with
-`jupyter-server-documents`' `POST /api/kernels/{kernel_id}/execute`:
-
-```json
-{"document_id": "json:notebook:<file id>",
- "cells": [{"cell_id": "...", "source_hash": "<MurmurHash2 of the source, seed 0>"}],
- "request_id": "...", "previous_request_id": "..."}
-```
-
-It checks each cell's source against the hash, clears the cells and
-queues them as one batch, and answers `200 null`; `409
-{"error": "source_mismatch", "cell_id"}` if a cell changed since the
-client hashed it, and `408` if `previous_request_id` wasn't queued within
-ten seconds. The server then writes outputs and execution counts into the
-room as the kernel sends them, so they reach every client, and the file,
-with no client connected. A cell that fails stops the rest of its batch.
-`POST /api/fileid/index?path=` gives a file's id, as
-`jupyter-server-documents` does; nb-cli takes a server that answers it
-for one that runs cells this way.
-
-Limits for now: notebooks only (a text file opened collaboratively fails
-to load); two processes can each hold a room on one file (the Mac server
-and the iPad app on one iCloud file, say), and they merge through the
-file rather than one owning it; and there is no forking, timeline, or
-chat.
-
-### Two servers on one notebook
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. In the latest release, both servers' rooms save
-> the file and merge each other's saves.
-
-On one machine, the first server to open a room on a notebook owns it
-while the room is open: it holds a lock in the Jupyter runtime dir's
-`ganymede-rooms/`, named for the file's path (`flock`, or `LockFileEx`
-on Windows). Another server's room on the same file is read-only. Its
-contents API reports the notebook as not `writable`, which JupyterLab
-shows as read-only. The room takes in the owner's saves, never saves,
-and undoes any edit a client sends, for every client. Once the owner's
-room closes or its server exits, the other room takes the lock within a
-second and saves its own edits from then on. Across machines, as with a
-notebook in a synced folder, there is no lock, and rooms merge through
-the file as described above. An app that embeds the server takes no
-lock.
+source of truth: a room loads it, saves to it, and merges in changes made
+on disk ([the iPad use case](ipados.md) says why). Ganymede answers
+`jupyter-collaboration`'s session and room endpoints and
+`jupyter-server-documents`' execute and file id endpoints.
+[Live editing and document rooms](rooms.md) describes how to use rooms,
+the merge rules, and the endpoints.
 
 ## What is usually missed
 

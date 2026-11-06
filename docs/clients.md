@@ -23,7 +23,7 @@ As of this survey:
 - Not served: classic Notebook / Notebook 7 pages (`/tree`, `/notebooks`),
   nbconvert exporters, server extensions.
 - Collaboration rooms: `/api/collaboration`, notebooks only; see
-  [Document model and collaboration](protocol.md#document-model-and-collaboration).
+  [Live editing and document rooms](rooms.md).
 
 So a client works today if it speaks REST/websocket with a token and needs no
 HTML pages from the server.
@@ -76,7 +76,7 @@ Ganymede answers `jupyter-server-documents`' `POST /api/fileid/index`,
 so nb-cli's remote mode edits notebooks through a document room and runs
 cells with `POST /api/kernels/{id}/execute`, the server writing outputs
 into the room; see
-[Document model and collaboration](protocol.md#document-model-and-collaboration).
+[Live editing and document rooms](rooms.md).
 `validation/nb-cli.sh` passes on this path too, on cdp-kernel in CI (the
 `workstation` job) and on ipykernel by hand, 2026-11-03. Two nb-cli
 0.0.10 quirks show on it: it reads cell indexes and counts from the file

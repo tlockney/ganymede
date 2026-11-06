@@ -1,9 +1,9 @@
 # User interfaces
 
 The UI is outside the Rust core. It is a client of the core's API (REST
-plus websocket, or the same JSON shapes over an in-app bridge), and more
-than one UI can exist. This page lists what any notebook UI needs,
-whatever it is written in.
+plus websocket, also inside the app, which runs the server on loopback),
+and more than one UI can exist. This design note lists what any notebook
+UI needs, whatever it is written in.
 
 Required pieces:
 

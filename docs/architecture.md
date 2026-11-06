@@ -135,7 +135,7 @@ embedding them can fill differently.
 | `KernelspecSource` | Which kernels can be launched | The Jupyter data dirs plus `--kernelspec-root`, which is how conda and venv kernels are found without the host knowing what a venv is; a fixed list (`StaticKernelspecs`); a gateway's list | An environment scanner, as VS Code has |
 | `Contents` | Files, directories, checkpoints | The local filesystem, with atomic writes and mtime and hash checks; on the iPad, any folder the app can open | Passing through to a remote host |
 | Auth | Who may call the API | A token, traded for a login cookie | `tailscale serve` identity headers; OIDC or a JupyterHub contract |
-| Document | The live notebook model | The file, read and written per request; or a document room, a `yrs` document that reloads and merges changes made on disk ([Document model and collaboration](protocol.md#document-model-and-collaboration)) | Rooms for files other than notebooks |
+| Document | The live notebook model | The file, read and written per request; or a document room, a `yrs` document that reloads and merges changes made on disk ([Live editing and document rooms](rooms.md)) | Rooms for files other than notebooks |
 
 The server uses kernelspec dirs, subprocesses and ZMQ unless an app
 embedding it passes its own `KernelspecSource`, `Provisioner` and
@@ -292,6 +292,8 @@ is a bug; please [report it](https://github.com/tlockney/ganymede/issues).
 
 - [Replacing Python](python-free.md): each place the reference stack
   assumes Python, and what Ganymede does instead.
+- [Live editing and document rooms](rooms.md): how rooms keep a live
+  notebook and its file in step.
 - [Protocol and kernel host](protocol.md): what each component has to get
   right, and what is usually missed.
 - [User interfaces](ui.md): what any notebook UI needs, and the UI options.
