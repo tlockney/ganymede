@@ -144,9 +144,10 @@ crash_reporting = false          # true: send crash reports (see Privacy)
 # mime_types = ["text/x-python"]
 ```
 
-These four keys have no flag. The terminal, MCP, `static_headers` and
-`language_servers` keys have none either; the sections below and
-[Agents over MCP](mcp.md#options) cover them.
+These four keys have no flag. The terminal keys, the MCP keys other
+than `mcp_enabled`, `static_headers` and `language_servers` have none
+either; the sections below and [Agents over MCP](mcp.md#options) cover
+them.
 
 | Key | Effect |
 | --- | --- |
