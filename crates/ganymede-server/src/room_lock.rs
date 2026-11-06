@@ -24,6 +24,12 @@ pub(crate) enum Acquire {
     Held(RoomLock),
     /// Another process owns it.
     Elsewhere,
+    /// Another room of this server holds it. A retiring room releases its
+    /// lock before a new room can open, so this means two file ids for one
+    /// file (a symlinked directory, a hard link, a case-insensitive name),
+    /// which this doesn't solve: the room is writable and tries again
+    /// (#400).
+    HeldHere,
     /// No locking here: no lock dir, a file not on disk, or an error
     /// (logged). The room is writable, as before #272.
     Unavailable,
@@ -69,9 +75,8 @@ impl Locks {
             return Acquire::Unavailable;
         };
         if self.held.lock().expect("held locks").contains(&canonical) {
-            // Another room of this server already owns it; rooms are one
-            // per file id, so this is a moment's overlap at most.
-            return Acquire::Unavailable;
+            // Another room of this server owns it, under another file id.
+            return Acquire::HeldHere;
         }
         let lock_file = match open(dir, &canonical) {
             Ok(f) => f,
@@ -162,6 +167,20 @@ mod tests {
         drop(held);
         assert!(!two.owned_elsewhere(&nb));
         assert!(matches!(two.acquire(&nb), Acquire::Held(_)));
+    }
+
+    #[test]
+    fn a_second_room_in_one_server_is_told_to_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let nb = dir.path().join("a.ipynb");
+        std::fs::write(&nb, "{}").unwrap();
+        let locks = Locks::new(Some(dir.path().join("locks")));
+        let Acquire::Held(held) = locks.acquire(&nb) else {
+            panic!("the first room owns it")
+        };
+        assert!(matches!(locks.acquire(&nb), Acquire::HeldHere));
+        drop(held);
+        assert!(matches!(locks.acquire(&nb), Acquire::Held(_)));
     }
 
     #[test]
