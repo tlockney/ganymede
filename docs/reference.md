@@ -230,7 +230,7 @@ given them.
 ```json
 {
   "base_url": "/",
-  "ganymede_version": "0.6.0",
+  "ganymede_version": "0.7.0",
   "hostname": "127.0.0.1",
   "password": false,
   "pid": 41237,
