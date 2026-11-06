@@ -690,8 +690,11 @@ async fn run_room(
     let mut watch = path.as_deref().and_then(|p| collab.watch(p));
     // Held while the room is open; `None` while read-only or not locking.
     let mut lock = None;
+    // Whether to try for the lock again on the tick: while read-only, or
+    // while another room of this server still holds it.
+    let mut lock_retry = false;
     if let Some(p) = &path {
-        take_lock(&collab, &room_id, p, &mut room, &mut lock);
+        lock_retry = take_lock(&collab, &room_id, p, &mut room, &mut lock);
     }
     let mut last_lock_try = Instant::now();
     tracing::info!(room = %room_id, path = ?path, watched = watch.is_some(), read_only = room.is_read_only(), "room opened");
@@ -756,7 +759,7 @@ async fn run_room(
                         watch = collab.watch(&d.path);
                         // The lock names the old path.
                         drop(lock.take());
-                        take_lock(&collab, &room_id, &d.path, &mut room, &mut lock);
+                        lock_retry = take_lock(&collab, &room_id, &d.path, &mut room, &mut lock);
                     }
                     Cmd::Removed(gone) => {
                         let Some(d) = disk.as_ref() else { continue };
@@ -819,9 +822,9 @@ async fn run_room(
                     if clients.is_empty() && next.is_none() && retire(&collab, &room_id, &mut rx) { break }
                     continue;
                 };
-                if room.is_read_only() && last_lock_try.elapsed() >= POLL_INTERVAL {
+                if lock_retry && last_lock_try.elapsed() >= POLL_INTERVAL {
                     last_lock_try = Instant::now();
-                    take_lock(&collab, &room_id, &d.path, &mut room, &mut lock);
+                    lock_retry = take_lock(&collab, &room_id, &d.path, &mut room, &mut lock);
                 }
                 let poll_every = if watch.is_some() { WATCHED_POLL_INTERVAL } else { POLL_INTERVAL };
                 let settled = disk_event.is_some_and(|t| t.elapsed() >= DEBOUNCE);
@@ -898,24 +901,35 @@ async fn run_room(
 }
 
 /// Own the room's file, or make the room read-only while another server's
-/// room does (#272).
+/// room does (#272). Returns whether to try again on the tick.
 fn take_lock(
     collab: &Collab,
     room_id: &str,
     path: &str,
     room: &mut Room,
     lock: &mut Option<crate::room_lock::RoomLock>,
-) {
+) -> bool {
     use crate::room_lock::Acquire;
     let was = room.is_read_only();
-    match collab.acquire(path) {
+    let retry = match collab.acquire(path) {
         Acquire::Held(held) => {
             *lock = Some(held);
             room.set_read_only(false);
+            false
         }
-        Acquire::Elsewhere => room.set_read_only(true),
-        Acquire::Unavailable => room.set_read_only(false),
-    }
+        Acquire::Elsewhere => {
+            room.set_read_only(true);
+            true
+        }
+        Acquire::HeldHere => {
+            room.set_read_only(false);
+            true
+        }
+        Acquire::Unavailable => {
+            room.set_read_only(false);
+            false
+        }
+    };
     match (was, room.is_read_only()) {
         (false, true) => tracing::info!(
             room = %room_id,
@@ -924,6 +938,7 @@ fn take_lock(
         (true, false) => tracing::info!(room = %room_id, "{path} is this room's to save now"),
         _ => {}
     }
+    retry
 }
 
 /// Settle the pending autosave after a save. A failed save leaves the
@@ -1168,5 +1183,36 @@ mod path_tests {
             Some("e/a.ipynb")
         );
         assert!(is_under("d/a.ipynb", "d"));
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    /// A room that opens while a retiring room of this server still holds
+    /// the lock is writable without it, and takes it on a later try
+    /// (#400), so another server can't take the file meanwhile.
+    #[test]
+    fn a_room_opening_as_the_old_one_retires_takes_the_lock_later() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.ipynb"), "{}").unwrap();
+        let collab = Collab::new(FileIds::in_memory(), dir.path().canonicalize().ok())
+            .with_room_locks(dir.path().join("locks"));
+        let crate::room_lock::Acquire::Held(old) = collab.acquire("a.ipynb") else {
+            panic!("the old room owns it")
+        };
+        let mut room = Room::transient();
+        let mut lock = None;
+        assert!(take_lock(&collab, "r", "a.ipynb", &mut room, &mut lock));
+        assert!(!room.is_read_only() && lock.is_none());
+
+        drop(old);
+        assert!(!take_lock(&collab, "r", "a.ipynb", &mut room, &mut lock));
+        assert!(!room.is_read_only() && lock.is_some());
+        // Now another server finds the file owned.
+        let other = Collab::new(FileIds::in_memory(), dir.path().canonicalize().ok())
+            .with_room_locks(dir.path().join("locks"));
+        assert!(other.owned_elsewhere("a.ipynb"));
     }
 }
