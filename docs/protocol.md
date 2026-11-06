@@ -187,10 +187,6 @@ file back. When the file id database can't be read or written, ids
 handed out meanwhile are kept in memory, so they still resolve until
 the server stops.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 File ids are kept in `ganymede_file_ids.db` in the Jupyter data dir, so
 a client keeps its room across a server restart, and a rename or delete
 through the contents API moves or drops them; a room open on a renamed

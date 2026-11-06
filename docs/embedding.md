@@ -49,10 +49,6 @@ output) go to the app's stderr. `prefix_output(true)` starts each of
 those lines with `[kernel <first 8 of its id>] `, so several kernels'
 output can be told apart.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 `ExecuteResult` has `status`, `execution_count`, `outputs` as a notebook
 stores them, the `execute_reply` content, and every iopub message.
 `text()` is what a terminal would print; `error()` is `(ename, evalue)`.
@@ -244,11 +240,6 @@ a build without `zmq` or `subprocess`, such as the iOS slices, has only
 the latter (see above).
 Strings passed in are UTF-8 and stay the caller's. The embedded server
 installs no signal handlers and prints nothing to stdout.
-
-> [!NOTE]
-> **Unreleased.** `ganymede_set_panic_callback` and `ganymede_debug_panic`
-> are available only from a build of `main` (HEAD), not in the latest
-> release.
 
 A call sequence, run on Linux against a release build of the library:
 

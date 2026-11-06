@@ -342,7 +342,7 @@ Options go after `sh -s --`:
 | Option | Effect |
 | --- | --- |
 | `--version X.Y.Z` | Install that release instead of the latest. |
-| `--main` | Install the latest build of `main` instead of a release (unreleased; see [Latest main build](#latest-main-build)). |
+| `--main` | Install the latest build of `main` instead of a release (see [Latest main build](#latest-main-build)). |
 | `--bin-dir DIR` | Install into `DIR` instead of `~/.local/bin`. |
 | `--no-kernel` | Skip cdp-kernel. |
 | `--runtime NAME` | cdp-kernel's target runtime: `node` (default), `deno`, `bun`, `workerd`, or `celld`. |
@@ -357,10 +357,6 @@ If the cdp-kernel step fails, the script says so and still exits 0, since
 `wget`, `tar`, and `sha256sum` or `shasum`.
 
 ### Latest main build
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 To try a change that isn't released yet without building from source,
 install the latest build of `main` with `--main`:

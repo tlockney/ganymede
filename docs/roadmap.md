@@ -30,8 +30,8 @@ pull request with a GitHub issue, and records what it learned in the
   reconnects with the same `session_id` gets the output it missed, as
   `jupyter_server` buffers it. Idle culling is configurable. A kernel that
   crashes is restarted under the same id, as `jupyter_server`'s restarter
-  does, and reported `dead` and removed after five crashes in a row
-  (unreleased); an attached one is watched by heartbeat. A start or restart whose kernel dies or doesn't
+  does, and reported `dead` and removed after five crashes in a row; an
+  attached one is watched by heartbeat. A start or restart whose kernel dies or doesn't
   answer is relaunched on fresh ports, up to three tries. Shutdown sends
   `shutdown_request`, then SIGTERM, then SIGKILL, and kernels die with the
   host.

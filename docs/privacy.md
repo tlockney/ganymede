@@ -1,10 +1,8 @@
 # Privacy and crash reporting
 
 > [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. The server and CLI can send crash reports from
-> `main` builds when you turn it on; the apps and cdp-kernel don't yet
-> ([#384](https://github.com/tlockney/ganymede/issues/384)).
+> The apps send crash reports from ganymede-ui 0.4.0 on, and cdp-kernel
+> from 0.8.0 on.
 
 Ganymede is local-first. Your notebooks, files and kernel output stay on
 your machine, and Ganymede sends no telemetry. Crash reporting is the
