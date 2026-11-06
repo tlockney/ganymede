@@ -17,7 +17,7 @@ design is on [The iPad use case](ipados.md).
 ![Three ways to embed Ganymede: a Rust app calling the engine in-process; an app whose web view talks HTTP to the server that ganymede-ffi runs on loopback; and a wasm or iOS build with zmq and subprocess off, where the kernel sits behind an in-process transport.](images/architecture/embedding.svg)
 
 The crates are not on crates.io, so depend on them from git:
-`ganymede-engine = { git = "https://github.com/tlockney/ganymede", tag = "v0.5.0" }`.
+`ganymede-engine = { git = "https://github.com/tlockney/ganymede", tag = "v0.6.0" }`.
 
 ## The engine in a Rust app
 
@@ -48,10 +48,6 @@ Unless `quiet`, a kernel process's own stdout and stderr (not its cell
 output) go to the app's stderr. `prefix_output(true)` starts each of
 those lines with `[kernel <first 8 of its id>] `, so several kernels'
 output can be told apart.
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 `ExecuteResult` has `status`, `execution_count`, `outputs` as a notebook
 stores them, the `execute_reply` content, and every iopub message.
@@ -244,11 +240,6 @@ a build without `zmq` or `subprocess`, such as the iOS slices, has only
 the latter (see above).
 Strings passed in are UTF-8 and stay the caller's. The embedded server
 installs no signal handlers and prints nothing to stdout.
-
-> [!NOTE]
-> **Unreleased.** `ganymede_set_panic_callback` and `ganymede_debug_panic`
-> are available only from a build of `main` (HEAD), not in the latest
-> release.
 
 A call sequence, run on Linux against a release build of the library:
 

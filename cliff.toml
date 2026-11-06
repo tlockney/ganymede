@@ -26,17 +26,21 @@ footer = ""
 conventional_commits = false
 filter_unconventional = false
 # A merge commit "Merge pull request #N from <branch>" carries the PR title
-# as its body; a squash merge's subject is "<title> (#N)". Both become
-# "<title> (#N)" with a link, and every other commit is dropped.
+# as its body; a squash merge's subject is "<title> (#N)", usually followed
+# by a body. Both become one line, "<title> (#N)" with a link. Only commits
+# GitHub committed (merges and squashes) are kept: commits on a PR branch
+# can also end in "(#N)", but their committer is the author.
 commit_preprocessors = [
   { pattern = '(?s)^Merge pull request #(\d+) from \S+\s*\n\s*([^\n]+).*', replace = "${2} (#${1})" },
-  { pattern = '\(#(\d+)\)\s*$', replace = "([#${1}](https://github.com/tlockney/ganymede/pull/${1}))" },
+  { pattern = '(?s)^([^\n]*)\(#(\d+)\)\s*(\n.*)?$', replace = "${1}([#${2}](https://github.com/tlockney/ganymede/pull/${2}))" },
   # The docs site renders CHANGELOG.md through Vue, which reads a bare
   # "<pid>" in a title as an unclosed tag and fails the build.
   { pattern = '<', replace = "&lt;" },
 ]
+# The release PR itself ("Release vX.Y.Z") is not a change.
 commit_parsers = [
-  { message = '\(\[#\d+\]\(https://github.com/tlockney/ganymede/pull/\d+\)\)$', group = "Changes" },
+  { message = '^Release v?\d', skip = true },
+  { field = "committer.name", pattern = '^GitHub$', message = '\(\[#\d+\]\(https://github.com/tlockney/ganymede/pull/\d+\)\)$', group = "Changes" },
   { message = ".*", skip = true },
 ]
 filter_commits = false

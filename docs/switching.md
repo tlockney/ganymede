@@ -55,7 +55,7 @@ missing, so you can judge the switch before making it.
   | `ServerApp.max_body_size` | `max_body_size` |
   | `MappingKernelManager.default_kernel_name` | `default_kernel` |
   | `MappingKernelManager.cull_idle_timeout` | `cull_idle_secs` |
-  | `KernelRestarter.restart_limit` | `kernel_restart_limit` (unreleased) |
+  | `KernelRestarter.restart_limit` | `kernel_restart_limit` |
   | `FileCheckpoints.checkpoint_dir` | `checkpoint_dir` |
   | `NotebookNotary.data_dir` | `notary_dir` |
   | `GatewayClient.url`, `GatewayClient.auth_token` | `gateway_url`, `gateway_token` |

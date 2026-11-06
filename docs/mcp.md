@@ -41,12 +41,6 @@ a URL instead of starting a command.
 
 ## The ganymede-journal plugin for Claude Code
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. The plugin needs `ganymede mcp call` and read
-> marks, which the latest release doesn't have: install
-> [the latest main build](install.md#latest-main-build).
-
 `ganymede-journal` packs the journaling mode into one Claude Code
 plugin: the `ganymede mcp` server, a skill with the conventions, a
 reviewer agent, and hooks that keep the record honest. Install it from
@@ -109,16 +103,12 @@ recorded in cells' provenance.
 hook that adds a cell for the agent (as the plugin's Bash hook does)
 isn't reported to the agent as someone else's edit.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 ## Tools
 
 | Tool | Does |
 | --- | --- |
 | `notebook_open` | Open a notebook, creating it (and its directories) when missing, with an optional title cell; start or join its kernel. Later calls may leave out `path`. |
-| `notebook_read` | The notebook as text: cells with ids, sources and outputs, then a read mark. With `since: <mark>` (unreleased), only what others changed since that read (see [Changes by others](#changes-by-others)). A notebook in nbformat 4.4 or older has no cell ids on disk; the server makes them up when it opens the notebook, and they stay the same while the MCP session lasts. A session ends after an hour without a request, or when the server stops; after that, read the notebook again for new ids. `ganymede mcp` starts a new session by itself. A new session has no notebook open either, so open or read the notebook again, with its `path`, before calls that leave `path` out. |
+| `notebook_read` | The notebook as text: cells with ids, sources and outputs, then a read mark. With `since: <mark>`, only what others changed since that read (see [Changes by others](#changes-by-others)). A notebook in nbformat 4.4 or older has no cell ids on disk; the server makes them up when it opens the notebook, and they stay the same while the MCP session lasts. A session ends after an hour without a request, or when the server stops; after that, read the notebook again for new ids. `ganymede mcp` starts a new session by itself. A new session has no notebook open either, so open or read the notebook again, with its `path`, before calls that leave `path` out. |
 | `cell_run` | Run code and return its outputs. Recorded as a new code cell by default; `record: false` runs it as scratch work that leaves nothing in the notebook but shares the kernel's state. |
 | `cell_add` | Add a Markdown note; `mode: recorded` records a step that ran outside the kernel, such as a shell command. |
 | `cell_edit` | Replace a cell's source, keeping the replaced text in the cell's history; `run: true` runs it after. |
@@ -138,10 +128,6 @@ behind it. A scratch run that times out before the kernel started it
 (queued behind a recorded cell still running, or a cell run from
 JupyterLab) interrupts nothing, so that other run isn't stopped; the
 reply says the code runs when the kernel is free.
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 Cells run through the server, as the
 [execute endpoint](protocol.md#document-model-and-collaboration) runs
@@ -186,10 +172,6 @@ so and returns the whole notebook with a mark to use next. A mark names
 one notebook path, so after a rename the old mark is treated the same
 way.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 ## What the agent sees
 
 Outputs come back as text in nb-cli's `@@cell` / `@@output` format:
@@ -209,10 +191,6 @@ on the server's machine. Images inside the SVG are drawn only from
 `data:` URLs; the server reads no files an SVG names. An SVG over 2 MB,
 or one that can't be drawn, is left out, as before.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 ## Provenance
 
 Cells an agent writes carry
@@ -226,10 +204,6 @@ ipykernel, a scratch result still sets `_`, and `Out[N]`/`_N` for the
 next recorded cell's number N, which keeps the scratch value if that
 cell has no result. A function a scratch run defines shows as
 `Cell In[N]` in tracebacks.
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 When `cell_edit` changes a cell's source, the source it replaced is kept
 in `metadata.ganymede.agent.history`, oldest first, as

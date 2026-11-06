@@ -241,15 +241,7 @@ as jupyter_server's does. An HTML or SVG file opened from `/files` runs
 its scripts in an opaque origin, so it can't read the UI's token or
 storage.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 ## Check memory and CPU
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 Ganymede answers [jupyter-resource-usage](https://github.com/jupyter-server/jupyter-resource-usage)'s
 two endpoints, which `jupyter_server` has only with that extension
@@ -295,10 +287,6 @@ no process for, an attached or in-process one, gets
 answered before but not within ten seconds now gets `"reason": "timeout"`.
 
 ## Read a kernel's log
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 When a kernel dies, the reason is usually in its stderr, which no
 Jupyter API carries. This route is a Ganymede extension (`jupyter_server`
