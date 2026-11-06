@@ -819,7 +819,7 @@ async fn run_room(
             }
             _ = tick.tick() => {
                 let Some(d) = disk.as_mut() else {
-                    if clients.is_empty() && next.is_none() && retire(&collab, &room_id, &mut rx) { break }
+                    if clients.is_empty() && next.is_none() && retire(&collab, &room_id, &mut rx, &mut lock) { break }
                     continue;
                 };
                 if lock_retry && last_lock_try.elapsed() >= POLL_INTERVAL {
@@ -891,7 +891,7 @@ async fn run_room(
                         empty_since = Some(Instant::now());
                         continue;
                     }
-                    if next.is_none() && retire(&collab, &room_id, &mut rx) { break }
+                    if next.is_none() && retire(&collab, &room_id, &mut rx, &mut lock) { break }
                     empty_since = Some(Instant::now());
                 }
             }
@@ -927,7 +927,9 @@ fn take_lock(
         }
         Acquire::Unavailable => {
             room.set_read_only(false);
-            false
+            // A read-only room keeps trying: the file may be missing for a
+            // moment while another program replaces it.
+            was
         }
     };
     match (was, room.is_read_only()) {
@@ -1008,12 +1010,20 @@ fn close_room(
 }
 
 /// Remove the room from the map, unless a client is on its way in.
-fn retire(collab: &Collab, room_id: &str, rx: &mut mpsc::UnboundedReceiver<Cmd>) -> bool {
+fn retire(
+    collab: &Collab,
+    room_id: &str,
+    rx: &mut mpsc::UnboundedReceiver<Cmd>,
+    lock: &mut Option<crate::room_lock::RoomLock>,
+) -> bool {
     let mut rooms = collab.rooms.lock().expect("rooms");
     if !rx.is_empty() {
         return false;
     }
     rooms.remove(room_id);
+    // Release the file while `rooms` is still locked: a room opened on it
+    // after this finds the lock free, not held by this server (#400).
+    drop(lock.take());
     true
 }
 
@@ -1190,11 +1200,11 @@ mod path_tests {
 mod lock_tests {
     use super::*;
 
-    /// A room that opens while a retiring room of this server still holds
-    /// the lock is writable without it, and takes it on a later try
-    /// (#400), so another server can't take the file meanwhile.
+    /// A room that finds the lock held by another room of this server is
+    /// writable without it and asks to try again, then takes it once the
+    /// other room lets go.
     #[test]
-    fn a_room_opening_as_the_old_one_retires_takes_the_lock_later() {
+    fn a_room_finding_the_lock_held_here_takes_it_later() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.ipynb"), "{}").unwrap();
         let collab = Collab::new(FileIds::in_memory(), dir.path().canonicalize().ok())
@@ -1214,5 +1224,34 @@ mod lock_tests {
         let other = Collab::new(FileIds::in_memory(), dir.path().canonicalize().ok())
             .with_room_locks(dir.path().join("locks"));
         assert!(other.owned_elsewhere("a.ipynb"));
+    }
+
+    /// A retiring room releases its lock before another room on the file
+    /// can open, so the new room takes it at once (#400).
+    #[test]
+    fn retiring_releases_the_lock_before_a_new_room_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.ipynb"), "{}").unwrap();
+        let collab = Collab::new(FileIds::in_memory(), dir.path().canonicalize().ok())
+            .with_room_locks(dir.path().join("locks"));
+        let crate::room_lock::Acquire::Held(held) = collab.acquire("a.ipynb") else {
+            panic!("the old room owns it")
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        collab.rooms.lock().unwrap().insert("r".into(), tx);
+        let mut lock = Some(held);
+        assert!(retire(&collab, "r", &mut rx, &mut lock));
+        assert!(lock.is_none());
+
+        let mut room = Room::transient();
+        let mut new_lock = None;
+        assert!(!take_lock(
+            &collab,
+            "r2",
+            "a.ipynb",
+            &mut room,
+            &mut new_lock
+        ));
+        assert!(new_lock.is_some(), "the new room owns the file");
     }
 }

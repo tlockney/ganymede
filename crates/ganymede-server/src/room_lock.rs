@@ -24,8 +24,11 @@ pub(crate) enum Acquire {
     Held(RoomLock),
     /// Another process owns it.
     Elsewhere,
-    /// Another room of this server holds it: one retiring as this one
-    /// opens, for a moment. The room is writable and tries again (#400).
+    /// Another room of this server holds it. A retiring room releases its
+    /// lock before a new room can open, so this means two file ids for one
+    /// file (a symlinked directory, a hard link, a case-insensitive name),
+    /// which this doesn't solve: the room is writable and tries again
+    /// (#400).
     HeldHere,
     /// No locking here: no lock dir, a file not on disk, or an error
     /// (logged). The room is writable, as before #272.
@@ -72,8 +75,7 @@ impl Locks {
             return Acquire::Unavailable;
         };
         if self.held.lock().expect("held locks").contains(&canonical) {
-            // Another room of this server already owns it; rooms are one
-            // per file id, so this is a moment's overlap at most.
+            // Another room of this server owns it, under another file id.
             return Acquire::HeldHere;
         }
         let lock_file = match open(dir, &canonical) {
