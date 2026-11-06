@@ -70,8 +70,9 @@ pull request with a GitHub issue, and records what it learned in the
 ## Open
 
 - A Linux build for musl (Alpine).
-- Distributing the Mac and iPad app. Today the Mac app is a CI artifact,
-  ad-hoc signed, and the iPad app is built from source.
+- Distributing the iPad and iPhone app beyond internal TestFlight
+  testers, which needs App Review (rule 2.5.2, apps that run code). The
+  Mac app is released, signed and notarized.
 - A runtime seam for the browser (timers and `spawn` on
   `wasm-bindgen-futures`) and a websocket or `postMessage` transport, so
   the engine runs in a page and not only under WASI.

@@ -188,3 +188,39 @@ colour or line style that carries meaning.
 The design is cdp-kernel.org's; keep
 `site/style.css` and `docs/.vitepress/theme/custom.css` in step with each
 other.
+
+### App screenshots
+
+The landing page's Apps section shows the Mac, iPad and iPhone apps from
+`docs/images/apps/`: `{mac,ipad,iphone}-{light,dark}.png`, the e2e
+fixture `Orbits.ipynb` with its outputs. Re-shoot them on a Mac when the
+apps' look changes, and after a ganymede-ui release, with
+[`docs/scripts/app-screenshots.sh`](scripts/app-screenshots.sh) and a
+ganymede-ui checkout:
+
+```sh
+docs/scripts/app-screenshots.sh ~/src/ganymede-ui docs/images/apps
+```
+
+It needs Xcode, the iOS simulators, and `ganymede` with cdp-kernel (it
+executes the notebook first). It builds both apps from the checkout
+against the ganymede revision ganymede-ui's CI pins, boots the largest
+iPad Pro and newest iPhone Pro simulators with the status bar at 9:41,
+and captures each device in light and dark. It works in
+`docs/scripts/work/` (git-ignored); keep that path free of dot-folders,
+which the server treats as hidden. Some steps still need a person:
+
+- **iOS.** Rotate the iPad to landscape, and tap Orbits on each device;
+  the script waits for Return. The app has no launch argument or URL to
+  open a notebook yet.
+- **Mac.** The capture needs Screen Recording in the shell that runs
+  it, and the dark shot needs the Mac in dark mode (the light one
+  overrides the app's appearance). When the shell that can `open` apps
+  lacks Screen Recording, split the shot:
+  `--mac-launch light|dark` in one shell, `--mac-capture light|dark` in
+  one that has it.
+
+The copies drop the fixture's deliberate error cell (`--keep-error-cell`
+keeps it). The Mac app's preferences go to `work/home`, so other builds
+on the Mac keep theirs. Don't shoot Settings or other windows that are
+being reworked; and check every picture before committing it.

@@ -31,6 +31,7 @@
     <nav>
       <a href="#start">Start</a>
       <a href="#features">Features</a>
+      <a href="#apps">Apps</a>
       <a href="https://cdp-kernel.org">cdp-kernel</a>
       <a href="#clients">Frontends</a>
       <a href="docs/">Docs</a>
@@ -113,6 +114,63 @@ http://127.0.0.1:8888/?token=<span class="s">4f9c…</span>
       <figcaption>One binary covers <code>jupyter server</code>, <code>jupyter execute</code>,
         <code>jupyter kernel</code>, and <code>jupyter kernelspec</code>.</figcaption>
     </figure>
+  </div>
+</section>
+
+<section id="apps">
+  <div class="wrap">
+    <h2>Mac, iPad, and iPhone apps</h2>
+    <p class="sub">Ganymede's own notebook app runs the server inside the app, so there is
+      nothing else to install or start. On the Mac, kernels are the ones installed on the
+      Mac; on the iPad and iPhone, TypeScript runs in the app itself. Either can also use
+      kernels on another server.</p>
+    <figure class="shot app-mac">
+      <img class="only-light" src="images/apps/mac-light.png" width="1280" height="820" loading="lazy"
+        alt="The Ganymede Mac app: a sidebar listing notebooks, a toolbar with run and kernel controls, and a TypeScript notebook on Jupiter's moons with printed orbital periods, computed ratios, and an HTML result.">
+      <img class="only-dark" src="images/apps/mac-dark.png" width="1280" height="820" loading="lazy"
+        alt="The Ganymede Mac app: a sidebar listing notebooks, a toolbar with run and kernel controls, and a TypeScript notebook on Jupiter's moons with printed orbital periods, computed ratios, and an HTML result.">
+      <figcaption>The Mac app.</figcaption>
+    </figure>
+    <div class="app-ios">
+      <figure class="shot app-ipad">
+        <img class="only-light" src="images/apps/ipad-light.png" width="1376" height="1032" loading="lazy"
+          alt="The Ganymede iPad app in landscape: the Files sidebar beside the same TypeScript notebook, run by cdp-kernel inside the app.">
+        <img class="only-dark" src="images/apps/ipad-dark.png" width="1376" height="1032" loading="lazy"
+          alt="The Ganymede iPad app in landscape: the Files sidebar beside the same TypeScript notebook, run by cdp-kernel inside the app.">
+        <figcaption>iPad.</figcaption>
+      </figure>
+      <figure class="shot app-iphone">
+        <img class="only-light" src="images/apps/iphone-light.png" width="402" height="874" loading="lazy"
+          alt="The Ganymede iPhone app: the same notebook in a single column, with run controls at the bottom.">
+        <img class="only-dark" src="images/apps/iphone-dark.png" width="402" height="874" loading="lazy"
+          alt="The Ganymede iPhone app: the same notebook in a single column, with run controls at the bottom.">
+        <figcaption>iPhone.</figcaption>
+      </figure>
+    </div>
+    <div class="grid apps">
+      <article>
+        <h3>Mac</h3>
+        <p>macOS 13 or later, Apple silicon or Intel. Signed and notarized: unzip it and move
+          <code>Ganymede.app</code> to Applications. It can be the default app for
+          <code>.ipynb</code> files.</p>
+        <div class="cta">
+          <a class="btn primary" id="mac-download" href="https://github.com/tlockney/ganymede-ui/releases/latest">Download for Mac</a>
+          <a class="btn" href="https://github.com/tlockney/ganymede-ui/releases/latest">Release notes</a>
+        </div>
+      </article>
+      <article>
+        <h3>iPad and iPhone</h3>
+        <p>iPadOS and iOS 16 or later. In testing on TestFlight with a small internal group,
+          and not in the App Store yet. To try it now, build it with Xcode from
+          <a href="https://github.com/tlockney/ganymede-ui/tree/main/apple#build">ganymede-ui's
+          <code>apple/</code> folder</a>.</p>
+      </article>
+      <article>
+        <h3>How it works</h3>
+        <p>The apps are a native shell around ganymede-ui, the same notebook page that runs in a
+          browser, with the Rust core linked in. <a href="docs/app">The app guide</a></p>
+      </article>
+    </div>
   </div>
 </section>
 
@@ -245,6 +303,20 @@ http://127.0.0.1:8888/?token=<span class="s">4f9c…</span>
       for (const p of document.querySelectorAll("[data-panel]")) p.hidden = p.dataset.panel !== btn.dataset.tab;
     });
   }
+  // The Mac app's zip is named after its version (Ganymede-macOS-X.Y.Z.zip),
+  // so the button asks GitHub for the latest release's. Without an answer it
+  // stays a link to the release page.
+  fetch("https://api.github.com/repos/tlockney/ganymede-ui/releases/latest")
+    .then((r) => (r.ok ? r.json() : null))
+    .then((release) => {
+      const zip = release?.assets?.find((a) => /^Ganymede-macOS-\d+\.\d+\.\d+\.zip$/.test(a.name));
+      if (zip) {
+        const btn = document.getElementById("mac-download");
+        btn.href = zip.browser_download_url;
+        btn.textContent = `Download for Mac (${release.tag_name})`;
+      }
+    })
+    .catch(() => {});
 </script>
 </body>
 </html>
