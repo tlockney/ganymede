@@ -12,4 +12,5 @@ often end in `(#N)` too. The committer tells them apart: GitHub commits
 merges and squashes, and branch commits keep their author's. The parser now
 requires `committer.name` to be `GitHub`, and skips "Release vX.Y.Z" as
 ganymede-ui does, so the release merge stays out of the next section.
-Regenerating the changelog leaves every released section unchanged.
+Regenerating the changelog changes released sections only by dropping
+their four "Release vX.Y.Z" entries (#36, #124, #147, #219).
