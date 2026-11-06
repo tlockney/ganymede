@@ -91,10 +91,10 @@ built on.
 ## Inside Ganymede
 
 The crates are layered so that each profile takes only what it needs.
-Lower crates know nothing of the ones above them, and the two at the
+Lower crates know nothing of the ones above them, and the three at the
 bottom do no I/O, so they build for any target.
 
-![Ganymede's crates and what each uses: ganymede-ffi and ganymede-cli on top; the server (over api and gateway) and the engine (over exec) below them; contents and kernel-host under those; protocol and nbformat, which do no I/O, at the bottom.](images/architecture/crates.svg)
+![Ganymede's crates and what each uses: ganymede-ffi and ganymede-cli on top; the server (over terminals, api, lsp, gateway, exec and documents) and the engine (over exec) below them; contents and kernel-host under those; documents, protocol and nbformat, which do no I/O, at the bottom.](images/architecture/crates.svg)
 
 | Crate | What it is |
 |---|---|
