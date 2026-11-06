@@ -56,19 +56,47 @@ pull request with a GitHub issue, and records what it learned in the
   Ganymede server while files stay local, which is how the iPad app gets
   kernels it can't launch.
 - **nbformat 3.** Older notebooks are upgraded to 4.5 on read.
+- **Terminals and language servers.** `/api/terminals` over a
+  pseudo-terminal, and `jupyter-lsp`'s relay to language servers from the
+  config file, both with no Python
+  ([JupyterLab and VS Code](frontends.md#terminals)).
+- **Document rooms.** The file is the source of truth: a room holds the
+  live notebook as a `yrs` document, reloads it when the file changes on
+  disk, merges outside changes cell by cell, and runs cells into it
+  through the execute endpoint
+  ([Document model and collaboration](protocol.md#document-model-and-collaboration)).
+- **Agents.** `ganymede mcp` gives coding agents notebook tools, and the
+  ganymede-journal plugin for Claude Code keeps an analysis as a notebook
+  while the agent works ([Agents over MCP](mcp.md)).
+- **Observability.** A kernel's log (`/api/kernels/{id}/log`),
+  `jupyter-resource-usage`'s memory and CPU metrics, and opt-in crash
+  reports with no notebook content ([Privacy](privacy.md)).
+- **Signed apps.** The Mac app is signed and notarized in each ganymede-ui
+  release, and the iPad and iPhone app is on TestFlight for internal
+  testers.
 
 ## Next
 
-1. **Document model.** The file is the source of truth and is reloaded
-   when it changes on disk (iCloud). A `yrs` CRDT layer is optional and
-   later.
-2. **A native on-device kernel** for the iPad app: cdp-kernel running in
-   the app's process instead of the web view.
-3. **CurveZMQ** for the ZeroMQ transport. ipykernel 7 already advertises
-   it.
+1. **ganymede-ui on document rooms.** The app opens notebooks through
+   rooms, so edits from an agent, another window or another device arrive
+   live, and shows the agent's journal as it is written
+   ([ganymede-ui#183](https://github.com/tlockney/ganymede-ui/issues/183),
+   [#184](https://github.com/tlockney/ganymede-ui/issues/184)).
+2. **A Python kernel in the apps.** Pyodide, run in the page like the
+   in-app TypeScript kernel, so the iPad and iPhone app runs Python
+   notebooks with no server
+   ([ganymede-ui#258](https://github.com/tlockney/ganymede-ui/issues/258),
+   [#375](https://github.com/tlockney/ganymede/issues/375)). Python stays
+   out of the product: it is a kernel the page loads.
 
 ## Open
 
+- A native on-device kernel for the iPad app: cdp-kernel in the app's
+  process instead of the web view, behind the `Provisioner` and
+  `TransportFactory` seams that already accept a kernel with no ZeroMQ.
+- CurveZMQ for the ZeroMQ transport. ipykernel 7 already advertises it.
+- Trusting `tailscale serve`'s identity headers, so a client on the
+  tailnet needs no token.
 - A Linux build for musl (Alpine).
 - Distributing the iPad and iPhone app beyond internal TestFlight
   testers, which needs App Review (rule 2.5.2, apps that run code). The
