@@ -50,6 +50,11 @@ curl -fsSL https://ganymede-server.com/install.sh | sh -s -- --version X.Y.Z --n
 docker run --rm ghcr.io/tlockney/ganymede:X.Y.Z ganymede --version
 ```
 
+The landing page's Mac download button finds the newest
+`Ganymede-macOS-X.Y.Z.zip` in ganymede-ui's latest release by itself.
+After a ganymede-ui release that changes how the apps look, re-shoot the
+app screenshots ([Development](development.md#app-screenshots)).
+
 ## Main builds
 
 Besides releases, `release.yml` runs on every push to `main` that

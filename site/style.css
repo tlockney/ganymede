@@ -230,3 +230,21 @@ footer { border-top: 1px solid var(--line); padding: 28px 0; color: var(--fg-sof
 :root[data-theme="dark"] .shot img.only-light { display: none; }
 .shot img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; }
 .shot figcaption { font-size: 0.9rem; color: var(--fg-soft); margin-top: 8px; }
+
+/* Apps: the Mac window, then the iPad and iPhone screens side by side at
+   one height (each figure's flex-grow is its image's width over height). */
+.app-mac { max-width: 1000px; margin: 8px auto 24px; }
+.app-ios { display: flex; gap: 24px; align-items: flex-end; max-width: 1000px; margin: 0 auto; }
+.app-ios .shot { min-width: 0; }
+.app-ipad { flex: 1.333 1 0; }
+.app-iphone { flex: 0.46 1 0; }
+.app-ipad img { border-radius: 14px; }
+.app-iphone img { border-radius: 22px; }
+.grid.apps { margin-top: 32px; }
+.grid.apps .cta { margin-top: 16px; }
+@media (max-width: 800px) {
+  .app-ios { gap: 12px; }
+  .app-iphone img { border-radius: 12px; }
+}
+/* The Mac window is captured with its own rounded corners and no shadow. */
+.app-mac img { border: 0; border-radius: 10px; box-shadow: 0 12px 40px rgb(0 0 0 / 0.18); }

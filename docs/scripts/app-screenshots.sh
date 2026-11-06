@@ -21,7 +21,8 @@
 #
 # iOS has no scriptable way to open a notebook or rotate a device, so the
 # script stops and asks: press Return when run in a terminal, otherwise
-# `touch $WORK/go`. See NOTES.md.
+# `touch $WORK/go`. Needs ganymede and cdp-kernel installed (to execute the
+# notebook). See docs/development.md, "App screenshots".
 set -euo pipefail
 
 skip_build=0 build_only=0 only=all mac_open=1 keep_error=0 mac_launch='' mac_capture=''
@@ -38,7 +39,7 @@ while [ $# -gt 0 ]; do
     *) break ;;
   esac
 done
-[ $# -eq 2 ] || { sed -n '2,24p' "$0" >&2; exit 2; }
+[ $# -eq 2 ] || { sed -n '2,26p' "$0" >&2; exit 2; }
 ui=$(cd "$1" && pwd)
 mkdir -p "$2"
 out=$(cd "$2" && pwd)
@@ -192,7 +193,7 @@ stop_mac() {
 }
 
 # The app's appearance is set for this process only, not the system's.
-# Preferences go to $work/home so Thomas's other Ganymede builds, which share
+# Preferences go to $work/home so other Ganymede builds on this Mac, which share
 # the bundle id, keep their folder, recents and window frames.
 launch_mac() { # light|dark
   local style=$1 tool size pid

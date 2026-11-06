@@ -41,24 +41,25 @@ version, otherwise the line in that release's `SHA256SUMS`. It unpacks to
 it), within the same size limits as JupyterLab. `GANYMEDE_UI_URL` points
 at a mirror laid out as `<url>/v<version>/<file>`.
 
-With the latest release, download the zip from ganymede-ui's
-[releases](https://github.com/tlockney/ganymede-ui/releases), unpack it,
-and serve it with `ganymede serve --static-dir <dir>`.
-
 ## The Mac and iPad app
 
 The app runs Ganymede inside its own process and shows ganymede-ui in a
 web view, so there is nothing else to install or start. It is built from
 ganymede-ui's [`apple/`](https://github.com/tlockney/ganymede-ui/tree/main/apple)
-folder and isn't in the App Store or a release yet:
+folder and isn't in the App Store:
 
-- **Mac.** Each CI run of ganymede-ui's `macos-app` job uploads
-  `Ganymede-macOS`, a zipped build, under the run's artifacts. It is
-  ad-hoc signed and not notarized, so clear the quarantine flag before
-  the first launch: `xattr -dr com.apple.quarantine Ganymede.app`.
-- **iPad and iPhone.** Build it from source with Xcode; the
+- **Mac** (macOS 13 or later). Each
+  [ganymede-ui release](https://github.com/tlockney/ganymede-ui/releases/latest)
+  attaches `Ganymede-macOS-<version>.zip`, a universal app signed with a
+  Developer ID and notarized. Unzip it and move `Ganymede.app` to
+  Applications.
+- **iPad and iPhone** (iPadOS and iOS 16 or later). Each release goes to
+  TestFlight for a small group of internal testers; it isn't open to
+  others yet. Otherwise build it from source with Xcode; the
   [`apple/` README](https://github.com/tlockney/ganymede-ui/tree/main/apple#build)
   has the steps.
+
+![The Mac app with a TypeScript notebook open.](images/apps/mac-light.png)
 
 On the Mac, File › Open Folder… (⇧⌘O) picks the notebook folder, and
 kernels are the kernelspecs installed on the Mac, as with `ganymede

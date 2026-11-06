@@ -60,8 +60,9 @@ covers problems with the install itself.
 
 ## The app
 
-- The Mac and iPad app isn't signed for the App Store or released: the
-  Mac build comes from CI, and the iPad build from source; see
+- The Mac app is released, signed and notarized, but not in the Mac App
+  Store. The iPad and iPhone app is on TestFlight for internal testers
+  only; anyone else builds it from source. See
   [Ganymede's app](app.md#the-mac-and-ipad-app).
 - The iPad runs only cdp-kernel's TypeScript kernel on the device; other
   kernels need a kernel server.
