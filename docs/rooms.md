@@ -99,11 +99,6 @@ ten seconds. A cell that fails stops the rest of its batch.
 
 ## Two servers on one notebook
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. In the latest release, both servers' rooms save
-> the file and merge each other's saves.
-
 On one machine, the first server to open a room on a notebook owns it
 while the room is open: it holds a lock in the Jupyter runtime dir's
 `ganymede-rooms/`, named for the file's path (`flock`, or `LockFileEx`
