@@ -429,6 +429,8 @@ jobs:
         run: node --test plugins/ganymede-journal/hooks/journal.test.mjs
         env:
           GANYMEDE_E2E_BIN: ${{ github.workspace }}/target/debug/ganymede
+      - name: Journal eval scoring tests
+        run: node --test evals/journal/score.test.mjs
 
   # jupyterlab-lsp against `ganymede serve`, with jupyter-lsp on
   # `jupyter lab` as the oracle: the same diagnostics from
