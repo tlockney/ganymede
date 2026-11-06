@@ -215,10 +215,6 @@ then keeps that text: diagnostics, which
 go to every editor, follow it until another tab edits, and a request
 from the other tab still being answered may come back against it.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 `typescript-language-server` needs TypeScript 5: TypeScript 7 has no
 `tsserver.js`. For TypeScript notebooks on cdp-kernel, completion and
 hover also come from the kernel itself, and `jupyterlab-lsp` 5.3 doesn't
