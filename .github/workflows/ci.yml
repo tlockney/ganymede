@@ -36,7 +36,31 @@ env:
   LSP_NPM_PACKAGES: typescript-language-server@5.3.0 typescript@5.9.3 pyright@1.1.414
 
 jobs:
+  # Whether a pull request needs the jobs below: scripts/ci-changes.sh says
+  # no when it changes only docs, the site or Markdown (#418). The jobs
+  # then report success under their required names without building:
+  # the others are skipped by their `if`, and each matrix cell (e2e, ffi,
+  # install-script, workstation) runs on Linux with every step skipped,
+  # since a matrix job skipped whole wouldn't report per-cell checks. If
+  # this job fails, its output is empty and everything runs. Pushes to
+  # main, the schedule and manual runs run everything.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The merge commit and its first parent, the base.
+          fetch-depth: 2
+      - id: changes
+        run: scripts/ci-changes.sh | tee -a "$GITHUB_OUTPUT"
+
   rust:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -94,6 +118,8 @@ jobs:
   # The oldest Rust the workspace says it supports (rust-version in
   # Cargo.toml) still builds it.
   msrv:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -116,6 +142,8 @@ jobs:
   # warnings), and crate sources (deny.toml). Licenses are the rust job's
   # cargo-about step.
   audit:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -133,11 +161,13 @@ jobs:
   # kernel scenarios on cdp-kernel and ipykernel. Python is a test oracle
   # and a kernel here, never a dependency of the product.
   e2e:
+    needs: changes
+    if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ needs.changes.outputs.code == 'false' && 'ubuntu-latest' || matrix.os }}
     timeout-minutes: 15
     env:
       GANYMEDE_E2E_KERNELS: cdp-node,python3
@@ -145,23 +175,31 @@ jobs:
       GANYMEDE_E2E_LAB: "1"
       GANYMEDE_E2E_UI: "1"
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - if: needs.changes.outputs.code == 'false'
+        run: echo "Only docs, the site or Markdown changed, so nothing to build (#418)."
+      - if: needs.changes.outputs.code != 'false'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - if: needs.changes.outputs.code != 'false'
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - if: needs.changes.outputs.code != 'false'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - if: needs.changes.outputs.code != 'false'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      - if: needs.changes.outputs.code != 'false'
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
           cache: pip
           # The pins live in this file.
           cache-dependency-path: .github/workflows/ci.yml
-      - name: Install kernels and the reference implementation
+      - if: needs.changes.outputs.code != 'false'
+        name: Install kernels and the reference implementation
         run: |
           npm install -g "@tlockney/cdp-kernel@$CDP_KERNEL_VERSION"
           cdp-kernel install --runtime node
@@ -174,15 +212,18 @@ jobs:
           # The Python that has the rooms oracle; collab.rs fails if it can't
           # import it, rather than skipping.
           echo "GANYMEDE_E2E_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
-      - run: cargo run -q -p ganymede-cli -- kernelspec list
+      - if: needs.changes.outputs.code != 'false'
+        run: cargo run -q -p ganymede-cli -- kernelspec list
       # The whole workspace, so the unit tests also run on macOS.
-      - name: cargo test --workspace
+      - if: needs.changes.outputs.code != 'false'
+        name: cargo test --workspace
         run: |
           set -o pipefail
           cargo test --workspace -- --nocapture 2>&1 | tee "$RUNNER_TEMP/test.log"
       # The GANYMEDE_E2E_* variables above already make a missing kernel or
       # Jupyter a failure; this catches any other way a test could skip.
-      - name: Nothing skipped
+      - if: needs.changes.outputs.code != 'false'
+        name: Nothing skipped
         run: |
           if grep -o 'skipping: .*' "$RUNNER_TEMP/test.log"; then
             echo "::error title=Skipped tests::tests skipped in the job that must run them all"
@@ -193,6 +234,8 @@ jobs:
   # in e2e, in the job summary, with a row per changed file on a pull
   # request. Informational: nothing fails on a number (#255).
   coverage:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -291,6 +334,8 @@ jobs:
   # Targets the desktop CI cannot run: the core libraries must build for
   # iOS, Android, and wasm, and the engine must run a notebook inside wasm.
   portability:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -336,25 +381,33 @@ jobs:
   # The C ABI the Swift shell links (crates/ganymede-ffi): the header
   # matches the library on Linux and macOS, and the XCFramework builds.
   ffi:
+    needs: changes
+    if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ needs.changes.outputs.code == 'false' && 'ubuntu-latest' || matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - if: needs.changes.outputs.code == 'false'
+        run: echo "Only docs, the site or Markdown changed, so nothing to build (#418)."
+      - if: needs.changes.outputs.code != 'false'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - if: needs.changes.outputs.code != 'false'
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
           targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin, x86_64-apple-darwin, aarch64-apple-ios, aarch64-apple-ios-sim' || '' }}
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: scripts/ffi-smoke.sh
-      - if: matrix.os == 'macos-latest'
+      - if: needs.changes.outputs.code != 'false'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - if: needs.changes.outputs.code != 'false'
+        run: scripts/ffi-smoke.sh
+      - if: needs.changes.outputs.code != 'false' && (matrix.os == 'macos-latest')
         run: scripts/build-xcframework.sh
-      - if: matrix.os == 'macos-latest'
+      - if: needs.changes.outputs.code != 'false' && (matrix.os == 'macos-latest')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: GanymedeFFI.xcframework
@@ -362,31 +415,42 @@ jobs:
           retention-days: 14
 
   install-script:
+    needs: changes
+    if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ needs.changes.outputs.code == 'false' && 'ubuntu-latest' || matrix.os }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - if: needs.changes.outputs.code == 'false'
+        run: echo "Only docs, the site or Markdown changed, so nothing to build (#418)."
+      - if: needs.changes.outputs.code != 'false'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - if: runner.os == 'Linux'
-        run: shellcheck -s sh site/install.sh scripts/test-install.sh scripts/test-workstation.sh validation/nb-cli.sh
-      - run: scripts/test-install.sh sh
-      - run: scripts/test-install.sh bash
-      - if: runner.os == 'Linux'
+      - if: needs.changes.outputs.code != 'false' && (runner.os == 'Linux')
+        run: shellcheck -s sh site/install.sh scripts/test-install.sh scripts/test-workstation.sh validation/nb-cli.sh scripts/ci-changes.sh
+      - if: needs.changes.outputs.code != 'false'
+        run: scripts/test-install.sh sh
+      - if: needs.changes.outputs.code != 'false'
+        run: scripts/test-install.sh bash
+      - if: needs.changes.outputs.code != 'false' && (runner.os == 'Linux')
         run: scripts/test-install.sh dash
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - if: needs.changes.outputs.code != 'false'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-      - run: TEST_KERNEL=1 scripts/test-install.sh sh
+      - if: needs.changes.outputs.code != 'false'
+        run: TEST_KERNEL=1 scripts/test-install.sh sh
 
   # The container image (container/Dockerfile, #203) built from the
   # checkout, then container/smoke-test.sh: no Python in it, a cell on
   # cdp-node, and `ganymede lab` serving behind its token.
   image:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -405,6 +469,8 @@ jobs:
   # end to end against this build's `ganymede mcp`, and its JSON files
   # parse.
   plugin:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -436,6 +502,8 @@ jobs:
   # `jupyter lab` as the oracle: the same diagnostics from
   # typescript-language-server and pyright on both (#257).
   lsp:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -489,35 +557,46 @@ jobs:
   # Playwright. scripts/test-workstation.sh hides Python from PATH and
   # fails if anything ran it.
   workstation:
+    needs: changes
+    if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ needs.changes.outputs.code == 'false' && 'ubuntu-latest' || matrix.os }}
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - if: needs.changes.outputs.code == 'false'
+        run: echo "Only docs, the site or Markdown changed, so nothing to build (#418)."
+      - if: needs.changes.outputs.code != 'false'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - if: needs.changes.outputs.code != 'false'
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo build --release --locked -p ganymede-cli
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - if: needs.changes.outputs.code != 'false'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - if: needs.changes.outputs.code != 'false'
+        run: cargo build --release --locked -p ganymede-cli
+      - if: needs.changes.outputs.code != 'false'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: validation/package-lock.json
       # Test tooling only, set up before Python is hidden. The browser
       # download is cached; the system libraries (--with-deps) are not.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - if: needs.changes.outputs.code != 'false'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cache/ms-playwright
             ~/Library/Caches/ms-playwright
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('validation/package-lock.json') }}
-      - name: Playwright
+      - if: needs.changes.outputs.code != 'false'
+        name: Playwright
         working-directory: validation
         run: |
           npm ci
@@ -526,25 +605,26 @@ jobs:
       # validation/nb-cli.sh. A test tool only, built from crates.io.
       # Restore and save are separate so a failing job still keeps the
       # binary; the scheduled run builds the latest release uncached.
-      - if: env.NB_CLI_VERSION != ''
+      - if: needs.changes.outputs.code != 'false' && (env.NB_CLI_VERSION != '')
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: nb-cli
         with:
           path: ${{ runner.temp }}/nb-cli
           key: nb-cli-${{ env.NB_CLI_VERSION }}-${{ runner.os }}-${{ runner.arch }}
-      - if: steps.nb-cli.outputs.cache-hit != 'true'
+      - if: needs.changes.outputs.code != 'false' && (steps.nb-cli.outputs.cache-hit != 'true')
         run: cargo install nb-cli ${NB_CLI_VERSION:+--version "$NB_CLI_VERSION"} --locked --root "$RUNNER_TEMP/nb-cli"
-      - if: env.NB_CLI_VERSION != '' && steps.nb-cli.outputs.cache-hit != 'true'
+      - if: needs.changes.outputs.code != 'false' && (env.NB_CLI_VERSION != '' && steps.nb-cli.outputs.cache-hit != 'true')
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/nb-cli
           key: nb-cli-${{ env.NB_CLI_VERSION }}-${{ runner.os }}-${{ runner.arch }}
-      - name: Install and use Ganymede with no Python on PATH
+      - if: needs.changes.outputs.code != 'false'
+        name: Install and use Ganymede with no Python on PATH
         run: scripts/test-workstation.sh target/release/ganymede
         env:
           OUT_DIR: ${{ runner.temp }}/workstation
           NB: ${{ runner.temp }}/nb-cli/bin/nb
-      - if: failure()
+      - if: needs.changes.outputs.code != 'false' && (failure())
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workstation-${{ matrix.os }}
