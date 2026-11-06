@@ -23,7 +23,7 @@ same flags. The guides show them in use:
 | `lab install`, `list`, `remove`, `clean`, `uninstall` | Manage JupyterLab bundles |
 | `lab extension install`, `list`, `enable`, `disable`, `remove` | Manage prebuilt JupyterLab extensions |
 | `ui`, `ui install`, `list`, `remove` | `serve` with [ganymede-ui](app.md#in-a-browser-from-ganymede) |
-| `mcp` | Notebook tools for coding agents over MCP on stdio; see [Agents over MCP](mcp.md) |
+| `mcp`, `mcp call` | Notebook tools for coding agents over MCP on stdio, or one tool call from a script; see [Agents over MCP](mcp.md) |
 | `info` | Versions and the directories in use |
 | `completions <shell>` | Shell completions for bash, zsh, fish, powershell, elvish |
 
@@ -144,7 +144,10 @@ crash_reporting = false          # true: send crash reports (see Privacy)
 # mime_types = ["text/x-python"]
 ```
 
-Four keys have no flag:
+These four keys have no flag. The terminal keys, the MCP keys other
+than `mcp_enabled`, `static_headers` and `language_servers` have none
+either; the sections below and [Agents over MCP](mcp.md#options) cover
+them.
 
 | Key | Effect |
 | --- | --- |

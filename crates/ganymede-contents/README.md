@@ -83,6 +83,5 @@ layouts, and read-only mode. `tests/trust.rs` checks signatures and
 
 ## What to try next
 
-- A file watcher (`notify`) emitting change events for the document seam.
 - An iCloud-aware implementation that defers reads of files still
   downloading, if the Files-app profile needs it.

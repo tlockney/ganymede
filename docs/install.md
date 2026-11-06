@@ -97,7 +97,7 @@ machine:
   "display_name": "TypeScript (cdp-kernel, node)",
   "language": "typescript",
   "interrupt_mode": "message",
-  "metadata": { "runtime": "node", "denoCompat": false, "version": "0.7.0", "debugger": true }
+  "metadata": { "runtime": "node", "denoCompat": false, "version": "0.8.0", "debugger": true }
 }
 ```
 
@@ -447,8 +447,7 @@ downloaded, but one saved from a browser may get a SmartScreen
 **Run anyway**, or run `Unblock-File` on the `.zip` before extracting it.
 
 Windows binaries are built and released but not tested end to end, and
-signal interrupts and killing a kernel process are not implemented
-there; see [Known gaps](known-gaps.md#platforms) and
+signal interrupts are not implemented there; see [Known gaps](known-gaps.md#platforms) and
 [#60](https://github.com/tlockney/ganymede/issues/60).
 
 ### Verify a download

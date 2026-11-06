@@ -1,14 +1,15 @@
 # ganymede-api
 
 The server API as plain functions over `ganymede-kernel-host`, with no HTTP
-framework. `ganymede-server` maps these to axum routes; an in-app bridge (the
-iPad profile) can call them directly.
+framework. `ganymede-server` maps these to axum routes.
 
 - `KernelManager`: kernelspecs, start, get, list, interrupt, restart,
   shutdown, idle culling. A start or restart whose kernel dies or doesn't
   answer is relaunched on fresh ports, up to three tries. A kernel that
-  dies on its own is removed and its clients get `status: dead`. Restart
-  announces `status: restarting` the way `jupyter_server` does.
+  dies on its own is restarted under the same id, up to
+  `kernel_restart_limit` crashes in a row, then removed with
+  `status: dead`. Restart announces `status: restarting` the way
+  `jupyter_server` does.
 - `ClientConnection`: one websocket's worth of traffic, on its own
   unbounded queue that outlives restarts. All clients share the kernel's
   sockets, so shell, control, and stdin replies are filtered by the
