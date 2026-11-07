@@ -820,7 +820,124 @@ async fn server_info_identity_and_config() {
     );
 
     let (st, nb) = call(&app, "GET", "/api/nbconvert", None, t).await;
-    assert_eq!((st, nb), (StatusCode::OK, json!({})));
+    assert_eq!(
+        (st, nb),
+        (
+            StatusCode::OK,
+            json!({
+                "markdown": {"output_mimetype": "text/markdown"},
+                "script": {"output_mimetype": "text/plain"},
+            })
+        )
+    );
+}
+
+#[tokio::test]
+async fn nbconvert_exports_script_and_markdown() {
+    let dir = tempfile::tempdir().unwrap();
+    let cell = |source: &str, outputs: Value| {
+        json!({"cell_type": "code", "id": source.len().to_string(), "metadata": {},
+               "execution_count": 1, "source": source, "outputs": outputs})
+    };
+    let text_nb = json!({
+        "nbformat": 4, "nbformat_minor": 5,
+        "metadata": {"language_info": {"name": "typescript", "file_extension": ".ts",
+                                       "mimetype": "text/typescript"}},
+        "cells": [
+            {"cell_type": "markdown", "id": "m", "metadata": {}, "source": "# Hi"},
+            cell("let a = 1", json!([{"output_type": "stream", "name": "stdout", "text": "1\n"}])),
+        ]
+    });
+    std::fs::write(dir.path().join("my nb.ipynb"), text_nb.to_string()).unwrap();
+    let mut img_nb = text_nb.clone();
+    img_nb["cells"][1] = cell(
+        "plot()",
+        json!([{"output_type": "display_data", "metadata": {},
+                "data": {"image/png": "iVBORw0KGgo=\n", "text/plain": "<Figure>"}},
+               {"output_type": "display_data", "metadata": {},
+                "data": {"image/png": "not base64!", "text/plain": "<Bad>"}}]),
+    );
+    std::fs::write(dir.path().join("img.ipynb"), img_nb.to_string()).unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "hello").unwrap();
+    let app = build_router(state(dir.path()));
+    let get = |path: &str| {
+        Request::get(path)
+            .header(header::AUTHORIZATION, format!("token {TOKEN}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let (st, h, body) = raw(&app, get("/nbconvert/script/my%20nb.ipynb")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(h[header::CONTENT_TYPE], "text/typescript; charset=utf-8");
+    assert!(h.get(header::CONTENT_DISPOSITION).is_none());
+    assert_eq!(body, b"let a = 1\n");
+
+    let (st, h, body) = raw(&app, get("/nbconvert/markdown/my%20nb.ipynb?download=true")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(h[header::CONTENT_TYPE], "text/markdown; charset=utf-8");
+    assert_eq!(
+        h[header::CONTENT_DISPOSITION],
+        "attachment; filename*=utf-8''my%20nb.md"
+    );
+    assert_eq!(
+        String::from_utf8(body).unwrap(),
+        "# Hi\n\n```typescript\nlet a = 1\n```\n\n```\n1\n```\n"
+    );
+    let (_, h, _) = raw(&app, get("/nbconvert/script/my%20nb.ipynb?download=TRUE")).await;
+    assert_eq!(
+        h[header::CONTENT_DISPOSITION],
+        "attachment; filename*=utf-8''my%20nb.ts"
+    );
+
+    // Images make a zip of the Markdown and its files.
+    let (st, h, body) = raw(&app, get("/nbconvert/markdown/img.ipynb")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(h[header::CONTENT_TYPE], "application/zip");
+    assert_eq!(
+        h[header::CONTENT_DISPOSITION],
+        "attachment; filename*=utf-8''img.zip"
+    );
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(body)).unwrap();
+    let mut names: Vec<String> = zip.file_names().map(|n| n.unwrap().into_owned()).collect();
+    names.sort();
+    assert_eq!(names, ["img.md", "img_files/output_1_0.png"]);
+    let mut png = Vec::new();
+    std::io::Read::read_to_end(
+        &mut zip.by_name("img_files/output_1_0.png").unwrap(),
+        &mut png,
+    )
+    .unwrap();
+    assert_eq!(png, [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+
+    // A download by URL keeps its token, as `/files` does.
+    let (st, _, body) = raw(
+        &app,
+        Request::get(format!("/nbconvert/script/img.ipynb?token={TOKEN}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!((st, body), (StatusCode::OK, b"plot()\n".to_vec()));
+
+    // Not a notebook: to /files. Unknown format: 404. Token required.
+    let (st, h, _) = raw(&app, get("/nbconvert/script/notes.txt")).await;
+    assert_eq!(st, StatusCode::SEE_OTHER);
+    assert_eq!(h[header::LOCATION], "/files/notes.txt");
+    assert_eq!(
+        raw(&app, get("/nbconvert/html/img.ipynb")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        raw(&app, get("/nbconvert/script/missing.ipynb")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(&app, "GET", "/nbconvert/script/img.ipynb", None, None)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
 }
 
 #[tokio::test]

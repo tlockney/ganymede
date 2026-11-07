@@ -74,6 +74,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/me", get(me))
         .route("/api/config/{section}", get(get_config).patch(patch_config))
         .route("/api/nbconvert", get(nbconvert))
+        .route("/nbconvert/{format}/{*path}", get(nbconvert_file))
         .route("/api/events/subscribe", get(crate::ws::events))
         .route("/kernelspecs/{name}/{*file}", get(kernelspec_resource))
         .route("/files/{*path}", get(get_file))
@@ -268,9 +269,134 @@ fn merge(target: &mut Value, update: Value) {
     }
 }
 
-/// Export formats. nbconvert is Python, so there are none.
+/// Export formats: nbconvert's `markdown` and `script`, the two that need
+/// no Python templates (#235).
 async fn nbconvert() -> Json<Value> {
-    Json(json!({}))
+    let formats: serde_json::Map<String, Value> = ganymede_nbformat::FORMATS
+        .iter()
+        .map(|(name, mime)| ((*name).to_owned(), json!({"output_mimetype": mime})))
+        .collect();
+    Json(Value::Object(formats))
+}
+
+#[derive(Deserialize)]
+struct NbconvertQuery {
+    download: Option<String>,
+}
+
+/// `GET /nbconvert/{format}/{path}`: the notebook exported, as
+/// `jupyter_server`'s `NbconvertFileHandler` returns it for JupyterLab's
+/// Save and Export Notebook As menu. A path that isn't a notebook
+/// redirects to `/files`. An export with files (Markdown with images) is
+/// a zip of the text and the files, always as a download; otherwise the
+/// text, as a download with `?download=true`.
+async fn nbconvert_file(
+    State(s): State<AppState>,
+    Path((format, path)): Path<(String, String)>,
+    Query(q): Query<NbconvertQuery>,
+) -> HttpResult<Response> {
+    if !ganymede_nbformat::FORMATS.iter().any(|(f, _)| *f == format) {
+        return Err(HttpError(404, format!("No exporter for format: {format}")));
+    }
+    let path = path.trim_matches('/').to_owned();
+    let model = s
+        .contents
+        .get(
+            &path,
+            GetOptions {
+                content: true,
+                ..GetOptions::default()
+            },
+        )
+        .await?;
+    if model.kind != ContentType::Notebook {
+        let to = format!("{}files/{}", s.base_url, url_escape(&path));
+        return Ok(axum::response::Redirect::to(&to).into_response());
+    }
+    let nb: ganymede_nbformat::Notebook =
+        serde_json::from_value(model.content.unwrap_or(Value::Null))
+            .map_err(|e| HttpError(500, format!("nbconvert failed: {e}")))?;
+    let title = model
+        .name
+        .strip_suffix(".ipynb")
+        .unwrap_or(&model.name)
+        .to_owned();
+    let export = match format.as_str() {
+        "markdown" => ganymede_nbformat::to_markdown(&nb, &title),
+        _ => ganymede_nbformat::to_script(&nb),
+    };
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store, no-cache, must-revalidate, max-age=0"),
+    );
+    // The script's type comes from the notebook; keep anything it names,
+    // such as text/html, from running as this origin.
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        header::HeaderValue::from_static(FILES_CSP),
+    );
+    let filename = format!("{title}{}", export.extension);
+    if !export.resources.is_empty() {
+        let zip = blocking(move || nbconvert_zip(&filename, export)).await?;
+        headers.insert(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_static("application/zip"),
+        );
+        attachment(&mut headers, &format!("{title}.zip"));
+        return Ok((headers, zip).into_response());
+    }
+    if q.download.is_some_and(|d| d.eq_ignore_ascii_case("true")) {
+        attachment(&mut headers, &filename);
+    }
+    let content_type =
+        header::HeaderValue::from_str(&format!("{}; charset=utf-8", export.mimetype)).unwrap_or(
+            header::HeaderValue::from_static("text/plain; charset=utf-8"),
+        );
+    headers.insert(header::CONTENT_TYPE, content_type);
+    Ok((headers, export.body).into_response())
+}
+
+fn attachment(headers: &mut HeaderMap, filename: &str) {
+    let disposition = format!("attachment; filename*=utf-8''{}", url_escape(filename));
+    if let Ok(v) = header::HeaderValue::from_str(&disposition) {
+        headers.insert(header::CONTENT_DISPOSITION, v);
+    }
+}
+
+/// An export with its files in a zip, as nbconvert's `respond_zip`.
+fn nbconvert_zip(filename: &str, export: ganymede_nbformat::Export) -> HttpResult<Vec<u8>> {
+    use base64::Engine;
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+    let fail = |e: &dyn std::fmt::Display| HttpError(500, format!("nbconvert failed: {e}"));
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let opts = SimpleFileOptions::default();
+    w.start_file(filename, opts).map_err(|e| fail(&e))?;
+    w.write_all(export.body.as_bytes()).map_err(|e| fail(&e))?;
+    let mut written = std::collections::HashSet::new();
+    for r in export.resources {
+        // One bad image shouldn't cost the whole export: leave it out.
+        let bytes = match r.data {
+            ganymede_nbformat::ResourceData::Text(t) => t.into_bytes(),
+            ganymede_nbformat::ResourceData::Base64(b) => {
+                let b: String = b.split_whitespace().collect();
+                match base64::engine::general_purpose::STANDARD.decode(b) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        tracing::warn!("nbconvert: leaving out {}: bad base64: {e}", r.path);
+                        continue;
+                    }
+                }
+            }
+        };
+        if !written.insert(r.path.clone()) {
+            continue;
+        }
+        w.start_file(r.path, opts).map_err(|e| fail(&e))?;
+        w.write_all(&bytes).map_err(|e| fail(&e))?;
+    }
+    Ok(w.finish().map_err(|e| fail(&e))?.into_inner())
 }
 
 // ----- status, kernelspecs --------------------------------------------------

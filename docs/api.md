@@ -33,7 +33,7 @@ location: /lab
 set-cookie: username-localhost-8888=2|1:0|10:…; expires=…; HttpOnly; Path=/; SameSite=Lax
 ```
 
-API paths and `/files/` downloads keep the token, so
+API paths and `/files/` and `/nbconvert/` downloads keep the token, so
 `curl 'http://127.0.0.1:8888/files/data.csv?token=tok'` gets the file.
 
 > [!NOTE]
@@ -343,6 +343,8 @@ What `ganymede serve` answers, beyond the examples above:
   `/kernelspecs/{name}/{file}`, `/api/kernels` with `interrupt`,
   `restart` and the `channels` websocket, `/api/sessions`,
   `/api/contents/{path}` with checkpoints and `trust`, `/files/{path}`,
+  `/nbconvert/{format}/{path}` for `script` and `markdown`
+  ([Export](frontends.md#export)),
   `/api/terminals` and `/terminals/websocket/{name}`.
 - Extensions' routes, with no Python behind them: `jupyter-lsp`'s
   `/lsp/status` and `/lsp/ws/{name}`; `jupyter-collaboration`'s
@@ -355,6 +357,11 @@ What `ganymede serve` answers, beyond the examples above:
 - With JupyterLab (`ganymede lab`): the page, `/static/lab`,
   `/lab/extensions/{name}`, and `/lab/api/` `settings`, `workspaces`,
   `translations`, `themes`, `listings`, `plugins`, `licenses`.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release: `/nbconvert/{format}/{path}`. In the latest
+> release, `/api/nbconvert` reports no exporters.
 
 The kernel websocket speaks `v1.kernel.websocket.jupyter.org` when the
 client offers it, and the legacy JSON framing otherwise. JSON bodies are

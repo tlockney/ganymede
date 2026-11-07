@@ -66,7 +66,8 @@ missing, so you can judge the switch before making it.
 ## What is missing
 
 Server extensions (the Python half of some JupyterLab extensions),
-nbconvert export, and JupyterHub's single-user mode. Terminals and
+nbconvert's template exports (HTML, PDF, LaTeX, slides; script and
+Markdown work), and JupyterHub's single-user mode. Terminals and
 language servers ([JupyterLab and VS Code](frontends.md#terminals)) and
 real-time collaboration
 ([Live editing and document rooms](rooms.md))
@@ -74,6 +75,12 @@ do work, with no Python behind them. [Known gaps](known-gaps.md) has the
 full list and the details. If you depend on one of these, stay on `jupyter_server` for now,
 or run it for that one job: both servers share kernels, notebooks and
 signatures, so they can run side by side.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release: script and Markdown export. The latest release
+> exports nothing.
+
 
 ## TypeScript notebooks
 
