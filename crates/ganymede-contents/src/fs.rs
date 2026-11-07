@@ -780,8 +780,14 @@ impl Inner {
             return Err(Error::Forbidden("contents root is read-only".into()));
         }
         let from = self.resolve_for_read(from_path)?;
-        if self.stat(&from)?.is_dir() {
+        let meta = self.stat(&from)?;
+        if meta.is_dir() {
             return Err(Error::BadRequest("Can't copy directories".into()));
+        }
+        // A FIFO or device would block or never end the read (#489); `get`
+        // doesn't serve one either.
+        if !meta.is_file() {
+            return Err(Error::NotFound(from.api.to_string()));
         }
         let to_path = match to_dir {
             Some(dir) => dir.to_owned(),
@@ -978,6 +984,10 @@ impl Inner {
     /// Copy the file at `r` to its checkpoint; returns the checkpoint path.
     fn write_checkpoint(&self, r: &Resolved) -> Result<PathBuf> {
         let cp = self.checkpoint_path_checked(&r.api)?;
+        // Only a regular file: reading a FIFO would block (#489).
+        if !self.stat(r)?.is_file() {
+            return Err(Error::NotFound(r.api.to_string()));
+        }
         if let Some(parent) = cp.parent() {
             fs::create_dir_all(parent)?;
         }
