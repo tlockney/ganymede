@@ -38,10 +38,11 @@ struct HeartbeatSocket {
 impl HeartbeatSocket {
     /// Send a ping and read its echo.
     async fn beat(&mut self) -> Result<()> {
-        let socket = self.socket().await?;
-        socket.send(ZmqMessage::from("ping")).await.map_err(zerr)?;
+        // Set before the send: a beat dropped inside it may already have
+        // queued the ping. At worst a fresh socket replaces a good one.
         self.awaiting_echo = true;
         let socket = self.socket().await?;
+        socket.send(ZmqMessage::from("ping")).await.map_err(zerr)?;
         socket.recv().await.map_err(zerr)?;
         self.awaiting_echo = false;
         Ok(())

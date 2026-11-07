@@ -418,6 +418,16 @@ impl KernelSession {
             );
             let _ = self.request(Channel::Control, m, false, grace).await;
         }
+        // A kernel we launched with no pid (one on a remote server) has
+        // only `kill` to end it, the remote's DELETE, and gets it now
+        // rather than when its handle is dropped. One that can't be killed
+        // (an in-process kernel) says so, and is left at the request.
+        if let Some(p) = self.inner.process.as_ref().filter(|p| p.pid().is_none()) {
+            match p.kill().await {
+                Ok(()) | Err(Error::Unsupported(_)) => {}
+                Err(e) => tracing::warn!("could not end the kernel: {e}"),
+            }
+        }
         // Only a process we own can be waited on or killed. An attached
         // kernel gets the request and nothing more.
         if let Some(p) = self.inner.process.as_ref().filter(|p| p.pid().is_some()) {
@@ -1096,6 +1106,7 @@ mod tests {
         calls: Mutex<Vec<&'static str>>,
         exits_on: &'static str,
         exit: watch::Sender<bool>,
+        pid: Option<u32>,
     }
 
     impl FakeProcess {
@@ -1110,7 +1121,7 @@ mod tests {
     #[async_trait::async_trait]
     impl KernelProcess for FakeProcess {
         fn pid(&self) -> Option<u32> {
-            Some(1)
+            self.pid
         }
         async fn interrupt(&self) -> Result<()> {
             self.record("interrupt");
@@ -1135,6 +1146,10 @@ mod tests {
 
     /// A session over a silent transport (no replies) with a fake process.
     fn session_with_process(exits_on: &'static str) -> (KernelSession, Arc<FakeProcess>) {
+        session_with(exits_on, Some(1))
+    }
+
+    fn session_with(exits_on: &'static str, pid: Option<u32>) -> (KernelSession, Arc<FakeProcess>) {
         let (tx, incoming) = tokio::sync::mpsc::channel(1);
         tokio::spawn(async move { tx.closed().await });
         let transport = KernelTransport {
@@ -1148,6 +1163,7 @@ mod tests {
             calls: Mutex::new(Vec::new()),
             exits_on,
             exit: watch::channel(false).0,
+            pid,
         });
         let launched = LaunchedKernel {
             connection: None,
@@ -1165,6 +1181,7 @@ mod tests {
             calls: Mutex::new(Vec::new()),
             exits_on: "",
             exit: watch::channel(false).0,
+            pid: Some(1),
         });
         let launched = LaunchedKernel {
             connection: None,
@@ -1206,6 +1223,7 @@ mod tests {
             calls: Mutex::new(Vec::new()),
             exits_on: "",
             exit: watch::channel(false).0,
+            pid: Some(1),
         });
         let launched = LaunchedKernel {
             connection: None,
@@ -1249,6 +1267,17 @@ mod tests {
         // A dead kernel is not signalled.
         assert!(matches!(s.interrupt().await, Err(Error::KernelDied)));
         assert_eq!(p.calls.lock().unwrap().len(), 2);
+    }
+
+    /// A launched kernel with no pid (a gateway's remote kernel) is
+    /// killed on shutdown, which for a remote kernel is its DELETE, with
+    /// no SIGTERM step.
+    #[tokio::test]
+    async fn shutdown_kills_a_launched_kernel_without_a_pid() {
+        let (s, p) = session_with("", None);
+        s.shutdown(false, Duration::from_millis(100)).await.unwrap();
+        assert_eq!(*p.calls.lock().unwrap(), vec!["kill"]);
+        assert!(!s.is_alive());
     }
 
     #[tokio::test]
