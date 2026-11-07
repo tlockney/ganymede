@@ -201,6 +201,9 @@ pub async fn execute_streaming(
     // By msg_id, not by count: after a lag the broadcast skips some
     // messages, and the reply's record fills in exactly those.
     let mut streamed = HashSet::new();
+    // After a lag, hand nothing more over live: what follows would come
+    // before what was skipped. The reply's record has both, in order.
+    let mut lagged = false;
     let exec = loop {
         tokio::select! {
             biased;
@@ -211,7 +214,7 @@ pub async fn execute_streaming(
                             handler.on_busy();
                         }
                     }
-                    Channel::IoPub => {
+                    Channel::IoPub if !lagged => {
                         handler.on_iopub(&m);
                         streamed.insert(m.header.msg_id.clone());
                     }
@@ -224,9 +227,12 @@ pub async fn execute_streaming(
                     _ => {}
                 },
                 Ok(_) | Err(RecvError::Closed) => {}
-                Err(RecvError::Lagged(n)) => tracing::warn!(
-                    "output handler fell {n} messages behind; the rest arrives with the reply"
-                ),
+                Err(RecvError::Lagged(n)) => {
+                    lagged = true;
+                    tracing::warn!(
+                        "output handler fell {n} messages behind; the rest arrives with the reply"
+                    );
+                }
             },
             r = &mut request => break r?,
         }
@@ -1000,6 +1006,87 @@ mod tests {
         assert_eq!(timestamp(&m), "2026-10-17T16:41:06.123000Z");
         m.header.date = "2026-10-17T16:41:06.123456+00:00".into();
         assert_eq!(timestamp(&m), "2026-10-17T16:41:06.123456Z");
+    }
+
+    /// Records the number each stream output carries.
+    struct Slow(Vec<usize>);
+
+    #[async_trait::async_trait]
+    impl Handler for Slow {
+        fn on_iopub(&mut self, m: &Message) {
+            if m.msg_type() != "stream" {
+                return;
+            }
+            if self.0.is_empty() {
+                // Fall behind the broadcast while the kernel keeps writing.
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            self.0
+                .push(m.content["text"].as_str().unwrap().parse().unwrap());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn outputs_keep_their_order_after_the_handler_lags() {
+        const N: usize = 3000;
+        let (host, mut side) = in_process_pair(64);
+        tokio::spawn(async move {
+            while let Some((ch, m)) = side.incoming.recv().await {
+                let send = |c, t: &str, v: serde_json::Value| (c, Message::reply_to(&m, t, &v));
+                let mut out = vec![];
+                match m.msg_type() {
+                    "kernel_info_request" => {
+                        out.push(send(
+                            Channel::IoPub,
+                            "status",
+                            serde_json::json!({"execution_state": "idle"}),
+                        ));
+                        out.push(send(
+                            ch,
+                            "kernel_info_reply",
+                            serde_json::to_value(ganymede_kernel_host::testing::kernel_info())
+                                .unwrap(),
+                        ));
+                    }
+                    "execute_request" => {
+                        out.push(send(
+                            Channel::IoPub,
+                            "status",
+                            serde_json::json!({"execution_state": "busy"}),
+                        ));
+                        for i in 0..N {
+                            out.push(send(
+                                Channel::IoPub,
+                                "stream",
+                                serde_json::json!({"name": "stdout", "text": i.to_string()}),
+                            ));
+                        }
+                        out.push(send(
+                            Channel::IoPub,
+                            "status",
+                            serde_json::json!({"execution_state": "idle"}),
+                        ));
+                        out.push(send(
+                            Channel::Shell,
+                            "execute_reply",
+                            serde_json::json!({"status": "ok", "execution_count": 1}),
+                        ));
+                    }
+                    _ => {}
+                }
+                for o in out {
+                    let _ = side.outgoing.send(o).await;
+                }
+            }
+        });
+        let s = KernelSession::start(host, None);
+        s.nudge(Duration::from_secs(5)).await.unwrap();
+        let mut h = Slow(vec![]);
+        let req = ExecuteRequest::new("x");
+        execute_streaming(&s, req, Duration::from_secs(30), &mut h)
+            .await
+            .unwrap();
+        assert_eq!(h.0, (0..N).collect::<Vec<_>>());
     }
 
     #[tokio::test]
