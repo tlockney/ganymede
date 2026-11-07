@@ -70,12 +70,12 @@ attests them, and replaces the assets of the `main-build` prerelease,
 which `install.sh --main` installs. A newer push cancels the older
 run's builds, but not its upload, which finishes first. Being a
 prerelease, `main-build` is never the "latest" release that the plain
-install fetches. The job moves
-the `main-build` tag to the commit when GitHub lets the workflow token do
-so; when it can't (a ref update across commits that change workflow
-files), the tag lags and the run warns, but the assets, notes, and
-attestation still name the right commit. A failed main build changes
-nothing; the next push or a manual run on `main` replaces it.
+install fetches. The job moves the `main-build` tag to the commit when
+GitHub lets the workflow token do so; when it can't (a ref update
+across commits that change workflow files), the tag lags and the run
+warns, but the assets, notes, and attestation still name the right
+commit. A failed main build changes nothing; the next push or a manual
+run on `main` replaces it.
 
 ## When it fails
 
@@ -89,8 +89,8 @@ workflow itself, depending on how far it got.
 A flaky runner, a network error, or a download that timed out: the code
 is fine. The XCFramework job counts too: the release and `main-build`
 wait for it as well as for the CLI targets, so a failed `xcframework`
-job holds back the whole release until it is rerun. Rerun the failed jobs from the run's page, or start a fresh run
-on the tag:
+job holds back the whole release until it is rerun. Rerun the failed
+jobs from the run's page, or start a fresh run on the tag:
 
 ```sh
 gh run rerun <run-id> --failed --repo tlockney/ganymede
