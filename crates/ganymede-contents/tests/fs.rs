@@ -707,7 +707,9 @@ async fn checkpoint_symlinks_out_of_root_rejected() {
         .await
         .unwrap();
     assert_eq!(status(&c.create_checkpoint("a.ipynb").await), 404);
-    assert_eq!(status(&c.list_checkpoints("a.ipynb").await), 404);
+    // Listing it isn't an error (JupyterLab lists on every open); it just
+    // isn't there.
+    assert_eq!(c.list_checkpoints("a.ipynb").await.unwrap(), vec![]);
     assert_eq!(
         status(&c.restore_checkpoint("a.ipynb", CHECKPOINT_ID).await),
         404
@@ -757,6 +759,37 @@ async fn checkpoint_symlinks_out_of_root_rejected() {
         .unwrap();
     assert_eq!(status(&c.create_checkpoint("d/n.ipynb").await), 404);
     assert!(!outside.path().join("n-checkpoint.ipynb").exists());
+
+    // Deleting a file doesn't delete a "checkpoint" outside the root.
+    fs::write(outside.path().join("x-checkpoint.txt"), "keep").unwrap();
+    c.save("d/x.txt", SaveRequest::text("x")).await.unwrap();
+    c.delete("d/x.txt").await.unwrap();
+    assert_eq!(
+        fs::read_to_string(outside.path().join("x-checkpoint.txt")).unwrap(),
+        "keep"
+    );
+
+    // Renaming into `d` doesn't move a checkpoint out of the root, over a
+    // file there.
+    fs::write(outside.path().join("y-checkpoint.txt"), "keep").unwrap();
+    c.save("y.txt", SaveRequest::text("y")).await.unwrap();
+    c.create_checkpoint("y.txt").await.unwrap();
+    c.rename("y.txt", "d/y.txt").await.unwrap();
+    assert_eq!(
+        fs::read_to_string(outside.path().join("y-checkpoint.txt")).unwrap(),
+        "keep"
+    );
+    assert!(cps.join("y-checkpoint.txt").is_file(), "left where it was");
+
+    // Nor out of `d` through the link, onto a checkpoint inside the root.
+    fs::write(outside.path().join("z-checkpoint.txt"), "secret").unwrap();
+    c.save("d/z.txt", SaveRequest::text("z")).await.unwrap();
+    c.rename("d/z.txt", "z.txt").await.unwrap();
+    assert!(!cps.join("z-checkpoint.txt").exists());
+    assert_eq!(
+        fs::read_to_string(outside.path().join("z-checkpoint.txt")).unwrap(),
+        "secret"
+    );
 }
 
 #[cfg(unix)]

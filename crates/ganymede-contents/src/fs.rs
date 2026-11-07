@@ -858,21 +858,44 @@ impl Inner {
     /// its root for checkpoints too.
     fn checkpoint_path_checked(&self, api: &ApiPath) -> Result<PathBuf> {
         let cp = self.checkpoint_path(api);
-        let base = match &self.options.checkpoint_dir {
-            None => self.root.clone(),
-            Some(dir) => match dir.canonicalize() {
-                Ok(dir) => dir,
-                // Nothing under it exists yet, so no link can lead out.
-                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(cp),
-                Err(e) => return Err(Error::Io(e)),
-            },
-        };
-        if resolves_under(&base, &cp)? {
+        if self.in_checkpoint_base(&cp)? {
             Ok(cp)
         } else {
             Err(Error::OutsideRoot(format!(
                 "the checkpoint of {api} is outside the checkpoint folder"
             )))
+        }
+    }
+
+    /// Whether `p`, a checkpoint path or a mirrored checkpoint directory,
+    /// stays under the root (or under `--checkpoint-dir` when one is set)
+    /// once symlinks are resolved.
+    fn in_checkpoint_base(&self, p: &Path) -> Result<bool> {
+        let base = match &self.options.checkpoint_dir {
+            None => self.root.clone(),
+            Some(dir) => match dir.canonicalize() {
+                Ok(dir) => dir,
+                // Nothing under it exists yet, so no link can lead out.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(true),
+                Err(e) => return Err(Error::Io(e)),
+            },
+        };
+        resolves_under(&base, p)
+    }
+
+    /// For the best-effort checkpoint upkeep of a delete or rename: whether
+    /// `p` may be touched. One that leads out of the root is left alone.
+    fn safe_to_touch(&self, p: &Path, api: &ApiPath) -> bool {
+        match self.in_checkpoint_base(p) {
+            Ok(true) => true,
+            Ok(false) => {
+                tracing::warn!(path = %api, "checkpoint leads outside the checkpoint folder; left alone");
+                false
+            }
+            Err(e) => {
+                tracing::warn!(path = %api, error = %e, "could not check checkpoint");
+                false
+            }
         }
     }
 
@@ -907,7 +930,13 @@ impl Inner {
 
     fn list_checkpoints(&self, path: &str) -> Result<Vec<Checkpoint>> {
         let r = self.resolve_for_read(path)?;
-        let cp = self.checkpoint_path_checked(&r.api)?;
+        // A checkpoint that leads out of the root isn't listed; listing it
+        // is no error, since JupyterLab lists on every open.
+        let cp = match self.checkpoint_path_checked(&r.api) {
+            Ok(cp) => cp,
+            Err(Error::OutsideRoot(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
         if cp.is_file() {
             Ok(vec![self.checkpoint_model(&cp)?])
         } else {
@@ -955,14 +984,14 @@ impl Inner {
     /// Best effort: the file or directory itself is already gone.
     fn delete_all_checkpoints(&self, api: &ApiPath, was_dir: bool) {
         let cp = self.checkpoint_path(api);
-        if cp.is_file() {
+        if cp.is_file() && self.safe_to_touch(&cp, api) {
             if let Err(e) = fs::remove_file(&cp) {
                 tracing::warn!(path = %api, error = %e, "could not delete checkpoint");
             }
         }
         if was_dir {
             if let Some(mirror) = self.mirrored_checkpoint_dir(api) {
-                if mirror.is_dir() {
+                if mirror.is_dir() && self.safe_to_touch(&mirror, api) {
                     if let Err(e) = fs::remove_dir_all(&mirror) {
                         tracing::warn!(path = %api, error = %e, "could not delete checkpoints");
                     }
@@ -989,6 +1018,9 @@ impl Inner {
             }
         }
         for (a, b) in moves {
+            if !self.safe_to_touch(&a, from) || !self.safe_to_touch(&b, to) {
+                continue;
+            }
             let result = b
                 .parent()
                 .map(fs::create_dir_all)
