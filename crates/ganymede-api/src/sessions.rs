@@ -50,6 +50,9 @@ pub struct SessionPatch {
 pub struct SessionManager {
     kernels: Arc<KernelManager>,
     sessions: RwLock<HashMap<String, Session>>,
+    /// Held by `create` and `update` across their kernel starts, so two
+    /// creates for one path can't both miss the other's session (#430).
+    changes: tokio::sync::Mutex<()>,
 }
 
 impl SessionManager {
@@ -57,6 +60,7 @@ impl SessionManager {
         SessionManager {
             kernels,
             sessions: RwLock::new(HashMap::new()),
+            changes: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -104,17 +108,22 @@ impl SessionManager {
     }
 
     /// Create, or return the existing session for the same path, as
-    /// `jupyter_server` does.
+    /// `jupyter_server` does. An existing session whose kernel is gone
+    /// (culled, or died) is dropped and a new one made in its place.
     pub async fn create(&self, req: SessionCreate) -> Result<SessionModel> {
-        if let Some(existing) = self
+        let _changing = self.changes.lock().await;
+        let existing = self
             .sessions
             .read()
             .unwrap()
             .values()
             .find(|s| s.path == req.path)
-            .cloned()
-        {
-            return self.model(&existing);
+            .cloned();
+        if let Some(existing) = existing {
+            if self.kernels.get(&existing.kernel_id).is_ok() {
+                return self.model(&existing);
+            }
+            self.sessions.write().unwrap().remove(&existing.id);
         }
         let kernel_id = match req.kernel.id {
             Some(id) => {
@@ -142,7 +151,11 @@ impl SessionManager {
         self.model(&s)
     }
 
+    /// Change a session's path, name, type or kernel. A session deleted
+    /// while its new kernel starts stays deleted, and that kernel is shut
+    /// down; the old kernel is shut down once the change is in.
     pub async fn update(&self, id: &str, patch: SessionPatch) -> Result<SessionModel> {
+        let changing = self.changes.lock().await;
         let mut s = self
             .sessions
             .read()
@@ -159,6 +172,8 @@ impl SessionManager {
         if let Some(t) = patch.type_ {
             s.type_ = t;
         }
+        let mut started = false;
+        let mut replaced = None;
         if let Some(k) = patch.kernel {
             let new_id = match (k.id, k.name) {
                 (Some(id), _) => {
@@ -166,6 +181,7 @@ impl SessionManager {
                     id
                 }
                 (None, Some(name)) => {
+                    started = true;
                     self.kernels
                         .start(Some(&name), Some(kernel_path(&s.path)))
                         .await?
@@ -174,14 +190,28 @@ impl SessionManager {
                 (None, None) => s.kernel_id.clone(),
             };
             if new_id != s.kernel_id {
-                let _ = self.kernels.shutdown(&s.kernel_id).await;
-                s.kernel_id = new_id;
+                replaced = Some(std::mem::replace(&mut s.kernel_id, new_id));
             }
         }
-        self.sessions
-            .write()
-            .unwrap()
-            .insert(id.to_string(), s.clone());
+        // `delete` doesn't wait for `changes`: it may have run while the
+        // kernel started, and then shut down the session's old kernel.
+        let kept = match self.sessions.write().unwrap().get_mut(id) {
+            Some(slot) => {
+                *slot = s.clone();
+                true
+            }
+            None => false,
+        };
+        drop(changing);
+        if !kept {
+            if started {
+                let _ = self.kernels.shutdown(&s.kernel_id).await;
+            }
+            return Err(ApiError::not_found(format!("session {id}")));
+        }
+        if let Some(old) = replaced {
+            let _ = self.kernels.shutdown(&old).await;
+        }
         self.model(&s)
     }
 
@@ -665,6 +695,58 @@ mod tests {
         sm.delete(&s.id).await.unwrap();
         assert!(m.list().is_empty());
         assert_eq!(sm.get(&s.id).unwrap_err().status, 404);
+    }
+
+    /// Two creates for one path at once make one session and one kernel;
+    /// a create for a path whose kernel is gone starts a new one (#430).
+    #[tokio::test]
+    async fn concurrent_creates_share_a_session_and_a_dead_one_is_replaced() {
+        let m = manager(None);
+        let sm = SessionManager::new(m.clone());
+        let req = || SessionCreate {
+            path: "a.ipynb".into(),
+            ..Default::default()
+        };
+        let (a, b) = tokio::join!(sm.create(req()), sm.create(req()));
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert_eq!(a.id, b.id);
+        assert_eq!(a.kernel.id, b.kernel.id);
+        assert_eq!(m.list().len(), 1);
+
+        m.shutdown(&a.kernel.id).await.unwrap();
+        let c = sm.create(req()).await.unwrap();
+        assert_ne!(c.id, a.id);
+        assert_ne!(c.kernel.id, a.kernel.id);
+        assert_eq!(sm.get(&a.id).unwrap_err().status, 404);
+        assert_eq!(sm.list().len(), 1);
+    }
+
+    /// A delete that lands while a PATCH starts the new kernel wins: the
+    /// session stays deleted and neither kernel is left running (#430).
+    #[tokio::test]
+    async fn a_session_deleted_during_a_kernel_change_stays_deleted() {
+        let m = manager(None);
+        let sm = SessionManager::new(m.clone());
+        let s = sm
+            .create(SessionCreate {
+                path: "a.ipynb".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let patch = SessionPatch {
+            kernel: Some(KernelRef {
+                name: Some("other".into()),
+                id: None,
+            }),
+            ..Default::default()
+        };
+        let (patched, deleted) = tokio::join!(sm.update(&s.id, patch), sm.delete(&s.id));
+        deleted.unwrap();
+        assert_eq!(patched.unwrap_err().status, 404);
+        assert_eq!(sm.get(&s.id).unwrap_err().status, 404);
+        assert!(sm.list().is_empty());
+        assert!(m.list().is_empty(), "{:?}", m.list());
     }
 
     async fn until_none(c: &mut crate::bridge::ClientConnection) -> Vec<(Channel, Message)> {
