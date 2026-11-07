@@ -74,6 +74,18 @@ const CLEANUP_DELAY: Duration = Duration::from_secs(60);
 /// Failed saves in a row after which a room with no clients closes with
 /// its edits unsaved: about five minutes of #353's backoff.
 const GIVE_UP_AFTER: u32 = 10;
+/// Frames queued for a client before it is dropped: the kernel bridge's
+/// limit. The kernel bridge drops output instead, but a room can't skip
+/// an update without the client's document going wrong, so the client
+/// goes and resyncs when it reconnects.
+const CLIENT_QUEUE_LIMIT: usize = 10_000;
+/// How often a room's websocket is pinged.
+const PING_INTERVAL: Duration = Duration::from_secs(30);
+/// A client that sends nothing, not even a pong, for this long is
+/// dropped: its connection is half-open (a laptop asleep, a network gone).
+const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// How long one write to a client's websocket may take.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Rooms and file ids for one server.
 pub struct Collab {
@@ -94,6 +106,9 @@ pub struct Collab {
     next_conn: AtomicU64,
     /// How long a room with no clients is kept: [`CLEANUP_DELAY`].
     cleanup_delay: Duration,
+    /// How often sockets are pinged, and how long one may stay silent:
+    /// [`PING_INTERVAL`] and [`IDLE_TIMEOUT`].
+    heartbeat: (Duration, Duration),
     /// Which rooms own their files on this machine (#272).
     locks: crate::room_lock::Locks,
     /// Request ids the execute endpoint has queued.
@@ -119,6 +134,7 @@ impl Collab {
             moves: AtomicU64::new(0),
             next_conn: AtomicU64::new(1),
             cleanup_delay: CLEANUP_DELAY,
+            heartbeat: (PING_INTERVAL, IDLE_TIMEOUT),
             locks: Default::default(),
             requests: Default::default(),
         }
@@ -158,6 +174,15 @@ impl Collab {
     #[doc(hidden)]
     pub fn with_cleanup_delay(mut self, delay: Duration) -> Self {
         self.cleanup_delay = delay;
+        self
+    }
+
+    /// Ping sockets every `ping` and drop one silent for `idle`, instead
+    /// of every 30 and 90 seconds, so tests can see a half-open
+    /// connection dropped.
+    #[doc(hidden)]
+    pub fn with_heartbeat(mut self, ping: Duration, idle: Duration) -> Self {
+        self.heartbeat = (ping, idle);
         self
     }
 
@@ -240,7 +265,7 @@ impl Collab {
 }
 
 pub(crate) enum Cmd {
-    Join(ConnId, mpsc::UnboundedSender<Out>),
+    Join(ConnId, ClientTx),
     Frame(ConnId, Vec<u8>),
     Leave(ConnId),
     /// A rename through the contents API: old and new path.
@@ -259,6 +284,37 @@ pub(crate) enum Cmd {
 pub(crate) enum Out {
     Frame(Vec<u8>),
     Close(u16, String),
+}
+
+/// A client's outgoing queue, bounded at [`CLIENT_QUEUE_LIMIT`]. A send
+/// that finds it full drops nothing silently: it tells the client's
+/// socket task to close, and the client leaves the room.
+#[derive(Clone)]
+pub(crate) struct ClientTx {
+    tx: mpsc::Sender<Out>,
+    full: Arc<tokio::sync::Notify>,
+}
+
+impl ClientTx {
+    fn new() -> (ClientTx, mpsc::Receiver<Out>, Arc<tokio::sync::Notify>) {
+        let (tx, rx) = mpsc::channel(CLIENT_QUEUE_LIMIT);
+        let full = Arc::new(tokio::sync::Notify::new());
+        (
+            ClientTx {
+                tx,
+                full: full.clone(),
+            },
+            rx,
+            full,
+        )
+    }
+
+    /// Queue `out`; a client gone or too far behind is not waited for.
+    fn send(&self, out: Out) {
+        if let Err(mpsc::error::TrySendError::Full(_)) = self.tx.try_send(out) {
+            self.full.notify_one();
+        }
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -382,7 +438,8 @@ pub async fn room(
     if !origin_allowed(&state, &headers) {
         return HttpError(403, "origin not allowed".into()).into_response();
     }
-    ws.max_message_size(1 << 30)
+    // No message larger than a notebook the contents API would take.
+    ws.max_message_size(state.max_body_size)
         .on_upgrade(move |socket| serve_socket(socket, state, room_id, query.session_id))
 }
 
@@ -428,7 +485,7 @@ async fn serve_socket(
     };
 
     let conn = collab.next_conn.fetch_add(1, Ordering::Relaxed);
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel();
+    let (out_tx, mut out_rx, full) = ClientTx::new();
     let room = {
         let mut rooms = collab.rooms.lock().expect("rooms");
         let tx = open_room(&collab, &mut rooms, &state.contents, &room_id, doc);
@@ -437,23 +494,45 @@ async fn serve_socket(
     };
     tracing::debug!(room = %room_id, conn, "collaboration client connected");
 
+    // Every message from the client, a pong included, shows the
+    // connection is alive; one silent for IDLE_TIMEOUT is dropped.
+    let (ping_every, idle_timeout) = collab.heartbeat;
+    let mut ping = tokio::time::interval(ping_every);
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ping.tick().await;
+    let mut last_heard = Instant::now();
     loop {
         tokio::select! {
-            incoming = socket.recv() => match incoming {
-                Some(Ok(WsMessage::Binary(b))) => {
-                    if room.send(Cmd::Frame(conn, b.to_vec())).is_err() { break }
+            incoming = socket.recv() => {
+                last_heard = Instant::now();
+                match incoming {
+                    Some(Ok(WsMessage::Binary(b))) => {
+                        if room.send(Cmd::Frame(conn, b.to_vec())).is_err() { break }
+                    }
+                    Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_) | WsMessage::Text(_))) => {}
+                    Some(Ok(WsMessage::Close(_))) | None => break,
+                    Some(Err(e)) => { tracing::debug!("collaboration websocket error: {e}"); break }
                 }
-                Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_) | WsMessage::Text(_))) => {}
-                Some(Ok(WsMessage::Close(_))) | None => break,
-                Some(Err(e)) => { tracing::debug!("collaboration websocket error: {e}"); break }
             },
             out = out_rx.recv() => match out {
                 Some(Out::Frame(f)) => {
-                    if socket.send(WsMessage::Binary(f.into())).await.is_err() { break }
+                    if !send_within(&mut socket, WsMessage::Binary(f.into())).await { break }
                 }
                 Some(Out::Close(code, reason)) => { close(&mut socket, code, reason).await; break }
                 None => break,
             },
+            () = full.notified() => {
+                tracing::info!(room = %room_id, conn, "collaboration client is {CLIENT_QUEUE_LIMIT} frames behind; dropping it");
+                close(&mut socket, 1008, format!("fell {CLIENT_QUEUE_LIMIT} messages behind")).await;
+                break
+            }
+            _ = ping.tick() => {
+                if last_heard.elapsed() >= idle_timeout {
+                    tracing::debug!(room = %room_id, conn, "collaboration client silent; dropping it");
+                    break
+                }
+                if !send_within(&mut socket, WsMessage::Ping(Default::default())).await { break }
+            }
         }
     }
     let _ = room.send(Cmd::Leave(conn));
@@ -580,18 +659,26 @@ pub(crate) async fn hold_notebook(
     let room_id = notebook_room_id(collab, path).await;
     let conn = collab.next_conn.fetch_add(1, Ordering::Relaxed);
     // The receiver is dropped: frames sent to this client go nowhere.
-    let (out, _) = mpsc::unbounded_channel();
+    let (out, _, _) = ClientTx::new();
     let room = send_to_notebook_room(collab, contents, &room_id, Cmd::Join(conn, out)).await?;
     Some(Hold { room, conn })
 }
 
 async fn close(socket: &mut WebSocket, code: u16, reason: String) {
-    let _ = socket
-        .send(WsMessage::Close(Some(CloseFrame {
-            code,
-            reason: reason.into(),
-        })))
-        .await;
+    let frame = WsMessage::Close(Some(CloseFrame {
+        code,
+        reason: reason.into(),
+    }));
+    send_within(socket, frame).await;
+}
+
+/// Send `msg`, giving up after [`WRITE_TIMEOUT`]. False when the client
+/// is gone or not reading.
+async fn send_within(socket: &mut WebSocket, msg: WsMessage) -> bool {
+    matches!(
+        tokio::time::timeout(WRITE_TIMEOUT, socket.send(msg)).await,
+        Ok(Ok(()))
+    )
 }
 
 /// A room's file: what was last read or written, to tell our own writes
@@ -659,7 +746,7 @@ async fn run_room(
     me: mpsc::UnboundedSender<Cmd>,
     mut rx: mpsc::UnboundedReceiver<Cmd>,
 ) {
-    let mut clients: HashMap<ConnId, mpsc::UnboundedSender<Out>> = HashMap::new();
+    let mut clients: HashMap<ConnId, ClientTx> = HashMap::new();
     let (mut room, mut disk) = match &path {
         None => (Room::transient(), None),
         Some(path) => match load(contents.as_ref(), path).await {
@@ -739,7 +826,7 @@ async fn run_room(
                                 };
                                 after_save(status, &mut last_edit, &mut save_failures);
                                 if let Some(out) = clients.get(&conn) {
-                                    let _ = out.send(Out::Frame(Room::save_reply(id, status)));
+                                    out.send(Out::Frame(Room::save_reply(id, status)));
                                 }
                             }
                         }
@@ -771,7 +858,7 @@ async fn run_room(
                         tracing::info!(room = %room_id, "{} deleted; closing the room", d.path);
                         let reason = format!("File deleted: {}", d.path);
                         for out in clients.values() {
-                            let _ = out.send(Out::Close(4404, reason.clone()));
+                            out.send(Out::Close(4404, reason.clone()));
                         }
                         close_room(&collab, &room_id, &mut rx, 4404, &reason, &reason);
                         break;
@@ -1002,7 +1089,7 @@ fn close_room(
     while let Ok(cmd) = rx.try_recv() {
         match cmd {
             Cmd::Join(_, out) => {
-                let _ = out.send(Out::Close(code, reason.to_string()));
+                out.send(Out::Close(code, reason.to_string()));
             }
             Cmd::Exec(cmd) => cmd.unavailable(exec_reason),
             Cmd::Flush(done) => {
@@ -1031,7 +1118,7 @@ fn retire(
     true
 }
 
-fn dispatch(clients: &HashMap<ConnId, mpsc::UnboundedSender<Out>>, send: Vec<(Target, Vec<u8>)>) {
+fn dispatch(clients: &HashMap<ConnId, ClientTx>, send: Vec<(Target, Vec<u8>)>) {
     for (target, frame) in send {
         for (conn, out) in clients {
             let to = match target {
@@ -1040,7 +1127,7 @@ fn dispatch(clients: &HashMap<ConnId, mpsc::UnboundedSender<Out>>, send: Vec<(Ta
                 Target::All => true,
             };
             if to {
-                let _ = out.send(Out::Frame(frame.clone()));
+                out.send(Out::Frame(frame.clone()));
             }
         }
     }
@@ -1055,7 +1142,7 @@ async fn save_room(
     contents: &dyn Contents,
     room: &mut Room,
     disk: &mut Disk,
-    clients: &HashMap<ConnId, mpsc::UnboundedSender<Out>>,
+    clients: &HashMap<ConnId, ClientTx>,
     force: bool,
 ) -> SaveStatus {
     // Another server's room saves this file (#272).
@@ -1113,7 +1200,7 @@ async fn poll(
     contents: &dyn Contents,
     room: &mut Room,
     disk: &mut Disk,
-    clients: &HashMap<ConnId, mpsc::UnboundedSender<Out>>,
+    clients: &HashMap<ConnId, ClientTx>,
 ) -> bool {
     let Ok(model) = contents.get(&disk.path, GetOptions::default()).await else {
         return false; // gone or unreadable: keep the room as it is
@@ -1139,7 +1226,7 @@ async fn reload(
     contents: &dyn Contents,
     room: &mut Room,
     disk: &mut Disk,
-    clients: &HashMap<ConnId, mpsc::UnboundedSender<Out>>,
+    clients: &HashMap<ConnId, ClientTx>,
 ) -> Reloaded {
     // The hash first, so a file event for our own save, or a file touched
     // but not changed, doesn't parse the notebook.
@@ -1232,6 +1319,27 @@ mod lock_tests {
 
     /// A retiring room releases its lock before another room on the file
     /// can open, so the new room takes it at once (#400).
+    /// A client too far behind is told to go, and nothing waits on it.
+    #[tokio::test]
+    async fn a_full_client_queue_asks_the_client_to_close() {
+        let (tx, mut rx, full) = ClientTx::new();
+        for _ in 0..CLIENT_QUEUE_LIMIT {
+            tx.send(Out::Frame(vec![1]));
+        }
+        let not_yet = tokio::time::timeout(Duration::from_millis(20), full.notified()).await;
+        assert!(not_yet.is_err(), "a queue at its limit is not yet full");
+        tx.send(Out::Frame(vec![2]));
+        tokio::time::timeout(Duration::from_secs(1), full.notified())
+            .await
+            .expect("told to close");
+        assert!(matches!(rx.recv().await, Some(Out::Frame(f)) if f == [1]));
+        // A client whose socket task is gone is not "full".
+        drop(rx);
+        tx.send(Out::Frame(vec![3]));
+        let after = tokio::time::timeout(Duration::from_millis(20), full.notified()).await;
+        assert!(after.is_err());
+    }
+
     #[test]
     fn retiring_releases_the_lock_before_a_new_room_opens() {
         let dir = tempfile::tempdir().unwrap();
