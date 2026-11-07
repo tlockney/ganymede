@@ -406,7 +406,10 @@ impl KernelSession {
     /// Ask the kernel to exit; escalate if it does not. As in
     /// `jupyter_client`'s `finish_shutdown`: a `shutdown_request` (its
     /// reply awaited up to `grace`), then up to `grace / 2` for the process
-    /// to exit, then SIGTERM and another `grace / 2`, then SIGKILL.
+    /// to exit, then SIGTERM and another `grace / 2`, then SIGKILL. A
+    /// kernel with no pid (a remote one) gets `kill` after the request
+    /// instead, also bounded by `grace`: up to twice `grace` in all, as a
+    /// process that needs the SIGKILL.
     pub async fn shutdown(&self, restart: bool, grace: Duration) -> Result<()> {
         if self.is_alive() {
             let m = self.message(

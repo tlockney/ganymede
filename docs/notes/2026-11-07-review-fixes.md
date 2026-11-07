@@ -52,6 +52,17 @@ server or reach outside the root, or that lose kernels.
     open. `out_to_json` stops one level past 16 as a backstop (values
     inside the deepest accepted type are kept) and gives null for XML
     types, whose yrs conversion recurses without limit.
+  - yrs takes an item's parent from its left origin only when the left
+    is an item with a known parent, and from the right origin otherwise
+    (`Update::repair`). The scan had followed the left only, so an array
+    placed after a GC block, with its right origin inside the deepest
+    allowed type, was counted at the GC block's stand-in depth: one
+    update could chain them past any limit. Both origins now count, and
+    the deeper wins.
+  - A sibling that isn't a known shared type stands in at the document's
+    deepest depth, so once some branch reaches 16, a new type beside a
+    plain value anywhere can be refused. Notebooks stay near 5; resolving
+    such a sibling's parent needs yrs internals, so it stays an estimate.
   - The collaboration websocket's 1 GiB message limit is left to #436.
 - **A beat cut short (#425).** Two timeouts of the same length, nested:
   the outer one always wins, and dropping the inner future skipped the

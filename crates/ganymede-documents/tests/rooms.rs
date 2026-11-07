@@ -924,3 +924,99 @@ fn values_at_the_depth_limit_are_kept() {
     }
     assert_eq!(v.get("leaf"), Some(&serde_json::json!("hello")));
 }
+
+/// yrs takes an item's parent from its right origin when the left origin
+/// is a GC block, not an item. A chain of arrays 16 deep, an `Any` value
+/// `s` in the deepest, a GC block `g`, then an array with origin `g` and
+/// right origin `s` (so inside the deepest array, at 17), and arrays
+/// chained under that: refused, whether `g` comes in the same update or
+/// is already in the document.
+#[test]
+fn a_type_beside_a_gc_block_takes_its_depth_from_the_right() {
+    use ganymede_documents::depth::MAX_SHARED_DEPTH;
+
+    fn varint(out: &mut Vec<u8>, mut n: u64) {
+        loop {
+            let byte = (n & 0x7f) as u8;
+            n >>= 7;
+            if n == 0 {
+                out.push(byte);
+                return;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+    const CLIENT: u64 = 4242;
+    // An array (shared type, type ref 0) whose parent is the type at `parent`.
+    fn array_in(b: &mut Vec<u8>, parent: u64) {
+        b.push(7);
+        varint(b, 0); // parent by id
+        varint(b, CLIENT);
+        varint(b, parent);
+        b.push(0);
+    }
+    // The blocks from clock 0: the chain under root "zz" (clocks 0..d-2,
+    // the last at depth MAX_SHARED_DEPTH), `s`, then `g` (one clock).
+    let deepest = MAX_SHARED_DEPTH as u64 - 2;
+    let mut first = Vec::new();
+    first.extend([7, 1, 2, b'z', b'z', 0]); // array in root "zz", depth 2
+    for clock in 1..=deepest {
+        array_in(&mut first, clock - 1);
+    }
+    let s = deepest + 1;
+    first.push(8); // Any content
+    varint(&mut first, 0);
+    varint(&mut first, CLIENT);
+    varint(&mut first, deepest);
+    first.extend([1, 126]); // one Any: null
+    let g = s + 1;
+    first.extend([0, 1]); // GC, one clock
+    let first_blocks = (deepest + 3) as usize;
+
+    // From clock g + 1: the array beside `g`, and 9 more under it.
+    let x = g + 1;
+    let mut second = vec![7 | 0x80 | 0x40];
+    for id in [g, s] {
+        varint(&mut second, CLIENT);
+        varint(&mut second, id);
+    }
+    second.push(0);
+    for clock in x + 1..x + 10 {
+        array_in(&mut second, clock - 1);
+    }
+    let second_blocks = 10;
+
+    let update = |blocks: usize, clock: u64, body: &[u8]| {
+        let mut u = vec![1];
+        varint(&mut u, blocks as u64);
+        varint(&mut u, CLIENT);
+        varint(&mut u, clock);
+        u.extend(body);
+        u.push(0); // no deletes
+        Message::Sync(SyncMessage::Update(u)).encode_v1()
+    };
+    let refused = |fx: &ganymede_documents::Effects| {
+        fx.send.iter().any(|(t, m)| {
+            matches!(t, Target::One(1)) && String::from_utf8_lossy(m).contains("conflict")
+        })
+    };
+    let nb = Notebook::from_str(&fixture("empty.ipynb")).unwrap();
+
+    // In one update.
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let mut both = first.clone();
+    both.extend(&second);
+    let fx = room
+        .receive(1, &update(first_blocks + second_blocks, 0, &both))
+        .unwrap();
+    assert!(refused(&fx), "one update");
+
+    // `g` already in the document.
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let fx = room.receive(1, &update(first_blocks, 0, &first)).unwrap();
+    assert!(!refused(&fx), "the chain alone is within the limit");
+    let fx = room.receive(1, &update(second_blocks, x, &second)).unwrap();
+    assert!(refused(&fx), "g in the document");
+}

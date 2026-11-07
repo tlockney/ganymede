@@ -46,7 +46,7 @@ pub const SCHEMA_DEPTH: usize = 5;
 pub struct Checked {
     /// A value nests deeper than [`MAX_DEPTH`].
     pub too_deep: bool,
-    /// The update's items, in order, for [`Checked::deepest_type`].
+    /// The update's items, in order, for [`Checked::type_depths`].
     items: Vec<ItemRec>,
 }
 
@@ -57,8 +57,11 @@ enum ParentRef {
     Root,
     /// The shared type that the item with this id holds.
     Type(u64, u32),
-    /// The same parent as the item holding this id (its origin).
-    Beside(u64, u32),
+    /// The same parent as a neighbour: the item at the left origin, or
+    /// the one at the right origin. yrs takes the left's parent when the
+    /// left is an item with a known parent, and the right's otherwise (a
+    /// GC block on the left, for one), so both count and the deeper wins.
+    Beside(Option<(u64, u32)>, Option<(u64, u32)>),
     /// Not an item: garbage-collected or skipped clocks.
     None,
 }
@@ -169,51 +172,67 @@ impl Checked {
                     continue;
                 }
                 state[i] = State::Busy;
-                // The item in the update this one's parent comes from, and
-                // whether it holds the parent (or is a sibling).
-                let (inside, through_type) = match self.items[i].parent {
-                    ParentRef::Root | ParentRef::None => (None, false),
-                    ParentRef::Type(c, k) => (find(c, k), true),
-                    ParentRef::Beside(c, k) => (find(c, k), false),
-                };
-                let parent_depth = match inside {
-                    Some(j) => {
-                        if self.items[j].skip || (through_type && !self.items[j].is_type) {
-                            return Err(Unresolved::Missing);
-                        }
-                        match state[j] {
-                            // `d` is j's parent's depth; j's own is one more.
-                            State::Done(d) if through_type => d + 1,
-                            State::Done(d) => d,
-                            State::Busy => return Err(Unresolved::Missing),
-                            State::Todo => {
-                                stack.push(j);
-                                continue;
-                            }
-                        }
+                // The items this one's parent comes from, and whether each
+                // holds the parent (or is a sibling). A sibling's parent can
+                // come from either origin, so both count.
+                let refs: [Option<((u64, u32), bool)>; 2] = match self.items[i].parent {
+                    ParentRef::Root => [None, None],
+                    ParentRef::None => {
+                        // Not an item: it has no parent, and a sibling of
+                        // it can't tell its depth from it.
+                        out.estimated = true;
+                        state[i] = State::Done(bound);
+                        stack.pop();
+                        continue;
                     }
-                    None => {
-                        let live_ref = match self.items[i].parent {
-                            ParentRef::Root => None,
-                            ParentRef::None => Some(None),
-                            ParentRef::Type(c, k) if known(c, k) => Some(Some(LiveRef::Type(c, k))),
-                            ParentRef::Beside(c, k) if known(c, k) => {
-                                Some(Some(LiveRef::Beside(c, k)))
+                    ParentRef::Type(c, k) => [Some(((c, k), true)), None],
+                    ParentRef::Beside(l, r) => [l.map(|id| (id, false)), r.map(|id| (id, false))],
+                };
+                let mut parent_depth = if refs.iter().all(Option::is_none) {
+                    1
+                } else {
+                    0
+                };
+                let mut pending = None;
+                for ((c, k), through_type) in refs.into_iter().flatten() {
+                    let d = match find(c, k) {
+                        Some(j) => {
+                            if self.items[j].skip || (through_type && !self.items[j].is_type) {
+                                return Err(Unresolved::Missing);
                             }
-                            _ => return Err(Unresolved::Missing),
-                        };
-                        match live_ref {
-                            None => 1,
-                            Some(r) => match r.and_then(&mut live) {
+                            match state[j] {
+                                // `d` is j's parent's depth; j's own is one more.
+                                State::Done(d) if through_type => d + 1,
+                                State::Done(d) => d,
+                                State::Busy => return Err(Unresolved::Missing),
+                                State::Todo => {
+                                    pending = Some(j);
+                                    break;
+                                }
+                            }
+                        }
+                        None if !known(c, k) => return Err(Unresolved::Missing),
+                        None => {
+                            let r = if through_type {
+                                LiveRef::Type(c, k)
+                            } else {
+                                LiveRef::Beside(c, k)
+                            };
+                            match live(r) {
                                 Some(d) => d,
                                 None => {
                                     out.estimated = true;
                                     bound
                                 }
-                            },
+                            }
                         }
-                    }
-                };
+                    };
+                    parent_depth = parent_depth.max(d);
+                }
+                if let Some(j) = pending {
+                    stack.push(j);
+                    continue;
+                }
                 state[i] = State::Done(parent_depth);
                 let item = &self.items[i];
                 if item.is_type {
@@ -243,7 +262,8 @@ pub fn check(update: &[u8]) -> Checked {
 }
 
 /// Whether `update` holds a value nested deeper than [`MAX_DEPTH`].
-pub fn too_deep(update: &[u8]) -> bool {
+#[cfg(test)]
+fn too_deep(update: &[u8]) -> bool {
     check(update).too_deep
 }
 
@@ -356,10 +376,8 @@ fn scan_block(c: &mut Cursor) -> Result<(u32, ParentRef, bool, bool), Scan> {
             let right = (info & HAS_RIGHT_ORIGIN != 0)
                 .then(|| scan_id(c))
                 .transpose()?;
-            let parent = match origin.or(right) {
-                // yrs takes the parent from the origin, else the right one.
-                Some((client, clock)) => ParentRef::Beside(client, clock),
-                None => {
+            let parent = match (origin, right) {
+                (None, None) => {
                     let parent_info: u32 = c.read_var()?;
                     let parent = if parent_info == 1 {
                         c.read_buf()?;
@@ -373,6 +391,7 @@ fn scan_block(c: &mut Cursor) -> Result<(u32, ParentRef, bool, bool), Scan> {
                     }
                     parent
                 }
+                (left, right) => ParentRef::Beside(left, right),
             };
             let (len, is_type) = scan_content(c, info & 0b1111)?;
             (len, parent, is_type, false)
