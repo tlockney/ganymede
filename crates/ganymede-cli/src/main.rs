@@ -867,6 +867,31 @@ async fn run_cells(
     Ok(failed)
 }
 
+/// Refuse, before running anything, notebooks that `--output` would save
+/// to one file, such as `a/x.ipynb` and `b/x.ipynb` with
+/// `{notebook_name}-out.ipynb`: each would overwrite the one before.
+fn same_output(dest: &Dest, notebooks: &[PathBuf]) -> Result<()> {
+    if dest.inplace {
+        return Ok(());
+    }
+    let mut seen: std::collections::HashMap<PathBuf, &Path> = Default::default();
+    for input in notebooks {
+        let Some(Some(out)) = dest.resolve(input) else {
+            continue;
+        };
+        let key = std::path::absolute(&out).unwrap_or(out.clone());
+        if let Some(first) = seen.insert(key, input) {
+            bail!(
+                "{} and {} would both be saved to {}",
+                first.display(),
+                input.display(),
+                out.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<ExitCode> {
     if args.notebooks.len() > 1 {
         if let Some(o) = &args.dest.output {
@@ -875,6 +900,7 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
             }
         }
     }
+    same_output(&args.dest, &args.notebooks)?;
     let opts = ganymede_engine::NotebookOptions {
         timeout: (args.timeout > 0).then(|| Duration::from_secs(args.timeout)),
         allow_errors: args.allow_errors,
