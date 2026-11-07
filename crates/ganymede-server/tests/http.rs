@@ -1215,7 +1215,9 @@ async fn lab_settings_round_trip_json5() {
 #[tokio::test]
 async fn lab_workspaces_translations_and_listings() {
     let dir = tempfile::tempdir().unwrap();
-    let app = build_router(lab_state(dir.path()));
+    let state = lab_state(dir.path());
+    let ws_dir = state.lab.as_ref().unwrap().workspaces_dir.clone();
+    let app = build_router(state);
     let t = Some(TOKEN);
 
     let (_, ws) = call(&app, "GET", "/lab/api/workspaces/default", None, t).await;
@@ -1249,6 +1251,47 @@ async fn lab_workspaces_translations_and_listings() {
             .await
             .0,
         StatusCode::NOT_FOUND
+    );
+
+    // Ids that differ only in punctuation keep files of their own, and a
+    // long id fits a file name; the names are JupyterLab's (#492).
+    for (id, n) in [("a/b", 1), ("a:b", 2), (&*"w".repeat(300), 3)] {
+        let body = json!({"data": {"n": n}, "metadata": {"id": id}});
+        let url = format!("/lab/api/workspaces/{id}");
+        assert_eq!(
+            call(&app, "PUT", &url, Some(body), t).await.0,
+            StatusCode::NO_CONTENT,
+            "{id}"
+        );
+    }
+    for (id, n) in [("a/b", 1), ("a:b", 2), (&*"w".repeat(300), 3)] {
+        let (_, ws) = call(&app, "GET", &format!("/lab/api/workspaces/{id}"), None, t).await;
+        assert_eq!(ws["data"]["n"], n, "{id}");
+    }
+    assert!(ws_dir.join("ab-c14c.jupyterlab-workspace").is_file());
+    assert!(ws_dir.join("ab-6783.jupyterlab-workspace").is_file());
+
+    // A workspace saved under the old name still loads, and moves to the
+    // new one on its next save.
+    let old = ws_dir.join("old_one.jupyterlab-workspace");
+    std::fs::write(
+        &old,
+        json!({"data": {"n": 4}, "metadata": {"id": "old/one"}}).to_string(),
+    )
+    .unwrap();
+    let (_, ws) = call(&app, "GET", "/lab/api/workspaces/old/one", None, t).await;
+    assert_eq!(ws["data"]["n"], 4);
+    let body = json!({"data": {"n": 5}, "metadata": {"id": "old/one"}});
+    call(&app, "PUT", "/lab/api/workspaces/old/one", Some(body), t).await;
+    assert!(!old.exists());
+    let (_, list) = call(&app, "GET", "/lab/api/workspaces", None, t).await;
+    let ids = list["workspaces"]["ids"].as_array().unwrap();
+    assert_eq!(ids.iter().filter(|i| *i == "old/one").count(), 1);
+    assert_eq!(
+        call(&app, "DELETE", "/lab/api/workspaces/old/one", None, t)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
     );
 
     let (_, tr) = call(&app, "GET", "/lab/api/translations", None, t).await;

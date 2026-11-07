@@ -268,7 +268,26 @@ impl Lab {
 
     // ----- workspaces --------------------------------------------------
 
+    /// Where workspace `id` is saved: the file JupyterLab's server uses
+    /// (#492), so ids that differ only in punctuation get files of their
+    /// own and a long id still fits a file name.
     fn workspace_path(&self, id: &str) -> PathBuf {
+        self.workspaces_dir
+            .join(format!("{}.jupyterlab-workspace", workspace_slug(id)))
+    }
+
+    /// Where Ganymede saved workspace `id` before #492, if that file is
+    /// this workspace's: ids such as `a/b` and `a:b` shared the name.
+    fn legacy_workspace(&self, id: &str) -> Option<(PathBuf, Value)> {
+        let path = self.legacy_workspace_path(id);
+        if path == self.workspace_path(id) {
+            return None;
+        }
+        let ws = read_json(&path)?;
+        (ws.pointer("/metadata/id").and_then(Value::as_str) == Some(id)).then_some((path, ws))
+    }
+
+    fn legacy_workspace_path(&self, id: &str) -> PathBuf {
         let slug: String = id
             .chars()
             .map(|c| {
@@ -544,9 +563,11 @@ async fn get_workspace(
 ) -> HttpResult<Json<Value>> {
     crate::routes::blocking(move || {
         let lab = lab_of(&s)?;
-        Ok(Json(read_json(&lab.workspace_path(&id)).unwrap_or_else(
-            || json!({"data": {}, "metadata": {"id": id}}),
-        )))
+        Ok(Json(
+            read_json(&lab.workspace_path(&id))
+                .or_else(|| lab.legacy_workspace(&id).map(|(_, ws)| ws))
+                .unwrap_or_else(|| json!({"data": {}, "metadata": {"id": id}})),
+        ))
     })
     .await
 }
@@ -573,6 +594,10 @@ async fn put_workspace(
         meta.insert("last_modified".into(), ganymede_api::now_iso().into());
         let bytes = serde_json::to_vec(&Value::Object(ws)).unwrap();
         write_atomic(&lab.workspace_path(&id), &bytes)?;
+        // Saved under the new name: the old file would list it twice.
+        if let Some((old, _)) = lab.legacy_workspace(&id) {
+            let _ = std::fs::remove_file(old);
+        }
         Ok(StatusCode::NO_CONTENT)
     })
     .await
@@ -584,15 +609,57 @@ async fn delete_workspace(
 ) -> HttpResult<StatusCode> {
     crate::routes::blocking(move || {
         let lab = lab_of(&s)?;
-        match std::fs::remove_file(lab.workspace_path(&id)) {
-            Ok(()) => Ok(StatusCode::NO_CONTENT),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Err(HttpError(404, format!("workspace {id} not found")))
+        let legacy = lab.legacy_workspace(&id).map(|(p, _)| p);
+        let mut found = false;
+        for path in std::iter::once(lab.workspace_path(&id)).chain(legacy) {
+            match std::fs::remove_file(path) {
+                Ok(()) => found = true,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(HttpError(500, e.to_string())),
             }
-            Err(e) => Err(HttpError(500, e.to_string())),
+        }
+        if found {
+            Ok(StatusCode::NO_CONTENT)
+        } else {
+            Err(HttpError(404, format!("workspace {id} not found")))
         }
     })
     .await
+}
+
+/// `jupyterlab_server`'s `slugify(id)`, which names a workspace's file:
+/// lowercase ASCII letters, digits, `_` and `-`, runs of spaces and
+/// hyphens as one `-`, cut to fit, then `-` and the first four hex digits
+/// of the SHA-256 of the id (without a leading `/`), which keeps ids that
+/// differ only in dropped characters apart. Unlike it, a non-ASCII
+/// character is dropped rather than NFKC-folded, and `%` escapes are not
+/// decoded a second time; such ids still get a file of their own.
+fn workspace_slug(id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    // 128 less `.jupyterlab-workspace`, less the 5-byte signature.
+    const MAX: usize = 128 - 21 - 5;
+    let data = id.strip_prefix('/').unwrap_or(id);
+    let digest = hex::encode(Sha256::digest(data.as_bytes()));
+    let kept: String = data
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-') || c.is_ascii_whitespace())
+        .collect();
+    let mut slug = String::new();
+    let mut gap = false;
+    for c in kept.trim().chars() {
+        if c == '-' || c.is_ascii_whitespace() {
+            if !gap {
+                slug.push('-');
+            }
+            gap = true;
+        } else {
+            slug.push(c);
+            gap = false;
+        }
+    }
+    slug.truncate(MAX);
+    format!("{slug}-{}", &digest[..4])
 }
 
 // ----- translations, listings, plugins, licenses -----------------------------
@@ -1164,6 +1231,20 @@ pub(crate) fn html_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Slugs as `jupyterlab_server` 2.28's `slugify` makes them (#492).
+    #[test]
+    fn workspace_slugs_match_jupyterlab_server() {
+        assert_eq!(workspace_slug("default"), "default-37a8");
+        assert_eq!(workspace_slug("a/b"), "ab-c14c");
+        assert_eq!(workspace_slug("a:b"), "ab-6783");
+        assert_eq!(workspace_slug("My  Space -- 2"), "my-space-2-a73d");
+        assert_eq!(workspace_slug("/lead"), "lead-e345");
+        assert_eq!(
+            workspace_slug(&"x".repeat(300)),
+            format!("{}-0d4e", "x".repeat(102))
+        );
+    }
 
     #[test]
     fn semver_versions_as_jupyterlab_converts_them() {
