@@ -168,7 +168,16 @@ is added by default. Routes the server answers itself, such as
 `/api/status`, never get these headers; a request no route claims, such
 as an unknown `/api/` path, falls through to the static files and can.
 When several keys set the same header, the last key in sorted order
-wins, and a configured header replaces one the server set. A page that needs `SharedArrayBuffer`, such as one hosting a
+wins, and a configured header replaces one the server set. Every
+response's `Content-Security-Policy` ends with `frame-ancestors 'self'`
+unless the policy already has a `frame-ancestors` directive, so set one
+here to let other origins frame a page.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+A page that needs `SharedArrayBuffer`, such as one hosting a
 kernel in a web worker, must be cross-origin isolated:
 
 ```toml

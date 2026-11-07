@@ -125,6 +125,45 @@ pub fn build_router(state: AppState) -> axum::Router {
         state,
         auth::check_host,
     ))
+    .layer(axum::middleware::map_response(frame_ancestors))
+}
+
+/// The `frame-ancestors` directive every response carries, as
+/// `jupyter_server`'s handlers send it: only pages of this server may
+/// frame its pages, so another site can't overlay `/lab` and steer clicks.
+pub const FRAME_ANCESTORS: &str = "frame-ancestors 'self'";
+
+/// Adds [`FRAME_ANCESTORS`] to the response's `Content-Security-Policy`:
+/// as the whole policy when there is none, appended to one a handler or
+/// `static_headers` set, and not at all when that policy already has a
+/// `frame-ancestors` directive, so a configured one wins.
+async fn frame_ancestors(mut res: axum::response::Response) -> axum::response::Response {
+    use axum::http::{header::CONTENT_SECURITY_POLICY, HeaderValue};
+    let headers = res.headers_mut();
+    let policy = match headers.get(CONTENT_SECURITY_POLICY) {
+        None => Some(HeaderValue::from_static(FRAME_ANCESTORS)),
+        Some(v) => {
+            let has = v.to_str().is_ok_and(|s| {
+                s.split(';').any(|d| {
+                    d.split_ascii_whitespace()
+                        .next()
+                        .is_some_and(|n| n.eq_ignore_ascii_case("frame-ancestors"))
+                })
+            });
+            if has {
+                None
+            } else {
+                let mut joined = v.as_bytes().to_vec();
+                joined.extend_from_slice(b"; ");
+                joined.extend_from_slice(FRAME_ANCESTORS.as_bytes());
+                HeaderValue::from_bytes(&joined).ok()
+            }
+        }
+    };
+    if let Some(p) = policy {
+        headers.insert(CONTENT_SECURITY_POLICY, p);
+    }
+    res
 }
 
 /// CORS for `allow_origins`, as `jupyter_server` sends it: the allowed

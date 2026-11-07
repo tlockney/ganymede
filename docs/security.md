@@ -22,6 +22,15 @@ protections match `jupyter_server`'s, so its security model applies here.
 | `trust_xheaders` | `false` | `X-Forwarded-Proto` and `X-Scheme` are ignored. |
 | TLS | None | Ganymede speaks plain HTTP. Put TLS in front of it ([below](#tls)). |
 
+Every response carries `Content-Security-Policy: frame-ancestors 'self'`,
+as `jupyter_server`'s do, so only the server's own pages can frame
+`/lab` or any other page. Another site can't load it in a hidden frame
+and steer your clicks.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
 ## Tokens and cookies
 
 - The token is checked in an `Authorization: token <t>` (or `Bearer`)

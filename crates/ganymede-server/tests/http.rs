@@ -1482,6 +1482,69 @@ async fn static_headers_reach_only_their_paths() {
     }
 }
 
+/// Every response, pages, API, errors and static files, says only this
+/// server may frame it (#429); a `frame-ancestors` from `static_headers`
+/// is kept as configured.
+#[tokio::test]
+async fn every_response_limits_who_may_frame_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let site = dir.path().join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("index.html"), "<!doctype html><title>app</title>").unwrap();
+    std::fs::write(site.join("embed.html"), "<!doctype html><title>e</title>").unwrap();
+    std::fs::write(site.join("strict.html"), "<!doctype html><title>s</title>").unwrap();
+    let config = std::collections::BTreeMap::from([
+        (
+            "/embed.html".to_string(),
+            std::collections::BTreeMap::from([(
+                "Content-Security-Policy".to_string(),
+                "frame-ancestors https://example.com".to_string(),
+            )]),
+        ),
+        (
+            "/strict.html".to_string(),
+            std::collections::BTreeMap::from([(
+                "Content-Security-Policy".to_string(),
+                "default-src 'self'".to_string(),
+            )]),
+        ),
+    ]);
+    let mut st = state(dir.path());
+    st.static_dir = Some(site);
+    st.static_headers = ganymede_server::static_headers::StaticHeaders::parse(&config)
+        .unwrap()
+        .into();
+    let app = build_router(st);
+    let (_, h, _) = send(&app, get_req(&format!("/?token={TOKEN}"), None)).await;
+    let (n, v, _) = set_cookies(&h).remove(0);
+    let login = format!("{n}={v}");
+
+    for (path, cookie, status) in [
+        ("/", Some(login.as_str()), StatusCode::OK),
+        ("/api/status", Some(&login), StatusCode::OK),
+        ("/api/status", None, StatusCode::FORBIDDEN),
+        ("/api/contents/missing", Some(&login), StatusCode::NOT_FOUND),
+    ] {
+        let (got, h, _) = send(&app, get_req(path, cookie)).await;
+        assert_eq!(got, status, "{path}");
+        assert_eq!(
+            h[header::CONTENT_SECURITY_POLICY],
+            "frame-ancestors 'self'",
+            "{path}"
+        );
+    }
+    let (_, h, _) = send(&app, get_req("/embed.html", Some(&login))).await;
+    assert_eq!(
+        h[header::CONTENT_SECURITY_POLICY],
+        "frame-ancestors https://example.com"
+    );
+    let (_, h, _) = send(&app, get_req("/strict.html", Some(&login))).await;
+    assert_eq!(
+        h[header::CONTENT_SECURITY_POLICY],
+        "default-src 'self'; frame-ancestors 'self'"
+    );
+}
+
 #[tokio::test]
 async fn cookie_auth_needs_xsrf_for_changes() {
     let dir = tempfile::tempdir().unwrap();
@@ -3223,12 +3286,18 @@ async fn files_serves_raw_bytes() {
     // HTML runs sandboxed in an opaque origin, as jupyter_server's.
     let (st, h, _) = raw(&app, get("/files/page.html")).await;
     assert_eq!(st, StatusCode::OK);
-    assert_eq!(h[header::CONTENT_SECURITY_POLICY], "sandbox allow-scripts");
+    assert_eq!(
+        h[header::CONTENT_SECURITY_POLICY],
+        "sandbox allow-scripts; frame-ancestors 'self'"
+    );
 
     let (st, h, body) = raw(&app, get("/files/notes.txt")).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(h[header::CONTENT_TYPE], "text/plain; charset=UTF-8");
-    assert_eq!(h[header::CONTENT_SECURITY_POLICY], "sandbox allow-scripts");
+    assert_eq!(
+        h[header::CONTENT_SECURITY_POLICY],
+        "sandbox allow-scripts; frame-ancestors 'self'"
+    );
     assert_eq!(body, b"hello");
 
     let (st, h, body) = raw(&app, get("/files/a.ipynb")).await;
