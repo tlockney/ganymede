@@ -25,16 +25,28 @@ project's environment.
 
 ### 1. Make an environment for the kernel
 
+Either way below makes the same environment at
+`~/.local/share/venvs/python3`. Install the packages you want in every
+notebook the same way as ipykernel, now or later.
+
+#### With an existing Python and pip
+
 ```sh
 python3 -m venv ~/.local/share/venvs/python3
 ~/.local/share/venvs/python3/bin/pip install ipykernel
+~/.local/share/venvs/python3/bin/pip install numpy pandas   # optional
 ```
 
-Add the packages you want in every notebook the same way, now or later
-(`~/.local/share/venvs/python3/bin/pip install numpy pandas`). With uv,
-make it with `uv venv ~/.local/share/venvs/python3`; uv's environments
-have no `pip`, so install into it with `uv pip install --python
-~/.local/share/venvs/python3 ipykernel`, and the same for other packages.
+#### With uv
+
+```sh
+uv venv ~/.local/share/venvs/python3
+uv pip install --python ~/.local/share/venvs/python3 ipykernel
+uv pip install --python ~/.local/share/venvs/python3 numpy pandas   # optional
+```
+
+uv's environments have no `pip` of their own, so add packages with `uv
+pip install --python ...` as above.
 
 Jupyter itself (`jupyter`, `notebook`, `jupyterlab`) isn't needed; only
 `ipykernel` and what your code imports.
