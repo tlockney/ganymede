@@ -1896,7 +1896,7 @@ async fn notebooks_over_two_megabytes_save_and_the_limit_gives_413() {
             > 3 << 20
     );
 
-    st.max_body_size = 64 * 1024;
+    st.max_body_size = 1 << 20;
     let app = build_router(st);
     let (status, _) = call(
         &app,

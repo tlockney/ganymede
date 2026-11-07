@@ -78,14 +78,18 @@ const GIVE_UP_AFTER: u32 = 10;
 /// limit. The kernel bridge drops output instead, but a room can't skip
 /// an update without the client's document going wrong, so the client
 /// goes and resyncs when it reconnects.
-const CLIENT_QUEUE_LIMIT: usize = 10_000;
+use ganymede_api::bridge::CLIENT_QUEUE_LIMIT;
 /// How often a room's websocket is pinged.
 const PING_INTERVAL: Duration = Duration::from_secs(30);
 /// A client that sends nothing, not even a pong, for this long is
 /// dropped: its connection is half-open (a laptop asleep, a network gone).
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
-/// How long one write to a client's websocket may take.
+/// How long one write to a client's websocket may take, plus a second
+/// for every [`MIN_WRITE_RATE`] bytes in it, so a large room's first sync
+/// over a slow link still gets through.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+/// The slowest link, in bytes a second, a large frame is given time for.
+const MIN_WRITE_RATE: u64 = 64 * 1024;
 
 /// Rooms and file ids for one server.
 pub struct Collab {
@@ -292,13 +296,33 @@ pub(crate) enum Out {
 #[derive(Clone)]
 pub(crate) struct ClientTx {
     tx: mpsc::Sender<Out>,
-    full: Arc<tokio::sync::Notify>,
+    full: Arc<Full>,
+}
+
+/// Raised when a client's queue is full: the socket task closes, with
+/// the room's own close if one couldn't be queued, else 1008.
+#[derive(Default)]
+pub(crate) struct Full {
+    notify: tokio::sync::Notify,
+    close: Mutex<Option<(u16, String)>>,
+}
+
+impl Full {
+    /// Wait until raised; the close code and reason to send.
+    async fn raised(&self) -> (u16, String) {
+        self.notify.notified().await;
+        self.close
+            .lock()
+            .expect("close")
+            .take()
+            .unwrap_or_else(|| (1008, format!("fell {CLIENT_QUEUE_LIMIT} messages behind")))
+    }
 }
 
 impl ClientTx {
-    fn new() -> (ClientTx, mpsc::Receiver<Out>, Arc<tokio::sync::Notify>) {
+    fn new() -> (ClientTx, mpsc::Receiver<Out>, Arc<Full>) {
         let (tx, rx) = mpsc::channel(CLIENT_QUEUE_LIMIT);
-        let full = Arc::new(tokio::sync::Notify::new());
+        let full = Arc::new(Full::default());
         (
             ClientTx {
                 tx,
@@ -309,10 +333,14 @@ impl ClientTx {
         )
     }
 
-    /// Queue `out`; a client gone or too far behind is not waited for.
+    /// Queue `out`; a client gone or too far behind is not waited for. A
+    /// close that finds the queue full goes around it.
     fn send(&self, out: Out) {
-        if let Err(mpsc::error::TrySendError::Full(_)) = self.tx.try_send(out) {
-            self.full.notify_one();
+        if let Err(mpsc::error::TrySendError::Full(out)) = self.tx.try_send(out) {
+            if let Out::Close(code, reason) = out {
+                *self.full.close.lock().expect("close") = Some((code, reason));
+            }
+            self.full.notify.notify_one();
         }
     }
 }
@@ -439,7 +467,10 @@ pub async fn room(
         return HttpError(403, "origin not allowed".into()).into_response();
     }
     // No message larger than a notebook the contents API would take.
+    // Browsers send each message as one frame, so the frame limit (16 MiB
+    // by default) has to match.
     ws.max_message_size(state.max_body_size)
+        .max_frame_size(state.max_body_size)
         .on_upgrade(move |socket| serve_socket(socket, state, room_id, query.session_id))
 }
 
@@ -521,9 +552,9 @@ async fn serve_socket(
                 Some(Out::Close(code, reason)) => { close(&mut socket, code, reason).await; break }
                 None => break,
             },
-            () = full.notified() => {
-                tracing::info!(room = %room_id, conn, "collaboration client is {CLIENT_QUEUE_LIMIT} frames behind; dropping it");
-                close(&mut socket, 1008, format!("fell {CLIENT_QUEUE_LIMIT} messages behind")).await;
+            (code, reason) = full.raised() => {
+                tracing::info!(room = %room_id, conn, code, "collaboration client's queue is full; closing it");
+                close(&mut socket, code, reason).await;
                 break
             }
             _ = ping.tick() => {
@@ -675,10 +706,24 @@ async fn close(socket: &mut WebSocket, code: u16, reason: String) {
 /// Send `msg`, giving up after [`WRITE_TIMEOUT`]. False when the client
 /// is gone or not reading.
 async fn send_within(socket: &mut WebSocket, msg: WsMessage) -> bool {
+    let limit = write_timeout(msg_len(&msg));
     matches!(
-        tokio::time::timeout(WRITE_TIMEOUT, socket.send(msg)).await,
+        tokio::time::timeout(limit, socket.send(msg)).await,
         Ok(Ok(()))
     )
+}
+
+fn msg_len(msg: &WsMessage) -> usize {
+    match msg {
+        WsMessage::Binary(b) | WsMessage::Ping(b) | WsMessage::Pong(b) => b.len(),
+        WsMessage::Text(t) => t.len(),
+        WsMessage::Close(_) => 0,
+    }
+}
+
+/// [`WRITE_TIMEOUT`], plus a second for every [`MIN_WRITE_RATE`] bytes.
+fn write_timeout(len: usize) -> Duration {
+    WRITE_TIMEOUT + Duration::from_secs(len as u64 / MIN_WRITE_RATE)
 }
 
 /// A room's file: what was last read or written, to tell our own writes
@@ -1319,27 +1364,6 @@ mod lock_tests {
 
     /// A retiring room releases its lock before another room on the file
     /// can open, so the new room takes it at once (#400).
-    /// A client too far behind is told to go, and nothing waits on it.
-    #[tokio::test]
-    async fn a_full_client_queue_asks_the_client_to_close() {
-        let (tx, mut rx, full) = ClientTx::new();
-        for _ in 0..CLIENT_QUEUE_LIMIT {
-            tx.send(Out::Frame(vec![1]));
-        }
-        let not_yet = tokio::time::timeout(Duration::from_millis(20), full.notified()).await;
-        assert!(not_yet.is_err(), "a queue at its limit is not yet full");
-        tx.send(Out::Frame(vec![2]));
-        tokio::time::timeout(Duration::from_secs(1), full.notified())
-            .await
-            .expect("told to close");
-        assert!(matches!(rx.recv().await, Some(Out::Frame(f)) if f == [1]));
-        // A client whose socket task is gone is not "full".
-        drop(rx);
-        tx.send(Out::Frame(vec![3]));
-        let after = tokio::time::timeout(Duration::from_millis(20), full.notified()).await;
-        assert!(after.is_err());
-    }
-
     #[test]
     fn retiring_releases_the_lock_before_a_new_room_opens() {
         let dir = tempfile::tempdir().unwrap();
@@ -1365,5 +1389,53 @@ mod lock_tests {
             &mut new_lock
         ));
         assert!(new_lock.is_some(), "the new room owns the file");
+    }
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+
+    /// A client too far behind is told to go, and nothing waits on it.
+    #[tokio::test]
+    async fn a_full_client_queue_asks_the_client_to_close() {
+        let (tx, mut rx, full) = ClientTx::new();
+        for _ in 0..CLIENT_QUEUE_LIMIT {
+            tx.send(Out::Frame(vec![1]));
+        }
+        let not_yet = tokio::time::timeout(Duration::from_millis(20), full.notify.notified()).await;
+        assert!(not_yet.is_err(), "a queue at its limit is not yet full");
+        tx.send(Out::Frame(vec![2]));
+        tokio::time::timeout(Duration::from_secs(1), full.notify.notified())
+            .await
+            .expect("told to close");
+        assert!(matches!(rx.recv().await, Some(Out::Frame(f)) if f == [1]));
+        // A client whose socket task is gone is not "full".
+        drop(rx);
+        tx.send(Out::Frame(vec![3]));
+        let after = tokio::time::timeout(Duration::from_millis(20), full.notify.notified()).await;
+        assert!(after.is_err());
+    }
+
+    /// A room's close that finds the queue full still reaches the client.
+    #[tokio::test]
+    async fn a_close_that_finds_the_queue_full_goes_around_it() {
+        let (tx, _rx, full) = ClientTx::new();
+        for _ in 0..CLIENT_QUEUE_LIMIT {
+            tx.send(Out::Frame(vec![1]));
+        }
+        tx.send(Out::Close(4404, "gone".into()));
+        let got = tokio::time::timeout(Duration::from_secs(1), full.raised())
+            .await
+            .expect("raised");
+        assert_eq!(got, (4404, "gone".to_string()));
+    }
+
+    /// A big frame gets time for a slow link; a small one the base timeout.
+    #[test]
+    fn write_timeout_grows_with_the_frame() {
+        assert_eq!(write_timeout(100), WRITE_TIMEOUT);
+        let sixty_mb = 60 * 1024 * 1024;
+        assert!(write_timeout(sixty_mb) >= WRITE_TIMEOUT + Duration::from_secs(900));
     }
 }
