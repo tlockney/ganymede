@@ -286,10 +286,11 @@ impl KernelProcess for RemoteKernel {
         if !*self.alive.borrow() {
             return;
         }
-        let _ = self.alive_tx.send(false);
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(kernel = %self.id, "no runtime to delete the remote kernel; it is left running");
             return;
         };
+        let _ = self.alive_tx.send(false);
         if let Ok(req) = self.inner.request(reqwest::Method::DELETE, &self.path("")) {
             let inner = self.inner.clone();
             handle.spawn(async move {
