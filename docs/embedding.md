@@ -269,6 +269,12 @@ with the system libraries `rustc --print native-static-libs` names.
 
 ### From Swift
 
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release: the latest release's script also builds
+> `x86_64-apple-darwin` (joined by `lipo`) and defaults to macOS 13.0 and
+> iOS 16.0.
+
 On macOS with Xcode, `scripts/build-xcframework.sh` builds the library
 for `aarch64-apple-darwin` (Apple silicon only), `aarch64-apple-ios` and
 `aarch64-apple-ios-sim`, and writes
