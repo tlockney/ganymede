@@ -16,45 +16,52 @@ ipykernel is the Python kernel JupyterLab and VS Code use. CI runs
 Ganymede's end-to-end suite against it (ipykernel 7.4) on Linux and
 macOS, alongside cdp-kernel.
 
-### 1. Install ipykernel in an environment
+The steps below set up one Python kernel for everything you open: a
+virtual environment kept only for the kernel, in a place you won't move
+or clean up, registered as `python3`. That name is the one most
+notebooks from elsewhere record, so they open on it without asking.
+[A kernel per project](#a-kernel-per-project) covers kernels tied to one
+project's environment.
 
-Use the Python environment your notebooks should run in, with the
-packages they import. With the standard library's `venv` and pip:
+### 1. Make an environment for the kernel
 
 ```sh
-python3 -m venv ~/venvs/myproject
-~/venvs/myproject/bin/pip install ipykernel
+python3 -m venv ~/.local/share/venvs/python3
+~/.local/share/venvs/python3/bin/pip install ipykernel
 ```
 
-With uv, `uv venv ~/venvs/myproject` and `uv pip install --python
-~/venvs/myproject ipykernel`. With conda, `conda create -n myproject
-python ipykernel`.
+Add the packages you want in every notebook the same way, now or later
+(`~/.local/share/venvs/python3/bin/pip install numpy pandas`). With uv,
+`uv venv ~/.local/share/venvs/python3` and `uv pip install --python
+~/.local/share/venvs/python3 ipykernel`.
 
 Jupyter itself (`jupyter`, `notebook`, `jupyterlab`) isn't needed; only
 `ipykernel` and what your code imports.
+
+Don't install ipykernel into the system Python or Homebrew's. Most
+current systems refuse `pip install` there (PEP 668's "externally
+managed environment" error), and an OS or Homebrew upgrade can replace
+that Python under the kernel.
 
 ### 2. Register the kernelspec
 
 Run `ipykernel install` with that environment's Python:
 
 ```sh
-~/venvs/myproject/bin/python -m ipykernel install --user \
-  --name myproject --display-name "Python (myproject)"
+~/.local/share/venvs/python3/bin/python -m ipykernel install --user \
+  --name python3 --display-name "Python 3"
 ```
 
-With conda, activate the environment first (`conda activate myproject`)
-and run `python -m ipykernel install --user ...` the same way.
-
-`--user` writes `kernels/myproject/kernel.json` into your user data
+`--user` writes `kernels/python3/kernel.json` into your user data
 directory (see [How Ganymede finds kernels](#how-ganymede-finds-kernels)).
 Its `argv` names the environment's Python by absolute path, so the kernel
-runs in that environment whatever is on `PATH`:
+runs in that environment from any directory, whatever is on `PATH`:
 
 ```json
 {
-  "argv": ["/home/you/venvs/myproject/bin/python", "-Xfrozen_modules=off",
+  "argv": ["/home/you/.local/share/venvs/python3/bin/python", "-Xfrozen_modules=off",
            "-m", "ipykernel_launcher", "-f", "{connection_file}"],
-  "display_name": "Python (myproject)",
+  "display_name": "Python 3",
   "language": "python",
   "metadata": { "debugger": true, "supported_encryption": ["curve"] },
   "kernel_protocol_version": "5.5"
@@ -62,18 +69,16 @@ runs in that environment whatever is on `PATH`:
 ```
 
 `--name` is the name you pass to `-k` and the one notebooks record in
-`metadata.kernelspec.name`; it must match `[a-z0-9._-]+`. Give each
-environment its own name. Without `--name` it is `python3`, and a second
-environment registered the same way replaces the first.
+`metadata.kernelspec.name`; it must match `[a-z0-9._-]+`.
 
 ### 3. Check that it runs
 
 ```sh
 ganymede kernelspec list
-ganymede run -k myproject 'import sys; print(sys.executable); 6 * 7'
+ganymede run -k python3 'import sys; print(sys.executable); 6 * 7'
 ```
 
-The list has a `myproject` line, and `run` prints the environment's
+The list has a `python3` line, and `run` prints the environment's
 Python path and `42`. The kernel then shows in JupyterLab's launcher, VS
 Code's kernel picker, and the Mac app, as with any other kernelspec.
 
@@ -86,6 +91,55 @@ On Windows, interrupting an ipykernel cell doesn't work yet: ipykernel
 there waits for an event that `jupyter_client` sets up, and Ganymede
 supports signal and message interrupts only
 ([Replacing Python](python-free.md)).
+
+### If the environment moves
+
+The kernelspec holds a path, not a copy of Python. If the environment is
+moved, renamed, or deleted, the kernel is still listed but won't start:
+
+```text
+ganymede: starting kernel python3: io: spawning "/home/you/.local/share/venvs/python3/bin/python": No such file or directory (os error 2)
+```
+
+A virtual environment also links to the Python it was made from, so
+removing or upgrading that Python (say, Homebrew moving from 3.13 to
+3.14) breaks it the same way. Either way, make the environment again
+(step 1) and register it again (step 2); `ipykernel install` replaces
+the old spec of the same name.
+
+### A kernel per project
+
+A project with its own environment, and package versions that should
+stay with it, can have its own kernel next to the global one. Register
+it from that environment under the project's name:
+
+```sh
+~/code/myproject/.venv/bin/python -m ipykernel install --user \
+  --name myproject --display-name "Python (myproject)"
+```
+
+With conda, activate the environment first (`conda activate myproject`)
+and run `python -m ipykernel install --user ...` the same way.
+
+Give each environment its own name. Without `--name` it is `python3`,
+and registering a project that way replaces the global kernel. The
+kernel lasts as long as the project's environment does, so remove it
+(below) when you delete the project.
+
+### For every user on the machine
+
+Put the environment somewhere shared and register it under
+`/usr/local`, which Ganymede searches for every user:
+
+```sh
+sudo python3 -m venv /opt/venvs/python3
+sudo /opt/venvs/python3/bin/pip install ipykernel
+sudo /opt/venvs/python3/bin/python -m ipykernel install \
+  --prefix /usr/local --name python3 --display-name "Python 3"
+```
+
+That writes `/usr/local/share/jupyter/kernels/python3`. A user's own
+`python3` in their user data directory comes first and hides it.
 
 ### A virtual environment's own kernelspec
 
@@ -100,13 +154,13 @@ To use it anyway, add the directory as a root and put the environment's
 `bin` first on `PATH`, for example by activating it:
 
 ```sh
-source ~/venvs/myproject/bin/activate
+source ~/code/myproject/.venv/bin/activate
 ganymede --kernelspec-root "$VIRTUAL_ENV/share/jupyter" run -k python3 '1 + 1'
 ```
 
 With the environment inactive, `python` is whatever else is on `PATH`,
 and the kernel fails with `No module named ipykernel_launcher`. The
-`--user --name` install above avoids both steps.
+`ipykernel install --user` steps above avoid both.
 
 ### Remove it
 
