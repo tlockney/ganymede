@@ -1678,6 +1678,15 @@ async fn login_form_and_logout() {
     let (st, h, _) = send(&app, form(&xsrf_cookie, format!("password={TOKEN}"))).await;
     assert_eq!(st, StatusCode::FORBIDDEN, "no _xsrf field");
     assert!(set_cookies(&h).is_empty());
+    // An empty field falls back to the header, as in tornado (#488).
+    let mut empty = form(&xsrf_cookie, "password=bad&_xsrf=".into());
+    empty
+        .headers_mut()
+        .insert("x-xsrftoken", xsrf.parse().unwrap());
+    let (st, _, _) = send(&app, empty).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "past the XSRF check");
+    let (st, _, _) = send(&app, form(&xsrf_cookie, "password=bad&_xsrf=".into())).await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "empty field, no header");
     let (st, _, html) = send(
         &app,
         form(&xsrf_cookie, format!("password=bad&_xsrf={}", enc(&xsrf))),
