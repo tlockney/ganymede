@@ -407,7 +407,8 @@ jobs:
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'schedule' && '1' || '16' }}
     steps:
       - if: env.BUILD != 'true'
-        run: echo "Nothing ganymede-ffi builds from changed, so nothing to build (#418, #457)."
+        # Quoted: in a plain scalar, " #" would start a YAML comment.
+        run: 'echo "Nothing ganymede-ffi builds from changed, so nothing to build (#418, #457)."'
       - if: env.BUILD == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
