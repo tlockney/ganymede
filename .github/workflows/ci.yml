@@ -504,19 +504,21 @@ jobs:
         run: node --test evals/journal/score.test.mjs
 
   # The Linux release binary, built once and used by lsp, workstation
-  # (ubuntu) and image instead of each compiling it (#460).
+  # (ubuntu) and image instead of each compiling it (#460). It builds in
+  # the Dockerfile's Rust image (Debian trixie), so it links against the
+  # image's glibc: a binary built on the runner needs the runner's newer
+  # glibc and won't start in the image. RUST_VERSION in
+  # container/Dockerfile is the same version.
   linux-release:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
+    container: rust:1.95-trixie
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo build --release --locked -p ganymede-cli
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

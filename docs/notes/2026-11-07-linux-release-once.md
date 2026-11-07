@@ -9,6 +9,11 @@ each `chmod +x`es it). The Dockerfile gained `GANYMEDE_SOURCE=local`,
 which copies `container/bin/ganymede` from the build context.
 `workstation (macos-latest)` still builds its own.
 
+`linux-release` runs in the `rust:1.95-trixie` container, the
+Dockerfile's build image. Built on the ubuntu runner, the binary needed
+glibc 2.43 and failed to start in the trixie image (2.41); built on
+trixie, it runs in the image and on the newer runner.
+
 e2e (ubuntu) stays separate from coverage, though both run the suite
 with the same kernels: e2e is a required check and fails on a skipped
 test, coverage is informational and instrumented.
