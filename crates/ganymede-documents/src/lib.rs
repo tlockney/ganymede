@@ -11,6 +11,7 @@
 //!   `/api/collaboration`; the apps can host them in-process through
 //!   `ganymede-ffi`.
 
+pub mod depth;
 pub mod merge;
 pub mod room;
 pub mod schema;

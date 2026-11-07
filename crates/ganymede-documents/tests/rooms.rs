@@ -650,3 +650,66 @@ fn a_read_only_room_refuses_edits_and_takes_the_files() {
         .unwrap();
     assert!(fx.changed);
 }
+
+/// An update nesting a value a million levels deep (two bytes a level)
+/// would overflow the stack if decoded. The room refuses it, tells the
+/// sender as it does any update it can't apply, and keeps working.
+#[test]
+fn a_deeply_nested_update_is_refused() {
+    let nb = Notebook::from_str(&fixture("code_outputs.ipynb")).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let mut update = vec![1, 1, 99, 0, 8, 1, 1, b'm', 1];
+    for _ in 0..1_000_000 {
+        update.extend([117, 1]);
+    }
+    update.extend([126, 0]);
+    let fx = room
+        .receive(1, &Message::Sync(SyncMessage::Update(update)).encode_v1())
+        .unwrap();
+    assert!(!fx.changed);
+    assert!(
+        fx.send
+            .iter()
+            .any(|(t, m)| matches!(t, Target::One(1))
+                && String::from_utf8_lossy(m).contains("conflict")),
+        "the sender is told"
+    );
+    assert_eq!(
+        room.notebook().unwrap().unwrap().to_file_string(),
+        fixture("code_outputs.ipynb")
+    );
+}
+
+/// Shared maps nested 20,000 deep (about 300 KB) would overflow the stack
+/// when the room turns its document into a notebook. Past the depth limit
+/// they come out as null.
+#[test]
+fn deeply_nested_shared_types_dont_overflow() {
+    use ganymede_documents::yrs::{MapPrelim, MapRef, WriteTxn};
+
+    let nb = Notebook::from_str(&fixture("empty.ipynb")).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let client = client_of(&room);
+    let sv = client.transact().state_vector();
+    {
+        let mut txn = client.transact_mut();
+        let meta = txn.get_or_insert_map("meta");
+        let mut m: MapRef = meta.insert(&mut txn, "metadata", MapPrelim::default());
+        for _ in 0..20_000 {
+            m = m.insert(&mut txn, "x", MapPrelim::default());
+        }
+    }
+    let update = client.transact().encode_state_as_update_v1(&sv);
+    room.receive(1, &Message::Sync(SyncMessage::Update(update)).encode_v1())
+        .unwrap();
+    let back = room.notebook().unwrap().unwrap();
+    let mut depth = 0;
+    let mut v = &back.metadata;
+    while let Some(next) = v.get("x").and_then(|x| x.as_object()) {
+        v = next;
+        depth += 1;
+    }
+    assert!(depth < ganymede_documents::depth::MAX_DEPTH, "{depth}");
+}

@@ -275,14 +275,22 @@ impl Room {
             }
             Message::Sync(SyncMessage::SyncStep2(bytes))
             | Message::Sync(SyncMessage::Update(bytes)) => {
-                let applied = Update::decode_v1(&bytes)
-                    .map_err(|e| e.to_string())
-                    .and_then(|u| {
-                        self.doc()
-                            .transact_mut()
-                            .apply_update(u)
-                            .map_err(|e| e.to_string())
-                    });
+                // Checked first: decoding a deeper one would overflow the
+                // stack and abort the server.
+                let applied = if crate::depth::too_deep(&bytes) {
+                    Err(format!(
+                        "values nested deeper than {} levels",
+                        crate::depth::MAX_DEPTH
+                    ))
+                } else {
+                    Update::decode_v1(&bytes).map_err(|e| e.to_string())
+                }
+                .and_then(|u| {
+                    self.doc()
+                        .transact_mut()
+                        .apply_update(u)
+                        .map_err(|e| e.to_string())
+                });
                 if let Err(e) = applied {
                     // jupyter-collaboration tells the client, which offers
                     // to reload.
