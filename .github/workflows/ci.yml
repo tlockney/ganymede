@@ -336,6 +336,19 @@ jobs:
           echo "GANYMEDE_E2E_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
       - run: cargo test -p ganymede-cli
 
+  # Weekly and on request: whether PyPI has newer JupyterLab or default
+  # extension releases than `ganymede lab install` pins (#433). A failure
+  # means a pin to bump, not a broken build.
+  pins:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: scripts/check-pins.sh
+
   # Targets the desktop CI cannot run: the core libraries must build for
   # iOS, Android, and wasm, and the engine must run a notebook inside wasm.
   portability:

@@ -31,9 +31,31 @@ use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+/// A release pinned in the source: its version and its wheel's SHA-256.
+pub struct Pin {
+    pub name: &'static str,
+    pub version: &'static str,
+    pub sha256: &'static str,
+}
+
 /// Installed by `ganymede lab install` unless `--no-default-extensions`:
 /// the widget manager and anywidget, which cdp-kernel's widgets use.
-pub const DEFAULTS: &[&str] = &["jupyterlab_widgets", "anywidget"];
+/// Pinned like JupyterLab (#433), so a new release on PyPI reaches users
+/// only through a Ganymede release; `--latest-extensions` takes the newest
+/// instead. CI's weekly run fails when PyPI has newer ones
+/// (`scripts/check-pins.sh`).
+pub const DEFAULTS: &[Pin] = &[
+    Pin {
+        name: "jupyterlab_widgets",
+        version: "3.0.17",
+        sha256: "40ac1e9955acf116c4d995d9bfa082d86ad9ec6d91c4f134827cf5e0a5eb75e0",
+    },
+    Pin {
+        name: "anywidget",
+        version: "0.11.0",
+        sha256: "c574d9acc6503ad27b37a9acea48f957a8ba7c9c9876cfcb37898931c098ce9d",
+    },
+];
 
 /// Under [`extensions_dir`]: one JSON record per installed package, naming
 /// the extension directories it put there.
@@ -143,7 +165,7 @@ pub fn run(cmd: ExtensionCmd) -> Result<ExitCode> {
             packages,
             force,
             no_deps,
-        } => install(&root, &packages, force, no_deps)?,
+        } => install(&root, &packages, force, no_deps, &[])?,
         ExtensionCmd::List { json: true } => {
             let all: Vec<Value> = records(&root)
                 .into_iter()
@@ -241,10 +263,45 @@ fn set_disabled(path: &Path, names: &[String], disabled: bool) -> Result<ExitCod
     Ok(ExitCode::SUCCESS)
 }
 
-/// [`DEFAULTS`], skipping those already installed.
-pub fn install_defaults() -> Result<()> {
-    let specs: Vec<String> = DEFAULTS.iter().map(|s| s.to_string()).collect();
-    install(&root()?, &specs, false, false)
+/// [`DEFAULTS`], skipping those already installed: at their pinned
+/// versions and hashes, or with `latest` the newest releases and the
+/// extensions they depend on.
+pub fn install_defaults(latest: bool) -> Result<()> {
+    let (specs, no_deps, pins) = default_specs(latest);
+    install(&root()?, &specs, false, no_deps, pins)
+}
+
+/// What [`install_defaults`] installs: specs, whether to skip
+/// dependencies, and the hashes to hold the wheels to. Pinned, the list
+/// is complete, so dependencies aren't followed to unpinned releases.
+fn default_specs(latest: bool) -> (Vec<String>, bool, &'static [Pin]) {
+    if latest {
+        (
+            DEFAULTS.iter().map(|p| p.name.to_string()).collect(),
+            false,
+            &[],
+        )
+    } else {
+        let specs = DEFAULTS
+            .iter()
+            .map(|p| format!("{}=={}", p.name, p.version))
+            .collect();
+        (specs, true, DEFAULTS)
+    }
+}
+
+/// Fails when `pins` holds `name` at `version` and the wheel's hash isn't
+/// the pinned one.
+fn check_pin(pins: &[Pin], name: &str, version: &str, sha256: &str) -> Result<()> {
+    for p in pins {
+        if normalize(p.name)? == normalize(name)? && p.version == version && p.sha256 != sha256 {
+            bail!(
+                "PyPI lists sha256 {sha256} for {name} {version}, expected {}",
+                p.sha256
+            );
+        }
+    }
+    Ok(())
 }
 
 fn root() -> Result<PathBuf> {
@@ -266,7 +323,7 @@ impl Want {
     }
 }
 
-fn install(root: &Path, specs: &[String], force: bool, no_deps: bool) -> Result<()> {
+fn install(root: &Path, specs: &[String], force: bool, no_deps: bool, pins: &[Pin]) -> Result<()> {
     let mut queue = VecDeque::new();
     for s in specs {
         let (name, specs) = parse_spec(s)?;
@@ -334,6 +391,7 @@ fn install(root: &Path, specs: &[String], force: bool, no_deps: bool) -> Result<
                 &meta,
                 want.required_by.as_deref(),
                 force,
+                pins,
             )?;
             if !installed && named {
                 bail!("{name} has no prebuilt JupyterLab extension in its wheel");
@@ -398,10 +456,12 @@ fn install_wheel(
     meta: &Value,
     required_by: Option<&str>,
     force: bool,
+    pins: &[Pin],
 ) -> Result<bool> {
     let version = meta["info"]["version"].as_str().unwrap_or_default();
     let wheel = pypi::pick_wheel(&meta["urls"])
         .with_context(|| format!("no py3-none-any wheel for {name} in {api}"))?;
+    check_pin(pins, name, version, &wheel.sha256)?;
     std::fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
     eprintln!(
         "downloading {name} {version}: {} (sha256 {})",
@@ -689,6 +749,32 @@ mod tests {
             w.write_all(b"{}").unwrap();
         }
         w.finish().unwrap().into_inner()
+    }
+
+    /// The defaults install at their pins with no dependencies followed,
+    /// unless asked for the latest (#433).
+    #[test]
+    fn defaults_are_pinned_unless_latest() {
+        let (specs, no_deps, pins) = default_specs(false);
+        assert_eq!(specs, ["jupyterlab_widgets==3.0.17", "anywidget==0.11.0"]);
+        assert!(no_deps);
+        assert_eq!(pins.len(), DEFAULTS.len());
+        let (specs, no_deps, pins) = default_specs(true);
+        assert_eq!(specs, ["jupyterlab_widgets", "anywidget"]);
+        assert!(!no_deps && pins.is_empty());
+    }
+
+    /// A pinned release whose wheel hash differs is refused; other
+    /// versions and packages pass.
+    #[test]
+    fn a_pinned_wheel_must_match_its_hash() {
+        let p = &DEFAULTS[1];
+        assert!(check_pin(DEFAULTS, p.name, p.version, p.sha256).is_ok());
+        let err = check_pin(DEFAULTS, "AnyWidget", p.version, "00").unwrap_err();
+        assert!(err.to_string().contains("expected"), "{err}");
+        assert!(check_pin(DEFAULTS, p.name, "0.0.1", "00").is_ok());
+        assert!(check_pin(DEFAULTS, "other", p.version, "00").is_ok());
+        assert!(check_pin(&[], p.name, p.version, "00").is_ok());
     }
 
     #[test]

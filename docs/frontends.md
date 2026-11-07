@@ -89,6 +89,16 @@ up.
 so widgets (cdp-kernel's `jupyter.widget`, for one) work out of the box;
 `--no-default-extensions` skips them.
 
+Those two are pinned to versions and wheel hashes in Ganymede's source,
+like JupyterLab, so a compromised release on PyPI doesn't reach a new
+install. `--latest-extensions` installs the newest releases and the
+extensions they depend on instead. CI's weekly run fails when PyPI has
+newer releases than the pins.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
 Only the wheel's `share/jupyter/labextensions/` is unpacked, into
 `ganymede/labextensions/` beside the bundles, which `serve` always
 searches. Dependencies are followed only as far as the frontend needs:
@@ -121,7 +131,8 @@ Downloads are HTTPS only, from `pypi.org`'s JSON API and wheels on
 Each wheel's SHA-256 is checked against the value PyPI lists next to its
 URL. That catches a corrupted or truncated download. It doesn't catch a
 malicious release, which would come with a matching hash; only the
-default JupyterLab version's hash is also pinned in the binary.
+hashes of the default JupyterLab version and default extensions are
+also pinned in the binary.
 `ganymede` prints each wheel's URL and SHA-256 before installing it.
 
 Downloads have timeouts and are capped at 256 MB. A wheel can unpack to
