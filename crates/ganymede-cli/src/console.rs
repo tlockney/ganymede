@@ -135,6 +135,7 @@ fn interactive(kernel: Arc<Kernel>, handle: Handle) -> Result<()> {
         kernel: kernel.clone(),
         handle: handle.clone(),
         completion_end: Default::default(),
+        completion_count: Default::default(),
     };
     let config = rustyline::Config::builder()
         .auto_add_history(true)
@@ -191,6 +192,8 @@ struct KernelHelper {
     /// Where the last completion's replacement ends, in bytes: the
     /// kernel's `cursor_end`, which may be past the cursor.
     completion_end: std::cell::Cell<usize>,
+    /// How many candidates the last completion offered.
+    completion_count: std::cell::Cell<usize>,
 }
 
 impl Completer for KernelHelper {
@@ -207,14 +210,15 @@ impl Completer for KernelHelper {
         let Ok(r) = self.handle.block_on(self.kernel.complete(line, cursor)) else {
             return Ok((pos, vec![]));
         };
-        let (start, end) = completion_range(
+        let Some((start, end)) = completion_range(
             line,
             pos,
             r["cursor_start"].as_u64(),
             r["cursor_end"].as_u64(),
-        );
-        self.completion_end.set(end);
-        let matches = r["matches"]
+        ) else {
+            return Ok((pos, vec![]));
+        };
+        let matches: Vec<Pair> = r["matches"]
             .as_array()
             .map(|a| {
                 a.iter()
@@ -226,35 +230,59 @@ impl Completer for KernelHelper {
                     .collect()
             })
             .unwrap_or_default();
+        self.completion_end.set(end);
+        self.completion_count.set(matches.len());
         Ok((start, matches))
     }
 
-    /// Replace up to the kernel's `cursor_end`, not only to the cursor.
+    /// Replace up to the kernel's `cursor_end` when the one candidate is
+    /// inserted. With several, the editor inserts their common prefix,
+    /// which replaces only what is before the cursor (#484).
     fn update(&self, line: &mut LineBuffer, start: usize, elected: &str, cl: &mut Changeset) {
-        let end = self.completion_end.get().clamp(line.pos(), line.len());
+        let end = replace_end(
+            self.completion_end.get(),
+            self.completion_count.get(),
+            line.pos(),
+            line.len(),
+        );
         line.replace(start..end, elected, cl);
     }
 }
 
+/// Where a completion's replacement ends: the kernel's `end` when the
+/// one candidate is inserted, else the cursor, as the editor does for a
+/// common prefix. Never before the cursor or past the line.
+fn replace_end(end: usize, candidates: usize, pos: usize, len: usize) -> usize {
+    if candidates == 1 {
+        end.clamp(pos, len)
+    } else {
+        pos
+    }
+}
+
 /// The byte range a completion replaces, from the kernel's
-/// `cursor_start` and `cursor_end` (in code points). A start past the
-/// cursor, which would panic in the editor, is the cursor; an end before
-/// it is the cursor too, and neither goes past the line.
+/// `cursor_start` and `cursor_end` (in code points), or none when the
+/// start is past the cursor, which would panic in the editor (#478) and
+/// isn't a completion of what was typed (#484). An end before the cursor
+/// is the cursor, and neither goes past the line.
 fn completion_range(
     line: &str,
     pos: usize,
     cursor_start: Option<u64>,
     cursor_end: Option<u64>,
-) -> (usize, usize) {
+) -> Option<(usize, usize)> {
     let byte = |chars: u64| {
         usize::try_from(chars)
             .ok()
             .and_then(|n| line.char_indices().nth(n))
             .map_or(line.len(), |(i, _)| i)
     };
-    let start = cursor_start.map_or(pos, byte).min(pos);
+    let start = cursor_start.map_or(pos, byte);
+    if start > pos {
+        return None;
+    }
     let end = cursor_end.map_or(pos, byte).max(pos);
-    (start, end)
+    Some((start, end))
 }
 
 impl Validator for KernelHelper {
@@ -285,19 +313,46 @@ impl Helper for KernelHelper {}
 
 #[cfg(test)]
 mod tests {
-    use super::completion_range;
+    use super::{completion_range, replace_end};
 
     /// A `cursor_start` past the cursor used to panic in the editor; a
     /// `cursor_end` past it was ignored, leaving the rest of the word.
     #[test]
     fn a_completion_range_stays_around_the_cursor() {
         // "pri|nt": the kernel replaces the whole word.
-        assert_eq!(completion_range("print", 3, Some(0), Some(5)), (0, 5));
-        assert_eq!(completion_range("print", 3, Some(4), Some(5)), (3, 5));
-        assert_eq!(completion_range("print", 3, Some(0), Some(1)), (0, 3));
-        assert_eq!(completion_range("print", 3, Some(0), Some(99)), (0, 5));
-        assert_eq!(completion_range("print", 3, None, None), (3, 3));
+        assert_eq!(completion_range("print", 3, Some(0), Some(5)), Some((0, 5)));
+        assert_eq!(completion_range("print", 3, Some(0), Some(1)), Some((0, 3)));
+        assert_eq!(
+            completion_range("print", 3, Some(0), Some(99)),
+            Some((0, 5))
+        );
+        assert_eq!(completion_range("print", 3, None, None), Some((3, 3)));
         // Code points, not bytes: "é" is two bytes.
-        assert_eq!(completion_range("é.ab", 4, Some(2), Some(4)), (3, 5));
+        assert_eq!(completion_range("é.ab", 4, Some(2), Some(4)), Some((3, 5)));
+    }
+
+    /// A start past the cursor isn't a completion of what was typed:
+    /// "pri|nt" with the kernel's range 4..5 used to become "prit" (#484).
+    #[test]
+    fn a_completion_starting_past_the_cursor_is_dropped() {
+        assert_eq!(completion_range("print", 3, Some(4), Some(5)), None);
+    }
+
+    /// "x.ap|pendleft" with candidates `append` and `appendleft`: the
+    /// editor inserts their common prefix, which must not replace the
+    /// rest of the word; only the one candidate does (#484).
+    #[test]
+    fn only_a_single_candidate_replaces_past_the_cursor() {
+        let line = "x.appendleft";
+        let (start, end) = completion_range(line, 4, Some(2), Some(12)).unwrap();
+        assert_eq!((start, end), (2, 12));
+        let mut several = line.to_string();
+        several.replace_range(start..replace_end(end, 2, 4, line.len()), "append");
+        assert_eq!(several, "x.appendpendleft");
+        let mut one = line.to_string();
+        one.replace_range(start..replace_end(end, 1, 4, line.len()), "appendleft");
+        assert_eq!(one, "x.appendleft");
+        assert_eq!(replace_end(99, 1, 4, line.len()), line.len());
+        assert_eq!(replace_end(1, 1, 4, line.len()), 4);
     }
 }
