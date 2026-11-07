@@ -85,6 +85,8 @@ struct Inner {
     /// One lock per path being saved, so the conflict check and the write
     /// of one save are not interleaved with another save of the same path.
     save_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
+    /// `options.checkpoint_dir`, canonicalized once it exists.
+    checkpoint_base: std::sync::OnceLock<PathBuf>,
 }
 
 impl FsContents {
@@ -103,6 +105,7 @@ impl FsContents {
                 root,
                 options,
                 save_locks: Mutex::default(),
+                checkpoint_base: std::sync::OnceLock::new(),
             }),
         })
     }
@@ -871,16 +874,19 @@ impl Inner {
     /// stays under the root (or under `--checkpoint-dir` when one is set)
     /// once symlinks are resolved.
     fn in_checkpoint_base(&self, p: &Path) -> Result<bool> {
-        let base = match &self.options.checkpoint_dir {
-            None => self.root.clone(),
-            Some(dir) => match dir.canonicalize() {
-                Ok(dir) => dir,
-                // Nothing under it exists yet, so no link can lead out.
-                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(true),
-                Err(e) => return Err(Error::Io(e)),
+        let base: &Path = match &self.options.checkpoint_dir {
+            None => &self.root,
+            Some(dir) => match self.checkpoint_base.get() {
+                Some(base) => base,
+                None => match dir.canonicalize() {
+                    Ok(base) => self.checkpoint_base.get_or_init(|| base),
+                    // Nothing under it exists yet, so no link can lead out.
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(true),
+                    Err(e) => return Err(Error::Io(e)),
+                },
             },
         };
-        resolves_under(&base, p)
+        resolves_under(base, p)
     }
 
     /// For the best-effort checkpoint upkeep of a delete or rename: whether
