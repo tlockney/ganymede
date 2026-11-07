@@ -527,10 +527,11 @@ async fn monitor(inner: Weak<Inner>, hb: Heartbeat) {
             _ = alive.wait_for(|a| !*a) => return,
         }
         let Some(inner) = inner.upgrade() else { return };
-        // Connecting the heartbeat socket can itself hang, so bound the
-        // whole beat, not only the wait for the echo.
+        // The transport bounds the beat by `hb.period` itself; this is a
+        // backstop for one that doesn't, set longer so the transport's own
+        // timeout fires first and can reset its socket.
         let ok = matches!(
-            tokio::time::timeout(hb.period, inner.sink.heartbeat(hb.period)).await,
+            tokio::time::timeout(hb.period * 2, inner.sink.heartbeat(hb.period)).await,
             Ok(Ok(true))
         );
         if ok {

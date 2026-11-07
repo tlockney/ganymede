@@ -28,9 +28,33 @@ pub struct ZmqTransport {
 struct HeartbeatSocket {
     endpoint: String,
     socket: Option<zeromq::ReqSocket>,
+    /// A ping was sent and its echo not yet read. Still set when the next
+    /// beat starts means that beat's future was dropped part way (a
+    /// caller's own timeout): the REQ socket then refuses to send again
+    /// until it gets that echo, so it has to be replaced.
+    awaiting_echo: bool,
 }
 
 impl HeartbeatSocket {
+    /// Send a ping and read its echo.
+    async fn beat(&mut self) -> Result<()> {
+        let socket = self.socket().await?;
+        socket.send(ZmqMessage::from("ping")).await.map_err(zerr)?;
+        self.awaiting_echo = true;
+        let socket = self.socket().await?;
+        socket.recv().await.map_err(zerr)?;
+        self.awaiting_echo = false;
+        Ok(())
+    }
+
+    /// Drop the REQ socket; the next beat connects a fresh one.
+    async fn reset(&mut self) {
+        self.awaiting_echo = false;
+        if let Some(s) = self.socket.take() {
+            let _ = s.close().await;
+        }
+    }
+
     async fn socket(&mut self) -> Result<&mut zeromq::ReqSocket> {
         if self.socket.is_none() {
             let mut s = zeromq::ReqSocket::new();
@@ -126,6 +150,7 @@ impl ZmqTransport {
         let hb = Mutex::new(HeartbeatSocket {
             endpoint: info.hb_endpoint(),
             socket: None,
+            awaiting_echo: false,
         });
         let sink = Arc::new(ZmqTransport {
             outgoing,
@@ -342,16 +367,19 @@ impl TransportSink for ZmqTransport {
 
     async fn heartbeat(&self, timeout: Duration) -> Result<bool> {
         let mut hb = self.hb.lock().await;
-        let socket = hb.socket().await?;
-        socket.send(ZmqMessage::from("ping")).await.map_err(zerr)?;
-        match tokio::time::timeout(timeout, socket.recv()).await {
-            Ok(Ok(_)) => Ok(true),
-            Ok(Err(e)) => Err(zerr(e)),
+        if hb.awaiting_echo {
+            hb.reset().await;
+        }
+        // Bound the whole beat, connecting included. Any failure leaves the
+        // REQ socket mid-request, so it is replaced before the next beat.
+        match tokio::time::timeout(timeout, hb.beat()).await {
+            Ok(Ok(())) => Ok(true),
+            Ok(Err(e)) => {
+                hb.reset().await;
+                Err(e)
+            }
             Err(_) => {
-                // A REQ socket that never got its reply is stuck; replace it.
-                if let Some(s) = hb.socket.take() {
-                    let _ = s.close().await;
-                }
+                hb.reset().await;
                 Ok(false)
             }
         }
@@ -419,5 +447,50 @@ mod tests {
         let b = first_frame(&mut stdin).await;
         assert_eq!(a, b);
         transport.sink.close().await;
+    }
+
+    /// A beat whose future is dropped before the echo (a caller's own
+    /// timeout) must not leave the REQ socket stuck mid-request: once the
+    /// kernel answers again, so does the heartbeat.
+    #[tokio::test]
+    async fn heartbeat_recovers_after_a_cancelled_beat() {
+        let any = "tcp://127.0.0.1:0";
+        let mut shell = RouterSocket::new();
+        let mut stdin = RouterSocket::new();
+        let mut control = RouterSocket::new();
+        let mut iopub = zeromq::PubSocket::new();
+        let mut hb = zeromq::RepSocket::new();
+        let ports = [
+            port(shell.bind(any).await.unwrap()),
+            port(iopub.bind(any).await.unwrap()),
+            port(stdin.bind(any).await.unwrap()),
+            port(control.bind(any).await.unwrap()),
+            port(hb.bind(any).await.unwrap()),
+        ];
+        let info = ConnectionInfo::new_tcp("127.0.0.1", ports);
+        let transport = ZmqTransport::connect(&info).await.unwrap();
+        let sink = transport.sink.clone();
+
+        // The kernel doesn't answer, and the caller gives up before the
+        // beat's own timeout: its future is dropped mid-request.
+        let cancelled = tokio::time::timeout(
+            Duration::from_millis(200),
+            sink.heartbeat(Duration::from_secs(10)),
+        )
+        .await;
+        assert!(cancelled.is_err());
+
+        // The kernel answers again.
+        let echo = tokio::spawn(async move {
+            while let Ok(m) = hb.recv().await {
+                if hb.send(m).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let ok = sink.heartbeat(Duration::from_secs(5)).await;
+        assert!(matches!(ok, Ok(true)), "{ok:?}");
+        echo.abort();
+        sink.close().await;
     }
 }
