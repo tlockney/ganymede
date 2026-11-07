@@ -374,16 +374,25 @@ fn nbconvert_zip(filename: &str, export: ganymede_nbformat::Export) -> HttpResul
     let opts = SimpleFileOptions::default();
     w.start_file(filename, opts).map_err(|e| fail(&e))?;
     w.write_all(export.body.as_bytes()).map_err(|e| fail(&e))?;
+    let mut written = std::collections::HashSet::new();
     for r in export.resources {
+        // One bad image shouldn't cost the whole export: leave it out.
         let bytes = match r.data {
             ganymede_nbformat::ResourceData::Text(t) => t.into_bytes(),
             ganymede_nbformat::ResourceData::Base64(b) => {
                 let b: String = b.split_whitespace().collect();
-                base64::engine::general_purpose::STANDARD
-                    .decode(b)
-                    .map_err(|e| fail(&e))?
+                match base64::engine::general_purpose::STANDARD.decode(b) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        tracing::warn!("nbconvert: leaving out {}: bad base64: {e}", r.path);
+                        continue;
+                    }
+                }
             }
         };
+        if !written.insert(r.path.clone()) {
+            continue;
+        }
         w.start_file(r.path, opts).map_err(|e| fail(&e))?;
         w.write_all(&bytes).map_err(|e| fail(&e))?;
     }

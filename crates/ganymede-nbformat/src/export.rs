@@ -143,12 +143,12 @@ pub fn to_markdown(nb: &Notebook, name: &str) -> Export {
         match cell {
             Cell::Markdown(c) => {
                 let mut source = c.source.as_str().trim_end().to_owned();
-                for (file, bundle) in c.attachments.iter().flatten() {
-                    let Some((path, data)) = attachment_file(&files_dir, index, file, bundle)
+                for (k, (file, bundle)) in c.attachments.iter().flatten().enumerate() {
+                    let Some((path, data)) = attachment_file(&files_dir, index, k, file, bundle)
                     else {
                         continue;
                     };
-                    source = source.replace(&format!("attachment:{file}"), &url_path(&path));
+                    source = replace_attachment_refs(&source, file, &url_path(&path));
                     resources.push(Resource { path, data });
                 }
                 if !source.is_empty() {
@@ -195,11 +195,34 @@ pub fn to_markdown(nb: &Notebook, name: &str) -> Export {
     }
 }
 
-/// An attachment as a file: `<files_dir>/attachment_<cell>_<name>`, from
-/// its first image or text entry.
+/// `attachment:<file>` references in `source` pointed at `target`. A
+/// reference ends where the link target does (`)`, whitespace, a quote,
+/// `>`, or the end), so `a.png` doesn't match the start of `a.png2`.
+fn replace_attachment_refs(source: &str, file: &str, target: &str) -> String {
+    let needle = format!("attachment:{file}");
+    let mut out = String::with_capacity(source.len());
+    let mut rest = source;
+    while let Some(at) = rest.find(&needle) {
+        let after = &rest[at + needle.len()..];
+        let ends = after
+            .chars()
+            .next()
+            .is_none_or(|c| c.is_whitespace() || matches!(c, ')' | '"' | '\'' | '>'));
+        out.push_str(&rest[..at]);
+        out.push_str(if ends { target } else { &needle });
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// An attachment as a file: `<files_dir>/attachment_<cell>_<k>_<name>`,
+/// `k` its place among the cell's attachments so two names can't map to
+/// one path, from its first image entry, else its first entry.
 fn attachment_file(
     files_dir: &str,
     cell: usize,
+    k: usize,
     file: &str,
     bundle: &MimeBundle,
 ) -> Option<(String, ResourceData)> {
@@ -214,14 +237,19 @@ fn attachment_file(
             }
         })
         .collect();
-    let (mime, value) = bundle.iter().next()?;
+    let (mime, value) = bundle
+        .iter()
+        .find(|(m, _)| m.starts_with("image/"))
+        .or_else(|| bundle.iter().next())?;
     let text = value.as_str()?;
-    let data = if mime.starts_with("image/") && mime != "image/svg+xml" {
-        ResourceData::Base64(text.to_owned())
-    } else {
+    // nbformat stores text-like types (`text/*`, SVG) as text and other
+    // non-JSON types as base64.
+    let data = if crate::is_split_mime(mime) || crate::is_json_mime(mime) {
         ResourceData::Text(text.to_owned())
+    } else {
+        ResourceData::Base64(text.to_owned())
     };
-    Some((format!("{files_dir}/attachment_{cell}_{safe}"), data))
+    Some((format!("{files_dir}/attachment_{cell}_{k}_{safe}"), data))
 }
 
 /// One output as a Markdown block, adding any image to `resources`.
@@ -441,11 +469,32 @@ mod tests {
         let n = nb(json!({
             "nbformat": 4, "nbformat_minor": 5, "metadata": {},
             "cells": [{"cell_type": "markdown", "id": "a", "metadata": {},
-                "source": "![pic](attachment:a b.png)",
-                "attachments": {"a b.png": {"image/png": "AAAA"}}}]
+                "source": "![pic](attachment:a b.png) ![x](attachment:x.png2) ![y](attachment:x.png)",
+                "attachments": {
+                    "a b.png": {"image/png": "AAAA"},
+                    "a/b.png": {"text/plain": "t", "application/pdf": "JVBE"},
+                    "x.png": {"image/png": "AAAA"},
+                    "x.png2": {"text/plain": "two"}
+                }}]
         }));
         let e = to_markdown(&n, "n");
-        assert_eq!(e.body, "![pic](n_files/attachment_0_a%20b.png)\n");
-        assert_eq!(e.resources[0].path, "n_files/attachment_0_a b.png");
+        assert_eq!(
+            e.body,
+            "![pic](n_files/attachment_0_0_a%20b.png) ![x](n_files/attachment_0_3_x.png2) \
+             ![y](n_files/attachment_0_2_x.png)\n"
+        );
+        let paths: Vec<&str> = e.resources.iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "n_files/attachment_0_0_a b.png",
+                "n_files/attachment_0_1_a_b.png",
+                "n_files/attachment_0_2_x.png",
+                "n_files/attachment_0_3_x.png2",
+            ]
+        );
+        // A binary type that isn't an image is base64 too.
+        assert_eq!(e.resources[1].data, ResourceData::Base64("JVBE".into()));
+        assert_eq!(e.resources[3].data, ResourceData::Text("two".into()));
     }
 }

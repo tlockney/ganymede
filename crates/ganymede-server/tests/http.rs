@@ -853,7 +853,9 @@ async fn nbconvert_exports_script_and_markdown() {
     img_nb["cells"][1] = cell(
         "plot()",
         json!([{"output_type": "display_data", "metadata": {},
-                "data": {"image/png": "iVBORw0KGgo=\n", "text/plain": "<Figure>"}}]),
+                "data": {"image/png": "iVBORw0KGgo=\n", "text/plain": "<Figure>"}},
+               {"output_type": "display_data", "metadata": {},
+                "data": {"image/png": "not base64!", "text/plain": "<Bad>"}}]),
     );
     std::fs::write(dir.path().join("img.ipynb"), img_nb.to_string()).unwrap();
     std::fs::write(dir.path().join("notes.txt"), "hello").unwrap();

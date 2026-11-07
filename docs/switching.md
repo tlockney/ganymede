@@ -76,6 +76,12 @@ full list and the details. If you depend on one of these, stay on `jupyter_serve
 or run it for that one job: both servers share kernels, notebooks and
 signatures, so they can run side by side.
 
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release: script and Markdown export. The latest release
+> exports nothing.
+
+
 ## TypeScript notebooks
 
 Ganymede was built for TypeScript notebooks with
