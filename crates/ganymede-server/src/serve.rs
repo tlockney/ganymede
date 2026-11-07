@@ -398,6 +398,18 @@ pub async fn run(cfg: Config) -> Result<()> {
     run_with(cfg, Startup::default()).await
 }
 
+/// `--base-url` without its trailing slash and with a leading one, as
+/// `jupyter_server` adds it: `jupyter` serves under `/jupyter/`, and `/`
+/// or an empty value is the root (an empty string here).
+fn normalize_base_url(base_url: &str) -> String {
+    let base = base_url.trim_matches('/');
+    if base.is_empty() {
+        String::new()
+    } else {
+        format!("/{base}")
+    }
+}
+
 /// [`run`], adjusted by `startup`.
 pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     let token = match cfg.token.clone() {
@@ -410,7 +422,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         .canonicalize()
         .with_context(|| format!("root dir {}", cfg.root_dir.display()))?;
 
-    let base = cfg.base_url.trim_end_matches('/').to_string();
+    let base = normalize_base_url(&cfg.base_url);
     let base_url = format!("{base}/");
     let config_dir = cfg
         .config_dir
@@ -780,6 +792,23 @@ mod tests {
         let cfg = ServeArgs::default().into_config_from(None).unwrap();
         assert_eq!((cfg.ip.as_str(), cfg.port), ("127.0.0.1", 8888));
         assert_eq!(cfg.token, None);
+    }
+
+    /// `--base-url jupyter` panicked at startup: the router was nested
+    /// at a path without a leading slash.
+    #[test]
+    fn a_base_url_gets_a_leading_slash() {
+        use super::normalize_base_url;
+        for (given, want) in [
+            ("jupyter", "/jupyter"),
+            ("jupyter/", "/jupyter"),
+            ("/jupyter/", "/jupyter"),
+            ("/a/b", "/a/b"),
+            ("/", ""),
+            ("", ""),
+        ] {
+            assert_eq!(normalize_base_url(given), want, "{given:?}");
+        }
     }
 
     #[test]
