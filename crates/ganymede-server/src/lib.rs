@@ -71,6 +71,9 @@ pub struct AppState {
     pub static_dir: Option<PathBuf>,
     /// Extra response headers for files from `static_dir`, by path.
     pub static_headers: Arc<[static_headers::StaticHeaders]>,
+    /// The `frame-ancestors` directive added to every response's
+    /// `Content-Security-Policy`; see [`frame_ancestors_directive`].
+    pub frame_ancestors: axum::http::HeaderValue,
     /// Document rooms behind `/api/collaboration`.
     pub collab: Arc<collab::Collab>,
     /// `/api/terminals`; `None` when `terminals_enabled` is off or the
@@ -121,10 +124,72 @@ pub fn build_router(state: AppState) -> axum::Router {
     if !state.allow_origins.is_empty() {
         app = app.layer(cors(state.allow_origins.clone(), state.allow_credentials));
     }
+    let directive = state.frame_ancestors.clone();
     app.layer(axum::middleware::from_fn_with_state(
         state,
         auth::check_host,
     ))
+    .layer(axum::middleware::from_fn_with_state(
+        directive,
+        frame_ancestors,
+    ))
+}
+
+/// The default `frame_ancestors` sources, as `jupyter_server`'s handlers
+/// send them: only pages of this server may frame its pages, so another
+/// site can't overlay `/lab` and steer clicks.
+pub const DEFAULT_FRAME_ANCESTORS: &str = "'self'";
+
+/// `frame-ancestors <sources>` as a header value, for the config's
+/// `frame_ancestors` (such as `'self' https://portal.example.com`). Fails
+/// on a value that isn't valid HTTP or would end the directive.
+pub fn frame_ancestors_directive(sources: &str) -> anyhow::Result<axum::http::HeaderValue> {
+    let sources = sources.trim();
+    anyhow::ensure!(
+        !sources.is_empty() && !sources.contains([';', ',']),
+        "frame_ancestors: {sources:?} must be a space-separated list of CSP sources"
+    );
+    axum::http::HeaderValue::try_from(format!("frame-ancestors {sources}"))
+        .map_err(|e| anyhow::anyhow!("frame_ancestors: {e}"))
+}
+
+/// Middleware that adds the `frame-ancestors` directive in its state to
+/// the response's `Content-Security-Policy`: as the whole policy when
+/// there is none, appended to one a handler or `static_headers` set, and
+/// not at all when that policy already has a `frame-ancestors` directive,
+/// so a configured one wins. Applying it twice changes nothing.
+pub async fn frame_ancestors(
+    axum::extract::State(directive): axum::extract::State<axum::http::HeaderValue>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::header::CONTENT_SECURITY_POLICY;
+    let mut res = next.run(req).await;
+    let headers = res.headers_mut();
+    let policy = match headers.get(CONTENT_SECURITY_POLICY) {
+        None => Some(directive),
+        Some(v) => {
+            let has = v.to_str().is_ok_and(|s| {
+                s.split(';').any(|d| {
+                    d.split_ascii_whitespace()
+                        .next()
+                        .is_some_and(|n| n.eq_ignore_ascii_case("frame-ancestors"))
+                })
+            });
+            if has {
+                None
+            } else {
+                let mut joined = v.as_bytes().to_vec();
+                joined.extend_from_slice(b"; ");
+                joined.extend_from_slice(directive.as_bytes());
+                axum::http::HeaderValue::from_bytes(&joined).ok()
+            }
+        }
+    };
+    if let Some(p) = policy {
+        headers.insert(CONTENT_SECURITY_POLICY, p);
+    }
+    res
 }
 
 /// CORS for `allow_origins`, as `jupyter_server` sends it: the allowed

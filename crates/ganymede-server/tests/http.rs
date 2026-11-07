@@ -95,6 +95,7 @@ fn state_with(
         lab: None,
         static_dir: None,
         static_headers: Arc::new([]),
+        frame_ancestors: ganymede_server::frame_ancestors_directive("'self'").unwrap(),
         collab: Arc::new(ganymede_server::collab::Collab::new(
             ganymede_contents::FileIds::in_memory(),
             root.canonicalize().ok(),
@@ -1479,6 +1480,104 @@ async fn static_headers_reach_only_their_paths() {
         ] {
             assert!(!h.contains_key(name), "{path} has {name}");
         }
+    }
+}
+
+/// By default pages, API answers, errors and static files say only this
+/// server may frame them (#429); a `frame-ancestors` from
+/// `static_headers` is kept as configured.
+#[tokio::test]
+async fn every_response_limits_who_may_frame_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let site = dir.path().join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("index.html"), "<!doctype html><title>app</title>").unwrap();
+    std::fs::write(site.join("embed.html"), "<!doctype html><title>e</title>").unwrap();
+    std::fs::write(site.join("strict.html"), "<!doctype html><title>s</title>").unwrap();
+    let config = std::collections::BTreeMap::from([
+        (
+            "/embed.html".to_string(),
+            std::collections::BTreeMap::from([(
+                "Content-Security-Policy".to_string(),
+                "frame-ancestors https://example.com".to_string(),
+            )]),
+        ),
+        (
+            "/strict.html".to_string(),
+            std::collections::BTreeMap::from([(
+                "Content-Security-Policy".to_string(),
+                "default-src 'self'".to_string(),
+            )]),
+        ),
+    ]);
+    let mut st = state(dir.path());
+    st.static_dir = Some(site);
+    st.static_headers = ganymede_server::static_headers::StaticHeaders::parse(&config)
+        .unwrap()
+        .into();
+    let app = build_router(st);
+    let (_, h, _) = send(&app, get_req(&format!("/?token={TOKEN}"), None)).await;
+    let (n, v, _) = set_cookies(&h).remove(0);
+    let login = format!("{n}={v}");
+
+    for (path, cookie, status) in [
+        ("/", Some(login.as_str()), StatusCode::OK),
+        ("/api/status", Some(&login), StatusCode::OK),
+        ("/api/status", None, StatusCode::FORBIDDEN),
+        ("/api/contents/missing", Some(&login), StatusCode::NOT_FOUND),
+    ] {
+        let (got, h, _) = send(&app, get_req(path, cookie)).await;
+        assert_eq!(got, status, "{path}");
+        assert_eq!(
+            h[header::CONTENT_SECURITY_POLICY],
+            "frame-ancestors 'self'",
+            "{path}"
+        );
+    }
+    let (_, h, _) = send(&app, get_req("/embed.html", Some(&login))).await;
+    assert_eq!(
+        h[header::CONTENT_SECURITY_POLICY],
+        "frame-ancestors https://example.com"
+    );
+    let (_, h, _) = send(&app, get_req("/strict.html", Some(&login))).await;
+    assert_eq!(
+        h[header::CONTENT_SECURITY_POLICY],
+        "default-src 'self'; frame-ancestors 'self'"
+    );
+}
+
+/// `frame_ancestors` widens the directive on every route, JupyterLab's
+/// included, which `static_headers` can't reach (#429 review).
+#[tokio::test]
+async fn frame_ancestors_setting_reaches_lab_and_api_routes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = lab_state(dir.path());
+    st.frame_ancestors =
+        ganymede_server::frame_ancestors_directive("'self' https://portal.example.com").unwrap();
+    let app = build_router(st);
+    for path in ["/lab/tree/a.ipynb", "/api/status"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get(path)
+                    .header(header::AUTHORIZATION, format!("token {TOKEN}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{path}");
+        assert_eq!(
+            resp.headers()[header::CONTENT_SECURITY_POLICY],
+            "frame-ancestors 'self' https://portal.example.com",
+            "{path}"
+        );
+    }
+    for bad in ["", "'self'; script-src *", "'self', https://a"] {
+        assert!(
+            ganymede_server::frame_ancestors_directive(bad).is_err(),
+            "{bad:?}"
+        );
     }
 }
 
@@ -3223,12 +3322,18 @@ async fn files_serves_raw_bytes() {
     // HTML runs sandboxed in an opaque origin, as jupyter_server's.
     let (st, h, _) = raw(&app, get("/files/page.html")).await;
     assert_eq!(st, StatusCode::OK);
-    assert_eq!(h[header::CONTENT_SECURITY_POLICY], "sandbox allow-scripts");
+    assert_eq!(
+        h[header::CONTENT_SECURITY_POLICY],
+        "sandbox allow-scripts; frame-ancestors 'self'"
+    );
 
     let (st, h, body) = raw(&app, get("/files/notes.txt")).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(h[header::CONTENT_TYPE], "text/plain; charset=UTF-8");
-    assert_eq!(h[header::CONTENT_SECURITY_POLICY], "sandbox allow-scripts");
+    assert_eq!(
+        h[header::CONTENT_SECURITY_POLICY],
+        "sandbox allow-scripts; frame-ancestors 'self'"
+    );
     assert_eq!(body, b"hello");
 
     let (st, h, body) = raw(&app, get("/files/a.ipynb")).await;
