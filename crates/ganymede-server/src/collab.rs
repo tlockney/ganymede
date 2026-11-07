@@ -630,7 +630,10 @@ async fn load(contents: &dyn Contents, path: &str) -> Result<(Notebook, Disk), L
         )
         .await
         .map_err(|e| LoadError {
-            missing: matches!(e, ganymede_contents::Error::NotFound(_)),
+            missing: matches!(
+                e,
+                ganymede_contents::Error::NotFound(_) | ganymede_contents::Error::Hidden(_)
+            ),
             message: e.to_string(),
         })?;
     let nb = Notebook::from_value(model.content.unwrap_or(Value::Null)).map_err(|e| LoadError {
@@ -867,7 +870,8 @@ async fn run_room(
                     if room.is_dirty() && save_failures > 0 {
                         let gone = matches!(
                             contents.get(&d.path, GetOptions::default()).await,
-                            Err(ganymede_contents::Error::NotFound(_))
+                            Err(ganymede_contents::Error::NotFound(_)
+                                | ganymede_contents::Error::Hidden(_))
                         );
                         if !gone && save_failures < GIVE_UP_AFTER {
                             tracing::warn!(
