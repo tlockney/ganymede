@@ -594,7 +594,9 @@ pub(crate) async fn page(
 
 /// A page URL with a correct `?token=` sets the login cookie and redirects
 /// to the same URL without the token, so it does not stay in the address
-/// bar or history. API paths and websocket upgrades keep the parameter.
+/// bar or history. API paths, `/files/` downloads and websocket upgrades
+/// keep the parameter: a client without a cookie jar, such as `curl`,
+/// would lose its token to the redirect.
 pub(crate) async fn strip_token(
     State(state): State<AppState>,
     req: Request<Body>,
@@ -604,7 +606,10 @@ pub(crate) async fn strip_token(
         return next.run(req).await;
     };
     let path = req.uri().path();
-    let api = path == "/api" || path.starts_with("/api/") || path.starts_with("/lab/api/");
+    let api = path == "/api"
+        || path.starts_with("/api/")
+        || path.starts_with("/lab/api/")
+        || path.starts_with("/files/");
     if api
         || !matches!(*req.method(), Method::GET | Method::HEAD)
         || req.headers().contains_key(header::UPGRADE)

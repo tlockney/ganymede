@@ -1408,6 +1408,17 @@ async fn token_in_a_page_url_becomes_a_login_cookie() {
     .await;
     assert_eq!(st, StatusCode::OK);
     assert!(set_cookies(&h).is_empty(), "already logged in");
+
+    // So do downloads, which a client without a cookie jar fetches once.
+    std::fs::write(dir.path().join("notes.txt"), "hi").unwrap();
+    let (st, h, body) = send(
+        &app,
+        get_req(&format!("/files/notes.txt?token={TOKEN}"), None),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body, "hi");
+    assert_eq!(set_cookies(&h)[0].0, LOGIN);
 }
 
 /// A generic `--static-dir` app (not JupyterLab) gets an `_xsrf` cookie
