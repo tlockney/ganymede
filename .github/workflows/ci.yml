@@ -449,7 +449,7 @@ jobs:
   # checkout, then container/smoke-test.sh: no Python in it, a cell on
   # cdp-node, and `ganymede lab` serving behind its token.
   image:
-    needs: changes
+    needs: [changes, linux-release]
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -458,9 +458,14 @@ jobs:
         with:
           persist-credentials: false
       - run: shellcheck -s sh container/smoke-test.sh
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ganymede-linux-release
+          path: container/bin
+      - run: chmod +x container/bin/ganymede
       - run: >-
           docker build -f container/Dockerfile -t ganymede
-          --build-arg GANYMEDE_SOURCE=checkout
+          --build-arg GANYMEDE_SOURCE=local
           --build-arg "CDP_KERNEL_VERSION=$CDP_KERNEL_VERSION" .
       - run: container/smoke-test.sh ganymede
         timeout-minutes: 5
@@ -498,14 +503,13 @@ jobs:
       - name: Journal eval scoring tests
         run: node --test evals/journal/score.test.mjs
 
-  # jupyterlab-lsp against `ganymede serve`, with jupyter-lsp on
-  # `jupyter lab` as the oracle: the same diagnostics from
-  # typescript-language-server and pyright on both (#257).
-  lsp:
+  # The Linux release binary, built once and used by lsp, workstation
+  # (ubuntu) and image instead of each compiling it (#460).
+  linux-release:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -515,6 +519,31 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo build --release --locked -p ganymede-cli
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ganymede-linux-release
+          path: target/release/ganymede
+          if-no-files-found: error
+          retention-days: 1
+
+  # jupyterlab-lsp against `ganymede serve`, with jupyter-lsp on
+  # `jupyter lab` as the oracle: the same diagnostics from
+  # typescript-language-server and pyright on both (#257).
+  lsp:
+    needs: [changes, linux-release]
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ganymede-linux-release
+          path: target/release
+      # Artifacts don't keep the executable bit.
+      - run: chmod +x target/release/ganymede
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
@@ -557,7 +586,7 @@ jobs:
   # Playwright. scripts/test-workstation.sh hides Python from PATH and
   # fails if anything ran it.
   workstation:
-    needs: changes
+    needs: [changes, linux-release]
     if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
@@ -572,13 +601,21 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - if: needs.changes.outputs.code != 'false'
+      # Linux takes linux-release's binary (#460); macOS builds its own.
+      - if: needs.changes.outputs.code != 'false' && matrix.os == 'ubuntu-latest'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ganymede-linux-release
+          path: target/release
+      - if: needs.changes.outputs.code != 'false' && matrix.os == 'ubuntu-latest'
+        run: chmod +x target/release/ganymede
+      - if: needs.changes.outputs.code != 'false' && matrix.os != 'ubuntu-latest'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
-      - if: needs.changes.outputs.code != 'false'
+      - if: needs.changes.outputs.code != 'false' && matrix.os != 'ubuntu-latest'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - if: needs.changes.outputs.code != 'false'
+      - if: needs.changes.outputs.code != 'false' && matrix.os != 'ubuntu-latest'
         run: cargo build --release --locked -p ganymede-cli
       - if: needs.changes.outputs.code != 'false'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

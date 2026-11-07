@@ -9,7 +9,9 @@
 # By default the binary is the GitHub release whose version is in the
 # checkout's Cargo.toml, so an image built from a release tag matches
 # what's on GitHub. --build-arg GANYMEDE_SOURCE=checkout builds the
-# checkout instead (CI on pull requests).
+# checkout instead, and GANYMEDE_SOURCE=local copies a Linux binary
+# already built at container/bin/ganymede (CI, which builds it once for
+# several jobs, #460).
 #
 # NODE_VERSION and CDP_KERNEL_VERSION are what CI tests (ci.yml).
 
@@ -52,6 +54,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked -p ganymede-cli \
  && mkdir /out && cp target/release/ganymede /out/
+
+FROM debian:trixie-slim AS binary-local
+COPY container/bin/ganymede /out/ganymede
 
 FROM binary-${GANYMEDE_SOURCE} AS binary
 
