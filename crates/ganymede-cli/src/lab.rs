@@ -47,6 +47,10 @@ pub enum LabCmd {
         /// `jupyterlab_widgets` and `anywidget`, for widgets.
         #[arg(long)]
         no_default_extensions: bool,
+        /// Install the newest releases of the default extensions instead
+        /// of the versions this release of Ganymede pins and checks.
+        #[arg(long, conflicts_with = "no_default_extensions")]
+        latest_extensions: bool,
     },
     /// Install, list, and remove prebuilt JupyterLab extensions.
     Extension {
@@ -85,10 +89,11 @@ pub fn run(cmd: LabCmd) -> Result<ExitCode> {
             version,
             force,
             no_default_extensions,
+            latest_extensions,
         } => {
             let dir = install(&root, &version, force)?;
             if !no_default_extensions {
-                extension::install_defaults()?;
+                extension::install_defaults(latest_extensions)?;
             }
             println!("{}", dir.display());
         }
