@@ -20,6 +20,10 @@ const MAX_SYMLINK_HOPS: usize = 40;
 /// The mode of an existing file is kept; a new file gets `0666 & !umask`
 /// like `creat(2)`. When `path` is a symlink, the file it points to is
 /// replaced and the link is left in place.
+///
+/// An existing file this process can't open for writing is refused with
+/// `PermissionDenied`, as an in-place write would be, although the rename
+/// only needs a writable directory.
 pub fn atomic_write(path: impl AsRef<Path>, bytes: &[u8]) -> io::Result<()> {
     let target = resolve_symlinks(path.as_ref())?;
     let dir = match target.parent() {
@@ -42,6 +46,18 @@ pub fn atomic_write(path: impl AsRef<Path>, bytes: &[u8]) -> io::Result<()> {
         .ok()
         .filter(fs::Metadata::is_file)
         .map(|m| m.permissions());
+    if existing_permissions.is_some() {
+        // Opening without truncating changes nothing; it only asks the
+        // OS whether this process may write the file.
+        if let Err(e) = fs::OpenOptions::new().write(true).open(&target) {
+            if e.kind() == io::ErrorKind::PermissionDenied {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("{} is not writable", target.display()),
+                ));
+            }
+        }
+    }
 
     let prefix = temp_prefix(name);
     let mut builder = tempfile::Builder::new();

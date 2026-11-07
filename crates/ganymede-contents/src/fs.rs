@@ -664,7 +664,15 @@ impl Inner {
         if target == self.root {
             return Err(Error::Forbidden("cannot write the contents root".into()));
         }
-        ganymede_nbformat::atomic_write(target, bytes).map_err(|e| io_to_error(e, &api.parent()))
+        ganymede_nbformat::atomic_write(target, bytes).map_err(|e| {
+            // An existing file is refused for itself; otherwise the
+            // directory is what couldn't be written.
+            if target.is_file() {
+                io_to_error(e, api)
+            } else {
+                io_to_error(e, &api.parent())
+            }
+        })
     }
 
     fn delete(&self, path: &str) -> Result<()> {
