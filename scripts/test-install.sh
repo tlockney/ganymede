@@ -56,6 +56,21 @@ chmod 755 "$work/$main/ganymede"
 		shasum -a 256 "$main.tar.gz" >"$main.tar.gz.sha256"
 	fi
 )
+# A release whose binary doesn't run here (wrong system, missing library).
+broken=ganymede-9.9.8-$target
+mkdir -p "$work/dl/v9.9.8" "$work/$broken"
+printf '#!/bin/sh\necho "cannot execute binary file" >&2\nexit 126\n' >"$work/$broken/ganymede"
+chmod 755 "$work/$broken/ganymede"
+(
+	cd "$work"
+	tar -czf "dl/v9.9.8/$broken.tar.gz" "$broken"
+	cd dl/v9.9.8
+	if command -v sha256sum >/dev/null; then
+		sha256sum "$broken.tar.gz" >"$broken.tar.gz.sha256"
+	else
+		shasum -a 256 "$broken.tar.gz" >"$broken.tar.gz.sha256"
+	fi
+)
 export GANYMEDE_DOWNLOAD_BASE="file://$work/dl"
 
 fail() {
@@ -68,6 +83,14 @@ out=$("$sh" "$script" --version "v$version" --bin-dir "$work/bin" --no-kernel)
 echo "$out"
 [ "$("$work/bin/ganymede" --version)" = "ganymede $version" ] || fail "installed binary"
 echo "$out" | grep -q "is not on your PATH" || fail "PATH hint"
+
+# A binary that doesn't run fails the install and leaves the old one.
+if "$sh" "$script" --version 9.9.8 --bin-dir "$work/bin" --no-kernel >"$work/out" 2>&1; then
+	fail "installed a binary that doesn't run: $(cat "$work/out")"
+fi
+grep -q "doesn't run on this system" "$work/out" || fail "broken binary message: $(cat "$work/out")"
+[ "$("$work/bin/ganymede" --version)" = "ganymede $version" ] || fail "old binary replaced"
+[ ! -e "$work/bin/.ganymede.new" ] || fail "left .ganymede.new"
 
 # Piped into sh, as the docs show, with --version=.
 "$sh" -s -- --version="$version" --bin-dir="$work/bin2" --no-kernel <"$script" >/dev/null ||
