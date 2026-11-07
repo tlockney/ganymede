@@ -53,7 +53,16 @@ git push --quiet -u origin "$branch"
 
 # Docs for features not yet released say "Unreleased." (CLAUDE.md). The
 # ones this release ships come out on $branch before it merges.
-unreleased=$(grep -rn 'Unreleased\.' README.md docs/*.md site/index.html || true)
+# In Markdown a note is a `> **Unreleased.**` line outside a fenced
+# block: the template in docs/development.md, and prose naming the
+# words, are not (#491). The landing page has no fixed form, so any
+# "Unreleased." there counts.
+unreleased=$(awk '
+  FNR == 1 { fenced = 0 }
+  FILENAME !~ /\.md$/ { if (/Unreleased\./) print FILENAME ":" FNR ":" $0; next }
+  /^[[:space:]]*(```|~~~)/ { fenced = !fenced; next }
+  !fenced && /^>[[:space:]]*\*\*Unreleased\.\*\*/ { print FILENAME ":" FNR ":" $0 }
+' README.md docs/*.md site/index.html)
 if [ -n "$unreleased" ]; then
   echo "Unreleased notes; remove those this release ships on $branch:"
   echo "$unreleased"
