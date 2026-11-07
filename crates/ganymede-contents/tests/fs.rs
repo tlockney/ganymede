@@ -1021,6 +1021,31 @@ async fn atomic_write_preserves_mode_and_replaces_in_place() {
     assert_eq!(leftovers, ["a.txt"]);
 }
 
+/// A file the server's user can't write is refused with 403, as
+/// `jupyter_server` does, though the directory would allow a rename over it.
+#[cfg(unix)]
+#[tokio::test]
+async fn saving_a_read_only_file_is_forbidden() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, c) = setup();
+    let path = dir.path().join("ro.txt");
+    c.save("ro.txt", SaveRequest::text("v1")).await.unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+    if fs::OpenOptions::new().write(true).open(&path).is_ok() {
+        eprintln!("skipped: this user can write a 0444 file (root?)");
+        return;
+    }
+    let ino = |p: &std::path::Path| std::os::unix::fs::MetadataExt::ino(&fs::metadata(p).unwrap());
+    let before = ino(&path);
+    let err = c.save("ro.txt", SaveRequest::text("v2")).await.unwrap_err();
+    assert_eq!(err.status(), 403, "{err}");
+    assert!(err.to_string().contains("ro.txt"), "{err}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "v1");
+    assert_eq!(ino(&path), before, "the file was not replaced");
+    let model = c.get("ro.txt", Default::default()).await.unwrap();
+    assert!(!model.writable);
+}
+
 #[tokio::test]
 async fn checkpoints_create_list_restore_delete() {
     let (dir, c) = setup();

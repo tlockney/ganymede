@@ -84,3 +84,22 @@ fn long_file_names_get_a_short_enough_temp_name() {
     assert_eq!(fs::read(&path).unwrap(), b"x");
     assert_eq!(names(dir.path()), [name]);
 }
+
+/// An existing file this process can't write is refused, not replaced.
+#[cfg(unix)]
+#[test]
+fn a_read_only_file_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ro.ipynb");
+    fs::write(&path, b"old").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+    if fs::OpenOptions::new().write(true).open(&path).is_ok() {
+        eprintln!("skipped: this user can write a 0444 file (root?)");
+        return;
+    }
+    let err = atomic_write(&path, b"new").unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    assert_eq!(fs::read(&path).unwrap(), b"old");
+    assert_eq!(names(dir.path()), ["ro.ipynb"]);
+}
