@@ -480,14 +480,17 @@ mod tests {
         .await;
         assert!(cancelled.is_err());
 
-        // The kernel answers again.
+        // The kernel answers again. Its echo of the first ping goes to the
+        // socket the host closed, and may fail; a kernel's REP socket
+        // carries on, so this one does too (stopping would drop it and
+        // reset the host's new connection).
         let echo = tokio::spawn(async move {
             while let Ok(m) = hb.recv().await {
-                if hb.send(m).await.is_err() {
-                    break;
-                }
+                let _ = hb.send(m).await;
             }
         });
+        // The first beat after the cut-short one is answered: the host
+        // saw the echo it never read and started on a fresh socket.
         let ok = sink.heartbeat(Duration::from_secs(5)).await;
         assert!(matches!(ok, Ok(true)), "{ok:?}");
         echo.abort();
