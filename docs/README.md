@@ -8,7 +8,8 @@ JupyterLab and VS Code connect to it as they would to Jupyter.
 
 The first target kernel is [cdp-kernel](https://cdp-kernel.org), for
 TypeScript notebooks. Python kernels still work: a Python kernel is one
-more installed kernelspec, not something the server needs.
+more installed kernelspec, not something the server needs
+([Other kernels](kernels.md)).
 
 ## Get started
 

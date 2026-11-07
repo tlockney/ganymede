@@ -5065,11 +5065,36 @@ async fn kernel_log_has_the_process_output_across_restarts() {
     );
 }
 
+/// Collects what a test's `tracing` subscriber writes.
+#[derive(Clone, Default)]
+struct LogSink(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// A kernel that dies at every start is left dead and leaves the map; its
-/// log, the reason it died, stays readable (#366 review).
+/// log, the reason it died, stays readable (#366 review). Its failure is
+/// logged as a warning, never an error, which crash reporting would send
+/// (#431).
 #[cfg(unix)]
 #[tokio::test]
 async fn kernel_log_outlives_a_kernel_left_dead() {
+    let sink = LogSink::default();
+    let writer = sink.clone();
+    let _logs = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish(),
+    );
     let dir = tempfile::tempdir().unwrap();
     let runtime = tempfile::tempdir().unwrap();
     let app = build_router(state_with(
@@ -5126,6 +5151,10 @@ async fn kernel_log_outlives_a_kernel_left_dead() {
     let exit = at(&|l| l.1 == "exited with code 3");
     let restart = at(&|l| l.1.starts_with("the kernel died; restarting"));
     assert!(err < exit && exit < restart, "{log}");
+
+    let logged = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+    assert!(logged.contains("leaving it dead"), "{logged}");
+    assert!(!logged.contains("ERROR"), "{logged}");
 }
 
 #[tokio::test]

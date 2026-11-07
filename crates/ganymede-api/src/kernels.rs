@@ -636,7 +636,7 @@ impl KernelManager {
         // new kernel can read it, not after.
         kernel.launched.lock().unwrap().take();
         if let Err(e) = self.core.relaunch(&kernel).await {
-            tracing::error!(kernel = %id, "kernel failed to restart: {e}");
+            tracing::warn!(kernel = %id, "kernel failed to restart: {e}");
             kernel.booting.store(false, Ordering::SeqCst);
             kernel.remove_dead(&self.core);
             return Err(e);
@@ -739,7 +739,11 @@ impl Core {
         let limit = self.config.restart_limit;
         if count > limit {
             if limit > 0 {
-                tracing::error!(kernel = %kernel.id, "kernel crashed {count} times in a row; leaving it dead");
+                // Kernel failures log at `warn`, never `error`: crash
+                // reporting sends Ganymede's `error` events, and a kernel
+                // that dies or won't start is the user's code or
+                // environment, not a crash (docs/privacy.md, #431).
+                tracing::warn!(kernel = %kernel.id, "kernel crashed {count} times in a row; leaving it dead");
                 kernel.log.host(&format!(
                     "the kernel died {count} times in a row; leaving it dead"
                 ));
@@ -763,7 +767,7 @@ impl Core {
         kernel.set_state("restarting");
         kernel.launched.lock().unwrap().take();
         if let Err(e) = self.relaunch(&kernel).await {
-            tracing::error!(kernel = %kernel.id, "kernel failed to restart: {e}");
+            tracing::warn!(kernel = %kernel.id, "kernel failed to restart: {e}");
             kernel.booting.store(false, Ordering::SeqCst);
             kernel.remove_dead(&self);
             return;
@@ -826,7 +830,7 @@ impl Core {
                 Ok(())
             }
             Err(e) => {
-                tracing::error!(kernel = %kernel.id, "kernel failed to start: {e}");
+                tracing::warn!(kernel = %kernel.id, "kernel failed to start: {e}");
                 kernel.log.host(&format!("the kernel failed to start: {e}"));
                 kernel.remove_dead(self);
                 Err(e)
