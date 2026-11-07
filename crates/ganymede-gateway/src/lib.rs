@@ -299,7 +299,13 @@ impl KernelProcess for RemoteKernel {
 }
 
 impl Drop for RemoteKernel {
+    /// The last handle to a remote kernel is gone: delete it there. A
+    /// shutdown sends the kernel only a `shutdown_request` (it has no pid
+    /// to wait on or kill), and a crash or a restart drops the handle
+    /// without one; a remote `jupyter_server` would restart the kernel
+    /// or keep it, as its `GatewayKernelManager` expects a `DELETE`.
     fn drop(&mut self) {
+        self.kill_now();
         let mut kernels = self.inner.kernels.lock().unwrap();
         kernels.retain(|_, id| *id != self.id);
     }

@@ -128,6 +128,33 @@ async fn runs_kernels_on_the_remote_server() {
     stop.send(()).await.unwrap();
 }
 
+/// Dropping a remote kernel's handle deletes the kernel on the remote
+/// server, whether or not it was ever sent a `shutdown_request`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dropped_remote_kernel_is_deleted() {
+    let root = tempfile::tempdir().unwrap();
+    let (url, stop) = remote(root.path()).await;
+    let gateway = Arc::new(Gateway::new(&base(&url), Some("secret".into())).unwrap());
+    gateway.refresh().await.unwrap();
+    let spec = gateway.list().unwrap().remove(0);
+    let launched = gateway
+        .launch(&spec, LaunchOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(gateway.remote_kernels().await.unwrap().len(), 1);
+
+    drop(launched);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !gateway.remote_kernels().await.unwrap().is_empty() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the remote kernel is still running"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    stop.send(()).await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_wrong_token_is_reported() {
     let root = tempfile::tempdir().unwrap();
