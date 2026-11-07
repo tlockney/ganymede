@@ -435,6 +435,10 @@ impl KernelSession {
         }
         // Only a process we own can be waited on or killed. An attached
         // kernel gets the request and nothing more.
+        // A failed signal doesn't end the shutdown early: the session is
+        // marked dead and its transport closed either way, and the error
+        // is returned after (#487).
+        let mut failed = None;
         if let Some(p) = self.inner.process.as_ref().filter(|p| p.pid().is_some()) {
             let half = grace / 2;
             let mut exited = tokio::time::timeout(half, p.wait()).await.is_ok();
@@ -443,21 +447,27 @@ impl KernelSession {
                 match p.terminate().await {
                     Ok(()) => exited = tokio::time::timeout(half, p.wait()).await.is_ok(),
                     Err(Error::Unsupported(_)) => {}
-                    Err(e) => return Err(e),
+                    Err(e) => {
+                        tracing::warn!("could not terminate the kernel: {e}");
+                        failed = Some(e);
+                    }
                 }
             }
             if !exited {
                 tracing::warn!("kernel still running; killing");
                 match p.kill().await {
                     Ok(()) | Err(Error::Unsupported(_)) => {}
-                    Err(e) => return Err(e),
+                    Err(e) => {
+                        tracing::warn!("could not kill the kernel: {e}");
+                        failed = Some(e);
+                    }
                 }
                 let _ = tokio::time::timeout(grace, p.wait()).await;
             }
         }
         self.inner.mark_dead();
         self.inner.sink.close().await;
-        Ok(())
+        failed.map_or(Ok(()), Err)
     }
 
     /// Heartbeat through the transport.
@@ -1134,10 +1144,16 @@ mod tests {
         }
         async fn terminate(&self) -> Result<()> {
             self.record("terminate");
+            if self.exits_on == "fails" {
+                return Err(Error::Io(std::io::Error::other("terminate failed")));
+            }
             Ok(())
         }
         async fn kill(&self) -> Result<()> {
             self.record("kill");
+            if self.exits_on == "fails" {
+                return Err(Error::Io(std::io::Error::other("kill failed")));
+            }
             if self.exits_on == "never" {
                 // A remote that accepts the DELETE and never answers.
                 std::future::pending::<()>().await;
@@ -1276,6 +1292,18 @@ mod tests {
         // A dead kernel is not signalled.
         assert!(matches!(s.interrupt().await, Err(Error::KernelDied)));
         assert_eq!(p.calls.lock().unwrap().len(), 2);
+    }
+
+    /// Signals that fail still leave the session dead, and a failed
+    /// SIGTERM still escalates to SIGKILL (#487).
+    #[tokio::test]
+    async fn shutdown_marks_dead_when_signals_fail() {
+        let (s, p) = session_with_process("fails");
+        let r = s.shutdown(false, Duration::from_millis(100)).await;
+        assert!(matches!(r, Err(Error::Io(_))), "{r:?}");
+        assert_eq!(*p.calls.lock().unwrap(), vec!["terminate", "kill"]);
+        assert!(!s.is_alive());
+        assert!(matches!(s.interrupt().await, Err(Error::KernelDied)));
     }
 
     /// A launched kernel with no pid (a gateway's remote kernel) is
