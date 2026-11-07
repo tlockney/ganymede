@@ -924,3 +924,207 @@ fn values_at_the_depth_limit_are_kept() {
     }
     assert_eq!(v.get("leaf"), Some(&serde_json::json!("hello")));
 }
+
+/// Hand-built v1 updates: one client's run of blocks, for shapes a yrs
+/// document can't produce.
+struct RawUpdate {
+    client: u64,
+    start: u32,
+    blocks: Vec<Vec<u8>>,
+}
+
+fn varint(out: &mut Vec<u8>, mut n: u64) {
+    loop {
+        let byte = (n & 0x7f) as u8;
+        n >>= 7;
+        if n == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+enum RawParent<'a> {
+    Root(&'a str),
+    Type(u64, u32),
+    Beside(Option<(u64, u32)>, Option<(u64, u32)>),
+}
+
+impl RawUpdate {
+    fn new(client: u64, start: u32) -> Self {
+        RawUpdate {
+            client,
+            start,
+            blocks: Vec::new(),
+        }
+    }
+
+    /// The clock of the next block.
+    fn next(&self) -> u32 {
+        self.start + self.blocks.len() as u32
+    }
+
+    /// An item of length 1: an array type, or a null.
+    fn item(&mut self, parent: RawParent, array: bool) -> (u64, u32) {
+        let id = (self.client, self.next());
+        let content = if array { 7 } else { 8 };
+        let mut b = Vec::new();
+        match parent {
+            RawParent::Root(name) => {
+                b.push(content);
+                b.push(1);
+                varint(&mut b, name.len() as u64);
+                b.extend(name.as_bytes());
+            }
+            RawParent::Type(c, k) => {
+                b.push(content);
+                b.push(0);
+                varint(&mut b, c);
+                varint(&mut b, u64::from(k));
+            }
+            RawParent::Beside(l, r) => {
+                b.push(
+                    content
+                        | if l.is_some() { 0x80 } else { 0 }
+                        | if r.is_some() { 0x40 } else { 0 },
+                );
+                for (c, k) in [l, r].into_iter().flatten() {
+                    varint(&mut b, c);
+                    varint(&mut b, u64::from(k));
+                }
+            }
+        }
+        if array {
+            b.push(0); // TYPE_REFS_ARRAY
+        } else {
+            b.extend([1, 126]); // one Any: null
+        }
+        self.blocks.push(b);
+        id
+    }
+
+    /// A garbage-collected clock.
+    fn gc(&mut self) -> (u64, u32) {
+        let id = (self.client, self.next());
+        self.blocks.push(vec![0, 1]);
+        id
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        let mut out = vec![1];
+        varint(&mut out, self.blocks.len() as u64);
+        varint(&mut out, self.client);
+        varint(&mut out, u64::from(self.start));
+        for b in &self.blocks {
+            out.extend(b);
+        }
+        out.push(0);
+        out
+    }
+}
+
+/// A chain of arrays under root `zz`, `depth` deep counting the root, with
+/// a null in the deepest; returns the deepest array and the null.
+fn raw_chain(u: &mut RawUpdate, depth: usize) -> ((u64, u32), (u64, u32)) {
+    let mut a = u.item(RawParent::Root("zz"), true);
+    for _ in 2..depth {
+        a = u.item(RawParent::Type(a.0, a.1), true);
+    }
+    let null = u.item(RawParent::Type(a.0, a.1), false);
+    (a, null)
+}
+
+fn conflict_for(fx: &ganymede_documents::Effects, conn: u64) -> bool {
+    fx.send.iter().any(|(t, m)| {
+        matches!(t, Target::One(c) if *c == conn) && String::from_utf8_lossy(m).contains("conflict")
+    })
+}
+
+/// yrs takes an item's parent from its left origin only when that is an
+/// item with a known parent; past a garbage-collected left origin it takes
+/// the right one's. The depth check follows it: an array beside a
+/// garbage-collected clock and a value deep in a chain is as deep as that
+/// value, and the update is refused.
+#[test]
+fn a_parent_through_the_right_origin_is_counted() {
+    use ganymede_documents::depth::{shared_depths, MAX_SHARED_DEPTH};
+
+    let text = fixture("empty.ipynb");
+    let nb = Notebook::from_str(&text).unwrap();
+
+    // Within the limit, the scan's depth is what yrs builds.
+    let mut ok = RawUpdate::new(7, 0);
+    let (_, null) = raw_chain(&mut ok, 4);
+    let gc = ok.gc();
+    let x = ok.item(RawParent::Beside(Some(gc), Some(null)), true);
+    ok.item(RawParent::Type(x.0, x.1), true);
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let fx = room
+        .receive(
+            1,
+            &Message::Sync(SyncMessage::Update(ok.bytes())).encode_v1(),
+        )
+        .unwrap();
+    assert!(!conflict_for(&fx, 1));
+    let (_, deepest) = shared_depths(&room.doc().transact());
+    assert_eq!(deepest, 6, "zz, 2 arrays, the deepest, x, and one under x");
+
+    // To the limit and past it.
+    let mut deep = RawUpdate::new(7, 0);
+    let (_, null) = raw_chain(&mut deep, MAX_SHARED_DEPTH);
+    let gc = deep.gc();
+    let mut x = deep.item(RawParent::Beside(Some(gc), Some(null)), true);
+    for _ in 0..9 {
+        x = deep.item(RawParent::Type(x.0, x.1), true);
+    }
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let fx = room
+        .receive(
+            1,
+            &Message::Sync(SyncMessage::Update(deep.bytes())).encode_v1(),
+        )
+        .unwrap();
+    assert!(conflict_for(&fx, 1));
+    assert_eq!(room.notebook().unwrap().unwrap().to_file_string(), text);
+}
+
+/// The same through items already in the document: a sibling that isn't a
+/// shared type could be anywhere (or garbage-collected, sending yrs to the
+/// right origin), so it counts as deep as the document goes.
+#[test]
+fn a_document_sibling_that_isnt_a_type_counts_as_deepest() {
+    use ganymede_documents::depth::MAX_SHARED_DEPTH;
+
+    let nb = Notebook::from_str(&fixture("empty.ipynb")).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    // First: a chain to the limit with a null at the bottom, and a null
+    // in a shallow array.
+    let mut first = RawUpdate::new(7, 0);
+    let (_, deep_null) = raw_chain(&mut first, MAX_SHARED_DEPTH);
+    let shallow = first.item(RawParent::Root("yy"), true);
+    let shallow_null = first.item(RawParent::Type(shallow.0, shallow.1), false);
+    let fx = room
+        .receive(
+            1,
+            &Message::Sync(SyncMessage::Update(first.bytes())).encode_v1(),
+        )
+        .unwrap();
+    assert!(!conflict_for(&fx, 1));
+    // Then: an array beside both nulls, with more under it.
+    let mut second = RawUpdate::new(7, first.next());
+    let mut x = second.item(RawParent::Beside(Some(shallow_null), Some(deep_null)), true);
+    for _ in 0..9 {
+        x = second.item(RawParent::Type(x.0, x.1), true);
+    }
+    let fx = room
+        .receive(
+            1,
+            &Message::Sync(SyncMessage::Update(second.bytes())).encode_v1(),
+        )
+        .unwrap();
+    assert!(conflict_for(&fx, 1));
+}
