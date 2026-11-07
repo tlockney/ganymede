@@ -459,7 +459,8 @@ mod tests {
         let mut stdin = RouterSocket::new();
         let mut control = RouterSocket::new();
         let mut iopub = zeromq::PubSocket::new();
-        let mut hb = zeromq::RepSocket::new();
+        // ipykernel's heartbeat is a ROUTER echoing what it gets.
+        let mut hb = RouterSocket::new();
         let ports = [
             port(shell.bind(any).await.unwrap()),
             port(iopub.bind(any).await.unwrap()),
@@ -481,9 +482,7 @@ mod tests {
         assert!(cancelled.is_err());
 
         // The kernel answers again. Its echo of the first ping goes to the
-        // socket the host closed, and may fail; a kernel's REP socket
-        // carries on, so this one does too (stopping would drop it and
-        // reset the host's new connection).
+        // socket the host closed and is lost, as with a real kernel.
         let echo = tokio::spawn(async move {
             while let Ok(m) = hb.recv().await {
                 let _ = hb.send(m).await;
