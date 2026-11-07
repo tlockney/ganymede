@@ -29,15 +29,12 @@ Either way below makes the same environment at
 `~/.local/share/venvs/python3`. Install the packages you want in every
 notebook the same way as ipykernel, now or later.
 
-#### With an existing Python and pip
+#### With uv (recommended)
 
-```sh
-python3 -m venv ~/.local/share/venvs/python3
-~/.local/share/venvs/python3/bin/pip install ipykernel
-~/.local/share/venvs/python3/bin/pip install numpy pandas   # optional
-```
-
-#### With uv
+[uv](https://docs.astral.sh/uv/) manages Python environments, and
+downloads a Python for them when the machine has none. If you don't have
+it, [install uv](https://docs.astral.sh/uv/getting-started/installation/)
+first.
 
 ```sh
 uv venv ~/.local/share/venvs/python3
@@ -47,6 +44,14 @@ uv pip install --python ~/.local/share/venvs/python3 numpy pandas   # optional
 
 uv's environments have no `pip` of their own, so add packages with `uv
 pip install --python ...` as above.
+
+#### With an existing Python and pip
+
+```sh
+python3 -m venv ~/.local/share/venvs/python3
+~/.local/share/venvs/python3/bin/pip install ipykernel
+~/.local/share/venvs/python3/bin/pip install numpy pandas   # optional
+```
 
 Jupyter itself (`jupyter`, `notebook`, `jupyterlab`) isn't needed; only
 `ipykernel` and what your code imports.
