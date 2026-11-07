@@ -1600,3 +1600,25 @@ async fn case_only_rename_on_a_case_insensitive_volume() {
     c.save("x.txt", SaveRequest::text("x")).await.unwrap();
     assert_eq!(status(&c.rename("x.txt", "n.IPYNB").await), 409);
 }
+
+/// A FIFO is refused instead of read: the read would wait for a writer
+/// forever (#489).
+#[cfg(unix)]
+#[tokio::test]
+async fn copy_and_checkpoint_refuse_a_fifo() {
+    let (dir, c) = setup();
+    let ok = std::process::Command::new("mkfifo")
+        .arg(dir.path().join("pipe"))
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok, "mkfifo");
+    let copy = tokio::time::timeout(Duration::from_secs(5), c.copy("pipe", None))
+        .await
+        .expect("copy returns");
+    assert_eq!(status(&copy), 404);
+    let cp = tokio::time::timeout(Duration::from_secs(5), c.create_checkpoint("pipe"))
+        .await
+        .expect("checkpoint returns");
+    assert_eq!(status(&cp), 404);
+}
