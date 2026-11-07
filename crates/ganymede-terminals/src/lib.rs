@@ -300,6 +300,7 @@ impl Terminal {
         let (tx, _) = broadcast::channel(CLIENT_QUEUE);
         let (input, input_rx) = std::sync::mpsc::channel::<Vec<u8>>();
         let reader = process.take_reader();
+        let waiter = process.waiter();
         let mut writer = process.take_writer();
         let term = Arc::new(Terminal {
             name,
@@ -329,7 +330,7 @@ impl Terminal {
         let weak = Arc::downgrade(&term);
         std::thread::Builder::new()
             .name(format!("terminal-{}-out", term.name))
-            .spawn(move || read_loop(reader, weak, manager))
+            .spawn(move || read_loop(reader, waiter, weak, manager))
             .expect("spawn terminal reader");
         term
     }
@@ -378,6 +379,7 @@ impl Terminal {
 
 fn read_loop(
     mut reader: Box<dyn std::io::Read + Send>,
+    waiter: pty::Waiter,
     term: Weak<Terminal>,
     manager: Weak<Inner>,
 ) {
@@ -389,13 +391,20 @@ fn read_loop(
             Ok(n) => n,
         };
         let text = decoder.push(&buf[..n]);
-        let Some(t) = term.upgrade() else { return };
+        // Deleted, and no client holds it: its shell was killed, and is
+        // reaped below.
+        let Some(t) = term.upgrade() else { break };
         if !text.is_empty() {
             t.emit(text);
         }
     }
-    let Some(t) = term.upgrade() else { return };
-    let code = t.process.wait();
+    // Wait through a handle of our own: a deleted terminal may be gone by
+    // now, and its shell would stay a zombie (#486).
+    let code = waiter.wait();
+    let Some(t) = term.upgrade() else {
+        tracing::info!(?code, "deleted terminal's shell exited");
+        return;
+    };
     tracing::info!(terminal = %t.name, ?code, "terminal exited");
     t.end();
     if let Some(m) = manager.upgrade() {
@@ -461,14 +470,16 @@ mod pty {
     use super::{Error, Result};
     use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
     use std::path::Path;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     pub const SUPPORTED: bool = true;
+
+    type SharedChild = Arc<Mutex<Box<dyn Child + Send + Sync>>>;
 
     /// Separate locks, so a kill or resize never waits behind `wait`.
     pub struct Process {
         master: Mutex<Box<dyn MasterPty + Send>>,
-        child: Mutex<Box<dyn Child + Send + Sync>>,
+        child: SharedChild,
         killer: Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
         reader: Mutex<Option<Box<dyn std::io::Read + Send>>>,
         writer: Mutex<Option<Box<dyn std::io::Write + Send>>>,
@@ -509,7 +520,7 @@ mod pty {
         let killer = child.clone_killer();
         Ok(Process {
             master: Mutex::new(pair.master),
-            child: Mutex::new(child),
+            child: Arc::new(Mutex::new(child)),
             killer: Mutex::new(killer),
             reader: Mutex::new(Some(reader)),
             writer: Mutex::new(Some(writer)),
@@ -563,14 +574,24 @@ mod pty {
             let _ = self.killer.lock().unwrap().kill();
         }
 
+        /// Waits for the shell, and outlives this process handle.
+        pub fn waiter(&self) -> Waiter {
+            Waiter(self.child.clone())
+        }
+
+        /// The shell's process id, while it runs.
+        #[cfg(test)]
+        pub fn pid(&self) -> Option<u32> {
+            self.child.lock().unwrap().process_id()
+        }
+    }
+
+    pub struct Waiter(SharedChild);
+
+    impl Waiter {
         /// The exit code, once the shell has exited.
         pub fn wait(&self) -> Option<u32> {
-            self.child
-                .lock()
-                .unwrap()
-                .wait()
-                .ok()
-                .map(|s| s.exit_code())
+            self.0.lock().unwrap().wait().ok().map(|s| s.exit_code())
         }
     }
 }
@@ -607,6 +628,14 @@ mod pty {
         pub fn kill(&self) {
             match *self {}
         }
+        pub fn waiter(&self) -> Waiter {
+            match *self {}
+        }
+    }
+
+    pub enum Waiter {}
+
+    impl Waiter {
         pub fn wait(&self) -> Option<u32> {
             match *self {}
         }
@@ -781,6 +810,32 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             panic!("terminal still listed: {:?}", m.list());
+        }
+
+        #[tokio::test]
+        async fn a_deleted_terminals_shell_is_reaped() {
+            // With no client holding the terminal, deleting it dropped the
+            // last handle to the shell before anyone waited for it (#486).
+            let root = tempfile::tempdir().unwrap();
+            let m = manager(root.path());
+            m.create(Some("t".into()), None).unwrap();
+            let pid = m.find("t").unwrap().process.pid().expect("shell pid");
+            m.delete("t").unwrap();
+            // `kill -0` succeeds on a zombie, so it fails only once the
+            // shell is reaped.
+            for _ in 0..250 {
+                let alive = std::process::Command::new("kill")
+                    .args(["-0", &pid.to_string()])
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .unwrap()
+                    .success();
+                if !alive {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            panic!("shell {pid} not reaped after delete");
         }
 
         #[test]
