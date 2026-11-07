@@ -71,7 +71,9 @@ with code 1008: the kernel channels drop output past that point, but a
 room can't skip an update; a close the room sends (4404 for a deleted
 file) still reaches it. A message larger than `max_body_size` closes the
 socket. A write to a client may take 30 seconds plus one more for every
-64 KiB, so a large notebook's first sync gets through a slow link. A client reconnects and resyncs as after any drop.
+64 KiB, and a write that long counts as hearing from the client, so a
+large notebook's first sync gets through a slow link. A client
+reconnects and resyncs as after any drop.
 
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in

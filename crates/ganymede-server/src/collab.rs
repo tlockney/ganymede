@@ -41,11 +41,16 @@
 use crate::routes::{origin_allowed, HttpError, LenientJson};
 use crate::watch::{Watch, Watcher};
 use crate::AppState;
+// Frames queued for a client before it is dropped: the kernel bridge's
+// limit. The kernel bridge drops output instead, but a room can't skip an
+// update without the client's document going wrong, so the client goes
+// and resyncs when it reconnects.
 use axum::extract::ws::{CloseFrame, Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use ganymede_api::bridge::CLIENT_QUEUE_LIMIT;
 use ganymede_contents::{ContentType, Contents, FileIds, GetOptions, IfMatch, SaveRequest};
 use ganymede_documents::{ConnId, Room, SaveStatus, Target};
 use ganymede_nbformat::Notebook;
@@ -74,11 +79,6 @@ const CLEANUP_DELAY: Duration = Duration::from_secs(60);
 /// Failed saves in a row after which a room with no clients closes with
 /// its edits unsaved: about five minutes of #353's backoff.
 const GIVE_UP_AFTER: u32 = 10;
-/// Frames queued for a client before it is dropped: the kernel bridge's
-/// limit. The kernel bridge drops output instead, but a room can't skip
-/// an update without the client's document going wrong, so the client
-/// goes and resyncs when it reconnects.
-use ganymede_api::bridge::CLIENT_QUEUE_LIMIT;
 /// How often a room's websocket is pinged.
 const PING_INTERVAL: Duration = Duration::from_secs(30);
 /// A client that sends nothing, not even a pong, for this long is
@@ -547,7 +547,9 @@ async fn serve_socket(
             },
             out = out_rx.recv() => match out {
                 Some(Out::Frame(f)) => {
+                    let started = Instant::now();
                     if !send_within(&mut socket, WsMessage::Binary(f.into())).await { break }
+                    last_heard = heard_after_write(last_heard, started.elapsed(), ping_every);
                 }
                 Some(Out::Close(code, reason)) => { close(&mut socket, code, reason).await; break }
                 None => break,
@@ -711,6 +713,18 @@ async fn send_within(socket: &mut WebSocket, msg: WsMessage) -> bool {
         tokio::time::timeout(limit, socket.send(msg)).await,
         Ok(Ok(()))
     )
+}
+
+/// When the client was last known alive, after a write that took
+/// `took`. A write that kept going for a whole ping interval had the
+/// client reading (its window kept opening), so it counts as hearing from
+/// it; a quick one only filled a buffer and proves nothing.
+fn heard_after_write(last_heard: Instant, took: Duration, ping_every: Duration) -> Instant {
+    if took >= ping_every {
+        Instant::now()
+    } else {
+        last_heard
+    }
 }
 
 fn msg_len(msg: &WsMessage) -> usize {
@@ -1429,6 +1443,19 @@ mod queue_tests {
             .await
             .expect("raised");
         assert_eq!(got, (4404, "gone".to_string()));
+    }
+
+    /// A long write counts as hearing from the client, so a slow first
+    /// sync isn't followed by an idle drop; a quick one doesn't.
+    #[test]
+    fn a_long_write_counts_as_hearing_from_the_client() {
+        let ping = Duration::from_secs(30);
+        let long_ago = Instant::now() - Duration::from_secs(120);
+        assert!(heard_after_write(long_ago, Duration::from_secs(100), ping).elapsed() < ping);
+        assert_eq!(
+            heard_after_write(long_ago, Duration::from_millis(5), ping),
+            long_ago
+        );
     }
 
     /// A big frame gets time for a slow link; a small one the base timeout.
