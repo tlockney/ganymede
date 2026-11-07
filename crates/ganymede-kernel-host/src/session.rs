@@ -295,6 +295,7 @@ impl KernelSession {
         let deadline = tokio::time::Instant::now() + timeout;
         let mut shell_info: Option<(content::KernelInfoReply, serde_json::Value)> = None;
         let mut control_ok = false;
+        let mut parse_logged = false;
         let (mut shell_wait, mut control_wait) = (FIRST, FIRST);
         while tokio::time::Instant::now() < deadline {
             let left = deadline - tokio::time::Instant::now();
@@ -325,13 +326,19 @@ impl KernelSession {
             };
             let (shell, control) = tokio::join!(shell, control);
             match shell {
-                Some(Ok(exec)) => {
-                    shell_info = exec
-                        .reply
-                        .content_as()
-                        .ok()
-                        .map(|info| (info, exec.reply.content.clone()));
-                }
+                Some(Ok(exec)) => match exec.reply.content_as() {
+                    Ok(info) => shell_info = Some((info, exec.reply.content.clone())),
+                    // The kernel answered, so it is not slow: say why its
+                    // answer doesn't count, once, or the start just times out.
+                    Err(e) if !parse_logged => {
+                        parse_logged = true;
+                        tracing::warn!(
+                            "kernel_info_reply did not parse ({e}); waiting for one that does: {}",
+                            exec.reply.content
+                        );
+                    }
+                    Err(_) => {}
+                },
                 Some(Err(_)) => shell_wait = (shell_wait * 2).min(LONGEST),
                 None => {}
             }
@@ -671,6 +678,52 @@ mod tests {
         );
         assert!(s.kernel_info().is_some());
         assert_eq!(s.execution_state(), ExecutionState::Idle);
+    }
+
+    /// Collects what `tracing` writes, for asserting on a warning.
+    #[derive(Clone, Default)]
+    struct Logs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Logs {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn nudge_logs_a_kernel_info_reply_that_does_not_parse() {
+        let logs = Logs::default();
+        let w = logs.clone();
+        let _log = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(move || w.clone())
+                .with_ansi(false)
+                .finish(),
+        );
+        let (host, mut kernel) = in_process_pair(64);
+        // Answers every kernel_info_request with a reply missing `status`.
+        tokio::spawn(async move {
+            while let Some((channel, m)) = kernel.incoming.recv().await {
+                let reply = Message::reply_to(&m, "kernel_info_reply", &serde_json::json!({}));
+                let _ = kernel.outgoing.send((channel, reply)).await;
+            }
+        });
+        let s = KernelSession::start(host, None);
+        assert!(matches!(
+            s.nudge(Duration::from_secs(10)).await,
+            Err(Error::Timeout(_))
+        ));
+        let text = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            text.matches("kernel_info_reply did not parse").count(),
+            1,
+            "{text}"
+        );
+        assert!(text.contains("missing field"), "{text}");
     }
 
     #[tokio::test(start_paused = true)]
