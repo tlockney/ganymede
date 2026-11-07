@@ -50,9 +50,51 @@ pub struct SessionPatch {
 pub struct SessionManager {
     kernels: Arc<KernelManager>,
     sessions: RwLock<HashMap<String, Session>>,
-    /// Held by `create` and `update` across their kernel starts, so two
-    /// creates for one path can't both miss the other's session (#430).
-    changes: tokio::sync::Mutex<()>,
+    /// One lock per notebook path, held by `create` and `update` across
+    /// their kernel starts, so two creates for one path can't both miss
+    /// the other's session (#430). Per path, so a slow start (a gateway
+    /// that takes its time) holds up only its own notebook.
+    path_locks: PathLocks,
+}
+
+type PathLocks = std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>;
+
+/// A held entry of [`SessionManager::path_locks`]; dropping it unlocks the
+/// path and removes the entry when no one else holds or waits on it.
+struct PathGuard<'a> {
+    locks: &'a PathLocks,
+    path: String,
+    lock: Arc<tokio::sync::Mutex<()>>,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl<'a> PathGuard<'a> {
+    async fn lock(locks: &'a PathLocks, path: &str) -> PathGuard<'a> {
+        let lock = locks
+            .lock()
+            .unwrap()
+            .entry(path.to_string())
+            .or_default()
+            .clone();
+        let guard = Some(lock.clone().lock_owned().await);
+        PathGuard {
+            locks,
+            path: path.to_string(),
+            lock,
+            guard,
+        }
+    }
+}
+
+impl Drop for PathGuard<'_> {
+    fn drop(&mut self) {
+        self.guard.take();
+        let mut locks = self.locks.lock().unwrap();
+        // The map's copy and ours: nobody else holds or waits on it.
+        if Arc::strong_count(&self.lock) == 2 {
+            locks.remove(&self.path);
+        }
+    }
 }
 
 impl SessionManager {
@@ -60,7 +102,7 @@ impl SessionManager {
         SessionManager {
             kernels,
             sessions: RwLock::new(HashMap::new()),
-            changes: tokio::sync::Mutex::new(()),
+            path_locks: Default::default(),
         }
     }
 
@@ -111,15 +153,21 @@ impl SessionManager {
     /// `jupyter_server` does. An existing session whose kernel is gone
     /// (culled, or died) is dropped and a new one made in its place.
     pub async fn create(&self, req: SessionCreate) -> Result<SessionModel> {
-        let _changing = self.changes.lock().await;
-        let existing = self
-            .sessions
-            .read()
-            .unwrap()
-            .values()
-            .find(|s| s.path == req.path)
-            .cloned();
-        if let Some(existing) = existing {
+        let find = || {
+            self.sessions
+                .read()
+                .unwrap()
+                .values()
+                .find(|s| s.path == req.path)
+                .cloned()
+        };
+        if let Some(existing) = find() {
+            if self.kernels.get(&existing.kernel_id).is_ok() {
+                return self.model(&existing);
+            }
+        }
+        let _path = PathGuard::lock(&self.path_locks, &req.path).await;
+        if let Some(existing) = find() {
             if self.kernels.get(&existing.kernel_id).is_ok() {
                 return self.model(&existing);
             }
@@ -155,14 +203,17 @@ impl SessionManager {
     /// while its new kernel starts stays deleted, and that kernel is shut
     /// down; the old kernel is shut down once the change is in.
     pub async fn update(&self, id: &str, patch: SessionPatch) -> Result<SessionModel> {
-        let changing = self.changes.lock().await;
-        let mut s = self
-            .sessions
-            .read()
-            .unwrap()
-            .get(id)
-            .cloned()
-            .ok_or_else(|| ApiError::not_found(format!("session {id}")))?;
+        let current = || {
+            self.sessions
+                .read()
+                .unwrap()
+                .get(id)
+                .cloned()
+                .ok_or_else(|| ApiError::not_found(format!("session {id}")))
+        };
+        let path = current()?.path;
+        let changing = PathGuard::lock(&self.path_locks, &path).await;
+        let mut s = current()?;
         if let Some(p) = patch.path {
             s.path = p;
         }
@@ -193,7 +244,7 @@ impl SessionManager {
                 replaced = Some(std::mem::replace(&mut s.kernel_id, new_id));
             }
         }
-        // `delete` doesn't wait for `changes`: it may have run while the
+        // `delete` doesn't take the path lock: it may have run while the
         // kernel started, and then shut down the session's old kernel.
         let kept = match self.sessions.write().unwrap().get_mut(id) {
             Some(slot) => {
@@ -719,6 +770,67 @@ mod tests {
         assert_ne!(c.kernel.id, a.kernel.id);
         assert_eq!(sm.get(&a.id).unwrap_err().status, 404);
         assert_eq!(sm.list().len(), 1);
+    }
+
+    /// Holds launches of the `other` kernelspec until notified.
+    struct GatedProvisioner(Arc<tokio::sync::Notify>);
+    #[async_trait]
+    impl Provisioner for GatedProvisioner {
+        async fn launch(
+            &self,
+            spec: &Kernelspec,
+            opts: LaunchOptions,
+        ) -> ganymede_kernel_host::Result<LaunchedKernel> {
+            if spec.name == "other" {
+                self.0.notified().await;
+            }
+            FakeProvisioner.launch(spec, opts).await
+        }
+    }
+
+    /// A slow kernel start holds up only its own path: other paths' creates
+    /// and a create for a path that has a session go ahead (#444 review).
+    #[tokio::test]
+    async fn a_slow_kernel_start_holds_up_only_its_own_path() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let m = Arc::new(KernelManager::new(
+            Arc::new(StaticKernelspecs(vec![
+                fake_spec("fake"),
+                fake_spec("other"),
+            ])),
+            Arc::new(GatedProvisioner(gate.clone())),
+            Arc::new(FakeTransports::default()),
+            KernelManagerConfig {
+                startup_timeout: Duration::from_secs(5),
+                ..Default::default()
+            },
+        ));
+        let sm = SessionManager::new(m.clone());
+        let req = |path: &str, kernel: &str| SessionCreate {
+            path: path.into(),
+            kernel: KernelRef {
+                name: Some(kernel.into()),
+                id: None,
+            },
+            ..Default::default()
+        };
+        let open = sm.create(req("a.ipynb", "fake")).await.unwrap();
+        let slow = sm.create(req("slow.ipynb", "other"));
+        let rest = async {
+            let b = sm.create(req("b.ipynb", "fake")).await.unwrap();
+            let again = sm.create(req("a.ipynb", "fake")).await.unwrap();
+            gate.notify_one();
+            (b, again)
+        };
+        let (slow, (b, again)) =
+            tokio::time::timeout(Duration::from_secs(10), async { tokio::join!(slow, rest) })
+                .await
+                .expect("creates for other paths waited on the slow start");
+        assert_eq!(again.id, open.id);
+        assert_ne!(b.id, open.id);
+        assert_eq!(slow.unwrap().kernel.name, "other");
+        assert_eq!(sm.list().len(), 3);
+        assert!(sm.path_locks.lock().unwrap().is_empty(), "path locks freed");
     }
 
     /// A delete that lands while a PATCH starts the new kernel wins: the
