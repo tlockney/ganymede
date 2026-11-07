@@ -456,9 +456,9 @@ downloaded, but one saved from a browser may get a SmartScreen
 "Windows protected your PC" prompt: choose **More info**, then
 **Run anyway**, or run `Unblock-File` on the `.zip` before extracting it.
 
-Windows binaries are built and released but not tested end to end, and
-signal interrupts are not implemented there; see [Known gaps](known-gaps.md#platforms) and
-[#60](https://github.com/tlockney/ganymede/issues/60).
+Windows binaries are built and released as a best effort: they are not
+tested end to end, and signal interrupts are not implemented there. There
+are no plans for Windows CI; see [Known gaps](known-gaps.md#platforms).
 
 ### Verify a download
 
