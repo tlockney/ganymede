@@ -61,6 +61,10 @@ server or reach outside the root, or that lose kernels.
     open. `out_to_json` stops one level past 16 as a backstop (values
     inside the deepest accepted type are kept) and gives null for XML
     types, whose yrs conversion recurses without limit.
+  - A sibling that isn't a known shared type stands in at the document's
+    deepest depth, so once some branch reaches 16, a new type beside a
+    plain value anywhere can be refused. Notebooks stay near 5; resolving
+    such a sibling's parent needs yrs internals, so it stays an estimate.
   - The collaboration websocket's 1 GiB message limit is left to #436.
 - **A beat cut short (#425).** Two timeouts of the same length, nested:
   the outer one always wins, and dropping the inner future skipped the
