@@ -157,6 +157,30 @@ Extensions installed some other way are found in `labextensions` under the
 Jupyter data directories or with `--labextensions-path`, which is searched
 first.
 
+### Export
+
+**File > Save and Export Notebook As** offers two formats, nbconvert's
+`script` and `markdown`, built in Rust from the notebook alone:
+
+- **Executable Script**: the code cells, and raw cells with no MIME
+  type, separated by blank lines. The file extension and MIME type come
+  from the notebook's `metadata.language_info` (`file_extension`,
+  `mimetype`), or `.txt` without them. Markdown cells are left out,
+  since turning them into comments needs the language's syntax.
+- **Markdown**: markdown cells as they are; code cells as fenced blocks
+  tagged with `language_info.name`; text outputs and tracebacks as plain
+  fenced blocks; HTML, LaTeX and Markdown outputs inline. Images and
+  cell attachments go in `<name>_files/`, and the download is then a zip
+  of the `.md` file and that folder, as nbconvert's.
+
+The exports are `GET /nbconvert/{format}/{path}`, with `?download=true`
+for a download, and `/api/nbconvert` lists the formats. HTML, PDF,
+LaTeX, and slides need nbconvert's Python templates and aren't offered.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release, whose export menu is empty.
+
 ## Terminals
 
 JupyterLab's Terminal launcher works: Ganymede serves `/api/terminals` and
@@ -237,7 +261,8 @@ language servers on iOS, where an app cannot start processes.
 ## What isn't there
 
 JupyterLab server extensions are Python and are not implemented.
-`/api/nbconvert` reports no exporters.
+nbconvert's template exports (HTML, PDF, LaTeX, slides) aren't offered;
+script and Markdown are ([Export](#export)).
 
 ## Other clients
 

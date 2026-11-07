@@ -110,6 +110,7 @@ pull request with a GitHub issue, and records what it learned in the
 ## Not planned
 
 JupyterLab server extensions and `jupyter_server` extensions (prebuilt
-JupyterLab frontend extensions do work), nbconvert export, and the
+JupyterLab frontend extensions do work), nbconvert's template exports
+(HTML, PDF, LaTeX, slides), and the
 JupyterHub single-user contract. See [Replacing Python](python-free.md)
 for why.

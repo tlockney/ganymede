@@ -21,7 +21,7 @@ As of this survey:
 - Kernel connection files are written to `JUPYTER_RUNTIME_DIR`, so a ZMQ
   client can attach to a kernel Ganymede launched.
 - Not served: classic Notebook / Notebook 7 pages (`/tree`, `/notebooks`),
-  nbconvert exporters, server extensions.
+  nbconvert's template exporters (HTML, PDF), server extensions.
 - Collaboration rooms: `/api/collaboration`, notebooks only; see
   [Live editing and document rooms](rooms.md).
 

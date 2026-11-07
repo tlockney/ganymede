@@ -59,6 +59,9 @@ base64.workspace = true
 getrandom = "0.4"
 form_urlencoded = "1"
 mime_guess = "2"
+# nbconvert's zip of a Markdown export and its images (#235); the
+# ganymede-cli dependency, with the same features.
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 dirs.workspace = true
 rmcp = { version = "3.8", default-features = false, features = ["server", "macros", "transport-io", "transport-streamable-http-server", "schemars"] }
 

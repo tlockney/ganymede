@@ -66,7 +66,8 @@ missing, so you can judge the switch before making it.
 ## What is missing
 
 Server extensions (the Python half of some JupyterLab extensions),
-nbconvert export, and JupyterHub's single-user mode. Terminals and
+nbconvert's template exports (HTML, PDF, LaTeX, slides; script and
+Markdown work), and JupyterHub's single-user mode. Terminals and
 language servers ([JupyterLab and VS Code](frontends.md#terminals)) and
 real-time collaboration
 ([Live editing and document rooms](rooms.md))

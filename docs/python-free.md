@@ -16,13 +16,18 @@ where these pieces sit.
 | `ipc` transport for connection files | cdp-kernel uses `node:net` TCP only. Default to `tcp`; keep `ipc` as an option for kernels that support it. |
 | Widgets mean ipywidgets: Python model classes plus `@jupyter-widgets/controls` | Widgets are the comm protocol plus the `jupyter.widget` state-sync protocol; the Python half is the kernel's business. `ganymede lab install` adds the frontend halves of `jupyterlab_widgets` and [`anywidget`](https://github.com/manzt/anywidget) from PyPI without Python, so cdp-kernel's anywidget-based widgets and ipywidgets from ipykernel both render. |
 | Trust signatures in `nbsignatures.db` via Python's sqlite and a secret file | The same files, read and written in Rust: HMAC-SHA256 over the notebook as nbformat computes it, keyed with `notebook_secret`, recorded in `nbsignatures.db` through SQLite compiled into the binary. Notebooks trusted by Jupyter stay trusted. `ganymede trust` replaces `jupyter trust`. |
-| nbconvert endpoints (`/nbconvert/*`) and export menus | Drop. Export is a separate tool if wanted. |
+| nbconvert endpoints (`/nbconvert/*`) and export menus | `script` and `markdown` in Rust, from the notebook's `language_info`, so the host still names no language ([Export](frontends.md#export)). Drop the exporters that need Python templates: HTML, PDF, LaTeX, slides. |
 | Server extensions via Python entry points, traitlets config, `jupyter_server_config.py` | Drop. One config file (TOML) for the server. No extension system in v1. |
 | JupyterHub single-user contract | Drop for v1. It is an auth handshake plus env vars and can be added later without touching the core. |
 | Language servers via `jupyter-lsp`, which finds servers with per-language Python spec finders | `/lsp/status` and `/lsp/ws/<name>` in Rust, relaying JSON-RPC to servers listed in the config file. No autodetection, so the host names no language. |
 | Terminals via `terminado` | `/api/terminals` and terminado's websocket protocol in Rust, over a pseudo-terminal (`portable-pty`). The terminal runs the user's login shell, or `terminal_shell` from the config; the host names no language. |
 | Language-specific UI behaviour: `%matplotlib`, `pip` magics, Python tracebacks | None. The only source of language information is `kernel_info_reply.language_info`; the editor mode comes from `codemirror_mode`, which cdp-kernel reports as TypeScript. Traceback rendering is ANSI text, not a Python format. |
 | Optional protocol messages treated as required (`history`, `is_complete`, `inspect`) | Treat every message beyond `kernel_info`, `execute`, `shutdown`, `interrupt`, and `status` as optional. Read `supported_features` when present. Time out and degrade rather than hang. |
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release: `script` and `markdown` export. The latest release
+> has no `/nbconvert` export.
 
 ## Where Python still appears
 

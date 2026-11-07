@@ -25,8 +25,8 @@ covers problems with the install itself.
 
 - JupyterLab **server extensions**, which are Python, don't run. Prebuilt
   frontend extensions do; see [JupyterLab and VS Code](frontends.md#extensions).
-- `/api/nbconvert` reports no exporters: there is no export to HTML, PDF,
-  or other formats.
+- Export covers only script and Markdown; HTML, PDF, LaTeX, and slides
+  need nbconvert's Python templates ([Export](frontends.md#export)).
 - No JupyterHub single-user mode.
 - **Widgets** work in JupyterLab: `ganymede lab install` adds the
   frontends of `jupyterlab_widgets` and [`anywidget`](https://github.com/manzt/anywidget), so ipywidgets from
@@ -37,6 +37,11 @@ covers problems with the install itself.
   message rate. A client that falls 10,000 output messages behind loses
   the rest of that output and is told, as `jupyter_server`'s rate limit
   does; replies are never dropped.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release: script and Markdown export. The latest release
+> exports nothing (`/api/nbconvert` reports no exporters).
 
 ## Kernels
 
