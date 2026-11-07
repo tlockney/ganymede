@@ -4,7 +4,8 @@ name: Release
 # for each target, packages it with SHA-256 checksums, and publishes a
 # GitHub Release whose notes are the version's CHANGELOG.md section, with
 # a build provenance attestation per archive, then pushes the container
-# image (container/Dockerfile) to ghcr.io. Pull requests that touch the
+# image (container/Dockerfile) to ghcr.io. The release also carries
+# GanymedeFFI.xcframework.zip for the apps (#456). Pull requests that touch the
 # release tooling, and manual runs on other refs, build and package
 # without publishing. docs/releasing.md says what to do when a run fails.
 #
@@ -186,9 +187,64 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
 
+  # GanymedeFFI.xcframework.zip, the static library the Mac and iPad app
+  # links (docs/embedding.md), so ganymede-ui downloads it by tag instead
+  # of building ganymede-ffi itself (#456). The name is the same on every
+  # release and on main-build, with GanymedeFFI.xcframework.zip.sha256
+  # beside it; the release's attestation and SHA256SUMS cover it.
+  # Not on pull requests: CI's ffi (macos-latest) job already runs
+  # build-xcframework.sh there, and macOS runners are the scarce ones.
+  xcframework:
+    if: github.event_name != 'pull_request'
+    needs: version
+    runs-on: macos-latest
+    timeout-minutes: 45
+    concurrency:
+      group: ${{ github.workflow }}-xcframework-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && 'main' || github.run_id }}
+      cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
+    env:
+      GANYMEDE_VERSION_BUILD: ${{ needs.version.outputs.build }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin, aarch64-apple-ios, aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: xcframework
+      - name: Build
+        run: scripts/build-xcframework.sh
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: cargo-about
+      # The zip redistributes ganymede-ffi's dependencies, so their
+      # notices and this repo's LICENSE travel with it, as in the CLI
+      # archives.
+      - name: Third-party notices
+        run: |
+          cargo about generate --locked --fail --target aarch64-apple-darwin --target aarch64-apple-ios --target aarch64-apple-ios-sim -m crates/ganymede-ffi/Cargo.toml about.hbs -o target/xcframework/THIRD-PARTY-NOTICES
+          cp LICENSE target/xcframework/
+          cd target/xcframework
+          zip -q GanymedeFFI.xcframework.zip THIRD-PARTY-NOTICES LICENSE
+      - name: Checksum
+        run: |
+          mkdir -p dist
+          cp target/xcframework/GanymedeFFI.xcframework.zip dist/
+          cd dist
+          shasum -a 256 GanymedeFFI.xcframework.zip > GanymedeFFI.xcframework.zip.sha256
+          cat GanymedeFFI.xcframework.zip.sha256
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: GanymedeFFI.xcframework
+          path: dist/*
+          if-no-files-found: error
+
   release:
     if: github.ref_type == 'tag'
-    needs: [version, build]
+    needs: [version, build, xcframework]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -262,7 +318,7 @@ jobs:
   # commit either way.
   main-build:
     if: github.ref == 'refs/heads/main'
-    needs: [version, build]
+    needs: [version, build, xcframework]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:

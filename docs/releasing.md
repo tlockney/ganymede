@@ -32,7 +32,11 @@ partway through.
    the version (x86_64 macOS under Rosetta), packages them with
    `THIRD-PARTY-NOTICES` and SHA-256 checksums, attests their build
    provenance, and publishes the GitHub Release with the changelog section
-   as notes.
+   as notes. The release also carries `GanymedeFFI.xcframework.zip`, the
+   library the Mac and iPad app links, with
+   `GanymedeFFI.xcframework.zip.sha256` beside it, under the same name
+   every release, so ganymede-ui downloads it for the tag it pins instead
+   of building it ([Embedding](embedding.md#from-swift)).
    It then redeploys the site from `main`, and builds the container image
    ([`container/Dockerfile`](../container/Dockerfile)) from the release,
    smoke-tests it, and pushes it to `ghcr.io/tlockney/ganymede` as the
@@ -61,15 +65,17 @@ Besides releases, `release.yml` runs on every push to `main` that
 changes more than docs, and on a manual run on `main`. It builds the
 same five targets with `GANYMEDE_VERSION_BUILD=main.<commit>`, so
 `ganymede --version` prints `X.Y.Z+main.<commit>`, packages them as
-`ganymede-main-<target>`, attests them, and replaces the assets of the
-`main-build` prerelease, which `install.sh --main` installs. A newer push
-cancels the older run's builds, but not its upload, which finishes first. Being a prerelease, `main-build` is
-never the "latest" release that the plain install fetches. The job moves
-the `main-build` tag to the commit when GitHub lets the workflow token do
-so; when it can't (a ref update across commits that change workflow
-files), the tag lags and the run warns, but the assets, notes, and
-attestation still name the right commit. A failed main build changes
-nothing; the next push or a manual run on `main` replaces it.
+`ganymede-main-<target>` (and the XCFramework under its usual name),
+attests them, and replaces the assets of the `main-build` prerelease,
+which `install.sh --main` installs. A newer push cancels the older
+run's builds, but not its upload, which finishes first. Being a
+prerelease, `main-build` is never the "latest" release that the plain
+install fetches. The job moves the `main-build` tag to the commit when
+GitHub lets the workflow token do so; when it can't (a ref update
+across commits that change workflow files), the tag lags and the run
+warns, but the assets, notes, and attestation still name the right
+commit. A failed main build changes nothing; the next push or a manual
+run on `main` replaces it.
 
 ## When it fails
 
@@ -81,8 +87,10 @@ workflow itself, depending on how far it got.
 ### A job failed and nothing was published
 
 A flaky runner, a network error, or a download that timed out: the code
-is fine. Rerun the failed jobs from the run's page, or start a fresh run
-on the tag:
+is fine. The XCFramework job counts too: the release and `main-build`
+wait for it as well as for the CLI targets, so a failed `xcframework`
+job holds back the whole release until it is rerun. Rerun the failed
+jobs from the run's page, or start a fresh run on the tag:
 
 ```sh
 gh run rerun <run-id> --failed --repo tlockney/ganymede
