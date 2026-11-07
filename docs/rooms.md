@@ -127,6 +127,10 @@ and undoes any edit a client sends, for every client. Once the owner's
 room closes or its server exits, the other room takes the lock within a
 second and saves its own edits from then on.
 
+A room that was writable and finds another server owns its file now
+(after a rename, or once the file is reachable by a path another server
+locked) saves its edits before it turns read-only.
+
 Across machines, as with a notebook in a synced folder, there is no lock,
 and rooms merge through the file as described above. An app that embeds
 the server takes no lock.

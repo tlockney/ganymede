@@ -906,7 +906,9 @@ async fn run_room(
                         dispatch(&clients, fx.send);
                         drop(watch.take());
                         watch = collab.watch(&d.path);
-                        // The lock names the old path.
+                        // The lock names the old path, and the room may not
+                        // get the new one: save first (#437).
+                        save_before_relock(contents.as_ref(), &mut room, d, &clients, &mut last_edit, &mut save_failures).await;
                         drop(lock.take());
                         lock_retry = take_lock(&collab, &room_id, &d.path, &mut room, &mut lock);
                     }
@@ -973,6 +975,9 @@ async fn run_room(
                 };
                 if lock_retry && last_lock_try.elapsed() >= POLL_INTERVAL {
                     last_lock_try = Instant::now();
+                    // A room writable without the lock may find another
+                    // server owns the file now: save first (#437).
+                    save_before_relock(contents.as_ref(), &mut room, d, &clients, &mut last_edit, &mut save_failures).await;
                     lock_retry = take_lock(&collab, &room_id, &d.path, &mut room, &mut lock);
                 }
                 let poll_every = if watch.is_some() { WATCHED_POLL_INTERVAL } else { POLL_INTERVAL };
@@ -1036,10 +1041,19 @@ async fn run_room(
                             "closing the room with unsaved edits: {}",
                             if gone { "its file is gone" } else { "its saves keep failing" }
                         );
-                    } else if room.is_dirty() {
+                    } else if room.is_dirty() && !room.is_read_only() {
                         // An edit the autosave hasn't reached yet.
                         empty_since = Some(Instant::now());
                         continue;
+                    } else if room.is_dirty() {
+                        // Another server owns the file now, so these
+                        // edits can't be saved here; keeping the room
+                        // wouldn't change that (#437).
+                        tracing::warn!(
+                            room = %room_id,
+                            path = %d.path,
+                            "closing a read-only room with edits it couldn't save"
+                        );
                     }
                     if next.is_none() && retire(&collab, &room_id, &mut rx, &mut lock) { break }
                     empty_since = Some(Instant::now());
@@ -1083,6 +1097,11 @@ fn take_lock(
         }
     };
     match (was, room.is_read_only()) {
+        (false, true) if room.is_dirty() => tracing::warn!(
+            room = %room_id,
+            "{path} is open in another server, which saves it; this room is read-only, \
+             and its edits since the last save are lost"
+        ),
         (false, true) => tracing::info!(
             room = %room_id,
             "{path} is open in another server, which saves it; this room is read-only"
@@ -1091,6 +1110,22 @@ fn take_lock(
         _ => {}
     }
     retry
+}
+
+/// Save the room's edits before a lock check that may make it read-only,
+/// which would leave them unsaved (#437). A read-only room saves nothing.
+async fn save_before_relock(
+    contents: &dyn Contents,
+    room: &mut Room,
+    disk: &mut Disk,
+    clients: &HashMap<ConnId, ClientTx>,
+    last_edit: &mut Option<Instant>,
+    failures: &mut u32,
+) {
+    if room.is_dirty() && !room.is_read_only() {
+        let status = save_room(contents, room, disk, clients, false).await;
+        after_save(status, last_edit, failures);
+    }
 }
 
 /// Settle the pending autosave after a save. A failed save leaves the
@@ -1374,6 +1409,57 @@ mod lock_tests {
         let other = Collab::new(FileIds::in_memory(), dir.path().canonicalize().ok())
             .with_room_locks(dir.path().join("locks"));
         assert!(other.owned_elsewhere("a.ipynb"));
+    }
+
+    /// A writable room that finds another server owns its file now saves
+    /// its edits before it turns read-only, instead of losing them (#437).
+    #[tokio::test]
+    async fn a_room_saves_before_another_server_takes_the_file() {
+        use ganymede_documents::yrs::{GetString, Map, Out, Text};
+        let dir = tempfile::tempdir().unwrap();
+        let nb = r#"{"cells":[{"cell_type":"markdown","id":"a","metadata":{},"source":["hello"]}],"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
+        std::fs::write(dir.path().join("a.ipynb"), nb).unwrap();
+        let root = dir.path().canonicalize().ok();
+        let contents = ganymede_contents::FsContents::new(dir.path(), Default::default()).unwrap();
+        let (loaded, mut disk) = load(&contents, "a.ipynb").await.ok().unwrap();
+        let mut room = Room::notebook_room(&loaded, "a.ipynb");
+        room.saved(0, &disk.hash);
+        let (_, fx) = room.edit(|txn, roots| {
+            let cell = ganymede_documents::schema::find_cell(txn, roots, "a").unwrap();
+            let Some(Out::YText(t)) = cell.get(txn, "source") else {
+                panic!("no source")
+            };
+            let end = t.len(txn);
+            t.insert(txn, end, " again");
+            assert_eq!(t.get_string(txn), "hello again");
+        });
+        assert!(fx.changed && room.is_dirty());
+
+        // Another server takes the file while this room is writable
+        // without the lock.
+        let other = Collab::new(FileIds::in_memory(), root.clone())
+            .with_room_locks(dir.path().join("locks"));
+        let crate::room_lock::Acquire::Held(_theirs) = other.acquire("a.ipynb") else {
+            panic!("the other server owns it")
+        };
+        let collab =
+            Collab::new(FileIds::in_memory(), root).with_room_locks(dir.path().join("locks"));
+        let (mut last_edit, mut failures) = (Some(Instant::now()), 0);
+        save_before_relock(
+            &contents,
+            &mut room,
+            &mut disk,
+            &HashMap::new(),
+            &mut last_edit,
+            &mut failures,
+        )
+        .await;
+        let mut lock = None;
+        assert!(take_lock(&collab, "r", "a.ipynb", &mut room, &mut lock));
+        assert!(room.is_read_only());
+        assert!(!room.is_dirty(), "the edit was saved first");
+        let saved = std::fs::read_to_string(dir.path().join("a.ipynb")).unwrap();
+        assert!(saved.contains("hello again"), "{saved}");
     }
 
     /// A retiring room releases its lock before another room on the file
