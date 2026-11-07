@@ -357,12 +357,13 @@ fn check_xsrf(
             .and_then(|v| v.to_str().ok())
             .map(String::from)
     };
-    let sent = form
-        .map(String::from)
-        .or_else(|| query_param(query, "_xsrf"))
-        .or_else(|| header("x-xsrftoken"))
-        .or_else(|| header("x-csrftoken"))
-        .filter(|v| !v.is_empty())
+    // Each source in turn, an empty one counting as absent, as tornado's
+    // `or` chain does (#488).
+    let nonempty = |v: Option<String>| v.filter(|v| !v.is_empty());
+    let sent = nonempty(form.map(String::from))
+        .or_else(|| nonempty(query_param(query, "_xsrf")))
+        .or_else(|| nonempty(header("x-xsrftoken")))
+        .or_else(|| nonempty(header("x-csrftoken")))
         .ok_or_else(|| HttpError(403, "'_xsrf' argument missing from POST".into()))?;
     let sent = decode_xsrf(&sent)
         .ok_or_else(|| HttpError(403, "'_xsrf' argument has invalid format".into()))?;
