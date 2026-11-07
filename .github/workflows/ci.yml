@@ -36,14 +36,15 @@ env:
   LSP_NPM_PACKAGES: typescript-language-server@5.3.0 typescript@5.9.3 pyright@1.1.414
 
 jobs:
-  # Whether a pull request needs the jobs below: scripts/ci-changes.sh says
-  # no when it changes only docs, the site or Markdown (#418). The jobs
+  # Whether a pull request, or a push to main, needs the jobs below:
+  # scripts/ci-changes.sh says no when it changes only docs, the site or
+  # Markdown (#418, #458). The jobs
   # then report success under their required names without building:
   # the others are skipped by their `if`, and each matrix cell (e2e, ffi,
   # install-script, workstation) runs on Linux with every step skipped,
   # since a matrix job skipped whole wouldn't report per-cell checks. If
-  # this job fails, its output is empty and everything runs. Pushes to
-  # main, the schedule and manual runs run everything.
+  # this job fails, its output is empty and everything runs. The
+  # schedule and manual runs run everything.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -57,6 +58,9 @@ jobs:
           fetch-depth: 2
       - id: changes
         run: scripts/ci-changes.sh | tee -a "$GITHUB_OUTPUT"
+        env:
+          # A push's base: main before the push (the script fetches it).
+          BASE_SHA: ${{ github.event.before }}
 
   rust:
     needs: changes
