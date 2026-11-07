@@ -14,6 +14,14 @@ Dockerfile's build image. Built on the ubuntu runner, the binary needed
 glibc 2.43 and failed to start in the trixie image (2.41); built on
 trixie, it runs in the image and on the newer runner.
 
+`needs` covers a whole matrix, so `workstation (macos-latest)` waited
+for linux-release before queueing for a macOS runner, though it doesn't
+use the binary. It is now its own job, `workstation-macos`, with the
+same check name and the same steps through a YAML anchor. Without the
+Rust toolchain step, the ubuntu cell's `cargo install nb-cli` on a cache
+miss (always on the weekly run) would have used the runner image's
+Rust; it sets up stable for that step.
+
 e2e (ubuntu) stays separate from coverage, though both run the suite
 with the same kernels: e2e is a required check and fails on a skipped
 test, coverage is informational and instrumented.
