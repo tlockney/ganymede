@@ -46,6 +46,10 @@ pub const SCHEMA_DEPTH: usize = 5;
 pub struct Checked {
     /// A value nests deeper than [`MAX_DEPTH`].
     pub too_deep: bool,
+    /// The scan couldn't follow the update. yrs may still read it (a clock
+    /// that wraps, say), and then nothing here was checked, so the room
+    /// refuses it.
+    pub malformed: bool,
     /// The update's items, in order, for [`Checked::type_depths`].
     items: Vec<ItemRec>,
 }
@@ -139,14 +143,20 @@ impl Checked {
                 return Err(Unresolved::Missing);
             }
         }
+        let known = |client: u64, clock: u32| clock < sv.get(&ClientID::new(client));
+        // An id in the update, unless the document has it already: yrs
+        // skips the update's copy of an item it has and uses its own, so a
+        // re-sent copy must not speak for it.
         let find = |client: u64, clock: u32| -> Option<usize> {
+            if known(client, clock) {
+                return None;
+            }
             let idxs = by_client.get(&client)?;
             let pos = idxs.partition_point(|&i| self.items[i].clock <= clock);
             let i = *idxs.get(pos.checked_sub(1)?)?;
             let it = &self.items[i];
             (clock < it.clock + it.len).then_some(i)
         };
-        let known = |client: u64, clock: u32| clock < sv.get(&ClientID::new(client));
         let bound = bound.max(1);
         let mut out = TypeDepths::default();
 
@@ -190,7 +200,9 @@ impl Checked {
             })
         };
         for start in 0..self.items.len() {
-            if !self.items[start].is_type {
+            // A type the document already has is not new; yrs skips it.
+            let it = &self.items[start];
+            if !it.is_type || known(it.client, it.clock) {
                 continue;
             }
             let mut stack = vec![start];
@@ -282,17 +294,21 @@ impl Checked {
     }
 }
 
-/// Scan `update`, a v1 update. A malformed update is neither too deep nor
-/// adds types: yrs refuses it when it decodes it.
+/// Scan `update`, a v1 update. One the scan can't follow is `malformed`,
+/// and refused: a guard that let it through would leave yrs to decode it
+/// unchecked.
 pub fn check(update: &[u8]) -> Checked {
     let mut checked = Checked::default();
     match scan_update(&mut Cursor::new(update), &mut checked.items) {
         Ok(()) => checked,
         Err(Scan::TooDeep) => Checked {
             too_deep: true,
-            items: Vec::new(),
+            ..Checked::default()
         },
-        Err(Scan::Malformed) => Checked::default(),
+        Err(Scan::Malformed) => Checked {
+            malformed: true,
+            ..Checked::default()
+        },
     }
 }
 

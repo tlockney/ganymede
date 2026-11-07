@@ -1224,3 +1224,99 @@ fn a_type_beside_a_gc_block_takes_its_depth_from_the_right() {
     let fx = room.receive(1, &update(second_blocks, x, &second)).unwrap();
     assert!(refused(&fx), "g in the document");
 }
+
+fn varint_into(out: &mut Vec<u8>, mut n: u64) {
+    loop {
+        let byte = (n & 0x7f) as u8;
+        n >>= 7;
+        if n == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+fn refused_to(fx: &ganymede_documents::Effects, conn: u64) -> bool {
+    fx.send.iter().any(|(t, m)| {
+        matches!(t, Target::One(c) if *c == conn) && String::from_utf8_lossy(m).contains("conflict")
+    })
+}
+
+/// An update whose clocks run past `u32::MAX`: yrs wraps the clock and
+/// reads on, the scan can't follow it. Refused, so the value nested a
+/// million deep after the wrap is never decoded.
+#[test]
+fn an_update_the_scan_cannot_follow_is_refused() {
+    let nb = Notebook::from_str(&fixture("empty.ipynb")).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let mut u = vec![1, 2];
+    varint_into(&mut u, 99);
+    varint_into(&mut u, u64::from(u32::MAX));
+    u.extend([0, 1]); // GC, one clock: the clock wraps here
+    u.extend([8, 1, 1, b'm', 1]); // Any content in root "m", one value
+    for _ in 0..1_000_000 {
+        u.extend([117, 1]);
+    }
+    u.push(126);
+    u.push(0); // no deletes
+    let fx = room
+        .receive(1, &Message::Sync(SyncMessage::Update(u)).encode_v1())
+        .unwrap();
+    assert!(refused_to(&fx, 1));
+}
+
+/// An update that re-sends an item the document already has, claiming a
+/// shallow parent for it: yrs keeps its own copy, so the depth of what
+/// hangs below it comes from the document, not the re-sent copy.
+#[test]
+fn a_resent_item_does_not_set_its_depth() {
+    use ganymede_documents::depth::MAX_SHARED_DEPTH;
+    use ganymede_documents::yrs::{merge_updates_v1, Map, MapPrelim, MapRef, WriteTxn};
+
+    let nb = Notebook::from_str(&fixture("empty.ipynb")).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let client = client_of(&room);
+    let id = client.client_id();
+    let send = |room: &mut Room, update: Vec<u8>| {
+        room.receive(1, &Message::Sync(SyncMessage::Update(update)).encode_v1())
+            .unwrap()
+    };
+
+    // `meta` (1) / metadata (2) / x ... down to MAX_SHARED_DEPTH, all
+    // accepted.
+    let mut m: MapRef = {
+        let mut txn = client.transact_mut();
+        txn.get_or_insert_map("meta")
+            .insert(&mut txn, "metadata", MapPrelim::default())
+    };
+    let mut last = 0;
+    for _ in 3..=MAX_SHARED_DEPTH {
+        last = client.transact().state_vector().get(&id);
+        let mut txn = client.transact_mut();
+        m = m.insert(&mut txn, "x", MapPrelim::default());
+    }
+    let all = client
+        .transact()
+        .encode_state_as_update_v1(&Default::default());
+    let fx = send(&mut room, all);
+    assert!(!refused_to(&fx, 1), "the chain is within the limit");
+
+    // The deepest map re-sent as a type under root "z", merged with a map
+    // nested under the real one.
+    let mut fake = vec![1, 1];
+    varint_into(&mut fake, id.get());
+    varint_into(&mut fake, u64::from(last));
+    fake.extend([7, 1, 1, b'z', 1, 0]);
+    let sv = client.transact().state_vector();
+    {
+        let mut txn = client.transact_mut();
+        m.insert(&mut txn, "x", MapPrelim::default());
+    }
+    let chain = client.transact().encode_state_as_update_v1(&sv);
+    let update = merge_updates_v1([fake.as_slice(), chain.as_slice()]).unwrap();
+    let fx = send(&mut room, update);
+    assert!(refused_to(&fx, 1), "the re-sent copy set the depth");
+}

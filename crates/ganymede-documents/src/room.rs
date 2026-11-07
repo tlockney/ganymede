@@ -333,7 +333,9 @@ impl Room {
                 // apply itself.
                 let checked = crate::depth::check(&bytes);
                 let mut depths = None;
-                let refused = if checked.too_deep {
+                let refused = if checked.malformed {
+                    Some("an update the room can't read".to_string())
+                } else if checked.too_deep {
                     Some(format!(
                         "values nested deeper than {} levels",
                         crate::depth::MAX_DEPTH

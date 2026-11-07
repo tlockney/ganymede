@@ -65,6 +65,14 @@ server or reach outside the root, or that lose kernels.
     deepest depth, so once some branch reaches 16, a new type beside a
     plain value anywhere can be refused. Notebooks stay near 5; resolving
     such a sibling's parent needs yrs internals, so it stays an estimate.
+  - Two more ways past the check. An update whose clocks run past
+    `u32::MAX` stopped the scan, which let it through unchecked, while
+    yrs wraps the clock and reads on; the room now refuses any update
+    the scan can't follow. And an update could re-send an item the
+    document already has with a shallow parent of its own: yrs keeps its
+    copy, but the scan took the depth of what hung below it from the
+    re-sent one. Ids the document has now always resolve from the
+    document.
   - The collaboration websocket's 1 GiB message limit is left to #436.
 - **A beat cut short (#425).** Two timeouts of the same length, nested:
   the outer one always wins, and dropping the inner future skipped the
