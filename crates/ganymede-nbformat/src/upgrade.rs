@@ -28,6 +28,12 @@ const MIME_MAP: [(&str, &str); 8] = [
     ("javascript", "application/javascript"),
 ];
 
+/// The most `#`s a v3 heading becomes. Python repeats `#` `level` times
+/// and raises `MemoryError` for an absurd level; repeating it here would
+/// abort the process, so higher levels are clamped. Markdown stops at 6,
+/// so no real notebook comes near this.
+const MAX_HEADING_LEVEL: u64 = 1024;
+
 /// Upgrade a parsed nbformat 3 notebook in place to nbformat 4.5. Cells get
 /// no ids here; the v4 id repair that runs next gives each a fresh one, as
 /// `upgrade_cell` does.
@@ -137,7 +143,11 @@ fn upgrade_cell(cell: &mut Map<String, Value>) {
         }
         Some("heading") => {
             cell.insert("cell_type".into(), "markdown".into());
-            let level = cell.remove("level").and_then(|l| l.as_u64()).unwrap_or(1);
+            let level = cell
+                .remove("level")
+                .and_then(|l| l.as_u64())
+                .unwrap_or(1)
+                .min(MAX_HEADING_LEVEL);
             let text = cell.get("source").and_then(Value::as_str).unwrap_or("");
             let source = format!(
                 "{} {}",
@@ -271,5 +281,23 @@ mod tests {
         assert_eq!(obj["empty"], "");
         // Not all strings: left for the v4 reader to report.
         assert_eq!(obj["mixed"], serde_json::json!(["a", 1]));
+    }
+
+    #[test]
+    fn huge_heading_level_is_clamped() {
+        let mut cell = serde_json::json!({
+            "cell_type": "heading",
+            "level": 1_000_000_000_000u64,
+            "source": "x",
+        });
+        upgrade_cell(cell.as_object_mut().unwrap());
+        let source = cell["source"].as_str().unwrap();
+        assert_eq!(cell["cell_type"], "markdown");
+        assert_eq!(source.len(), MAX_HEADING_LEVEL as usize + 2);
+        assert!(source.ends_with("# x"));
+
+        let mut cell = serde_json::json!({"cell_type": "heading", "level": 3, "source": "t"});
+        upgrade_cell(cell.as_object_mut().unwrap());
+        assert_eq!(cell["source"], "### t");
     }
 }
