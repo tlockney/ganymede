@@ -682,34 +682,100 @@ fn a_deeply_nested_update_is_refused() {
 }
 
 /// Shared maps nested 20,000 deep (about 300 KB) would overflow the stack
-/// when the room turns its document into a notebook. Past the depth limit
-/// they come out as null.
+/// when deleted, which yrs does recursively, or when the room turned its
+/// document into a notebook. The room refuses the update instead, and the
+/// sender's later delete of the tree is harmless.
 #[test]
-fn deeply_nested_shared_types_dont_overflow() {
+fn deeply_nested_shared_types_are_refused() {
+    use ganymede_documents::depth::MAX_SHARED_DEPTH;
     use ganymede_documents::yrs::{MapPrelim, MapRef, WriteTxn};
 
-    let nb = Notebook::from_str(&fixture("empty.ipynb")).unwrap();
+    let text = fixture("empty.ipynb");
+    let nb = Notebook::from_str(&text).unwrap();
     let mut room = Room::notebook_room(&nb, "n.ipynb");
     room.connect(1);
-    let client = client_of(&room);
-    let sv = client.transact().state_vector();
+    let send_bytes = |room: &mut Room, update: Vec<u8>| {
+        room.receive(1, &Message::Sync(SyncMessage::Update(update)).encode_v1())
+            .unwrap()
+    };
+    let refused = |fx: &ganymede_documents::Effects| {
+        fx.send.iter().any(|(t, m)| {
+            matches!(t, Target::One(1)) && String::from_utf8_lossy(m).contains("conflict")
+        })
+    };
+
+    // All at once. (This client's own document can't delete the tree
+    // either, so it is only ever dropped.)
+    let deep = client_of(&room);
+    let sv = deep.transact().state_vector();
     {
-        let mut txn = client.transact_mut();
+        let mut txn = deep.transact_mut();
         let meta = txn.get_or_insert_map("meta");
         let mut m: MapRef = meta.insert(&mut txn, "metadata", MapPrelim::default());
         for _ in 0..20_000 {
             m = m.insert(&mut txn, "x", MapPrelim::default());
         }
     }
-    let update = client.transact().encode_state_as_update_v1(&sv);
-    room.receive(1, &Message::Sync(SyncMessage::Update(update)).encode_v1())
-        .unwrap();
+    let fx = send_bytes(&mut room, deep.transact().encode_state_as_update_v1(&sv));
+    assert!(refused(&fx));
+    assert_eq!(room.notebook().unwrap().unwrap().to_file_string(), text);
+
+    // The sender then deletes its tree's top: the room never had it.
+    let id = deep.client_id();
+    let clock = sv.get(&id);
+    let mut delete = vec![0, 1]; // no blocks; a delete set for one client
+    for n in [id.get(), 1, u64::from(clock), 1] {
+        let mut n = n;
+        loop {
+            let byte = (n & 0x7f) as u8;
+            n >>= 7;
+            if n == 0 {
+                delete.push(byte);
+                break;
+            }
+            delete.push(byte | 0x80);
+        }
+    }
+    send_bytes(&mut room, delete);
+    assert_eq!(room.notebook().unwrap().unwrap().to_file_string(), text);
+
+    let client = client_of(&room);
+    let send = |room: &mut Room, sv: &StateVector| {
+        send_bytes(room, client.transact().encode_state_as_update_v1(sv))
+    };
+
+    // One level per update: accepted up to the limit, then refused.
+    let mut m: MapRef = {
+        let mut txn = client.transact_mut();
+        let meta = txn.get_or_insert_map("meta");
+        meta.insert(&mut txn, "metadata", MapPrelim::default())
+    };
+    let mut accepted = 2; // meta, metadata
+    let mut sv = StateVector::default();
+    for _ in 0..MAX_SHARED_DEPTH + 4 {
+        let fx = send(&mut room, &sv);
+        if refused(&fx) {
+            break;
+        }
+        sv = client.transact().state_vector();
+        let mut txn = client.transact_mut();
+        m = m.insert(&mut txn, "x", MapPrelim::default());
+        accepted += 1;
+    }
+    assert_eq!(accepted, MAX_SHARED_DEPTH + 1, "the update that went over");
     let back = room.notebook().unwrap().unwrap();
-    let mut depth = 0;
+    let mut depth = 2;
     let mut v = &back.metadata;
     while let Some(next) = v.get("x").and_then(|x| x.as_object()) {
         v = next;
         depth += 1;
     }
-    assert!(depth < ganymede_documents::depth::MAX_DEPTH, "{depth}");
+    assert_eq!(depth, MAX_SHARED_DEPTH);
+
+    // A notebook's own shapes (cells, outputs) are far from the limit.
+    let nb = Notebook::from_str(&fixture("code_outputs.ipynb")).unwrap();
+    let room = Room::notebook_room(&nb, "c.ipynb");
+    assert!(!ganymede_documents::depth::shared_types_too_deep(
+        &room.doc().transact()
+    ));
 }

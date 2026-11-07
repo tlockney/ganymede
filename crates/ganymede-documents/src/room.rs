@@ -171,6 +171,34 @@ impl Room {
         self.awareness.doc()
     }
 
+    /// Whether applying `update` would nest the document's shared types
+    /// deeper than [`crate::depth::MAX_SHARED_DEPTH`]. Their depth spans
+    /// updates, so it is measured on a scratch copy of the whole document
+    /// (pending updates included) with `update` applied: once applied to
+    /// the room, a too-deep tree couldn't be taken out again, as deleting
+    /// it recurses. Only updates that create shared types get here (adding
+    /// a cell, not typing), so the copy's cost is rare.
+    fn would_nest_too_deep(&self, update: &[u8]) -> bool {
+        let state = self
+            .doc()
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        let scratch = Doc::new();
+        {
+            let mut txn = scratch.transact_mut();
+            for bytes in [&state[..], update] {
+                let Ok(u) = Update::decode_v1(bytes) else {
+                    return false;
+                };
+                if txn.apply_update(u).is_err() {
+                    return false;
+                }
+            }
+        }
+        let txn = scratch.transact();
+        crate::depth::shared_types_too_deep(&txn)
+    }
+
     /// Number of connected clients.
     pub fn connections(&self) -> usize {
         self.conns.len()
@@ -275,12 +303,19 @@ impl Room {
             }
             Message::Sync(SyncMessage::SyncStep2(bytes))
             | Message::Sync(SyncMessage::Update(bytes)) => {
-                // Checked first: decoding a deeper one would overflow the
-                // stack and abort the server.
-                let applied = if crate::depth::too_deep(&bytes) {
+                // Checked first: decoding values nested deeper would
+                // overflow the stack, and so would deleting shared types
+                // nested deeper, so neither reaches the document.
+                let checked = crate::depth::check(&bytes);
+                let applied = if checked.too_deep {
                     Err(format!(
                         "values nested deeper than {} levels",
                         crate::depth::MAX_DEPTH
+                    ))
+                } else if checked.adds_types && self.would_nest_too_deep(&bytes) {
+                    Err(format!(
+                        "shared types nested deeper than {} levels",
+                        crate::depth::MAX_SHARED_DEPTH
                     ))
                 } else {
                     Update::decode_v1(&bytes).map_err(|e| e.to_string())

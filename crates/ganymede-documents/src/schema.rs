@@ -550,12 +550,13 @@ fn strip_runtime(mut cell: Value) -> Value {
 
 /// A shared value as JSON, with numbers as described in the module docs.
 ///
-/// Shared types a client nested more than [`crate::depth::MAX_DEPTH`]
-/// deep come out as `null`: following them would overflow the stack. So
-/// do XML types, which no notebook uses and whose yrs conversion recurses
-/// with no limit.
+/// A room refuses updates that nest shared types deeper than
+/// [`crate::depth::MAX_SHARED_DEPTH`]; past that depth they come out as
+/// `null` all the same, so a document built some other way can't overflow
+/// the stack here. XML types, which no notebook uses and whose yrs
+/// conversion recurses with no limit, come out as `null` too.
 pub fn out_to_json<T: ReadTxn>(txn: &T, out: &Out) -> Value {
-    out_to_json_within(txn, out, crate::depth::MAX_DEPTH)
+    out_to_json_within(txn, out, crate::depth::MAX_SHARED_DEPTH)
 }
 
 fn out_to_json_within<T: ReadTxn>(txn: &T, out: &Out, depth: usize) -> Value {

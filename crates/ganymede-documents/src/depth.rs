@@ -1,28 +1,116 @@
-//! How deeply a client's update nests its values, found without decoding it.
+//! How deeply a client's update nests, so a room can refuse one that
+//! would overflow the stack.
 //!
-//! yrs decodes an `Any` value (a JSON-like array or map) by recursing into
-//! each nested value with no depth limit, and one level costs two bytes on
-//! the wire. A small update nested deeply enough overflows the stack when
-//! it is decoded, which aborts the process rather than panicking. So a
-//! room scans each client update first, iteratively, following yrs 0.28's
-//! v1 decoding (`Update::decode`, `ItemContent::decode`, `Any::decode`),
-//! and refuses one that nests deeper than [`MAX_DEPTH`].
+//! Two kinds of nesting, both checked before an update reaches the room:
+//!
+//! - **Values.** yrs decodes an `Any` value (a JSON-like array or map) by
+//!   recursing into each nested value with no depth limit, and one level
+//!   costs two bytes on the wire. [`check`] scans the update iteratively,
+//!   following yrs 0.28's v1 decoding (`Update::decode`,
+//!   `ItemContent::decode`, `Any::decode`), without decoding it.
+//! - **Shared types.** Maps, arrays and texts nested in one another, each
+//!   level its own item, possibly sent over many updates. yrs deletes them
+//!   recursively, and so would converting them to JSON. Their depth is a
+//!   property of the whole document, so a room applies an update that adds
+//!   shared types to a scratch copy first and measures it there with
+//!   [`shared_types_too_deep`], which walks without recursing.
 //!
 //! Strings that yrs parses as JSON (embeds, formats, JSON content) need no
-//! check: `serde_json` stops at 128 levels on its own.
+//! check: `serde_json` stops at 128 levels on its own. A yrs upgrade that
+//! changes the v1 format has to update [`check`].
 
+use yrs::branch::{Branch, BranchPtr};
 use yrs::encoding::read::{Cursor, Error, Read};
+use yrs::types::text::{Diff, YChange};
+use yrs::{Map, MapRef, Out, ReadTxn, Text, TextRef};
 
-/// The deepest nesting of `Any` values a client update may hold. A notebook
-/// file can't nest deeper than `serde_json`'s 128 levels and still be read
-/// back, so nothing legitimate comes near it.
-pub const MAX_DEPTH: usize = 256;
+/// The deepest nesting of `Any` values a client update may hold.
+pub const MAX_DEPTH: usize = 100;
 
-/// Whether `update`, a v1 update, holds a value nested deeper than
-/// [`MAX_DEPTH`]. A malformed update is not too deep: yrs refuses it when
-/// it decodes it.
+/// The deepest nesting of shared types a document may reach, counting a
+/// root as 1. The notebook schema goes 5 deep (cells, a cell, its outputs,
+/// an output, its text). With [`MAX_DEPTH`] on top, and the notebook's own
+/// levels, a document stays inside the 128 levels `serde_json` reads back.
+pub const MAX_SHARED_DEPTH: usize = 16;
+
+/// What [`check`] found in an update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Checked {
+    /// A value nests deeper than [`MAX_DEPTH`].
+    pub too_deep: bool,
+    /// The update creates shared types, so it can deepen the document's
+    /// nesting of them.
+    pub adds_types: bool,
+}
+
+/// Scan `update`, a v1 update. A malformed update is neither too deep nor
+/// adds types: yrs refuses it when it decodes it.
+pub fn check(update: &[u8]) -> Checked {
+    let mut adds_types = false;
+    match scan_update(&mut Cursor::new(update), &mut adds_types) {
+        Ok(()) => Checked {
+            too_deep: false,
+            adds_types,
+        },
+        Err(Scan::TooDeep) => Checked {
+            too_deep: true,
+            adds_types,
+        },
+        Err(Scan::Malformed) => Checked {
+            too_deep: false,
+            adds_types: false,
+        },
+    }
+}
+
+/// Whether `update` holds a value nested deeper than [`MAX_DEPTH`].
 pub fn too_deep(update: &[u8]) -> bool {
-    matches!(scan_update(&mut Cursor::new(update)), Err(Scan::TooDeep))
+    check(update).too_deep
+}
+
+/// Whether the document's shared types nest deeper than
+/// [`MAX_SHARED_DEPTH`]. Walks every root's maps and sequences (embedded
+/// types included) with a stack of its own.
+pub fn shared_types_too_deep<T: ReadTxn>(txn: &T) -> bool {
+    let mut stack: Vec<(BranchPtr, usize)> = txn
+        .root_refs()
+        .filter_map(|(_, out)| branch_of(&out))
+        .map(|b| (b, 1))
+        .collect();
+    while let Some((branch, depth)) = stack.pop() {
+        if depth > MAX_SHARED_DEPTH {
+            return true;
+        }
+        // Any branch can hold keyed entries and a sequence, whatever its
+        // type; read both through the generic views.
+        let map = MapRef::from(branch);
+        for (_, value) in map.iter(txn) {
+            if let Some(child) = branch_of(&value) {
+                stack.push((child, depth + 1));
+            }
+        }
+        let text = TextRef::from(branch);
+        let diffs: Vec<Diff<YChange>> = text.diff(txn, YChange::identity);
+        for diff in diffs {
+            if let Some(child) = branch_of(&diff.insert) {
+                stack.push((child, depth + 1));
+            }
+        }
+    }
+    false
+}
+
+fn branch_of(out: &Out) -> Option<BranchPtr> {
+    Some(match out {
+        Out::YText(t) => BranchPtr::from(AsRef::<Branch>::as_ref(t)),
+        Out::YArray(a) => BranchPtr::from(AsRef::<Branch>::as_ref(a)),
+        Out::YMap(m) => BranchPtr::from(AsRef::<Branch>::as_ref(m)),
+        Out::YXmlElement(x) => BranchPtr::from(AsRef::<Branch>::as_ref(x)),
+        Out::YXmlFragment(x) => BranchPtr::from(AsRef::<Branch>::as_ref(x)),
+        Out::YXmlText(x) => BranchPtr::from(AsRef::<Branch>::as_ref(x)),
+        Out::UndefinedRef(b) => *b,
+        _ => return None,
+    })
 }
 
 enum Scan {
@@ -38,14 +126,14 @@ impl From<Error> for Scan {
 
 /// `Update::decode`: the blocks of each client. The delete set that follows
 /// holds no values.
-fn scan_update(c: &mut Cursor) -> Result<(), Scan> {
+fn scan_update(c: &mut Cursor, adds_types: &mut bool) -> Result<(), Scan> {
     let clients: u32 = c.read_var()?;
     for _ in 0..clients {
         let blocks: u32 = c.read_var()?;
         let _client: u64 = c.read_var()?;
         let _clock: u32 = c.read_var()?;
         for _ in 0..blocks {
-            scan_block(c)?;
+            scan_block(c, adds_types)?;
         }
     }
     Ok(())
@@ -59,7 +147,7 @@ const HAS_PARENT_SUB: u8 = 0b0010_0000;
 const TYPE_REFS_XML_ELEMENT: u8 = 3;
 
 /// `Update::decode_block`.
-fn scan_block(c: &mut Cursor) -> Result<(), Scan> {
+fn scan_block(c: &mut Cursor, adds_types: &mut bool) -> Result<(), Scan> {
     match c.read_u8()? {
         BLOCK_SKIP | BLOCK_GC => {
             let _len: u32 = c.read_var()?;
@@ -82,7 +170,7 @@ fn scan_block(c: &mut Cursor) -> Result<(), Scan> {
                     c.read_buf()?;
                 }
             }
-            scan_content(c, info & 0b1111)?;
+            scan_content(c, info & 0b1111, adds_types)?;
         }
     }
     Ok(())
@@ -95,7 +183,7 @@ fn scan_id(c: &mut Cursor) -> Result<(), Scan> {
 }
 
 /// `ItemContent::decode`.
-fn scan_content(c: &mut Cursor, content_ref: u8) -> Result<(), Scan> {
+fn scan_content(c: &mut Cursor, content_ref: u8, adds_types: &mut bool) -> Result<(), Scan> {
     match content_ref {
         // Deleted: a length.
         1 => {
@@ -120,6 +208,7 @@ fn scan_content(c: &mut Cursor, content_ref: u8) -> Result<(), Scan> {
         }
         // A shared type; an XML element has a name.
         7 => {
+            *adds_types = true;
             if c.read_u8()? == TYPE_REFS_XML_ELEMENT {
                 c.read_buf()?;
             }
@@ -234,8 +323,12 @@ mod tests {
     fn real_updates_are_not_too_deep() {
         for depth in [0, 1, 2, 50, MAX_DEPTH] {
             let update = update_with(nested(depth));
-            assert!(
-                matches!(scan_update(&mut Cursor::new(&update)), Ok(())),
+            assert_eq!(
+                check(&update),
+                Checked {
+                    too_deep: false,
+                    adds_types: false
+                },
                 "depth {depth}"
             );
         }
