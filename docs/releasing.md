@@ -32,7 +32,11 @@ partway through.
    the version (x86_64 macOS under Rosetta), packages them with
    `THIRD-PARTY-NOTICES` and SHA-256 checksums, attests their build
    provenance, and publishes the GitHub Release with the changelog section
-   as notes.
+   as notes. The release also carries `GanymedeFFI.xcframework.zip`, the
+   library the Mac and iPad app links, with
+   `GanymedeFFI.xcframework.zip.sha256` beside it, under the same name
+   every release, so ganymede-ui downloads it for the tag it pins instead
+   of building it ([Embedding](embedding.md#from-swift)).
    It then redeploys the site from `main`, and builds the container image
    ([`container/Dockerfile`](../container/Dockerfile)) from the release,
    smoke-tests it, and pushes it to `ghcr.io/tlockney/ganymede` as the
@@ -61,8 +65,8 @@ Besides releases, `release.yml` runs on every push to `main` that
 changes more than docs, and on a manual run on `main`. It builds the
 same five targets with `GANYMEDE_VERSION_BUILD=main.<commit>`, so
 `ganymede --version` prints `X.Y.Z+main.<commit>`, packages them as
-`ganymede-main-<target>`, attests them, and replaces the assets of the
-`main-build` prerelease, which `install.sh --main` installs. A newer push
+`ganymede-main-<target>` (and the XCFramework under its usual name),
+attests them, and replaces the assets of the `main-build` prerelease, which `install.sh --main` installs. A newer push
 cancels the older run's builds, but not its upload, which finishes first. Being a prerelease, `main-build` is
 never the "latest" release that the plain install fetches. The job moves
 the `main-build` tag to the commit when GitHub lets the workflow token do

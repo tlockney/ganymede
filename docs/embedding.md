@@ -280,8 +280,22 @@ for `aarch64-apple-darwin` (Apple silicon only), `aarch64-apple-ios` and
 `aarch64-apple-ios-sim`, and writes
 `target/xcframework/GanymedeFFI.xcframework` and a zip of it.
 `MACOSX_DEPLOYMENT_TARGET` (26.0) and `IPHONEOS_DEPLOYMENT_TARGET` (26.0)
-set the minimums. CI's macOS `ffi` job uploads the zip. Add the
-framework to an Xcode target and import its module:
+set the minimums.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release: the latest release has no XCFramework asset.
+
+Each release, and the `main-build` prerelease, carries the zip as
+`GanymedeFFI.xcframework.zip` with `GanymedeFFI.xcframework.zip.sha256`
+beside it, built by `release.yml` with the release profile:
+
+```sh
+gh release download vX.Y.Z --repo tlockney/ganymede -p 'GanymedeFFI.xcframework.zip*'
+shasum -a 256 -c GanymedeFFI.xcframework.zip.sha256
+```
+
+Add the framework to an Xcode target and import its module:
 
 ```swift
 import GanymedeFFI
