@@ -58,7 +58,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -290,13 +290,17 @@ pub(crate) enum Out {
     Close(u16, String),
 }
 
-/// A client's outgoing queue, bounded at [`CLIENT_QUEUE_LIMIT`]. A send
-/// that finds it full drops nothing silently: it tells the client's
-/// socket task to close, and the client leaves the room.
+/// A client's outgoing queue, bounded at [`CLIENT_QUEUE_LIMIT`] frames
+/// and at `budget` bytes of frames (#472): each client holds its own copy
+/// of every frame, so large outputs would fill memory long before the
+/// frame count. A send that finds it full drops nothing silently: it
+/// tells the client's socket task to close, and the client leaves the
+/// room.
 #[derive(Clone)]
 pub(crate) struct ClientTx {
     tx: mpsc::Sender<Out>,
     full: Arc<Full>,
+    budget: usize,
 }
 
 /// Raised when a client's queue is full: the socket task closes, with
@@ -305,9 +309,16 @@ pub(crate) struct ClientTx {
 pub(crate) struct Full {
     notify: tokio::sync::Notify,
     close: Mutex<Option<(u16, String)>>,
+    /// Bytes of frames queued and not yet taken by the socket task.
+    queued: AtomicUsize,
 }
 
 impl Full {
+    /// The socket task took `frame` off the queue.
+    fn taken(&self, frame: &[u8]) {
+        self.queued.fetch_sub(frame.len(), Ordering::SeqCst);
+    }
+
     /// Wait until raised; the close code and reason to send.
     async fn raised(&self) -> (u16, String) {
         self.notify.notified().await;
@@ -320,13 +331,16 @@ impl Full {
 }
 
 impl ClientTx {
-    fn new() -> (ClientTx, mpsc::Receiver<Out>, Arc<Full>) {
+    /// A queue of at most [`CLIENT_QUEUE_LIMIT`] frames and `budget`
+    /// bytes of them (beyond one frame, which always fits an empty queue).
+    fn new(budget: usize) -> (ClientTx, mpsc::Receiver<Out>, Arc<Full>) {
         let (tx, rx) = mpsc::channel(CLIENT_QUEUE_LIMIT);
         let full = Arc::new(Full::default());
         (
             ClientTx {
                 tx,
                 full: full.clone(),
+                budget,
             },
             rx,
             full,
@@ -336,12 +350,33 @@ impl ClientTx {
     /// Queue `out`; a client gone or too far behind is not waited for. A
     /// close that finds the queue full goes around it.
     fn send(&self, out: Out) {
-        if let Err(mpsc::error::TrySendError::Full(out)) = self.tx.try_send(out) {
-            if let Out::Close(code, reason) = out {
-                *self.full.close.lock().expect("close") = Some((code, reason));
+        let len = match &out {
+            Out::Frame(f) => f.len(),
+            Out::Close(..) => 0,
+        };
+        let before = self.full.queued.fetch_add(len, Ordering::SeqCst);
+        let over = before > 0 && before.saturating_add(len) > self.budget;
+        let sent = if over {
+            Err(mpsc::error::TrySendError::Full(out))
+        } else {
+            self.tx.try_send(out)
+        };
+        let Err(e) = sent else { return };
+        self.full.queued.fetch_sub(len, Ordering::SeqCst);
+        // A client whose socket task is gone holds nothing.
+        let mpsc::error::TrySendError::Full(out) = e else {
+            return;
+        };
+        let mut close = self.full.close.lock().expect("close");
+        match out {
+            Out::Close(code, reason) => *close = Some((code, reason)),
+            Out::Frame(_) if over => {
+                close.get_or_insert_with(|| (1008, format!("fell {} bytes behind", self.budget)));
             }
-            self.full.notify.notify_one();
+            Out::Frame(_) => {}
         }
+        drop(close);
+        self.full.notify.notify_one();
     }
 }
 
@@ -516,7 +551,7 @@ async fn serve_socket(
     };
 
     let conn = collab.next_conn.fetch_add(1, Ordering::Relaxed);
-    let (out_tx, mut out_rx, full) = ClientTx::new();
+    let (out_tx, mut out_rx, full) = ClientTx::new(state.max_body_size);
     let room = {
         let mut rooms = collab.rooms.lock().expect("rooms");
         let tx = open_room(&collab, &mut rooms, &state.contents, &room_id, doc);
@@ -547,6 +582,7 @@ async fn serve_socket(
             },
             out = out_rx.recv() => match out {
                 Some(Out::Frame(f)) => {
+                    full.taken(&f);
                     let started = Instant::now();
                     if !send_within(&mut socket, WsMessage::Binary(f.into())).await { break }
                     last_heard = heard_after_write(last_heard, started.elapsed(), ping_every);
@@ -692,7 +728,7 @@ pub(crate) async fn hold_notebook(
     let room_id = notebook_room_id(collab, path).await;
     let conn = collab.next_conn.fetch_add(1, Ordering::Relaxed);
     // The receiver is dropped: frames sent to this client go nowhere.
-    let (out, _, _) = ClientTx::new();
+    let (out, _, _) = ClientTx::new(usize::MAX);
     let room = send_to_notebook_room(collab, contents, &room_id, Cmd::Join(conn, out)).await?;
     Some(Hold { room, conn })
 }
@@ -1499,7 +1535,7 @@ mod queue_tests {
     /// A client too far behind is told to go, and nothing waits on it.
     #[tokio::test]
     async fn a_full_client_queue_asks_the_client_to_close() {
-        let (tx, mut rx, full) = ClientTx::new();
+        let (tx, mut rx, full) = ClientTx::new(usize::MAX);
         for _ in 0..CLIENT_QUEUE_LIMIT {
             tx.send(Out::Frame(vec![1]));
         }
@@ -1520,7 +1556,7 @@ mod queue_tests {
     /// A room's close that finds the queue full still reaches the client.
     #[tokio::test]
     async fn a_close_that_finds_the_queue_full_goes_around_it() {
-        let (tx, _rx, full) = ClientTx::new();
+        let (tx, _rx, full) = ClientTx::new(usize::MAX);
         for _ in 0..CLIENT_QUEUE_LIMIT {
             tx.send(Out::Frame(vec![1]));
         }
@@ -1529,6 +1565,33 @@ mod queue_tests {
             .await
             .expect("raised");
         assert_eq!(got, (4404, "gone".to_string()));
+    }
+
+    /// A client holding more than its byte budget of frames is told to
+    /// go, though far below the frame limit; one frame larger than the
+    /// budget still reaches an empty queue (#472).
+    #[tokio::test]
+    async fn a_client_over_its_byte_budget_is_asked_to_close() {
+        let (tx, mut rx, full) = ClientTx::new(1000);
+        tx.send(Out::Frame(vec![0; 1500]));
+        let alone = tokio::time::timeout(Duration::from_millis(20), full.notify.notified()).await;
+        assert!(alone.is_err(), "one large frame fits an empty queue");
+        // Taken by the socket task, the queue is empty again.
+        let Some(Out::Frame(f)) = rx.recv().await else {
+            panic!()
+        };
+        full.taken(&f);
+        for _ in 0..3 {
+            tx.send(Out::Frame(vec![0; 300]));
+        }
+        let under = tokio::time::timeout(Duration::from_millis(20), full.notify.notified()).await;
+        assert!(under.is_err(), "900 bytes is within 1000");
+        tx.send(Out::Frame(vec![0; 300]));
+        let got = tokio::time::timeout(Duration::from_secs(1), full.raised())
+            .await
+            .expect("raised");
+        assert_eq!(got, (1008, "fell 1000 bytes behind".to_string()));
+        assert_eq!(full.queued.load(Ordering::SeqCst), 900);
     }
 
     /// A long write counts as hearing from the client, so a slow first
