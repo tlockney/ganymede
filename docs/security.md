@@ -63,10 +63,14 @@ in another site, list that origin in `frame_ancestors`
   blanked. Notebook text sent to a server is written under
   `.virtual_documents/` in the root dir, and nowhere else.
 - Treat the URL with the token like a password. Anyone who sees it (a
-  shared terminal, a screenshot, shell history) can run code as you until
-  the server restarts with a new token. A token set with `--token` or in
-  the config file stays valid across restarts. Don't set it in a file
-  others can read.
+  shared terminal, a screenshot, shell history) can run code as you. A
+  token set with `--token` or in the config file stays valid across
+  restarts. Don't set it in a file others can read.
+- One use of a leaked token is enough to keep access: the login cookie
+  it gets lasts 30 days, and its signing key survives a restart, so a
+  restart with a new token doesn't log that browser out. To cut off
+  everyone, delete `jupyter_cookie_secret` and restart with a new token.
+  `jupyter_server` behaves the same.
 
 ### `--token ""`
 
