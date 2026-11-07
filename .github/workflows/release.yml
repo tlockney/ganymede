@@ -79,6 +79,7 @@ jobs:
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
           - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
           - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest, cross: true }
           - { target: x86_64-pc-windows-msvc, os: windows-latest }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -140,8 +141,20 @@ jobs:
       - name: Third-party notices for this target's dependency tree
         run: cargo about generate --locked --fail --target "$TARGET" --features crash-reporting -m crates/ganymede-cli/Cargo.toml about.hbs -o THIRD-PARTY-NOTICES
       - name: Check the binary reports the release version
+        if: ${{ !matrix.cross }}
         run: |
           out=$("target/$TARGET/release/ganymede" --version)
+          echo "$out"
+          [[ "$out" == "ganymede $VERSION" ]]
+      # x86_64 macOS is cross-built on the arm64 runner; run it under
+      # Rosetta so it is checked like the native ones.
+      - name: Check the x86_64 macOS binary under Rosetta
+        if: ${{ matrix.target == 'x86_64-apple-darwin' }}
+        run: |
+          if ! arch -x86_64 /usr/bin/true 2> /dev/null; then
+            softwareupdate --install-rosetta --agree-to-license
+          fi
+          out=$(arch -x86_64 "target/$TARGET/release/ganymede" --version)
           echo "$out"
           [[ "$out" == "ganymede $VERSION" ]]
       - name: Package

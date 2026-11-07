@@ -384,17 +384,12 @@ checksum while a new build is uploading, run the command again.
 ### By hand
 
 Releases attach a prebuilt archive per platform: Linux (x86_64,
-aarch64), macOS (aarch64), and Windows (x86_64), each with a
+aarch64), macOS (aarch64, x86_64), and Windows (x86_64), each with a
 `.sha256` beside it, `SHA256SUMS` for all of them, and a build
 provenance attestation. Get one from the
 [releases page](https://github.com/tlockney/ganymede/releases), or do what
 the install script does. This downloads the latest release, checks its
 SHA-256, and installs `ganymede` into `~/.local/bin`:
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release: from the next release there is no Intel macOS
-> binary (#454). The latest release still has one.
 
 ```sh
 VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
@@ -403,6 +398,7 @@ case "$(uname -s)-$(uname -m)" in
   Linux-x86_64)                TARGET=x86_64-unknown-linux-gnu ;;
   Linux-aarch64 | Linux-arm64) TARGET=aarch64-unknown-linux-gnu ;;
   Darwin-arm64)                TARGET=aarch64-apple-darwin ;;
+  Darwin-x86_64)               TARGET=x86_64-apple-darwin ;;
   *) echo "no prebuilt binary for $(uname -sm)" >&2 ;;
 esac
 NAME=ganymede-$VERSION-$TARGET

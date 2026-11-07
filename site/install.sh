@@ -91,13 +91,12 @@ target() {
 	Linux-aarch64 | Linux-arm64) check_libc && echo aarch64-unknown-linux-gnu ;;
 	Darwin-arm64 | Darwin-aarch64) echo aarch64-apple-darwin ;;
 	Darwin-x86_64)
-		# Rosetta reports x86_64 under a translated shell: an Apple
-		# silicon Mac, which runs the native binary. Intel Macs get none.
+		# Rosetta reports x86_64 under a translated shell; the native
+		# binary is the better pick.
 		if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = 1 ]; then
 			echo aarch64-apple-darwin
 		else
-			err "no prebuilt binary for Intel Macs. Install from source:
-  cargo install --git $REPO ganymede-cli"
+			echo x86_64-apple-darwin
 		fi
 		;;
 	*) err "no prebuilt binary for $(uname -sm). Install from source:

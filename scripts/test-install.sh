@@ -21,17 +21,7 @@ Darwin-x86_64)
 	if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = 1 ]; then
 		target=aarch64-apple-darwin
 	else
-		# An Intel Mac: install.sh refuses, and says how to build.
-		out=$("$sh" "$script" --bin-dir "$work/bin" --no-kernel 2>&1) && {
-			echo "FAIL: installed on an Intel Mac" >&2
-			exit 1
-		}
-		echo "$out" | grep -q "no prebuilt binary for Intel Macs" || {
-			echo "FAIL: Intel Mac message: $out" >&2
-			exit 1
-		}
-		echo "Intel Mac: refused, as expected"
-		exit 0
+		target=x86_64-apple-darwin
 	fi
 	;;
 esac

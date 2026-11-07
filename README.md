@@ -57,8 +57,8 @@ ganymede lab                                             # opens JupyterLab in t
 
 ## Install
 
-Prebuilt binaries for Linux (x86_64, aarch64), macOS (Apple silicon),
-and Windows (x86_64) are on the
+Prebuilt binaries for Linux (x86_64, aarch64), macOS (Apple silicon,
+Intel), and Windows (x86_64) are on the
 [releases page](https://github.com/tlockney/ganymede/releases). The
 script above downloads the latest, checks its SHA-256, installs
 `ganymede` into `~/.local/bin`, and installs
@@ -67,11 +67,6 @@ options after `sh -s --`: `--version 0.1.0` pins a release, `--bin-dir
 DIR` installs elsewhere, `--no-kernel` skips cdp-kernel. To build from
 source: `cargo install --path crates/ganymede-cli`.
 [Install](docs/install.md) has each step by hand and the platform notes.
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release: from the next release there is no Intel macOS
-> binary (#454). The latest release still has one.
 
 ## Use
 
