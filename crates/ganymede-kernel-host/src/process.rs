@@ -43,8 +43,16 @@ pub struct LaunchedKernel {
     pub interrupt_mode: InterruptMode,
 }
 
+/// Dropping a launch kills its process if it is still running, as
+/// [`KernelProcess::kill_now`] does, and removes its connection file. A
+/// launch cancelled between the fork and the kernel's first answer
+/// would otherwise leave the kernel running with no way to reach it.
+/// Shut a kernel down before dropping its launch to let it exit cleanly.
 impl Drop for LaunchedKernel {
     fn drop(&mut self) {
+        if self.process.is_alive() {
+            self.process.kill_now();
+        }
         if let Some(p) = &self.connection_file {
             let _ = std::fs::remove_file(p);
         }
@@ -1586,6 +1594,20 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         false
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_a_launch_kills_its_kernel() {
+        // A start cancelled after the fork drops the launch unanswered.
+        let dir = tempfile::tempdir().unwrap();
+        let k = launch_sh(dir.path(), "exec sleep 30").await;
+        let pid = k.process.pid().unwrap() as i32;
+        let file = k.connection_file.clone().unwrap();
+        assert!(pid_running(pid));
+        drop(k);
+        assert!(until_gone(pid).await, "kernel {pid} outlived its launch");
+        assert!(!file.exists());
     }
 
     #[cfg(unix)]
