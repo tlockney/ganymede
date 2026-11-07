@@ -59,7 +59,9 @@ ganymede lab                                             # opens JupyterLab in t
 
 Prebuilt binaries for Linux (x86_64, aarch64), macOS (Apple silicon,
 Intel), and Windows (x86_64) are on the
-[releases page](https://github.com/tlockney/ganymede/releases). The
+[releases page](https://github.com/tlockney/ganymede/releases). Linux
+and macOS are tested end to end; the Windows build is untested and best
+effort ([Known gaps](docs/known-gaps.md#platforms)). The
 script above downloads the latest, checks its SHA-256, installs
 `ganymede` into `~/.local/bin`, and installs
 [cdp-kernel](https://cdp-kernel.org) if Node 24 or later is there. Pass
