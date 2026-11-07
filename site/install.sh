@@ -205,8 +205,14 @@ main() {
 	# Copy then rename, so a running ganymede is replaced, not overwritten.
 	cp "$tmp/$name/ganymede" "$bin_dir/.ganymede.new"
 	chmod 755 "$bin_dir/.ganymede.new"
+	# Run it before it replaces anything: a binary for the wrong system,
+	# or one missing a library, fails here and the old one stays.
+	if ! installed=$("$bin_dir/.ganymede.new" --version 2>&1); then
+		rm -f "$bin_dir/.ganymede.new"
+		err "the downloaded ganymede doesn't run on this system: $installed"
+	fi
 	mv -f "$bin_dir/.ganymede.new" "$bin_dir/ganymede"
-	say "Installed $("$bin_dir/ganymede" --version) to $bin_dir/ganymede"
+	say "Installed $installed to $bin_dir/ganymede"
 	if [ -n "$main" ]; then
 		say "This is a build of main, not a release. Rerun with --main to update"
 		say "it, or without --main to go back to the latest release."
