@@ -271,6 +271,26 @@ fn execute_outputs_inplace_stdout_and_failures() {
             .unwrap();
     assert!(v["cells"][1]["metadata"].get("execution").is_none());
 
+    // Two notebooks of one name would save to one file: refused up front.
+    let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+    for d in [&a, &b] {
+        std::fs::create_dir(d).unwrap();
+        std::fs::copy(&nb, d.join("nb.ipynb")).unwrap();
+    }
+    std::fs::remove_file(dir.path().join("nb-out.ipynb")).unwrap();
+    let out = ganymede(&["execute", "-o", out_tpl.to_str().unwrap()])
+        .arg(a.join("nb.ipynb"))
+        .arg(b.join("nb.ipynb"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("would both be saved to"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!dir.path().join("nb-out.ipynb").exists());
+
     // In place, then cleared again.
     run_ok(ganymede(&["execute", "--inplace"]).arg(&nb));
     let v: serde_json::Value =
