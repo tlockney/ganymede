@@ -379,9 +379,6 @@ jobs:
           node run.mjs target/wasm32-wasip1/release/ganymede-wasm-smoke.wasm > out.ipynb
           grep -q '"ONE"' out.ipynb
 
-  # site/install.sh against a stub release served over file://, under sh
-  # (bash on macOS), bash, and dash, then once more installing cdp-kernel
-  # (CDP_KERNEL_VERSION) on Node 24.
   # The C ABI the Swift shell links (crates/ganymede-ffi): the header
   # matches the library on Linux and macOS, and the XCFramework builds.
   ffi:
@@ -418,13 +415,18 @@ jobs:
           path: target/xcframework/GanymedeFFI.xcframework.zip
           retention-days: 14
 
+  # site/install.sh against a stub release served over file://, under sh,
+  # bash, and dash, then once more installing cdp-kernel
+  # (CDP_KERNEL_VERSION) on Node 24. Linux only: the workstation job runs
+  # the same checks on macOS at its end, which saves a macOS runner per
+  # run (#459). The matrix keeps the required check's name.
   install-script:
     needs: changes
     if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
     runs-on: ${{ needs.changes.outputs.code == 'false' && 'ubuntu-latest' || matrix.os }}
     timeout-minutes: 15
     steps:
@@ -434,13 +436,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - if: needs.changes.outputs.code != 'false' && (runner.os == 'Linux')
+      - if: needs.changes.outputs.code != 'false'
         run: shellcheck -s sh site/install.sh scripts/test-install.sh scripts/test-workstation.sh validation/nb-cli.sh scripts/ci-changes.sh
       - if: needs.changes.outputs.code != 'false'
         run: scripts/test-install.sh sh
       - if: needs.changes.outputs.code != 'false'
         run: scripts/test-install.sh bash
-      - if: needs.changes.outputs.code != 'false' && (runner.os == 'Linux')
+      - if: needs.changes.outputs.code != 'false'
         run: scripts/test-install.sh dash
       - if: needs.changes.outputs.code != 'false'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -628,6 +630,19 @@ jobs:
         env:
           OUT_DIR: ${{ runner.temp }}/workstation
           NB: ${{ runner.temp }}/nb-cli/bin/nb
+      # install-script's checks on macOS (#459), here rather than on a
+      # macOS runner of their own. They run even if the workstation test
+      # failed. bash stands in for dash, which macOS lacks; TEST_KERNEL
+      # goes last since it changes the global npm packages.
+      - if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && matrix.os == 'macos-latest' }}
+        name: site/install.sh under sh
+        run: scripts/test-install.sh sh
+      - if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && matrix.os == 'macos-latest' }}
+        name: site/install.sh under bash
+        run: scripts/test-install.sh bash
+      - if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && matrix.os == 'macos-latest' }}
+        name: site/install.sh installing cdp-kernel
+        run: TEST_KERNEL=1 scripts/test-install.sh sh
       - if: needs.changes.outputs.code != 'false' && (failure())
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
