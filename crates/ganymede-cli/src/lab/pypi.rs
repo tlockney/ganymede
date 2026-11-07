@@ -66,9 +66,19 @@ impl Index {
     /// PyPI's JSON for a release, or for the project (its latest release
     /// and every release's files) when `version` is `None`, and the URL it
     /// came from. `None` when PyPI has no such project or release.
+    /// Fails on a version that isn't a public PEP 440 version, so nothing
+    /// but a version reaches the URL's path.
     pub fn json(&self, project: &str, version: Option<&str>) -> Result<Option<(String, Value)>> {
         let url = match version {
-            Some(v) => format!("{}/{project}/{v}/json", self.api),
+            Some(v) => {
+                if !is_public_version(v) {
+                    bail!(
+                        "invalid version {v:?} for {project}: PyPI has only public \
+                         versions (no local `+` part)"
+                    );
+                }
+                format!("{}/{project}/{v}/json", self.api)
+            }
             None => format!("{}/{project}/json", self.api),
         };
         match self.agent.get(&url).call() {
@@ -276,9 +286,18 @@ pub fn newest_matching(project_meta: &Value, specs: &[Spec]) -> Option<(String, 
 
 // ----- PEP 440 versions and specifiers ------------------------------------
 
+/// Whether `s` is a version PyPI can have: it parses, and has no local
+/// part and nothing but letters, digits, `.`, `!`, `-`, and `_`.
+fn is_public_version(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '!' | '-' | '_'))
+        && Version::parse(s).is_some()
+}
+
 /// A PEP 440 version, enough to order and compare releases: epoch,
 /// release numbers, pre-release (`a`, `b`, `rc`), post and dev releases.
-/// A local part (`+...`) is ignored.
+/// A local part (`+...`) must be well formed, and is then ignored.
 #[derive(Debug, Clone)]
 pub struct Version {
     epoch: u64,
@@ -292,7 +311,19 @@ impl Version {
     pub fn parse(s: &str) -> Option<Version> {
         let s = s.trim().to_ascii_lowercase();
         let s = s.strip_prefix('v').unwrap_or(&s);
-        let s = s.split('+').next()?;
+        let s = match s.split_once('+') {
+            // A local part is letters and digits, separated by `.`, `-`, or `_`.
+            Some((public, local)) => {
+                let ok = local
+                    .split(['.', '-', '_'])
+                    .all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_ascii_alphanumeric()));
+                if !ok {
+                    return None;
+                }
+                public
+            }
+            None => s,
+        };
         let (epoch, rest) = match s.split_once('!') {
             Some((e, r)) => (e.parse().ok()?, r),
             None => (0, s),
@@ -572,7 +603,15 @@ mod tests {
         assert_eq!(v("1.0RC1"), v("1.0c1"));
         assert_eq!(v("1.0+local"), v("1.0"));
         assert!(v("4.7.0a2").is_pre() && !v("4.7.0").is_pre());
-        for bad in ["", "abc", "1.x", ".1"] {
+        for bad in [
+            "",
+            "abc",
+            "1.x",
+            ".1",
+            "1.0+",
+            "1.0+/../../evil/1.0",
+            "1.0+a..b",
+        ] {
             assert!(Version::parse(bad).is_none(), "{bad}");
         }
     }
@@ -596,6 +635,30 @@ mod tests {
         assert_eq!(Spec::parse("==4.6.4").unwrap().pinned(), Some("4.6.4"));
         assert_eq!(Spec::parse("==4.*").unwrap().pinned(), None);
         assert_eq!(Spec::parse(">=4").unwrap().pinned(), None);
+        assert!(Spec::parse("==3.0+/../../evil/1.0").is_err());
+    }
+
+    #[test]
+    fn only_public_versions_reach_a_url() {
+        for good in ["1.0", "4.7.0a2", "1!2.0.post1", "1.0-1", "1.0.dev3"] {
+            assert!(is_public_version(good), "{good}");
+        }
+        for bad in [
+            "1.0+local",
+            "1.0+/../x",
+            "1.0/../x",
+            "1.0?x",
+            "1.0#x",
+            "",
+            "../1.0",
+        ] {
+            assert!(!is_public_version(bad), "{bad}");
+        }
+        let index = Index::new("https://pypi.org/pypi", "").unwrap();
+        let err = index
+            .json("jupyterlab-widgets", Some("1.0+local"))
+            .unwrap_err();
+        assert!(err.to_string().contains("public"), "{err}");
     }
 
     #[test]
