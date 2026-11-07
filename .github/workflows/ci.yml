@@ -50,6 +50,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       code: ${{ steps.changes.outputs.code }}
+      ffi: ${{ steps.changes.outputs.ffi }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -381,6 +382,15 @@ jobs:
 
   # The C ABI the Swift shell links (crates/ganymede-ffi): the header
   # matches the library on Linux and macOS, and the XCFramework builds.
+  # The macOS cell builds only when the change can affect ganymede-ffi
+  # (ci-changes.sh's ffi); otherwise it reports from an ubuntu runner and
+  # leaves the macOS runner free (#457).
+  #
+  # Both cells build without LTO and with the default codegen units, on
+  # every event, so a PR's cache from main matches: this checks that the
+  # slices build and the framework assembles. release.yml builds the
+  # published framework with the full release profile on every push to
+  # main and every tag (#456).
   ffi:
     needs: changes
     if: ${{ !cancelled() }}
@@ -388,27 +398,40 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ needs.changes.outputs.code == 'false' && 'ubuntu-latest' || matrix.os }}
+    runs-on: ${{ (needs.changes.outputs.code == 'false' || (matrix.os == 'macos-latest' && needs.changes.outputs.ffi == 'false')) && 'ubuntu-latest' || matrix.os }}
     timeout-minutes: 60
+    env:
+      BUILD: ${{ needs.changes.outputs.code != 'false' && (matrix.os != 'macos-latest' || needs.changes.outputs.ffi != 'false') }}
+      CARGO_PROFILE_RELEASE_LTO: "off"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     steps:
-      - if: needs.changes.outputs.code == 'false'
-        run: echo "Only docs, the site or Markdown changed, so nothing to build (#418)."
-      - if: needs.changes.outputs.code != 'false'
+      - if: env.BUILD != 'true'
+        run: echo "Nothing ganymede-ffi builds from changed, so nothing to build (#418, #457)."
+      - if: env.BUILD == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - if: needs.changes.outputs.code != 'false'
+      - if: env.BUILD == 'true'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
           targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin, aarch64-apple-ios, aarch64-apple-ios-sim' || '' }}
-      - if: needs.changes.outputs.code != 'false'
+      - if: env.BUILD == 'true'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - if: needs.changes.outputs.code != 'false'
+      # ci-changes.sh's ffi output assumes these two crates stay outside
+      # ganymede-ffi's dependency tree.
+      - if: env.BUILD == 'true' && matrix.os == 'ubuntu-latest'
+        name: ganymede-cli and ganymede-engine stay out of ganymede-ffi
+        run: |
+          if cargo tree --locked -p ganymede-ffi --all-features -e normal,build --prefix none | grep -E '^ganymede-(cli|engine) '; then
+            echo "::error::ganymede-ffi now depends on a crate scripts/ci-changes.sh treats as outside it; update the script"
+            exit 1
+          fi
+      - if: env.BUILD == 'true'
         run: scripts/ffi-smoke.sh
-      - if: needs.changes.outputs.code != 'false' && (matrix.os == 'macos-latest')
+      - if: env.BUILD == 'true' && matrix.os == 'macos-latest'
         run: scripts/build-xcframework.sh
-      - if: needs.changes.outputs.code != 'false' && (matrix.os == 'macos-latest')
+      - if: env.BUILD == 'true' && matrix.os == 'macos-latest'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: GanymedeFFI.xcframework

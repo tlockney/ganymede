@@ -117,6 +117,12 @@ number. Locally: `cargo llvm-cov --workspace --open`.
   workflow still builds the site. Anything else, the weekly schedule and
   manual runs run the whole CI. Add a path to the script's list only if
   no job can be affected by it.
+- **The XCFramework.** `ffi (macos-latest)` builds it only when the change
+  can affect ganymede-ffi (the script's `ffi` output: anything but
+  `ganymede-cli`, `ganymede-engine`, the test and tooling directories,
+  and other scripts and workflows), and both `ffi` cells build without
+  LTO. The release profile build is `release.yml`'s, on every push to
+  `main` and every tag.
 - **Actions** are pinned by full commit SHA, with the version in a
   comment. Let Dependabot move them; don't hand-edit a tag back in.
 - **Permissions.** Every workflow starts from `contents: read` (or
