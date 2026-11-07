@@ -30,7 +30,7 @@ case ${GITHUB_EVENT_NAME:-} in
   *) everything ;;
 esac
 
-files=$(git diff --name-only "$base" HEAD) || everything
+files=$(git diff --no-renames --name-only "$base" HEAD) || everything
 code=false
 while IFS= read -r f; do
   [ -n "$f" ] || continue
