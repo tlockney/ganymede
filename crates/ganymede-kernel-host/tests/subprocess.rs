@@ -17,7 +17,7 @@ fn spec(script: &str) -> Kernelspec {
         "argv": ["sh", "-c", script, "kernel", "{connection_file}"],
         "display_name": "sh",
         "language": "sh",
-        "env": {"FROM_SPEC": "spec"},
+        "env": {"FROM_SPEC": "spec", "EXPANDED": "${FROM_LAUNCH}:$NOT_SET_ANYWHERE:$$"},
     }))
     .unwrap();
     spec.name = "sh".into();
@@ -71,7 +71,7 @@ async fn kernel_gets_its_connection_file_env_and_cwd() {
     std::fs::create_dir(&cwd).unwrap();
     let out = dir.path().join("out");
     let script = format!(
-        "{{ pwd -P; echo \"$1\"; echo \"$FROM_SPEC $FROM_LAUNCH $JPY_SESSION_NAME $JPY_PARENT_PID\"; \
+        "{{ pwd -P; echo \"$1\"; echo \"$FROM_SPEC $FROM_LAUNCH $JPY_SESSION_NAME $JPY_PARENT_PID $EXPANDED\"; \
          cat \"$1\"; echo; echo done; }} > '{}'; sleep 30",
         out.display()
     );
@@ -90,7 +90,10 @@ async fn kernel_gets_its_connection_file_env_and_cwd() {
     assert!(file.ends_with("kernel-k-123.json"));
     assert_eq!(
         lines[2],
-        format!("spec launch k-123 {}", std::process::id())
+        format!(
+            "spec launch k-123 {} launch:$NOT_SET_ANYWHERE:$",
+            std::process::id()
+        )
     );
     // The kernel reads the same ports the host connects to.
     let json = &text[text.find('{').unwrap()..text.rfind('}').unwrap() + 1];
