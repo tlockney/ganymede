@@ -761,6 +761,22 @@ async fn hidden_paths() {
             "{hidden}"
         );
     }
+    // The 404 says the file is hidden, not that it's missing
+    // (ganymede-ui#337); a hidden path that isn't there is just missing.
+    let e = c
+        .get(".secret/x.txt", GetOptions::with_content())
+        .await
+        .unwrap_err();
+    assert!(matches!(e, ganymede_contents::Error::Hidden(_)), "{e:?}");
+    assert!(
+        e.to_string().starts_with("hidden path: .secret/x.txt: "),
+        "{e}"
+    );
+    let e = c
+        .get(".secret/nope.txt", GetOptions::with_content())
+        .await
+        .unwrap_err();
+    assert!(matches!(e, ganymede_contents::Error::NotFound(_)), "{e:?}");
     assert_eq!(
         status(&c.save(".secret/y.txt", SaveRequest::text("y")).await),
         400

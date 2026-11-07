@@ -214,11 +214,16 @@ impl Inner {
     }
 
     /// [`Inner::resolve`] plus the read-side hidden policy: hidden paths are
-    /// `NotFound`, as `jupyter_server` answers a GET.
+    /// a 404, as `jupyter_server` answers a GET, with [`Error::Hidden`]
+    /// saying why.
     fn resolve_for_read(&self, path: &str) -> Result<Resolved> {
         let r = self.resolve(path)?;
         if r.api.is_hidden() && !self.options.allow_hidden {
-            return Err(Error::NotFound(r.api.to_string()));
+            return Err(if fs::symlink_metadata(&r.os).is_ok() {
+                Error::Hidden(r.api.to_string())
+            } else {
+                Error::NotFound(r.api.to_string())
+            });
         }
         Ok(r)
     }

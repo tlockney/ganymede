@@ -48,9 +48,15 @@ pub use ganymede_nbformat::from_json_slice;
 /// knowledge of the variants.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// The path does not exist (or is hidden and `allow_hidden` is off).
+    /// The path does not exist.
     #[error("no such file or directory: {0}")]
     NotFound(String),
+    /// The path is hidden, or is inside a hidden directory, and
+    /// `allow_hidden` is off. 404 as for a missing file, as
+    /// `jupyter_server` answers, but the message says why, since the file
+    /// is there (ganymede-ui#337).
+    #[error("hidden path: {0}: Ganymede doesn't open files or folders whose names start with a dot, or anything inside them")]
+    Hidden(String),
     /// The path escapes the root: a `..` component, an absolute path, a
     /// backslash, or a symlink that resolves outside it. 404, as
     /// `jupyter_server` answers "is outside root contents directory".
@@ -91,7 +97,7 @@ impl Error {
     pub fn status(&self) -> u16 {
         use std::io::ErrorKind;
         match self {
-            Error::NotFound(_) | Error::OutsideRoot(_) => 404,
+            Error::NotFound(_) | Error::Hidden(_) | Error::OutsideRoot(_) => 404,
             Error::Forbidden(_) => 403,
             Error::Conflict(_) => 409,
             Error::PreconditionFailed(_) => 412,
@@ -202,6 +208,7 @@ mod tests {
     #[test]
     fn status_codes_match_jupyter_server() {
         assert_eq!(Error::NotFound("x".into()).status(), 404);
+        assert_eq!(Error::Hidden("x".into()).status(), 404);
         assert_eq!(Error::Forbidden("x".into()).status(), 403);
         assert_eq!(Error::OutsideRoot("x".into()).status(), 404);
         assert_eq!(Error::Conflict("x".into()).status(), 409);
