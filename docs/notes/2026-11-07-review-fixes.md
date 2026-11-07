@@ -37,13 +37,22 @@ server or reach outside the root, or that lose kernels.
     the second review crashed the copy that way, and the copy cost two
     whole-document encodes per added cell. Now the scan records each
     item's clock range and parent (a named root, the item holding the
-    parent type, or an origin whose parent it shares), and the depth of
-    each new shared type is worked out from that, without applying
-    anything. Parents already in the document come from a map of branch
+    parent type, or its two origins), and the depth of each new shared
+    type is worked out from that, without applying anything. The parent
+    rule has to be yrs's own (`Update::repair`): the left origin's parent
+    when that origin is an item with a known parent, else the right
+    one's, else none (yrs then never attaches the item). The third review
+    built 22k levels past a version that always took the left origin: a
+    left origin on a garbage-collected clock sent yrs to a deep right
+    origin while the check counted a shallow one. Parents already in the document come from a map of branch
     depths by item id, measured when the room loads and again when an
     update names a branch the map lacks (the server's own edits add
-    some); a sibling that isn't a shared type has no depth of its own, so
-    the document's deepest stands in. Past 16 levels the update is
+    some). A sibling in the document that isn't a shared type has no
+    depth the room can see, and may be garbage-collected (sending yrs to
+    the other origin), so the document's deepest stands in, and the room
+    measures again after such an update rather than let the estimate
+    ratchet its bound up. A child of a deleted type is no longer refused:
+    yrs leaves it unattached, so it adds no depth. Past 16 levels the update is
     refused, as is one that hangs shared types on items the room doesn't
     have: yrs would hold it pending and integrate it later, at a depth
     nobody checked. The notebook schema goes 5 deep.
