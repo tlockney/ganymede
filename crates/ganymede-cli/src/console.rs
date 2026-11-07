@@ -11,8 +11,9 @@ use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::history::DefaultHistory;
+use rustyline::line_buffer::LineBuffer;
 use rustyline::validate::{ValidationContext, ValidationResult, Validator};
-use rustyline::{Context, Editor, Helper};
+use rustyline::{Changeset, Context, Editor, Helper};
 use std::io::{BufRead, IsTerminal};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -133,6 +134,7 @@ fn interactive(kernel: Arc<Kernel>, handle: Handle) -> Result<()> {
     let helper = KernelHelper {
         kernel: kernel.clone(),
         handle: handle.clone(),
+        completion_end: Default::default(),
     };
     let config = rustyline::Config::builder()
         .auto_add_history(true)
@@ -186,6 +188,9 @@ fn save_history(rl: &mut Editor<KernelHelper, DefaultHistory>, path: Option<&std
 struct KernelHelper {
     kernel: Arc<Kernel>,
     handle: Handle,
+    /// Where the last completion's replacement ends, in bytes: the
+    /// kernel's `cursor_end`, which may be past the cursor.
+    completion_end: std::cell::Cell<usize>,
 }
 
 impl Completer for KernelHelper {
@@ -202,12 +207,13 @@ impl Completer for KernelHelper {
         let Ok(r) = self.handle.block_on(self.kernel.complete(line, cursor)) else {
             return Ok((pos, vec![]));
         };
-        let start_chars = r["cursor_start"].as_u64().unwrap_or(cursor as u64) as usize;
-        let start = line
-            .char_indices()
-            .nth(start_chars)
-            .map(|(i, _)| i)
-            .unwrap_or(line.len());
+        let (start, end) = completion_range(
+            line,
+            pos,
+            r["cursor_start"].as_u64(),
+            r["cursor_end"].as_u64(),
+        );
+        self.completion_end.set(end);
         let matches = r["matches"]
             .as_array()
             .map(|a| {
@@ -222,6 +228,33 @@ impl Completer for KernelHelper {
             .unwrap_or_default();
         Ok((start, matches))
     }
+
+    /// Replace up to the kernel's `cursor_end`, not only to the cursor.
+    fn update(&self, line: &mut LineBuffer, start: usize, elected: &str, cl: &mut Changeset) {
+        let end = self.completion_end.get().clamp(line.pos(), line.len());
+        line.replace(start..end, elected, cl);
+    }
+}
+
+/// The byte range a completion replaces, from the kernel's
+/// `cursor_start` and `cursor_end` (in code points). A start past the
+/// cursor, which would panic in the editor, is the cursor; an end before
+/// it is the cursor too, and neither goes past the line.
+fn completion_range(
+    line: &str,
+    pos: usize,
+    cursor_start: Option<u64>,
+    cursor_end: Option<u64>,
+) -> (usize, usize) {
+    let byte = |chars: u64| {
+        usize::try_from(chars)
+            .ok()
+            .and_then(|n| line.char_indices().nth(n))
+            .map_or(line.len(), |(i, _)| i)
+    };
+    let start = cursor_start.map_or(pos, byte).min(pos);
+    let end = cursor_end.map_or(pos, byte).max(pos);
+    (start, end)
 }
 
 impl Validator for KernelHelper {
@@ -249,3 +282,22 @@ impl Hinter for KernelHelper {
 impl Highlighter for KernelHelper {}
 
 impl Helper for KernelHelper {}
+
+#[cfg(test)]
+mod tests {
+    use super::completion_range;
+
+    /// A `cursor_start` past the cursor used to panic in the editor; a
+    /// `cursor_end` past it was ignored, leaving the rest of the word.
+    #[test]
+    fn a_completion_range_stays_around_the_cursor() {
+        // "pri|nt": the kernel replaces the whole word.
+        assert_eq!(completion_range("print", 3, Some(0), Some(5)), (0, 5));
+        assert_eq!(completion_range("print", 3, Some(4), Some(5)), (3, 5));
+        assert_eq!(completion_range("print", 3, Some(0), Some(1)), (0, 3));
+        assert_eq!(completion_range("print", 3, Some(0), Some(99)), (0, 5));
+        assert_eq!(completion_range("print", 3, None, None), (3, 3));
+        // Code points, not bytes: "é" is two bytes.
+        assert_eq!(completion_range("é.ab", 4, Some(2), Some(4)), (3, 5));
+    }
+}
