@@ -129,6 +129,7 @@ mcp_read_only = false            # /mcp reads notebooks only
 mcp_no_execute = false           # /mcp edits notebooks but runs no code
 mcp_images = false               # /mcp sends images in outputs to the model
 crash_reporting = false          # true: send crash reports (see Privacy)
+frame_ancestors = "'self'"       # who may frame the server's pages
 
 # Extra response headers for files from a static_dir that
 # isn't JupyterLab, none by default (see Static headers). One table per path; "/assets/*" matches
@@ -144,7 +145,7 @@ crash_reporting = false          # true: send crash reports (see Privacy)
 # mime_types = ["text/x-python"]
 ```
 
-These four keys have no flag. The terminal keys, the MCP keys other
+These five keys have no flag. The terminal keys, the MCP keys other
 than `mcp_enabled`, `static_headers` and `language_servers` have none
 either; the sections below and [Agents over MCP](mcp.md#options) cover
 them.
@@ -155,6 +156,11 @@ them.
 | `trust_xheaders` | Trust `X-Forwarded-Proto` and `X-Scheme` from a reverse proxy, so login cookies sent over proxied HTTPS are marked `Secure`. |
 | `max_body_size` | Largest request body, in bytes, which caps a notebook's size. Default 512 MiB. |
 | `crash_reporting` | Send crash reports from `ganymede` to Sentry; see [Privacy and crash reporting](privacy.md). Default `false`. |
+| `frame_ancestors` | The CSP sources allowed to frame the server's pages, added to every response as `frame-ancestors <sources>`. Default `'self'`, as `jupyter_server`; add an origin, such as `'self' https://portal.example.com`, to embed `/lab` in that site. See [Security](security.md#defaults). |
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
 
 ## Static headers
 
@@ -168,10 +174,10 @@ is added by default. Routes the server answers itself, such as
 `/api/status`, never get these headers; a request no route claims, such
 as an unknown `/api/` path, falls through to the static files and can.
 When several keys set the same header, the last key in sorted order
-wins, and a configured header replaces one the server set. Every
-response's `Content-Security-Policy` ends with `frame-ancestors 'self'`
-unless the policy already has a `frame-ancestors` directive, so set one
-here to let other origins frame a page.
+wins, and a configured header replaces one the server set. The
+`frame_ancestors` directive is appended to a `Content-Security-Policy`
+set here unless it already has a `frame-ancestors` directive, so a page
+can set its own.
 
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in

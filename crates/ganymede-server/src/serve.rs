@@ -417,6 +417,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         .clone()
         .unwrap_or_else(ganymede_kernel_host::kernelspec::jupyter_config_dir);
     let static_headers = crate::static_headers::StaticHeaders::parse(&cfg.static_headers)?;
+    let frame_ancestors = crate::frame_ancestors_directive(&cfg.frame_ancestors)?;
     let static_dir = match &cfg.static_dir {
         Some(d) => Some(d.clone()),
         None => installed_lab(cfg.lab_version.as_deref())?,
@@ -547,6 +548,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         config_dir,
         static_dir: if lab.is_some() { None } else { static_dir },
         static_headers: static_headers.into(),
+        frame_ancestors: frame_ancestors.clone(),
         lab: lab.map(Arc::new),
         collab: state_collab.clone(),
         terminals: terminals.clone(),
@@ -564,7 +566,13 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
 
     let mut app = crate::build_router(state);
     if !base.is_empty() {
-        app = axum::Router::new().nest(&base, app);
+        // Paths outside the prefix get the same frame-ancestors.
+        app = axum::Router::new()
+            .nest(&base, app)
+            .layer(axum::middleware::from_fn_with_state(
+                frame_ancestors,
+                crate::frame_ancestors,
+            ));
     }
     let app = app.layer(
         tower_http::trace::TraceLayer::new_for_http().make_span_with(

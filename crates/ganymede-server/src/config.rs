@@ -40,6 +40,11 @@ pub struct Config {
     /// cross-origin isolated, which `SharedArrayBuffer` needs.
     pub static_headers:
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    /// The sources every response's `Content-Security-Policy` allows to
+    /// frame it, as `frame-ancestors <sources>`. `'self'` by default, as
+    /// `jupyter_server` sends; add an origin, such as
+    /// `'self' https://portal.example.com`, to embed `/lab` in that site.
+    pub frame_ancestors: String,
     /// Which installed JupyterLab to serve when `static_dir` is unset.
     pub lab_version: Option<String>,
     /// Extra directories of prebuilt JupyterLab extensions, searched before
@@ -129,6 +134,7 @@ impl Default for Config {
             notary_dir: None,
             static_dir: None,
             static_headers: Default::default(),
+            frame_ancestors: crate::DEFAULT_FRAME_ANCESTORS.into(),
             lab_version: None,
             labextensions_paths: vec![],
             config_dir: None,
