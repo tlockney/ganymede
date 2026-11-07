@@ -53,7 +53,7 @@ same name in snake case, except where the last column says otherwise.
 | `--allow-remote-access` | Accept requests whose `Host` is not a loopback address or a name in `local_hostnames`. | |
 | `--allow-origin` | An origin, besides the server's own, allowed to use the API and websockets. Repeatable. | `allow_origins` |
 | `--allow-credentials` | Let pages on the `--allow-origin` origins use the login cookie. Off by default; ignored when `*` is allowed. See [Security](security.md#cross-origin-clients). | `allow_credentials` |
-| `--base-url` | A prefix for serving behind a reverse proxy, e.g. `/jupyter/`. | |
+| `--base-url` | A prefix for serving behind a reverse proxy, e.g. `/jupyter/`. Leading and trailing slashes are added when missing. | |
 | `--cookie-secret-file` | Key for signing login cookies. Default: `jupyter_cookie_secret` in the Jupyter runtime dir. | |
 | `--default-kernel` | The kernelspec new notebooks start. Default: the first kernelspec found. | |
 | `--cull-idle-secs` | Shut down kernels idle this long with no clients. `0` (the default) never does. | |
