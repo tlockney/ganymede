@@ -763,7 +763,6 @@ async fn prefix_lines(
     }
 }
 
-/// "exited with code 1", or how else the process ended.
 /// `value` with `$NAME` and `${NAME}` replaced by `lookup(NAME)`, as
 /// Python's `string.Template.safe_substitute`, which jupyter_client runs
 /// on kernelspec `env` values: `$$` is `$`, and a name `lookup` doesn't
@@ -817,6 +816,7 @@ fn expand_env(value: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
     out
 }
 
+/// "exited with code 1", or how else the process ended.
 #[cfg(feature = "subprocess")]
 fn describe_exit(status: Option<std::process::ExitStatus>) -> String {
     let Some(status) = status else {
