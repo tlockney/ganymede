@@ -500,8 +500,12 @@ impl Inner {
     }
 
     /// Run `f` holding the save lock of `os`. Entries are dropped once no
-    /// save of that path is running or waiting.
+    /// save of that path is running or waiting. The lock is the file's,
+    /// not the name's: two paths to one file (a symlink, another case on
+    /// a case-insensitive volume) share it, see [`save_lock_key`].
     fn with_save_lock<T>(&self, os: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        let key = save_lock_key(os);
+        let os = key.as_path();
         let lock = {
             let mut locks = self
                 .save_locks
@@ -1062,6 +1066,19 @@ impl Inner {
     }
 }
 
+/// The file `os` names, for keying its save lock: canonical when it
+/// exists, else its canonical parent joined with its name (a new file;
+/// two saves creating it race on the parent's entry), else `os` itself.
+fn save_lock_key(os: &Path) -> PathBuf {
+    if let Ok(p) = os.canonicalize() {
+        return p;
+    }
+    match (os.parent().map(Path::canonicalize), os.file_name()) {
+        (Some(Ok(dir)), Some(name)) => dir.join(name),
+        _ => os.to_path_buf(),
+    }
+}
+
 /// Whether `os` stays under the canonical directory `base` once symlinks
 /// are resolved. Canonicalizes the deepest existing ancestor (the path
 /// itself if it exists). A dangling symlink counts as outside: writing
@@ -1412,6 +1429,27 @@ fn splitext(name: &str) -> (&str, &str) {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// Two paths to one file share a save lock, a new file included.
+    #[cfg(unix)]
+    #[test]
+    fn save_lock_keys_follow_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = |n: &str| dir.path().join(n);
+        fs::create_dir(p("d")).unwrap();
+        fs::write(p("d/a.ipynb"), "{}").unwrap();
+        std::os::unix::fs::symlink(p("d/a.ipynb"), p("link.ipynb")).unwrap();
+        std::os::unix::fs::symlink(p("d"), p("e")).unwrap();
+        let key = save_lock_key(&p("d/a.ipynb"));
+        assert_eq!(save_lock_key(&p("link.ipynb")), key);
+        assert_eq!(save_lock_key(&p("e/a.ipynb")), key);
+        // Not there yet: the canonical directory and the name.
+        assert_eq!(
+            save_lock_key(&p("e/new.ipynb")),
+            save_lock_key(&p("d/new.ipynb"))
+        );
+        assert_ne!(save_lock_key(&p("d/new.ipynb")), key);
+    }
 
     #[test]
     fn rename_noreplace_refuses_an_existing_target() {
