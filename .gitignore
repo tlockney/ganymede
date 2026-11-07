@@ -11,3 +11,6 @@ THIRD-PARTY-NOTICES
 docs/ganymede-ui/
 docs/images/themed/
 docs/scripts/work/
+
+# CI copies the Linux release binary here for the image (#460).
+/container/bin/

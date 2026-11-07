@@ -455,7 +455,7 @@ jobs:
   # checkout, then container/smoke-test.sh: no Python in it, a cell on
   # cdp-node, and `ganymede lab` serving behind its token.
   image:
-    needs: changes
+    needs: [changes, linux-release]
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -464,9 +464,14 @@ jobs:
         with:
           persist-credentials: false
       - run: shellcheck -s sh container/smoke-test.sh
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ganymede-linux-release
+          path: container/bin
+      - run: chmod +x container/bin/ganymede
       - run: >-
           docker build -f container/Dockerfile -t ganymede
-          --build-arg GANYMEDE_SOURCE=checkout
+          --build-arg GANYMEDE_SOURCE=local
           --build-arg "CDP_KERNEL_VERSION=$CDP_KERNEL_VERSION" .
       - run: container/smoke-test.sh ganymede
         timeout-minutes: 5
@@ -504,11 +509,36 @@ jobs:
       - name: Journal eval scoring tests
         run: node --test evals/journal/score.test.mjs
 
+  # The Linux release binary, built once and used by lsp, workstation
+  # (ubuntu) and image instead of each compiling it (#460). It builds in
+  # the Dockerfile's Rust image (Debian trixie), so it links against the
+  # image's glibc: a binary built on the runner needs the runner's newer
+  # glibc and won't start in the image. RUST_VERSION in
+  # container/Dockerfile is the same version.
+  linux-release:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    container: rust:1.95-trixie
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build --release --locked -p ganymede-cli
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ganymede-linux-release
+          path: target/release/ganymede
+          if-no-files-found: error
+          retention-days: 1
+
   # jupyterlab-lsp against `ganymede serve`, with jupyter-lsp on
   # `jupyter lab` as the oracle: the same diagnostics from
   # typescript-language-server and pyright on both (#257).
   lsp:
-    needs: changes
+    needs: [changes, linux-release]
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -516,11 +546,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo build --release --locked -p ganymede-cli
+          name: ganymede-linux-release
+          path: target/release
+      # Artifacts don't keep the executable bit.
+      - run: chmod +x target/release/ganymede
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
@@ -562,29 +593,41 @@ jobs:
   # from `ganymede lab install`; then `ganymede lab --no-browser` driven by
   # Playwright. scripts/test-workstation.sh hides Python from PATH and
   # fails if anything ran it.
+  #
+  # Linux takes linux-release's binary (#460) and macOS builds its own, so
+  # macOS is a job of its own (workstation-macos, same check name and the
+  # same steps via the anchor) that doesn't wait for linux-release before
+  # queueing for a runner.
   workstation:
-    needs: changes
+    needs: [changes, linux-release]
     if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
     runs-on: ${{ needs.changes.outputs.code == 'false' && 'ubuntu-latest' || matrix.os }}
     timeout-minutes: 40
-    steps:
+    steps: &workstation-steps
       - if: needs.changes.outputs.code == 'false'
         run: echo "Only docs, the site or Markdown changed, so nothing to build (#418)."
       - if: needs.changes.outputs.code != 'false'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - if: needs.changes.outputs.code != 'false'
+      - if: needs.changes.outputs.code != 'false' && matrix.os == 'ubuntu-latest'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ganymede-linux-release
+          path: target/release
+      - if: needs.changes.outputs.code != 'false' && matrix.os == 'ubuntu-latest'
+        run: chmod +x target/release/ganymede
+      - if: needs.changes.outputs.code != 'false' && matrix.os != 'ubuntu-latest'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
-      - if: needs.changes.outputs.code != 'false'
+      - if: needs.changes.outputs.code != 'false' && matrix.os != 'ubuntu-latest'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - if: needs.changes.outputs.code != 'false'
+      - if: needs.changes.outputs.code != 'false' && matrix.os != 'ubuntu-latest'
         run: cargo build --release --locked -p ganymede-cli
       - if: needs.changes.outputs.code != 'false'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -617,6 +660,11 @@ jobs:
         with:
           path: ${{ runner.temp }}/nb-cli
           key: nb-cli-${{ env.NB_CLI_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+      # Linux skipped the toolchain above; a miss builds nb-cli on stable.
+      - if: needs.changes.outputs.code != 'false' && matrix.os == 'ubuntu-latest' && steps.nb-cli.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
       - if: needs.changes.outputs.code != 'false' && (steps.nb-cli.outputs.cache-hit != 'true')
         run: cargo install nb-cli ${NB_CLI_VERSION:+--version "$NB_CLI_VERSION"} --locked --root "$RUNNER_TEMP/nb-cli"
       - if: needs.changes.outputs.code != 'false' && (env.NB_CLI_VERSION != '' && steps.nb-cli.outputs.cache-hit != 'true')
@@ -649,3 +697,15 @@ jobs:
           name: workstation-${{ matrix.os }}
           path: ${{ runner.temp }}/workstation
           if-no-files-found: ignore
+
+  workstation-macos:
+    name: workstation (${{ matrix.os }})
+    needs: changes
+    if: ${{ !cancelled() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest]
+    runs-on: ${{ needs.changes.outputs.code == 'false' && 'ubuntu-latest' || matrix.os }}
+    timeout-minutes: 40
+    steps: *workstation-steps
