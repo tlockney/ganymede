@@ -36,6 +36,7 @@ export function groups(): Group[] {
         { text: "Overview", link: "/" },
         { text: "Install", link: "/install" },
         { text: "Getting started", link: "/getting-started" },
+        { text: "Other kernels", link: "/kernels" },
       ],
     },
     {
