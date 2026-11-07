@@ -556,7 +556,9 @@ fn strip_runtime(mut cell: Value) -> Value {
 /// the stack here. XML types, which no notebook uses and whose yrs
 /// conversion recurses with no limit, come out as `null` too.
 pub fn out_to_json<T: ReadTxn>(txn: &T, out: &Out) -> Value {
-    out_to_json_within(txn, out, crate::depth::MAX_SHARED_DEPTH)
+    // One more than the room allows, for the values inside its deepest
+    // shared types.
+    out_to_json_within(txn, out, crate::depth::MAX_SHARED_DEPTH + 1)
 }
 
 fn out_to_json_within<T: ReadTxn>(txn: &T, out: &Out, depth: usize) -> Value {

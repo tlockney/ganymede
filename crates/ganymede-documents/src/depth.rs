@@ -1,28 +1,31 @@
 //! How deeply a client's update nests, so a room can refuse one that
-//! would overflow the stack.
+//! would overflow the stack. Nothing here applies the update or recurses.
 //!
-//! Two kinds of nesting, both checked before an update reaches the room:
+//! Two kinds of nesting:
 //!
 //! - **Values.** yrs decodes an `Any` value (a JSON-like array or map) by
 //!   recursing into each nested value with no depth limit, and one level
-//!   costs two bytes on the wire. [`check`] scans the update iteratively,
-//!   following yrs 0.28's v1 decoding (`Update::decode`,
-//!   `ItemContent::decode`, `Any::decode`), without decoding it.
+//!   costs two bytes on the wire. [`check`] scans the update, following
+//!   yrs 0.28's v1 decoding (`Update::decode`, `ItemContent::decode`,
+//!   `Any::decode`), and finds values nested deeper than [`MAX_DEPTH`].
 //! - **Shared types.** Maps, arrays and texts nested in one another, each
-//!   level its own item, possibly sent over many updates. yrs deletes them
-//!   recursively, and so would converting them to JSON. Their depth is a
-//!   property of the whole document, so a room applies an update that adds
-//!   shared types to a scratch copy first and measures it there with
-//!   [`shared_types_too_deep`], which walks without recursing.
+//!   level its own item, possibly over many updates. yrs deletes them
+//!   recursively, during an apply too (a key overwritten in the same
+//!   update deletes the tree under it), so the depth has to be known
+//!   before the update is applied. [`check`] records each item's place and
+//!   parent, and [`Checked::type_depths`] works out how deep the update's
+//!   new shared types would sit, asking the room how deep the items they
+//!   hang on in the document are ([`shared_depths`] measures that).
 //!
 //! Strings that yrs parses as JSON (embeds, formats, JSON content) need no
 //! check: `serde_json` stops at 128 levels on its own. A yrs upgrade that
-//! changes the v1 format has to update [`check`].
+//! changes the v1 format has to update this module.
 
-use yrs::branch::{Branch, BranchPtr};
+use std::collections::HashMap;
+use yrs::branch::{Branch, BranchID, BranchPtr};
 use yrs::encoding::read::{Cursor, Error, Read};
 use yrs::types::text::{Diff, YChange};
-use yrs::{Map, MapRef, Out, ReadTxn, Text, TextRef};
+use yrs::{ClientID, Map, MapRef, Out, ReadTxn, StateVector, Text, TextRef};
 
 /// The deepest nesting of `Any` values a client update may hold.
 pub const MAX_DEPTH: usize = 100;
@@ -33,33 +36,209 @@ pub const MAX_DEPTH: usize = 100;
 /// levels, a document stays inside the 128 levels `serde_json` reads back.
 pub const MAX_SHARED_DEPTH: usize = 16;
 
+/// How deep the server's own edits nest shared types: the notebook schema
+/// (cells, a cell, its outputs, an output, its text). A room counts its
+/// document as at least this deep.
+pub const SCHEMA_DEPTH: usize = 5;
+
 /// What [`check`] found in an update.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub struct Checked {
     /// A value nests deeper than [`MAX_DEPTH`].
     pub too_deep: bool,
-    /// The update creates shared types, so it can deepen the document's
-    /// nesting of them.
-    pub adds_types: bool,
+    /// The update's items, in order, for [`Checked::deepest_type`].
+    items: Vec<ItemRec>,
+}
+
+/// Where an item hangs, as the update says.
+#[derive(Debug, Clone, Copy)]
+enum ParentRef {
+    /// A root type, named.
+    Root,
+    /// The shared type that the item with this id holds.
+    Type(u64, u32),
+    /// The same parent as the item holding this id (its origin).
+    Beside(u64, u32),
+    /// Not an item: garbage-collected or skipped clocks.
+    None,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ItemRec {
+    client: u64,
+    clock: u32,
+    len: u32,
+    parent: ParentRef,
+    is_type: bool,
+    /// A skip block: a gap the update doesn't fill.
+    skip: bool,
+}
+
+/// Why [`Checked::type_depths`] has no answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unresolved {
+    /// The update hangs items on ones the document doesn't have yet. yrs
+    /// would hold them until those arrive, and they would land at a depth
+    /// nobody checked.
+    Missing,
+}
+
+/// An item in the document that an update's item hangs on, for
+/// [`Checked::type_depths`] to ask the room about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveRef {
+    /// The item holds the shared type that is the parent.
+    Type(u64, u32),
+    /// The item is a sibling: same parent.
+    Beside(u64, u32),
+}
+
+/// The depths of the shared types an update creates.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TypeDepths {
+    /// Each new shared type's item id (client, clock) and depth, a root
+    /// counting as 1.
+    pub types: Vec<(u64, u32, usize)>,
+    /// The deepest of them; 0 for none.
+    pub deepest: usize,
+    /// Some depth stood in for one the room couldn't tell (the bound
+    /// given): the result can overstate.
+    pub estimated: bool,
+}
+
+impl Checked {
+    /// Whether the update creates shared types, so it can deepen the
+    /// document's nesting of them.
+    pub fn adds_types(&self) -> bool {
+        self.items.iter().any(|i| i.is_type)
+    }
+
+    /// How deep each shared type the update creates would sit. `sv` is the
+    /// document's state vector, to tell which referenced items it has.
+    /// For an item hung on one in the document, `live` gives that parent's
+    /// depth, or `None` when it can't tell; then `bound`, how deep the
+    /// document goes at most, stands in.
+    pub fn type_depths(
+        &self,
+        sv: &StateVector,
+        bound: usize,
+        mut live: impl FnMut(LiveRef) -> Option<usize>,
+    ) -> Result<TypeDepths, Unresolved> {
+        let mut by_client: HashMap<u64, Vec<usize>> = HashMap::new();
+        for (i, item) in self.items.iter().enumerate() {
+            by_client.entry(item.client).or_default().push(i);
+        }
+        for idxs in by_client.values_mut() {
+            idxs.sort_by_key(|&i| self.items[i].clock);
+        }
+        // yrs holds a run that starts past what the document has.
+        for (client, idxs) in &by_client {
+            if self.items[idxs[0]].clock > sv.get(&ClientID::new(*client)) {
+                return Err(Unresolved::Missing);
+            }
+        }
+        let find = |client: u64, clock: u32| -> Option<usize> {
+            let idxs = by_client.get(&client)?;
+            let pos = idxs.partition_point(|&i| self.items[i].clock <= clock);
+            let i = *idxs.get(pos.checked_sub(1)?)?;
+            let it = &self.items[i];
+            (clock < it.clock + it.len).then_some(i)
+        };
+        let known = |client: u64, clock: u32| clock < sv.get(&ClientID::new(client));
+        let bound = bound.max(1);
+        let mut out = TypeDepths::default();
+
+        // The depth of each item's parent, resolved without recursing:
+        // chains of origins and of types within the update are followed
+        // with a stack, and a cycle (malformed) is unresolved.
+        #[derive(Clone, Copy)]
+        enum State {
+            Todo,
+            Busy,
+            Done(usize),
+        }
+        let mut state = vec![State::Todo; self.items.len()];
+        for start in 0..self.items.len() {
+            if !self.items[start].is_type {
+                continue;
+            }
+            let mut stack = vec![start];
+            while let Some(&i) = stack.last() {
+                if let State::Done(_) = state[i] {
+                    stack.pop();
+                    continue;
+                }
+                state[i] = State::Busy;
+                // The item in the update this one's parent comes from, and
+                // whether it holds the parent (or is a sibling).
+                let (inside, through_type) = match self.items[i].parent {
+                    ParentRef::Root | ParentRef::None => (None, false),
+                    ParentRef::Type(c, k) => (find(c, k), true),
+                    ParentRef::Beside(c, k) => (find(c, k), false),
+                };
+                let parent_depth = match inside {
+                    Some(j) => {
+                        if self.items[j].skip || (through_type && !self.items[j].is_type) {
+                            return Err(Unresolved::Missing);
+                        }
+                        match state[j] {
+                            // `d` is j's parent's depth; j's own is one more.
+                            State::Done(d) if through_type => d + 1,
+                            State::Done(d) => d,
+                            State::Busy => return Err(Unresolved::Missing),
+                            State::Todo => {
+                                stack.push(j);
+                                continue;
+                            }
+                        }
+                    }
+                    None => {
+                        let live_ref = match self.items[i].parent {
+                            ParentRef::Root => None,
+                            ParentRef::None => Some(None),
+                            ParentRef::Type(c, k) if known(c, k) => Some(Some(LiveRef::Type(c, k))),
+                            ParentRef::Beside(c, k) if known(c, k) => {
+                                Some(Some(LiveRef::Beside(c, k)))
+                            }
+                            _ => return Err(Unresolved::Missing),
+                        };
+                        match live_ref {
+                            None => 1,
+                            Some(r) => match r.and_then(&mut live) {
+                                Some(d) => d,
+                                None => {
+                                    out.estimated = true;
+                                    bound
+                                }
+                            },
+                        }
+                    }
+                };
+                state[i] = State::Done(parent_depth);
+                let item = &self.items[i];
+                if item.is_type {
+                    let depth = parent_depth + 1;
+                    out.types.push((item.client, item.clock, depth));
+                    out.deepest = out.deepest.max(depth);
+                }
+                stack.pop();
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// Scan `update`, a v1 update. A malformed update is neither too deep nor
 /// adds types: yrs refuses it when it decodes it.
 pub fn check(update: &[u8]) -> Checked {
-    let mut adds_types = false;
-    match scan_update(&mut Cursor::new(update), &mut adds_types) {
-        Ok(()) => Checked {
-            too_deep: false,
-            adds_types,
-        },
+    let mut checked = Checked::default();
+    match scan_update(&mut Cursor::new(update), &mut checked.items) {
+        Ok(()) => checked,
         Err(Scan::TooDeep) => Checked {
             too_deep: true,
-            adds_types,
+            items: Vec::new(),
         },
-        Err(Scan::Malformed) => Checked {
-            too_deep: false,
-            adds_types: false,
-        },
+        Err(Scan::Malformed) => Checked::default(),
     }
 }
 
@@ -68,18 +247,26 @@ pub fn too_deep(update: &[u8]) -> bool {
     check(update).too_deep
 }
 
-/// Whether the document's shared types nest deeper than
-/// [`MAX_SHARED_DEPTH`]. Walks every root's maps and sequences (embedded
-/// types included) with a stack of its own.
-pub fn shared_types_too_deep<T: ReadTxn>(txn: &T) -> bool {
+/// The depth of each nested shared type in the document, by the id
+/// (client, clock) of the item holding it, and the deepest, counting a
+/// root as 1 (0 for none). Walks every root's maps and sequences (embedded
+/// types included) with a stack of its own, and stops descending past
+/// [`MAX_SHARED_DEPTH`].
+pub fn shared_depths<T: ReadTxn>(txn: &T) -> (HashMap<(u64, u32), usize>, usize) {
     let mut stack: Vec<(BranchPtr, usize)> = txn
         .root_refs()
         .filter_map(|(_, out)| branch_of(&out))
         .map(|b| (b, 1))
         .collect();
+    let mut depths = HashMap::new();
+    let mut deepest = 0;
     while let Some((branch, depth)) = stack.pop() {
+        deepest = deepest.max(depth);
+        if let BranchID::Nested(id) = branch.id() {
+            depths.insert((id.client.get(), id.clock), depth);
+        }
         if depth > MAX_SHARED_DEPTH {
-            return true;
+            continue;
         }
         // Any branch can hold keyed entries and a sequence, whatever its
         // type; read both through the generic views.
@@ -97,7 +284,7 @@ pub fn shared_types_too_deep<T: ReadTxn>(txn: &T) -> bool {
             }
         }
     }
-    false
+    (depths, deepest)
 }
 
 fn branch_of(out: &Out) -> Option<BranchPtr> {
@@ -125,15 +312,27 @@ impl From<Error> for Scan {
 }
 
 /// `Update::decode`: the blocks of each client. The delete set that follows
-/// holds no values.
-fn scan_update(c: &mut Cursor, adds_types: &mut bool) -> Result<(), Scan> {
+/// holds no values and adds no items.
+fn scan_update(c: &mut Cursor, items: &mut Vec<ItemRec>) -> Result<(), Scan> {
     let clients: u32 = c.read_var()?;
     for _ in 0..clients {
         let blocks: u32 = c.read_var()?;
-        let _client: u64 = c.read_var()?;
-        let _clock: u32 = c.read_var()?;
+        let client: u64 = c.read_var()?;
+        let mut clock: u32 = c.read_var()?;
         for _ in 0..blocks {
-            scan_block(c, adds_types)?;
+            let (len, parent, is_type, skip) = scan_block(c)?;
+            // yrs drops an empty item without advancing the clock.
+            if len > 0 {
+                items.push(ItemRec {
+                    client,
+                    clock,
+                    len,
+                    parent,
+                    is_type,
+                    skip,
+                });
+                clock = clock.checked_add(len).ok_or(Scan::Malformed)?;
+            }
         }
     }
     Ok(())
@@ -146,72 +345,87 @@ const HAS_RIGHT_ORIGIN: u8 = 0b0100_0000;
 const HAS_PARENT_SUB: u8 = 0b0010_0000;
 const TYPE_REFS_XML_ELEMENT: u8 = 3;
 
-/// `Update::decode_block`.
-fn scan_block(c: &mut Cursor, adds_types: &mut bool) -> Result<(), Scan> {
-    match c.read_u8()? {
-        BLOCK_SKIP | BLOCK_GC => {
-            let _len: u32 = c.read_var()?;
-        }
+/// `Update::decode_block`: the block's length in clocks, its parent, and
+/// whether it holds a shared type or is a skip.
+fn scan_block(c: &mut Cursor) -> Result<(u32, ParentRef, bool, bool), Scan> {
+    Ok(match c.read_u8()? {
+        BLOCK_SKIP => (c.read_var()?, ParentRef::None, false, true),
+        BLOCK_GC => (c.read_var()?, ParentRef::None, false, false),
         info => {
-            if info & HAS_ORIGIN != 0 {
-                scan_id(c)?;
-            }
-            if info & HAS_RIGHT_ORIGIN != 0 {
-                scan_id(c)?;
-            }
-            if info & (HAS_ORIGIN | HAS_RIGHT_ORIGIN) == 0 {
-                let parent_info: u32 = c.read_var()?;
-                if parent_info == 1 {
-                    c.read_buf()?;
-                } else {
-                    scan_id(c)?;
+            let origin = (info & HAS_ORIGIN != 0).then(|| scan_id(c)).transpose()?;
+            let right = (info & HAS_RIGHT_ORIGIN != 0)
+                .then(|| scan_id(c))
+                .transpose()?;
+            let parent = match origin.or(right) {
+                // yrs takes the parent from the origin, else the right one.
+                Some((client, clock)) => ParentRef::Beside(client, clock),
+                None => {
+                    let parent_info: u32 = c.read_var()?;
+                    let parent = if parent_info == 1 {
+                        c.read_buf()?;
+                        ParentRef::Root
+                    } else {
+                        let (client, clock) = scan_id(c)?;
+                        ParentRef::Type(client, clock)
+                    };
+                    if info & HAS_PARENT_SUB != 0 {
+                        c.read_buf()?;
+                    }
+                    parent
                 }
-                if info & HAS_PARENT_SUB != 0 {
-                    c.read_buf()?;
-                }
-            }
-            scan_content(c, info & 0b1111, adds_types)?;
+            };
+            let (len, is_type) = scan_content(c, info & 0b1111)?;
+            (len, parent, is_type, false)
         }
-    }
-    Ok(())
+    })
 }
 
-fn scan_id(c: &mut Cursor) -> Result<(), Scan> {
-    let _client: u64 = c.read_var()?;
-    let _clock: u32 = c.read_var()?;
-    Ok(())
+fn scan_id(c: &mut Cursor) -> Result<(u64, u32), Scan> {
+    let client: u64 = c.read_var()?;
+    let clock: u32 = c.read_var()?;
+    Ok((client, clock))
 }
 
-/// `ItemContent::decode`.
-fn scan_content(c: &mut Cursor, content_ref: u8, adds_types: &mut bool) -> Result<(), Scan> {
-    match content_ref {
+/// `ItemContent::decode`: the content's length in clocks (UTF-16 units
+/// for a string, as yrs counts them) and whether it is a shared type.
+fn scan_content(c: &mut Cursor, content_ref: u8) -> Result<(u32, bool), Scan> {
+    Ok(match content_ref {
         // Deleted: a length.
-        1 => {
-            let _len: u32 = c.read_var()?;
-        }
+        1 => (c.read_var()?, false),
         // JSON: strings. yrs reads one more than the count it is given.
         2 => {
-            let mut remaining = c.read_var::<u32>()? as i32;
+            let mut remaining = c.read_var::<u32>()? as i64;
+            let mut len = 0u32;
             while remaining >= 0 {
                 c.read_buf()?;
                 remaining -= 1;
+                len += 1;
             }
+            (len, false)
         }
-        // Binary, string, embed (JSON text).
-        3..=5 => {
+        // Binary, embed (JSON text): one each.
+        3 | 5 => {
             c.read_buf()?;
+            (1, false)
+        }
+        // String.
+        4 => {
+            let s = std::str::from_utf8(c.read_buf()?).map_err(|_| Scan::Malformed)?;
+            let len = s.encode_utf16().count();
+            (u32::try_from(len).map_err(|_| Scan::Malformed)?, false)
         }
         // Format: a key and JSON text.
         6 => {
             c.read_buf()?;
             c.read_buf()?;
+            (1, false)
         }
         // A shared type; an XML element has a name.
         7 => {
-            *adds_types = true;
             if c.read_u8()? == TYPE_REFS_XML_ELEMENT {
                 c.read_buf()?;
             }
+            (1, true)
         }
         // Any values.
         8 => {
@@ -219,15 +433,16 @@ fn scan_content(c: &mut Cursor, content_ref: u8, adds_types: &mut bool) -> Resul
             for _ in 0..len {
                 scan_any(c)?;
             }
+            (len, false)
         }
         // Subdocument: a guid and its options.
         9 => {
             c.read_buf()?;
             scan_any(c)?;
+            (1, false)
         }
         _ => return Err(Scan::Malformed),
-    }
-    Ok(())
+    })
 }
 
 /// `Any::decode`, without recursing: `open` holds, for each array or map
@@ -323,14 +538,9 @@ mod tests {
     fn real_updates_are_not_too_deep() {
         for depth in [0, 1, 2, 50, MAX_DEPTH] {
             let update = update_with(nested(depth));
-            assert_eq!(
-                check(&update),
-                Checked {
-                    too_deep: false,
-                    adds_types: false
-                },
-                "depth {depth}"
-            );
+            let checked = check(&update);
+            assert!(!checked.too_deep, "depth {depth}");
+            assert!(!checked.adds_types(), "depth {depth}");
         }
     }
 

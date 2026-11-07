@@ -775,7 +775,152 @@ fn deeply_nested_shared_types_are_refused() {
     // A notebook's own shapes (cells, outputs) are far from the limit.
     let nb = Notebook::from_str(&fixture("code_outputs.ipynb")).unwrap();
     let room = Room::notebook_room(&nb, "c.ipynb");
-    assert!(!ganymede_documents::depth::shared_types_too_deep(
-        &room.doc().transact()
+    let (_, deepest) = ganymede_documents::depth::shared_depths(&room.doc().transact());
+    assert!(
+        deepest <= ganymede_documents::depth::SCHEMA_DEPTH,
+        "{deepest}"
+    );
+}
+
+/// A deep tree that the same update also deletes, or overwrites, would be
+/// deleted (recursively) while yrs applies it: the depth is checked from
+/// the update's bytes, before anything is applied.
+#[test]
+fn a_deep_tree_created_and_deleted_in_one_update_is_refused() {
+    use ganymede_documents::yrs::{merge_updates_v1, MapPrelim, MapRef, WriteTxn};
+
+    let text = fixture("empty.ipynb");
+    let nb = Notebook::from_str(&text).unwrap();
+    let base = Room::notebook_room(&nb, "n.ipynb");
+
+    // The tree, built on a client's copy (never deleted there: that client
+    // would overflow too).
+    let deep = client_of(&base);
+    let sv = deep.transact().state_vector();
+    {
+        let mut txn = deep.transact_mut();
+        let meta = txn.get_or_insert_map("meta");
+        let mut m: MapRef = meta.insert(&mut txn, "metadata", MapPrelim::default());
+        for _ in 0..20_000 {
+            m = m.insert(&mut txn, "x", MapPrelim::default());
+        }
+    }
+    let tree = deep.transact().encode_state_as_update_v1(&sv);
+
+    fn varint(out: &mut Vec<u8>, mut n: u64) {
+        loop {
+            let byte = (n & 0x7f) as u8;
+            n >>= 7;
+            if n == 0 {
+                out.push(byte);
+                return;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+    let id = deep.client_id();
+    let top = u64::from(sv.get(&id));
+    let end = u64::from(deep.transact().state_vector().get(&id));
+
+    // Its top deleted: a delete set naming the first item.
+    let mut delete = vec![0, 1];
+    for n in [id.get(), 1, top, 1] {
+        varint(&mut delete, n);
+    }
+    // Or its key set again by a later item from the same client: a map
+    // entry whose origin is the tree's top, holding the string "y".
+    let mut overwrite = vec![1, 1];
+    varint(&mut overwrite, id.get());
+    varint(&mut overwrite, end);
+    overwrite.push(0x80 | 8); // has an origin; Any content
+    varint(&mut overwrite, id.get());
+    varint(&mut overwrite, top);
+    overwrite.extend([1, 119, 1, b'y']); // one Any: the string "y"
+    overwrite.push(0); // no deletes
+
+    for second in [delete, overwrite] {
+        let update = merge_updates_v1([tree.as_slice(), second.as_slice()]).unwrap();
+        let mut room = Room::notebook_room(&nb, "n.ipynb");
+        room.connect(1);
+        let fx = room
+            .receive(1, &Message::Sync(SyncMessage::Update(update)).encode_v1())
+            .unwrap();
+        assert!(fx
+            .send
+            .iter()
+            .any(|(t, m)| matches!(t, Target::One(1))
+                && String::from_utf8_lossy(m).contains("conflict")));
+        assert_eq!(room.notebook().unwrap().unwrap().to_file_string(), text);
+    }
+}
+
+/// An update that hangs shared types on items the room doesn't have would
+/// be held by yrs and land later at a depth nobody checked: refused.
+#[test]
+fn shared_types_on_missing_items_are_refused() {
+    use ganymede_documents::yrs::{MapPrelim, MapRef, WriteTxn};
+
+    let nb = Notebook::from_str(&fixture("empty.ipynb")).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let client = client_of(&room);
+    let sv0 = client.transact().state_vector();
+    let m: MapRef = {
+        let mut txn = client.transact_mut();
+        txn.get_or_insert_map("meta")
+            .insert(&mut txn, "metadata", MapPrelim::default())
+    };
+    let sv1 = client.transact().state_vector();
+    {
+        let mut txn = client.transact_mut();
+        m.insert(&mut txn, "x", MapPrelim::default());
+    }
+    // The second update alone: its parent is in the first, never sent.
+    let second = client.transact().encode_state_as_update_v1(&sv1);
+    let fx = room
+        .receive(1, &Message::Sync(SyncMessage::Update(second)).encode_v1())
+        .unwrap();
+    assert!(fx.send.iter().any(
+        |(t, m)| matches!(t, Target::One(1)) && String::from_utf8_lossy(m).contains("conflict")
     ));
+    // Both, in order: fine.
+    let both = client.transact().encode_state_as_update_v1(&sv0);
+    let fx = room
+        .receive(1, &Message::Sync(SyncMessage::Update(both)).encode_v1())
+        .unwrap();
+    assert!(fx.changed);
+}
+
+/// Values inside the deepest shared type the room accepts are kept.
+#[test]
+fn values_at_the_depth_limit_are_kept() {
+    use ganymede_documents::depth::MAX_SHARED_DEPTH;
+    use ganymede_documents::yrs::{MapPrelim, MapRef, WriteTxn};
+
+    let nb = Notebook::from_str(&fixture("empty.ipynb")).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let client = client_of(&room);
+    let sv = client.transact().state_vector();
+    {
+        let mut txn = client.transact_mut();
+        let meta = txn.get_or_insert_map("meta");
+        // meta is 1, metadata 2, then x up to the limit.
+        let mut m: MapRef = meta.insert(&mut txn, "metadata", MapPrelim::default());
+        for _ in 2..MAX_SHARED_DEPTH {
+            m = m.insert(&mut txn, "x", MapPrelim::default());
+        }
+        m.insert(&mut txn, "leaf", "hello");
+    }
+    let update = client.transact().encode_state_as_update_v1(&sv);
+    let fx = room
+        .receive(1, &Message::Sync(SyncMessage::Update(update)).encode_v1())
+        .unwrap();
+    assert!(fx.changed);
+    let back = room.notebook().unwrap().unwrap();
+    let mut v = &back.metadata;
+    while let Some(next) = v.get("x").and_then(|x| x.as_object()) {
+        v = next;
+    }
+    assert_eq!(v.get("leaf"), Some(&serde_json::json!("hello")));
 }
