@@ -85,6 +85,8 @@ struct Inner {
     /// One lock per path being saved, so the conflict check and the write
     /// of one save are not interleaved with another save of the same path.
     save_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
+    /// `options.checkpoint_dir`, canonicalized once it exists.
+    checkpoint_base: std::sync::OnceLock<PathBuf>,
 }
 
 impl FsContents {
@@ -103,6 +105,7 @@ impl FsContents {
                 root,
                 options,
                 save_locks: Mutex::default(),
+                checkpoint_base: std::sync::OnceLock::new(),
             }),
         })
     }
@@ -278,28 +281,10 @@ impl Inner {
             let api = api.to_string_lossy().replace('\\', "/");
             Error::OutsideRoot(format!("{api} is outside the contents root"))
         };
-        let mut p = os;
-        loop {
-            match fs::symlink_metadata(p) {
-                Ok(_) => {
-                    let canonical = p.canonicalize().map_err(|e| {
-                        if e.kind() == io::ErrorKind::NotFound {
-                            escape()
-                        } else {
-                            Error::Io(e)
-                        }
-                    })?;
-                    return if canonical.starts_with(&self.root) {
-                        Ok(())
-                    } else {
-                        Err(escape())
-                    };
-                }
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    p = p.parent().ok_or_else(escape)?;
-                }
-                Err(e) => return Err(Error::Io(e)),
-            }
+        if resolves_under(&self.root, os)? {
+            Ok(())
+        } else {
+            Err(escape())
         }
     }
 
@@ -874,6 +859,57 @@ impl Inner {
         }
     }
 
+    /// [`Inner::checkpoint_path`], refused when a symlink (the checkpoint
+    /// folder, or the checkpoint file itself) would take it outside the
+    /// root, or outside the checkpoint dir when one is set.
+    /// `jupyter_server` follows such links; here the contents API stays in
+    /// its root for checkpoints too.
+    fn checkpoint_path_checked(&self, api: &ApiPath) -> Result<PathBuf> {
+        let cp = self.checkpoint_path(api);
+        if self.in_checkpoint_base(&cp)? {
+            Ok(cp)
+        } else {
+            Err(Error::OutsideRoot(format!(
+                "the checkpoint of {api} is outside the checkpoint folder"
+            )))
+        }
+    }
+
+    /// Whether `p`, a checkpoint path or a mirrored checkpoint directory,
+    /// stays under the root (or under `--checkpoint-dir` when one is set)
+    /// once symlinks are resolved.
+    fn in_checkpoint_base(&self, p: &Path) -> Result<bool> {
+        let base: &Path = match &self.options.checkpoint_dir {
+            None => &self.root,
+            Some(dir) => match self.checkpoint_base.get() {
+                Some(base) => base,
+                None => match dir.canonicalize() {
+                    Ok(base) => self.checkpoint_base.get_or_init(|| base),
+                    // Nothing under it exists yet, so no link can lead out.
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(true),
+                    Err(e) => return Err(Error::Io(e)),
+                },
+            },
+        };
+        resolves_under(base, p)
+    }
+
+    /// For the best-effort checkpoint upkeep of a delete or rename: whether
+    /// `p` may be touched. One that leads out of the root is left alone.
+    fn safe_to_touch(&self, p: &Path, api: &ApiPath) -> bool {
+        match self.in_checkpoint_base(p) {
+            Ok(true) => true,
+            Ok(false) => {
+                tracing::warn!(path = %api, "checkpoint leads outside the checkpoint folder; left alone");
+                false
+            }
+            Err(e) => {
+                tracing::warn!(path = %api, error = %e, "could not check checkpoint");
+                false
+            }
+        }
+    }
+
     /// The mirrored directory under an external checkpoint dir for the API
     /// directory `api`; `None` with the default per-directory layout.
     fn mirrored_checkpoint_dir(&self, api: &ApiPath) -> Option<PathBuf> {
@@ -888,7 +924,7 @@ impl Inner {
         if id != CHECKPOINT_ID {
             return Err(missing());
         }
-        let cp = self.checkpoint_path(api);
+        let cp = self.checkpoint_path_checked(api)?;
         if !cp.is_file() {
             return Err(missing());
         }
@@ -905,7 +941,13 @@ impl Inner {
 
     fn list_checkpoints(&self, path: &str) -> Result<Vec<Checkpoint>> {
         let r = self.resolve_for_read(path)?;
-        let cp = self.checkpoint_path(&r.api);
+        // A checkpoint that leads out of the root isn't listed; listing it
+        // is no error, since JupyterLab lists on every open.
+        let cp = match self.checkpoint_path_checked(&r.api) {
+            Ok(cp) => cp,
+            Err(Error::OutsideRoot(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
         if cp.is_file() {
             Ok(vec![self.checkpoint_model(&cp)?])
         } else {
@@ -927,7 +969,7 @@ impl Inner {
 
     /// Copy the file at `r` to its checkpoint; returns the checkpoint path.
     fn write_checkpoint(&self, r: &Resolved) -> Result<PathBuf> {
-        let cp = self.checkpoint_path(&r.api);
+        let cp = self.checkpoint_path_checked(&r.api)?;
         if let Some(parent) = cp.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -953,14 +995,14 @@ impl Inner {
     /// Best effort: the file or directory itself is already gone.
     fn delete_all_checkpoints(&self, api: &ApiPath, was_dir: bool) {
         let cp = self.checkpoint_path(api);
-        if cp.is_file() {
+        if cp.is_file() && self.safe_to_touch(&cp, api) {
             if let Err(e) = fs::remove_file(&cp) {
                 tracing::warn!(path = %api, error = %e, "could not delete checkpoint");
             }
         }
         if was_dir {
             if let Some(mirror) = self.mirrored_checkpoint_dir(api) {
-                if mirror.is_dir() {
+                if mirror.is_dir() && self.safe_to_touch(&mirror, api) {
                     if let Err(e) = fs::remove_dir_all(&mirror) {
                         tracing::warn!(path = %api, error = %e, "could not delete checkpoints");
                     }
@@ -987,6 +1029,9 @@ impl Inner {
             }
         }
         for (a, b) in moves {
+            if !self.safe_to_touch(&a, from) || !self.safe_to_touch(&b, to) {
+                continue;
+            }
             let result = b
                 .parent()
                 .map(fs::create_dir_all)
@@ -995,6 +1040,30 @@ impl Inner {
             if let Err(e) = result {
                 tracing::warn!(from = %from, to = %to, error = %e, "could not move checkpoint");
             }
+        }
+    }
+}
+
+/// Whether `os` stays under the canonical directory `base` once symlinks
+/// are resolved. Canonicalizes the deepest existing ancestor (the path
+/// itself if it exists). A dangling symlink counts as outside: writing
+/// through it would create a file at its target.
+fn resolves_under(base: &Path, os: &Path) -> Result<bool> {
+    let mut p = os;
+    loop {
+        match fs::symlink_metadata(p) {
+            Ok(_) => {
+                return match p.canonicalize() {
+                    Ok(canonical) => Ok(canonical.starts_with(base)),
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+                    Err(e) => Err(Error::Io(e)),
+                };
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => match p.parent() {
+                Some(parent) => p = parent,
+                None => return Ok(false),
+            },
+            Err(e) => return Err(Error::Io(e)),
         }
     }
 }

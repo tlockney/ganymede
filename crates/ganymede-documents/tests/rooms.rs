@@ -650,3 +650,776 @@ fn a_read_only_room_refuses_edits_and_takes_the_files() {
         .unwrap();
     assert!(fx.changed);
 }
+
+/// An update nesting a value a million levels deep (two bytes a level)
+/// would overflow the stack if decoded. The room refuses it, tells the
+/// sender as it does any update it can't apply, and keeps working.
+#[test]
+fn a_deeply_nested_update_is_refused() {
+    let nb = Notebook::from_str(&fixture("code_outputs.ipynb")).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let mut update = vec![1, 1, 99, 0, 8, 1, 1, b'm', 1];
+    for _ in 0..1_000_000 {
+        update.extend([117, 1]);
+    }
+    update.extend([126, 0]);
+    let fx = room
+        .receive(1, &Message::Sync(SyncMessage::Update(update)).encode_v1())
+        .unwrap();
+    assert!(!fx.changed);
+    assert!(
+        fx.send
+            .iter()
+            .any(|(t, m)| matches!(t, Target::One(1))
+                && String::from_utf8_lossy(m).contains("conflict")),
+        "the sender is told"
+    );
+    assert_eq!(
+        room.notebook().unwrap().unwrap().to_file_string(),
+        fixture("code_outputs.ipynb")
+    );
+}
+
+/// Shared maps nested 20,000 deep (about 300 KB) would overflow the stack
+/// when deleted, which yrs does recursively, or when the room turned its
+/// document into a notebook. The room refuses the update instead, and the
+/// sender's later delete of the tree is harmless.
+#[test]
+fn deeply_nested_shared_types_are_refused() {
+    use ganymede_documents::depth::MAX_SHARED_DEPTH;
+    use ganymede_documents::yrs::{MapPrelim, MapRef, WriteTxn};
+
+    let text = fixture("empty.ipynb");
+    let nb = Notebook::from_str(&text).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let send_bytes = |room: &mut Room, update: Vec<u8>| {
+        room.receive(1, &Message::Sync(SyncMessage::Update(update)).encode_v1())
+            .unwrap()
+    };
+    let refused = |fx: &ganymede_documents::Effects| {
+        fx.send.iter().any(|(t, m)| {
+            matches!(t, Target::One(1)) && String::from_utf8_lossy(m).contains("conflict")
+        })
+    };
+
+    // All at once. (This client's own document can't delete the tree
+    // either, so it is only ever dropped.)
+    let deep = client_of(&room);
+    let sv = deep.transact().state_vector();
+    {
+        let mut txn = deep.transact_mut();
+        let meta = txn.get_or_insert_map("meta");
+        let mut m: MapRef = meta.insert(&mut txn, "metadata", MapPrelim::default());
+        for _ in 0..20_000 {
+            m = m.insert(&mut txn, "x", MapPrelim::default());
+        }
+    }
+    let fx = send_bytes(&mut room, deep.transact().encode_state_as_update_v1(&sv));
+    assert!(refused(&fx));
+    assert_eq!(room.notebook().unwrap().unwrap().to_file_string(), text);
+
+    // The sender then deletes its tree's top: the room never had it.
+    let id = deep.client_id();
+    let clock = sv.get(&id);
+    let mut delete = vec![0, 1]; // no blocks; a delete set for one client
+    for n in [id.get(), 1, u64::from(clock), 1] {
+        let mut n = n;
+        loop {
+            let byte = (n & 0x7f) as u8;
+            n >>= 7;
+            if n == 0 {
+                delete.push(byte);
+                break;
+            }
+            delete.push(byte | 0x80);
+        }
+    }
+    send_bytes(&mut room, delete);
+    assert_eq!(room.notebook().unwrap().unwrap().to_file_string(), text);
+
+    let client = client_of(&room);
+    let send = |room: &mut Room, sv: &StateVector| {
+        send_bytes(room, client.transact().encode_state_as_update_v1(sv))
+    };
+
+    // One level per update: accepted up to the limit, then refused.
+    let mut m: MapRef = {
+        let mut txn = client.transact_mut();
+        let meta = txn.get_or_insert_map("meta");
+        meta.insert(&mut txn, "metadata", MapPrelim::default())
+    };
+    let mut accepted = 2; // meta, metadata
+    let mut sv = StateVector::default();
+    for _ in 0..MAX_SHARED_DEPTH + 4 {
+        let fx = send(&mut room, &sv);
+        if refused(&fx) {
+            break;
+        }
+        sv = client.transact().state_vector();
+        let mut txn = client.transact_mut();
+        m = m.insert(&mut txn, "x", MapPrelim::default());
+        accepted += 1;
+    }
+    assert_eq!(accepted, MAX_SHARED_DEPTH + 1, "the update that went over");
+    let back = room.notebook().unwrap().unwrap();
+    let mut depth = 2;
+    let mut v = &back.metadata;
+    while let Some(next) = v.get("x").and_then(|x| x.as_object()) {
+        v = next;
+        depth += 1;
+    }
+    assert_eq!(depth, MAX_SHARED_DEPTH);
+
+    // A notebook's own shapes (cells, outputs) are far from the limit.
+    let nb = Notebook::from_str(&fixture("code_outputs.ipynb")).unwrap();
+    let room = Room::notebook_room(&nb, "c.ipynb");
+    let (_, deepest) = ganymede_documents::depth::shared_depths(&room.doc().transact());
+    assert!(
+        deepest <= ganymede_documents::depth::SCHEMA_DEPTH,
+        "{deepest}"
+    );
+}
+
+/// A deep tree that the same update also deletes, or overwrites, would be
+/// deleted (recursively) while yrs applies it: the depth is checked from
+/// the update's bytes, before anything is applied.
+#[test]
+fn a_deep_tree_created_and_deleted_in_one_update_is_refused() {
+    use ganymede_documents::yrs::{merge_updates_v1, MapPrelim, MapRef, WriteTxn};
+
+    let text = fixture("empty.ipynb");
+    let nb = Notebook::from_str(&text).unwrap();
+    let base = Room::notebook_room(&nb, "n.ipynb");
+
+    // The tree, built on a client's copy (never deleted there: that client
+    // would overflow too).
+    let deep = client_of(&base);
+    let sv = deep.transact().state_vector();
+    {
+        let mut txn = deep.transact_mut();
+        let meta = txn.get_or_insert_map("meta");
+        let mut m: MapRef = meta.insert(&mut txn, "metadata", MapPrelim::default());
+        for _ in 0..20_000 {
+            m = m.insert(&mut txn, "x", MapPrelim::default());
+        }
+    }
+    let tree = deep.transact().encode_state_as_update_v1(&sv);
+
+    fn varint(out: &mut Vec<u8>, mut n: u64) {
+        loop {
+            let byte = (n & 0x7f) as u8;
+            n >>= 7;
+            if n == 0 {
+                out.push(byte);
+                return;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+    let id = deep.client_id();
+    let top = u64::from(sv.get(&id));
+    let end = u64::from(deep.transact().state_vector().get(&id));
+
+    // Its top deleted: a delete set naming the first item.
+    let mut delete = vec![0, 1];
+    for n in [id.get(), 1, top, 1] {
+        varint(&mut delete, n);
+    }
+    // Or its key set again by a later item from the same client: a map
+    // entry whose origin is the tree's top, holding the string "y".
+    let mut overwrite = vec![1, 1];
+    varint(&mut overwrite, id.get());
+    varint(&mut overwrite, end);
+    overwrite.push(0x80 | 8); // has an origin; Any content
+    varint(&mut overwrite, id.get());
+    varint(&mut overwrite, top);
+    overwrite.extend([1, 119, 1, b'y']); // one Any: the string "y"
+    overwrite.push(0); // no deletes
+
+    for second in [delete, overwrite] {
+        let update = merge_updates_v1([tree.as_slice(), second.as_slice()]).unwrap();
+        let mut room = Room::notebook_room(&nb, "n.ipynb");
+        room.connect(1);
+        let fx = room
+            .receive(1, &Message::Sync(SyncMessage::Update(update)).encode_v1())
+            .unwrap();
+        assert!(fx
+            .send
+            .iter()
+            .any(|(t, m)| matches!(t, Target::One(1))
+                && String::from_utf8_lossy(m).contains("conflict")));
+        assert_eq!(room.notebook().unwrap().unwrap().to_file_string(), text);
+    }
+}
+
+/// An update that hangs shared types on items the room doesn't have would
+/// be held by yrs and land later at a depth nobody checked: refused.
+#[test]
+fn shared_types_on_missing_items_are_refused() {
+    use ganymede_documents::yrs::{MapPrelim, MapRef, WriteTxn};
+
+    let nb = Notebook::from_str(&fixture("empty.ipynb")).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let client = client_of(&room);
+    let sv0 = client.transact().state_vector();
+    let m: MapRef = {
+        let mut txn = client.transact_mut();
+        txn.get_or_insert_map("meta")
+            .insert(&mut txn, "metadata", MapPrelim::default())
+    };
+    let sv1 = client.transact().state_vector();
+    {
+        let mut txn = client.transact_mut();
+        m.insert(&mut txn, "x", MapPrelim::default());
+    }
+    // The second update alone: its parent is in the first, never sent.
+    let second = client.transact().encode_state_as_update_v1(&sv1);
+    let fx = room
+        .receive(1, &Message::Sync(SyncMessage::Update(second)).encode_v1())
+        .unwrap();
+    assert!(fx.send.iter().any(
+        |(t, m)| matches!(t, Target::One(1)) && String::from_utf8_lossy(m).contains("conflict")
+    ));
+    // Both, in order: fine.
+    let both = client.transact().encode_state_as_update_v1(&sv0);
+    let fx = room
+        .receive(1, &Message::Sync(SyncMessage::Update(both)).encode_v1())
+        .unwrap();
+    assert!(fx.changed);
+}
+
+/// Values inside the deepest shared type the room accepts are kept.
+#[test]
+fn values_at_the_depth_limit_are_kept() {
+    use ganymede_documents::depth::MAX_SHARED_DEPTH;
+    use ganymede_documents::yrs::{MapPrelim, MapRef, WriteTxn};
+
+    let nb = Notebook::from_str(&fixture("empty.ipynb")).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let client = client_of(&room);
+    let sv = client.transact().state_vector();
+    {
+        let mut txn = client.transact_mut();
+        let meta = txn.get_or_insert_map("meta");
+        // meta is 1, metadata 2, then x up to the limit.
+        let mut m: MapRef = meta.insert(&mut txn, "metadata", MapPrelim::default());
+        for _ in 2..MAX_SHARED_DEPTH {
+            m = m.insert(&mut txn, "x", MapPrelim::default());
+        }
+        m.insert(&mut txn, "leaf", "hello");
+    }
+    let update = client.transact().encode_state_as_update_v1(&sv);
+    let fx = room
+        .receive(1, &Message::Sync(SyncMessage::Update(update)).encode_v1())
+        .unwrap();
+    assert!(fx.changed);
+    let back = room.notebook().unwrap().unwrap();
+    let mut v = &back.metadata;
+    while let Some(next) = v.get("x").and_then(|x| x.as_object()) {
+        v = next;
+    }
+    assert_eq!(v.get("leaf"), Some(&serde_json::json!("hello")));
+}
+
+/// Hand-built v1 updates: one client's run of blocks, for shapes a yrs
+/// document can't produce.
+struct RawUpdate {
+    client: u64,
+    start: u32,
+    blocks: Vec<Vec<u8>>,
+}
+
+fn varint(out: &mut Vec<u8>, mut n: u64) {
+    loop {
+        let byte = (n & 0x7f) as u8;
+        n >>= 7;
+        if n == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+enum RawParent<'a> {
+    Root(&'a str),
+    Type(u64, u32),
+    Beside(Option<(u64, u32)>, Option<(u64, u32)>),
+}
+
+impl RawUpdate {
+    fn new(client: u64, start: u32) -> Self {
+        RawUpdate {
+            client,
+            start,
+            blocks: Vec::new(),
+        }
+    }
+
+    /// The clock of the next block.
+    fn next(&self) -> u32 {
+        self.start + self.blocks.len() as u32
+    }
+
+    /// An item of length 1: an array type, or a null.
+    fn item(&mut self, parent: RawParent, array: bool) -> (u64, u32) {
+        let id = (self.client, self.next());
+        let content = if array { 7 } else { 8 };
+        let mut b = Vec::new();
+        match parent {
+            RawParent::Root(name) => {
+                b.push(content);
+                b.push(1);
+                varint(&mut b, name.len() as u64);
+                b.extend(name.as_bytes());
+            }
+            RawParent::Type(c, k) => {
+                b.push(content);
+                b.push(0);
+                varint(&mut b, c);
+                varint(&mut b, u64::from(k));
+            }
+            RawParent::Beside(l, r) => {
+                b.push(
+                    content
+                        | if l.is_some() { 0x80 } else { 0 }
+                        | if r.is_some() { 0x40 } else { 0 },
+                );
+                for (c, k) in [l, r].into_iter().flatten() {
+                    varint(&mut b, c);
+                    varint(&mut b, u64::from(k));
+                }
+            }
+        }
+        if array {
+            b.push(0); // TYPE_REFS_ARRAY
+        } else {
+            b.extend([1, 126]); // one Any: null
+        }
+        self.blocks.push(b);
+        id
+    }
+
+    /// A garbage-collected clock.
+    fn gc(&mut self) -> (u64, u32) {
+        let id = (self.client, self.next());
+        self.blocks.push(vec![0, 1]);
+        id
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        let mut out = vec![1];
+        varint(&mut out, self.blocks.len() as u64);
+        varint(&mut out, self.client);
+        varint(&mut out, u64::from(self.start));
+        for b in &self.blocks {
+            out.extend(b);
+        }
+        out.push(0);
+        out
+    }
+}
+
+/// A chain of arrays under root `zz`, `depth` deep counting the root, with
+/// a null in the deepest; returns the deepest array and the null.
+fn raw_chain(u: &mut RawUpdate, depth: usize) -> ((u64, u32), (u64, u32)) {
+    let mut a = u.item(RawParent::Root("zz"), true);
+    for _ in 2..depth {
+        a = u.item(RawParent::Type(a.0, a.1), true);
+    }
+    let null = u.item(RawParent::Type(a.0, a.1), false);
+    (a, null)
+}
+
+fn conflict_for(fx: &ganymede_documents::Effects, conn: u64) -> bool {
+    fx.send.iter().any(|(t, m)| {
+        matches!(t, Target::One(c) if *c == conn) && String::from_utf8_lossy(m).contains("conflict")
+    })
+}
+
+/// yrs takes an item's parent from its left origin only when that is an
+/// item with a known parent; past a garbage-collected left origin it takes
+/// the right one's. The depth check follows it: an array beside a
+/// garbage-collected clock and a value deep in a chain is as deep as that
+/// value, and the update is refused.
+#[test]
+fn a_parent_through_the_right_origin_is_counted() {
+    use ganymede_documents::depth::{shared_depths, MAX_SHARED_DEPTH};
+
+    let text = fixture("empty.ipynb");
+    let nb = Notebook::from_str(&text).unwrap();
+
+    // Within the limit, the scan's depth is what yrs builds.
+    let mut ok = RawUpdate::new(7, 0);
+    let (_, null) = raw_chain(&mut ok, 4);
+    let gc = ok.gc();
+    let x = ok.item(RawParent::Beside(Some(gc), Some(null)), true);
+    ok.item(RawParent::Type(x.0, x.1), true);
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let fx = room
+        .receive(
+            1,
+            &Message::Sync(SyncMessage::Update(ok.bytes())).encode_v1(),
+        )
+        .unwrap();
+    assert!(!conflict_for(&fx, 1));
+    let (_, deepest) = shared_depths(&room.doc().transact());
+    assert_eq!(deepest, 6, "zz, 2 arrays, the deepest, x, and one under x");
+
+    // To the limit and past it.
+    let mut deep = RawUpdate::new(7, 0);
+    let (_, null) = raw_chain(&mut deep, MAX_SHARED_DEPTH);
+    let gc = deep.gc();
+    let mut x = deep.item(RawParent::Beside(Some(gc), Some(null)), true);
+    for _ in 0..9 {
+        x = deep.item(RawParent::Type(x.0, x.1), true);
+    }
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let fx = room
+        .receive(
+            1,
+            &Message::Sync(SyncMessage::Update(deep.bytes())).encode_v1(),
+        )
+        .unwrap();
+    assert!(conflict_for(&fx, 1));
+    assert_eq!(room.notebook().unwrap().unwrap().to_file_string(), text);
+}
+
+/// The same through items already in the document: a sibling that isn't a
+/// shared type could be anywhere (or garbage-collected, sending yrs to the
+/// right origin), so it counts as deep as the document goes.
+#[test]
+fn a_document_sibling_that_isnt_a_type_counts_as_deepest() {
+    use ganymede_documents::depth::MAX_SHARED_DEPTH;
+
+    let nb = Notebook::from_str(&fixture("empty.ipynb")).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    // First: a chain to the limit with a null at the bottom, and a null
+    // in a shallow array.
+    let mut first = RawUpdate::new(7, 0);
+    let (_, deep_null) = raw_chain(&mut first, MAX_SHARED_DEPTH);
+    let shallow = first.item(RawParent::Root("yy"), true);
+    let shallow_null = first.item(RawParent::Type(shallow.0, shallow.1), false);
+    let fx = room
+        .receive(
+            1,
+            &Message::Sync(SyncMessage::Update(first.bytes())).encode_v1(),
+        )
+        .unwrap();
+    assert!(!conflict_for(&fx, 1));
+    // Then: an array beside both nulls, with more under it.
+    let mut second = RawUpdate::new(7, first.next());
+    let mut x = second.item(RawParent::Beside(Some(shallow_null), Some(deep_null)), true);
+    for _ in 0..9 {
+        x = second.item(RawParent::Type(x.0, x.1), true);
+    }
+    let fx = room
+        .receive(
+            1,
+            &Message::Sync(SyncMessage::Update(second.bytes())).encode_v1(),
+        )
+        .unwrap();
+    assert!(conflict_for(&fx, 1));
+}
+
+/// yrs takes an item's parent from its right origin when the left origin
+/// is a GC block, not an item. A chain of arrays 16 deep, an `Any` value
+/// `s` in the deepest, a GC block `g`, then an array with origin `g` and
+/// right origin `s` (so inside the deepest array, at 17), and arrays
+/// chained under that: refused, whether `g` comes in the same update or
+/// is already in the document.
+#[test]
+fn a_type_beside_a_gc_block_takes_its_depth_from_the_right() {
+    use ganymede_documents::depth::MAX_SHARED_DEPTH;
+
+    fn varint(out: &mut Vec<u8>, mut n: u64) {
+        loop {
+            let byte = (n & 0x7f) as u8;
+            n >>= 7;
+            if n == 0 {
+                out.push(byte);
+                return;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+    const CLIENT: u64 = 4242;
+    // An array (shared type, type ref 0) whose parent is the type at `parent`.
+    fn array_in(b: &mut Vec<u8>, parent: u64) {
+        b.push(7);
+        varint(b, 0); // parent by id
+        varint(b, CLIENT);
+        varint(b, parent);
+        b.push(0);
+    }
+    // The blocks from clock 0: the chain under root "zz" (clocks 0..d-2,
+    // the last at depth MAX_SHARED_DEPTH), `s`, then `g` (one clock).
+    let deepest = MAX_SHARED_DEPTH as u64 - 2;
+    let mut first = Vec::new();
+    first.extend([7, 1, 2, b'z', b'z', 0]); // array in root "zz", depth 2
+    for clock in 1..=deepest {
+        array_in(&mut first, clock - 1);
+    }
+    let s = deepest + 1;
+    first.push(8); // Any content
+    varint(&mut first, 0);
+    varint(&mut first, CLIENT);
+    varint(&mut first, deepest);
+    first.extend([1, 126]); // one Any: null
+    let g = s + 1;
+    first.extend([0, 1]); // GC, one clock
+    let first_blocks = (deepest + 3) as usize;
+
+    // From clock g + 1: the array beside `g`, and 9 more under it.
+    let x = g + 1;
+    let mut second = vec![7 | 0x80 | 0x40];
+    for id in [g, s] {
+        varint(&mut second, CLIENT);
+        varint(&mut second, id);
+    }
+    second.push(0);
+    for clock in x + 1..x + 10 {
+        array_in(&mut second, clock - 1);
+    }
+    let second_blocks = 10;
+
+    let update = |blocks: usize, clock: u64, body: &[u8]| {
+        let mut u = vec![1];
+        varint(&mut u, blocks as u64);
+        varint(&mut u, CLIENT);
+        varint(&mut u, clock);
+        u.extend(body);
+        u.push(0); // no deletes
+        Message::Sync(SyncMessage::Update(u)).encode_v1()
+    };
+    let refused = |fx: &ganymede_documents::Effects| {
+        fx.send.iter().any(|(t, m)| {
+            matches!(t, Target::One(1)) && String::from_utf8_lossy(m).contains("conflict")
+        })
+    };
+    let nb = Notebook::from_str(&fixture("empty.ipynb")).unwrap();
+
+    // In one update.
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let mut both = first.clone();
+    both.extend(&second);
+    let fx = room
+        .receive(1, &update(first_blocks + second_blocks, 0, &both))
+        .unwrap();
+    assert!(refused(&fx), "one update");
+
+    // `g` already in the document.
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let fx = room.receive(1, &update(first_blocks, 0, &first)).unwrap();
+    assert!(!refused(&fx), "the chain alone is within the limit");
+    let fx = room.receive(1, &update(second_blocks, x, &second)).unwrap();
+    assert!(refused(&fx), "g in the document");
+}
+
+fn varint_into(out: &mut Vec<u8>, mut n: u64) {
+    loop {
+        let byte = (n & 0x7f) as u8;
+        n >>= 7;
+        if n == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+fn refused_to(fx: &ganymede_documents::Effects, conn: u64) -> bool {
+    fx.send.iter().any(|(t, m)| {
+        matches!(t, Target::One(c) if *c == conn) && String::from_utf8_lossy(m).contains("conflict")
+    })
+}
+
+/// An update whose clocks run past `u32::MAX`: yrs wraps the clock and
+/// reads on, the scan can't follow it. Refused, so the value nested a
+/// million deep after the wrap is never decoded.
+#[test]
+fn an_update_the_scan_cannot_follow_is_refused() {
+    let nb = Notebook::from_str(&fixture("empty.ipynb")).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let mut u = vec![1, 2];
+    varint_into(&mut u, 99);
+    varint_into(&mut u, u64::from(u32::MAX));
+    u.extend([0, 1]); // GC, one clock: the clock wraps here
+    u.extend([8, 1, 1, b'm', 1]); // Any content in root "m", one value
+    for _ in 0..1_000_000 {
+        u.extend([117, 1]);
+    }
+    u.push(126);
+    u.push(0); // no deletes
+    let fx = room
+        .receive(1, &Message::Sync(SyncMessage::Update(u)).encode_v1())
+        .unwrap();
+    assert!(refused_to(&fx, 1));
+}
+
+/// An update that re-sends an item the document already has, claiming a
+/// shallow parent for it: yrs keeps its own copy, so the depth of what
+/// hangs below it comes from the document, not the re-sent copy.
+#[test]
+fn a_resent_item_does_not_set_its_depth() {
+    use ganymede_documents::depth::MAX_SHARED_DEPTH;
+    use ganymede_documents::yrs::{merge_updates_v1, Map, MapPrelim, MapRef, WriteTxn};
+
+    let nb = Notebook::from_str(&fixture("empty.ipynb")).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let client = client_of(&room);
+    let id = client.client_id();
+    let send = |room: &mut Room, update: Vec<u8>| {
+        room.receive(1, &Message::Sync(SyncMessage::Update(update)).encode_v1())
+            .unwrap()
+    };
+
+    // `meta` (1) / metadata (2) / x ... down to MAX_SHARED_DEPTH, all
+    // accepted.
+    let mut m: MapRef = {
+        let mut txn = client.transact_mut();
+        txn.get_or_insert_map("meta")
+            .insert(&mut txn, "metadata", MapPrelim::default())
+    };
+    let mut last = 0;
+    for _ in 3..=MAX_SHARED_DEPTH {
+        last = client.transact().state_vector().get(&id);
+        let mut txn = client.transact_mut();
+        m = m.insert(&mut txn, "x", MapPrelim::default());
+    }
+    let all = client
+        .transact()
+        .encode_state_as_update_v1(&Default::default());
+    let fx = send(&mut room, all);
+    assert!(!refused_to(&fx, 1), "the chain is within the limit");
+
+    // The deepest map re-sent as a type under root "z", merged with a map
+    // nested under the real one.
+    let mut fake = vec![1, 1];
+    varint_into(&mut fake, id.get());
+    varint_into(&mut fake, u64::from(last));
+    fake.extend([7, 1, 1, b'z', 1, 0]);
+    let sv = client.transact().state_vector();
+    {
+        let mut txn = client.transact_mut();
+        m.insert(&mut txn, "x", MapPrelim::default());
+    }
+    let chain = client.transact().encode_state_as_update_v1(&sv);
+    let update = merge_updates_v1([fake.as_slice(), chain.as_slice()]).unwrap();
+    let fx = send(&mut room, update);
+    assert!(refused_to(&fx, 1), "the re-sent copy set the depth");
+}
+
+/// What yrs would hold for later (items after a skip, waiting for the
+/// skipped clocks) is never left to land unchecked: shared types behind a
+/// skip are refused, and anything else held is dropped.
+#[test]
+fn nothing_held_back_lands_unchecked() {
+    use ganymede_documents::depth::{shared_depths, MAX_SHARED_DEPTH};
+    use ganymede_documents::yrs::{Doc, Transact, Update};
+
+    const CLIENT: u64 = 99;
+    let chain = |u: &mut Vec<u8>, from: u32, to: u32| {
+        for k in from..to {
+            u.extend([7, 0]); // array, parent by id
+            varint_into(u, CLIENT);
+            varint_into(u, u64::from(k - 1));
+            u.push(0);
+        }
+    };
+    let header = |blocks: u32| {
+        let mut u = vec![1];
+        varint_into(&mut u, u64::from(blocks));
+        varint_into(&mut u, CLIENT);
+        varint_into(&mut u, 0);
+        u
+    };
+    let deepest = |room: &Room| {
+        let doc = Doc::new();
+        doc.transact_mut()
+            .apply_update(Update::decode_v1(&room.encode_state()).unwrap())
+            .unwrap();
+        let (_, deepest) = shared_depths(&doc.transact());
+        deepest
+    };
+    let nb = Notebook::from_str(&fixture("empty.ipynb")).unwrap();
+    let m = 1_000;
+
+    // A skip over clock 0, then a chain hung on it; then clock 0 itself.
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let mut u1 = header(m + 1);
+    u1.extend([10, 1]); // skip one clock
+    chain(&mut u1, 1, m + 1);
+    u1.push(0);
+    let fx = room
+        .receive(1, &Message::Sync(SyncMessage::Update(u1)).encode_v1())
+        .unwrap();
+    assert!(refused_to(&fx, 1), "a chain behind a skip");
+    let mut u2 = header(1);
+    u2.extend([7, 1, 2, b'z', b'z', 0, 0]); // an array in root "zz"
+    room.receive(1, &Message::Sync(SyncMessage::Update(u2)).encode_v1())
+        .unwrap();
+    assert!(deepest(&room) <= MAX_SHARED_DEPTH);
+
+    // A skip, then a plain value: no types, so it goes through, but yrs's
+    // hold on it is dropped. The skipped clocks then arrive as a chain:
+    // checked on its own, and refused.
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let mut u1 = header(2);
+    u1.push(10);
+    varint_into(&mut u1, u64::from(m));
+    u1.extend([8, 1, 2, b'z', b'z', 1, 126, 0]); // null in root "zz"
+    room.receive(1, &Message::Sync(SyncMessage::Update(u1)).encode_v1())
+        .unwrap();
+    let txn = room.doc().transact();
+    let held = ganymede_documents::yrs::ReadTxn::store(&txn).pending_update();
+    assert!(held.is_none_or(|p| p.update.is_empty()), "nothing held");
+    drop(txn);
+    let mut u2 = header(m);
+    u2.extend([7, 1, 2, b'z', b'z', 0]);
+    chain(&mut u2, 1, m);
+    u2.push(0);
+    let fx = room
+        .receive(1, &Message::Sync(SyncMessage::Update(u2)).encode_v1())
+        .unwrap();
+    assert!(refused_to(&fx, 1), "the chain filling the gap");
+    assert!(deepest(&room) <= MAX_SHARED_DEPTH);
+}
+
+/// The backstop for what yrs holds: a plain value whose origin is an item
+/// the room doesn't have is held by yrs, waiting for that item. It adds no
+/// shared types, so the depth check lets it through, and the room drops
+/// the hold.
+#[test]
+fn a_held_update_is_dropped() {
+    use ganymede_documents::yrs::{ReadTxn, Transact};
+
+    let nb = Notebook::from_str(&fixture("empty.ipynb")).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let mut u = vec![1, 1];
+    varint_into(&mut u, 99); // client 99
+    varint_into(&mut u, 0); // clock 0
+    u.push(0x80 | 8); // has an origin; Any content
+    varint_into(&mut u, 77); // origin: client 77, clock 5, which the room lacks
+    varint_into(&mut u, 5);
+    u.extend([1, 126, 0]); // one Any: null; no deletes
+    room.receive(1, &Message::Sync(SyncMessage::Update(u)).encode_v1())
+        .unwrap();
+    let txn = room.doc().transact();
+    let held = txn.store().pending_update();
+    assert!(held.is_none_or(|p| p.update.is_empty()), "nothing held");
+}

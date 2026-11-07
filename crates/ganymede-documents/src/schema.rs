@@ -549,16 +549,36 @@ fn strip_runtime(mut cell: Value) -> Value {
 }
 
 /// A shared value as JSON, with numbers as described in the module docs.
+///
+/// A room refuses updates that nest shared types deeper than
+/// [`crate::depth::MAX_SHARED_DEPTH`]; past that depth they come out as
+/// `null` all the same, so a document built some other way can't overflow
+/// the stack here. XML types, which no notebook uses and whose yrs
+/// conversion recurses with no limit, come out as `null` too.
 pub fn out_to_json<T: ReadTxn>(txn: &T, out: &Out) -> Value {
+    // One more than the room allows, for the values inside its deepest
+    // shared types.
+    out_to_json_within(txn, out, crate::depth::MAX_SHARED_DEPTH + 1)
+}
+
+fn out_to_json_within<T: ReadTxn>(txn: &T, out: &Out, depth: usize) -> Value {
+    let Some(depth) = depth.checked_sub(1) else {
+        return Value::Null;
+    };
     match out {
         Out::Any(any) => any_to_json(any),
         Out::YText(t) => Value::String(t.get_string(txn)),
-        Out::YArray(a) => Value::Array(a.iter(txn).map(|o| out_to_json(txn, &o)).collect()),
-        Out::YMap(m) => Value::Object(
-            m.iter(txn)
-                .map(|(k, v)| (k.to_string(), out_to_json(txn, &v)))
+        Out::YArray(a) => Value::Array(
+            a.iter(txn)
+                .map(|o| out_to_json_within(txn, &o, depth))
                 .collect(),
         ),
+        Out::YMap(m) => Value::Object(
+            m.iter(txn)
+                .map(|(k, v)| (k.to_string(), out_to_json_within(txn, &v, depth)))
+                .collect(),
+        ),
+        Out::YXmlElement(_) | Out::YXmlFragment(_) | Out::YXmlText(_) => Value::Null,
         other => any_to_json(&other.to_json(txn)),
     }
 }

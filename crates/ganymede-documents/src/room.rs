@@ -103,6 +103,13 @@ pub struct Room {
     content_changed: Arc<AtomicBool>,
     /// Another process owns the file (#272): see [`Room::set_read_only`].
     read_only: bool,
+    /// The depth of each nested shared type, by the id of the item holding
+    /// it, and the deepest: measured when the room is loaded and again when
+    /// an update hangs on one it doesn't know (the server's own edits add
+    /// some), and kept up from each client update in between. See
+    /// [`crate::depth`].
+    depths: HashMap<(u64, u32), usize>,
+    shared_depth: usize,
 }
 
 impl Room {
@@ -124,6 +131,7 @@ impl Room {
         }
         room.drain();
         room.content_changed.store(false, Ordering::Relaxed);
+        room.measure_depths();
         room
     }
 
@@ -163,7 +171,51 @@ impl Room {
             baseline: None,
             content_changed,
             read_only: false,
+            depths: HashMap::new(),
+            shared_depth: 0,
         }
+    }
+
+    /// How deep the shared types `checked` creates would sit. An item in
+    /// the document that the update hangs on is looked up in the measured
+    /// depths; when one holding a shared type isn't there (the server added
+    /// it since), the room measures again once. A sibling that isn't a
+    /// shared type has no depth of its own, so the deepest the document
+    /// goes stands in, and the result can overstate.
+    fn type_depths(
+        &mut self,
+        checked: &crate::depth::Checked,
+    ) -> Result<crate::depth::TypeDepths, crate::depth::Unresolved> {
+        use crate::depth::LiveRef;
+        let sv = self.doc().transact().state_vector();
+        let mut remeasured = false;
+        loop {
+            let bound = self.shared_depth.max(crate::depth::SCHEMA_DEPTH);
+            let mut type_missed = false;
+            let depths = &self.depths;
+            let result = checked.type_depths(&sv, bound, |r| match r {
+                LiveRef::Type(c, k) => {
+                    let d = depths.get(&(c, k)).copied();
+                    type_missed |= d.is_none();
+                    d
+                }
+                // A sibling that holds a shared type: the parent is one up.
+                LiveRef::Beside(c, k) => depths.get(&(c, k)).map(|d| d - 1),
+            });
+            if type_missed && !remeasured {
+                self.measure_depths();
+                remeasured = true;
+                continue;
+            }
+            return result;
+        }
+    }
+
+    /// Measure the depth of every shared type in the document.
+    fn measure_depths(&mut self) {
+        let (depths, deepest) = crate::depth::shared_depths(&self.doc().transact());
+        self.depths = depths;
+        self.shared_depth = deepest;
     }
 
     /// The underlying document.
@@ -275,14 +327,65 @@ impl Room {
             }
             Message::Sync(SyncMessage::SyncStep2(bytes))
             | Message::Sync(SyncMessage::Update(bytes)) => {
-                let applied = Update::decode_v1(&bytes)
-                    .map_err(|e| e.to_string())
-                    .and_then(|u| {
-                        self.doc()
-                            .transact_mut()
-                            .apply_update(u)
-                            .map_err(|e| e.to_string())
-                    });
+                // Checked first, without applying: decoding values nested
+                // deeper would overflow the stack, and so would deleting
+                // shared types nested deeper, which can happen during the
+                // apply itself.
+                let checked = crate::depth::check(&bytes);
+                let mut depths = None;
+                let refused = if checked.malformed {
+                    Some("an update the room can't read".to_string())
+                } else if checked.too_deep {
+                    Some(format!(
+                        "values nested deeper than {} levels",
+                        crate::depth::MAX_DEPTH
+                    ))
+                } else if checked.adds_types() {
+                    match self.type_depths(&checked) {
+                        Ok(d) if d.deepest <= crate::depth::MAX_SHARED_DEPTH => {
+                            depths = Some(d);
+                            None
+                        }
+                        Ok(_) => Some(format!(
+                            "shared types nested deeper than {} levels",
+                            crate::depth::MAX_SHARED_DEPTH
+                        )),
+                        Err(crate::depth::Unresolved::Missing) => {
+                            Some("shared types hung on items the room doesn't have".to_string())
+                        }
+                    }
+                } else {
+                    None
+                };
+                let applied = match refused {
+                    Some(e) => Err(e),
+                    None => Update::decode_v1(&bytes).map_err(|e| e.to_string()),
+                }
+                .and_then(|u| {
+                    let mut txn = self.doc().transact_mut();
+                    txn.apply_update(u).map_err(|e| e.to_string())?;
+                    // The checks above refuse what yrs would hold for later.
+                    // Should it hold something all the same, drop it: it
+                    // would be integrated by a later update, unchecked.
+                    if let Some(p) = yrs::WriteTxn::store_mut(&mut txn).pending_update_mut() {
+                        if !p.update.is_empty() {
+                            tracing::warn!("dropping a held update the depth check didn't foresee");
+                            p.update = Update::new();
+                        }
+                    }
+                    Ok(())
+                });
+                match depths {
+                    Some(d) if applied.is_ok() && !d.estimated => {
+                        for (client, clock, depth) in d.types {
+                            self.depths.insert((client, clock), depth);
+                        }
+                        self.shared_depth = self.shared_depth.max(d.deepest);
+                    }
+                    // A depth stood in for one unknown: measure for real.
+                    Some(_) if applied.is_ok() => self.measure_depths(),
+                    _ => {}
+                }
                 if let Err(e) = applied {
                     // jupyter-collaboration tells the client, which offers
                     // to reload.

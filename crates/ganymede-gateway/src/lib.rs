@@ -264,9 +264,10 @@ impl KernelProcess for RemoteKernel {
         let req = self
             .inner
             .request(reqwest::Method::DELETE, &self.path(""))?;
-        let result = self.inner.send(req).await.map(drop);
+        // Still alive on failure, so dropping the handle tries again.
+        self.inner.send(req).await?;
         let _ = self.alive_tx.send(false);
-        result
+        Ok(())
     }
 
     async fn wait(&self) -> Option<i32> {
@@ -285,10 +286,11 @@ impl KernelProcess for RemoteKernel {
         if !*self.alive.borrow() {
             return;
         }
-        let _ = self.alive_tx.send(false);
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(kernel = %self.id, "no runtime to delete the remote kernel; it is left running");
             return;
         };
+        let _ = self.alive_tx.send(false);
         if let Ok(req) = self.inner.request(reqwest::Method::DELETE, &self.path("")) {
             let inner = self.inner.clone();
             handle.spawn(async move {
@@ -299,7 +301,13 @@ impl KernelProcess for RemoteKernel {
 }
 
 impl Drop for RemoteKernel {
+    /// The last handle to a remote kernel is gone: delete it there. A
+    /// shutdown sends the kernel only a `shutdown_request` (it has no pid
+    /// to wait on or kill), and a crash or a restart drops the handle
+    /// without one; a remote `jupyter_server` would restart the kernel
+    /// or keep it, as its `GatewayKernelManager` expects a `DELETE`.
     fn drop(&mut self) {
+        self.kill_now();
         let mut kernels = self.inner.kernels.lock().unwrap();
         kernels.retain(|_, id| *id != self.id);
     }
