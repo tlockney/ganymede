@@ -400,7 +400,7 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
-          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin, x86_64-apple-darwin, aarch64-apple-ios, aarch64-apple-ios-sim' || '' }}
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin, aarch64-apple-ios, aarch64-apple-ios-sim' || '' }}
       - if: needs.changes.outputs.code != 'false'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - if: needs.changes.outputs.code != 'false'
