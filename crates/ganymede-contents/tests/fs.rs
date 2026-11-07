@@ -686,6 +686,81 @@ async fn path_traversal_rejected() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn checkpoint_symlinks_out_of_root_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let (dir, c) = setup();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("victim.txt"), "victim").unwrap();
+    fs::write(outside.path().join("secret.txt"), "secret").unwrap();
+    let cps = dir.path().join(DEFAULT_CHECKPOINT_DIR);
+    fs::create_dir(&cps).unwrap();
+
+    // A checkpoint file that links to a file outside the root: neither
+    // written through nor restored from.
+    symlink(
+        outside.path().join("victim.txt"),
+        cps.join("a-checkpoint.ipynb"),
+    )
+    .unwrap();
+    c.save("a.ipynb", SaveRequest::notebook(sample_notebook()))
+        .await
+        .unwrap();
+    assert_eq!(status(&c.create_checkpoint("a.ipynb").await), 404);
+    assert_eq!(status(&c.list_checkpoints("a.ipynb").await), 404);
+    assert_eq!(
+        status(&c.restore_checkpoint("a.ipynb", CHECKPOINT_ID).await),
+        404
+    );
+    assert_eq!(
+        fs::read_to_string(outside.path().join("victim.txt")).unwrap(),
+        "victim"
+    );
+
+    // A dangling link: the first save's automatic checkpoint creates
+    // nothing at its target.
+    symlink(
+        outside.path().join("created.txt"),
+        cps.join("b-checkpoint.ipynb"),
+    )
+    .unwrap();
+    c.save("b.ipynb", SaveRequest::notebook(sample_notebook()))
+        .await
+        .unwrap();
+    assert!(!outside.path().join("created.txt").exists());
+
+    // Restoring from a checkpoint that links to a secret copies nothing in.
+    symlink(
+        outside.path().join("secret.txt"),
+        cps.join("c-checkpoint.txt"),
+    )
+    .unwrap();
+    c.save("c.txt", SaveRequest::text("mine")).await.unwrap();
+    assert_eq!(
+        status(&c.restore_checkpoint("c.txt", CHECKPOINT_ID).await),
+        404
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("c.txt")).unwrap(),
+        "mine"
+    );
+
+    // The checkpoint folder itself linking out of the root.
+    fs::create_dir(dir.path().join("d")).unwrap();
+    symlink(
+        outside.path(),
+        dir.path().join("d").join(DEFAULT_CHECKPOINT_DIR),
+    )
+    .unwrap();
+    c.save("d/n.ipynb", SaveRequest::notebook(sample_notebook()))
+        .await
+        .unwrap();
+    assert_eq!(status(&c.create_checkpoint("d/n.ipynb").await), 404);
+    assert!(!outside.path().join("n-checkpoint.ipynb").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn symlink_escaping_root_rejected() {
     use std::os::unix::fs::symlink;
 
