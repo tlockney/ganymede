@@ -8,6 +8,10 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWr
 /// the relay allocate without bound.
 pub const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 
+/// Largest header block accepted from a server, so a server that never
+/// ends a header line cannot make the relay buffer it without bound.
+pub const MAX_HEADER: usize = 8 * 1024;
+
 /// Writes one message with its header.
 pub async fn write_message<W: AsyncWrite + Unpin>(w: &mut W, body: &str) -> std::io::Result<()> {
     let header = format!("Content-Length: {}\r\n\r\n", body.len());
@@ -23,10 +27,22 @@ pub async fn read_message<R: AsyncBufRead + Unpin>(r: &mut R) -> std::io::Result
     loop {
         let mut length: Option<usize> = None;
         let mut saw_header = false;
+        let mut header_bytes = 0;
         loop {
             let mut line = String::new();
-            if r.read_line(&mut line).await? == 0 {
+            let room = MAX_HEADER - header_bytes;
+            let n = (&mut *r).take(room as u64 + 1).read_line(&mut line).await?;
+            if n == 0 {
                 return Ok(None);
+            }
+            if saw_header || !line.trim().is_empty() {
+                header_bytes += n;
+            }
+            if header_bytes > MAX_HEADER {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("message header longer than {MAX_HEADER} bytes"),
+                ));
             }
             let line = line.trim();
             if line.is_empty() {
@@ -87,5 +103,30 @@ mod tests {
         assert!(read_message(&mut r).await.is_err());
         let mut r = tokio::io::BufReader::new(&b"Content-Length: 99999999999\r\n\r\n"[..]);
         assert!(read_message(&mut r).await.is_err());
+    }
+
+    /// A header line, or block, that never ends is refused once it passes
+    /// `MAX_HEADER`, instead of being buffered without bound.
+    #[tokio::test]
+    async fn an_endless_header_is_an_error() {
+        let long = vec![b'x'; MAX_HEADER * 4];
+        let mut r = tokio::io::BufReader::new(&long[..]);
+        let err = read_message(&mut r).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+
+        let mut many = Vec::new();
+        for _ in 0..MAX_HEADER {
+            many.extend_from_slice(b"X-A: 1\r\n");
+        }
+        let mut r = tokio::io::BufReader::new(&many[..]);
+        assert!(read_message(&mut r).await.is_err());
+
+        // A header just under the limit still reads, and so do blank
+        // lines between messages, however many.
+        let mut ok = vec![b'\n'; MAX_HEADER * 2];
+        ok.extend_from_slice(format!("X-Pad: {}\r\n", "p".repeat(MAX_HEADER - 64)).as_bytes());
+        ok.extend_from_slice(b"Content-Length: 2\r\n\r\n{}");
+        let mut r = tokio::io::BufReader::new(&ok[..]);
+        assert_eq!(read_message(&mut r).await.unwrap().unwrap(), "{}");
     }
 }
