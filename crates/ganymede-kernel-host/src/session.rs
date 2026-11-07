@@ -422,10 +422,13 @@ impl KernelSession {
         // only `kill` to end it, the remote's DELETE, and gets it now
         // rather than when its handle is dropped. One that can't be killed
         // (an in-process kernel) says so, and is left at the request.
+        // Bounded by `grace`, as the rest of a shutdown is: a remote that
+        // accepts the DELETE and then stalls doesn't hold it up.
         if let Some(p) = self.inner.process.as_ref().filter(|p| p.pid().is_none()) {
-            match p.kill().await {
-                Ok(()) | Err(Error::Unsupported(_)) => {}
-                Err(e) => tracing::warn!("could not end the kernel: {e}"),
+            match tokio::time::timeout(grace, p.kill()).await {
+                Ok(Ok(()) | Err(Error::Unsupported(_))) => {}
+                Ok(Err(e)) => tracing::warn!("could not end the kernel: {e}"),
+                Err(_) => tracing::warn!("kernel did not end within {grace:?}"),
             }
         }
         // Only a process we own can be waited on or killed. An attached
@@ -1133,6 +1136,10 @@ mod tests {
         }
         async fn kill(&self) -> Result<()> {
             self.record("kill");
+            if self.exits_on == "never" {
+                // A remote that accepts the DELETE and never answers.
+                std::future::pending::<()>().await;
+            }
             Ok(())
         }
         async fn wait(&self) -> Option<i32> {
@@ -1277,6 +1284,17 @@ mod tests {
         let (s, p) = session_with("", None);
         s.shutdown(false, Duration::from_millis(100)).await.unwrap();
         assert_eq!(*p.calls.lock().unwrap(), vec!["kill"]);
+        assert!(!s.is_alive());
+
+        // A kill that never finishes doesn't hold the shutdown past grace.
+        let (s, _) = session_with("never", None);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            s.shutdown(false, Duration::from_millis(100)),
+        )
+        .await
+        .expect("shutdown bounded by grace")
+        .unwrap();
         assert!(!s.is_alive());
     }
 

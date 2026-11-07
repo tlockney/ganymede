@@ -264,9 +264,10 @@ impl KernelProcess for RemoteKernel {
         let req = self
             .inner
             .request(reqwest::Method::DELETE, &self.path(""))?;
-        let result = self.inner.send(req).await.map(drop);
+        // Still alive on failure, so dropping the handle tries again.
+        self.inner.send(req).await?;
         let _ = self.alive_tx.send(false);
-        result
+        Ok(())
     }
 
     async fn wait(&self) -> Option<i32> {
