@@ -121,8 +121,8 @@ number. Locally: `cargo llvm-cov --workspace --open`.
   can affect ganymede-ffi (the script's `ffi` output: anything but
   `ganymede-cli`, `ganymede-engine`, the test and tooling directories,
   and other scripts and workflows), and both `ffi` cells build without
-  LTO. The release profile build is `release.yml`'s, on every push to
-  `main` and every tag.
+  LTO except on the weekly schedule. The release profile build is also
+  `release.yml`'s, on every push to `main` and every tag.
 - **Actions** are pinned by full commit SHA, with the version in a
   comment. Let Dependabot move them; don't hand-edit a tag back in.
 - **Permissions.** Every workflow starts from `contents: read` (or

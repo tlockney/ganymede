@@ -402,8 +402,9 @@ jobs:
     timeout-minutes: 60
     env:
       BUILD: ${{ needs.changes.outputs.code != 'false' && (matrix.os != 'macos-latest' || needs.changes.outputs.ffi != 'false') }}
-      CARGO_PROFILE_RELEASE_LTO: "off"
-      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      # The weekly scheduled run keeps Cargo.toml's release profile (#457).
+      CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'schedule' && 'thin' || 'off' }}
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'schedule' && '1' || '16' }}
     steps:
       - if: env.BUILD != 'true'
         run: echo "Nothing ganymede-ffi builds from changed, so nothing to build (#418, #457)."
@@ -423,7 +424,7 @@ jobs:
       - if: env.BUILD == 'true' && matrix.os == 'ubuntu-latest'
         name: ganymede-cli and ganymede-engine stay out of ganymede-ffi
         run: |
-          if cargo tree --locked -p ganymede-ffi --all-features -e normal,build --prefix none | grep -E '^ganymede-(cli|engine) '; then
+          if cargo tree --locked -p ganymede-ffi --all-features --target all -e normal,build --prefix none | grep -E '^ganymede-(cli|engine) '; then
             echo "::error::ganymede-ffi now depends on a crate scripts/ci-changes.sh treats as outside it; update the script"
             exit 1
           fi
