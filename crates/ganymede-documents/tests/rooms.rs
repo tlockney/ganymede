@@ -1398,3 +1398,28 @@ fn nothing_held_back_lands_unchecked() {
     assert!(refused_to(&fx, 1), "the chain filling the gap");
     assert!(deepest(&room) <= MAX_SHARED_DEPTH);
 }
+
+/// The backstop for what yrs holds: a plain value whose origin is an item
+/// the room doesn't have is held by yrs, waiting for that item. It adds no
+/// shared types, so the depth check lets it through, and the room drops
+/// the hold.
+#[test]
+fn a_held_update_is_dropped() {
+    use ganymede_documents::yrs::{ReadTxn, Transact};
+
+    let nb = Notebook::from_str(&fixture("empty.ipynb")).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let mut u = vec![1, 1];
+    varint_into(&mut u, 99); // client 99
+    varint_into(&mut u, 0); // clock 0
+    u.push(0x80 | 8); // has an origin; Any content
+    varint_into(&mut u, 77); // origin: client 77, clock 5, which the room lacks
+    varint_into(&mut u, 5);
+    u.extend([1, 126, 0]); // one Any: null; no deletes
+    room.receive(1, &Message::Sync(SyncMessage::Update(u)).encode_v1())
+        .unwrap();
+    let txn = room.doc().transact();
+    let held = txn.store().pending_update();
+    assert!(held.is_none_or(|p| p.update.is_empty()), "nothing held");
+}

@@ -160,9 +160,12 @@ impl Checked {
         let bound = bound.max(1);
         let mut out = TypeDepths::default();
 
-        // yrs can't integrate past a gap: what follows a skip in a client's
-        // run waits until the skipped clocks arrive, and then lands at a
-        // depth nobody checked.
+        // Items after a skip in a client's run are refused. yrs 0.28 does
+        // integrate one after a gap when nothing it names is missing (the
+        // gap stays a hole), and holds one that names something missing,
+        // to land later at a depth nobody checked. Telling the two apart
+        // isn't worth it: a client's own updates have no skips, so this
+        // refuses more than it must, never less.
         for idxs in by_client.values() {
             let gap = idxs.iter().position(|&i| self.items[i].skip);
             if gap.is_some_and(|g| g + 1 < idxs.len()) {
