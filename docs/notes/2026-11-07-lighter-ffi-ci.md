@@ -17,6 +17,6 @@ push to main.
 ganymede-ffi's dependency tree changed (ganymede-cli, ganymede-engine,
 e2e, evals, plugins, validation, container, other scripts and
 workflows). Then the macOS cell runs its one step on an ubuntu runner
-and frees the macOS runner. The ubuntu cell checks with `cargo tree --target all`
-that ganymede-ffi still doesn't depend on ganymede-cli or
-ganymede-engine, so the list can't go stale silently.
+and frees the macOS runner. The ubuntu cell checks with
+`cargo tree --target all` that ganymede-ffi still doesn't depend on
+ganymede-cli or ganymede-engine, so the list can't go stale silently.
