@@ -2972,6 +2972,88 @@ fn quick_cleanup_collab(root: &std::path::Path) -> Arc<ganymede_server::collab::
     )
 }
 
+/// A room's sockets are pinged; a client that answers stays, and one
+/// whose connection went half-open (it reads and sends nothing) is
+/// dropped, so its room can retire (#436). A message larger than
+/// `max_body_size` closes the socket.
+#[tokio::test]
+async fn rooms_ping_clients_and_drop_silent_ones() {
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    st.max_body_size = 64 * 1024;
+    let collab = Arc::new(
+        ganymede_server::collab::Collab::new(ganymede_contents::FileIds::in_memory(), None)
+            .with_cleanup_delay(Duration::from_millis(50))
+            .with_heartbeat(Duration::from_millis(50), Duration::from_millis(300)),
+    );
+    st.collab = collab.clone();
+    let app = build_router(st);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let connect = |room: &str| {
+        let mut req = format!("ws://{addr}/api/collaboration/room/{room}")
+            .into_client_request()
+            .unwrap();
+        req.headers_mut()
+            .insert("Authorization", format!("token {TOKEN}").parse().unwrap());
+        tokio_tungstenite::connect_async(req)
+    };
+
+    // Reading answers pings: the client stays well past the idle timeout.
+    let (mut live, _) = connect("Test:live").await.unwrap();
+    let start = std::time::Instant::now();
+    let mut pings = 0;
+    while start.elapsed() < Duration::from_millis(900) {
+        match tokio::time::timeout(Duration::from_millis(100), live.next()).await {
+            Ok(Some(Ok(TMsg::Ping(_)))) => pings += 1,
+            Ok(Some(Ok(TMsg::Close(f)))) => panic!("a live client was closed: {f:?}"),
+            Ok(None | Some(Err(_))) => panic!("a live client was dropped"),
+            _ => {}
+        }
+    }
+    assert!(pings >= 3, "{pings} pings");
+    assert_eq!(collab.open_rooms(), 1);
+
+    // A client that never reads never answers: dropped, and its room retires.
+    let (silent, _) = connect("Test:silent").await.unwrap();
+    for _ in 0..20 {
+        if collab.open_rooms() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(collab.open_rooms(), 2);
+    let mut gone = false;
+    for _ in 0..100 {
+        if collab.open_rooms() == 1 {
+            gone = true;
+            break;
+        }
+        // Keep answering on the live one meanwhile.
+        let _ = tokio::time::timeout(Duration::from_millis(20), live.next()).await;
+    }
+    assert!(gone, "the silent client's room is still open");
+    drop(silent);
+
+    // Past max_body_size, the server closes the socket.
+    let _ = live.send(TMsg::Binary(vec![0u8; 128 * 1024].into())).await;
+    let closed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match live.next().await {
+                Some(Ok(TMsg::Close(_))) | None | Some(Err(_)) => break,
+                _ => {}
+            }
+        }
+    })
+    .await;
+    assert!(
+        closed.is_ok(),
+        "an oversized message didn't close the socket"
+    );
+}
+
 /// A room on `fail.ipynb` (cell `a`, "keep") whose first `fail` saves of
 /// its own edit fail, with one client that has typed "room: " into the
 /// cell. Returns the client's socket with the file and the count of

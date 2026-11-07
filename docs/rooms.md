@@ -61,6 +61,24 @@ A delete through the contents API closes the room's clients with code
 4404, the code a reconnect gets for the dropped file, and the room
 doesn't write the file back.
 
+## Connections
+
+The server pings each room's websocket every 30 seconds and drops a
+client it hasn't heard from, not even a pong, for 90 seconds, so a
+connection left half-open by a sleeping laptop or a lost network doesn't
+keep its room open. A client that falls 10,000 messages behind is closed
+with code 1008: the kernel channels drop output past that point, but a
+room can't skip an update; a close the room sends (4404 for a deleted
+file) still reaches it. A message larger than `max_body_size` closes the
+socket. A write to a client may take 30 seconds plus one more for every
+64 KiB, and a write that long counts as hearing from the client, so a
+large notebook's first sync gets through a slow link. A client
+reconnects and resyncs as after any drop.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
 ## File ids
 
 A room is named for its file's id, not its path. Ids are kept in
