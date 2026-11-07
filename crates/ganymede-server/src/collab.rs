@@ -517,6 +517,14 @@ async fn serve_socket(
 ) {
     let collab = state.collab.clone();
     let parts: Vec<&str> = room_id.splitn(3, ':').collect();
+    // Read before the path lookup, which runs without the rooms lock: a
+    // rename or delete meanwhile makes the path stale, so it is looked up
+    // again before the room opens, as `send_to_notebook_room` does.
+    let moves = collab.moves.load(Ordering::SeqCst);
+    let file_id = match parts[..] {
+        [_, _, id] => Some(id),
+        _ => None,
+    };
     let doc = if let [format, kind, file_id] = parts[..] {
         if session_id
             .as_deref()
@@ -552,11 +560,18 @@ async fn serve_socket(
 
     let conn = collab.next_conn.fetch_add(1, Ordering::Relaxed);
     let (out_tx, mut out_rx, full) = ClientTx::new(state.max_body_size);
-    let room = {
-        let mut rooms = collab.rooms.lock().expect("rooms");
-        let tx = open_room(&collab, &mut rooms, &state.contents, &room_id, doc);
-        let _ = tx.send(Cmd::Join(conn, out_tx));
-        tx
+    let Some(room) = join_room(
+        &collab,
+        &state.contents,
+        &room_id,
+        file_id.zip(doc).map(|(id, path)| (id, path, moves)),
+        Cmd::Join(conn, out_tx),
+    )
+    .await
+    else {
+        let id = file_id.unwrap_or_default();
+        close(&mut socket, 4404, format!("Unknown file id {id}")).await;
+        return;
     };
     tracing::debug!(room = %room_id, conn, "collaboration client connected");
 
@@ -605,6 +620,40 @@ async fn serve_socket(
         }
     }
     let _ = room.send(Cmd::Leave(conn));
+}
+
+/// Send `join` to `room_id`, opening the room if needed, and return its
+/// sender. A notebook room comes with `(file_id, path, moves)`: the path
+/// looked up after reading `moves`. A rename or delete since then makes
+/// the path stale, so it is looked up again rather than opening the room
+/// on a file that has moved. `None` when the file id is gone.
+async fn join_room(
+    collab: &Arc<Collab>,
+    contents: &Arc<dyn Contents>,
+    room_id: &str,
+    mut doc: Option<(&str, String, u64)>,
+    join: Cmd,
+) -> Option<mpsc::UnboundedSender<Cmd>> {
+    loop {
+        if let Some((id, _, moves)) = &mut doc {
+            let now = collab.moves.load(Ordering::SeqCst);
+            if now != *moves {
+                let id = *id;
+                let path = collab.path_of(id).await?;
+                doc = Some((id, path, now));
+            }
+        }
+        let mut rooms = collab.rooms.lock().expect("rooms");
+        if let Some((_, _, moves)) = &doc {
+            if collab.moves.load(Ordering::SeqCst) != *moves {
+                continue;
+            }
+        }
+        let path = doc.map(|(_, path, _)| path);
+        let tx = open_room(collab, &mut rooms, contents, room_id, path);
+        let _ = tx.send(join);
+        return Some(tx);
+    }
 }
 
 /// The room's task, started if it isn't running. Call with `rooms` locked,
@@ -1613,5 +1662,42 @@ mod queue_tests {
         assert_eq!(write_timeout(100), WRITE_TIMEOUT);
         let sixty_mb = 60 * 1024 * 1024;
         assert!(write_timeout(sixty_mb) >= WRITE_TIMEOUT + Duration::from_secs(900));
+    }
+}
+
+#[cfg(test)]
+mod join_tests {
+    use super::*;
+
+    /// A join that looked its path up before a rename opens the room on
+    /// the new path, not on the old one, which no longer loads.
+    #[tokio::test]
+    async fn a_join_after_a_rename_opens_the_new_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let nb = r#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
+        std::fs::write(dir.path().join("a.ipynb"), nb).unwrap();
+        let contents: Arc<dyn Contents> =
+            Arc::new(ganymede_contents::FsContents::new(dir.path(), Default::default()).unwrap());
+        let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
+        let (id, _) = collab.index("a.ipynb").await;
+        // The join read `moves` and looked up the path, then the rename.
+        let moves = collab.moves.load(Ordering::SeqCst);
+        let stale = collab.path_of(&id).await.unwrap();
+        std::fs::rename(dir.path().join("a.ipynb"), dir.path().join("b.ipynb")).unwrap();
+        collab.moved("a.ipynb", "b.ipynb").await;
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let cmd = Cmd::With(Box::new(move |_: &mut Room| {
+            let _ = tx.send(());
+            Default::default()
+        }));
+        let room_id = format!("json:notebook:{id}");
+        join_room(&collab, &contents, &room_id, Some((&id, stale, moves)), cmd)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), rx)
+            .await
+            .unwrap()
+            .expect("the room loaded the renamed file");
     }
 }
