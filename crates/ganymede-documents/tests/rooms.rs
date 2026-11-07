@@ -1320,3 +1320,81 @@ fn a_resent_item_does_not_set_its_depth() {
     let fx = send(&mut room, update);
     assert!(refused_to(&fx, 1), "the re-sent copy set the depth");
 }
+
+/// What yrs would hold for later (items after a skip, waiting for the
+/// skipped clocks) is never left to land unchecked: shared types behind a
+/// skip are refused, and anything else held is dropped.
+#[test]
+fn nothing_held_back_lands_unchecked() {
+    use ganymede_documents::depth::{shared_depths, MAX_SHARED_DEPTH};
+    use ganymede_documents::yrs::{Doc, Transact, Update};
+
+    const CLIENT: u64 = 99;
+    let chain = |u: &mut Vec<u8>, from: u32, to: u32| {
+        for k in from..to {
+            u.extend([7, 0]); // array, parent by id
+            varint_into(u, CLIENT);
+            varint_into(u, u64::from(k - 1));
+            u.push(0);
+        }
+    };
+    let header = |blocks: u32| {
+        let mut u = vec![1];
+        varint_into(&mut u, u64::from(blocks));
+        varint_into(&mut u, CLIENT);
+        varint_into(&mut u, 0);
+        u
+    };
+    let deepest = |room: &Room| {
+        let doc = Doc::new();
+        doc.transact_mut()
+            .apply_update(Update::decode_v1(&room.encode_state()).unwrap())
+            .unwrap();
+        let (_, deepest) = shared_depths(&doc.transact());
+        deepest
+    };
+    let nb = Notebook::from_str(&fixture("empty.ipynb")).unwrap();
+    let m = 1_000;
+
+    // A skip over clock 0, then a chain hung on it; then clock 0 itself.
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let mut u1 = header(m + 1);
+    u1.extend([10, 1]); // skip one clock
+    chain(&mut u1, 1, m + 1);
+    u1.push(0);
+    let fx = room
+        .receive(1, &Message::Sync(SyncMessage::Update(u1)).encode_v1())
+        .unwrap();
+    assert!(refused_to(&fx, 1), "a chain behind a skip");
+    let mut u2 = header(1);
+    u2.extend([7, 1, 2, b'z', b'z', 0, 0]); // an array in root "zz"
+    room.receive(1, &Message::Sync(SyncMessage::Update(u2)).encode_v1())
+        .unwrap();
+    assert!(deepest(&room) <= MAX_SHARED_DEPTH);
+
+    // A skip, then a plain value: no types, so it goes through, but yrs's
+    // hold on it is dropped. The skipped clocks then arrive as a chain:
+    // checked on its own, and refused.
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.connect(1);
+    let mut u1 = header(2);
+    u1.push(10);
+    varint_into(&mut u1, u64::from(m));
+    u1.extend([8, 1, 2, b'z', b'z', 1, 126, 0]); // null in root "zz"
+    room.receive(1, &Message::Sync(SyncMessage::Update(u1)).encode_v1())
+        .unwrap();
+    let txn = room.doc().transact();
+    let held = ganymede_documents::yrs::ReadTxn::store(&txn).pending_update();
+    assert!(held.is_none_or(|p| p.update.is_empty()), "nothing held");
+    drop(txn);
+    let mut u2 = header(m);
+    u2.extend([7, 1, 2, b'z', b'z', 0]);
+    chain(&mut u2, 1, m);
+    u2.push(0);
+    let fx = room
+        .receive(1, &Message::Sync(SyncMessage::Update(u2)).encode_v1())
+        .unwrap();
+    assert!(refused_to(&fx, 1), "the chain filling the gap");
+    assert!(deepest(&room) <= MAX_SHARED_DEPTH);
+}

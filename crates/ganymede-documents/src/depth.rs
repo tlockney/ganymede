@@ -160,8 +160,19 @@ impl Checked {
         let bound = bound.max(1);
         let mut out = TypeDepths::default();
 
-        // Every id an item hangs on must be in the update or the document:
-        // yrs holds an item that names one it doesn't have.
+        // yrs can't integrate past a gap: what follows a skip in a client's
+        // run waits until the skipped clocks arrive, and then lands at a
+        // depth nobody checked.
+        for idxs in by_client.values() {
+            let gap = idxs.iter().position(|&i| self.items[i].skip);
+            if gap.is_some_and(|g| g + 1 < idxs.len()) {
+                return Err(Unresolved::Missing);
+            }
+        }
+
+        // Every id an item hangs on must be an item in the update or in the
+        // document: yrs holds an item that names one it doesn't have, and
+        // an id in a skip is one it doesn't have.
         for item in &self.items {
             let ids = match item.parent {
                 ParentRef::Type(c, k) => [Some((c, k)), None],
@@ -169,7 +180,8 @@ impl Checked {
                 ParentRef::Root | ParentRef::None => [None, None],
             };
             for (c, k) in ids.into_iter().flatten() {
-                if find(c, k).is_none() && !known(c, k) {
+                let in_update = find(c, k).map(|j| !self.items[j].skip);
+                if in_update == Some(false) || (in_update.is_none() && !known(c, k)) {
                     return Err(Unresolved::Missing);
                 }
             }

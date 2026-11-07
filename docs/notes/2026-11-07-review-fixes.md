@@ -73,6 +73,12 @@ server or reach outside the root, or that lose kernels.
     copy, but the scan took the depth of what hung below it from the
     re-sent one. Ids the document has now always resolve from the
     document.
+  - What yrs holds for later was a third way past: types hung on a skip
+    block were taken as unattached, and yrs integrated them, unchecked,
+    once a later update filled the gap. Items after a skip, and ids that
+    fall in one, now count as missing, so such an update is refused.
+    After each apply the room also drops anything yrs still holds, so
+    nothing the check didn't see can land later.
   - The collaboration websocket's 1 GiB message limit is left to #436.
 - **A beat cut short (#425).** Two timeouts of the same length, nested:
   the outer one always wins, and dropping the inner future skipped the

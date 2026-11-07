@@ -362,10 +362,18 @@ impl Room {
                     None => Update::decode_v1(&bytes).map_err(|e| e.to_string()),
                 }
                 .and_then(|u| {
-                    self.doc()
-                        .transact_mut()
-                        .apply_update(u)
-                        .map_err(|e| e.to_string())
+                    let mut txn = self.doc().transact_mut();
+                    txn.apply_update(u).map_err(|e| e.to_string())?;
+                    // The checks above refuse what yrs would hold for later.
+                    // Should it hold something all the same, drop it: it
+                    // would be integrated by a later update, unchecked.
+                    if let Some(p) = yrs::WriteTxn::store_mut(&mut txn).pending_update_mut() {
+                        if !p.update.is_empty() {
+                            tracing::warn!("dropping a held update the depth check didn't foresee");
+                            p.update = Update::new();
+                        }
+                    }
+                    Ok(())
                 });
                 match depths {
                     Some(d) if applied.is_ok() && !d.estimated => {
