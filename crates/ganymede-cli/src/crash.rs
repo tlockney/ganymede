@@ -163,6 +163,8 @@ mod enabled {
 
     /// `error!` events from Ganymede's crates become reports; nothing else
     /// (no other levels, no spans, no other crates' events) reaches Sentry.
+    /// So a failure that isn't Ganymede's, such as a kernel that won't
+    /// start, logs at `warn` (#431).
     fn layer() -> ganymede_server::serve::ExtraLayer {
         use tracing_subscriber::Layer;
         Box::new(
