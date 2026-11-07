@@ -48,16 +48,22 @@ web view, so there is nothing else to install or start. It is built from
 ganymede-ui's [`apple/`](https://github.com/tlockney/ganymede-ui/tree/main/apple)
 folder and isn't in the App Store:
 
-- **Mac** (macOS 13 or later). Each
+- **Mac** (macOS 26 or later, Apple silicon). Each
   [ganymede-ui release](https://github.com/tlockney/ganymede-ui/releases/latest)
-  attaches `Ganymede-macOS-<version>.zip`, a universal app signed with a
+  attaches `Ganymede-macOS-<version>.zip`, an app signed with a
   Developer ID and notarized. Unzip it and move `Ganymede.app` to
   Applications.
-- **iPad and iPhone** (iPadOS and iOS 16 or later). Each release goes to
+- **iPad and iPhone** (iPadOS and iOS 26 or later). Each release goes to
   TestFlight for a small group of internal testers; it isn't open to
   others yet. Otherwise build it from source with Xcode; the
   [`apple/` README](https://github.com/tlockney/ganymede-ui/tree/main/apple#build)
   has the steps.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release: the apps require macOS 26 or iOS 26, and the Mac
+> app runs on Apple silicon only. The latest ganymede-ui release
+> still runs on macOS 13 and iOS 16, and on Intel Macs.
 
 ![The Mac app with a TypeScript notebook open.](images/apps/mac-light.png)
 
