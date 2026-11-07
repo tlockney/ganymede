@@ -32,8 +32,9 @@ python3 -m venv ~/.local/share/venvs/python3
 
 Add the packages you want in every notebook the same way, now or later
 (`~/.local/share/venvs/python3/bin/pip install numpy pandas`). With uv,
-`uv venv ~/.local/share/venvs/python3` and `uv pip install --python
-~/.local/share/venvs/python3 ipykernel`.
+make it with `uv venv ~/.local/share/venvs/python3`; uv's environments
+have no `pip`, so install into it with `uv pip install --python
+~/.local/share/venvs/python3 ipykernel`, and the same for other packages.
 
 Jupyter itself (`jupyter`, `notebook`, `jupyterlab`) isn't needed; only
 `ipykernel` and what your code imports.
