@@ -547,9 +547,19 @@ impl Provisioner for SubprocessProvisioner {
         let mut cmd = tokio::process::Command::new(&argv[0]);
         cmd.args(&argv[1..]);
         // The kernel inherits the host's environment, then the kernelspec's
-        // `env`, then per-launch overrides.
+        // `env`, then per-launch overrides. `$NAME` in a kernelspec value
+        // expands over the host's environment and the per-launch one, as
+        // jupyter_client does.
+        let lookup = |name: &str| {
+            opts.env
+                .iter()
+                .rev()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.clone())
+                .or_else(|| std::env::var(name).ok())
+        };
         for (k, v) in &spec.env {
-            cmd.env(k, v);
+            cmd.env(k, expand_env(v, lookup));
         }
         for (k, v) in &opts.env {
             cmd.env(k, v);
@@ -751,6 +761,59 @@ async fn prefix_lines(
             }
         }
     }
+}
+
+/// `value` with `$NAME` and `${NAME}` replaced by `lookup(NAME)`, as
+/// Python's `string.Template.safe_substitute`, which jupyter_client runs
+/// on kernelspec `env` values: `$$` is `$`, and a name `lookup` doesn't
+/// know, or a `$` not followed by a name, stays as it is. A name is an
+/// ASCII letter or `_`, then letters, digits, or `_`.
+#[cfg(feature = "subprocess")]
+fn expand_env(value: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
+    fn name_len(s: &str) -> usize {
+        let b = s.as_bytes();
+        if b.first()
+            .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_')
+        {
+            b.iter()
+                .take_while(|c| c.is_ascii_alphanumeric() || **c == b'_')
+                .count()
+        } else {
+            0
+        }
+    }
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(i) = rest.find('$') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        if let Some(tail) = after.strip_prefix('$') {
+            out.push('$');
+            rest = tail;
+            continue;
+        }
+        let (name, consumed) = match after.strip_prefix('{') {
+            Some(braced) => {
+                let n = name_len(braced);
+                if n > 0 && braced[n..].starts_with('}') {
+                    (&braced[..n], n + 2)
+                } else {
+                    ("", 0)
+                }
+            }
+            None => {
+                let n = name_len(after);
+                (&after[..n], n)
+            }
+        };
+        match (consumed > 0).then(|| lookup(name)).flatten() {
+            Some(v) => out.push_str(&v),
+            None => out.push_str(&rest[i..i + 1 + consumed]),
+        }
+        rest = &after[consumed..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// "exited with code 1", or how else the process ended.
@@ -1134,6 +1197,31 @@ pub fn read_connection_file(path: &Path) -> Result<ConnectionInfo> {
 #[cfg(all(test, feature = "subprocess"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn env_values_expand_as_safe_substitute() {
+        let lookup = |n: &str| match n {
+            "PATH" => Some("/usr/bin:/bin".to_string()),
+            "A_1" => Some("x".to_string()),
+            "EMPTY" => Some(String::new()),
+            _ => None,
+        };
+        let cases = [
+            ("/opt/x/bin:${PATH}", "/opt/x/bin:/usr/bin:/bin"),
+            ("$PATH:/opt", "/usr/bin:/bin:/opt"),
+            ("$A_1.$A_1y", "x.$A_1y"),
+            ("${A_1}y", "xy"),
+            ("[$EMPTY]", "[]"),
+            ("$$PATH costs $$5", "$PATH costs $5"),
+            ("$UNKNOWN ${UNKNOWN}", "$UNKNOWN ${UNKNOWN}"),
+            ("$ $1 ${} ${A_1 ${1x} $", "$ $1 ${} ${A_1 ${1x} $"),
+            ("ü$A_1ü", "üxü"),
+            ("no dollars", "no dollars"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(expand_env(input, lookup), want, "{input}");
+        }
+    }
 
     #[tokio::test]
     async fn kernel_output_lines_get_the_prefix() {
