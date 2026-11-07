@@ -101,7 +101,7 @@ pub struct RunningKernel {
     booting: AtomicBool,
     /// Held across start, restart, and shutdown, so they do not interleave.
     /// In an `Arc` so the start's background boot can own its guard.
-    lifecycle: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) lifecycle: Arc<tokio::sync::Mutex<()>>,
     last_activity: Mutex<String>,
     execution_state: Mutex<String>,
     /// Shell requests clients have sent that the current session has not
@@ -547,9 +547,24 @@ impl KernelManager {
 
     /// [`Self::shutdown`], saying why in the kernel's log.
     async fn shutdown_because(&self, id: &str, why: &str) -> Result<()> {
+        self.shutdown_if(id, why, |_| true).await.map(|_| ())
+    }
+
+    /// Shut `id` down if `still` holds once its lifecycle lock is held, so
+    /// a check made earlier can't act on a kernel that changed since.
+    /// `Ok(false)`: left running.
+    async fn shutdown_if(
+        &self,
+        id: &str,
+        why: &str,
+        still: impl FnOnce(&RunningKernel) -> bool,
+    ) -> Result<bool> {
         let kernel = self.get(id)?;
         let _guard = kernel.lifecycle.lock().await;
         self.core.ensure_listed(&kernel)?;
+        if !still(&kernel) {
+            return Ok(false);
+        }
         kernel.log.host(&format!("shutting down {why}"));
         self.core.kernels.write().unwrap().remove(id);
         self.core.keep_log(&kernel);
@@ -567,7 +582,7 @@ impl KernelManager {
         if let Err(e) = result {
             tracing::warn!(kernel = %id, "kernel removed, but shutdown reported: {e}");
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Up to `limit` lines of `id`'s log: the newest without `after`,
@@ -652,28 +667,42 @@ impl KernelManager {
         let Some(limit) = self.core.config.cull_idle else {
             return vec![];
         };
-        let now = chrono::Utc::now();
+        // Checked again under each kernel's lifecycle lock: a client can
+        // connect, or a cell start, while earlier candidates shut down.
+        let cullable = |k: &RunningKernel| {
+            k.clients.lock().unwrap().connections() == 0
+                && k.execution_state.lock().unwrap().as_str() == "idle"
+                && chrono::DateTime::parse_from_rfc3339(&k.last_activity.lock().unwrap())
+                    .map(|t| {
+                        chrono::Utc::now()
+                            .signed_duration_since(t)
+                            .to_std()
+                            .unwrap_or_default()
+                            > limit
+                    })
+                    .unwrap_or(false)
+        };
         let candidates: Vec<String> = self
             .core
             .kernels
             .read()
             .unwrap()
             .values()
-            .filter(|k| {
-                k.clients.lock().unwrap().connections() == 0
-                    && k.execution_state.lock().unwrap().as_str() == "idle"
-            })
-            .filter(|k| {
-                chrono::DateTime::parse_from_rfc3339(&k.last_activity.lock().unwrap())
-                    .map(|t| now.signed_duration_since(t).to_std().unwrap_or_default() > limit)
-                    .unwrap_or(false)
-            })
+            .filter(|k| cullable(k))
             .map(|k| k.id.clone())
             .collect();
         let mut culled = vec![];
         for id in candidates {
-            tracing::info!(kernel = %id, "culling idle kernel");
-            if self.shutdown_because(&id, "after being idle").await.is_ok() {
+            if let Ok(true) = self
+                .shutdown_if(&id, "after being idle", |k| {
+                    let idle = cullable(k);
+                    if idle {
+                        tracing::info!(kernel = %id, "culling idle kernel");
+                    }
+                    idle
+                })
+                .await
+            {
                 culled.push(id);
             }
         }

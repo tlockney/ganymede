@@ -687,6 +687,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cull_spares_a_kernel_connected_while_it_waited() {
+        let m = manager(Some(Duration::from_millis(50)));
+        let k = started(&m, Some("fake"), None).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        // Hold the kernel's lifecycle, as a shutdown of an earlier
+        // candidate holds its own, so the cull waits after choosing it.
+        let kernel = m.get(&k.id).unwrap();
+        let held = kernel.lifecycle.lock().await;
+        let cull = tokio::spawn({
+            let m = m.clone();
+            async move { m.cull_idle().await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _c = m.connect_client(&k.id).unwrap();
+        drop(held);
+        assert!(cull.await.unwrap().is_empty());
+        assert_eq!(m.list().len(), 1);
+    }
+
+    #[tokio::test]
     async fn cull_shuts_down_idle_unconnected_kernels() {
         let m = manager(Some(Duration::from_millis(50)));
         let k = started(&m, Some("fake"), None).await.unwrap();
