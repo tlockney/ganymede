@@ -192,7 +192,10 @@ jobs:
   # of building ganymede-ffi itself (#456). The name is the same on every
   # release and on main-build, with GanymedeFFI.xcframework.zip.sha256
   # beside it; the release's attestation and SHA256SUMS cover it.
+  # Not on pull requests: CI's ffi (macos-latest) job already runs
+  # build-xcframework.sh there, and macOS runners are the scarce ones.
   xcframework:
+    if: github.event_name != 'pull_request'
     needs: version
     runs-on: macos-latest
     timeout-minutes: 45
@@ -214,6 +217,18 @@ jobs:
           key: xcframework
       - name: Build
         run: scripts/build-xcframework.sh
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: cargo-about
+      # The zip redistributes ganymede-ffi's dependencies, so their
+      # notices and this repo's LICENSE travel with it, as in the CLI
+      # archives.
+      - name: Third-party notices
+        run: |
+          cargo about generate --locked --fail --target aarch64-apple-darwin --target aarch64-apple-ios --target aarch64-apple-ios-sim -m crates/ganymede-ffi/Cargo.toml about.hbs -o target/xcframework/THIRD-PARTY-NOTICES
+          cp LICENSE target/xcframework/
+          cd target/xcframework
+          zip -q GanymedeFFI.xcframework.zip THIRD-PARTY-NOTICES LICENSE
       - name: Checksum
         run: |
           mkdir -p dist

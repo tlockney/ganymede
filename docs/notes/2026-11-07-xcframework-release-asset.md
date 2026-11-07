@@ -14,3 +14,9 @@ version, so ganymede-ui can fetch it by tag
 and main-build jobs wait for it, so the attestation and `SHA256SUMS`
 cover it like the CLI archives. The CLI targets are unchanged.
 ganymede-ui's side is ganymede-ui#359.
+
+The zip carries `LICENSE` and a `THIRD-PARTY-NOTICES` from `cargo about`
+for ganymede-ffi's tree on the three Apple targets, since the release
+now redistributes those crates. The job skips pull requests: CI's
+`ffi (macos-latest)` already runs the build script there, and a
+`Cargo.toml` change would otherwise queue a second macOS build.

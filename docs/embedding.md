@@ -288,7 +288,9 @@ set the minimums.
 
 Each release, and the `main-build` prerelease, carries the zip as
 `GanymedeFFI.xcframework.zip` with `GanymedeFFI.xcframework.zip.sha256`
-beside it, built by `release.yml` with the release profile:
+beside it, built by `release.yml` with the release profile. Besides
+the framework, the zip holds `LICENSE` and `THIRD-PARTY-NOTICES` for
+the crates compiled into it:
 
 ```sh
 gh release download vX.Y.Z --repo tlockney/ganymede -p 'GanymedeFFI.xcframework.zip*'
