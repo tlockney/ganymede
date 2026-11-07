@@ -104,8 +104,9 @@ machine:
 cdp-kernel also runs notebooks on Deno, Bun, workerd, and celld, one
 kernelspec per runtime (`--runtime deno` and so on); its
 [install docs](https://cdp-kernel.org/docs/install) cover what each needs.
-Any other Jupyter kernel works the same way, ipykernel included, once its
-kernelspec is installed.
+Any other Jupyter kernel works the same way once its kernelspec is
+installed; [Other kernels](kernels.md) covers Python (ipykernel) and
+others.
 
 ## 3. Check the kernel
 
@@ -298,7 +299,8 @@ build yet; [build from source](#from-source) instead.
 ### Kernel not listed
 
 `ganymede kernelspec list` reads kernelspecs from Jupyter's data
-directories:
+directories ([How Ganymede finds kernels](kernels.md#how-ganymede-finds-kernels)
+has the full order):
 
 | Platform | Kernels directory |
 | --- | --- |

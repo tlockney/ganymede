@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 476" width="900" height="476" role="img" aria-label="Where Ganymede looks for kernelspecs. It searches roots in order and the first spec with a given name wins: roots given with --kernelspec-root or kernelspec_roots, then each $JUPYTER_PATH entry, then the user data dir ($JUPYTER_DATA_DIR, ~/.local/share/jupyter on Linux, ~/Library/Jupyter on macOS), where python -m ipykernel install --user writes a spec whose argv is the environment&#x27;s python by absolute path, then /usr/local/share/jupyter and /usr/share/jupyter, where ipykernel install --prefix /usr/local and distro packages write. A virtual environment&#x27;s own share/jupyter, where pip install ipykernel drops a python3 spec whose argv is plain python, is not searched unless it is added as a root.">
+  <title>Where Ganymede looks for kernelspecs. It searches roots in order and the first spec with a given name wins: roots given with --kernelspec-root or kernelspec_roots, then each $JUPYTER_PATH entry, then the user data dir ($JUPYTER_DATA_DIR, ~/.local/share/jupyter on Linux, ~/Library/Jupyter on macOS), where python -m ipykernel install --user writes a spec whose argv is the environment&#x27;s python by absolute path, then /usr/local/share/jupyter and /usr/share/jupyter, where ipykernel install --prefix /usr/local and distro packages write. A virtual environment&#x27;s own share/jupyter, where pip install ipykernel drops a python3 spec whose argv is plain python, is not searched unless it is added as a root.</title>
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f6f7f9; stroke: #9aa3ad; stroke-width: 1.2; }
+    .inner { fill: #ffffff; stroke: #b8c0c8; stroke-width: 1; }
+    .acc { fill: #e8f0fe; stroke: #3b6fd8; stroke-width: 1.4; }
+    .warn { fill: #fdf0e6; stroke: #c96a1b; stroke-width: 1.4; }
+    .ok { fill: #e7f5ec; stroke: #2f8a4c; stroke-width: 1.4; }
+    .dash { stroke-dasharray: 5 4; }
+    .t { font: 600 14px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1f2328; }
+    .s { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .m { font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f2328; }
+    .l { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .ln { stroke: #6e7781; stroke-width: 1.4; fill: none; }
+    .hl { stroke: #3b6fd8; stroke-width: 1.6; fill: none; }
+    .ah { fill: #6e7781; }
+    .ahb { fill: #3b6fd8; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #1b1b1f; }
+      .box { fill: #25262b; stroke: #5c6370; }
+      .inner { fill: #1b1b1f; stroke: #4a505a; }
+      .acc { fill: #1e2a44; stroke: #6b9bff; }
+      .warn { fill: #3a2a1c; stroke: #e0904a; }
+      .ok { fill: #1d3326; stroke: #5cc27e; }
+      .t, .m { fill: #e6e8eb; }
+      .s, .l { fill: #b6bcc4; }
+      .ln { stroke: #a0a7b0; }
+      .hl { stroke: #6b9bff; }
+      .ah { fill: #a0a7b0; }
+      .ahb { fill: #6b9bff; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ahb" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="900" height="476"/>
+
+  <text class="t" x="20" y="28">ganymede searches these roots in order</text>
+  <text class="s" x="20" y="46">Each root holds kernels/&lt;name&gt;/kernel.json. The first spec with a name wins.</text>
+  <text class="t" x="530" y="28">What writes there</text>
+
+  <!-- order arrow -->
+  <line class="hl" x1="36" y1="66" x2="36" y2="350" marker-end="url(#b)"/>
+
+  <!-- 1 extra roots -->
+  <rect class="box" x="56" y="62" width="414" height="58" rx="8"/>
+  <text class="t" x="72" y="86">1. Roots you add</text>
+  <text class="m" x="72" y="106">--kernelspec-root DIR, kernelspec_roots</text>
+
+  <!-- 2 JUPYTER_PATH -->
+  <rect class="box" x="56" y="134" width="414" height="58" rx="8"/>
+  <text class="t" x="72" y="158">2. Each $JUPYTER_PATH entry</text>
+  <text class="s" x="72" y="178">When the variable is set</text>
+
+  <!-- 3 user data dir -->
+  <rect class="acc" x="56" y="206" width="414" height="76" rx="8"/>
+  <text class="t" x="72" y="230">3. User data dir</text>
+  <text class="m" x="72" y="250">$JUPYTER_DATA_DIR, or</text>
+  <text class="m" x="72" y="268">~/.local/share/jupyter · ~/Library/Jupyter</text>
+
+  <!-- 4 system -->
+  <rect class="box" x="56" y="296" width="414" height="58" rx="8"/>
+  <text class="t" x="72" y="320">4. System dirs</text>
+  <text class="m" x="72" y="340">/usr/local/share/jupyter, /usr/share/jupyter</text>
+
+  <!-- writers -->
+  <rect class="ok" x="530" y="214" width="350" height="60" rx="8"/>
+  <text class="m" x="546" y="238">ipykernel install --user --name NAME</text>
+  <text class="s" x="546" y="258">argv: the env's python, by absolute path</text>
+  <line class="ln" x1="528" y1="244" x2="472" y2="244" marker-end="url(#a)"/>
+
+  <rect class="inner" x="530" y="296" width="350" height="58" rx="8"/>
+  <text class="m" x="546" y="320">ipykernel install --prefix /usr/local</text>
+  <text class="s" x="546" y="340">or a distro package</text>
+  <line class="ln" x1="528" y1="325" x2="472" y2="325" marker-end="url(#a)"/>
+
+  <rect class="inner" x="530" y="134" width="350" height="58" rx="8"/>
+  <text class="m" x="546" y="158">ganymede kernelspec install, and</text>
+  <text class="m" x="546" y="178">most kernels' own installers</text>
+  <path class="ln" d="M705,192 V200 H500 V232 H472" marker-end="url(#a)"/>
+
+  <!-- not searched -->
+  <rect class="warn dash" x="56" y="384" width="414" height="76" rx="8"/>
+  <text class="t" x="72" y="408">Not searched: &lt;venv&gt;/share/jupyter</text>
+  <text class="s" x="72" y="428">A Python environment's own prefix. Pass it as</text>
+  <text class="s" x="72" y="446">--kernelspec-root to use the specs there.</text>
+
+  <rect class="inner" x="530" y="392" width="350" height="60" rx="8"/>
+  <text class="m" x="546" y="416">pip install ipykernel</text>
+  <text class="s" x="546" y="436">python3 spec, argv: "python" from PATH</text>
+  <line class="ln" x1="528" y1="422" x2="472" y2="422" marker-end="url(#a)"/>
+</svg>
