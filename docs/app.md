@@ -60,10 +60,11 @@ folder and isn't in the App Store:
   has the steps.
 
 > [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release: the apps require macOS 26 or iOS 26, and the Mac
-> app runs on Apple silicon only. The latest ganymede-ui release
-> still runs on macOS 13 and iOS 16, and on Intel Macs.
+> **Unreleased in ganymede-ui.** Available only from a build of
+> ganymede-ui's `main`, not in its latest release: the apps require
+> macOS 26 or iOS 26, and the Mac app runs on Apple silicon only. The
+> latest ganymede-ui release still runs on macOS 13 and iOS 16, and on
+> Intel Macs.
 
 ![The Mac app with a TypeScript notebook open.](images/apps/mac-light.png)
 

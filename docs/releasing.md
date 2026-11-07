@@ -18,6 +18,10 @@ partway through.
    grep -rn 'Unreleased\.' README.md docs/*.md site/index.html
    ```
 
+   Notes that say "Unreleased in ganymede-ui." stay: they describe the
+   apps, which ship with ganymede-ui's release, and its release script
+   opens an issue here to update them then.
+
    The bump also updates the docs that name the current release: the git
    `tag` in [Embedding](embedding.md) and the sample `ganymede_version` in
    [CLI and configuration](reference.md#server-info-file). The list is

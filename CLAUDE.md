@@ -23,6 +23,22 @@ per section the feature adds, not one per paragraph. A change to a
 feature that is already released needs no note, and `site/install.sh`
 goes live on merge, so it must keep working with the latest release.
 
+The apps ship from ganymede-ui, on its own release schedule. Text here
+about an app change that ganymede-ui hasn't released yet takes this note
+instead, which Ganymede's release leaves alone:
+
+```md
+> [!NOTE]
+> **Unreleased in ganymede-ui.** Available only from a build of
+> ganymede-ui's `main`, not in its latest release.
+```
+
+Where the current text is still right until then, such as a requirement
+on the landing page, put the marker in an HTML comment beside it,
+saying what to change: `<!-- **Unreleased in ganymede-ui.** ... -->`.
+ganymede-ui's `scripts/release.sh` lists these notes and opens an issue
+here to update them once its release is out (#502).
+
 ## Cutting a release
 
 Releases follow [Releasing](docs/releasing.md). Before the release pull
