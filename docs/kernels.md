@@ -31,16 +31,35 @@ notebook the same way as ipykernel, now or later.
 
 #### With uv (recommended)
 
-[uv](https://docs.astral.sh/uv/) manages Python environments, and
-downloads a Python for them when the machine has none. If you don't have
-it, [install uv](https://docs.astral.sh/uv/getting-started/installation/)
+[uv](https://docs.astral.sh/uv/) manages Python environments and the
+Pythons they run on. If you don't have it,
+[install uv](https://docs.astral.sh/uv/getting-started/installation/)
 first.
 
 ```sh
-uv venv ~/.local/share/venvs/python3
+uv venv --managed-python ~/.local/share/venvs/python3
 uv pip install --python ~/.local/share/venvs/python3 ipykernel
 uv pip install --python ~/.local/share/venvs/python3 numpy pandas   # optional
 ```
+
+`--managed-python` makes the environment use a Python that uv installs
+and keeps under its own data directory (`~/.local/share/uv/python`),
+downloading one the first time. Without it, `uv venv` takes the first
+Python it finds, which may be the system's or Homebrew's, and an OS or
+Homebrew upgrade can then remove that Python and break the kernel (see
+[If the environment moves](#if-the-environment-moves)). uv's own Pythons
+change only when you ask:
+
+- `uv python upgrade` installs the latest patch release (3.14.6 to
+  3.14.7, say). The environment points at uv's directory for the minor
+  version, so it picks up the patch without being made again.
+- A new minor version (3.15) is a separate install. The environment
+  stays on the one it was made with until you make it again with
+  `--python 3.15`.
+- `uv python uninstall` of the version the environment uses breaks it,
+  as deleting any Python would.
+
+To choose the version, add `--python 3.13` (or another) to `uv venv`.
 
 uv's environments have no `pip` of their own, so add packages with `uv
 pip install --python ...` as above.
