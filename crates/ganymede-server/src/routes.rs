@@ -366,7 +366,6 @@ fn attachment(headers: &mut HeaderMap, filename: &str) {
 
 /// An export with its files in a zip, as nbconvert's `respond_zip`.
 fn nbconvert_zip(filename: &str, export: ganymede_nbformat::Export) -> HttpResult<Vec<u8>> {
-    use base64::Engine;
     use std::io::Write;
     use zip::write::SimpleFileOptions;
     let fail = |e: &dyn std::fmt::Display| HttpError(500, format!("nbconvert failed: {e}"));
@@ -376,19 +375,9 @@ fn nbconvert_zip(filename: &str, export: ganymede_nbformat::Export) -> HttpResul
     w.write_all(export.body.as_bytes()).map_err(|e| fail(&e))?;
     let mut written = std::collections::HashSet::new();
     for r in export.resources {
-        // One bad image shouldn't cost the whole export: leave it out.
         let bytes = match r.data {
             ganymede_nbformat::ResourceData::Text(t) => t.into_bytes(),
-            ganymede_nbformat::ResourceData::Base64(b) => {
-                let b: String = b.split_whitespace().collect();
-                match base64::engine::general_purpose::STANDARD.decode(b) {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        tracing::warn!("nbconvert: leaving out {}: bad base64: {e}", r.path);
-                        continue;
-                    }
-                }
-            }
+            ganymede_nbformat::ResourceData::Bytes(b) => b,
         };
         if !written.insert(r.path.clone()) {
             continue;
