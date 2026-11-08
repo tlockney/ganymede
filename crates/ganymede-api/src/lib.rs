@@ -50,6 +50,7 @@ impl From<ganymede_kernel_host::Error> for ApiError {
         match e {
             E::NoSuchKernelspec(n) => ApiError::new(404, format!("No such kernel named {n}")),
             E::Timeout(what) => ApiError::new(504, format!("timed out waiting for {what}")),
+            E::SendTimeout => ApiError::new(504, e.to_string()),
             E::KernelDied | E::TransportClosed => ApiError::new(503, e.to_string()),
             other => ApiError::new(500, other.to_string()),
         }

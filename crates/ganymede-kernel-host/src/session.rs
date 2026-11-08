@@ -276,7 +276,7 @@ impl KernelSession {
         match result {
             Ok(r) => r,
             Err(_) if sent => Err(Error::Timeout("reply")),
-            Err(_) => Err(Error::Timeout("send")),
+            Err(_) => Err(Error::SendTimeout),
         }
     }
 
@@ -1245,7 +1245,7 @@ mod tests {
         )
         .await
         .expect("request returned");
-        assert!(matches!(r, Err(Error::Timeout("send"))), "{r:?}");
+        assert!(matches!(r, Err(Error::SendTimeout)), "{r:?}");
         assert_eq!(s.pending_len(), 0);
     }
 

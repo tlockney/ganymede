@@ -63,6 +63,11 @@ pub enum Error {
     },
     #[error("timed out waiting for {0}")]
     Timeout(&'static str),
+    /// The request was never handed to the kernel: its queue stayed full
+    /// for the whole timeout, so the kernel is wedged or gone. Unlike
+    /// [`Error::Timeout`], nothing of the request runs later.
+    #[error("the kernel did not accept the request in time")]
+    SendTimeout,
     #[error("kernel died")]
     KernelDied,
     #[error("transport closed")]
