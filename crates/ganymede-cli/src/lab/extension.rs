@@ -205,11 +205,7 @@ pub fn run(cmd: ExtensionCmd) -> Result<ExitCode> {
             }
         }
         ExtensionCmd::Remove { packages } => {
-            let _lock = if root.is_dir() {
-                super::removal_lock(&root, "removing")?
-            } else {
-                None
-            };
+            let _lock = super::removal_lock(&root, "removing")?;
             for p in packages {
                 let key = normalize(&p)?;
                 let Some(rec) = record(&root, &key) else {
