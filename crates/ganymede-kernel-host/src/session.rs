@@ -324,24 +324,26 @@ impl KernelSession {
             sent = true;
             (&mut rx).await.map_err(|_| Error::KernelDied)
         };
-        let result = match tokio::time::timeout(timeout, exchange).await {
-            Ok(r) => r,
-            // The reply may have completed the request as the time ran
-            // out, taking its record with it: it still counts.
-            Err(_) if sent => rx.try_recv().map_err(|_| Error::Timeout("reply")),
-            Err(_) => Err(Error::SendTimeout),
+        let timed_out = match tokio::time::timeout(timeout, exchange).await {
+            Ok(r) => {
+                let busy = r.as_ref().is_ok_and(|exec| has_busy(&exec.status));
+                return (r, busy);
+            }
+            Err(_) if sent => Error::Timeout("reply"),
+            Err(_) => Error::SendTimeout,
         };
-        let busy = match &result {
-            Ok(exec) => has_busy(&exec.status),
-            // Before `guard` drops the record.
-            Err(_) => self
-                .inner
-                .pending
-                .lock()
-                .unwrap()
-                .get(&guard.id)
-                .is_some_and(|p| has_busy(&p.status)),
-        };
+        // Under the lock `route` holds while it completes a request, so
+        // either the record is still here or its reply is already in `rx`:
+        // a reply that landed as the time ran out still counts, and so
+        // does a `busy` in the record. Before `guard` drops the record.
+        let pending = self.inner.pending.lock().unwrap();
+        if let Ok(exec) = rx.try_recv() {
+            let busy = has_busy(&exec.status);
+            return (Ok(exec), busy);
+        }
+        let busy = pending.get(&guard.id).is_some_and(|p| has_busy(&p.status));
+        drop(pending);
+        let result = Err(timed_out);
         (result, busy)
     }
 
