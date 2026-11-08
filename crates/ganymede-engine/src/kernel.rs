@@ -284,8 +284,10 @@ impl Kernel {
         let timeout = opts.timeout.unwrap_or(FOREVER);
         let exec = match ganymede_exec::execute_streaming(&session, req, timeout, handler).await {
             // Stop the cell rather than leave the kernel busy; on a
-            // shared kernel the next client would wait behind it.
-            Err(ganymede_kernel_host::Error::Timeout(t)) => {
+            // shared kernel the next client would wait behind it. A send
+            // that timed out never reached the kernel, so there is nothing
+            // of ours to interrupt.
+            Err(ganymede_kernel_host::Error::Timeout(t)) if t != "send" => {
                 if let Err(e) = session.interrupt().await {
                     tracing::warn!("interrupting a timed-out cell: {e}");
                 }
