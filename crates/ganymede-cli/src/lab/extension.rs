@@ -324,7 +324,6 @@ impl Want {
 }
 
 fn install(root: &Path, specs: &[String], force: bool, no_deps: bool, pins: &[Pin]) -> Result<()> {
-    let _lock = super::install_lock(root)?;
     let mut queue = VecDeque::new();
     for s in specs {
         let (name, specs) = parse_spec(s)?;
@@ -334,6 +333,7 @@ fn install(root: &Path, specs: &[String], force: bool, no_deps: bool, pins: &[Pi
             required_by: None,
         });
     }
+    let _lock = super::install_lock(root)?;
     let index = Index::from_env()?;
     let mut seen = HashSet::new();
     while let Some(want) = queue.pop_front() {

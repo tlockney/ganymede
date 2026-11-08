@@ -73,7 +73,8 @@ pub enum LabCmd {
     },
     /// Delete what interrupted installs left behind.
     ///
-    /// That is partial downloads and unpacked staging directories.
+    /// That is partial downloads and unpacked staging directories. A
+    /// directory with an install running is skipped.
     Clean,
     /// Remove every installed version and extension.
     ///
@@ -156,14 +157,33 @@ const LOCK: &str = ".lock";
 /// Takes a shared lock on `dir`'s [`LOCK`] file, creating both, so `lab
 /// clean` leaves this install's temporary entries alone until the
 /// returned file drops. Installs don't exclude each other: their entries
-/// have unique names.
-pub(crate) fn install_lock(dir: &Path) -> Result<std::fs::File> {
+/// have unique names. Best-effort: where the filesystem has no working
+/// locks the install goes ahead unlocked, as it did before the lock.
+pub(crate) fn install_lock(dir: &Path) -> Result<Option<std::fs::File>> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let path = dir.join(LOCK);
-    let file = lock_file(&path)?;
-    file.lock_shared()
-        .with_context(|| format!("locking {}", path.display()))?;
-    Ok(file)
+    let file = match lock_file(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("installing without a lock: {e:#}");
+            return Ok(None);
+        }
+    };
+    let locked = match file.try_lock_shared() {
+        Ok(()) => Ok(()),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            eprintln!("waiting for `lab clean` in {} to finish", dir.display());
+            file.lock_shared()
+        }
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
+    };
+    match locked {
+        Ok(()) => Ok(Some(file)),
+        Err(e) => {
+            tracing::warn!("installing without a lock on {}: {e}", path.display());
+            Ok(None)
+        }
+    }
 }
 
 fn lock_file(path: &Path) -> Result<std::fs::File> {
@@ -177,26 +197,36 @@ fn lock_file(path: &Path) -> Result<std::fs::File> {
 
 /// Removes the dot-named entries in `dir` that installs create and rename
 /// away on success (`.download-*`, `.<version>-*`, `.<package>-*`), but
-/// not the extension records or the lock. Refuses while an install holds
-/// the lock, since its entries are in use. Returns how many were removed.
+/// not the extension records or the lock. Skips `dir`, removing nothing,
+/// while an install holds the lock, since its entries are in use. Where
+/// locks don't work it cleans unlocked, as before the lock. Returns how
+/// many were removed.
 fn clean(dir: &Path) -> Result<usize> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Ok(0);
     };
     let path = dir.join(LOCK);
-    let lock = lock_file(&path)?;
-    match lock.try_lock() {
-        Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) => {
-            bail!(
-                "an install is running in {}; run `lab clean` after it finishes",
-                dir.display()
-            )
+    // Held until the entries are removed.
+    let _lock = match lock_file(&path) {
+        Ok(lock) => match lock.try_lock() {
+            Ok(()) => Some(lock),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                eprintln!(
+                    "skipped {}: an install is running there; run `lab clean` after it finishes",
+                    dir.display()
+                );
+                return Ok(0);
+            }
+            Err(std::fs::TryLockError::Error(e)) => {
+                tracing::warn!("cleaning without a lock on {}: {e}", path.display());
+                None
+            }
+        },
+        Err(e) => {
+            tracing::warn!("cleaning without a lock: {e:#}");
+            None
         }
-        Err(std::fs::TryLockError::Error(e)) => {
-            return Err(e).with_context(|| format!("locking {}", path.display()))
-        }
-    }
+    };
     let mut n = 0;
     for e in entries.flatten() {
         let name = e.file_name();
@@ -564,13 +594,12 @@ mod tests {
     fn clean_leaves_a_running_install_alone() {
         let root = tempfile::tempdir().unwrap();
         let r = root.path();
-        let install = install_lock(r).unwrap();
+        let install = install_lock(r).unwrap().expect("locks work here");
         std::fs::write(r.join(".download-xyz"), "in progress").unwrap();
-        let e = clean(r).unwrap_err().to_string();
-        assert!(e.contains("an install is running"), "{e}");
+        assert_eq!(clean(r).unwrap(), 0);
         assert!(r.join(".download-xyz").exists());
         // A second install runs alongside the first.
-        drop(install_lock(r).unwrap());
+        assert!(install_lock(r).unwrap().is_some());
         drop(install);
         assert_eq!(clean(r).unwrap(), 1);
         assert!(!r.join(".download-xyz").exists());
