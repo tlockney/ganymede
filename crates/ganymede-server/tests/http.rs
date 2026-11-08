@@ -1865,6 +1865,10 @@ async fn login_form_and_logout() {
     .await;
     assert_eq!(st, StatusCode::UNAUTHORIZED);
     assert!(html.contains("Invalid credentials"));
+    // The form is read before the XSRF check, so its body is kept small.
+    let big = format!("password={}&_xsrf={}", "x".repeat(65 * 1024), enc(&xsrf));
+    let (st, _, _) = send(&app, form(&xsrf_cookie, big)).await;
+    assert_eq!(st, StatusCode::PAYLOAD_TOO_LARGE);
     let (st, h, _) = send(
         &app,
         form(
@@ -1900,6 +1904,22 @@ async fn login_form_and_logout() {
     let (n, v, full) = set_cookies(&h).remove(0);
     assert_eq!((n.as_str(), v.as_str()), (LOGIN, "\"\""));
     assert!(full.contains("Path=/"));
+}
+
+/// The login form's own limit never raises a smaller `max_body_size`.
+#[tokio::test]
+async fn login_keeps_a_smaller_max_body_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    st.max_body_size = 32 * 1024;
+    let app = build_router(st);
+    let req = Request::post("/login")
+        .header(header::HOST, HOST)
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from(format!("password={}", "x".repeat(40 * 1024))))
+        .unwrap();
+    let (st, _, _) = send(&app, req).await;
+    assert_eq!(st, StatusCode::PAYLOAD_TOO_LARGE);
 }
 
 #[tokio::test]

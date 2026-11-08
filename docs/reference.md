@@ -154,7 +154,7 @@ them.
 | --- | --- |
 | `local_hostnames` | Host names accepted besides loopback addresses while remote access is off. Default `["localhost"]`. |
 | `trust_xheaders` | Trust `X-Forwarded-Proto` and `X-Scheme` from a reverse proxy, so login cookies sent over proxied HTTPS are marked `Secure`. |
-| `max_body_size` | Largest request body, in bytes, which caps a notebook's size. Also the largest message a [document room](rooms.md#connections) takes, and how many bytes of messages a room client may fall behind before it is closed, so lowering it to cap uploads also closes slow room clients sooner. Default 512 MiB. |
+| `max_body_size` | Largest request body, in bytes, which caps a notebook's size. A `/login` form gets at most 64 KiB. Also the largest message a [document room](rooms.md#connections) takes, and how many bytes of messages a room client may fall behind before it is closed, so lowering it to cap uploads also closes slow room clients sooner. Default 512 MiB. |
 | `crash_reporting` | Send crash reports from `ganymede` to Sentry; see [Privacy and crash reporting](privacy.md). Default `false`. |
 | `frame_ancestors` | The CSP sources allowed to frame the server's pages, added to every response as `frame-ancestors <sources>`. Default `'self'`, as `jupyter_server`; add an origin, such as `'self' https://portal.example.com`, to embed `/lab` in that site. See [Security](security.md#defaults). |
 
