@@ -131,8 +131,11 @@ Behind a proxy, two settings matter:
   used (the tailnet or public name) gets 403 from a loopback server,
   because that name isn't `localhost`. Add the name to `local_hostnames`
   in the config file, so other names are still refused, or pass
-  `--allow-remote-access`. A proxy that rewrites `Host` to
-  `127.0.0.1:<port>` needs neither.
+  `--allow-remote-access`. Prefer passing `Host` on: a proxy that
+  rewrites it to `127.0.0.1:<port>` gets past the `Host` check, but then
+  the browser's `Origin` (`https://<name>`) no longer matches `Host`, so
+  saves and kernel connections are refused until the origin is in
+  `allow_origins`, as in `jupyter_server`.
 - **`trust_xheaders = true`** in the config file, when the proxy sends
   `X-Forwarded-Proto: https`, so the login cookie is marked `Secure`.
   Set it only when every request comes through a proxy you control:
