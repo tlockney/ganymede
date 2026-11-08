@@ -264,8 +264,14 @@ impl KernelSession {
             inner: &self.inner,
             id,
         };
-        self.inner.sink.send(channel, msg).await?;
-        match tokio::time::timeout(timeout, rx).await {
+        // The timeout covers the send too: a dead kernel's DEALER queue
+        // fills and blocks it.
+        let deadline = tokio::time::Instant::now() + timeout;
+        match tokio::time::timeout_at(deadline, self.inner.sink.send(channel, msg)).await {
+            Ok(sent) => sent?,
+            Err(_) => return Err(Error::Timeout("send")),
+        }
+        match tokio::time::timeout_at(deadline, rx).await {
             Ok(Ok(exec)) => Ok(exec),
             Ok(Err(_)) => Err(Error::KernelDied),
             Err(_) => Err(Error::Timeout("reply")),
@@ -1165,6 +1171,41 @@ mod tests {
             .request(Channel::Shell, m, false, Duration::from_millis(10))
             .await;
         assert!(matches!(r, Err(Error::Timeout(_))));
+        assert_eq!(s.pending_len(), 0);
+    }
+
+    /// A transport whose sends never finish, like a DEALER socket whose
+    /// queue is full.
+    struct StuckSink;
+
+    #[async_trait::async_trait]
+    impl TransportSink for StuckSink {
+        async fn send(&self, _channel: Channel, _msg: Message) -> Result<()> {
+            std::future::pending().await
+        }
+        async fn heartbeat(&self, _timeout: Duration) -> Result<bool> {
+            Ok(true)
+        }
+        async fn close(&self) {}
+    }
+
+    #[tokio::test]
+    async fn a_request_whose_send_blocks_times_out() {
+        let (tx, incoming) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(async move { tx.closed().await });
+        let transport = KernelTransport {
+            sink: Arc::new(StuckSink),
+            incoming,
+        };
+        let s = KernelSession::start_with(transport, None, None);
+        let m = s.message("kernel_info_request", &serde_json::json!({}));
+        let r = tokio::time::timeout(
+            Duration::from_secs(5),
+            s.request(Channel::Shell, m, false, Duration::from_millis(50)),
+        )
+        .await
+        .expect("request returned");
+        assert!(matches!(r, Err(Error::Timeout("send"))), "{r:?}");
         assert_eq!(s.pending_len(), 0);
     }
 
