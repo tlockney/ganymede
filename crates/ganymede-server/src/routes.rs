@@ -321,10 +321,20 @@ async fn nbconvert_file(
         .strip_suffix(".ipynb")
         .unwrap_or(&model.name)
         .to_owned();
-    let export = match format.as_str() {
-        "markdown" => ganymede_nbformat::to_markdown(&nb, &title),
-        _ => ganymede_nbformat::to_script(&nb),
+    // Decoding a notebook's images can take a while: off the runtime.
+    let export = {
+        let title = title.clone();
+        blocking(move || {
+            Ok(match format.as_str() {
+                "markdown" => ganymede_nbformat::to_markdown(&nb, &title),
+                _ => ganymede_nbformat::to_script(&nb),
+            })
+        })
+        .await?
     };
+    for skipped in &export.skipped {
+        tracing::warn!("nbconvert: {path}: leaving out {skipped}: bad base64");
+    }
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CACHE_CONTROL,
