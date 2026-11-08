@@ -101,6 +101,10 @@ number. Locally: `cargo llvm-cov --workspace --open`.
   there first. `NB_CLI_VERSION` (nb-cli, for the workstation job) is
   pinned there too and also goes to the latest release on the scheduled
   run.
+- **Base images.** `container/Dockerfile` pins each base image by tag and
+  multi-arch digest, and Dependabot's weekly `docker` group updates
+  them. Keep the `rust` tag the same as the `linux-release` job's
+  container in `ci.yml`.
 - **Rust versions.** CI builds with the latest stable. `rust-version` in
   the workspace `Cargo.toml` is the oldest supported Rust, and the `msrv`
   job builds with exactly that; raise it on purpose.

@@ -18,6 +18,20 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /container
+    schedule:
+      interval: weekly
+    groups:
+      docker:
+        patterns: ["*"]
+    ignore:
+      # Node and Rust version bumps go with ci.yml (node-version and the
+      # linux-release container); only digests and patches come from here.
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
+      - dependency-name: rust
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
   - package-ecosystem: npm
     directories: ["/docs", "/validation"]
     schedule:

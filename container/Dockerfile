@@ -13,18 +13,19 @@
 # already built at container/bin/ganymede (CI, which builds it once for
 # several jobs, #460).
 #
-# NODE_VERSION and CDP_KERNEL_VERSION are what CI tests (ci.yml).
+# CDP_KERNEL_VERSION is what CI tests (ci.yml). The base images are
+# pinned by tag and multi-arch digest; Dependabot updates both. The Rust
+# image's tag matches ci.yml's linux-release container, and Node's major
+# version what CI tests.
 
 ARG GANYMEDE_SOURCE=release
-ARG RUST_VERSION=1.95
-ARG NODE_VERSION=24
 ARG CDP_KERNEL_VERSION=0.8.0
 
-FROM node:${NODE_VERSION}-trixie-slim AS node
+FROM node:24-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS node
 
 # The binary, from the release or from the checkout. Only the stage that
 # GANYMEDE_SOURCE names is built.
-FROM debian:trixie-slim AS binary-release
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS binary-release
 ARG TARGETARCH
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
@@ -47,7 +48,7 @@ RUN set -e; \
     mkdir /out; \
     mv "$name/ganymede" /out/
 
-FROM rust:${RUST_VERSION}-trixie AS binary-checkout
+FROM rust:1.95-trixie@sha256:f49565f188ee00bc2a18dd418183f2c5f23ef7d6e691890517ed341a598f67c3 AS binary-checkout
 WORKDIR /src
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
@@ -55,12 +56,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --locked -p ganymede-cli \
  && mkdir /out && cp target/release/ganymede /out/
 
-FROM debian:trixie-slim AS binary-local
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS binary-local
 COPY container/bin/ganymede /out/ganymede
 
 FROM binary-${GANYMEDE_SOURCE} AS binary
 
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 ARG CDP_KERNEL_VERSION
 
 # ca-certificates: `ganymede lab install` and other HTTPS downloads use
