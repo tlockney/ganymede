@@ -926,7 +926,7 @@ impl Notebooks {
         // is held too; a room that stopped is held again.
         let room_id = notebook_room_id(&self.state.collab, &self.state.contents, path)
             .await
-            .ok_or_else(|| err(format!("cannot open {path}")))?;
+            .map_err(|e| err(format!("cannot open {path}: {e}")))?;
         let held = self
             .holds
             .lock()

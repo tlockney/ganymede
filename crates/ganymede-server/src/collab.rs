@@ -107,10 +107,11 @@ pub struct Collab {
     /// Bumped, under the rooms lock, by every rename or delete, so a path
     /// looked up without the lock can be checked before a room opens on it.
     moves: AtomicU64,
-    /// Held for writing by a rename from its disk change until the ids
-    /// follow ([`Collab::begin_move`]), and for reading by a room opening
-    /// across its path lookup, so no room opens on a path a rename is
-    /// moving away (#522).
+    /// Held for writing by a rename or delete through the contents API,
+    /// from its disk change until the ids follow ([`Collab::begin_move`]),
+    /// and for reading by a room opening across its path lookup and by
+    /// [`Collab::index_existing`], so no room opens and no id is made for a
+    /// path that is moving away or going (#522, #574).
     move_lock: tokio::sync::RwLock<()>,
     next_conn: AtomicU64,
     /// How long a room with no clients is kept: [`CLEANUP_DELAY`].
@@ -215,6 +216,22 @@ impl Collab {
         self.with_ids(move |ids| ids.index(&path)).await
     }
 
+    /// The id for the file at `path`, as [`Collab::index`], if `contents`
+    /// has one matching `options` (a notebook, say), or the contents
+    /// error. Under [`Collab::begin_move`]'s lock for reading, so no
+    /// rename or delete through the contents API lands between the check
+    /// and the id: a path that is gone never gets one.
+    pub(crate) async fn index_existing(
+        &self,
+        contents: &Arc<dyn Contents>,
+        path: &str,
+        options: GetOptions,
+    ) -> ganymede_contents::Result<(String, bool)> {
+        let _no_move = self.move_lock.read().await;
+        contents.get(path, options).await?;
+        Ok(self.index(path).await)
+    }
+
     /// The path a file id names now.
     async fn path_of(&self, id: &str) -> Option<String> {
         let id = id.to_string();
@@ -225,7 +242,8 @@ impl Collab {
     /// until the returned guard drops, after [`Collab::moved`], no room
     /// opens, so none opens on the old path between the disk rename and
     /// the ids following it (#522). Dropping it without `moved`, when the
-    /// rename failed, is fine: the path hasn't changed.
+    /// rename failed, is fine: the path hasn't changed. A delete holds it
+    /// the same way, until [`Collab::removed`] (#574).
     pub(crate) async fn begin_move(&self) -> tokio::sync::RwLockWriteGuard<'_, ()> {
         self.move_lock.write().await
     }
@@ -408,15 +426,14 @@ pub async fn session(
     LenientJson(body): LenientJson<SessionBody>,
 ) -> Result<Response, HttpError> {
     let path = ganymede_contents::normalize_api_path(&path);
-    state
-        .contents
-        .get(&path, GetOptions::default())
+    let (id, new) = state
+        .collab
+        .index_existing(&state.contents, &path, GetOptions::default())
         .await
         .map_err(|e| match e.status() {
             404 => HttpError(404, format!("File {path:?} does not exist")),
             _ => HttpError::from(e),
         })?;
-    let (id, new) = state.collab.index(&path).await;
     let status = if new {
         StatusCode::CREATED
     } else {
@@ -455,8 +472,10 @@ pub async fn fileid_index(
         )
     })?;
     let path = ganymede_contents::normalize_api_path(&path);
-    state.contents.get(&path, GetOptions::default()).await?;
-    let (id, _) = state.collab.index(&path).await;
+    let (id, _) = state
+        .collab
+        .index_existing(&state.contents, &path, GetOptions::default())
+        .await?;
     Ok(Json(json!({"id": id, "path": path})))
 }
 
@@ -660,8 +679,9 @@ async fn send_to_room(
         let read = collab.moves.load(Ordering::SeqCst);
         let path = collab.path_of(id).await?;
         let mut rooms = collab.rooms.lock().expect("rooms");
-        // The read lock keeps renames out, so a change here is a delete
-        // (`removed` doesn't take `move_lock`): look the id up again.
+        // The read lock keeps out renames and deletes through the contents
+        // API; a change here could only come from a caller of `removed`
+        // that skips `begin_move`. Look the id up again to be safe.
         if !rooms.contains_key(room_id) && collab.moves.load(Ordering::SeqCst) != read {
             continue;
         }
@@ -718,21 +738,21 @@ pub(crate) async fn send_to_notebook_room(
     send_to_room(collab, contents, room_id, Some(file_id), cmd).await
 }
 
-/// The room id of the notebook at `path`. `None` when no notebook is
-/// there (nothing, or a directory): as the REST routes do, only an
+/// The room id of the notebook at `path`, or the contents error when no
+/// notebook is there (nothing, or a directory): as the REST routes do, only an
 /// existing file gets a file id, so a mistyped path leaves no row in the
 /// id table.
 pub(crate) async fn notebook_room_id(
     collab: &Collab,
     contents: &Arc<dyn Contents>,
     path: &str,
-) -> Option<String> {
+) -> ganymede_contents::Result<String> {
     let notebook = GetOptions {
         type_hint: Some(ContentType::Notebook),
         ..Default::default()
     };
-    contents.get(path, notebook).await.ok()?;
-    Some(format!("json:notebook:{}", collab.index(path).await.0))
+    let (id, _) = collab.index_existing(contents, path, notebook).await?;
+    Ok(format!("json:notebook:{id}"))
 }
 
 /// Run `f` on the room of the notebook at `path`, opening it if needed.
@@ -750,7 +770,7 @@ pub(crate) async fn with_notebook<R: Send + 'static>(
         let _ = tx.send(r);
         fx
     }));
-    let room_id = notebook_room_id(collab, contents, path).await?;
+    let room_id = notebook_room_id(collab, contents, path).await.ok()?;
     send_to_notebook_room(collab, contents, &room_id, cmd).await?;
     rx.await.ok()
 }
@@ -784,7 +804,7 @@ pub(crate) async fn hold_notebook(
     contents: &Arc<dyn Contents>,
     path: &str,
 ) -> Option<Hold> {
-    let room_id = notebook_room_id(collab, contents, path).await?;
+    let room_id = notebook_room_id(collab, contents, path).await.ok()?;
     let conn = collab.next_conn.fetch_add(1, Ordering::Relaxed);
     // The receiver is dropped: frames sent to this client go nowhere.
     let (out, _, _) = ClientTx::new(usize::MAX);
@@ -1729,9 +1749,10 @@ mod join_tests {
     async fn a_missing_notebook_gets_no_file_id() {
         let (dir, contents) = notebook_dir();
         let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
-        assert!(notebook_room_id(&collab, &contents, "typo.ipynb")
+        let e = notebook_room_id(&collab, &contents, "typo.ipynb")
             .await
-            .is_none());
+            .unwrap_err();
+        assert_eq!(e.status(), 404);
         assert!(with_notebook(&collab, &contents, "typo.ipynb", |_| (
             (),
             Default::default()
@@ -1744,7 +1765,7 @@ mod join_tests {
         // Never indexed: the first index makes the id.
         assert!(collab.index("typo.ipynb").await.1);
         std::fs::create_dir(dir.path().join("sub")).unwrap();
-        assert!(notebook_room_id(&collab, &contents, "sub").await.is_none());
+        assert!(notebook_room_id(&collab, &contents, "sub").await.is_err());
         assert!(collab.index("sub").await.1);
         let id = notebook_room_id(&collab, &contents, "a.ipynb")
             .await
@@ -1752,6 +1773,49 @@ mod join_tests {
         assert_eq!(
             id,
             format!("json:notebook:{}", collab.index("a.ipynb").await.0)
+        );
+    }
+
+    /// Indexing a path while a rename is under way waits for it, so the
+    /// old path, gone by then, gets no id (#574).
+    #[tokio::test]
+    async fn indexing_waits_for_a_rename() {
+        let (dir, contents) = notebook_dir();
+        let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
+        let moving = collab.begin_move().await;
+        let index = {
+            let (collab, contents) = (collab.clone(), contents.clone());
+            tokio::spawn(async move { notebook_room_id(&collab, &contents, "a.ipynb").await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!index.is_finished(), "indexed during the rename");
+        std::fs::rename(dir.path().join("a.ipynb"), dir.path().join("b.ipynb")).unwrap();
+        collab.moved("a.ipynb", "b.ipynb").await;
+        drop(moving);
+        assert_eq!(index.await.unwrap().unwrap_err().status(), 404);
+        assert!(collab.index("a.ipynb").await.1, "the old path got an id");
+    }
+
+    /// Indexing a path while a delete is under way waits for it, so the
+    /// deleted path gets no id (#574).
+    #[tokio::test]
+    async fn indexing_waits_for_a_delete() {
+        let (dir, contents) = notebook_dir();
+        let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
+        let deleting = collab.begin_move().await;
+        let index = {
+            let (collab, contents) = (collab.clone(), contents.clone());
+            tokio::spawn(async move { notebook_room_id(&collab, &contents, "a.ipynb").await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!index.is_finished(), "indexed during the delete");
+        std::fs::remove_file(dir.path().join("a.ipynb")).unwrap();
+        collab.removed("a.ipynb").await;
+        drop(deleting);
+        assert_eq!(index.await.unwrap().unwrap_err().status(), 404);
+        assert!(
+            collab.index("a.ipynb").await.1,
+            "the deleted path got an id"
         );
     }
 
