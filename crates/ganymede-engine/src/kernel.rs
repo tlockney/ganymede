@@ -101,7 +101,9 @@ pub struct ExecuteOptions {
     pub allow_stdin: bool,
     /// Abort queued executions after an error.
     pub stop_on_error: bool,
-    /// `None` waits until the kernel replies.
+    /// `None` waits until the kernel replies. On a timeout the cell is
+    /// interrupted if the kernel had started it; a request still queued
+    /// behind another client's cell is left alone.
     pub timeout: Option<Duration>,
 }
 
@@ -285,19 +287,27 @@ impl Kernel {
         req.allow_stdin = opts.allow_stdin;
         req.stop_on_error = opts.stop_on_error;
         let timeout = opts.timeout.unwrap_or(FOREVER);
-        let exec = match ganymede_exec::execute_streaming(&session, req, timeout, handler).await {
-            // Stop the cell rather than leave the kernel busy; on a
-            // shared kernel the next client would wait behind it. A
-            // `SendTimeout` never reached the kernel, so it falls through:
-            // there is nothing of ours to interrupt.
-            Err(ganymede_kernel_host::Error::Timeout(t)) => {
-                if let Err(e) = session.interrupt().await {
-                    tracing::warn!("interrupting a timed-out cell: {e}");
-                }
-                return Err(ganymede_kernel_host::Error::Timeout(t).into());
-            }
-            r => r?,
+        let mut tracked = Tracked {
+            inner: handler,
+            started: false,
         };
+        let exec =
+            match ganymede_exec::execute_streaming(&session, req, timeout, &mut tracked).await {
+                // Stop the cell rather than leave the kernel busy; on a
+                // shared kernel the next client would wait behind it. Only
+                // once the kernel took the request up: a request still queued
+                // behind another client's cell would interrupt that cell. A
+                // `SendTimeout` never reached the kernel, so it falls through.
+                Err(ganymede_kernel_host::Error::Timeout(t)) => {
+                    if tracked.started {
+                        if let Err(e) = session.interrupt().await {
+                            tracing::warn!("interrupting a timed-out cell: {e}");
+                        }
+                    }
+                    return Err(ganymede_kernel_host::Error::Timeout(t).into());
+                }
+                r => r?,
+            };
         let reply: content::ExecuteReply = exec.reply.content_as()?;
         Ok(ExecuteResult {
             status: reply.status,
@@ -470,6 +480,29 @@ impl Drop for Kernel {
     }
 }
 
+/// Passes everything to `inner` and notes whether the kernel took the
+/// request up: its `busy`, or any output for it.
+struct Tracked<'a> {
+    inner: &'a mut dyn Handler,
+    started: bool,
+}
+
+#[async_trait::async_trait]
+impl Handler for Tracked<'_> {
+    fn on_iopub(&mut self, msg: &Message) {
+        self.started = true;
+        self.inner.on_iopub(msg);
+    }
+    fn on_busy(&mut self) {
+        self.started = true;
+        self.inner.on_busy();
+    }
+    async fn on_input(&mut self, prompt: &str, password: bool) -> Option<String> {
+        self.started = true;
+        self.inner.on_input(prompt, password).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -562,5 +595,25 @@ mod tests {
             .await
             .unwrap();
         assert!(r.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_timeout_while_queued_interrupts_nothing() {
+        let k = Arc::new(fake().await);
+        // Another client's cell keeps the kernel busy.
+        let k2 = k.clone();
+        let other = tokio::spawn(async move { k2.execute("sleep 1500").await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let opts = ExecuteOptions {
+            timeout: Some(Duration::from_millis(100)),
+            ..Default::default()
+        };
+        assert!(k
+            .execute_with("hello", &opts, &mut NoHandler)
+            .await
+            .is_err());
+        // Our request never started, so the other cell runs to the end.
+        let r = other.await.unwrap().unwrap();
+        assert!(r.is_ok(), "{:?}", r.error());
     }
 }
