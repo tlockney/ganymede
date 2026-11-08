@@ -8,3 +8,8 @@ holds a `Weak<Inner>` and upgrades it only while it handles a message,
 as the heartbeat monitor and process watcher already did. When the last
 `KernelSession` drops, `ZmqTransport`'s `Drop` aborts its socket tasks,
 the channel closes, and `route` ends.
+
+`Inner` now also runs `mark_dead` on drop, so `watch_alive` receivers
+see `false`, waiting requests fail, and `close()` runs for transports
+that free resources only there, instead of relying on each sink's own
+`Drop`.
