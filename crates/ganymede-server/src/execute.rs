@@ -246,6 +246,18 @@ fn enqueue(room: &mut Room, cells: &[(String, Option<String>)]) -> (Result<(), R
             Effects::default(),
         );
     }
+    // Another server owns the file (#272): this room never saves, so the
+    // cells' outputs would be lost.
+    if room.is_read_only() {
+        return (
+            Err(Refused::Bad(
+                "the notebook is open in another server on this machine, so it is \
+                 read-only here; run it there"
+                    .into(),
+            )),
+            Effects::default(),
+        );
+    }
     room.edit(|txn, roots: &Roots| {
         let mut found = Vec::new();
         for (id, hash) in cells {
@@ -698,6 +710,27 @@ pub(crate) async fn run_and_wait(
 #[cfg(test)]
 mod request_tests {
     use super::*;
+
+    #[test]
+    fn a_read_only_room_queues_nothing() {
+        let nb: ganymede_nbformat::Notebook = serde_json::from_value(json!({
+            "cells": [{"cell_type": "code", "id": "a", "metadata": {},
+                       "source": "1", "outputs": [], "execution_count": null}],
+            "metadata": {}, "nbformat": 4, "nbformat_minor": 5
+        }))
+        .unwrap();
+        let mut room = Room::notebook_room(&nb, "a.ipynb");
+        let cells = [("a".to_string(), None)];
+        assert!(enqueue(&mut room, &cells).0.is_ok());
+        room.set_read_only(true);
+        let (r, fx) = enqueue(&mut room, &cells);
+        assert!(
+            matches!(&r, Err(Refused::Bad(m)) if m.contains("read-only")),
+            "{:?}",
+            r.err().map(|_| ())
+        );
+        assert!(!fx.changed);
+    }
 
     #[test]
     fn live_outputs_append_until_something_may_change_them() {
