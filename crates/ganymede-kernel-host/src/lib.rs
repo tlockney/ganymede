@@ -39,7 +39,7 @@ pub use process::{
     attach, in_process, KernelOutput, KernelProcess, LaunchOptions, LaunchedKernel, OutputSource,
     Provisioner,
 };
-pub use session::{Execution, Heartbeat, KernelSession};
+pub use session::{Execution, Heartbeat, KernelSession, SoFar};
 pub use transport::{
     in_process_pair, KernelSide, KernelTransport, TransportFactory, TransportSink,
 };

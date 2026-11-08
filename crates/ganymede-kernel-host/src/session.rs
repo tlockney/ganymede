@@ -48,6 +48,15 @@ impl Pending {
     }
 }
 
+/// A waiting request's record so far: see [`KernelSession::record_so_far`].
+#[derive(Debug, Clone)]
+pub struct SoFar {
+    /// The kernel has sent `busy` for the request: it took it up.
+    pub busy: bool,
+    /// Its iopub messages other than `status`, from the index asked for.
+    pub outputs: Vec<Message>,
+}
+
 /// A finished request: its reply and the iopub messages it produced.
 #[derive(Debug, Clone)]
 pub struct Execution {
@@ -303,21 +312,29 @@ impl KernelSession {
         }
     }
 
-    /// The iopub messages (other than `status`) a request still waiting
-    /// for its reply has produced so far, in arrival order: what its
+    /// What a request still waiting for its reply has produced so far,
+    /// read under one lock: whether the kernel has sent `busy` for it,
+    /// and its iopub messages other than `status` from index `from` on,
+    /// in arrival order (cloned). The outputs are what its
     /// [`Execution::outputs`] will start with. A message is recorded here
-    /// before it is broadcast, so a subscriber that fell behind can catch
-    /// up from it. Only the messages from index `from` on are returned
-    /// (cloned), so a caller that keeps how far it has read takes just the
-    /// new tail. `None` once the request is complete or gone, and before
-    /// [`KernelSession::request`] for it is first polled.
-    pub fn outputs_so_far(&self, msg_id: &str, from: usize) -> Option<Vec<Message>> {
+    /// before it is broadcast, and the record keeps every status, so a
+    /// subscriber that fell behind can catch up from it; a caller that
+    /// keeps how far it has read takes just the new tail. `None` once the
+    /// request is complete or gone, and before [`KernelSession::request`]
+    /// for it is first polled.
+    pub fn record_so_far(&self, msg_id: &str, from: usize) -> Option<SoFar> {
         self.inner
             .pending
             .lock()
             .unwrap()
             .get(msg_id)
-            .map(|p| p.outputs.get(from..).unwrap_or_default().to_vec())
+            .map(|p| SoFar {
+                busy: p
+                    .status
+                    .iter()
+                    .any(|m| m.content["execution_state"] == "busy"),
+                outputs: p.outputs.get(from..).unwrap_or_default().to_vec(),
+            })
     }
 
     /// Number of requests waiting for a reply.
@@ -1266,25 +1283,31 @@ mod tests {
         misses: 3,
     };
 
+    /// A waiting request's record holding `outputs` and `status`.
+    fn pending_with(outputs: Vec<Message>, status: Vec<Message>) -> Pending {
+        Pending {
+            want_idle: true,
+            reply: None,
+            broadcast_reply: None,
+            idle_seen: false,
+            outputs,
+            status,
+            done: None,
+        }
+    }
+
     #[tokio::test]
-    async fn outputs_so_far_gives_the_tail_from_an_index() {
+    async fn record_so_far_gives_the_tail_from_an_index() {
         let (s, _, _) = silent_session(true, FAST);
         let out = |n: i64| s.message("stream", &serde_json::json!({ "n": n }));
         s.inner.pending.lock().unwrap().insert(
             "r".into(),
-            Pending {
-                want_idle: false,
-                reply: None,
-                broadcast_reply: None,
-                idle_seen: false,
-                outputs: vec![out(0), out(1), out(2)],
-                status: Vec::new(),
-                done: None,
-            },
+            pending_with(vec![out(0), out(1), out(2)], Vec::new()),
         );
         let ns = |from| {
-            s.outputs_so_far("r", from)
+            s.record_so_far("r", from)
                 .unwrap()
+                .outputs
                 .iter()
                 .map(|m| m.content["n"].as_i64().unwrap())
                 .collect::<Vec<_>>()
@@ -1293,7 +1316,28 @@ mod tests {
         assert_eq!(ns(2), [2]);
         assert_eq!(ns(3), Vec::<i64>::new());
         assert_eq!(ns(9), Vec::<i64>::new(), "past the end is empty");
-        assert!(s.outputs_so_far("other", 0).is_none());
+        assert!(s.record_so_far("other", 0).is_none());
+    }
+
+    #[tokio::test]
+    async fn record_so_far_says_whether_busy_came() {
+        let (s, _, _) = silent_session(true, FAST);
+        let state = |st: &str| s.message("status", &serde_json::json!({ "execution_state": st }));
+        let pending = |status| pending_with(Vec::new(), status);
+        s.inner
+            .pending
+            .lock()
+            .unwrap()
+            .insert("queued".into(), pending(Vec::new()));
+        s.inner
+            .pending
+            .lock()
+            .unwrap()
+            .insert("running".into(), pending(vec![state("busy")]));
+        let busy = |id| s.record_so_far(id, 0).map(|r| r.busy);
+        assert_eq!(busy("queued"), Some(false));
+        assert_eq!(busy("running"), Some(true));
+        assert_eq!(busy("other"), None);
     }
 
     #[tokio::test]

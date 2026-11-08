@@ -484,7 +484,7 @@ impl Drop for Kernel {
 }
 
 /// Passes everything to `inner` and notes whether the kernel took the
-/// request up: its `busy`, or any output for it.
+/// request up, by [`Handler::on_busy`].
 struct Tracked<'a> {
     inner: &'a mut dyn Handler,
     started: bool,
@@ -493,7 +493,6 @@ struct Tracked<'a> {
 #[async_trait::async_trait]
 impl Handler for Tracked<'_> {
     fn on_iopub(&mut self, msg: &Message) {
-        self.started = true;
         self.inner.on_iopub(msg);
     }
     fn on_busy(&mut self) {
@@ -501,7 +500,6 @@ impl Handler for Tracked<'_> {
         self.inner.on_busy();
     }
     async fn on_input(&mut self, prompt: &str, password: bool) -> Option<String> {
-        self.started = true;
         self.inner.on_input(prompt, password).await
     }
 }

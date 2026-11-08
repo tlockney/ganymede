@@ -147,7 +147,11 @@ pub trait Handler: Send {
     /// The kernel took the request up: its `busy` status for the request
     /// arrived. The one message the protocol requires of every request,
     /// so it tells a run apart from one still queued even when the code
-    /// prints nothing and the kernel sends no `execute_input`.
+    /// prints nothing and the kernel sends no `execute_input`. Called at
+    /// most once, before any output for the request, and not lost to a
+    /// lag: a `busy` the broadcast skipped is read from the request's
+    /// record, or from the reply when the request finished first. The
+    /// one rule for "the kernel started it" (#588).
     fn on_busy(&mut self) {}
     /// The kernel asked for input. `None` answers with an empty string.
     /// Async, so a UI can wait for the user without blocking the runtime.
@@ -216,6 +220,9 @@ pub async fn execute_streaming(
     // finished): live messages would then come before skipped ones, so
     // the rest is left to the reply's record.
     let mut behind = false;
+    // Whether `on_busy` has been called: once, from the broadcast or,
+    // after a lag that skipped the `busy`, from the request's record.
+    let mut busy = false;
     let exec = loop {
         tokio::select! {
             biased;
@@ -223,7 +230,7 @@ pub async fn execute_streaming(
                 Ok((ch, m)) if m.parent_id() == Some(id.as_str()) => match ch {
                     Channel::IoPub if m.msg_type() == "status" => {
                         if m.content["execution_state"] == "busy" {
-                            handler.on_busy();
+                            note_busy(&mut busy, handler);
                         }
                     }
                     Channel::IoPub if !behind => {
@@ -237,7 +244,7 @@ pub async fn execute_streaming(
                         // first, even if it is still behind in the
                         // broadcast.
                         if !behind {
-                            catch_up(session, &id, &mut handed, &mut streamed, handler);
+                            catch_up(session, &id, &mut handed, &mut streamed, &mut busy, handler);
                         }
                         let prompt = m.content["prompt"].as_str().unwrap_or_default();
                         let password = m.content["password"].as_bool().unwrap_or(false);
@@ -251,8 +258,10 @@ pub async fn execute_streaming(
                     // The record has everything broadcast so far, in
                     // order: hand over what was skipped, then go on live.
                     tracing::debug!("output handler fell {n} messages behind; catching up");
+                    // The skipped messages may include the `busy`, which
+                    // the record keeps too.
                     if sent.load(Ordering::Relaxed)
-                        && !catch_up(session, &id, &mut handed, &mut streamed, handler)
+                        && !catch_up(session, &id, &mut handed, &mut streamed, &mut busy, handler)
                     {
                         tracing::warn!(
                             "output handler fell {n} messages behind as the request finished; \
@@ -265,6 +274,15 @@ pub async fn execute_streaming(
             r = &mut request => break r?,
         }
     };
+    // A lag noticed after the request finished skipped the `busy` with
+    // the record gone from the session; the reply carries it.
+    if exec
+        .status
+        .iter()
+        .any(|m| m.content["execution_state"] == "busy")
+    {
+        note_busy(&mut busy, handler);
+    }
     // The reply can win the race against the last broadcasts; the
     // execution's own record has everything, in order.
     for m in &exec.outputs {
@@ -275,9 +293,18 @@ pub async fn execute_streaming(
     Ok(exec)
 }
 
+/// Calls `on_busy` unless `busy` says it already was.
+fn note_busy(busy: &mut bool, handler: &mut dyn Handler) {
+    if !*busy {
+        *busy = true;
+        handler.on_busy();
+    }
+}
+
 /// Hands `handler` the request's recorded outputs it hasn't had yet, in
 /// order, reading the record from `handed` on and moving `handed` past
-/// what it read. The session records a message before broadcasting it,
+/// what it read. If the record holds the `busy`, `on_busy` comes first:
+/// both are read under one lock, so no output is handed before it. The session records a message before broadcasting it,
 /// so after this every output the broadcast has carried so far has been
 /// handed over, and later live ones follow in order. `false`, handing
 /// over nothing, when the request has finished and its record went with
@@ -287,13 +314,17 @@ fn catch_up(
     id: &str,
     handed: &mut usize,
     streamed: &mut HashSet<String>,
+    busy: &mut bool,
     handler: &mut dyn Handler,
 ) -> bool {
-    let Some(outputs) = session.outputs_so_far(id, *handed) else {
+    let Some(record) = session.record_so_far(id, *handed) else {
         return false;
     };
-    *handed += outputs.len();
-    for m in outputs {
+    if record.busy {
+        note_busy(busy, handler);
+    }
+    *handed += record.outputs.len();
+    for m in record.outputs {
         if streamed.insert(m.header.msg_id.clone()) {
             handler.on_iopub(&m);
         }
@@ -1060,6 +1091,187 @@ mod tests {
         assert_eq!(timestamp(&m), "2026-10-17T16:41:06.123000Z");
         m.header.date = "2026-10-17T16:41:06.123456+00:00".into();
         assert_eq!(timestamp(&m), "2026-10-17T16:41:06.123456Z");
+    }
+
+    /// Counts `on_busy` calls.
+    struct Busies(usize);
+    #[async_trait::async_trait]
+    impl Handler for Busies {
+        fn on_busy(&mut self) {
+            self.0 += 1;
+        }
+    }
+
+    /// `on_busy` comes once per request, even if the kernel repeats its
+    /// `busy` (#588).
+    #[tokio::test]
+    async fn on_busy_is_called_once() {
+        let (host, mut side) = in_process_pair(64);
+        tokio::spawn(async move {
+            while let Some((ch, m)) = side.incoming.recv().await {
+                let send = |c, t: &str, v: serde_json::Value| (c, Message::reply_to(&m, t, &v));
+                let state =
+                    |st: &str| send(Channel::IoPub, "status", json!({"execution_state": st}));
+                let out = match m.msg_type() {
+                    "kernel_info_request" => vec![
+                        state("idle"),
+                        send(
+                            ch,
+                            "kernel_info_reply",
+                            serde_json::to_value(ganymede_kernel_host::testing::kernel_info())
+                                .unwrap(),
+                        ),
+                    ],
+                    "execute_request" => vec![
+                        state("busy"),
+                        state("busy"),
+                        state("idle"),
+                        send(
+                            Channel::Shell,
+                            "execute_reply",
+                            json!({"status": "ok", "execution_count": 1}),
+                        ),
+                    ],
+                    _ => vec![],
+                };
+                for o in out {
+                    let _ = side.outgoing.send(o).await;
+                }
+            }
+        });
+        let s = KernelSession::start(host, None);
+        s.nudge(Duration::from_secs(5)).await.unwrap();
+        let mut h = Busies(0);
+        execute_streaming(
+            &s,
+            ExecuteRequest::new("x"),
+            Duration::from_secs(10),
+            &mut h,
+        )
+        .await
+        .unwrap();
+        assert_eq!(h.0, 1);
+    }
+
+    /// Records the order of `on_busy` and stream outputs, and says when
+    /// `on_busy` came.
+    struct Order(Vec<&'static str>, Option<tokio::sync::oneshot::Sender<()>>);
+    #[async_trait::async_trait]
+    impl Handler for Order {
+        fn on_busy(&mut self) {
+            self.0.push("busy");
+            if let Some(tx) = self.1.take() {
+                let _ = tx.send(());
+            }
+        }
+        fn on_iopub(&mut self, m: &Message) {
+            if m.msg_type() == "stream" {
+                self.0.push("out");
+            }
+        }
+    }
+
+    /// A lag that skips the request's `busy` still calls `on_busy`, once
+    /// and before any output: from the request's record while it runs
+    /// (`hold`), or from the reply when it finished first (#588).
+    async fn busy_skipped_by_a_lag(hold: bool) -> Vec<&'static str> {
+        // More than the session's broadcast keeps, so the `busy` is lost.
+        const N: usize = 2000;
+        let (host, mut side) = in_process_pair(64);
+        let (flooded_tx, flooded_rx) = tokio::sync::oneshot::channel::<()>();
+        let (busy_tx, busy_rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let mut flooded_tx = Some(flooded_tx);
+            let mut busy_rx = Some(busy_rx);
+            while let Some((ch, m)) = side.incoming.recv().await {
+                let send = |c, t: &str, v: serde_json::Value| (c, Message::reply_to(&m, t, &v));
+                let state =
+                    |st: &str| send(Channel::IoPub, "status", json!({"execution_state": st}));
+                let end = [
+                    state("idle"),
+                    send(
+                        Channel::Shell,
+                        "execute_reply",
+                        json!({"status": "ok", "execution_count": 1}),
+                    ),
+                ];
+                match m.msg_type() {
+                    "kernel_info_request" => {
+                        let info =
+                            serde_json::to_value(ganymede_kernel_host::testing::kernel_info())
+                                .unwrap();
+                        for o in [state("idle"), send(ch, "kernel_info_reply", info)] {
+                            let _ = side.outgoing.send(o).await;
+                        }
+                    }
+                    "execute_request" => {
+                        let _ = side.outgoing.send(state("busy")).await;
+                        for i in 0..N {
+                            let text = json!({"name": "stdout", "text": i.to_string()});
+                            let _ = side
+                                .outgoing
+                                .send(send(Channel::IoPub, "stream", text))
+                                .await;
+                        }
+                        if hold {
+                            let _ = flooded_tx.take().unwrap().send(());
+                            // Reply only once the handler has had `on_busy`.
+                            let busy = busy_rx.take().unwrap();
+                            let _ = tokio::time::timeout(Duration::from_secs(5), busy).await;
+                            for o in end {
+                                let _ = side.outgoing.send(o).await;
+                            }
+                        } else {
+                            for o in end {
+                                let _ = side.outgoing.send(o).await;
+                            }
+                            let _ = flooded_tx.take().unwrap().send(());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+        let s = KernelSession::start(host, None);
+        s.nudge(Duration::from_secs(5)).await.unwrap();
+        let mut h = Order(vec![], Some(busy_tx));
+        {
+            let run = execute_streaming(
+                &s,
+                ExecuteRequest::new("x"),
+                Duration::from_secs(30),
+                &mut h,
+            );
+            tokio::pin!(run);
+            // Poll once, which subscribes and sends the request, then leave
+            // the broadcast unread while the kernel floods it.
+            std::future::poll_fn(|cx| {
+                use std::future::Future;
+                assert!(run.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            flooded_rx.await.unwrap();
+            // Let the session take in what the kernel sent.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            run.await.unwrap();
+        }
+        assert_eq!(h.0.iter().filter(|e| **e == "out").count(), N);
+        h.0
+    }
+
+    #[tokio::test]
+    async fn on_busy_survives_a_lag_while_the_request_runs() {
+        let events = busy_skipped_by_a_lag(true).await;
+        assert_eq!(events[0], "busy");
+        assert_eq!(events.iter().filter(|e| **e == "busy").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn on_busy_survives_a_lag_after_the_request_finished() {
+        let events = busy_skipped_by_a_lag(false).await;
+        assert_eq!(events[0], "busy");
+        assert_eq!(events.iter().filter(|e| **e == "busy").count(), 1);
     }
 
     /// Records the number each stream output carries.
