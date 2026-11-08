@@ -295,7 +295,7 @@ impl KernelSession {
         if let Err(e) = self.ensure_alive() {
             return (Err(e), false);
         }
-        let (tx, rx) = oneshot::channel();
+        let (tx, mut rx) = oneshot::channel();
         let id = msg.header.msg_id.clone();
         self.inner.pending.lock().unwrap().insert(
             id.clone(),
@@ -312,7 +312,7 @@ impl KernelSession {
         // Removes the entry however this future ends: an error, a timeout,
         // or being dropped by a cancelled caller. Otherwise `route` would
         // keep collecting the request's iopub output until the kernel dies.
-        let _guard = PendingGuard {
+        let guard = PendingGuard {
             inner: &self.inner,
             id,
         };
@@ -322,22 +322,24 @@ impl KernelSession {
         let exchange = async {
             self.inner.sink.send(channel, msg).await?;
             sent = true;
-            rx.await.map_err(|_| Error::KernelDied)
+            (&mut rx).await.map_err(|_| Error::KernelDied)
         };
         let result = match tokio::time::timeout(timeout, exchange).await {
             Ok(r) => r,
-            Err(_) if sent => Err(Error::Timeout("reply")),
+            // The reply may have completed the request as the time ran
+            // out, taking its record with it: it still counts.
+            Err(_) if sent => rx.try_recv().map_err(|_| Error::Timeout("reply")),
             Err(_) => Err(Error::SendTimeout),
         };
         let busy = match &result {
             Ok(exec) => has_busy(&exec.status),
-            // Before `_guard` drops the record.
+            // Before `guard` drops the record.
             Err(_) => self
                 .inner
                 .pending
                 .lock()
                 .unwrap()
-                .get(&_guard.id)
+                .get(&guard.id)
                 .is_some_and(|p| has_busy(&p.status)),
         };
         (result, busy)

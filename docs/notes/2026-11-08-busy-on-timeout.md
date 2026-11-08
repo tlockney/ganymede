@@ -10,6 +10,8 @@ reads the record just before it goes, and says whether `busy` came; with
 a reply it reads the reply's statuses. `execute_streaming` calls
 `on_busy` from that before it returns, which also replaces its separate
 check of the reply's statuses for a lag noticed after the request
-finished. The race itself can't be reproduced on demand, so the test is
+finished. A reply that completed the request as the time ran out
+took the record with it; the request now takes that reply from its
+channel instead of reporting a timeout. The race itself can't be reproduced on demand, so the test is
 at the session level: a request the kernel took up but never answered
 times out with `busy` reported, and one left queued without.

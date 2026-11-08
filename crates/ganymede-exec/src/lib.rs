@@ -222,8 +222,10 @@ pub async fn execute_streaming(
     // finished): live messages would then come before skipped ones, so
     // the rest is left to the reply's record.
     let mut behind = false;
-    // Whether `on_busy` has been called: once, from the broadcast or,
-    // after a lag that skipped the `busy`, from the request's record.
+    // Whether `on_busy` has been called: once, from the broadcast, from
+    // the request's record after a lag that skipped the `busy`, or from
+    // what the request ended with (its reply, or its record as it timed
+    // out).
     let mut busy = false;
     let exec = loop {
         tokio::select! {
