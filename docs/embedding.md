@@ -57,6 +57,13 @@ and no timeout; a cell that runs past its `timeout` is interrupted. A
 request still queued behind another client's cell when it times out is
 not: the interrupt would stop that cell instead.
 
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release, which returns `Host(Timeout)` for both.
+
+A timed-out cell that started fails with `Host(Timeout)`; one still
+queued fails with `Queued`, and the kernel runs it when its turn comes.
+
 `Kernel` is `Send + Sync`: put it in an `Arc` to interrupt from one task
 while another executes. A kernel the engine launched is killed when the
 `Kernel` is dropped. Calls return `ganymede_engine::Result<T>`, except
@@ -68,6 +75,7 @@ pub enum Error {
     Notebook(ganymede_nbformat::Error), // reading or parsing a notebook
     Exec(ganymede_exec::Error),         // a notebook cell that failed or timed out
     Io(std::io::Error),
+    Queued(std::time::Duration),        // timed out before the kernel started the cell
     Usage(String),                      // a call this kernel or build can't serve
 }
 ```
