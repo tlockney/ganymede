@@ -9,7 +9,6 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::Engine;
 use chrono::{DateTime, TimeDelta, Utc};
 use ganymede_nbformat::Notebook;
@@ -34,12 +33,10 @@ pub const DEFAULT_CHECKPOINT_DIR: &str = ".ipynb_checkpoints";
 /// microseconds); the slack covers clients that round it to coarser units.
 const CONFLICT_WINDOW: TimeDelta = TimeDelta::milliseconds(500);
 
-/// Lenient base64 decoder for uploads: `jupyter_server` uses
-/// `base64.decodebytes`, which ignores padding problems and whitespace.
-const BASE64_LENIENT: GeneralPurpose = GeneralPurpose::new(
-    &base64::alphabet::STANDARD,
-    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
-);
+// Lenient base64 decoder for uploads: `jupyter_server` uses
+// `base64.decodebytes`, which ignores padding problems and whitespace.
+// Shared with the notebook export, so the two accept the same input.
+use ganymede_nbformat::BASE64_LENIENT;
 
 /// Options for [`FsContents`].
 #[derive(Debug, Clone, Default)]

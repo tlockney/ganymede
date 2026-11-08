@@ -54,8 +54,9 @@ pub enum ResourceData {
 }
 
 /// Base64 with or without padding, as Python's `base64.decodebytes`
-/// (which jupyter_server uses) and JupyterLab accept it.
-const BASE64_LENIENT: GeneralPurpose = GeneralPurpose::new(
+/// (which jupyter_server uses) and JupyterLab accept it. The contents
+/// crate decodes uploads with it too.
+pub const BASE64_LENIENT: GeneralPurpose = GeneralPurpose::new(
     &base64::alphabet::STANDARD,
     GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
 );
