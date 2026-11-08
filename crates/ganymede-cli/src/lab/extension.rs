@@ -499,11 +499,15 @@ fn install_wheel(
     if !force {
         check_replacements(name, &others, &extensions)?;
     }
-    if let Some(old) = record(root, key) {
-        for ext in old.extensions.iter().filter(|e| !extensions.contains(*e)) {
-            remove_extension(root, ext)?;
-        }
-    }
+    let dropped: Vec<String> = record(root, key)
+        .map(|old| {
+            old.extensions
+                .into_iter()
+                .filter(|e| !extensions.contains(e))
+                .collect()
+        })
+        .unwrap_or_default();
+    place(root, staging.path(), key, &extensions, &dropped)?;
     for mut other in others {
         let before = other.extensions.len();
         other.extensions.retain(|e| !extensions.contains(e));
@@ -511,18 +515,6 @@ fn install_wheel(
             eprintln!("{name} replaces extensions installed by {}", other.name);
             other.save(root)?;
         }
-    }
-    for ext in &extensions {
-        let dest = root.join(ext);
-        if dest.exists() {
-            std::fs::remove_dir_all(&dest)
-                .with_context(|| format!("removing {}", dest.display()))?;
-        }
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::rename(staging.path().join(ext), &dest)
-            .with_context(|| format!("moving {ext} to {}", dest.display()))?;
     }
     Record {
         key: key.to_string(),
@@ -534,6 +526,88 @@ fn install_wheel(
     .save(root)?;
     eprintln!("installed {name} {version}");
     Ok(true)
+}
+
+/// Moves `extensions` from `staging` into `root`, replacing what is there,
+/// and removes `dropped`: all of it or, on an error, none of it. What it
+/// replaces or removes goes to a backup directory first and comes back if
+/// a later move fails.
+fn place(
+    root: &Path,
+    staging: &Path,
+    key: &str,
+    extensions: &BTreeSet<String>,
+    dropped: &[String],
+) -> Result<()> {
+    if let Some(ext) = dropped.iter().find(|e| !valid_extension(e)) {
+        bail!("refusing to remove {ext:?}: not an extension name");
+    }
+    let backup = tempfile::Builder::new()
+        .prefix(&format!(".{key}-old-"))
+        .tempdir_in(root)?;
+    let mut saved: Vec<&str> = Vec::new();
+    let mut placed: Vec<&str> = Vec::new();
+    let result = (|| -> Result<()> {
+        for ext in extensions.iter().chain(dropped) {
+            let dest = root.join(ext);
+            if !dest.exists() {
+                continue;
+            }
+            let to = backup.path().join(ext);
+            if let Some(parent) = to.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::rename(&dest, &to)
+                .with_context(|| format!("moving {} aside", dest.display()))?;
+            saved.push(ext);
+        }
+        for ext in extensions {
+            let dest = root.join(ext);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("creating {}", parent.display()))?;
+            }
+            std::fs::rename(staging.join(ext), &dest)
+                .with_context(|| format!("moving {ext} to {}", dest.display()))?;
+            placed.push(ext);
+        }
+        Ok(())
+    })();
+    if let Err(e) = result {
+        for ext in placed {
+            // Back to staging, or gone with it if that fails.
+            if std::fs::rename(root.join(ext), staging.join(ext)).is_err() {
+                let _ = std::fs::remove_dir_all(root.join(ext));
+            }
+        }
+        let mut lost = false;
+        for ext in saved {
+            lost |= std::fs::rename(backup.path().join(ext), root.join(ext)).is_err();
+        }
+        remove_empty_scopes(root, extensions.iter().chain(dropped));
+        if lost {
+            // Keep what couldn't go back rather than delete it with the
+            // backup directory.
+            let kept = backup.keep();
+            return Err(e.context(format!(
+                "could not restore every replaced extension; the old ones are in {}",
+                kept.display()
+            )));
+        }
+        return Err(e);
+    }
+    remove_empty_scopes(root, dropped);
+    Ok(())
+}
+
+/// Removes the `@scope` directories of `exts` that are now empty.
+fn remove_empty_scopes<'a>(root: &Path, exts: impl IntoIterator<Item = &'a String>) {
+    for ext in exts {
+        if let Some((scope, _)) = ext.split_once('/') {
+            // Fails, harmlessly, while other extensions share the scope.
+            let _ = std::fs::remove_dir(root.join(scope));
+        }
+    }
 }
 
 /// Fails if any of `others` installed one of `extensions`.
@@ -1096,6 +1170,48 @@ mod tests {
         assert_eq!(record(&root, "a").unwrap().version, "2.0.0");
         // No temp files left beside the record.
         assert_eq!(std::fs::read_dir(root.join(RECORDS)).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_failed_move_puts_the_old_extensions_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // The old version: `@a/one` and `@c/gone`.
+        for ext in ["@a/one", "@c/gone"] {
+            std::fs::create_dir_all(root.join(ext)).unwrap();
+            std::fs::write(root.join(ext).join("package.json"), "old").unwrap();
+        }
+        let staging = tempfile::tempdir_in(root).unwrap();
+        for ext in ["@a/one", "@b/two"] {
+            std::fs::create_dir_all(staging.path().join(ext)).unwrap();
+            std::fs::write(staging.path().join(ext).join("package.json"), "new").unwrap();
+        }
+        let new: BTreeSet<String> = ["@a/one".into(), "@b/two".into()].into();
+        let dropped = vec!["@c/gone".to_string()];
+
+        // A file where `@b`'s directory should go fails the second move.
+        std::fs::write(root.join("@b"), "").unwrap();
+        assert!(place(root, staging.path(), "pkg", &new, &dropped).is_err());
+        for ext in ["@a/one", "@c/gone"] {
+            let got = std::fs::read_to_string(root.join(ext).join("package.json")).unwrap();
+            assert_eq!(got, "old", "{ext}");
+        }
+        assert!(root.join("@b").is_file());
+
+        // Without it, everything moves.
+        std::fs::remove_file(root.join("@b")).unwrap();
+        place(root, staging.path(), "pkg", &new, &dropped).unwrap();
+        for ext in ["@a/one", "@b/two"] {
+            let got = std::fs::read_to_string(root.join(ext).join("package.json")).unwrap();
+            assert_eq!(got, "new", "{ext}");
+        }
+        assert!(!root.join("@c").exists());
+        let left: Vec<_> = std::fs::read_dir(root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n.starts_with(".pkg-old-"))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
     }
 
     #[test]
