@@ -663,9 +663,18 @@ fn redirect(location: &str) -> Response {
 
 // ----- login and logout pages ---------------------------------------------------
 
+/// Largest `/login` form body. It holds a token, `_xsrf` and `next`, and
+/// is read before the XSRF check, so it gets less than `max_body_size`.
+const LOGIN_BODY_LIMIT: usize = 64 * 1024;
+
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .route("/login", get(login_form).post(login))
+        .route(
+            "/login",
+            get(login_form)
+                .post(login)
+                .layer(axum::extract::DefaultBodyLimit::max(LOGIN_BODY_LIMIT)),
+        )
         .route("/logout", get(logout))
         .with_state(state)
 }

@@ -1865,6 +1865,10 @@ async fn login_form_and_logout() {
     .await;
     assert_eq!(st, StatusCode::UNAUTHORIZED);
     assert!(html.contains("Invalid credentials"));
+    // The form is read before the XSRF check, so its body is kept small.
+    let big = format!("password={}&_xsrf={}", "x".repeat(65 * 1024), enc(&xsrf));
+    let (st, _, _) = send(&app, form(&xsrf_cookie, big)).await;
+    assert_eq!(st, StatusCode::PAYLOAD_TOO_LARGE);
     let (st, h, _) = send(
         &app,
         form(
