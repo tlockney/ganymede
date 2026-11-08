@@ -102,8 +102,10 @@ pub struct ExecuteOptions {
     /// Abort queued executions after an error.
     pub stop_on_error: bool,
     /// `None` waits until the kernel replies. On a timeout the cell is
-    /// interrupted if the kernel had started it; a request still queued
-    /// behind another client's cell is left alone.
+    /// interrupted if the kernel had started it, and the call fails with
+    /// the host's `Timeout`. A request still queued behind another
+    /// client's cell is left alone, and fails with
+    /// [`Error::Queued`](crate::Error::Queued): the kernel runs it later.
     pub timeout: Option<Duration>,
 }
 
@@ -299,10 +301,11 @@ impl Kernel {
                 // behind another client's cell would interrupt that cell. A
                 // `SendTimeout` never reached the kernel, so it falls through.
                 Err(ganymede_kernel_host::Error::Timeout(t)) => {
-                    if tracked.started {
-                        if let Err(e) = session.interrupt().await {
-                            tracing::warn!("interrupting a timed-out cell: {e}");
-                        }
+                    if !tracked.started {
+                        return Err(crate::Error::Queued(timeout));
+                    }
+                    if let Err(e) = session.interrupt().await {
+                        tracing::warn!("interrupting a timed-out cell: {e}");
                     }
                     return Err(ganymede_kernel_host::Error::Timeout(t).into());
                 }
@@ -606,10 +609,17 @@ mod tests {
             timeout: Some(Duration::from_millis(100)),
             ..Default::default()
         };
-        assert!(k
+        let e = k
             .execute_with("quiet 10000", &opts, &mut NoHandler)
             .await
-            .is_err());
+            .unwrap_err();
+        assert!(
+            matches!(
+                e,
+                crate::Error::Host(ganymede_kernel_host::Error::Timeout(_))
+            ),
+            "{e}"
+        );
         let opts = ExecuteOptions {
             timeout: Some(Duration::from_secs(2)),
             ..Default::default()
@@ -632,10 +642,11 @@ mod tests {
             timeout: Some(Duration::from_millis(100)),
             ..Default::default()
         };
-        assert!(k
+        let e = k
             .execute_with("hello", &opts, &mut NoHandler)
             .await
-            .is_err());
+            .unwrap_err();
+        assert!(matches!(e, crate::Error::Queued(_)), "{e}");
         // Our request never started, so the other cell runs to the end.
         let r = other.await.unwrap().unwrap();
         assert!(r.is_ok(), "{:?}", r.error());
