@@ -934,13 +934,16 @@ impl Notebooks {
             .get(&room_id)
             .is_some_and(Hold::is_live);
         if !held {
-            if let Some(h) = hold_notebook(&self.state.collab, &self.state.contents, path).await {
+            if let Some(h) = hold_notebook(&self.state.collab, &self.state.contents, &room_id).await
+            {
                 // A hold made meanwhile by another call is replaced; it
                 // leaves the room as this one joins it.
-                self.holds.lock().expect("holds").insert(room_id, h);
+                self.holds.lock().expect("holds").insert(room_id.clone(), h);
             }
         }
-        with_notebook(&self.state.collab, &self.state.contents, path, f)
+        // The same room as the hold, even if the file moves meanwhile:
+        // the room follows its file id.
+        with_notebook(&self.state.collab, &self.state.contents, &room_id, f)
             .await
             .ok_or_else(|| err(format!("cannot open {path}")))
     }
