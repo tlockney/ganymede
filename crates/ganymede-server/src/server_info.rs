@@ -124,6 +124,14 @@ impl ServerInfoFiles {
     pub fn paths(&self) -> &[PathBuf] {
         &self.paths
     }
+
+    /// The `jpserver-<pid>-open.html` written, if writing it worked.
+    pub fn open_html(&self) -> Option<&Path> {
+        self.paths
+            .iter()
+            .find(|p| p.to_string_lossy().ends_with("-open.html"))
+            .map(PathBuf::as_path)
+    }
 }
 
 impl Drop for ServerInfoFiles {
