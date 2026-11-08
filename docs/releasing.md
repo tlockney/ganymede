@@ -83,10 +83,22 @@ run on `main` replaces it.
 
 ## When it fails
 
-Find the failed `release.yml` run under the tag in the Actions tab. The
-tag already exists, so pushing to `main` or rerunning `tag-release.yml`
-does nothing ("vX.Y.Z exists; nothing to do"). Recover from the release
-workflow itself, depending on how far it got.
+If `scripts/release.sh --execute` stops after its commit (the push, the
+issue or the pull request failed), run it again from the
+`release/vX.Y.Z` branch it left you on, with `--execute`: it skips the
+bump, pushes the branch, and opens whichever of the issue and pull
+request doesn't exist yet. If it stops earlier, the branch doesn't
+exist and a rerun from `main` starts over.
+
+If `tag-release.yml` pushed the tag but failed to start `release.yml`,
+rerun it: with the tag on the merge commit and no release run for it,
+it starts the release.
+
+Otherwise find the failed `release.yml` run under the tag in the
+Actions tab. Once it has run, pushing to `main` or rerunning
+`tag-release.yml` does nothing ("vX.Y.Z exists and release.yml has run
+for it"). Recover from the release workflow itself, depending on how
+far it got.
 
 ### A job failed and nothing was published
 
