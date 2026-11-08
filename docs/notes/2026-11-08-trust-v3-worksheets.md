@@ -11,3 +11,10 @@ older than v3. `check_cells` and `mark_cells` now do the same.
 The fixture generator (`tests/fixtures/generate_trust.py`) gained five v3
 and v2 cases, recorded from nbformat 5.11.1; the existing fixtures came out
 unchanged.
+
+A test saving a v3 notebook through `FsContents` found a second gap: save
+upgrades it to v4 and signed the upgraded notebook with its
+`orig_nbformat` metadata, which writing strips, so the signature never
+matched what `get` reads back and a saved v3 notebook was never trusted
+on reopening. Save now signs the notebook read back from the bytes it
+writes.
