@@ -73,7 +73,8 @@ pub enum LabCmd {
     },
     /// Delete what interrupted installs left behind.
     ///
-    /// That is partial downloads and unpacked staging directories.
+    /// That is partial downloads and unpacked staging directories. A
+    /// directory with an install running is skipped.
     Clean,
     /// Remove every installed version and extension.
     ///
@@ -149,18 +150,88 @@ pub fn run(cmd: LabCmd) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// The file in an installs directory that installs hold a shared lock on
+/// while they run, and `lab clean` an exclusive one.
+const LOCK: &str = ".lock";
+
+/// Takes a shared lock on `dir`'s [`LOCK`] file, creating both, so `lab
+/// clean` leaves this install's temporary entries alone until the
+/// returned file drops. Installs don't exclude each other: their entries
+/// have unique names. Best-effort: where the filesystem has no working
+/// locks the install goes ahead unlocked, as it did before the lock.
+pub(crate) fn install_lock(dir: &Path) -> Result<Option<std::fs::File>> {
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let path = dir.join(LOCK);
+    let file = match lock_file(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("installing without a lock: {e:#}");
+            return Ok(None);
+        }
+    };
+    let locked = match file.try_lock_shared() {
+        Ok(()) => Ok(()),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            eprintln!("waiting for `lab clean` in {} to finish", dir.display());
+            file.lock_shared()
+        }
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
+    };
+    match locked {
+        Ok(()) => Ok(Some(file)),
+        Err(e) => {
+            tracing::warn!("installing without a lock on {}: {e}", path.display());
+            Ok(None)
+        }
+    }
+}
+
+fn lock_file(path: &Path) -> Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("opening {}", path.display()))
+}
+
 /// Removes the dot-named entries in `dir` that installs create and rename
 /// away on success (`.download-*`, `.<version>-*`, `.<package>-*`), but
-/// not the extension records. Returns how many were removed.
+/// not the extension records or the lock. Skips `dir`, removing nothing,
+/// while an install holds the lock, since its entries are in use. Where
+/// locks don't work it cleans unlocked, as before the lock. Returns how
+/// many were removed.
 fn clean(dir: &Path) -> Result<usize> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Ok(0);
+    };
+    let path = dir.join(LOCK);
+    // Held until the entries are removed.
+    let _lock = match lock_file(&path) {
+        Ok(lock) => match lock.try_lock() {
+            Ok(()) => Some(lock),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                eprintln!(
+                    "skipped {}: an install is running there; run `lab clean` after it finishes",
+                    dir.display()
+                );
+                return Ok(0);
+            }
+            Err(std::fs::TryLockError::Error(e)) => {
+                tracing::warn!("cleaning without a lock on {}: {e}", path.display());
+                None
+            }
+        },
+        Err(e) => {
+            tracing::warn!("cleaning without a lock: {e:#}");
+            None
+        }
     };
     let mut n = 0;
     for e in entries.flatten() {
         let name = e.file_name();
         let name = name.to_string_lossy();
-        if !name.starts_with('.') || name == extension::RECORDS {
+        if !name.starts_with('.') || name == extension::RECORDS || name == LOCK {
             continue;
         }
         let path = e.path();
@@ -208,7 +279,7 @@ fn install(root: &Path, version: &str, force: bool) -> Result<PathBuf> {
             wheel.sha256
         );
     }
-    std::fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
+    let _lock = install_lock(root)?;
 
     eprintln!(
         "downloading JupyterLab {version}: {} (sha256 {})",
@@ -515,8 +586,23 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         left.sort();
-        assert_eq!(left, [".packages", "4.6.4", "anywidget"]);
+        assert_eq!(left, [".lock", ".packages", "4.6.4", "anywidget"]);
         assert_eq!(clean(&r.join("missing")).unwrap(), 0);
+    }
+
+    #[test]
+    fn clean_leaves_a_running_install_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let r = root.path();
+        let install = install_lock(r).unwrap().expect("locks work here");
+        std::fs::write(r.join(".download-xyz"), "in progress").unwrap();
+        assert_eq!(clean(r).unwrap(), 0);
+        assert!(r.join(".download-xyz").exists());
+        // A second install runs alongside the first.
+        assert!(install_lock(r).unwrap().is_some());
+        drop(install);
+        assert_eq!(clean(r).unwrap(), 1);
+        assert!(!r.join(".download-xyz").exists());
     }
 
     #[test]
