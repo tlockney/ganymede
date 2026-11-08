@@ -17,6 +17,8 @@
 //! is empty or one the output format takes.
 
 use crate::{Cell, MimeBundle, Notebook, Output};
+use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+use base64::Engine as _;
 use serde_json::{Map, Value};
 
 /// An exported notebook.
@@ -30,6 +32,9 @@ pub struct Export {
     pub mimetype: String,
     /// Files the body refers to by relative path, such as images.
     pub resources: Vec<Resource>,
+    /// Binary entries left out because their base64 didn't decode, such
+    /// as `cell 2, output 0: image/png`, for the caller to log.
+    pub skipped: Vec<String>,
 }
 
 /// A file an export refers to.
@@ -40,13 +45,28 @@ pub struct Resource {
     pub data: ResourceData,
 }
 
-/// A resource's content, as the notebook stores it.
+/// A resource's content.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResourceData {
     Text(String),
-    /// Base64, as nbformat stores binary output data. May contain line
-    /// breaks.
-    Base64(String),
+    /// Binary data, decoded from the base64 the notebook stores it as.
+    Bytes(Vec<u8>),
+}
+
+/// Base64 with or without padding, as Python's `base64.decodebytes`
+/// (which jupyter_server uses) and JupyterLab accept it. The contents
+/// crate decodes uploads with it too.
+pub const BASE64_LENIENT: GeneralPurpose = GeneralPurpose::new(
+    &base64::alphabet::STANDARD,
+    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
+);
+
+/// Decodes nbformat's base64, which may contain line breaks. `None` when
+/// it isn't valid base64, so the export can leave the file out and not
+/// link to it.
+fn decode_base64(text: &str) -> Option<Vec<u8>> {
+    let compact: String = text.split_whitespace().collect();
+    BASE64_LENIENT.decode(compact).ok()
 }
 
 /// The export formats, by their nbconvert names, with the MIME type
@@ -116,6 +136,7 @@ pub fn to_script(nb: &Notebook) -> Export {
         extension,
         mimetype,
         resources: Vec::new(),
+        skipped: Vec::new(),
     }
 }
 
@@ -139,12 +160,14 @@ pub fn to_markdown(nb: &Notebook, name: &str) -> Export {
     let language = language_info_str(nb, "name").unwrap_or("");
     let mut blocks: Vec<String> = Vec::new();
     let mut resources: Vec<Resource> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
     for (index, cell) in nb.cells.iter().enumerate() {
         match cell {
             Cell::Markdown(c) => {
                 let mut source = c.source.as_str().trim_end().to_owned();
                 for (k, (file, bundle)) in c.attachments.iter().flatten().enumerate() {
-                    let Some((path, data)) = attachment_file(&files_dir, index, k, file, bundle)
+                    let Some((path, data)) =
+                        attachment_file(&files_dir, index, k, file, bundle, &mut skipped)
                     else {
                         continue;
                     };
@@ -174,7 +197,8 @@ pub fn to_markdown(nb: &Notebook, name: &str) -> Export {
                     blocks.push(fenced(lang, c.source.as_str()));
                 }
                 for (o, output) in c.outputs.iter().enumerate() {
-                    if let Some(block) = output_block(output, &files_dir, index, o, &mut resources)
+                    if let Some(block) =
+                        output_block(output, &files_dir, index, o, &mut resources, &mut skipped)
                     {
                         blocks.push(block);
                     }
@@ -192,6 +216,7 @@ pub fn to_markdown(nb: &Notebook, name: &str) -> Export {
         extension: ".md".to_owned(),
         mimetype: "text/markdown".to_owned(),
         resources,
+        skipped,
     }
 }
 
@@ -218,13 +243,15 @@ fn replace_attachment_refs(source: &str, file: &str, target: &str) -> String {
 
 /// An attachment as a file: `<files_dir>/attachment_<cell>_<k>_<name>`,
 /// `k` its place among the cell's attachments so two names can't map to
-/// one path, from its first image entry, else its first entry.
+/// one path, from its first image entry that decodes, else its first
+/// entry. Entries whose base64 doesn't decode go in `skipped`.
 fn attachment_file(
     files_dir: &str,
     cell: usize,
     k: usize,
     file: &str,
     bundle: &MimeBundle,
+    skipped: &mut Vec<String>,
 ) -> Option<(String, ResourceData)> {
     // The name is the notebook author's; keep it to one path segment.
     let safe: String = file
@@ -237,18 +264,28 @@ fn attachment_file(
             }
         })
         .collect();
-    let (mime, value) = bundle
-        .iter()
-        .find(|(m, _)| m.starts_with("image/"))
-        .or_else(|| bundle.iter().next())?;
-    let text = value.as_str()?;
     // nbformat stores text-like types (`text/*`, SVG) as text and other
     // non-JSON types as base64.
-    let data = if crate::is_split_mime(mime) || crate::is_json_mime(mime) {
-        ResourceData::Text(text.to_owned())
-    } else {
-        ResourceData::Base64(text.to_owned())
+    let mut entry = |mime: &str, value: &Value| -> Option<ResourceData> {
+        let text = value.as_str()?;
+        if crate::is_split_mime(mime) || crate::is_json_mime(mime) {
+            return Some(ResourceData::Text(text.to_owned()));
+        }
+        let bytes = decode_base64(text);
+        if bytes.is_none() {
+            skipped.push(format!("cell {cell}, attachment {file}: {mime}"));
+        }
+        bytes.map(ResourceData::Bytes)
     };
+    let mut images = bundle
+        .iter()
+        .filter(|(m, _)| m.starts_with("image/"))
+        .peekable();
+    let data = if images.peek().is_some() {
+        images.find_map(|(m, v)| entry(m, v))
+    } else {
+        bundle.iter().next().and_then(|(m, v)| entry(m, v))
+    }?;
     Some((format!("{files_dir}/attachment_{cell}_{k}_{safe}"), data))
 }
 
@@ -259,6 +296,7 @@ fn output_block(
     cell: usize,
     index: usize,
     resources: &mut Vec<Resource>,
+    skipped: &mut Vec<String>,
 ) -> Option<String> {
     let data = match output {
         Output::Stream(s) => {
@@ -277,23 +315,36 @@ fn output_block(
         Output::ExecuteResult(r) => &r.data,
         Output::Unknown(_) => return None,
     };
-    let (mime, value) = PRIORITY
-        .iter()
-        .find_map(|m| data.get_str(m).map(|v| (*m, v)))?;
+    // The first type in priority order that can be shown: an image whose
+    // base64 doesn't decode is skipped, so the output falls back to its
+    // next entry (usually `text/plain`) rather than a link to no file.
+    let (mime, value, bytes) = PRIORITY.iter().find_map(|m| {
+        let v = data.get_str(m)?;
+        match *m {
+            "image/png" | "image/jpeg" => {
+                let bytes = decode_base64(v);
+                if bytes.is_none() {
+                    skipped.push(format!("cell {cell}, output {index}: {m}"));
+                }
+                bytes.map(|b| (*m, v, Some(b)))
+            }
+            _ => Some((*m, v, None)),
+        }
+    })?;
     let image = |ext: &str, data: ResourceData, resources: &mut Vec<Resource>| {
         let path = format!("{files_dir}/output_{cell}_{index}.{ext}");
         let block = format!("![{ext}]({})", url_path(&path));
         resources.push(Resource { path, data });
         Some(block)
     };
-    match mime {
-        "text/html" | "text/latex" | "text/markdown" => {
+    match (mime, bytes) {
+        ("text/html" | "text/latex" | "text/markdown", _) => {
             let v = value.trim();
             (!v.is_empty()).then(|| v.to_owned())
         }
-        "image/svg+xml" => image("svg", ResourceData::Text(value.to_owned()), resources),
-        "image/png" => image("png", ResourceData::Base64(value.to_owned()), resources),
-        "image/jpeg" => image("jpg", ResourceData::Base64(value.to_owned()), resources),
+        ("image/svg+xml", _) => image("svg", ResourceData::Text(value.to_owned()), resources),
+        ("image/png", Some(b)) => image("png", ResourceData::Bytes(b), resources),
+        ("image/jpeg", Some(b)) => image("jpg", ResourceData::Bytes(b), resources),
         _ => text_block(&crate::strip_ansi(value)),
     }
 }
@@ -438,7 +489,7 @@ mod tests {
             e.resources,
             vec![Resource {
                 path: "my nb_files/output_1_1.png".into(),
-                data: ResourceData::Base64("iVBORw0KGgo=\n".into()),
+                data: ResourceData::Bytes(b"\x89PNG\r\n\x1a\n".to_vec()),
             }]
         );
     }
@@ -494,7 +545,71 @@ mod tests {
             ]
         );
         // A binary type that isn't an image is base64 too.
-        assert_eq!(e.resources[1].data, ResourceData::Base64("JVBE".into()));
+        assert_eq!(e.resources[1].data, ResourceData::Bytes(b"%PD".to_vec()));
         assert_eq!(e.resources[3].data, ResourceData::Text("two".into()));
+    }
+
+    #[test]
+    fn markdown_bad_base64_falls_back_and_links_no_file() {
+        let n = nb(json!({
+            "nbformat": 4, "nbformat_minor": 5, "metadata": {},
+            "cells": [
+                {"cell_type": "markdown", "id": "a", "metadata": {},
+                 "source": "![bad](attachment:bad.png) ![ok](attachment:ok.png)",
+                 "attachments": {
+                     "bad.png": {"image/png": "not base64!"},
+                     "ok.png": {"image/png": "AAAA"}
+                 }},
+                {"cell_type": "code", "id": "b", "metadata": {}, "execution_count": 1,
+                 "source": "plot()",
+                 "outputs": [
+                     {"output_type": "display_data", "metadata": {},
+                      "data": {"image/png": "%%%", "text/plain": "<Figure>"}},
+                     {"output_type": "display_data", "metadata": {},
+                      "data": {"image/jpeg": "@@"}}
+                 ]}
+            ]
+        }));
+        let e = to_markdown(&n, "n");
+        assert_eq!(
+            e.body,
+            "![bad](attachment:bad.png) ![ok](n_files/attachment_0_1_ok.png)\n\n\
+             ```\nplot()\n```\n\n\
+             ```\n<Figure>\n```\n"
+        );
+        let paths: Vec<&str> = e.resources.iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(paths, ["n_files/attachment_0_1_ok.png"]);
+        assert_eq!(
+            e.skipped,
+            [
+                "cell 0, attachment bad.png: image/png",
+                "cell 1, output 0: image/png",
+                "cell 1, output 1: image/jpeg",
+            ]
+        );
+    }
+
+    #[test]
+    fn markdown_takes_unpadded_base64_and_the_image_that_decodes() {
+        let n = nb(json!({
+            "nbformat": 4, "nbformat_minor": 5, "metadata": {},
+            "cells": [
+                {"cell_type": "markdown", "id": "a", "metadata": {},
+                 "source": "![p](attachment:p.png)",
+                 "attachments": {"p.png": {"image/jpeg": "@@", "image/png": "iVBORw0KGgo"}}},
+                {"cell_type": "code", "id": "b", "metadata": {}, "execution_count": 1,
+                 "source": "", "outputs": [{"output_type": "display_data", "metadata": {},
+                     "data": {"image/png": "iVBORw0KGgo", "text/plain": "<Figure>"}}]}
+            ]
+        }));
+        let e = to_markdown(&n, "n");
+        assert_eq!(
+            e.body,
+            "![p](n_files/attachment_0_0_p.png)\n\n![png](n_files/output_1_0.png)\n"
+        );
+        let png = ResourceData::Bytes(b"\x89PNG\r\n\x1a\n".to_vec());
+        assert_eq!(e.resources[0].data, png);
+        assert_eq!(e.resources[1].data, png);
+        assert_eq!(e.skipped, ["cell 0, attachment p.png: image/jpeg"]);
     }
 }
