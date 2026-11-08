@@ -276,14 +276,17 @@ impl KernelSession {
     /// for its reply has produced so far, in arrival order: what its
     /// [`Execution::outputs`] will start with. A message is recorded here
     /// before it is broadcast, so a subscriber that fell behind can catch
-    /// up from it. `None` once the request is complete or gone.
-    pub fn outputs_so_far(&self, msg_id: &str) -> Option<Vec<Message>> {
+    /// up from it. Only the messages from index `from` on are returned
+    /// (cloned), so a caller that keeps how far it has read takes just the
+    /// new tail. `None` once the request is complete or gone, and before
+    /// [`KernelSession::request`] for it is first polled.
+    pub fn outputs_so_far(&self, msg_id: &str, from: usize) -> Option<Vec<Message>> {
         self.inner
             .pending
             .lock()
             .unwrap()
             .get(msg_id)
-            .map(|p| p.outputs.clone())
+            .map(|p| p.outputs.get(from..).unwrap_or_default().to_vec())
     }
 
     /// Number of requests waiting for a reply.

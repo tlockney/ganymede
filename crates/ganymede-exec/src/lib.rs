@@ -34,6 +34,7 @@ use ganymede_nbformat::{
 };
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
 
@@ -196,11 +197,20 @@ pub async fn execute_streaming(
     let id = msg.header.msg_id.clone();
     // Subscribe before sending so nothing is missed.
     let mut sub = session.subscribe();
-    let request = session.request(Channel::Shell, msg, true, timeout);
+    // Set once the request is polled, which records it in the session:
+    // before then no output of it can have been broadcast, so a lag
+    // skipped none of it.
+    let sent = AtomicBool::new(false);
+    let request = async {
+        sent.store(true, Ordering::Relaxed);
+        session.request(Channel::Shell, msg, true, timeout).await
+    };
     tokio::pin!(request);
     // By msg_id, not by count: after a lag the broadcast skips some
     // messages, and the request's record fills in exactly those.
     let mut streamed = HashSet::new();
+    // How far into the request's record `catch_up` has read.
+    let mut handed = 0;
     // Set after a lag the record can no longer cover (the request just
     // finished): live messages would then come before skipped ones, so
     // the rest is left to the reply's record.
@@ -221,11 +231,12 @@ pub async fn execute_streaming(
                         }
                     }
                     Channel::Stdin if m.msg_type() == "input_request" => {
-                        // Output the kernel sent before asking (a prompt
-                        // printed before `input()`) shows first, even if
-                        // it is still behind in the broadcast.
+                        // Output the session received before the kernel
+                        // asked (a prompt printed before `input()`) shows
+                        // first, even if it is still behind in the
+                        // broadcast.
                         if !behind {
-                            catch_up(session, &id, &mut streamed, handler);
+                            catch_up(session, &id, &mut handed, &mut streamed, handler);
                         }
                         let prompt = m.content["prompt"].as_str().unwrap_or_default();
                         let password = m.content["password"].as_bool().unwrap_or(false);
@@ -239,7 +250,13 @@ pub async fn execute_streaming(
                     // The record has everything broadcast so far, in
                     // order: hand over what was skipped, then go on live.
                     tracing::debug!("output handler fell {n} messages behind; catching up");
-                    if !catch_up(session, &id, &mut streamed, handler) {
+                    if sent.load(Ordering::Relaxed)
+                        && !catch_up(session, &id, &mut handed, &mut streamed, handler)
+                    {
+                        tracing::warn!(
+                            "output handler fell {n} messages behind as the request finished; \
+                             the rest of its output comes with the reply"
+                        );
                         behind = true;
                     }
                 }
@@ -258,20 +275,23 @@ pub async fn execute_streaming(
 }
 
 /// Hands `handler` the request's recorded outputs it hasn't had yet, in
-/// order. The session records a message before broadcasting it, so after
-/// this every output the broadcast has carried so far has been handed
-/// over, and later live ones follow in order. `false`, handing over
-/// nothing, when the request has finished and its record went with the
-/// reply.
+/// order, reading the record from `handed` on and moving `handed` past
+/// what it read. The session records a message before broadcasting it,
+/// so after this every output the broadcast has carried so far has been
+/// handed over, and later live ones follow in order. `false`, handing
+/// over nothing, when the request has finished and its record went with
+/// the reply.
 fn catch_up(
     session: &KernelSession,
     id: &str,
+    handed: &mut usize,
     streamed: &mut HashSet<String>,
     handler: &mut dyn Handler,
 ) -> bool {
-    let Some(outputs) = session.outputs_so_far(id) else {
+    let Some(outputs) = session.outputs_so_far(id, *handed) else {
         return false;
     };
+    *handed += outputs.len();
     for m in outputs {
         if streamed.insert(m.header.msg_id.clone()) {
             handler.on_iopub(&m);
