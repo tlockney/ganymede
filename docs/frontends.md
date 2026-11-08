@@ -34,7 +34,7 @@ ganymede lab                            # JupyterLab at /lab, opened in the brow
 ganymede lab --no-browser --port 9000   # takes `serve`'s flags
 ganymede serve --lab-version 4.6.4      # the same at /lab, without the browser
 ganymede lab list                       # installed versions; --json too
-ganymede lab remove 4.6.4
+ganymede lab remove 4.6.4               # fails while an install runs, as uninstall does
 ganymede lab clean                      # leftovers of interrupted installs; skips a running one
 ganymede lab uninstall                  # every version and extension
 ```
