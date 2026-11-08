@@ -143,7 +143,11 @@ impl KernelSession {
             kernel_info: Mutex::new(None),
             kernel_info_json: Mutex::new(None),
         });
-        tokio::spawn(route(inner.clone(), transport.incoming));
+        // Weak, so a session dropped without `shutdown` drops its
+        // transport rather than keeping it alive from here. The route ends
+        // when the transport's channel closes: at once for ZMQ, whose
+        // `Drop` aborts its socket tasks.
+        tokio::spawn(route(Arc::downgrade(&inner), transport.incoming));
         if let Some(p) = inner.process.clone() {
             let weak = Arc::downgrade(&inner);
             let mut alive = inner.alive.subscribe();
@@ -548,7 +552,8 @@ impl Inner {
             // a thread that it can stop before the reply is written, while
             // the iopub copy of a `shutdown_reply` is sent. Dropping the
             // senders fails every other waiting request.
-            for (_, p) in self.pending.lock().unwrap().drain() {
+            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            for (_, p) in pending.drain() {
                 if let (Some(reply), Some(tx)) = (p.broadcast_reply, p.done) {
                     let _ = tx.send(Execution {
                         reply,
@@ -564,6 +569,14 @@ impl Inner {
                 rt.spawn(async move { sink.close().await });
             }
         }
+    }
+}
+
+/// A session dropped without `shutdown` still tells `watch_alive`
+/// receivers, fails waiting requests and closes its transport.
+impl Drop for Inner {
+    fn drop(&mut self) {
+        self.mark_dead();
     }
 }
 
@@ -605,8 +618,13 @@ async fn monitor(inner: Weak<Inner>, hb: Heartbeat) {
     }
 }
 
-async fn route(inner: Arc<Inner>, mut incoming: crate::transport::Incoming) {
+async fn route(weak: Weak<Inner>, mut incoming: crate::transport::Incoming) {
     while let Some((channel, msg)) = incoming.recv().await {
+        // Held only while a message is handled: between messages the
+        // route must not keep the session (and so its transport) alive.
+        let Some(inner) = weak.upgrade() else {
+            return;
+        };
         if channel == Channel::IoPub {
             inner.iopub_seen.store(true, Ordering::SeqCst);
             // The welcome answers the host's own subscription, which every
@@ -669,7 +687,9 @@ async fn route(inner: Arc<Inner>, mut incoming: crate::transport::Incoming) {
         }
         let _ = inner.clients.send((channel, msg));
     }
-    inner.mark_dead();
+    if let Some(inner) = weak.upgrade() {
+        inner.mark_dead();
+    }
 }
 
 fn whoami() -> String {
@@ -691,6 +711,27 @@ mod tests {
         let s = KernelSession::start(host, None);
         let info = s.nudge(Duration::from_secs(5)).await.unwrap();
         (s, info)
+    }
+
+    /// A session dropped without `shutdown` lets its transport go: the
+    /// kernel side sees the host's sender close (#564).
+    #[tokio::test]
+    async fn a_dropped_session_closes_its_transport() {
+        let (host, mut kernel) = in_process_pair(64);
+        let s = KernelSession::start_with(host, None, None);
+        // A message routed through, so the route has upgraded and let go.
+        let mut sub = s.subscribe();
+        let idle = s.message("status", &serde_json::json!({"execution_state": "idle"}));
+        kernel.outgoing.send((Channel::IoPub, idle)).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), sub.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let alive = s.watch_alive();
+        drop(s);
+        assert!(!*alive.borrow(), "watch_alive still says alive");
+        let closed = tokio::time::timeout(Duration::from_secs(2), kernel.incoming.recv()).await;
+        assert!(matches!(closed, Ok(None)), "the transport stayed open");
     }
 
     #[tokio::test]
