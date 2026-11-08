@@ -150,7 +150,8 @@ pub trait Handler: Send {
     /// prints nothing and the kernel sends no `execute_input`. Called at
     /// most once, before any output for the request, and not lost to a
     /// lag: a `busy` the broadcast skipped is read from the request's
-    /// record, or from the reply when the request finished first. The one rule for "the kernel started it" (#588).
+    /// record, or from the reply when the request finished first. The
+    /// one rule for "the kernel started it" (#588).
     fn on_busy(&mut self) {}
     /// The kernel asked for input. `None` answers with an empty string.
     /// Async, so a UI can wait for the user without blocking the runtime.
@@ -243,7 +244,7 @@ pub async fn execute_streaming(
                         // first, even if it is still behind in the
                         // broadcast.
                         if !behind {
-                            catch_up(session, &id, &mut handed, &mut streamed, handler);
+                            catch_up(session, &id, &mut handed, &mut streamed, &mut busy, handler);
                         }
                         let prompt = m.content["prompt"].as_str().unwrap_or_default();
                         let password = m.content["password"].as_bool().unwrap_or(false);
@@ -257,12 +258,10 @@ pub async fn execute_streaming(
                     // The record has everything broadcast so far, in
                     // order: hand over what was skipped, then go on live.
                     tracing::debug!("output handler fell {n} messages behind; catching up");
-                    // The skipped messages may include the `busy`.
-                    if session.busy_seen(&id) == Some(true) {
-                        note_busy(&mut busy, handler);
-                    }
+                    // The skipped messages may include the `busy`, which
+                    // the record keeps too.
                     if sent.load(Ordering::Relaxed)
-                        && !catch_up(session, &id, &mut handed, &mut streamed, handler)
+                        && !catch_up(session, &id, &mut handed, &mut streamed, &mut busy, handler)
                     {
                         tracing::warn!(
                             "output handler fell {n} messages behind as the request finished; \
@@ -304,7 +303,8 @@ fn note_busy(busy: &mut bool, handler: &mut dyn Handler) {
 
 /// Hands `handler` the request's recorded outputs it hasn't had yet, in
 /// order, reading the record from `handed` on and moving `handed` past
-/// what it read. The session records a message before broadcasting it,
+/// what it read. If the record holds the `busy`, `on_busy` comes first:
+/// both are read under one lock, so no output is handed before it. The session records a message before broadcasting it,
 /// so after this every output the broadcast has carried so far has been
 /// handed over, and later live ones follow in order. `false`, handing
 /// over nothing, when the request has finished and its record went with
@@ -314,13 +314,17 @@ fn catch_up(
     id: &str,
     handed: &mut usize,
     streamed: &mut HashSet<String>,
+    busy: &mut bool,
     handler: &mut dyn Handler,
 ) -> bool {
-    let Some(outputs) = session.outputs_so_far(id, *handed) else {
+    let Some(record) = session.record_so_far(id, *handed) else {
         return false;
     };
-    *handed += outputs.len();
-    for m in outputs {
+    if record.busy {
+        note_busy(busy, handler);
+    }
+    *handed += record.outputs.len();
+    for m in record.outputs {
         if streamed.insert(m.header.msg_id.clone()) {
             handler.on_iopub(&m);
         }
