@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
-use tokio::sync::{broadcast, oneshot, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 /// One request's progress until it is complete.
 struct Pending {
@@ -71,6 +71,9 @@ impl Execution {
 struct Inner {
     sink: Arc<dyn TransportSink>,
     clients: broadcast::Sender<(Channel, Message)>,
+    /// Receivers that see every message, for a consumer that must not
+    /// miss one (the API's pump, whose clients need every reply).
+    lossless: Mutex<Vec<mpsc::UnboundedSender<(Channel, Message)>>>,
     pending: Mutex<HashMap<String, Pending>>,
     state: watch::Sender<ExecutionState>,
     iopub_seen: AtomicBool,
@@ -130,6 +133,7 @@ impl KernelSession {
         let inner = Arc::new(Inner {
             sink: transport.sink,
             clients,
+            lossless: Mutex::new(Vec::new()),
             pending: Mutex::new(HashMap::new()),
             state,
             iopub_seen: AtomicBool::new(false),
@@ -219,6 +223,21 @@ impl KernelSession {
     /// kernel.
     pub fn subscribe(&self) -> broadcast::Receiver<(Channel, Message)> {
         self.inner.clients.subscribe()
+    }
+
+    /// Every message from the kernel, like [`KernelSession::subscribe`],
+    /// but none is dropped: a receiver that falls behind queues them
+    /// instead, so it must keep reading. For a consumer that relays
+    /// replies and cannot recover a lost one. The channel closes when
+    /// the session is dropped; a dropped receiver is forgotten.
+    pub fn subscribe_lossless(&self) -> mpsc::UnboundedReceiver<(Channel, Message)> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.inner
+            .lossless
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(tx);
+        rx
     }
 
     /// Build a request message in this session's identity.
@@ -685,6 +704,10 @@ async fn route(weak: Weak<Inner>, mut incoming: crate::transport::Incoming) {
             };
             let _ = finished;
         }
+        {
+            let mut lossless = inner.lossless.lock().unwrap_or_else(|e| e.into_inner());
+            lossless.retain(|tx| tx.send((channel, msg.clone())).is_ok());
+        }
         let _ = inner.clients.send((channel, msg));
     }
     if let Some(inner) = weak.upgrade() {
@@ -711,6 +734,36 @@ mod tests {
         let s = KernelSession::start(host, None);
         let info = s.nudge(Duration::from_secs(5)).await.unwrap();
         (s, info)
+    }
+
+    /// A lossless receiver that falls behind gets every message, where
+    /// the broadcast skips the ones past its capacity.
+    #[tokio::test]
+    async fn a_lossless_subscriber_misses_nothing() {
+        let (host, kernel) = in_process_pair(4096);
+        let s = KernelSession::start_with(host, None, None);
+        let mut lossless = s.subscribe_lossless();
+        let mut lossy = s.subscribe();
+        let n = 3000;
+        for i in 0..n {
+            let m = s.message(
+                "stream",
+                &serde_json::json!({"name": "stdout", "text": i.to_string()}),
+            );
+            kernel.outgoing.send((Channel::IoPub, m)).await.unwrap();
+        }
+        for i in 0..n {
+            let (_, m) = tokio::time::timeout(Duration::from_secs(5), lossless.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(m.content["text"], i.to_string());
+        }
+        assert!(matches!(
+            lossy.recv().await,
+            Err(broadcast::error::RecvError::Lagged(_))
+        ));
+        drop(kernel);
     }
 
     /// A session dropped without `shutdown` lets its transport go: the
