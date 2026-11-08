@@ -824,7 +824,7 @@ async fn patch_contents(
         .ok_or_else(|| HttpError(400, "PATCH needs {\"path\": ...}".into()))?;
     let new_path = ganymede_contents::normalize_api_path(&new_path);
     // No room opens between the disk rename and the ids following it.
-    let moving = s.collab.begin_move();
+    let moving = s.collab.begin_move().await;
     let model = s.contents.rename(&p, &new_path).await?;
     s.collab.moved(&p, &model.path).await;
     drop(moving);

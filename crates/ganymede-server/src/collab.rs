@@ -107,10 +107,11 @@ pub struct Collab {
     /// Bumped, under the rooms lock, by every rename or delete, so a path
     /// looked up without the lock can be checked before a room opens on it.
     moves: AtomicU64,
-    /// Renames under way: begun on disk, ids not yet moved
-    /// ([`Collab::begin_move`]). No room opens while one is, since a path
-    /// looked up meanwhile may be the old one.
-    moving: AtomicU64,
+    /// Held for writing by a rename from its disk change until the ids
+    /// follow ([`Collab::begin_move`]), and for reading by a room opening
+    /// across its path lookup, so no room opens on a path a rename is
+    /// moving away (#522).
+    move_lock: tokio::sync::RwLock<()>,
     next_conn: AtomicU64,
     /// How long a room with no clients is kept: [`CLEANUP_DELAY`].
     cleanup_delay: Duration,
@@ -121,19 +122,6 @@ pub struct Collab {
     locks: crate::room_lock::Locks,
     /// Request ids the execute endpoint has queued.
     pub(crate) requests: crate::execute::Requests,
-}
-
-/// A rename under way; see [`Collab::begin_move`].
-pub struct MoveGuard<'a> {
-    collab: &'a Collab,
-}
-
-impl Drop for MoveGuard<'_> {
-    fn drop(&mut self) {
-        let _rooms = self.collab.rooms.lock().expect("rooms");
-        self.collab.moving.fetch_sub(1, Ordering::SeqCst);
-        self.collab.moves.fetch_add(1, Ordering::SeqCst);
-    }
 }
 
 impl Default for Collab {
@@ -153,7 +141,7 @@ impl Collab {
             watcher: Watcher::new(),
             rooms: Mutex::default(),
             moves: AtomicU64::new(0),
-            moving: AtomicU64::new(0),
+            move_lock: tokio::sync::RwLock::new(()),
             next_conn: AtomicU64::new(1),
             cleanup_delay: CLEANUP_DELAY,
             heartbeat: (PING_INTERVAL, IDLE_TIMEOUT),
@@ -237,12 +225,9 @@ impl Collab {
     /// until the returned guard drops, after [`Collab::moved`], no room
     /// opens, so none opens on the old path between the disk rename and
     /// the ids following it (#522). Dropping it without `moved`, when the
-    /// rename failed, is fine.
-    pub fn begin_move(&self) -> MoveGuard<'_> {
-        let _rooms = self.rooms.lock().expect("rooms");
-        self.moving.fetch_add(1, Ordering::SeqCst);
-        self.moves.fetch_add(1, Ordering::SeqCst);
-        MoveGuard { collab: self }
+    /// rename failed, is fine: the path hasn't changed.
+    pub(crate) async fn begin_move(&self) -> tokio::sync::RwLockWriteGuard<'_, ()> {
+        self.move_lock.write().await
     }
 
     /// `old` (a file or directory) was renamed to `new` through the
@@ -255,12 +240,6 @@ impl Collab {
         for room in rooms.values() {
             let _ = room.send(Cmd::Moved(old.to_string(), new.to_string()));
         }
-    }
-
-    /// Whether a path looked up after reading `moves` as `read` is still
-    /// the file's path. Call with the rooms lock held.
-    fn path_still_good(&self, read: u64) -> bool {
-        self.moving.load(Ordering::SeqCst) == 0 && self.moves.load(Ordering::SeqCst) == read
     }
 
     /// The contents root on disk, when the contents are a local directory.
@@ -553,15 +532,7 @@ async fn serve_socket(
 ) {
     let collab = state.collab.clone();
     let parts: Vec<&str> = room_id.splitn(3, ':').collect();
-    // Read before the path lookup, which runs without the rooms lock: a
-    // rename or delete meanwhile makes the path stale, so it is looked up
-    // again before the room opens, as `send_to_notebook_room` does.
-    let moves = collab.moves.load(Ordering::SeqCst);
-    let file_id = match parts[..] {
-        [_, _, id] => Some(id),
-        _ => None,
-    };
-    let doc = if let [format, kind, file_id] = parts[..] {
+    let file_id = if let [format, kind, file_id] = parts[..] {
         if session_id
             .as_deref()
             .is_some_and(|s| s != collab.session_id)
@@ -574,11 +545,6 @@ async fn serve_socket(
             close(&mut socket, 1003, reason.to_string()).await;
             return;
         }
-        let path = collab.path_of(file_id).await;
-        let Some(path) = path else {
-            close(&mut socket, 4404, format!("Unknown file id {file_id}")).await;
-            return;
-        };
         if format != "json" || kind != "notebook" {
             // Text files (`jupyter_ydoc`'s YUnicode) are not served yet.
             close(
@@ -589,22 +555,17 @@ async fn serve_socket(
             .await;
             return;
         }
-        Some(path)
+        Some(file_id)
     } else {
         None
     };
 
     let conn = collab.next_conn.fetch_add(1, Ordering::Relaxed);
     let (out_tx, mut out_rx, full) = ClientTx::new(state.max_body_size);
-    let Some(room) = join_room(
-        &collab,
-        &state.contents,
-        &room_id,
-        file_id.zip(doc).map(|(id, path)| (id, path, moves)),
-        Cmd::Join(conn, out_tx),
-    )
-    .await
-    else {
+    // An open room takes the join with no path lookup, so a client
+    // joining one whose file was just deleted hears "File deleted".
+    let join = Cmd::Join(conn, out_tx);
+    let Some(room) = send_to_room(&collab, &state.contents, &room_id, file_id, join).await else {
         let id = file_id.unwrap_or_default();
         close(&mut socket, 4404, format!("Unknown file id {id}")).await;
         return;
@@ -658,87 +619,58 @@ async fn serve_socket(
     let _ = room.send(Cmd::Leave(conn));
 }
 
-/// Send `join` to `room_id`, opening the room if needed, and return its
-/// sender. A notebook room comes with `(file_id, path, moves)`: the path
-/// looked up after reading `moves`, used if no rename or delete has
-/// happened since. `None` when the file id is gone.
-async fn join_room(
-    collab: &Arc<Collab>,
-    contents: &Arc<dyn Contents>,
-    room_id: &str,
-    doc: Option<(&str, String, u64)>,
-    join: Cmd,
-) -> Option<mpsc::UnboundedSender<Cmd>> {
-    match doc {
-        Some((id, path, moves)) => {
-            send_to_room(
-                collab,
-                contents,
-                room_id,
-                Some(id),
-                Some((path, moves)),
-                join,
-            )
-            .await
-        }
-        None => send_to_room(collab, contents, room_id, None, None, join).await,
-    }
-}
-
 /// Send `cmd` to `room_id`, opening the room if needed, and return its
 /// sender: the one way into a room, for websocket clients and for the
-/// server's own callers. An open room takes `cmd` with no path lookup,
-/// so a client joining a room whose file was just deleted hears "File
-/// deleted" from it. Opening a notebook room (`file_id` given) needs its
-/// path, looked up without the rooms lock: a rename or delete meanwhile
-/// (or a rename under way, [`Collab::begin_move`]) makes it stale, so it
-/// is looked up again rather than opening the room on a file that has
-/// moved. `known` is a path the caller already looked up after reading
-/// `moves`. `None` when the file id is gone or the room has stopped.
+/// server's own callers. An open room takes `cmd` with no path lookup;
+/// an entry whose task has stopped is replaced by a fresh room. Opening a
+/// notebook room (`file_id` given) looks its path up holding
+/// [`Collab::begin_move`]'s lock for reading, so no rename is between its
+/// disk change and the ids; a rename or delete finished meanwhile changes
+/// `moves`, and the path is looked up again. `None` when the file id is
+/// gone.
 async fn send_to_room(
     collab: &Arc<Collab>,
     contents: &Arc<dyn Contents>,
     room_id: &str,
     file_id: Option<&str>,
-    mut known: Option<(String, u64)>,
-    cmd: Cmd,
+    mut cmd: Cmd,
 ) -> Option<mpsc::UnboundedSender<Cmd>> {
     loop {
         // Sends with the rooms lock held, so the room can't retire between
         // the lookup and the send.
-        let now = {
+        {
             let mut rooms = collab.rooms.lock().expect("rooms");
             if let Some(tx) = rooms.get(room_id) {
-                tx.send(cmd).ok()?;
-                return Some(tx.clone());
+                match tx.send(cmd) {
+                    Ok(()) => return Some(tx.clone()),
+                    Err(mpsc::error::SendError(back)) => {
+                        rooms.remove(room_id);
+                        cmd = back;
+                    }
+                }
             }
-            let Some(id) = file_id else {
+            if file_id.is_none() {
                 let tx = open_room(collab, &mut rooms, contents, room_id, None);
                 tx.send(cmd).ok()?;
                 return Some(tx);
-            };
-            if collab.moving.load(Ordering::SeqCst) == 0 {
-                Some((id, collab.moves.load(Ordering::SeqCst)))
-            } else {
-                None
             }
-        };
-        let Some((id, now)) = now else {
-            // A rename is under way; its ids follow shortly.
-            tokio::time::sleep(Duration::from_millis(5)).await;
-            continue;
-        };
-        let (path, read) = match known.take() {
-            Some((path, read)) if read == now => (path, read),
-            _ => (collab.path_of(id).await?, now),
-        };
+        }
+        let id = file_id?;
+        let _no_rename = collab.move_lock.read().await;
+        let read = collab.moves.load(Ordering::SeqCst);
+        let path = collab.path_of(id).await?;
         let mut rooms = collab.rooms.lock().expect("rooms");
-        if !rooms.contains_key(room_id) && !collab.path_still_good(read) {
+        if !rooms.contains_key(room_id) && collab.moves.load(Ordering::SeqCst) != read {
             continue;
         }
         let tx = open_room(collab, &mut rooms, contents, room_id, Some(path));
-        tx.send(cmd).ok()?;
-        return Some(tx);
+        match tx.send(cmd) {
+            Ok(()) => return Some(tx),
+            Err(mpsc::error::SendError(back)) => {
+                rooms.remove(room_id);
+                cmd = back;
+            }
+        }
     }
 }
 
@@ -781,7 +713,7 @@ pub(crate) async fn send_to_notebook_room(
     let ["json", "notebook", file_id] = parts[..] else {
         return None;
     };
-    send_to_room(collab, contents, room_id, Some(file_id), None, cmd).await
+    send_to_room(collab, contents, room_id, Some(file_id), cmd).await
 }
 
 /// The room id of the notebook at `path`.
@@ -1733,38 +1665,6 @@ mod queue_tests {
 mod join_tests {
     use super::*;
 
-    /// A join that looked its path up before a rename opens the room on
-    /// the new path, not on the old one, which no longer loads.
-    #[tokio::test]
-    async fn a_join_after_a_rename_opens_the_new_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let nb = r#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
-        std::fs::write(dir.path().join("a.ipynb"), nb).unwrap();
-        let contents: Arc<dyn Contents> =
-            Arc::new(ganymede_contents::FsContents::new(dir.path(), Default::default()).unwrap());
-        let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
-        let (id, _) = collab.index("a.ipynb").await;
-        // The join read `moves` and looked up the path, then the rename.
-        let moves = collab.moves.load(Ordering::SeqCst);
-        let stale = collab.path_of(&id).await.unwrap();
-        std::fs::rename(dir.path().join("a.ipynb"), dir.path().join("b.ipynb")).unwrap();
-        collab.moved("a.ipynb", "b.ipynb").await;
-
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let cmd = Cmd::With(Box::new(move |_: &mut Room| {
-            let _ = tx.send(());
-            Default::default()
-        }));
-        let room_id = format!("json:notebook:{id}");
-        join_room(&collab, &contents, &room_id, Some((&id, stale, moves)), cmd)
-            .await
-            .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), rx)
-            .await
-            .unwrap()
-            .expect("the room loaded the renamed file");
-    }
-
     fn notebook_dir() -> (tempfile::TempDir, Arc<dyn Contents>) {
         let dir = tempfile::tempdir().unwrap();
         let nb = r#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
@@ -1785,9 +1685,34 @@ mod join_tests {
         (cmd, rx)
     }
 
-    /// A join or a server-side send that looks the path up while a rename
-    /// is under way (on disk, ids not yet moved) waits for it, and opens
-    /// the room on the new path (#522).
+    async fn loads(rx: tokio::sync::oneshot::Receiver<()>, what: &str) {
+        tokio::time::timeout(Duration::from_secs(5), rx)
+            .await
+            .unwrap()
+            .unwrap_or_else(|_| panic!("{what}"));
+    }
+
+    /// A join after a rename opens the room on the new path, not on the
+    /// old one, which no longer loads.
+    #[tokio::test]
+    async fn a_join_after_a_rename_opens_the_new_path() {
+        let (dir, contents) = notebook_dir();
+        let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
+        let (id, _) = collab.index("a.ipynb").await;
+        std::fs::rename(dir.path().join("a.ipynb"), dir.path().join("b.ipynb")).unwrap();
+        collab.moved("a.ipynb", "b.ipynb").await;
+
+        let (cmd, rx) = report_loaded();
+        let room_id = format!("json:notebook:{id}");
+        send_to_room(&collab, &contents, &room_id, Some(&id), cmd)
+            .await
+            .unwrap();
+        loads(rx, "the room loaded the renamed file").await;
+    }
+
+    /// A websocket join or a server-side send while a rename is under way
+    /// (on disk, ids not yet moved) waits for it, and opens the room on
+    /// the new path (#522).
     #[tokio::test]
     async fn no_room_opens_while_a_rename_is_under_way() {
         for websocket in [true, false] {
@@ -1796,13 +1721,10 @@ mod join_tests {
             let (id, _) = collab.index("a.ipynb").await;
             let room_id = format!("json:notebook:{id}");
 
-            let moving = collab.begin_move();
+            let moving = collab.begin_move().await;
             std::fs::rename(dir.path().join("a.ipynb"), dir.path().join("b.ipynb")).unwrap();
-            // The joiner reads `moves` and the path after the disk rename,
-            // before the ids follow: it sees the old path.
-            let moves = collab.moves.load(Ordering::SeqCst);
-            let stale = collab.path_of(&id).await.unwrap();
-            assert_eq!(stale, "a.ipynb");
+            // A lookup now would still give the old path.
+            assert_eq!(collab.path_of(&id).await.unwrap(), "a.ipynb");
             let (cmd, rx) = report_loaded();
             let join = {
                 let (collab, contents, room_id, id) = (
@@ -1813,8 +1735,8 @@ mod join_tests {
                 );
                 tokio::spawn(async move {
                     if websocket {
-                        join_room(&collab, &contents, &room_id, Some((&id, stale, moves)), cmd)
-                            .await
+                        // What `serve_socket` calls.
+                        send_to_room(&collab, &contents, &room_id, Some(&id), cmd).await
                     } else {
                         send_to_notebook_room(&collab, &contents, &room_id, cmd).await
                     }
@@ -1827,33 +1749,28 @@ mod join_tests {
 
             join.await.unwrap().expect("joined");
             // Only `b.ipynb` exists, so a room that loaded opened on it.
-            tokio::time::timeout(Duration::from_secs(5), rx)
-                .await
-                .unwrap()
-                .expect("the room loaded the renamed file");
+            loads(rx, "the room loaded the renamed file").await;
         }
     }
 
-    /// A rename that fails releases its guard, and rooms open again.
+    /// A rename that fails releases its lock, and rooms open again.
     #[tokio::test]
     async fn a_failed_rename_lets_rooms_open() {
         let (_dir, contents) = notebook_dir();
         let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
         let (id, _) = collab.index("a.ipynb").await;
-        drop(collab.begin_move());
+        drop(collab.begin_move().await);
         let (cmd, rx) = report_loaded();
         send_to_notebook_room(&collab, &contents, &format!("json:notebook:{id}"), cmd)
             .await
             .expect("joined");
-        tokio::time::timeout(Duration::from_secs(5), rx)
-            .await
-            .unwrap()
-            .expect("the room loaded");
+        loads(rx, "the room loaded").await;
     }
 
     /// An open room takes a join with no path lookup: one whose id is
     /// gone (its file deleted) still reaches the room, which tells its
     /// clients the file was deleted, rather than "Unknown file id".
+    /// `serve_socket` makes this same call, with no lookup before it.
     #[tokio::test]
     async fn an_open_room_takes_a_join_without_a_lookup() {
         let (_dir, contents) = notebook_dir();
@@ -1866,23 +1783,39 @@ mod join_tests {
             .unwrap();
         rx.await.unwrap();
 
-        // The id goes, as a delete makes it go, and `moves` changes.
-        let moves = collab.moves.load(Ordering::SeqCst);
+        // The id goes, as a delete makes it go.
         collab.ids.removed("a.ipynb");
-        collab.moves.fetch_add(1, Ordering::SeqCst);
         assert_eq!(collab.path_of(&id).await, None);
 
         let (cmd, rx) = report_loaded();
-        let joined = join_room(
-            &collab,
-            &contents,
-            &room_id,
-            Some((&id, "a.ipynb".into(), moves)),
-            cmd,
-        )
-        .await
-        .expect("the open room took the join");
+        let joined = send_to_room(&collab, &contents, &room_id, Some(&id), cmd)
+            .await
+            .expect("the open room took the join");
         assert!(joined.same_channel(&open));
         rx.await.expect("the open room ran the command");
+    }
+
+    /// A room entry whose task has stopped is replaced by a fresh room,
+    /// rather than the join failing as an unknown file id.
+    #[tokio::test]
+    async fn a_stopped_room_is_replaced() {
+        let (_dir, contents) = notebook_dir();
+        let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
+        let (id, _) = collab.index("a.ipynb").await;
+        let room_id = format!("json:notebook:{id}");
+        let (dead, rx) = mpsc::unbounded_channel();
+        drop(rx);
+        collab
+            .rooms
+            .lock()
+            .unwrap()
+            .insert(room_id.clone(), dead.clone());
+
+        let (cmd, rx) = report_loaded();
+        let joined = send_to_room(&collab, &contents, &room_id, Some(&id), cmd)
+            .await
+            .expect("a fresh room took the join");
+        assert!(!joined.same_channel(&dead));
+        loads(rx, "the fresh room loaded").await;
     }
 }
