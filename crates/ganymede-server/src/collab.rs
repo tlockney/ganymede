@@ -107,10 +107,11 @@ pub struct Collab {
     /// Bumped, under the rooms lock, by every rename or delete, so a path
     /// looked up without the lock can be checked before a room opens on it.
     moves: AtomicU64,
-    /// Held for writing by a rename from its disk change until the ids
-    /// follow ([`Collab::begin_move`]), and for reading by a room opening
-    /// across its path lookup, so no room opens on a path a rename is
-    /// moving away (#522).
+    /// Held for writing by a rename or delete through the contents API,
+    /// from its disk change until the ids follow ([`Collab::begin_move`]),
+    /// and for reading by a room opening across its path lookup and by
+    /// [`Collab::index_existing`], so no room opens and no id is made for a
+    /// path that is moving away or going (#522, #574).
     move_lock: tokio::sync::RwLock<()>,
     next_conn: AtomicU64,
     /// How long a room with no clients is kept: [`CLEANUP_DELAY`].
@@ -241,7 +242,8 @@ impl Collab {
     /// until the returned guard drops, after [`Collab::moved`], no room
     /// opens, so none opens on the old path between the disk rename and
     /// the ids following it (#522). Dropping it without `moved`, when the
-    /// rename failed, is fine: the path hasn't changed.
+    /// rename failed, is fine: the path hasn't changed. A delete holds it
+    /// the same way, until [`Collab::removed`] (#574).
     pub(crate) async fn begin_move(&self) -> tokio::sync::RwLockWriteGuard<'_, ()> {
         self.move_lock.write().await
     }
@@ -677,8 +679,9 @@ async fn send_to_room(
         let read = collab.moves.load(Ordering::SeqCst);
         let path = collab.path_of(id).await?;
         let mut rooms = collab.rooms.lock().expect("rooms");
-        // The read lock keeps renames out, so a change here is a delete
-        // (`removed` doesn't take `move_lock`): look the id up again.
+        // The read lock keeps out renames and deletes through the contents
+        // API; a change here could only come from a caller of `removed`
+        // that skips `begin_move`. Look the id up again to be safe.
         if !rooms.contains_key(room_id) && collab.moves.load(Ordering::SeqCst) != read {
             continue;
         }
@@ -1791,6 +1794,29 @@ mod join_tests {
         drop(moving);
         assert_eq!(index.await.unwrap().unwrap_err().status(), 404);
         assert!(collab.index("a.ipynb").await.1, "the old path got an id");
+    }
+
+    /// Indexing a path while a delete is under way waits for it, so the
+    /// deleted path gets no id (#574).
+    #[tokio::test]
+    async fn indexing_waits_for_a_delete() {
+        let (dir, contents) = notebook_dir();
+        let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
+        let deleting = collab.begin_move().await;
+        let index = {
+            let (collab, contents) = (collab.clone(), contents.clone());
+            tokio::spawn(async move { notebook_room_id(&collab, &contents, "a.ipynb").await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!index.is_finished(), "indexed during the delete");
+        std::fs::remove_file(dir.path().join("a.ipynb")).unwrap();
+        collab.removed("a.ipynb").await;
+        drop(deleting);
+        assert_eq!(index.await.unwrap().unwrap_err().status(), 404);
+        assert!(
+            collab.index("a.ipynb").await.1,
+            "the deleted path got an id"
+        );
     }
 
     /// A websocket join or a server-side send while a rename is under way
