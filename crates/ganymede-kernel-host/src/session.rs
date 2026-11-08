@@ -660,6 +660,13 @@ async fn route(weak: Weak<Inner>, mut incoming: crate::transport::Incoming) {
                 }
             }
         }
+        // Queued before the pending record can fire `done`: `shutdown`
+        // marks the session dead as soon as `done` fires, and a lossless
+        // receiver that finds its channel empty then stops.
+        {
+            let mut lossless = inner.lossless.lock().unwrap_or_else(|e| e.into_inner());
+            lossless.retain(|tx| tx.send((channel, msg.clone())).is_ok());
+        }
         let parent = msg.parent_id().map(str::to_string);
         if let Some(pid) = parent {
             let finished = {
@@ -703,10 +710,6 @@ async fn route(weak: Weak<Inner>, mut incoming: crate::transport::Incoming) {
                 finished
             };
             let _ = finished;
-        }
-        {
-            let mut lossless = inner.lossless.lock().unwrap_or_else(|e| e.into_inner());
-            lossless.retain(|tx| tx.send((channel, msg.clone())).is_ok());
         }
         let _ = inner.clients.send((channel, msg));
     }
