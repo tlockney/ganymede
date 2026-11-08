@@ -264,11 +264,19 @@ impl KernelSession {
             inner: &self.inner,
             id,
         };
-        self.inner.sink.send(channel, msg).await?;
-        match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(exec)) => Ok(exec),
-            Ok(Err(_)) => Err(Error::KernelDied),
-            Err(_) => Err(Error::Timeout("reply")),
+        // One timeout covers the send and the reply: a dead kernel's DEALER
+        // queue fills and blocks the send.
+        let mut sent = false;
+        let exchange = async {
+            self.inner.sink.send(channel, msg).await?;
+            sent = true;
+            rx.await.map_err(|_| Error::KernelDied)
+        };
+        let result = tokio::time::timeout(timeout, exchange).await;
+        match result {
+            Ok(r) => r,
+            Err(_) if sent => Err(Error::Timeout("reply")),
+            Err(_) => Err(Error::SendTimeout),
         }
     }
 
@@ -1212,6 +1220,79 @@ mod tests {
             .request(Channel::Shell, m, false, Duration::from_millis(10))
             .await;
         assert!(matches!(r, Err(Error::Timeout(_))));
+        assert_eq!(s.pending_len(), 0);
+    }
+
+    /// A transport whose sends never finish, like a DEALER socket whose
+    /// queue is full.
+    struct StuckSink;
+
+    #[async_trait::async_trait]
+    impl TransportSink for StuckSink {
+        async fn send(&self, _channel: Channel, _msg: Message) -> Result<()> {
+            std::future::pending().await
+        }
+        async fn heartbeat(&self, _timeout: Duration) -> Result<bool> {
+            Ok(true)
+        }
+        async fn close(&self) {}
+    }
+
+    /// A transport whose sends finish after `delay`, and whose kernel
+    /// never replies.
+    struct SlowSink {
+        delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl TransportSink for SlowSink {
+        async fn send(&self, _channel: Channel, _msg: Message) -> Result<()> {
+            tokio::time::sleep(self.delay).await;
+            Ok(())
+        }
+        async fn heartbeat(&self, _timeout: Duration) -> Result<bool> {
+            Ok(true)
+        }
+        async fn close(&self) {}
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_send_comes_out_of_the_reply_wait() {
+        let (tx, incoming) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(async move { tx.closed().await });
+        let transport = KernelTransport {
+            sink: Arc::new(SlowSink {
+                delay: Duration::from_secs(8),
+            }),
+            incoming,
+        };
+        let s = KernelSession::start_with(transport, None, None);
+        let m = s.message("kernel_info_request", &serde_json::json!({}));
+        let start = tokio::time::Instant::now();
+        let r = s
+            .request(Channel::Shell, m, false, Duration::from_secs(10))
+            .await;
+        assert!(matches!(r, Err(Error::Timeout("reply"))), "{r:?}");
+        assert_eq!(start.elapsed(), Duration::from_secs(10), "one deadline");
+    }
+
+    #[tokio::test]
+    async fn a_request_whose_send_blocks_times_out() {
+        let (tx, incoming) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(async move { tx.closed().await });
+        let transport = KernelTransport {
+            sink: Arc::new(StuckSink),
+            incoming,
+        };
+        let s = KernelSession::start_with(transport, None, None);
+        let m = s.message("kernel_info_request", &serde_json::json!({}));
+        let r = tokio::time::timeout(
+            Duration::from_secs(5),
+            s.request(Channel::Shell, m, false, Duration::from_millis(50)),
+        )
+        .await
+        .expect("request returned");
+        assert!(matches!(r, Err(Error::SendTimeout)), "{r:?}");
         assert_eq!(s.pending_len(), 0);
     }
 

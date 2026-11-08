@@ -839,7 +839,10 @@ impl Core {
             };
             let _ = session.shutdown(false, Duration::from_millis(200)).await;
             kernel.launched.lock().unwrap().take();
-            let retry = matches!(e, HostError::KernelDied | HostError::Timeout(_));
+            let retry = matches!(
+                e,
+                HostError::KernelDied | HostError::Timeout(_) | HostError::SendTimeout
+            );
             if !retry || attempt == START_ATTEMPTS {
                 break Err(e.into());
             }

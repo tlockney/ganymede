@@ -186,7 +186,8 @@ impl<F: FnMut(Event<'_>) + Send> NotebookHandler for F {
 /// message to `handler` as it arrives and answering input requests
 /// through it. A timeout returns [`ganymede_kernel_host::Error::Timeout`]
 /// and leaves the kernel running the code; interrupting is the caller's
-/// choice.
+/// choice. A request the kernel never accepted returns
+/// [`ganymede_kernel_host::Error::SendTimeout`] instead.
 pub async fn execute_streaming(
     session: &KernelSession,
     req: ExecuteRequest,

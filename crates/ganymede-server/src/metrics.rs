@@ -261,7 +261,9 @@ impl Metrics {
                 Ok(Some(reply))
             }
             Ok(_) => Ok(None),
-            Err(ganymede_kernel_host::Error::Timeout(_)) => Err(()),
+            Err(
+                ganymede_kernel_host::Error::Timeout(_) | ganymede_kernel_host::Error::SendTimeout,
+            ) => Err(()),
             Err(_) => Ok(None),
         }
     }
