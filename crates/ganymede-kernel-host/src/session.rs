@@ -1279,21 +1279,26 @@ mod tests {
         misses: 3,
     };
 
+    /// A waiting request's record holding `outputs` and `status`.
+    fn pending_with(outputs: Vec<Message>, status: Vec<Message>) -> Pending {
+        Pending {
+            want_idle: true,
+            reply: None,
+            broadcast_reply: None,
+            idle_seen: false,
+            outputs,
+            status,
+            done: None,
+        }
+    }
+
     #[tokio::test]
     async fn outputs_so_far_gives_the_tail_from_an_index() {
         let (s, _, _) = silent_session(true, FAST);
         let out = |n: i64| s.message("stream", &serde_json::json!({ "n": n }));
         s.inner.pending.lock().unwrap().insert(
             "r".into(),
-            Pending {
-                want_idle: false,
-                reply: None,
-                broadcast_reply: None,
-                idle_seen: false,
-                outputs: vec![out(0), out(1), out(2)],
-                status: Vec::new(),
-                done: None,
-            },
+            pending_with(vec![out(0), out(1), out(2)], Vec::new()),
         );
         let ns = |from| {
             s.outputs_so_far("r", from)
@@ -1313,15 +1318,7 @@ mod tests {
     async fn busy_seen_reads_the_requests_record() {
         let (s, _, _) = silent_session(true, FAST);
         let state = |st: &str| s.message("status", &serde_json::json!({ "execution_state": st }));
-        let pending = |status| Pending {
-            want_idle: true,
-            reply: None,
-            broadcast_reply: None,
-            idle_seen: false,
-            outputs: Vec::new(),
-            status,
-            done: None,
-        };
+        let pending = |status| pending_with(Vec::new(), status);
         s.inner
             .pending
             .lock()
