@@ -7,4 +7,4 @@ or delete in between. `Collab::index_existing` does both under
 for writing, as renames did (#522), so a path that's gone never gets an
 id. `notebook_room_id` returns the contents error, so MCP and the
 execute endpoint say why a notebook can't be opened ("cannot open x:
-... not found") instead of only "cannot open x".
+no such file or directory: x") instead of only "cannot open x".

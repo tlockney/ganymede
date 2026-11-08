@@ -2525,11 +2525,24 @@ async fn collaboration_room_syncs_saves_and_reloads() {
         &app,
         "PUT",
         "/api/collaboration/session/nope.ipynb",
+        Some(body.clone()),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    // A hidden file is there: the 404 says why it can't open (#580).
+    std::fs::write(dir.path().join(".hidden.ipynb"), original).unwrap();
+    let (s, hidden) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/.hidden.ipynb",
         Some(body),
         Some(TOKEN),
     )
     .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
+    let message = hidden["message"].as_str().unwrap();
+    assert!(message.starts_with("hidden path"), "{message}");
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
