@@ -125,7 +125,7 @@ machine and point it at the loopback port:
 - Caddy, nginx, or another reverse proxy works the same way. Serve it at
   a path with `--base-url /jupyter/` if the proxy shares a host.
 
-Behind a proxy, two settings matter:
+Behind a proxy, these settings matter:
 
 - **The `Host` check.** A proxy that passes on the `Host` its clients
   used (the tailnet or public name) gets 403 from a loopback server,
