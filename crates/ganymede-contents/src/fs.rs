@@ -569,10 +569,15 @@ impl Inner {
                         if self.options.notary.is_some() && !trusted {
                             tracing::debug!("Notebook {} is not trusted", r.api);
                         }
+                        let bytes = notebook.to_file_string().into_bytes();
                         if trusted {
-                            sign = Some(serde_json::to_value(&notebook)?);
+                            // Sign the notebook as `get` will serve it: read
+                            // back from what is written, which leaves out
+                            // what writing strips (an upgraded nbformat 3
+                            // notebook's `orig_nbformat`).
+                            sign = Some(serde_json::to_value(Notebook::from_slice(&bytes)?)?);
                         }
-                        notebook.to_file_string().into_bytes()
+                        bytes
                     }
                     _ => file_bytes(&r.api, request.format, content)?,
                 };

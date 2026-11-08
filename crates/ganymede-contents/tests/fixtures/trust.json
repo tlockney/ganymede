@@ -453,6 +453,278 @@
     "nbformat_minor": 5
    },
    "trusted": false
+  },
+  {
+   "after": {
+    "metadata": {},
+    "nbformat": 3,
+    "nbformat_minor": 0,
+    "worksheets": [
+     {
+      "cells": [
+       {
+        "cell_type": "code",
+        "input": "x",
+        "language": "python",
+        "metadata": {},
+        "outputs": [
+         {
+          "html": "<b>x</b>",
+          "metadata": {},
+          "output_type": "pyout",
+          "prompt_number": 1
+         }
+        ]
+       }
+      ],
+      "metadata": {}
+     }
+    ]
+   },
+   "case": "v3 unsafe output in a worksheet",
+   "notebook": {
+    "metadata": {},
+    "nbformat": 3,
+    "nbformat_minor": 0,
+    "worksheets": [
+     {
+      "cells": [
+       {
+        "cell_type": "code",
+        "input": "x",
+        "language": "python",
+        "metadata": {},
+        "outputs": [
+         {
+          "html": "<b>x</b>",
+          "metadata": {},
+          "output_type": "pyout",
+          "prompt_number": 1
+         }
+        ]
+       }
+      ],
+      "metadata": {}
+     }
+    ]
+   },
+   "trusted": false
+  },
+  {
+   "after": {
+    "metadata": {},
+    "nbformat": 3,
+    "nbformat_minor": 0,
+    "worksheets": [
+     {
+      "cells": [
+       {
+        "cell_type": "code",
+        "input": "x",
+        "language": "python",
+        "metadata": {},
+        "outputs": [
+         {
+          "metadata": {},
+          "output_type": "pyout",
+          "prompt_number": 1
+         }
+        ]
+       }
+      ],
+      "metadata": {}
+     }
+    ]
+   },
+   "case": "v3 only safe keys",
+   "notebook": {
+    "metadata": {},
+    "nbformat": 3,
+    "nbformat_minor": 0,
+    "worksheets": [
+     {
+      "cells": [
+       {
+        "cell_type": "code",
+        "input": "x",
+        "language": "python",
+        "metadata": {},
+        "outputs": [
+         {
+          "metadata": {},
+          "output_type": "pyout",
+          "prompt_number": 1
+         }
+        ]
+       }
+      ],
+      "metadata": {}
+     }
+    ]
+   },
+   "trusted": true
+  },
+  {
+   "after": {
+    "metadata": {},
+    "nbformat": 3,
+    "nbformat_minor": 0,
+    "worksheets": [
+     {
+      "cells": [
+       {
+        "cell_type": "code",
+        "input": "x",
+        "language": "python",
+        "metadata": {},
+        "outputs": [
+         {
+          "metadata": {},
+          "output_type": "display_data",
+          "png": "AAAA"
+         }
+        ]
+       }
+      ],
+      "metadata": {}
+     },
+     {
+      "cells": [
+       {
+        "cell_type": "code",
+        "input": "y",
+        "language": "python",
+        "metadata": {},
+        "outputs": [
+         {
+          "html": "<i>y</i>",
+          "metadata": {},
+          "output_type": "display_data"
+         }
+        ]
+       }
+      ],
+      "metadata": {}
+     }
+    ]
+   },
+   "case": "v3 untrusted cell in a second worksheet",
+   "notebook": {
+    "metadata": {},
+    "nbformat": 3,
+    "nbformat_minor": 0,
+    "worksheets": [
+     {
+      "cells": [
+       {
+        "cell_type": "code",
+        "input": "x",
+        "language": "python",
+        "metadata": {
+         "trusted": true
+        },
+        "outputs": [
+         {
+          "metadata": {},
+          "output_type": "display_data",
+          "png": "AAAA"
+         }
+        ]
+       }
+      ],
+      "metadata": {}
+     },
+     {
+      "cells": [
+       {
+        "cell_type": "code",
+        "input": "y",
+        "language": "python",
+        "metadata": {},
+        "outputs": [
+         {
+          "html": "<i>y</i>",
+          "metadata": {},
+          "output_type": "display_data"
+         }
+        ]
+       }
+      ],
+      "metadata": {}
+     }
+    ]
+   },
+   "trusted": false
+  },
+  {
+   "after": {
+    "metadata": {},
+    "nbformat": 3,
+    "nbformat_minor": 0,
+    "worksheets": [
+     {
+      "cells": [
+       {
+        "cell_type": "code",
+        "input": "x",
+        "language": "python",
+        "metadata": {},
+        "outputs": [
+         {
+          "data": {},
+          "metadata": {},
+          "output_type": "execute_result"
+         }
+        ]
+       }
+      ],
+      "metadata": {}
+     }
+    ]
+   },
+   "case": "v3 execute_result is not v3's unsafe type",
+   "notebook": {
+    "metadata": {},
+    "nbformat": 3,
+    "nbformat_minor": 0,
+    "worksheets": [
+     {
+      "cells": [
+       {
+        "cell_type": "code",
+        "input": "x",
+        "language": "python",
+        "metadata": {},
+        "outputs": [
+         {
+          "data": {},
+          "metadata": {},
+          "output_type": "execute_result"
+         }
+        ]
+       }
+      ],
+      "metadata": {}
+     }
+    ]
+   },
+   "trusted": true
+  },
+  {
+   "after": {
+    "metadata": {},
+    "nbformat": 2,
+    "nbformat_minor": 0,
+    "worksheets": []
+   },
+   "case": "v2 is never trusted",
+   "notebook": {
+    "metadata": {},
+    "nbformat": 2,
+    "nbformat_minor": 0,
+    "worksheets": []
+   },
+   "trusted": false
   }
  ],
  "notebooks": [
