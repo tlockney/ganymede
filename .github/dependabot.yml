@@ -18,6 +18,13 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /container
+    schedule:
+      interval: weekly
+    groups:
+      docker:
+        patterns: ["*"]
   - package-ecosystem: npm
     directories: ["/docs", "/validation"]
     schedule:
