@@ -66,6 +66,8 @@ pub enum LabCmd {
         json: bool,
     },
     /// Remove installed versions.
+    ///
+    /// Fails, removing nothing, while an install is running.
     Remove {
         /// Versions, as `ganymede lab list` shows them.
         #[arg(required = true)]
@@ -79,7 +81,7 @@ pub enum LabCmd {
     /// Remove every installed version and extension.
     ///
     /// Also removes the records of them, leaving nothing of `ganymede lab
-    /// install` behind.
+    /// install` behind. Fails while an install is running.
     Uninstall,
 }
 
@@ -120,6 +122,7 @@ pub fn run(cmd: LabCmd) -> Result<ExitCode> {
             }
         }
         LabCmd::Remove { versions } => {
+            let _lock = removal_lock(&root, "removing")?;
             for v in versions {
                 let dir = version_dir(&root, &v)?;
                 if !dir.is_dir() {
@@ -138,52 +141,76 @@ pub fn run(cmd: LabCmd) -> Result<ExitCode> {
             eprintln!("removed {n} leftover files and directories");
         }
         LabCmd::Uninstall => {
-            for dir in [Some(root.clone()), extension::dir()].into_iter().flatten() {
-                if dir.exists() {
-                    std::fs::remove_dir_all(&dir)
-                        .with_context(|| format!("removing {}", dir.display()))?;
-                    eprintln!("removed {}", dir.display());
-                }
-            }
+            let dirs: Vec<_> = [Some(root.clone()), extension::dir()]
+                .into_iter()
+                .flatten()
+                .collect();
+            uninstall(&dirs)?;
         }
     }
     Ok(ExitCode::SUCCESS)
 }
 
 /// The file in an installs directory that installs hold a shared lock on
-/// while they run, and `lab clean` an exclusive one.
+/// while they run, and `lab clean`, `remove`, `uninstall` and `extension
+/// remove` an exclusive one.
 const LOCK: &str = ".lock";
 
 /// Takes a shared lock on `dir`'s [`LOCK`] file, creating both, so `lab
-/// clean` leaves this install's temporary entries alone until the
-/// returned file drops. Installs don't exclude each other: their entries
+/// clean` and the removals leave this install's entries alone until the
+/// returned file drops. If `uninstall` deleted the file while this waited,
+/// it starts over on a new one. Installs don't exclude each other: their entries
 /// have unique names. Best-effort: where the filesystem has no working
 /// locks the install goes ahead unlocked, as it did before the lock.
 pub(crate) fn install_lock(dir: &Path) -> Result<Option<std::fs::File>> {
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let path = dir.join(LOCK);
-    let file = match lock_file(&path) {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::warn!("installing without a lock: {e:#}");
-            return Ok(None);
-        }
-    };
-    let locked = match file.try_lock_shared() {
-        Ok(()) => Ok(()),
-        Err(std::fs::TryLockError::WouldBlock) => {
-            eprintln!("waiting for `lab clean` in {} to finish", dir.display());
-            file.lock_shared()
-        }
-        Err(std::fs::TryLockError::Error(e)) => Err(e),
-    };
-    match locked {
-        Ok(()) => Ok(Some(file)),
-        Err(e) => {
-            tracing::warn!("installing without a lock on {}: {e}", path.display());
-            Ok(None)
+    loop {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        let file = match lock_file(&path) {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!("installing without a lock: {e:#}");
+                return Ok(None);
+            }
+        };
+        let locked = match file.try_lock_shared() {
+            Ok(()) => Ok(()),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                eprintln!(
+                    "waiting for `lab clean` or a removal in {} to finish",
+                    dir.display()
+                );
+                file.lock_shared()
+            }
+            Err(std::fs::TryLockError::Error(e)) => Err(e),
+        };
+        match locked {
+            Ok(()) if still_at(&file, &path) => return Ok(Some(file)),
+            Ok(()) => continue,
+            Err(e) => {
+                tracing::warn!("installing without a lock on {}: {e}", path.display());
+                return Ok(None);
+            }
         }
     }
+}
+
+/// Whether `file` is still the file at `path`, not one deleted (with its
+/// directory, by `uninstall`) while the caller waited for its lock.
+#[cfg(unix)]
+fn still_at(file: &std::fs::File, path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (file.metadata(), std::fs::metadata(path)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+/// Windows can't delete a directory with an open file in it, so the
+/// file is always still there.
+#[cfg(not(unix))]
+fn still_at(_: &std::fs::File, _: &Path) -> bool {
+    true
 }
 
 fn lock_file(path: &Path) -> Result<std::fs::File> {
@@ -193,6 +220,67 @@ fn lock_file(path: &Path) -> Result<std::fs::File> {
         .write(true)
         .open(path)
         .with_context(|| format!("opening {}", path.display()))
+}
+
+/// What [`exclusive_lock`] got.
+pub(crate) enum Exclusive {
+    /// The lock, or `None` where locks don't work and the caller goes
+    /// ahead unlocked, as before the lock.
+    Locked(Option<std::fs::File>),
+    /// An install holds the shared lock.
+    Busy,
+}
+
+/// Takes the exclusive lock on `dir`'s [`LOCK`] file, for a command that
+/// deletes in `dir` (`clean`, `remove`, `uninstall`, `extension remove`),
+/// so it can't delete what a running install is writing. Doesn't wait:
+/// the caller decides what to do while an install runs. `doing` names
+/// the command in the warning when locks don't work.
+pub(crate) fn exclusive_lock(dir: &Path, doing: &str) -> Exclusive {
+    let path = dir.join(LOCK);
+    match lock_file(&path) {
+        Ok(lock) => match lock.try_lock() {
+            Ok(()) => Exclusive::Locked(Some(lock)),
+            Err(std::fs::TryLockError::WouldBlock) => Exclusive::Busy,
+            Err(std::fs::TryLockError::Error(e)) => {
+                tracing::warn!("{doing} without a lock on {}: {e}", path.display());
+                Exclusive::Locked(None)
+            }
+        },
+        Err(e) => {
+            tracing::warn!("{doing} without a lock: {e:#}");
+            Exclusive::Locked(None)
+        }
+    }
+}
+
+/// [`exclusive_lock`] for a command that fails while an install runs.
+/// `None`, with nothing to lock, when `dir` doesn't exist.
+pub(crate) fn removal_lock(dir: &Path, doing: &str) -> Result<Option<std::fs::File>> {
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+    match exclusive_lock(dir, doing) {
+        Exclusive::Locked(lock) => Ok(lock),
+        Exclusive::Busy => bail!(
+            "an install is running in {}; try again after it finishes",
+            dir.display()
+        ),
+    }
+}
+
+/// Removes `dirs` whole, lock files included, after locking every one,
+/// so an install running in any of them leaves all of them in place.
+fn uninstall(dirs: &[PathBuf]) -> Result<()> {
+    let _locks = dirs
+        .iter()
+        .map(|d| removal_lock(d, "uninstalling"))
+        .collect::<Result<Vec<_>>>()?;
+    for dir in dirs.iter().filter(|d| d.exists()) {
+        std::fs::remove_dir_all(dir).with_context(|| format!("removing {}", dir.display()))?;
+        eprintln!("removed {}", dir.display());
+    }
+    Ok(())
 }
 
 /// Removes the dot-named entries in `dir` that installs create and rename
@@ -205,27 +293,13 @@ fn clean(dir: &Path) -> Result<usize> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Ok(0);
     };
-    let path = dir.join(LOCK);
     // Held until the entries are removed.
-    let _lock = match lock_file(&path) {
-        Ok(lock) => match lock.try_lock() {
-            Ok(()) => Some(lock),
-            Err(std::fs::TryLockError::WouldBlock) => {
-                eprintln!(
-                    "skipped {}: an install is running there; run `lab clean` after it finishes",
-                    dir.display()
-                );
-                return Ok(0);
-            }
-            Err(std::fs::TryLockError::Error(e)) => {
-                tracing::warn!("cleaning without a lock on {}: {e}", path.display());
-                None
-            }
-        },
-        Err(e) => {
-            tracing::warn!("cleaning without a lock: {e:#}");
-            None
-        }
+    let Exclusive::Locked(_lock) = exclusive_lock(dir, "cleaning") else {
+        eprintln!(
+            "skipped {}: an install is running there; run `lab clean` after it finishes",
+            dir.display()
+        );
+        return Ok(0);
     };
     let mut n = 0;
     for e in entries.flatten() {
@@ -603,6 +677,63 @@ mod tests {
         drop(install);
         assert_eq!(clean(r).unwrap(), 1);
         assert!(!r.join(".download-xyz").exists());
+    }
+
+    #[test]
+    fn removals_fail_while_an_install_runs() {
+        let root = tempfile::tempdir().unwrap();
+        let r = root.path();
+        let install = install_lock(r).unwrap().expect("locks work here");
+        let err = removal_lock(r, "removing").unwrap_err().to_string();
+        assert!(err.contains("an install is running"), "{err}");
+        drop(install);
+        let lock = removal_lock(r, "removing").unwrap();
+        assert!(lock.is_some());
+        // An install waits for a removal; a second removal fails.
+        assert!(removal_lock(r, "removing").is_err());
+        drop(lock);
+        assert!(removal_lock(&r.join("missing"), "removing")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn uninstall_removes_nothing_while_any_install_runs() {
+        let root = tempfile::tempdir().unwrap();
+        let (lab, ext) = (root.path().join("lab"), root.path().join("labextensions"));
+        std::fs::create_dir_all(lab.join("4.6.4")).unwrap();
+        let install = install_lock(&ext).unwrap().expect("locks work here");
+        assert!(uninstall(&[lab.clone(), ext.clone()]).is_err());
+        assert!(lab.join("4.6.4").is_dir());
+        drop(install);
+        uninstall(&[lab.clone(), ext.clone()]).unwrap();
+        assert!(!lab.exists() && !ext.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_install_waiting_on_an_uninstall_relocks_the_new_file() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("lab");
+        let held = removal_lock(
+            &{
+                std::fs::create_dir_all(&dir).unwrap();
+                dir.clone()
+            },
+            "uninstalling",
+        )
+        .unwrap()
+        .expect("locks work here");
+        let waiter = {
+            let dir = dir.clone();
+            std::thread::spawn(move || install_lock(&dir).unwrap().expect("locks work here"))
+        };
+        // Let the install start waiting, then remove the directory.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::fs::remove_dir_all(&dir).unwrap();
+        drop(held);
+        let lock = waiter.join().unwrap();
+        assert!(still_at(&lock, &dir.join(LOCK)));
     }
 
     #[test]

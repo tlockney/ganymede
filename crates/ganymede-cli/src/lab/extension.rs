@@ -97,7 +97,8 @@ pub enum ExtensionCmd {
     },
     /// Remove packages' extensions.
     ///
-    /// Dependencies installed with them stay.
+    /// Dependencies installed with them stay. Fails while an install is
+    /// running.
     Remove {
         /// Package names, as `ganymede lab extension list` shows them.
         #[arg(required = true)]
@@ -204,6 +205,7 @@ pub fn run(cmd: ExtensionCmd) -> Result<ExitCode> {
             }
         }
         ExtensionCmd::Remove { packages } => {
+            let _lock = super::removal_lock(&root, "removing")?;
             for p in packages {
                 let key = normalize(&p)?;
                 let Some(rec) = record(&root, &key) else {
