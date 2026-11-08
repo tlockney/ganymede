@@ -51,9 +51,15 @@ impl ApiPath {
     /// Parse and validate client input.
     ///
     /// Rejected with [`Error::OutsideRoot`]: backslashes anywhere, a leading
-    /// slash (absolute path), and any `..` component. Rejected with
+    /// slash (absolute path), any `..` component and, on Windows, a colon
+    /// (a drive such as `C:x` or a stream such as `a:b`). Rejected with
     /// [`Error::BadRequest`]: NUL bytes. Empty and `.` components are dropped.
     pub fn parse(path: &str) -> Result<Self> {
+        Self::parse_for(path, cfg!(windows))
+    }
+
+    /// [`ApiPath::parse`], with Windows' rules when `windows`.
+    fn parse_for(path: &str, windows: bool) -> Result<Self> {
         if path.contains('\0') {
             return Err(Error::BadRequest("path contains a NUL byte".into()));
         }
@@ -65,6 +71,13 @@ impl ApiPath {
         if path.starts_with('/') {
             return Err(Error::OutsideRoot(format!(
                 "absolute paths are not allowed: {path:?}"
+            )));
+        }
+        // Joined onto the root, `C:x` replaces it with a path on drive C:,
+        // and `a:b` names a stream of the file `a`.
+        if windows && path.contains(':') {
+            return Err(Error::OutsideRoot(format!(
+                "colons are not allowed in paths: {path:?}"
             )));
         }
         let mut components = Vec::new();
@@ -202,6 +215,17 @@ mod tests {
             );
         }
         assert!(matches!(ApiPath::parse("a\0b"), Err(Error::BadRequest(_))));
+    }
+
+    #[test]
+    fn parse_rejects_drives_and_streams_on_windows() {
+        for bad in ["C:.git", "a/C:x", "C:", "notes.txt:secret"] {
+            assert!(
+                matches!(ApiPath::parse_for(bad, true), Err(Error::OutsideRoot(_))),
+                "{bad:?} should be outside the root on Windows"
+            );
+            assert!(ApiPath::parse_for(bad, false).is_ok(), "{bad:?} elsewhere");
+        }
     }
 
     #[test]
