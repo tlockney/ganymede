@@ -981,6 +981,15 @@ mod tests {
         let k = started(&m, Some("fake"), None).await.unwrap();
         let mut c = m.connect_client(&k.id).unwrap();
         run(&mut c, "x = 1").await;
+        // A comm message ahead of the cell gets no reply, and doesn't take
+        // the running cell's place: the cell still gets the error (#532).
+        let comm = Message::new(
+            "comm_msg",
+            "sess",
+            "u",
+            &serde_json::json!({"comm_id": "c", "data": {}}),
+        );
+        c.send(Channel::Shell, comm).await.unwrap();
         let crash = run(&mut c, "die").await;
         let queued = run(&mut c, "after").await;
         let got = until_announced(&mut c, "restarting").await;
@@ -1027,6 +1036,32 @@ mod tests {
             }
         }
         assert_eq!(m.list().len(), 1);
+        m.shutdown(&k.id).await.unwrap();
+    }
+
+    /// Messages a kernel never replies to (`comm_msg`) aren't kept for a
+    /// crash's answers, so a widget's updates during a long cell can't
+    /// push the running request out of the list (#532).
+    #[tokio::test]
+    async fn only_requests_wait_for_a_crash_answer() {
+        let m = manager(None);
+        let k = started(&m, Some("fake"), None).await.unwrap();
+        let kernel = m.get(&k.id).unwrap();
+        let cell = Message::new("execute_request", "sess", "u", &ExecuteRequest::new("x"));
+        let comm = Message::new(
+            "comm_msg",
+            "sess",
+            "u",
+            &serde_json::json!({"comm_id": "c", "data": {}}),
+        );
+        kernel.sent_on_shell(&cell.header);
+        for _ in 0..crate::kernels::UNANSWERED_LIMIT {
+            kernel.sent_on_shell(&comm.header);
+        }
+        assert_eq!(
+            kernel.unanswered_ids(),
+            std::slice::from_ref(&cell.header.msg_id)
+        );
         m.shutdown(&k.id).await.unwrap();
     }
 

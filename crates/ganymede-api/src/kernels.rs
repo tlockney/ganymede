@@ -20,7 +20,7 @@ use tokio::sync::{broadcast, watch};
 const START_ATTEMPTS: u32 = 3;
 
 /// Unanswered shell requests remembered per kernel.
-const UNANSWERED_LIMIT: usize = 1000;
+pub(crate) const UNANSWERED_LIMIT: usize = 1000;
 
 /// A kernel that runs this long after a restart has started cleanly, and
 /// its next crash counts from one again (`KernelRestarter.stable_start_time`).
@@ -238,8 +238,13 @@ impl RunningKernel {
     }
 
     /// A shell request a client sent, to be answered for the kernel if it
-    /// crashes first.
+    /// crashes first. Only `*_request` messages are kept: a `comm_msg`
+    /// gets no reply, and a widget sending many during a long cell would
+    /// otherwise push the running request out of the list (#532).
     pub(crate) fn sent_on_shell(&self, header: &Header) {
+        if !header.msg_type.ends_with("_request") {
+            return;
+        }
         let mut unanswered = self.unanswered.lock().unwrap();
         // Requests a kernel never answers (an unknown type, which kernels
         // ignore) must not pile up for ever.
@@ -247,6 +252,13 @@ impl RunningKernel {
             unanswered.pop_front();
         }
         unanswered.push_back(header.clone());
+    }
+
+    /// The ids of the shell requests kept for a crash's answers.
+    #[cfg(test)]
+    pub(crate) fn unanswered_ids(&self) -> Vec<String> {
+        let unanswered = self.unanswered.lock().unwrap();
+        unanswered.iter().map(|h| h.msg_id.clone()).collect()
     }
 
     /// The session died. Unless the manager shut it down or a start or
@@ -270,15 +282,19 @@ impl RunningKernel {
     fn answer_for_crashed_kernel(&self, why: &str) {
         let unanswered: Vec<Header> = self.unanswered.lock().unwrap().drain(..).collect();
         let mut clients = self.clients.lock().unwrap();
-        for (i, parent) in unanswered.into_iter().enumerate() {
+        // The first *request* was the one running. `sent_on_shell` keeps
+        // only requests; this is a second guard.
+        let mut first = true;
+        for parent in unanswered {
             let reply_type = match parent.msg_type.strip_suffix("_request") {
                 Some(base) => format!("{base}_reply"),
                 None => continue,
             };
+            let running = std::mem::replace(&mut first, false);
             let msg = |msg_type: &str, content: serde_json::Value| {
                 Message::new(msg_type, "server", "server", &content).with_parent(parent.clone())
             };
-            let content = if i == 0 {
+            let content = if running {
                 let error = serde_json::json!({
                     "ename": "KernelDied",
                     "evalue": why,
