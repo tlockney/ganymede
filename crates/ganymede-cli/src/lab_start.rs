@@ -4,6 +4,9 @@
 //! ganymede-ui at `/`. Both open the URL in the browser and move to the
 //! next port when 8888 is taken.
 
+use std::ffi::OsString;
+use std::path::Path;
+
 use anyhow::Result;
 use ganymede_server::config::Config;
 use ganymede_server::serve::{OnListening, ServeArgs, Startup};
@@ -38,9 +41,14 @@ pub async fn run(cfg: Config, no_browser: bool, lab: bool) -> Result<()> {
     ganymede_server::serve::run_with(cfg, startup).await
 }
 
-/// Opens `url` with the platform's opener. A failure is only reported:
-/// the URL is on stdout to open by hand.
+/// Opens the server's `jpserver-<pid>-open.html`, as `jupyter_server`
+/// does, so the token stays out of the opener's argv; `url` when that file
+/// is missing. A failure is only reported: the URL is on stdout to open by
+/// hand.
 fn open_browser(url: &str) {
+    let open_html = ganymede_engine::host::kernelspec::jupyter_runtime_dir()
+        .join(format!("jpserver-{}-open.html", std::process::id()));
+    let target = browser_target(url, &open_html);
     let opener = if cfg!(target_os = "macos") {
         "open"
     } else if cfg!(windows) {
@@ -49,7 +57,7 @@ fn open_browser(url: &str) {
         "xdg-open"
     };
     match std::process::Command::new(opener)
-        .arg(url)
+        .arg(target)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -66,5 +74,30 @@ fn open_browser(url: &str) {
             });
         }
         Err(e) => tracing::warn!("cannot run {opener}: {e}; open the URL by hand"),
+    }
+}
+
+/// What to hand the opener: the redirect page when the server wrote one,
+/// else the URL.
+fn browser_target(url: &str, open_html: &Path) -> OsString {
+    if open_html.is_file() {
+        open_html.as_os_str().to_owned()
+    } else {
+        url.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_browser_gets_the_redirect_page_not_the_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let page = dir.path().join("jpserver-1-open.html");
+        let url = "http://127.0.0.1:8888/lab?token=secret";
+        assert_eq!(browser_target(url, &page), OsString::from(url));
+        std::fs::write(&page, "<html></html>").unwrap();
+        assert_eq!(browser_target(url, &page), page.into_os_string());
     }
 }
