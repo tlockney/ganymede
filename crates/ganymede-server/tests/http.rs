@@ -1906,6 +1906,22 @@ async fn login_form_and_logout() {
     assert!(full.contains("Path=/"));
 }
 
+/// The login form's own limit never raises a smaller `max_body_size`.
+#[tokio::test]
+async fn login_keeps_a_smaller_max_body_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    st.max_body_size = 32 * 1024;
+    let app = build_router(st);
+    let req = Request::post("/login")
+        .header(header::HOST, HOST)
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from(format!("password={}", "x".repeat(40 * 1024))))
+        .unwrap();
+    let (st, _, _) = send(&app, req).await;
+    assert_eq!(st, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
 #[tokio::test]
 async fn login_redirects_keep_the_base_url() {
     let dir = tempfile::tempdir().unwrap();
