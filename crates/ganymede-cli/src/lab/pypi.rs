@@ -257,17 +257,27 @@ pub fn check_not_yanked(project: &str, meta: &Value) -> Result<()> {
 
 /// The newest release in a project's JSON (`/pypi/<project>/json`) that
 /// matches `specs` and has a file that is not yanked (PyPI yanks a release
-/// by yanking every file). Pre-releases count only
+/// by yanking every file). With `pure_only`, the file must be a pure wheel,
+/// the only kind [`pick_wheel`] installs; without it, the release is good
+/// for reading its metadata. Pre-releases count only
 /// when a specifier names one or no final release matches, as pip does;
 /// the flag says a pre-release was picked.
-pub fn newest_matching(project_meta: &Value, specs: &[Spec]) -> Option<(String, bool)> {
+pub fn newest_matching(
+    project_meta: &Value,
+    specs: &[Spec],
+    pure_only: bool,
+) -> Option<(String, bool)> {
     let releases = project_meta["releases"].as_object()?;
     let mut candidates: Vec<(Version, &str)> = releases
         .iter()
         .filter(|(_, files)| {
-            files
-                .as_array()
-                .is_some_and(|f| f.iter().any(|f| f["yanked"] != true))
+            if pure_only {
+                pick_wheel(files).is_some()
+            } else {
+                files
+                    .as_array()
+                    .is_some_and(|f| f.iter().any(|f| f["yanked"] != true))
+            }
         })
         .filter_map(|(v, _)| Some((Version::parse(v)?, v.as_str())))
         .filter(|(v, _)| specs.iter().all(|s| s.matches(v)))
@@ -728,9 +738,23 @@ mod tests {
             "1.2": [wheel("x-1.2", true)],
             "2.0b1": [wheel("x-2.0b1", false)],
             "0.9": [],
+            "1.3": [
+                {"packagetype": "sdist", "filename": "x-1.3.tar.gz", "yanked": false},
+                {"packagetype": "bdist_wheel", "filename": "x-1.3-cp312-cp312-win_amd64.whl",
+                 "url": "https://x/c", "digests": {"sha256": "cc"}, "yanked": false},
+            ],
         }});
-        let pick = |s: &str| newest_matching(&meta, &Spec::parse_list(s).unwrap());
-        assert_eq!(pick(""), Some(("1.1".into(), false)), "1.2 is yanked");
+        let pick = |s: &str| newest_matching(&meta, &Spec::parse_list(s).unwrap(), true);
+        assert_eq!(
+            pick(""),
+            Some(("1.1".into(), false)),
+            "1.2 is yanked, 1.3 has no pure wheel"
+        );
+        assert_eq!(pick("<=1.3"), Some(("1.1".into(), false)));
+        // Read for its requirements, a release needs no pure wheel.
+        let any = |s: &str| newest_matching(&meta, &Spec::parse_list(s).unwrap(), false);
+        assert_eq!(any(""), Some(("1.3".into(), false)));
+        assert_eq!(any("==1.2"), None, "yanked");
         assert_eq!(pick("<1.1"), Some(("1.0".into(), false)));
         assert_eq!(pick(">=2.0b1"), Some(("2.0b1".into(), true)));
         assert_eq!(

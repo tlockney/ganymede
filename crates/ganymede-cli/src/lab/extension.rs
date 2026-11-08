@@ -354,7 +354,7 @@ fn install(root: &Path, specs: &[String], force: bool, no_deps: bool, pins: &[Pi
                 continue;
             }
         }
-        let Some((api, meta)) = resolve(&index, &want)? else {
+        let Some((api, meta)) = resolve(&index, &want, false)? else {
             if named {
                 bail!("no release of {} on PyPI has a wheel", want.describe());
             }
@@ -377,11 +377,21 @@ fn install(root: &Path, specs: &[String], force: bool, no_deps: bool, pins: &[Pi
         if !named && !has(FRAMEWORK) {
             continue;
         }
+        let install = named || has(EXTENSIONS);
+        let walk = has(FRAMEWORK) && !no_deps;
+        // Installing needs a pure wheel; an older release may have one when
+        // the newest doesn't. Everything after this, the dependency walk
+        // included, then reads the release that gets installed.
+        let (api, meta) = if install && pypi::pick_wheel(&meta["urls"]).is_none() {
+            resolve(&index, &want, true)?.unwrap_or((api, meta))
+        } else {
+            (api, meta)
+        };
         let name = meta["info"]["name"]
             .as_str()
             .unwrap_or(&want.name)
             .to_string();
-        if named || has(EXTENSIONS) {
+        if install {
             let installed = install_wheel(
                 &index,
                 root,
@@ -397,7 +407,7 @@ fn install(root: &Path, specs: &[String], force: bool, no_deps: bool, pins: &[Pi
                 bail!("{name} has no prebuilt JupyterLab extension in its wheel");
             }
         }
-        if has(FRAMEWORK) && !no_deps {
+        if walk {
             for (dep, specs) in requirements(&meta) {
                 queue.push_back(Want {
                     name: dep,
@@ -410,10 +420,10 @@ fn install(root: &Path, specs: &[String], force: bool, no_deps: bool, pins: &[Pi
     Ok(())
 }
 
-/// PyPI's JSON for the newest release that `want` allows, with a pure
-/// wheel and not yanked. `None` when there is none. An exact `==` pin is
-/// fetched directly and refused if yanked.
-fn resolve(index: &Index, want: &Want) -> Result<Option<(String, Value)>> {
+/// PyPI's JSON for the newest release that `want` allows and that is not
+/// yanked, with a pure wheel when `pure_only`. `None` when there is none.
+/// An exact `==` pin is fetched directly and refused if yanked.
+fn resolve(index: &Index, want: &Want, pure_only: bool) -> Result<Option<(String, Value)>> {
     if let [only] = want.specs.as_slice() {
         if let Some(v) = only.pinned() {
             let Some((api, meta)) = index.json(&want.name, Some(v))? else {
@@ -431,7 +441,7 @@ fn resolve(index: &Index, want: &Want) -> Result<Option<(String, Value)>> {
         pypi::check_not_yanked(&want.name, &project)?;
         return Ok(Some((api, project)));
     }
-    let Some((version, pre)) = pypi::newest_matching(&project, &want.specs) else {
+    let Some((version, pre)) = pypi::newest_matching(&project, &want.specs, pure_only) else {
         return Ok(None);
     };
     if pre {
