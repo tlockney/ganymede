@@ -49,6 +49,8 @@ const PREDECESSOR_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_REMEMBERED_CELLS: usize = 256;
 /// Queued request ids kept for successors; the oldest go first.
 const MAX_QUEUED_IDS: usize = 10_000;
+/// The longest `wait` a request may ask for.
+const MAX_WAIT: Duration = Duration::from_secs(3600);
 
 #[derive(Deserialize, Default)]
 pub struct ExecuteBody {
@@ -58,6 +60,9 @@ pub struct ExecuteBody {
     client_id: Option<String>,
     request_id: Option<String>,
     previous_request_id: Option<String>,
+    /// Ganymede's extension (#566): wait up to this many seconds for the
+    /// batch to run, and answer with its cells.
+    wait: Option<f64>,
 }
 
 /// Why a batch was refused.
@@ -622,6 +627,16 @@ pub async fn execute(
         };
         cells.push((id.to_string(), Some(hash)));
     }
+    let wait = match body.wait {
+        None => None,
+        Some(w) if w.is_finite() && w > 0.0 => Some(Duration::from_secs_f64(w).min(MAX_WAIT)),
+        Some(w) => {
+            return Err(bad(format!(
+                "wait must be a positive number of seconds, got {w}"
+            )))
+        }
+    };
+    let ids: Vec<String> = cells.iter().map(|(id, _)| id.clone()).collect();
     // 404 for an unknown kernel, as the other kernel endpoints answer.
     state.kernels.get(&kernel_id).map_err(HttpError::from)?;
 
@@ -644,14 +659,21 @@ pub async fn execute(
     }
 
     let (reply, answer) = oneshot::channel();
+    let (finished, done) = match wait {
+        Some(_) => {
+            let (tx, rx) = oneshot::channel();
+            (Some(tx), Some(rx))
+        }
+        None => (None, None),
+    };
     let cmd = Cmd::Exec(RoomCmd::Enqueue {
         kernels: state.kernels.clone(),
         kernel_id,
         cells,
         reply,
-        finished: None,
+        finished,
     });
-    send_to_notebook_room(&state.collab, &state.contents, &document_id, cmd)
+    let room = send_to_notebook_room(&state.collab, &state.contents, &document_id, cmd)
         .await
         .ok_or_else(|| bad(format!("No YRoom available for document: {document_id:?}")))?;
     match answer.await {
@@ -669,12 +691,36 @@ pub async fn execute(
     if let Some(id) = body.request_id.as_deref().filter(|p| !p.is_empty()) {
         state.collab.requests.mark(id);
     }
+    if let (Some(wait), Some(done)) = (wait, done) {
+        let finished = tokio::time::timeout(wait, done)
+            .await
+            .is_ok_and(|r| r.is_ok());
+        let cells = room_cells(&room, ids).await;
+        return Ok(axum::Json(json!({"finished": finished, "cells": cells})).into_response());
+    }
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/json")],
         "null",
     )
         .into_response())
+}
+
+/// The cells `ids` as the room has them now, in that order, as nbformat
+/// JSON; a cell deleted since is left out. The room handles commands in
+/// order, so asked after a batch finished, these carry its outputs.
+async fn room_cells(room: &mpsc::UnboundedSender<Cmd>, ids: Vec<String>) -> Vec<Value> {
+    let mut cells = Vec::new();
+    for id in ids {
+        let (tx, rx) = oneshot::channel();
+        if room.send(Cmd::Exec(RoomCmd::Get(id, tx))).is_err() {
+            break;
+        }
+        if let Ok(Some(cell)) = rx.await {
+            cells.extend(serde_json::to_value(&cell).ok());
+        }
+    }
+    cells
 }
 
 /// Queue cells of the notebook at `path` on `kernel_id`, unchecked, and

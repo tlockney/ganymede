@@ -3938,6 +3938,73 @@ async fn execute_endpoint_runs_cells_into_the_document() {
     );
 }
 
+/// The execute endpoint's `wait` (#566): the reply comes once the batch
+/// has run, with its cells as the room has them, before any save.
+#[tokio::test]
+async fn execute_wait_answers_with_the_cells() {
+    let dir = tempfile::tempdir().unwrap();
+    let code = |id: &str, src: &str| json!({"cell_type": "code", "execution_count": null, "id": id, "metadata": {}, "outputs": [], "source": src});
+    let nb = json!({
+        "cells": [code("a", "hello"), code("b", "raise"), code("c", "never"), code("s", "sleep 3000")],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5
+    });
+    std::fs::write(
+        dir.path().join("wait.ipynb"),
+        serde_json::to_string_pretty(&nb).unwrap(),
+    )
+    .unwrap();
+    let app = build_router(state(dir.path()));
+    let (_, kernel) = call(&app, "POST", "/api/kernels", Some(json!({})), Some(TOKEN)).await;
+    let kid = kernel["id"].as_str().unwrap().to_string();
+    let (_, v) = call(
+        &app,
+        "POST",
+        "/api/fileid/index?path=wait.ipynb",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    let doc = format!("json:notebook:{}", v["id"].as_str().unwrap());
+    let hash = |src: &str| ganymede_documents::murmur2(src.as_bytes(), 0).to_string();
+    let url = format!("/api/kernels/{kid}/execute");
+    let exec = |body: Value| call(&app, "POST", &url, Some(body), Some(TOKEN));
+
+    let (s, _) = exec(json!({"document_id": doc, "wait": -1,
+        "cells": [{"cell_id": "a", "source_hash": hash("hello")}]}))
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "negative wait");
+
+    // a runs, b fails, c is skipped; the reply has all three, in order.
+    let (s, v) = exec(json!({"document_id": doc, "wait": 15, "cells": [
+        {"cell_id": "a", "source_hash": hash("hello")},
+        {"cell_id": "b", "source_hash": hash("raise")},
+        {"cell_id": "c", "source_hash": hash("never")}]}))
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["finished"], true, "{v:#}");
+    let cells = v["cells"].as_array().unwrap();
+    let ids: Vec<&str> = cells.iter().map(|c| c["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["a", "b", "c"]);
+    assert_eq!(cells[0]["execution_count"], 1);
+    assert!(
+        cells[0]["outputs"].to_string().contains("hello"),
+        "{:#}",
+        cells[0]
+    );
+    assert_eq!(cells[1]["outputs"][0]["output_type"], "error");
+    assert_eq!(cells[2]["execution_count"], Value::Null);
+    assert_eq!(cells[2]["outputs"], json!([]));
+
+    // A wait shorter than the cell: not finished, the cell still empty.
+    let (s, v) = exec(json!({"document_id": doc, "wait": 0.2,
+        "cells": [{"cell_id": "s", "source_hash": hash("sleep 3000")}]}))
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["finished"], false, "{v:#}");
+    assert_eq!(v["cells"][0]["id"], "s");
+    assert_eq!(v["cells"][0]["execution_count"], Value::Null);
+}
+
 /// A progress-style cell (clear with wait, then print) updates a
 /// connected client live, before the cell finishes.
 #[tokio::test]
