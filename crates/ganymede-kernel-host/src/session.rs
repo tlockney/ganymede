@@ -143,7 +143,9 @@ impl KernelSession {
             kernel_info: Mutex::new(None),
             kernel_info_json: Mutex::new(None),
         });
-        tokio::spawn(route(inner.clone(), transport.incoming));
+        // Weak, so a session dropped without `shutdown` drops its
+        // transport, whose socket tasks then stop and end the route.
+        tokio::spawn(route(Arc::downgrade(&inner), transport.incoming));
         if let Some(p) = inner.process.clone() {
             let weak = Arc::downgrade(&inner);
             let mut alive = inner.alive.subscribe();
@@ -605,8 +607,13 @@ async fn monitor(inner: Weak<Inner>, hb: Heartbeat) {
     }
 }
 
-async fn route(inner: Arc<Inner>, mut incoming: crate::transport::Incoming) {
+async fn route(weak: std::sync::Weak<Inner>, mut incoming: crate::transport::Incoming) {
     while let Some((channel, msg)) = incoming.recv().await {
+        // Held only while a message is handled: between messages the
+        // route must not keep the session (and so its transport) alive.
+        let Some(inner) = weak.upgrade() else {
+            return;
+        };
         if channel == Channel::IoPub {
             inner.iopub_seen.store(true, Ordering::SeqCst);
             // The welcome answers the host's own subscription, which every
@@ -669,7 +676,9 @@ async fn route(inner: Arc<Inner>, mut incoming: crate::transport::Incoming) {
         }
         let _ = inner.clients.send((channel, msg));
     }
-    inner.mark_dead();
+    if let Some(inner) = weak.upgrade() {
+        inner.mark_dead();
+    }
 }
 
 fn whoami() -> String {
@@ -691,6 +700,27 @@ mod tests {
         let s = KernelSession::start(host, None);
         let info = s.nudge(Duration::from_secs(5)).await.unwrap();
         (s, info)
+    }
+
+    /// A session dropped without `shutdown` lets its transport go: the
+    /// kernel side sees the host's sender close (#564).
+    #[tokio::test]
+    async fn a_dropped_session_closes_its_transport() {
+        let (host, mut kernel) = in_process_pair(64);
+        let s = KernelSession::start_with(host, None, None);
+        // A message routed through, so the route has run.
+        kernel
+            .outgoing
+            .send((
+                Channel::IoPub,
+                s.message("status", &serde_json::json!({"execution_state": "idle"})),
+            ))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(s);
+        let closed = tokio::time::timeout(Duration::from_secs(2), kernel.incoming.recv()).await;
+        assert!(matches!(closed, Ok(None)), "the transport stayed open");
     }
 
     #[tokio::test]
