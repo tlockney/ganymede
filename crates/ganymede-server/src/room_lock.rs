@@ -46,14 +46,20 @@ pub(crate) struct Locks {
 
 /// A held lock; dropping it releases the file.
 pub(crate) struct RoomLock {
-    _file: File,
+    /// `None` only while dropping.
+    file: Option<File>,
     path: PathBuf,
     held: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
 impl Drop for RoomLock {
     fn drop(&mut self) {
-        self.held.lock().expect("held locks").remove(&self.path);
+        // Release the file under the guard, before it leaves the held set:
+        // a probe in between would find it locked and not held here, and
+        // report another process.
+        let mut held = self.held.lock().expect("held locks");
+        drop(self.file.take());
+        held.remove(&self.path);
     }
 }
 
@@ -74,7 +80,12 @@ impl Locks {
         let Ok(canonical) = file.canonicalize() else {
             return Acquire::Unavailable;
         };
-        if self.held.lock().expect("held locks").contains(&canonical) {
+        // Held through the `try_lock`, so it never overlaps a probe of
+        // this server's (`owned_elsewhere`): flock locks belong to the open
+        // file, so the probe's lock would turn this room away as if
+        // another process owned the file.
+        let mut held = self.held.lock().expect("held locks");
+        if held.contains(&canonical) {
             // Another room of this server owns it, under another file id.
             return Acquire::HeldHere;
         }
@@ -87,12 +98,9 @@ impl Locks {
         };
         match lock_file.try_lock() {
             Ok(()) => {
-                self.held
-                    .lock()
-                    .expect("held locks")
-                    .insert(canonical.clone());
+                held.insert(canonical.clone());
                 Acquire::Held(RoomLock {
-                    _file: lock_file,
+                    file: Some(lock_file),
                     path: canonical,
                     held: self.held.clone(),
                 })
@@ -106,11 +114,12 @@ impl Locks {
     }
 
     /// Whether another process owns `file`, for the contents API's
-    /// `writable`. Takes and drops the lock to find out, without marking
-    /// it held, so a room of this server opening at the same moment isn't
-    /// turned away. While the probe holds it, another server's room
-    /// opening on the file finds it owned and starts read-only; it takes
-    /// the lock on its next retry, within a second.
+    /// `writable`. Takes and drops the lock to find out, holding this
+    /// server's held set throughout, so a room of this server opening at
+    /// the same moment waits rather than being turned away. While the
+    /// probe holds it, another server's room opening on the file finds it
+    /// owned and starts read-only; it takes the lock on its next retry,
+    /// within a second.
     pub(crate) fn owned_elsewhere(&self, file: &Path) -> bool {
         let Some(dir) = &self.dir else {
             return false;
@@ -118,7 +127,8 @@ impl Locks {
         let Ok(canonical) = file.canonicalize() else {
             return false;
         };
-        if self.held.lock().expect("held locks").contains(&canonical) {
+        let held = self.held.lock().expect("held locks");
+        if held.contains(&canonical) {
             return false;
         }
         match open(dir, &canonical).map(|f| f.try_lock()) {
@@ -167,6 +177,32 @@ mod tests {
         drop(held);
         assert!(!two.owned_elsewhere(&nb));
         assert!(matches!(two.acquire(&nb), Acquire::Held(_)));
+    }
+
+    #[test]
+    fn a_probe_never_turns_this_servers_own_room_away() {
+        let dir = tempfile::tempdir().unwrap();
+        let nb = dir.path().join("a.ipynb");
+        std::fs::write(&nb, "{}").unwrap();
+        let locks = Arc::new(Locks::new(Some(dir.path().join("locks"))));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let prober = {
+            let (locks, stop, nb) = (locks.clone(), stop.clone(), nb.clone());
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    assert!(!locks.owned_elsewhere(&nb));
+                }
+            })
+        };
+        for _ in 0..2000 {
+            match locks.acquire(&nb) {
+                Acquire::Held(lock) => drop(lock),
+                Acquire::Elsewhere => panic!("this server's probe turned its room away"),
+                _ => panic!("no locking"),
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        prober.join().unwrap();
     }
 
     #[test]
