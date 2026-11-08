@@ -320,6 +320,19 @@ impl KernelSession {
             .map(|p| p.outputs.get(from..).unwrap_or_default().to_vec())
     }
 
+    /// Whether the kernel has sent `busy` for a request still waiting for
+    /// its reply: it took the request up rather than queuing it. Read
+    /// from the request's record, which keeps every status without lag.
+    /// `None` once the request is complete or gone, and before
+    /// [`KernelSession::request`] for it is first polled.
+    pub fn busy_seen(&self, msg_id: &str) -> Option<bool> {
+        self.inner.pending.lock().unwrap().get(msg_id).map(|p| {
+            p.status
+                .iter()
+                .any(|m| m.content["execution_state"] == "busy")
+        })
+    }
+
     /// Number of requests waiting for a reply.
     #[cfg(test)]
     fn pending_len(&self) -> usize {
@@ -1294,6 +1307,34 @@ mod tests {
         assert_eq!(ns(3), Vec::<i64>::new());
         assert_eq!(ns(9), Vec::<i64>::new(), "past the end is empty");
         assert!(s.outputs_so_far("other", 0).is_none());
+    }
+
+    #[tokio::test]
+    async fn busy_seen_reads_the_requests_record() {
+        let (s, _, _) = silent_session(true, FAST);
+        let state = |st: &str| s.message("status", &serde_json::json!({ "execution_state": st }));
+        let pending = |status| Pending {
+            want_idle: true,
+            reply: None,
+            broadcast_reply: None,
+            idle_seen: false,
+            outputs: Vec::new(),
+            status,
+            done: None,
+        };
+        s.inner
+            .pending
+            .lock()
+            .unwrap()
+            .insert("queued".into(), pending(Vec::new()));
+        s.inner
+            .pending
+            .lock()
+            .unwrap()
+            .insert("running".into(), pending(vec![state("busy")]));
+        assert_eq!(s.busy_seen("queued"), Some(false));
+        assert_eq!(s.busy_seen("running"), Some(true));
+        assert_eq!(s.busy_seen("other"), None);
     }
 
     #[tokio::test]

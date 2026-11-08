@@ -147,7 +147,10 @@ pub trait Handler: Send {
     /// The kernel took the request up: its `busy` status for the request
     /// arrived. The one message the protocol requires of every request,
     /// so it tells a run apart from one still queued even when the code
-    /// prints nothing and the kernel sends no `execute_input`.
+    /// prints nothing and the kernel sends no `execute_input`. Called at
+    /// most once, before any output for the request, and not lost to a
+    /// lag: a `busy` the broadcast skipped is read from the request's
+    /// record. The one rule for "the kernel started it" (#588).
     fn on_busy(&mut self) {}
     /// The kernel asked for input. `None` answers with an empty string.
     /// Async, so a UI can wait for the user without blocking the runtime.
@@ -216,13 +219,17 @@ pub async fn execute_streaming(
     // finished): live messages would then come before skipped ones, so
     // the rest is left to the reply's record.
     let mut behind = false;
+    // Whether `on_busy` has been called: once, from the broadcast or,
+    // after a lag that skipped the `busy`, from the request's record.
+    let mut busy = false;
     let exec = loop {
         tokio::select! {
             biased;
             r = sub.recv() => match r {
                 Ok((ch, m)) if m.parent_id() == Some(id.as_str()) => match ch {
                     Channel::IoPub if m.msg_type() == "status" => {
-                        if m.content["execution_state"] == "busy" {
+                        if m.content["execution_state"] == "busy" && !busy {
+                            busy = true;
                             handler.on_busy();
                         }
                     }
@@ -251,6 +258,11 @@ pub async fn execute_streaming(
                     // The record has everything broadcast so far, in
                     // order: hand over what was skipped, then go on live.
                     tracing::debug!("output handler fell {n} messages behind; catching up");
+                    // The skipped messages may include the `busy`.
+                    if !busy && session.busy_seen(&id) == Some(true) {
+                        busy = true;
+                        handler.on_busy();
+                    }
                     if sent.load(Ordering::Relaxed)
                         && !catch_up(session, &id, &mut handed, &mut streamed, handler)
                     {
@@ -1060,6 +1072,66 @@ mod tests {
         assert_eq!(timestamp(&m), "2026-10-17T16:41:06.123000Z");
         m.header.date = "2026-10-17T16:41:06.123456+00:00".into();
         assert_eq!(timestamp(&m), "2026-10-17T16:41:06.123456Z");
+    }
+
+    /// Counts `on_busy` calls.
+    struct Busies(usize);
+    #[async_trait::async_trait]
+    impl Handler for Busies {
+        fn on_busy(&mut self) {
+            self.0 += 1;
+        }
+    }
+
+    /// `on_busy` comes once per request, even if the kernel repeats its
+    /// `busy` (#588).
+    #[tokio::test]
+    async fn on_busy_is_called_once() {
+        let (host, mut side) = in_process_pair(64);
+        tokio::spawn(async move {
+            while let Some((ch, m)) = side.incoming.recv().await {
+                let send = |c, t: &str, v: serde_json::Value| (c, Message::reply_to(&m, t, &v));
+                let state =
+                    |st: &str| send(Channel::IoPub, "status", json!({"execution_state": st}));
+                let out = match m.msg_type() {
+                    "kernel_info_request" => vec![
+                        state("idle"),
+                        send(
+                            ch,
+                            "kernel_info_reply",
+                            serde_json::to_value(ganymede_kernel_host::testing::kernel_info())
+                                .unwrap(),
+                        ),
+                    ],
+                    "execute_request" => vec![
+                        state("busy"),
+                        state("busy"),
+                        state("idle"),
+                        send(
+                            Channel::Shell,
+                            "execute_reply",
+                            json!({"status": "ok", "execution_count": 1}),
+                        ),
+                    ],
+                    _ => vec![],
+                };
+                for o in out {
+                    let _ = side.outgoing.send(o).await;
+                }
+            }
+        });
+        let s = KernelSession::start(host, None);
+        s.nudge(Duration::from_secs(5)).await.unwrap();
+        let mut h = Busies(0);
+        execute_streaming(
+            &s,
+            ExecuteRequest::new("x"),
+            Duration::from_secs(10),
+            &mut h,
+        )
+        .await
+        .unwrap();
+        assert_eq!(h.0, 1);
     }
 
     /// Records the number each stream output carries.

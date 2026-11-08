@@ -1275,8 +1275,8 @@ impl Notebooks {
             store_history: false,
             ..Default::default()
         };
-        // Whether the kernel took the request up: it sends `busy` for the
-        // request, and `execute_input` or an output, only once it runs it.
+        // Whether the kernel took the request up: its `busy` for the
+        // request (`on_busy`, which a lag doesn't lose).
         let mut started = Started(false);
         let mut cells = vec![Cell::Code(cell)];
         let r = ganymede_exec::NotebookRun::new(opts)
@@ -1541,15 +1541,11 @@ fn strip_html(s: &str) -> String {
         .replace("&amp;", "&")
 }
 
-/// Whether a scratch run's request was taken up by the kernel (#340).
+/// Whether a scratch run's request was taken up by the kernel (#340),
+/// by [`ganymede_exec::Handler::on_busy`]'s rule.
 struct Started(bool);
 
 impl ganymede_exec::NotebookHandler for Started {
-    fn on_event(&mut self, e: ganymede_exec::Event<'_>) {
-        if let ganymede_exec::Event::Output { .. } = e {
-            self.0 = true;
-        }
-    }
     fn on_busy(&mut self, _index: usize) {
         self.0 = true;
     }
