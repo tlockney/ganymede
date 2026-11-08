@@ -597,6 +597,30 @@ mod tests {
         assert!(r.is_ok());
     }
 
+    /// A cell that prints nothing and sends no `execute_input` still
+    /// counts as started from its `busy`, so it is interrupted.
+    #[tokio::test]
+    async fn a_timeout_on_a_quiet_cell_interrupts_it() {
+        let k = fake().await;
+        let opts = ExecuteOptions {
+            timeout: Some(Duration::from_millis(100)),
+            ..Default::default()
+        };
+        assert!(k
+            .execute_with("quiet 10000", &opts, &mut NoHandler)
+            .await
+            .is_err());
+        let opts = ExecuteOptions {
+            timeout: Some(Duration::from_secs(2)),
+            ..Default::default()
+        };
+        let r = k
+            .execute_with("hello", &opts, &mut NoHandler)
+            .await
+            .unwrap();
+        assert!(r.is_ok());
+    }
+
     #[tokio::test]
     async fn a_timeout_while_queued_interrupts_nothing() {
         let k = Arc::new(fake().await);

@@ -53,7 +53,9 @@ output can be told apart.
 stores them, the `execute_reply` content, and every iopub message.
 `text()` is what a terminal would print; `error()` is `(ename, evalue)`.
 `ExecuteOptions` defaults to a notebook cell's settings, with stdin off
-and no timeout; a cell that runs past its `timeout` is interrupted.
+and no timeout; a cell that runs past its `timeout` is interrupted. A
+request still queued behind another client's cell when it times out is
+not: the interrupt would stop that cell instead.
 
 `Kernel` is `Send + Sync`: put it in an `Arc` to interrupt from one task
 while another executes. A kernel the engine launched is killed when the
