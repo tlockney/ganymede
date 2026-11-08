@@ -11,7 +11,8 @@ written).
 Review follow-ups: the server hands `lab`/`ui` the page it actually wrote
 (`Startup::on_open_page`, `ServerInfoFiles::open_html`), so a stale file
 from an earlier process with the same pid is never opened and the CLI no
-longer rebuilds the server's file name. The page goes to the opener as a
-`file://` URL, so it reaches the browser rather than the `.html` handler.
+longer rebuilds the server's file name. The page goes to the opener as an
+absolute `file://` URL, as jupyter_server does, so a relative
+`JUPYTER_RUNTIME_DIR` still names a file that exists.
 `--no-redirect-file` opens the URL instead, for snap and Flatpak browsers
 that can't read the runtime dir; `docs/reference.md` says so.

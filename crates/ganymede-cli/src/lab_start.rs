@@ -89,12 +89,13 @@ fn open_browser(url: &str, page: Option<&Path>) {
     }
 }
 
-/// What to hand the opener: the redirect page as a `file://` URL, so it
-/// goes to the browser rather than to whatever opens `.html` files; else
-/// the URL.
+/// What to hand the opener: the redirect page as a `file://` URL, as
+/// jupyter_server does; else the URL. A page path that cannot be made
+/// absolute (a relative `JUPYTER_RUNTIME_DIR` with no working directory)
+/// falls back to the URL.
 fn browser_target(url: &str, page: Option<&Path>) -> OsString {
-    match page {
-        Some(p) => file_url(p).into(),
+    match page.and_then(|p| std::path::absolute(p).ok()) {
+        Some(p) => file_url(&p).into(),
         None => url.into(),
     }
 }
@@ -137,6 +138,13 @@ mod tests {
         assert!(target.starts_with("file://"), "{target}");
         assert!(target.ends_with("/jpserver-1-open.html"), "{target}");
         assert!(!target.contains("secret"), "{target}");
+        // A relative runtime dir still names the file under the cwd.
+        let rel = browser_target(url, Some(Path::new("rt/jpserver-1-open.html")));
+        let cwd = file_url(&std::env::current_dir().unwrap());
+        assert_eq!(
+            rel.to_str().unwrap(),
+            format!("{cwd}/rt/jpserver-1-open.html")
+        );
         assert_eq!(
             file_url(Path::new("/home/me/a b/x.html")),
             "file:///home/me/a%20b/x.html"
