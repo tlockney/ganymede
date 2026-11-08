@@ -981,6 +981,15 @@ mod tests {
         let k = started(&m, Some("fake"), None).await.unwrap();
         let mut c = m.connect_client(&k.id).unwrap();
         run(&mut c, "x = 1").await;
+        // A comm message ahead of the cell gets no reply, and doesn't take
+        // the running cell's place: the cell still gets the error (#532).
+        let comm = Message::new(
+            "comm_msg",
+            "sess",
+            "u",
+            &serde_json::json!({"comm_id": "c", "data": {}}),
+        );
+        c.send(Channel::Shell, comm).await.unwrap();
         let crash = run(&mut c, "die").await;
         let queued = run(&mut c, "after").await;
         let got = until_announced(&mut c, "restarting").await;

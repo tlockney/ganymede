@@ -270,15 +270,19 @@ impl RunningKernel {
     fn answer_for_crashed_kernel(&self, why: &str) {
         let unanswered: Vec<Header> = self.unanswered.lock().unwrap().drain(..).collect();
         let mut clients = self.clients.lock().unwrap();
-        for (i, parent) in unanswered.into_iter().enumerate() {
+        // The first *request* was the one running: a `comm_msg` sent
+        // ahead of it gets no reply, and doesn't take its place.
+        let mut first = true;
+        for parent in unanswered {
             let reply_type = match parent.msg_type.strip_suffix("_request") {
                 Some(base) => format!("{base}_reply"),
                 None => continue,
             };
+            let running = std::mem::replace(&mut first, false);
             let msg = |msg_type: &str, content: serde_json::Value| {
                 Message::new(msg_type, "server", "server", &content).with_parent(parent.clone())
             };
-            let content = if i == 0 {
+            let content = if running {
                 let error = serde_json::json!({
                     "ename": "KernelDied",
                     "evalue": why,
