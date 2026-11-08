@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::watch;
 
 /// Launches tried before a kernel that never answers counts as failed.
 const START_ATTEMPTS: u32 = 3;
@@ -171,7 +171,9 @@ impl RunningKernel {
     /// the session dies. The task holds neither the kernel nor the session,
     /// so a kernel that is shut down and dropped is freed.
     fn pump(self: &Arc<Self>, session: &KernelSession, core: Weak<Core>) {
-        let mut rx = session.subscribe();
+        // Lossless: a reply the pump missed would leave a client's cell
+        // running for ever, and nothing could send it again.
+        let mut rx = session.subscribe_lossless();
         let mut alive = session.watch_alive();
         let session_id = session.session_id().to_string();
         let me = Arc::downgrade(self);
@@ -184,22 +186,15 @@ impl RunningKernel {
                 };
                 let Some(k) = me.upgrade() else { return };
                 match got {
-                    Ok((channel, msg)) => k.forward(channel, msg),
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(kernel = %k.id, "pump lagged by {n} messages; clients missed them")
-                    }
-                    Err(broadcast::error::RecvError::Closed) => break,
+                    Some((channel, msg)) => k.forward(channel, msg),
+                    None => break,
                 }
             }
             // What the kernel sent before it died still goes to clients.
-            loop {
-                match rx.try_recv() {
-                    Ok((channel, msg)) => match me.upgrade() {
-                        Some(k) => k.forward(channel, msg),
-                        None => return,
-                    },
-                    Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
-                    Err(_) => break,
+            while let Ok((channel, msg)) = rx.try_recv() {
+                match me.upgrade() {
+                    Some(k) => k.forward(channel, msg),
+                    None => return,
                 }
             }
             if let (Some(k), Some(core)) = (me.upgrade(), core.upgrade()) {
