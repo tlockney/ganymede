@@ -775,13 +775,13 @@ pub(crate) async fn notebook_room_id(
     Ok(format!("json:notebook:{id}"))
 }
 
-/// Run `f` on the room of the notebook at `path`, opening it if needed.
-/// `None` when the room can't be opened (the file is gone or not a
-/// notebook).
+/// Run `f` on notebook room `room_id` (from [`notebook_room_id`]),
+/// opening it if needed. `None` when the room can't be opened (the file
+/// is gone or not a notebook).
 pub(crate) async fn with_notebook<R: Send + 'static>(
     collab: &Arc<Collab>,
     contents: &Arc<dyn Contents>,
-    path: &str,
+    room_id: &str,
     f: impl FnOnce(&mut Room) -> (R, ganymede_documents::Effects) + Send + 'static,
 ) -> Option<R> {
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -790,8 +790,7 @@ pub(crate) async fn with_notebook<R: Send + 'static>(
         let _ = tx.send(r);
         fx
     }));
-    let room_id = notebook_room_id(collab, contents, path).await.ok()?;
-    send_to_notebook_room(collab, contents, &room_id, cmd).await?;
+    send_to_notebook_room(collab, contents, room_id, cmd).await?;
     rx.await.ok()
 }
 
@@ -817,18 +816,17 @@ impl Drop for Hold {
     }
 }
 
-/// Join the room of the notebook at `path` as a client that never reads
-/// its frames. `None` when the path names no notebook room.
+/// Join notebook room `room_id` (from [`notebook_room_id`]) as a client
+/// that never reads its frames. `None` when the room can't be opened.
 pub(crate) async fn hold_notebook(
     collab: &Arc<Collab>,
     contents: &Arc<dyn Contents>,
-    path: &str,
+    room_id: &str,
 ) -> Option<Hold> {
-    let room_id = notebook_room_id(collab, contents, path).await.ok()?;
     let conn = collab.next_conn.fetch_add(1, Ordering::Relaxed);
     // The receiver is dropped: frames sent to this client go nowhere.
     let (out, _, _) = ClientTx::new(usize::MAX);
-    let room = send_to_notebook_room(collab, contents, &room_id, Cmd::Join(conn, out)).await?;
+    let room = send_to_notebook_room(collab, contents, room_id, Cmd::Join(conn, out)).await?;
     Some(Hold { room, conn })
 }
 
@@ -1773,15 +1771,6 @@ mod join_tests {
             .await
             .unwrap_err();
         assert_eq!(e.status(), 404);
-        assert!(with_notebook(&collab, &contents, "typo.ipynb", |_| (
-            (),
-            Default::default()
-        ))
-        .await
-        .is_none());
-        assert!(hold_notebook(&collab, &contents, "typo.ipynb")
-            .await
-            .is_none());
         // Never indexed: the first index makes the id.
         assert!(collab.index("typo.ipynb").await.1);
         std::fs::create_dir(dir.path().join("sub")).unwrap();
@@ -1794,6 +1783,37 @@ mod join_tests {
             id,
             format!("json:notebook:{}", collab.index("a.ipynb").await.0)
         );
+    }
+
+    /// MCP resolves a path to a room id once and passes the id on to the
+    /// hold and the call (#584): both reach the room after a rename.
+    #[tokio::test]
+    async fn a_room_id_reaches_its_notebook_after_a_rename() {
+        let (dir, contents) = notebook_dir();
+        let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
+        let room_id = notebook_room_id(&collab, &contents, "a.ipynb")
+            .await
+            .unwrap();
+        let hold = hold_notebook(&collab, &contents, &room_id).await.unwrap();
+        let read = |collab: Arc<Collab>, contents: Arc<dyn Contents>, room_id: String| async move {
+            with_notebook(&collab, &contents, &room_id, |room| {
+                (room.notebook_with_ids(), Default::default())
+            })
+            .await
+        };
+        let before = read(collab.clone(), contents.clone(), room_id.clone()).await;
+        assert!(matches!(before, Some(Some(Ok(_)))), "loaded: {before:?}");
+
+        let moving = collab.begin_move().await;
+        std::fs::rename(dir.path().join("a.ipynb"), dir.path().join("b.ipynb")).unwrap();
+        collab.moved("a.ipynb", "b.ipynb").await;
+        drop(moving);
+        let after = read(collab.clone(), contents.clone(), room_id.clone()).await;
+        assert!(
+            matches!(after, Some(Some(Ok(_)))),
+            "after the rename: {after:?}"
+        );
+        assert!(hold.is_live());
     }
 
     /// Indexing a path while a rename is under way waits for it, so the
