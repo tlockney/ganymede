@@ -10,7 +10,7 @@ use ganymede_kernel_host::{FsKernelspecs, KernelspecSource, Provisioner};
 use ganymede_lsp::{LspConfig, LspManager};
 use ganymede_terminals::{TerminalConfig, TerminalManager};
 use std::future::IntoFuture;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -285,6 +285,10 @@ pub fn init_logging_with(
 /// Called with the printed URL once the port is bound.
 pub type OnListening = Box<dyn FnOnce(&str) + Send>;
 
+/// Called with the printed URL and the `jpserver-<pid>-open.html` this
+/// server wrote (`None` when it wrote none) once the port is bound.
+pub type OnOpenPage = Box<dyn FnOnce(&str, Option<&Path>) + Send>;
+
 /// What `ganymede lab` asks of [`run_with`] beyond `ganymede serve`.
 #[derive(Default)]
 pub struct Startup {
@@ -295,6 +299,9 @@ pub struct Startup {
     /// and print the URL of `/lab` rather than of the root.
     pub require_lab: bool,
     pub on_listening: Option<OnListening>,
+    /// Like `on_listening`, also given the redirect page, so a browser can
+    /// be opened without the token in its arguments.
+    pub on_open_page: Option<OnOpenPage>,
     /// Stop on a message here instead of on Ctrl-C or SIGTERM, and print
     /// nothing to stdout: how an app embedding the server runs it.
     pub stop: Option<tokio::sync::mpsc::Receiver<()>>,
@@ -628,7 +635,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     }
     // Written before the URL is printed, so whoever reads the URL finds
     // them. An embedding app has no use for them, and on iOS no runtime dir.
-    let _info_files = (!embedded).then(|| {
+    let info_files = (!embedded).then(|| {
         crate::server_info::ServerInfoFiles::write(
             &ganymede_kernel_host::kernelspec::jupyter_runtime_dir(),
             &crate::server_info::ServerInfo {
@@ -646,6 +653,9 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     }
     if let Some(f) = startup.on_listening {
         f(&url);
+    }
+    if let Some(f) = startup.on_open_page {
+        f(&url, info_files.as_ref().and_then(|f| f.open_html()));
     }
 
     serve_until(listener, app, stop, DRAIN_TIMEOUT).await?;

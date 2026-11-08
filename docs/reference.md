@@ -268,6 +268,17 @@ the token, and are removed when the server stops; a file left by a server
 that was killed names a process that is gone, which `jupyter server list`
 checks and cleans up. A server embedded in an app writes neither.
 
+`lab` and `ui` open the browser on `jpserver-<pid>-open.html`, as
+`jupyter_server` does, so the token is not in the browser command's
+arguments. Snap and Flatpak browsers, the default Firefox and Chromium on
+Ubuntu 22.04 and later, can't read the runtime dir and show an
+access-denied page; `--no-redirect-file` opens the URL itself instead, as
+`jupyter_server`'s `use_redirect_file = False` does.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
 ## Environment variables
 
 | Variable | Effect |

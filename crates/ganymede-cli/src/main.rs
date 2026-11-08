@@ -565,20 +565,36 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             tokio::task::spawn_blocking(move || lab::run(cmd)).await?
         }
         Cmd::Lab { cmd: None, start } => {
-            let lab_start::StartArgs { no_browser, serve } = *start;
+            let lab_start::StartArgs {
+                no_browser,
+                no_redirect_file,
+                serve,
+            } = *start;
+            let browser = lab_start::Browser {
+                no_browser,
+                no_redirect_file,
+            };
             let cfg = server_config(serve, &cli.kernelspec_root, cli.startup_timeout, cli.quiet)?;
-            lab_start::run(cfg, no_browser, true).await?;
+            lab_start::run(cfg, browser, true).await?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Ui { cmd: Some(cmd), .. } => tokio::task::spawn_blocking(move || ui::run(cmd)).await?,
         Cmd::Ui { cmd: None, start } => {
-            let lab_start::StartArgs { no_browser, serve } = *start;
+            let lab_start::StartArgs {
+                no_browser,
+                no_redirect_file,
+                serve,
+            } = *start;
+            let browser = lab_start::Browser {
+                no_browser,
+                no_redirect_file,
+            };
             let mut cfg =
                 server_config(serve, &cli.kernelspec_root, cli.startup_timeout, cli.quiet)?;
             if cfg.static_dir.is_none() {
                 cfg.static_dir = Some(ui::newest()?);
             }
-            lab_start::run(cfg, no_browser, false).await?;
+            lab_start::run(cfg, browser, false).await?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Serve(args) => {
