@@ -165,6 +165,56 @@ CHECK_CELLS_CASES = {
 }
 
 
+# nbformat 3 notebooks: cells under worksheets, `pyout` for
+# execute_result and `prompt_number` for execution_count. Given as whole
+# notebooks, version fields included.
+CHECK_CELLS_V3_CASES = {
+    "v3 unsafe output in a worksheet": {
+        "nbformat": 3, "nbformat_minor": 0, "metadata": {},
+        "worksheets": [
+            {"metadata": {}, "cells": [
+                {"cell_type": "code", "metadata": {}, "input": "x", "language": "python",
+                 "outputs": [{"output_type": "pyout", "prompt_number": 1, "html": "<b>x</b>", "metadata": {}}]},
+            ]},
+        ],
+    },
+    "v3 only safe keys": {
+        "nbformat": 3, "nbformat_minor": 0, "metadata": {},
+        "worksheets": [
+            {"metadata": {}, "cells": [
+                {"cell_type": "code", "metadata": {}, "input": "x", "language": "python",
+                 "outputs": [{"output_type": "pyout", "prompt_number": 1, "metadata": {}}]},
+            ]},
+        ],
+    },
+    "v3 untrusted cell in a second worksheet": {
+        "nbformat": 3, "nbformat_minor": 0, "metadata": {},
+        "worksheets": [
+            {"metadata": {}, "cells": [
+                {"cell_type": "code", "metadata": {"trusted": True}, "input": "x", "language": "python",
+                 "outputs": [{"output_type": "display_data", "png": "AAAA", "metadata": {}}]},
+            ]},
+            {"metadata": {}, "cells": [
+                {"cell_type": "code", "metadata": {}, "input": "y", "language": "python",
+                 "outputs": [{"output_type": "display_data", "html": "<i>y</i>", "metadata": {}}]},
+            ]},
+        ],
+    },
+    "v3 execute_result is not v3's unsafe type": {
+        "nbformat": 3, "nbformat_minor": 0, "metadata": {},
+        "worksheets": [
+            {"metadata": {}, "cells": [
+                {"cell_type": "code", "metadata": {}, "input": "x", "language": "python",
+                 "outputs": [{"output_type": "execute_result", "data": {}, "metadata": {}}]},
+            ]},
+        ],
+    },
+    "v2 is never trusted": {
+        "nbformat": 2, "nbformat_minor": 0, "metadata": {}, "worksheets": [],
+    },
+}
+
+
 def main():
     signing = signing_notebook()
     nbformat.write(signing, HERE / "signing.ipynb")
@@ -198,6 +248,10 @@ def main():
         nb = nbformat.from_dict({"nbformat": 4, "nbformat_minor": 5, "metadata": {}, **copy.deepcopy(case)})
         result = notary(SECRETS["short"]).check_cells(nb)
         check_cells.append({"case": label, "notebook": {"nbformat": 4, "nbformat_minor": 5, "metadata": {}, **case}, "trusted": result, "after": nb})
+    for label, case in CHECK_CELLS_V3_CASES.items():
+        nb = nbformat.from_dict(copy.deepcopy(case))
+        result = notary(SECRETS["short"]).check_cells(nb)
+        check_cells.append({"case": label, "notebook": case, "trusted": result, "after": nb})
 
     out = {
         "secrets": {label: secret.decode("ascii") for label, secret in SECRETS.items()},
