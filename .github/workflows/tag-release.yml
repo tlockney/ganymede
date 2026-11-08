@@ -42,11 +42,22 @@ jobs:
             echo "CHANGELOG.md has no $version section; not a release commit"
             exit 0
           fi
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
-            echo "$tag exists; nothing to do"
-            exit 0
+          if tagged=$(git ls-remote --exit-code --tags origin "refs/tags/$tag"); then
+            # A rerun after the tag was pushed but release.yml never
+            # started: start it, unless it already ran or the tag is on
+            # another commit.
+            if [[ "${tagged%%[[:space:]]*}" != "$GITHUB_SHA" ]]; then
+              echo "$tag exists on another commit; nothing to do"
+              exit 0
+            fi
+            runs=$(gh run list --workflow release.yml --branch "$tag" --json databaseId --jq length)
+            if gh release view "$tag" > /dev/null 2>&1 || [[ "$runs" != 0 ]]; then
+              echo "$tag exists and release.yml has run for it; nothing to do"
+              exit 0
+            fi
+          else
+            git tag "$tag" "$GITHUB_SHA"
+            git push origin "refs/tags/$tag"
           fi
-          git tag "$tag" "$GITHUB_SHA"
-          git push origin "refs/tags/$tag"
           gh workflow run release.yml --ref "$tag"
           echo "Tagged $GITHUB_SHA as $tag and started release.yml"
