@@ -47,6 +47,14 @@ pub enum Error {
     Exec(#[from] ganymede_exec::Error),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    /// [`ExecuteOptions::timeout`](crate::ExecuteOptions::timeout) ran out
+    /// while the request was still queued behind another client's cell.
+    /// Nothing was interrupted, and the kernel still runs the code when
+    /// its turn comes.
+    #[error(
+        "timed out after {0:?} while queued behind another cell; the kernel will still run it"
+    )]
+    Queued(std::time::Duration),
     #[error("{0}")]
     Usage(String),
 }
