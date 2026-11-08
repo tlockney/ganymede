@@ -9,4 +9,5 @@ across their `try_lock`, so they can't overlap. The test also caught a
 second gap: `RoomLock::drop` left the held set before its file closed, so
 a probe in between found the lock taken and not held here. It now closes
 the file first, under the same guard. The new test runs a prober thread
-against 2000 acquires; with either fix undone it fails.
+against 2000 acquires. Undoing the `acquire` fix fails it every run; undoing
+only the `Drop` fix fails it some runs, since that window is narrower.
