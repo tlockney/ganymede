@@ -695,7 +695,9 @@ pub(crate) async fn run_and_wait(
         reply,
         finished: Some(finished),
     });
-    let room = crate::collab::notebook_room_id(&state.collab, path).await;
+    let room = crate::collab::notebook_room_id(&state.collab, &state.contents, path)
+        .await
+        .ok_or_else(|| format!("cannot open {path}"))?;
     send_to_notebook_room(&state.collab, &state.contents, &room, cmd)
         .await
         .ok_or_else(|| format!("cannot open {path}"))?;

@@ -718,9 +718,16 @@ pub(crate) async fn send_to_notebook_room(
     send_to_room(collab, contents, room_id, Some(file_id), cmd).await
 }
 
-/// The room id of the notebook at `path`.
-pub(crate) async fn notebook_room_id(collab: &Collab, path: &str) -> String {
-    format!("json:notebook:{}", collab.index(path).await.0)
+/// The room id of the notebook at `path`. `None` when nothing is there:
+/// as the REST routes do, only an existing file gets a file id, so a
+/// mistyped path leaves no row in the id table.
+pub(crate) async fn notebook_room_id(
+    collab: &Collab,
+    contents: &Arc<dyn Contents>,
+    path: &str,
+) -> Option<String> {
+    contents.get(path, GetOptions::default()).await.ok()?;
+    Some(format!("json:notebook:{}", collab.index(path).await.0))
 }
 
 /// Run `f` on the room of the notebook at `path`, opening it if needed.
@@ -738,7 +745,7 @@ pub(crate) async fn with_notebook<R: Send + 'static>(
         let _ = tx.send(r);
         fx
     }));
-    let room_id = notebook_room_id(collab, path).await;
+    let room_id = notebook_room_id(collab, contents, path).await?;
     send_to_notebook_room(collab, contents, &room_id, cmd).await?;
     rx.await.ok()
 }
@@ -772,7 +779,7 @@ pub(crate) async fn hold_notebook(
     contents: &Arc<dyn Contents>,
     path: &str,
 ) -> Option<Hold> {
-    let room_id = notebook_room_id(collab, path).await;
+    let room_id = notebook_room_id(collab, contents, path).await?;
     let conn = collab.next_conn.fetch_add(1, Ordering::Relaxed);
     // The receiver is dropped: frames sent to this client go nowhere.
     let (out, _, _) = ClientTx::new(usize::MAX);
@@ -1710,6 +1717,34 @@ mod join_tests {
             .await
             .unwrap();
         loads(rx, "the room loaded the renamed file").await;
+    }
+
+    /// A path with no file behind it gets no room and no file id (#560).
+    #[tokio::test]
+    async fn a_missing_notebook_gets_no_file_id() {
+        let (_dir, contents) = notebook_dir();
+        let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
+        assert!(notebook_room_id(&collab, &contents, "typo.ipynb")
+            .await
+            .is_none());
+        assert!(with_notebook(&collab, &contents, "typo.ipynb", |_| (
+            (),
+            Default::default()
+        ))
+        .await
+        .is_none());
+        assert!(hold_notebook(&collab, &contents, "typo.ipynb")
+            .await
+            .is_none());
+        // Never indexed: the first index makes the id.
+        assert!(collab.index("typo.ipynb").await.1);
+        let id = notebook_room_id(&collab, &contents, "a.ipynb")
+            .await
+            .unwrap();
+        assert_eq!(
+            id,
+            format!("json:notebook:{}", collab.index("a.ipynb").await.0)
+        );
     }
 
     /// A websocket join or a server-side send while a rename is under way
