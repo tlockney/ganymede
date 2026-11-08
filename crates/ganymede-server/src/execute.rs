@@ -629,7 +629,10 @@ pub async fn execute(
     }
     let wait = match body.wait {
         None => None,
-        Some(w) if w.is_finite() && w > 0.0 => Some(Duration::from_secs_f64(w).min(MAX_WAIT)),
+        // Clamped first: `from_secs_f64` panics past `Duration::MAX`.
+        Some(w) if w.is_finite() && w > 0.0 => {
+            Some(Duration::from_secs_f64(w.min(MAX_WAIT.as_secs_f64())))
+        }
         Some(w) => {
             return Err(bad(format!(
                 "wait must be a positive number of seconds, got {w}"

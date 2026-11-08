@@ -3974,6 +3974,12 @@ async fn execute_wait_answers_with_the_cells() {
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "negative wait");
 
+    // A wait past the cap is capped, not a panic.
+    let (s, v) = exec(json!({"document_id": doc, "wait": 1e20,
+        "cells": [{"cell_id": "a", "source_hash": hash("hello")}]}))
+    .await;
+    assert_eq!((s, &v["finished"]), (StatusCode::OK, &json!(true)), "{v:#}");
+
     // a runs, b fails, c is skipped; the reply has all three, in order.
     let (s, v) = exec(json!({"document_id": doc, "wait": 15, "cells": [
         {"cell_id": "a", "source_hash": hash("hello")},
@@ -3985,7 +3991,7 @@ async fn execute_wait_answers_with_the_cells() {
     let cells = v["cells"].as_array().unwrap();
     let ids: Vec<&str> = cells.iter().map(|c| c["id"].as_str().unwrap()).collect();
     assert_eq!(ids, ["a", "b", "c"]);
-    assert_eq!(cells[0]["execution_count"], 1);
+    assert_eq!(cells[0]["execution_count"], 2);
     assert!(
         cells[0]["outputs"].to_string().contains("hello"),
         "{:#}",
