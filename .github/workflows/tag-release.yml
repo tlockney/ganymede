@@ -42,11 +42,12 @@ jobs:
             echo "CHANGELOG.md has no $version section; not a release commit"
             exit 0
           fi
-          if tagged=$(git ls-remote --exit-code --tags origin "refs/tags/$tag"); then
+          if tagged=$(git ls-remote --exit-code --tags origin "refs/tags/$tag" "refs/tags/$tag^{}"); then
             # A rerun after the tag was pushed but release.yml never
             # started: start it, unless it already ran or the tag is on
-            # another commit.
-            if [[ "${tagged%%[[:space:]]*}" != "$GITHUB_SHA" ]]; then
+            # another commit. An annotated tag's commit is its `^{}` line.
+            commit=$(echo "$tagged" | tail -n 1)
+            if [[ "${commit%%[[:space:]]*}" != "$GITHUB_SHA" ]]; then
               echo "$tag exists on another commit; nothing to do"
               exit 0
             fi

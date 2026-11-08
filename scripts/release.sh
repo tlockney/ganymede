@@ -55,10 +55,11 @@ prepare() {
 
   version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
   branch="release/v$version"
-  if git show-ref --quiet --verify "refs/heads/$branch"; then
+  if git show-ref --quiet --verify "refs/heads/$branch" ||
+    git ls-remote --exit-code --heads origin "$branch" > /dev/null; then
     # Undo this run's commit; main stays as it was.
     git reset --quiet --keep HEAD~1
-    echo "error: $branch exists from an earlier run; switch to it and rerun with --execute, or delete it" >&2
+    echo "error: $branch exists from an earlier run (here or on origin); switch to it and rerun with --execute, or delete it" >&2
     exit 1
   fi
   git switch --quiet -c "$branch"
