@@ -124,9 +124,9 @@ impl ZmqTransport {
                 .await
                 .is_err()
             {
-                tracing::debug!(
+                tracing::warn!(
                     endpoint = hb_endpoint,
-                    "heartbeat port not answering; sending on shell anyway"
+                    "heartbeat port not answering after the grace period; sending on shell anyway"
                 );
             }
             hb_ready.send_replace(true);
