@@ -276,3 +276,35 @@ async fn trust_survives_a_restart_with_the_same_data_dir() {
     };
     assert_eq!(trusted_flags(&again, "a.ipynb").await, [None, expected]);
 }
+
+/// An nbformat 3 notebook saved with untrusted HTML output is not signed,
+/// and one whose outputs are all safe is: its cells are found in its
+/// worksheets (#531).
+#[tokio::test]
+async fn v3_notebooks_are_signed_by_their_worksheet_cells() {
+    let (_dir, contents) = setup(Some(memory_notary()));
+    let v3 = |output: Value| {
+        json!({"nbformat": 3, "nbformat_minor": 0, "metadata": {"name": ""},
+        "worksheets": [{"metadata": {}, "cells": [
+            {"cell_type": "code", "collapsed": false, "input": "x", "language": "python",
+             "metadata": {}, "prompt_number": 1, "outputs": [output]}
+        ]}]})
+    };
+    let html = json!({"output_type": "display_data", "metadata": {},
+        "html": ["<b>bold</b>"], "text": ["html"]});
+    let stream = json!({"output_type": "stream", "stream": "stdout", "metadata": {},
+        "text": ["1\n"]});
+    for (output, signed) in [(html, false), (stream, true)] {
+        contents
+            .save("old.ipynb", SaveRequest::notebook(v3(output.clone())))
+            .await
+            .unwrap();
+        // Saved as v4, its cells judged in the v3 the client sent; a
+        // signed notebook comes back with its cells trusted.
+        assert_eq!(
+            trusted_flags(&contents, "old.ipynb").await,
+            [Some(signed)],
+            "{output}"
+        );
+    }
+}
