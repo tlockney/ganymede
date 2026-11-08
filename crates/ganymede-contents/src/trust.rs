@@ -501,9 +501,25 @@ pub fn mark_cells(nb: &mut Value, trusted: bool) {
 /// Whether every code cell is trusted (`NotebookNotary.check_cells`): its
 /// `metadata.trusted` is truthy, or none of its `execute_result` and
 /// `display_data` outputs has anything besides `output_type`,
-/// `execution_count` and `metadata`. Removes `trusted` from code cells, as
-/// nbformat does, so the result can be signed.
+/// `execution_count` and `metadata`. In nbformat 3 the outputs are
+/// `pyout` and `display_data`, and `prompt_number` stands for
+/// `execution_count`. Removes `trusted` from code cells, as nbformat
+/// does, so the result can be signed.
 pub fn check_cells(nb: &mut Value) -> bool {
+    // Older than nbformat 3: never trusted, as nbformat has it.
+    if nb
+        .get("nbformat")
+        .and_then(Value::as_u64)
+        .is_some_and(|v| v < 3)
+    {
+        return false;
+    }
+    let v3 = is_v3(nb);
+    let (unsafe_types, count_key) = if v3 {
+        (["pyout", "display_data"], "prompt_number")
+    } else {
+        (["execute_result", "display_data"], "execution_count")
+    };
     let mut all = true;
     for cell in code_cells(nb) {
         let flagged = match cell.get_mut("metadata") {
@@ -520,12 +536,13 @@ pub fn check_cells(nb: &mut Value) -> bool {
             .flatten()
             .filter_map(Value::as_object)
             .any(|output| {
-                matches!(
-                    output.get("output_type").and_then(Value::as_str),
-                    Some("execute_result" | "display_data")
-                ) && output
-                    .keys()
-                    .any(|k| !matches!(k.as_str(), "output_type" | "execution_count" | "metadata"))
+                output
+                    .get("output_type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|t| unsafe_types.contains(&t))
+                    && output.keys().any(|k| {
+                        !matches!(k.as_str(), "output_type" | "metadata") && k != count_key
+                    })
             });
         if unsafe_output {
             all = false;
@@ -534,10 +551,30 @@ pub fn check_cells(nb: &mut Value) -> bool {
     all
 }
 
+/// Whether `nb` is nbformat 3 or older, whose cells sit under
+/// `worksheets[*].cells`.
+fn is_v3(nb: &Value) -> bool {
+    nb.get("nbformat")
+        .and_then(Value::as_u64)
+        .is_some_and(|v| v < 4)
+}
+
+/// The notebook's code cells: under `cells`, or in nbformat 3 under each
+/// worksheet's `cells`, as nbformat's `yield_code_cells` walks them.
 fn code_cells(nb: &mut Value) -> impl Iterator<Item = &mut Map<String, Value>> {
-    nb.get_mut("cells")
-        .and_then(Value::as_array_mut)
+    let lists: Vec<&mut Value> = if is_v3(nb) {
+        nb.get_mut("worksheets")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+            .filter_map(|ws| ws.get_mut("cells"))
+            .collect()
+    } else {
+        nb.get_mut("cells").into_iter().collect()
+    };
+    lists
         .into_iter()
+        .filter_map(Value::as_array_mut)
         .flatten()
         .filter_map(Value::as_object_mut)
         .filter(|cell| cell.get("cell_type").and_then(Value::as_str) == Some("code"))
