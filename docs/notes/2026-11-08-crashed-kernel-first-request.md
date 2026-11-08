@@ -6,3 +6,7 @@ suffix, such as `comm_msg`). A widget's `comm_msg` sent just before a cell
 took index 0, so the cell that was running when the kernel died got
 `aborted` and no `KernelDied` output: the user saw the cell stop with no
 reason. The first message that is a request now gets the error.
+
+`sent_on_shell` also keeps only `*_request` messages now. A `comm_msg` never
+gets a reply, so it stayed in the list (capped at 1000) and a widget sending
+many during a long cell could push the running request out of it.

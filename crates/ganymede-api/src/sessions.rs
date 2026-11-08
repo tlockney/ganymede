@@ -1039,6 +1039,32 @@ mod tests {
         m.shutdown(&k.id).await.unwrap();
     }
 
+    /// Messages a kernel never replies to (`comm_msg`) aren't kept for a
+    /// crash's answers, so a widget's updates during a long cell can't
+    /// push the running request out of the list (#532).
+    #[tokio::test]
+    async fn only_requests_wait_for_a_crash_answer() {
+        let m = manager(None);
+        let k = started(&m, Some("fake"), None).await.unwrap();
+        let kernel = m.get(&k.id).unwrap();
+        let cell = Message::new("execute_request", "sess", "u", &ExecuteRequest::new("x"));
+        let comm = Message::new(
+            "comm_msg",
+            "sess",
+            "u",
+            &serde_json::json!({"comm_id": "c", "data": {}}),
+        );
+        kernel.sent_on_shell(&cell.header);
+        for _ in 0..crate::kernels::UNANSWERED_LIMIT {
+            kernel.sent_on_shell(&comm.header);
+        }
+        assert_eq!(
+            kernel.unanswered_ids(),
+            std::slice::from_ref(&cell.header.msg_id)
+        );
+        m.shutdown(&k.id).await.unwrap();
+    }
+
     #[tokio::test]
     async fn a_kernel_that_keeps_crashing_is_left_dead() {
         let (m, _) = with_config(KernelManagerConfig {
