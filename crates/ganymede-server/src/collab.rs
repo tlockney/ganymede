@@ -238,16 +238,43 @@ impl Collab {
 
     /// Deletes `path` through `contents` and drops its ids, under
     /// [`Collab::begin_move`]'s lock, so no id is made for the path
-    /// between the delete and [`Collab::removed`] (#574).
+    /// between the delete and [`Collab::removed`] (#574). Runs to the end
+    /// even if the caller is dropped, as a request is when its client
+    /// disconnects, so the ids never keep a deleted path (#586).
     pub(crate) async fn delete(
-        &self,
+        self: &Arc<Self>,
         contents: &Arc<dyn Contents>,
         path: &str,
     ) -> ganymede_contents::Result<()> {
-        let _deleting = self.begin_move().await;
-        contents.delete(path).await?;
-        self.removed(path).await;
-        Ok(())
+        let (collab, contents, path) = (self.clone(), contents.clone(), path.to_string());
+        detached(async move {
+            let _deleting = collab.begin_move().await;
+            contents.delete(&path).await?;
+            collab.removed(&path).await;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Renames `old` to `new` through `contents`, and the ids and open
+    /// rooms follow, under [`Collab::begin_move`]'s lock so no room opens
+    /// on the old path in between (#522). Runs to the end even if the
+    /// caller is dropped, as [`Collab::delete`] does (#586).
+    pub(crate) async fn rename(
+        self: &Arc<Self>,
+        contents: &Arc<dyn Contents>,
+        old: &str,
+        new: &str,
+    ) -> ganymede_contents::Result<ganymede_contents::ContentsModel> {
+        let (collab, contents) = (self.clone(), contents.clone());
+        let (old, new) = (old.to_string(), new.to_string());
+        detached(async move {
+            let _moving = collab.begin_move().await;
+            let model = contents.rename(&old, &new).await?;
+            collab.moved(&old, &model.path).await;
+            Ok(model)
+        })
+        .await
     }
 
     /// The path a file id names now.
@@ -756,6 +783,16 @@ pub(crate) async fn send_to_notebook_room(
         return None;
     };
     send_to_room(collab, contents, room_id, Some(file_id), cmd).await
+}
+
+/// Runs `f` on its own task and waits for it: dropping the wait leaves
+/// `f` running to the end. A panic in `f` comes back as an I/O error.
+async fn detached<T: Send + 'static>(
+    f: impl std::future::Future<Output = ganymede_contents::Result<T>> + Send + 'static,
+) -> ganymede_contents::Result<T> {
+    tokio::spawn(f)
+        .await
+        .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string()).into()))
 }
 
 /// The room id of the notebook at `path`, or the contents error when no
@@ -1858,6 +1895,45 @@ mod join_tests {
         delete.await.unwrap().unwrap();
         assert!(!dir.path().join("a.ipynb").exists());
         assert!(collab.index("a.ipynb").await.1, "the id stayed");
+    }
+
+    /// A delete or rename whose caller is dropped once it has started
+    /// still finishes, ids included (#586).
+    #[tokio::test]
+    async fn a_dropped_caller_does_not_stop_a_delete_or_rename() {
+        for rename in [false, true] {
+            let (dir, contents) = notebook_dir();
+            let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
+            let (id, _) = collab.index("a.ipynb").await;
+            let indexing = collab.move_lock.read().await;
+            let caller = {
+                let (collab, contents) = (collab.clone(), contents.clone());
+                tokio::spawn(async move {
+                    if rename {
+                        collab
+                            .rename(&contents, "a.ipynb", "b.ipynb")
+                            .await
+                            .map(drop)
+                    } else {
+                        collab.delete(&contents, "a.ipynb").await
+                    }
+                })
+            };
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            caller.abort();
+            let _ = caller.await;
+            drop(indexing);
+            // The detached task takes the lock for writing once it's free;
+            // this read waits for it to finish.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            drop(collab.move_lock.read().await);
+            assert!(!dir.path().join("a.ipynb").exists(), "rename {rename}");
+            if rename {
+                assert_eq!(collab.path_of(&id).await.as_deref(), Some("b.ipynb"));
+            } else {
+                assert_eq!(collab.path_of(&id).await, None);
+            }
+        }
     }
 
     /// A websocket join or a server-side send while a rename is under way
