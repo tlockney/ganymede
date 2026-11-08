@@ -117,6 +117,25 @@ queues them as one batch, and answers `200 null`. It answers `409
 client hashed it, and `408` if `previous_request_id` wasn't queued within
 ten seconds. A cell that fails stops the rest of its batch.
 
+### Waiting for the cells
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+Ganymede adds an optional `wait` field, in seconds (at most 3600), for
+clients that can't follow the room, such as the apps' Shortcuts actions.
+With it, the server answers once the batch has run or the time is up,
+with each requested cell as the room has it, before the room saves:
+
+```json
+{"finished": true, "cells": [{"cell_type": "code", "id": "...", "execution_count": 1, "outputs": [...], "...": "..."}]}
+```
+
+`finished` is false when the time ran out; the cells keep running and
+the reply shows them as they were. Without `wait`, the answer is `200
+null`, as in `jupyter-server-documents`.
+
 ## Two servers on one notebook
 
 On one machine, the first server to open a room on a notebook owns it
