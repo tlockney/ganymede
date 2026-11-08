@@ -3196,29 +3196,38 @@ async fn rooms_ping_clients_and_drop_silent_ones() {
     assert!(pings >= 3, "{pings} pings");
     assert_eq!(collab.open_rooms(), 1);
 
-    // A client that never reads never answers: dropped, and its room retires.
+    // A client that never reads never answers: dropped, and its room
+    // retires. The live client keeps reading meanwhile, so it answers its
+    // pings, and a drop of it fails the test rather than passing for the
+    // silent one's.
+    async fn read_live<S>(live: &mut S, wait: Duration)
+    where
+        S: futures::Stream<Item = Result<TMsg, tokio_tungstenite::tungstenite::Error>> + Unpin,
+    {
+        match tokio::time::timeout(wait, live.next()).await {
+            Ok(Some(Ok(TMsg::Close(f)))) => panic!("a live client was closed: {f:?}"),
+            Ok(None | Some(Err(_))) => panic!("a live client was dropped"),
+            _ => {}
+        }
+    }
     let (silent, _) = connect("Test:silent").await.unwrap();
     let opened = std::time::Instant::now();
     while collab.open_rooms() != 2 && opened.elapsed() < Duration::from_secs(5) {
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        read_live(&mut live, Duration::from_millis(10)).await;
     }
     assert_eq!(collab.open_rooms(), 2);
-    // The server needs the idle timeout plus a ping interval and the
-    // cleanup delay (about 400 ms); the bound is a wall-clock deadline
-    // with room for a slow runner (#520), not a count of iterations,
-    // which the live socket's pings cut short.
+    // The server needs the idle timeout and a ping interval to drop the
+    // client, then the cleanup delay and up to one tick of the room's
+    // loop (250 ms) to retire the room: about 650 ms. The bound is a
+    // wall-clock deadline with room for a slow runner (#520), not a count
+    // of iterations, which the live socket's pings cut short.
     let waited = std::time::Instant::now();
-    let mut gone = false;
-    while waited.elapsed() < Duration::from_secs(10) {
-        if collab.open_rooms() == 1 {
-            gone = true;
-            break;
-        }
-        // Keep answering on the live one meanwhile.
-        let _ = tokio::time::timeout(Duration::from_millis(20), live.next()).await;
+    while collab.open_rooms() != 1 && waited.elapsed() < Duration::from_secs(10) {
+        read_live(&mut live, Duration::from_millis(20)).await;
     }
-    assert!(
-        gone,
+    assert_eq!(
+        collab.open_rooms(),
+        1,
         "the silent client's room is still open after {:?}",
         waited.elapsed()
     );
