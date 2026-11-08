@@ -105,17 +105,34 @@ impl ZmqTransport {
 
         // Shell sends nothing until stdin and iopub are connected, so the
         // kernel can route an `input_request` and we see the outputs of the
-        // first request.
+        // first request. Nor until control is connected and the heartbeat
+        // port listens: a kernel that answers `kernel_info` while one of
+        // its ports is still taken (cdp-kernel waits five seconds for it,
+        // then exits) would otherwise count as started and die after
+        // (#501). Waiting, its start fails instead, and is retried on
+        // fresh ports.
         let (stdin_ready, stdin_rx) = watch::channel(false);
         let (iopub_ready, iopub_rx) = watch::channel(false);
+        let (control_ready, control_rx) = watch::channel(false);
+        let (hb_ready, hb_rx) = watch::channel(false);
+        let hb_endpoint = info.hb_endpoint();
+        tasks.push(tokio::spawn(async move {
+            wait_listening(&hb_endpoint).await;
+            hb_ready.send_replace(true);
+        }));
         for (channel, endpoint, wait, ready) in [
             (
                 Channel::Shell,
                 info.shell_endpoint(),
-                vec![stdin_rx, iopub_rx],
+                vec![stdin_rx, iopub_rx, control_rx, hb_rx],
                 None,
             ),
-            (Channel::Control, info.control_endpoint(), vec![], None),
+            (
+                Channel::Control,
+                info.control_endpoint(),
+                vec![],
+                Some(control_ready),
+            ),
             (
                 Channel::Stdin,
                 info.stdin_endpoint(),
@@ -447,6 +464,58 @@ mod tests {
         let a = first_frame(&mut shell).await;
         let b = first_frame(&mut stdin).await;
         assert_eq!(a, b);
+        transport.sink.close().await;
+    }
+
+    /// A kernel's request goes out on shell only once its control port
+    /// is connected and its heartbeat port listens, so a kernel still
+    /// waiting to bind one of them doesn't count as started (#501).
+    #[tokio::test]
+    async fn shell_waits_for_control_and_heartbeat() {
+        let any = "tcp://127.0.0.1:0";
+        let mut shell = RouterSocket::new();
+        let mut stdin = RouterSocket::new();
+        let mut iopub = zeromq::PubSocket::new();
+        // Free ports for control and the heartbeat, bound later.
+        let free = || {
+            std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port()
+        };
+        let (control_port, hb_port) = (free(), free());
+        let ports = [
+            port(shell.bind(any).await.unwrap()),
+            port(iopub.bind(any).await.unwrap()),
+            port(stdin.bind(any).await.unwrap()),
+            control_port,
+            hb_port,
+        ];
+        let info = ConnectionInfo::new_tcp("127.0.0.1", ports);
+        let transport = ZmqTransport::connect(&info).await.unwrap();
+        let msg = Message::new("kernel_info_request", "s", "u", &serde_json::json!({}));
+        transport.sink.send(Channel::Shell, msg).await.unwrap();
+        let quiet = Duration::from_millis(500);
+
+        assert!(
+            tokio::time::timeout(quiet, shell.recv()).await.is_err(),
+            "shell sent before control and the heartbeat were up"
+        );
+        let mut control = RouterSocket::new();
+        control
+            .bind(&format!("tcp://127.0.0.1:{control_port}"))
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(quiet, shell.recv()).await.is_err(),
+            "shell sent before the heartbeat was up"
+        );
+        let mut hb = zeromq::RepSocket::new();
+        hb.bind(&format!("tcp://127.0.0.1:{hb_port}"))
+            .await
+            .unwrap();
+        first_frame(&mut shell).await;
         transport.sink.close().await;
     }
 
