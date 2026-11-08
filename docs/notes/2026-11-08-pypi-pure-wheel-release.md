@@ -13,3 +13,8 @@ resolves without it, and a package that is about to be installed is
 resolved again with it when its release has no pure wheel. A lone `==` pin
 is fetched directly as before, so a pinned release with no pure wheel
 still fails in `install_wheel`.
+
+Second review: when the pure-wheel fallback picks an older release, the
+install loop now rebinds to that release's metadata, so the dependency walk
+reads the `Requires-Dist` of the version that was installed rather than the
+newest one's.

@@ -377,25 +377,28 @@ fn install(root: &Path, specs: &[String], force: bool, no_deps: bool, pins: &[Pi
         if !named && !has(FRAMEWORK) {
             continue;
         }
+        let install = named || has(EXTENSIONS);
+        let walk = has(FRAMEWORK) && !no_deps;
+        // Installing needs a pure wheel; an older release may have one when
+        // the newest doesn't. Everything after this, the dependency walk
+        // included, then reads the release that gets installed.
+        let (api, meta) = if install && pypi::pick_wheel(&meta["urls"]).is_none() {
+            resolve(&index, &want, true)?.unwrap_or((api, meta))
+        } else {
+            (api, meta)
+        };
         let name = meta["info"]["name"]
             .as_str()
             .unwrap_or(&want.name)
             .to_string();
-        if named || has(EXTENSIONS) {
-            // Installing needs a pure wheel; an older release may have one
-            // when the newest doesn't.
-            let pure = match pypi::pick_wheel(&meta["urls"]) {
-                Some(_) => None,
-                None => resolve(&index, &want, true)?,
-            };
-            let (api, meta) = pure.as_ref().map_or((&api, &meta), |(a, m)| (a, m));
+        if install {
             let installed = install_wheel(
                 &index,
                 root,
                 &key,
                 &name,
-                api,
-                meta,
+                &api,
+                &meta,
                 want.required_by.as_deref(),
                 force,
                 pins,
@@ -404,7 +407,7 @@ fn install(root: &Path, specs: &[String], force: bool, no_deps: bool, pins: &[Pi
                 bail!("{name} has no prebuilt JupyterLab extension in its wheel");
             }
         }
-        if has(FRAMEWORK) && !no_deps {
+        if walk {
             for (dep, specs) in requirements(&meta) {
                 queue.push_back(Want {
                     name: dep,
