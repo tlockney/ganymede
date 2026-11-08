@@ -274,7 +274,27 @@ impl KernelSession {
         want_idle: bool,
         timeout: Duration,
     ) -> Result<Execution> {
-        self.ensure_alive()?;
+        self.request_with_busy(channel, msg, want_idle, timeout)
+            .await
+            .0
+    }
+
+    /// [`request`](Self::request), also saying whether the kernel sent
+    /// `busy` for the request: it took the request up rather than queuing
+    /// it. When the request ends without its reply (a timeout), the
+    /// answer is read from the request's record just before the record
+    /// goes, so a `busy` that arrived as the time ran out still counts;
+    /// with the reply, it comes from [`Execution::status`].
+    pub async fn request_with_busy(
+        &self,
+        channel: Channel,
+        msg: Message,
+        want_idle: bool,
+        timeout: Duration,
+    ) -> (Result<Execution>, bool) {
+        if let Err(e) = self.ensure_alive() {
+            return (Err(e), false);
+        }
         let (tx, rx) = oneshot::channel();
         let id = msg.header.msg_id.clone();
         self.inner.pending.lock().unwrap().insert(
@@ -304,12 +324,23 @@ impl KernelSession {
             sent = true;
             rx.await.map_err(|_| Error::KernelDied)
         };
-        let result = tokio::time::timeout(timeout, exchange).await;
-        match result {
+        let result = match tokio::time::timeout(timeout, exchange).await {
             Ok(r) => r,
             Err(_) if sent => Err(Error::Timeout("reply")),
             Err(_) => Err(Error::SendTimeout),
-        }
+        };
+        let busy = match &result {
+            Ok(exec) => has_busy(&exec.status),
+            // Before `_guard` drops the record.
+            Err(_) => self
+                .inner
+                .pending
+                .lock()
+                .unwrap()
+                .get(&_guard.id)
+                .is_some_and(|p| has_busy(&p.status)),
+        };
+        (result, busy)
     }
 
     /// What a request still waiting for its reply has produced so far,
@@ -329,10 +360,7 @@ impl KernelSession {
             .unwrap()
             .get(msg_id)
             .map(|p| SoFar {
-                busy: p
-                    .status
-                    .iter()
-                    .any(|m| m.content["execution_state"] == "busy"),
+                busy: has_busy(&p.status),
                 outputs: p.outputs.get(from..).unwrap_or_default().to_vec(),
             })
     }
@@ -554,6 +582,13 @@ impl KernelSession {
             Err(Error::KernelDied)
         }
     }
+}
+
+/// Whether `status` holds a `busy`.
+fn has_busy(status: &[Message]) -> bool {
+    status
+        .iter()
+        .any(|m| m.content["execution_state"] == "busy")
 }
 
 struct PendingGuard<'a> {
@@ -1317,6 +1352,59 @@ mod tests {
         assert_eq!(ns(3), Vec::<i64>::new());
         assert_eq!(ns(9), Vec::<i64>::new(), "past the end is empty");
         assert!(s.record_so_far("other", 0).is_none());
+    }
+
+    /// A request that times out still says whether its `busy` came: read
+    /// from the record before it goes (#590).
+    #[tokio::test]
+    async fn a_timed_out_request_says_whether_busy_came() {
+        let (host, mut side) = in_process_pair(64);
+        tokio::spawn(async move {
+            while let Some((ch, m)) = side.incoming.recv().await {
+                let reply = |c, t: &str, v: serde_json::Value| (c, Message::reply_to(&m, t, &v));
+                let state = |st: &str| {
+                    reply(
+                        Channel::IoPub,
+                        "status",
+                        serde_json::json!({ "execution_state": st }),
+                    )
+                };
+                let out = match m.msg_type() {
+                    "kernel_info_request" => vec![
+                        state("idle"),
+                        reply(
+                            ch,
+                            "kernel_info_reply",
+                            serde_json::to_value(crate::testing::kernel_info()).unwrap(),
+                        ),
+                    ],
+                    // Taken up, but never answered.
+                    "execute_request" => vec![state("busy")],
+                    // Left queued.
+                    _ => vec![],
+                };
+                for o in out {
+                    let _ = side.outgoing.send(o).await;
+                }
+            }
+        });
+        let s = KernelSession::start(host, None);
+        s.nudge(Duration::from_secs(5)).await.unwrap();
+        let ask = |t: &str| {
+            s.request_with_busy(
+                Channel::Shell,
+                s.message(t, &serde_json::json!({})),
+                true,
+                Duration::from_millis(300),
+            )
+        };
+        let (r, busy) = ask("execute_request").await;
+        assert!(matches!(r, Err(Error::Timeout("reply"))), "{r:?}");
+        assert!(busy, "the kernel took it up");
+        let (r, busy) = ask("comm_info_request").await;
+        assert!(matches!(r, Err(Error::Timeout("reply"))), "{r:?}");
+        assert!(!busy, "still queued");
+        assert_eq!(s.pending_len(), 0);
     }
 
     #[tokio::test]

@@ -150,8 +150,8 @@ pub trait Handler: Send {
     /// prints nothing and the kernel sends no `execute_input`. Called at
     /// most once, before any output for the request, and not lost to a
     /// lag: a `busy` the broadcast skipped is read from the request's
-    /// record, or from the reply when the request finished first. The
-    /// one rule for "the kernel started it" (#588).
+    /// record, or from what the request ended with when it finished or
+    /// timed out first. The one rule for "the kernel started it" (#588).
     fn on_busy(&mut self) {}
     /// The kernel asked for input. `None` answers with an empty string.
     /// Async, so a UI can wait for the user without blocking the runtime.
@@ -208,7 +208,9 @@ pub async fn execute_streaming(
     let sent = AtomicBool::new(false);
     let request = async {
         sent.store(true, Ordering::Relaxed);
-        session.request(Channel::Shell, msg, true, timeout).await
+        session
+            .request_with_busy(Channel::Shell, msg, true, timeout)
+            .await
     };
     tokio::pin!(request);
     // By msg_id, not by count: after a lag the broadcast skips some
@@ -271,18 +273,17 @@ pub async fn execute_streaming(
                     }
                 }
             },
-            r = &mut request => break r?,
+            (r, busy_came) = &mut request => {
+                // A `busy` the loop hasn't read: skipped by a lag noticed
+                // after the request finished, or broadcast as the time
+                // ran out (#590).
+                if busy_came {
+                    note_busy(&mut busy, handler);
+                }
+                break r?;
+            }
         }
     };
-    // A lag noticed after the request finished skipped the `busy` with
-    // the record gone from the session; the reply carries it.
-    if exec
-        .status
-        .iter()
-        .any(|m| m.content["execution_state"] == "busy")
-    {
-        note_busy(&mut busy, handler);
-    }
     // The reply can win the race against the last broadcasts; the
     // execution's own record has everything, in order.
     for m in &exec.outputs {
