@@ -718,15 +718,20 @@ pub(crate) async fn send_to_notebook_room(
     send_to_room(collab, contents, room_id, Some(file_id), cmd).await
 }
 
-/// The room id of the notebook at `path`. `None` when nothing is there:
-/// as the REST routes do, only an existing file gets a file id, so a
-/// mistyped path leaves no row in the id table.
+/// The room id of the notebook at `path`. `None` when no notebook is
+/// there (nothing, or a directory): as the REST routes do, only an
+/// existing file gets a file id, so a mistyped path leaves no row in the
+/// id table.
 pub(crate) async fn notebook_room_id(
     collab: &Collab,
     contents: &Arc<dyn Contents>,
     path: &str,
 ) -> Option<String> {
-    contents.get(path, GetOptions::default()).await.ok()?;
+    let notebook = GetOptions {
+        type_hint: Some(ContentType::Notebook),
+        ..Default::default()
+    };
+    contents.get(path, notebook).await.ok()?;
     Some(format!("json:notebook:{}", collab.index(path).await.0))
 }
 
@@ -1722,7 +1727,7 @@ mod join_tests {
     /// A path with no file behind it gets no room and no file id (#560).
     #[tokio::test]
     async fn a_missing_notebook_gets_no_file_id() {
-        let (_dir, contents) = notebook_dir();
+        let (dir, contents) = notebook_dir();
         let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
         assert!(notebook_room_id(&collab, &contents, "typo.ipynb")
             .await
@@ -1738,6 +1743,9 @@ mod join_tests {
             .is_none());
         // Never indexed: the first index makes the id.
         assert!(collab.index("typo.ipynb").await.1);
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        assert!(notebook_room_id(&collab, &contents, "sub").await.is_none());
+        assert!(collab.index("sub").await.1);
         let id = notebook_room_id(&collab, &contents, "a.ipynb")
             .await
             .unwrap();
