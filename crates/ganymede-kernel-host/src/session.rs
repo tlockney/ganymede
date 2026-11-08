@@ -272,6 +272,20 @@ impl KernelSession {
         }
     }
 
+    /// The iopub messages (other than `status`) a request still waiting
+    /// for its reply has produced so far, in arrival order: what its
+    /// [`Execution::outputs`] will start with. A message is recorded here
+    /// before it is broadcast, so a subscriber that fell behind can catch
+    /// up from it. `None` once the request is complete or gone.
+    pub fn outputs_so_far(&self, msg_id: &str) -> Option<Vec<Message>> {
+        self.inner
+            .pending
+            .lock()
+            .unwrap()
+            .get(msg_id)
+            .map(|p| p.outputs.clone())
+    }
+
     /// Number of requests waiting for a reply.
     #[cfg(test)]
     fn pending_len(&self) -> usize {
