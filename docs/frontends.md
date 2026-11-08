@@ -111,7 +111,10 @@ from the command line or from the `Requires-Dist` of the package that
 needs it; an installed dependency is replaced only when it no longer
 satisfies them. Pre-releases are picked only when a specifier names one
 or nothing else matches, and yanked releases never are, even when pinned.
-A wheel must be `py3-none-any`. `--no-deps` installs only the named
+A wheel must be `py3-none-any`: a package that is installed gets the
+newest allowed release that has one, which can be older than the newest
+release, or a pre-release when only a pre-release has one (a `note:`
+line says so). `--no-deps` installs only the named
 packages. Server extensions, the Python half of some packages, don't run.
 
 A package can't replace an extension another package installed unless
