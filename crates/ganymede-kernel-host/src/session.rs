@@ -272,6 +272,23 @@ impl KernelSession {
         }
     }
 
+    /// The iopub messages (other than `status`) a request still waiting
+    /// for its reply has produced so far, in arrival order: what its
+    /// [`Execution::outputs`] will start with. A message is recorded here
+    /// before it is broadcast, so a subscriber that fell behind can catch
+    /// up from it. Only the messages from index `from` on are returned
+    /// (cloned), so a caller that keeps how far it has read takes just the
+    /// new tail. `None` once the request is complete or gone, and before
+    /// [`KernelSession::request`] for it is first polled.
+    pub fn outputs_so_far(&self, msg_id: &str, from: usize) -> Option<Vec<Message>> {
+        self.inner
+            .pending
+            .lock()
+            .unwrap()
+            .get(msg_id)
+            .map(|p| p.outputs.get(from..).unwrap_or_default().to_vec())
+    }
+
     /// Number of requests waiting for a reply.
     #[cfg(test)]
     fn pending_len(&self) -> usize {
@@ -1143,6 +1160,36 @@ mod tests {
         period: Duration::from_millis(20),
         misses: 3,
     };
+
+    #[tokio::test]
+    async fn outputs_so_far_gives_the_tail_from_an_index() {
+        let (s, _, _) = silent_session(true, FAST);
+        let out = |n: i64| s.message("stream", &serde_json::json!({ "n": n }));
+        s.inner.pending.lock().unwrap().insert(
+            "r".into(),
+            Pending {
+                want_idle: false,
+                reply: None,
+                broadcast_reply: None,
+                idle_seen: false,
+                outputs: vec![out(0), out(1), out(2)],
+                status: Vec::new(),
+                done: None,
+            },
+        );
+        let ns = |from| {
+            s.outputs_so_far("r", from)
+                .unwrap()
+                .iter()
+                .map(|m| m.content["n"].as_i64().unwrap())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ns(0), [0, 1, 2]);
+        assert_eq!(ns(2), [2]);
+        assert_eq!(ns(3), Vec::<i64>::new());
+        assert_eq!(ns(9), Vec::<i64>::new(), "past the end is empty");
+        assert!(s.outputs_so_far("other", 0).is_none());
+    }
 
     #[tokio::test]
     async fn cancelled_and_timed_out_requests_leave_no_pending_entry() {

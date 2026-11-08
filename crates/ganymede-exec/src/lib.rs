@@ -34,6 +34,7 @@ use ganymede_nbformat::{
 };
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
 
@@ -196,14 +197,24 @@ pub async fn execute_streaming(
     let id = msg.header.msg_id.clone();
     // Subscribe before sending so nothing is missed.
     let mut sub = session.subscribe();
-    let request = session.request(Channel::Shell, msg, true, timeout);
+    // Set once the request is polled, which records it in the session:
+    // before then no output of it can have been broadcast, so a lag
+    // skipped none of it.
+    let sent = AtomicBool::new(false);
+    let request = async {
+        sent.store(true, Ordering::Relaxed);
+        session.request(Channel::Shell, msg, true, timeout).await
+    };
     tokio::pin!(request);
     // By msg_id, not by count: after a lag the broadcast skips some
-    // messages, and the reply's record fills in exactly those.
+    // messages, and the request's record fills in exactly those.
     let mut streamed = HashSet::new();
-    // After a lag, hand nothing more over live: what follows would come
-    // before what was skipped. The reply's record has both, in order.
-    let mut lagged = false;
+    // How far into the request's record `catch_up` has read.
+    let mut handed = 0;
+    // Set after a lag the record can no longer cover (the request just
+    // finished): live messages would then come before skipped ones, so
+    // the rest is left to the reply's record.
+    let mut behind = false;
     let exec = loop {
         tokio::select! {
             biased;
@@ -214,11 +225,19 @@ pub async fn execute_streaming(
                             handler.on_busy();
                         }
                     }
-                    Channel::IoPub if !lagged => {
-                        handler.on_iopub(&m);
-                        streamed.insert(m.header.msg_id.clone());
+                    Channel::IoPub if !behind => {
+                        if streamed.insert(m.header.msg_id.clone()) {
+                            handler.on_iopub(&m);
+                        }
                     }
                     Channel::Stdin if m.msg_type() == "input_request" => {
+                        // Output the session received before the kernel
+                        // asked (a prompt printed before `input()`) shows
+                        // first, even if it is still behind in the
+                        // broadcast.
+                        if !behind {
+                            catch_up(session, &id, &mut handed, &mut streamed, handler);
+                        }
                         let prompt = m.content["prompt"].as_str().unwrap_or_default();
                         let password = m.content["password"].as_bool().unwrap_or(false);
                         let value = handler.on_input(prompt, password).await.unwrap_or_default();
@@ -228,10 +247,18 @@ pub async fn execute_streaming(
                 },
                 Ok(_) | Err(RecvError::Closed) => {}
                 Err(RecvError::Lagged(n)) => {
-                    lagged = true;
-                    tracing::warn!(
-                        "output handler fell {n} messages behind; the rest arrives with the reply"
-                    );
+                    // The record has everything broadcast so far, in
+                    // order: hand over what was skipped, then go on live.
+                    tracing::debug!("output handler fell {n} messages behind; catching up");
+                    if sent.load(Ordering::Relaxed)
+                        && !catch_up(session, &id, &mut handed, &mut streamed, handler)
+                    {
+                        tracing::warn!(
+                            "output handler fell {n} messages behind as the request finished; \
+                             the rest of its output comes with the reply"
+                        );
+                        behind = true;
+                    }
                 }
             },
             r = &mut request => break r?,
@@ -240,11 +267,37 @@ pub async fn execute_streaming(
     // The reply can win the race against the last broadcasts; the
     // execution's own record has everything, in order.
     for m in &exec.outputs {
-        if !streamed.contains(&m.header.msg_id) {
+        if streamed.insert(m.header.msg_id.clone()) {
             handler.on_iopub(m);
         }
     }
     Ok(exec)
+}
+
+/// Hands `handler` the request's recorded outputs it hasn't had yet, in
+/// order, reading the record from `handed` on and moving `handed` past
+/// what it read. The session records a message before broadcasting it,
+/// so after this every output the broadcast has carried so far has been
+/// handed over, and later live ones follow in order. `false`, handing
+/// over nothing, when the request has finished and its record went with
+/// the reply.
+fn catch_up(
+    session: &KernelSession,
+    id: &str,
+    handed: &mut usize,
+    streamed: &mut HashSet<String>,
+    handler: &mut dyn Handler,
+) -> bool {
+    let Some(outputs) = session.outputs_so_far(id, *handed) else {
+        return false;
+    };
+    *handed += outputs.len();
+    for m in outputs {
+        if streamed.insert(m.header.msg_id.clone()) {
+            handler.on_iopub(&m);
+        }
+    }
+    true
 }
 
 /// Execute every code cell in order, writing outputs into `nb`.
@@ -1087,6 +1140,183 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(h.0, (0..N).collect::<Vec<_>>());
+    }
+
+    /// After a lag the handler catches up from the request's record and
+    /// goes on live: output the kernel sends after the burst reaches the
+    /// handler while the cell still runs, not only with the reply (#521).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn live_output_resumes_after_the_handler_lags() {
+        const N: usize = 3000;
+        let (host, mut side) = in_process_pair(64);
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel::<()>();
+        let kernel = tokio::spawn(async move {
+            let mut seen_rx = Some(seen_rx);
+            let mut seen_live = false;
+            while let Some((ch, m)) = side.incoming.recv().await {
+                let send = |c, t: &str, v: serde_json::Value| (c, Message::reply_to(&m, t, &v));
+                let stream = |i: usize| {
+                    send(
+                        Channel::IoPub,
+                        "stream",
+                        serde_json::json!({"name": "stdout", "text": i.to_string()}),
+                    )
+                };
+                match m.msg_type() {
+                    "kernel_info_request" => {
+                        let info =
+                            serde_json::to_value(ganymede_kernel_host::testing::kernel_info())
+                                .unwrap();
+                        for o in [
+                            send(
+                                Channel::IoPub,
+                                "status",
+                                serde_json::json!({"execution_state": "idle"}),
+                            ),
+                            send(ch, "kernel_info_reply", info),
+                        ] {
+                            let _ = side.outgoing.send(o).await;
+                        }
+                    }
+                    "execute_request" => {
+                        let busy = serde_json::json!({"execution_state": "busy"});
+                        let _ = side
+                            .outgoing
+                            .send(send(Channel::IoPub, "status", busy))
+                            .await;
+                        for i in 0..N {
+                            let _ = side.outgoing.send(stream(i)).await;
+                        }
+                        // One more line, then wait for the handler to show
+                        // it before replying.
+                        let _ = side.outgoing.send(stream(N)).await;
+                        seen_live =
+                            tokio::time::timeout(Duration::from_secs(20), seen_rx.take().unwrap())
+                                .await
+                                .is_ok();
+                        let idle = serde_json::json!({"execution_state": "idle"});
+                        let reply = serde_json::json!({"status": "ok", "execution_count": 1});
+                        for o in [
+                            send(Channel::IoPub, "status", idle),
+                            send(Channel::Shell, "execute_reply", reply),
+                        ] {
+                            let _ = side.outgoing.send(o).await;
+                        }
+                        return seen_live;
+                    }
+                    _ => {}
+                }
+            }
+            seen_live
+        });
+        struct Last(Slow, Option<tokio::sync::oneshot::Sender<()>>);
+        #[async_trait::async_trait]
+        impl Handler for Last {
+            fn on_iopub(&mut self, m: &Message) {
+                self.0.on_iopub(m);
+                if self.0 .0.last() == Some(&N) {
+                    if let Some(tx) = self.1.take() {
+                        let _ = tx.send(());
+                    }
+                }
+            }
+        }
+        let s = KernelSession::start(host, None);
+        s.nudge(Duration::from_secs(5)).await.unwrap();
+        let mut h = Last(Slow(vec![]), Some(seen_tx));
+        execute_streaming(
+            &s,
+            ExecuteRequest::new("x"),
+            Duration::from_secs(30),
+            &mut h,
+        )
+        .await
+        .unwrap();
+        assert!(
+            kernel.await.unwrap(),
+            "the last line reached the handler only with the reply"
+        );
+        assert_eq!(h.0 .0, (0..=N).collect::<Vec<_>>());
+    }
+
+    /// An input request after a lag is answered once the output sent
+    /// before it (the prompt a cell printed before `input()`) has reached
+    /// the handler.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn input_waits_for_the_output_before_it_after_a_lag() {
+        const N: usize = 3000;
+        let (host, mut side) = in_process_pair(64);
+        tokio::spawn(async move {
+            let mut request = None;
+            while let Some((ch, m)) = side.incoming.recv().await {
+                let send = |c, t: &str, v: serde_json::Value| (c, Message::reply_to(&m, t, &v));
+                let mut out = vec![];
+                match m.msg_type() {
+                    "kernel_info_request" => {
+                        let info =
+                            serde_json::to_value(ganymede_kernel_host::testing::kernel_info())
+                                .unwrap();
+                        out.push(send(
+                            Channel::IoPub,
+                            "status",
+                            serde_json::json!({"execution_state": "idle"}),
+                        ));
+                        out.push(send(ch, "kernel_info_reply", info));
+                    }
+                    "execute_request" => {
+                        let busy = serde_json::json!({"execution_state": "busy"});
+                        out.push(send(Channel::IoPub, "status", busy));
+                        for i in 0..=N {
+                            out.push(send(
+                                Channel::IoPub,
+                                "stream",
+                                serde_json::json!({"name": "stdout", "text": i.to_string()}),
+                            ));
+                        }
+                        out.push(send(
+                            Channel::Stdin,
+                            "input_request",
+                            serde_json::json!({"prompt": "", "password": false}),
+                        ));
+                        request = Some(m.clone());
+                    }
+                    "input_reply" => {
+                        let req = request.take().unwrap();
+                        let send =
+                            |c, t: &str, v: serde_json::Value| (c, Message::reply_to(&req, t, &v));
+                        let idle = serde_json::json!({"execution_state": "idle"});
+                        let reply = serde_json::json!({"status": "ok", "execution_count": 1});
+                        out.push(send(Channel::IoPub, "status", idle));
+                        out.push(send(Channel::Shell, "execute_reply", reply));
+                    }
+                    _ => {}
+                }
+                for o in out {
+                    let _ = side.outgoing.send(o).await;
+                }
+            }
+        });
+        struct Asked(Slow, Option<Vec<usize>>);
+        #[async_trait::async_trait]
+        impl Handler for Asked {
+            fn on_iopub(&mut self, m: &Message) {
+                self.0.on_iopub(m);
+            }
+            async fn on_input(&mut self, _: &str, _: bool) -> Option<String> {
+                self.1 = Some(self.0 .0.clone());
+                Some("x".into())
+            }
+        }
+        let s = KernelSession::start(host, None);
+        s.nudge(Duration::from_secs(5)).await.unwrap();
+        let mut h = Asked(Slow(vec![]), None);
+        let mut req = ExecuteRequest::new("x");
+        req.allow_stdin = true;
+        execute_streaming(&s, req, Duration::from_secs(30), &mut h)
+            .await
+            .unwrap();
+        assert_eq!(h.1.as_deref(), Some(&(0..=N).collect::<Vec<_>>()[..]));
+        assert_eq!(h.0 .0, (0..=N).collect::<Vec<_>>());
     }
 
     #[tokio::test]
