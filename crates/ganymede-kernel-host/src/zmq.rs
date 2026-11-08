@@ -105,14 +105,37 @@ impl ZmqTransport {
 
         // Shell sends nothing until stdin and iopub are connected, so the
         // kernel can route an `input_request` and we see the outputs of the
-        // first request.
+        // first request. Nor until the heartbeat port answers a ZMTP
+        // handshake, for up to HB_GRACE: a kernel that answers
+        // `kernel_info` while its heartbeat port is still taken
+        // (cdp-kernel waits five seconds for it, then exits) would
+        // otherwise count as started and die after (#501). Waiting, its
+        // start fails instead, and is retried on fresh ports. Shell and
+        // control need no gate: the start's nudge needs a reply on both.
+        // After the grace period shell goes anyway, so a kernel whose
+        // heartbeat isn't reachable from here (an attached kernel with
+        // some ports tunnelled) still starts, as with jupyter_client.
         let (stdin_ready, stdin_rx) = watch::channel(false);
         let (iopub_ready, iopub_rx) = watch::channel(false);
+        let (hb_ready, hb_rx) = watch::channel(false);
+        let hb_endpoint = info.hb_endpoint();
+        tasks.push(tokio::spawn(async move {
+            if tokio::time::timeout(HB_GRACE, wait_zmtp(&hb_endpoint))
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    endpoint = hb_endpoint,
+                    "heartbeat port not answering after the grace period; sending on shell anyway"
+                );
+            }
+            hb_ready.send_replace(true);
+        }));
         for (channel, endpoint, wait, ready) in [
             (
                 Channel::Shell,
                 info.shell_endpoint(),
-                vec![stdin_rx, iopub_rx],
+                vec![stdin_rx, iopub_rx, hb_rx],
                 None,
             ),
             (Channel::Control, info.control_endpoint(), vec![], None),
@@ -179,6 +202,33 @@ async fn wait_listening(endpoint: &str) {
     while tokio::net::TcpStream::connect(addr).await.is_err() {
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(Duration::from_millis(250));
+    }
+}
+
+/// How long shell waits for the heartbeat port before sending anyway:
+/// longer than cdp-kernel's five seconds of retrying a taken port.
+#[cfg(not(test))]
+const HB_GRACE: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const HB_GRACE: Duration = Duration::from_secs(2);
+
+/// Wait until a ZMTP peer answers on `endpoint`: a handshake, not just a
+/// TCP accept, so a port another process listens on doesn't count. Each
+/// try is bounded, since a listener that never speaks ZMTP may leave the
+/// handshake hanging. Returns at once for a non-TCP endpoint.
+async fn wait_zmtp(endpoint: &str) {
+    if !endpoint.starts_with("tcp://") {
+        return;
+    }
+    loop {
+        wait_listening(endpoint).await;
+        let mut probe = zeromq::ReqSocket::new();
+        let shook = tokio::time::timeout(Duration::from_millis(500), probe.connect(endpoint)).await;
+        let _ = probe.close().await;
+        if matches!(shook, Ok(Ok(()))) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -447,6 +497,81 @@ mod tests {
         let a = first_frame(&mut shell).await;
         let b = first_frame(&mut stdin).await;
         assert_eq!(a, b);
+        transport.sink.close().await;
+    }
+
+    /// A kernel's request goes out on shell only once its heartbeat port
+    /// answers a ZMTP handshake: a port another process holds, even one
+    /// listening, doesn't count, so a kernel still waiting to bind it
+    /// doesn't count as started (#501).
+    #[tokio::test]
+    async fn shell_waits_for_the_heartbeat() {
+        let any = "tcp://127.0.0.1:0";
+        let mut shell = RouterSocket::new();
+        let mut stdin = RouterSocket::new();
+        let mut control = RouterSocket::new();
+        let mut iopub = zeromq::PubSocket::new();
+        // Another process holds the heartbeat port, listening but not
+        // speaking ZMTP, until the kernel binds it.
+        let holder = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let hb_port = holder.local_addr().unwrap().port();
+        let ports = [
+            port(shell.bind(any).await.unwrap()),
+            port(iopub.bind(any).await.unwrap()),
+            port(stdin.bind(any).await.unwrap()),
+            port(control.bind(any).await.unwrap()),
+            hb_port,
+        ];
+        let info = ConnectionInfo::new_tcp("127.0.0.1", ports);
+        let transport = ZmqTransport::connect(&info).await.unwrap();
+        let msg = Message::new("kernel_info_request", "s", "u", &serde_json::json!({}));
+        transport.sink.send(Channel::Shell, msg).await.unwrap();
+
+        // Well under HB_GRACE in tests.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(800), shell.recv())
+                .await
+                .is_err(),
+            "shell sent while another process held the heartbeat port"
+        );
+        drop(holder);
+        let mut hb = zeromq::RepSocket::new();
+        hb.bind(&format!("tcp://127.0.0.1:{hb_port}"))
+            .await
+            .unwrap();
+        first_frame(&mut shell).await;
+        transport.sink.close().await;
+    }
+
+    /// A kernel whose heartbeat port never answers (not served, or not
+    /// reachable from here) still gets its shell messages, after
+    /// HB_GRACE, as with jupyter_client.
+    #[tokio::test]
+    async fn shell_goes_after_the_heartbeat_grace() {
+        let any = "tcp://127.0.0.1:0";
+        let mut shell = RouterSocket::new();
+        let mut stdin = RouterSocket::new();
+        let mut control = RouterSocket::new();
+        let mut iopub = zeromq::PubSocket::new();
+        // Held for the whole test, so nothing serves the heartbeat.
+        let holder = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let ports = [
+            port(shell.bind(any).await.unwrap()),
+            port(iopub.bind(any).await.unwrap()),
+            port(stdin.bind(any).await.unwrap()),
+            port(control.bind(any).await.unwrap()),
+            holder.local_addr().unwrap().port(),
+        ];
+        let info = ConnectionInfo::new_tcp("127.0.0.1", ports);
+        let started = std::time::Instant::now();
+        let transport = ZmqTransport::connect(&info).await.unwrap();
+        let msg = Message::new("kernel_info_request", "s", "u", &serde_json::json!({}));
+        transport.sink.send(Channel::Shell, msg).await.unwrap();
+        tokio::time::timeout(HB_GRACE * 3, first_frame(&mut shell))
+            .await
+            .expect("shell sent after the grace period");
+        assert!(started.elapsed() >= HB_GRACE);
+        drop(holder);
         transport.sink.close().await;
     }
 
