@@ -835,14 +835,7 @@ async fn delete_contents(
     Path(path): Path<String>,
 ) -> HttpResult<StatusCode> {
     match target(&path) {
-        ContentsTarget::Path(p) => {
-            // No file id is made for the path between the delete and the
-            // ids dropping it.
-            let deleting = s.collab.begin_move().await;
-            s.contents.delete(&p).await?;
-            s.collab.removed(&p).await;
-            drop(deleting);
-        }
+        ContentsTarget::Path(p) => s.collab.delete(&s.contents, &p).await?,
         ContentsTarget::Checkpoint(p, id) => s.contents.delete_checkpoint(&p, &id).await?,
         ContentsTarget::Checkpoints(_) | ContentsTarget::Trust(_) => {
             return Err(method_not_allowed())

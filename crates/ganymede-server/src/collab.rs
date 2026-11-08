@@ -227,9 +227,27 @@ impl Collab {
         path: &str,
         options: GetOptions,
     ) -> ganymede_contents::Result<(String, bool)> {
+        // The SQLite insert runs under the guard too, so a busy shared
+        // file-id database (up to its 5 s `busy_timeout`) holds back a
+        // queued rename or delete, and rooms behind that. Releasing the
+        // guard before the insert would let a gone path get an id again.
         let _no_move = self.move_lock.read().await;
         contents.get(path, options).await?;
         Ok(self.index(path).await)
+    }
+
+    /// Deletes `path` through `contents` and drops its ids, under
+    /// [`Collab::begin_move`]'s lock, so no id is made for the path
+    /// between the delete and [`Collab::removed`] (#574).
+    pub(crate) async fn delete(
+        &self,
+        contents: &Arc<dyn Contents>,
+        path: &str,
+    ) -> ganymede_contents::Result<()> {
+        let _deleting = self.begin_move().await;
+        contents.delete(path).await?;
+        self.removed(path).await;
+        Ok(())
     }
 
     /// The path a file id names now.
@@ -430,9 +448,11 @@ pub async fn session(
         .collab
         .index_existing(&state.contents, &path, GetOptions::default())
         .await
-        .map_err(|e| match e.status() {
-            404 => HttpError(404, format!("File {path:?} does not exist")),
-            _ => HttpError::from(e),
+        .map_err(|e| match e {
+            ganymede_contents::Error::NotFound(_) => {
+                HttpError(404, format!("File {path:?} does not exist"))
+            }
+            e => HttpError::from(e),
         })?;
     let status = if new {
         StatusCode::CREATED
@@ -1817,6 +1837,27 @@ mod join_tests {
             collab.index("a.ipynb").await.1,
             "the deleted path got an id"
         );
+    }
+
+    /// `Collab::delete`, which `DELETE /api/contents` calls, waits for an
+    /// index in progress and leaves the path without an id (#580).
+    #[tokio::test]
+    async fn delete_waits_for_indexing_and_drops_the_id() {
+        let (dir, contents) = notebook_dir();
+        let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
+        collab.index("a.ipynb").await;
+        let indexing = collab.move_lock.read().await;
+        let delete = {
+            let (collab, contents) = (collab.clone(), contents.clone());
+            tokio::spawn(async move { collab.delete(&contents, "a.ipynb").await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!delete.is_finished(), "deleted during an index");
+        assert!(dir.path().join("a.ipynb").exists());
+        drop(indexing);
+        delete.await.unwrap().unwrap();
+        assert!(!dir.path().join("a.ipynb").exists());
+        assert!(collab.index("a.ipynb").await.1, "the id stayed");
     }
 
     /// A websocket join or a server-side send while a rename is under way
