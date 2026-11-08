@@ -638,6 +638,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_replaced_sessions_messages_do_not_reach_clients() {
+        let m = manager(None);
+        let k = started(&m, Some("fake"), None).await.unwrap();
+        let kernel = m.get(&k.id).unwrap();
+        let old = kernel.session().session_id().to_string();
+        m.restart(&k.id).await.unwrap();
+        let new = kernel.session().session_id().to_string();
+        assert_ne!(old, new);
+        let mut c = m.connect_client(&k.id).unwrap();
+        drain(&mut c).await;
+
+        let busy = |from: &str| {
+            Message::new(
+                "status",
+                from,
+                "kernel",
+                &serde_json::json!({"execution_state": "busy"}),
+            )
+        };
+        kernel.forward_from(&old, Channel::IoPub, busy(&old));
+        assert!(drain(&mut c).await.is_empty(), "the old session's status");
+        assert_eq!(m.model(&k.id).unwrap().execution_state, "idle");
+
+        kernel.forward_from(&new, Channel::IoPub, busy(&new));
+        let got = drain(&mut c).await;
+        assert_eq!(got.len(), 1);
+        assert_eq!(m.model(&k.id).unwrap().execution_state, "busy");
+    }
+
+    #[tokio::test]
     async fn a_new_connection_replaces_a_stale_one_with_its_session() {
         let m = manager(None);
         let k = started(&m, Some("fake"), None).await.unwrap();
