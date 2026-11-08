@@ -3198,15 +3198,18 @@ async fn rooms_ping_clients_and_drop_silent_ones() {
 
     // A client that never reads never answers: dropped, and its room retires.
     let (silent, _) = connect("Test:silent").await.unwrap();
-    for _ in 0..20 {
-        if collab.open_rooms() == 2 {
-            break;
-        }
+    let opened = std::time::Instant::now();
+    while collab.open_rooms() != 2 && opened.elapsed() < Duration::from_secs(5) {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(collab.open_rooms(), 2);
+    // The server needs the idle timeout plus a ping interval and the
+    // cleanup delay (about 400 ms); the bound is a wall-clock deadline
+    // with room for a slow runner (#520), not a count of iterations,
+    // which the live socket's pings cut short.
+    let waited = std::time::Instant::now();
     let mut gone = false;
-    for _ in 0..100 {
+    while waited.elapsed() < Duration::from_secs(10) {
         if collab.open_rooms() == 1 {
             gone = true;
             break;
@@ -3214,7 +3217,11 @@ async fn rooms_ping_clients_and_drop_silent_ones() {
         // Keep answering on the live one meanwhile.
         let _ = tokio::time::timeout(Duration::from_millis(20), live.next()).await;
     }
-    assert!(gone, "the silent client's room is still open");
+    assert!(
+        gone,
+        "the silent client's room is still open after {:?}",
+        waited.elapsed()
+    );
     drop(silent);
 
     // Past max_body_size, the server closes the socket.
