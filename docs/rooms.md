@@ -125,7 +125,10 @@ while the room is open: it holds a lock in the Jupyter runtime dir's
 on Windows). Another server's room on the same file is read-only. Its
 contents API reports the notebook as not `writable`, which JupyterLab
 shows as read-only. The room takes in the owner's saves, never saves,
-and undoes any edit a client sends, for every client. Once the owner's
+and undoes any edit a client sends, for every client. It also refuses
+to run cells (`POST /api/kernels/<id>/execute` answers 400, and the MCP
+run tools return an error), since their outputs would never be saved.
+Once the owner's
 room closes or its server exits, the other room takes the lock within a
 second and saves its own edits from then on.
 
