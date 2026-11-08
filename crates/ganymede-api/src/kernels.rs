@@ -22,6 +22,11 @@ const START_ATTEMPTS: u32 = 3;
 /// Unanswered shell requests remembered per kernel.
 pub(crate) const UNANSWERED_LIMIT: usize = 1000;
 
+/// The pump warns once its queue of kernel messages reaches this many,
+/// and again after it has fallen below half and come back. The queue
+/// itself is unbounded, so that no reply is lost.
+const PUMP_BACKLOG_WARN: usize = 10_000;
+
 /// A kernel that runs this long after a restart has started cleanly, and
 /// its next crash counts from one again (`KernelRestarter.stable_start_time`).
 const STABLE_START: Duration = Duration::from_secs(10);
@@ -178,6 +183,7 @@ impl RunningKernel {
         let session_id = session.session_id().to_string();
         let me = Arc::downgrade(self);
         tokio::spawn(async move {
+            let mut warned = false;
             loop {
                 let got = tokio::select! {
                     biased;
@@ -185,15 +191,22 @@ impl RunningKernel {
                     _ = alive.wait_for(|a| !*a) => break,
                 };
                 let Some(k) = me.upgrade() else { return };
+                let backlog = rx.len();
+                if !warned && backlog >= PUMP_BACKLOG_WARN {
+                    warned = true;
+                    tracing::warn!(kernel = %k.id, backlog, "kernel messages are queuing faster than the pump forwards them");
+                } else if warned && backlog < PUMP_BACKLOG_WARN / 2 {
+                    warned = false;
+                }
                 match got {
-                    Some((channel, msg)) => k.forward(channel, msg),
+                    Some((channel, msg)) => k.forward_from(&session_id, channel, msg),
                     None => break,
                 }
             }
             // What the kernel sent before it died still goes to clients.
             while let Ok((channel, msg)) = rx.try_recv() {
                 match me.upgrade() {
-                    Some(k) => k.forward(channel, msg),
+                    Some(k) => k.forward_from(&session_id, channel, msg),
                     None => return,
                 }
             }
@@ -201,6 +214,16 @@ impl RunningKernel {
                 k.session_died(&session_id, &core);
             }
         });
+    }
+
+    /// [`Self::forward`] a message from session `session_id`, unless a
+    /// restart has replaced that session: the old kernel's output and
+    /// statuses must not reach clients once the new one runs.
+    pub(crate) fn forward_from(&self, session_id: &str, channel: Channel, msg: Message) {
+        if self.session.read().unwrap().session_id() != session_id {
+            return;
+        }
+        self.forward(channel, msg);
     }
 
     fn forward(&self, channel: Channel, msg: Message) {
