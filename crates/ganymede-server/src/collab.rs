@@ -660,6 +660,8 @@ async fn send_to_room(
         let read = collab.moves.load(Ordering::SeqCst);
         let path = collab.path_of(id).await?;
         let mut rooms = collab.rooms.lock().expect("rooms");
+        // The read lock keeps renames out, so a change here is a delete
+        // (`removed` doesn't take `move_lock`): look the id up again.
         if !rooms.contains_key(room_id) && collab.moves.load(Ordering::SeqCst) != read {
             continue;
         }
