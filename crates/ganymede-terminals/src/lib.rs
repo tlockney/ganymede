@@ -633,11 +633,14 @@ mod pty {
         }
     }
 
-    pub enum Waiter {}
+    /// Never made: only a `Process` hands one out, and there is none.
+    /// A unit struct rather than an empty enum, so the code after
+    /// `process.waiter()` isn't reported as unreachable on these targets.
+    pub struct Waiter;
 
     impl Waiter {
         pub fn wait(&self) -> Option<u32> {
-            match *self {}
+            None
         }
     }
 }

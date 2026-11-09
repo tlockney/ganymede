@@ -15,7 +15,6 @@ zmq = ["ganymede-kernel-host/zmq"]
 subprocess = ["ganymede-kernel-host/subprocess"]
 
 [dependencies]
-ganymede-protocol = { path = "../ganymede-protocol" }
 ganymede-kernel-host = { path = "../ganymede-kernel-host", default-features = false }
 ganymede-contents = { path = "../ganymede-contents" }
 serde.workspace = true

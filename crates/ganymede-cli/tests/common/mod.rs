@@ -99,9 +99,6 @@ pub fn have_kernel(name: &str) -> bool {
     false
 }
 
-/// The kernels the cross-kernel scenarios run on.
-pub const KERNELS: &[&str] = &["cdp-node", "python3"];
-
 /// The reference `jupyter` command, if available.
 pub fn jupyter() -> Option<PathBuf> {
     let found = std::env::var_os("GANYMEDE_E2E_JUPYTER")
