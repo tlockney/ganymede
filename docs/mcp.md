@@ -58,8 +58,8 @@ be on your `PATH`, and its hooks run with `node`.
 | Part | What it does |
 | --- | --- |
 | MCP server `ganymede` | `ganymede mcp`, found or started as [above](#set-up). |
-| Skill `journal` | The conventions: a title and goal, one question per section, scratch probes, recorded steps, revising findings in place, reading a person's cells, charts the agent can see, finishing with run-all and a summary. Its `typescript.md` covers cdp-kernel's display API, Polars and Observable Plot. |
-| Agent `journal-reviewer` | Reads the notebook cold, re-runs it, and lists what a stranger couldn't follow or reproduce. It doesn't edit. |
+| Skill `journal` | The conventions: a title and goal, one question per section, scratch probes, recorded steps, revising findings in place, reading a person's cells, looking at charts, showing results to the user with snapshots, finishing with run-all and a summary. Its `typescript.md` covers cdp-kernel's display API, Polars and Observable Plot. |
+| Agent `journal-reviewer` | Reads the notebook cold, re-runs it, looks at its charts, and lists what a stranger couldn't follow or reproduce. It doesn't edit. |
 | Hook `SessionStart` | Says whether a server is running for the directory, its kernels, and the journal open in a resumed session. |
 | Hook `UserPromptSubmit` | Reads the open journal with the agent's [read mark](#changes-by-others) and adds what a person or another agent changed as context. |
 | Hook `PostToolUse` | Follows the agent's notebook tools (the open notebook, its mark, edits since the last clean run-all). Records a Bash command that ends in `# journal` as a recorded cell, with up to 2,000 characters of its output. |
@@ -77,7 +77,13 @@ stay silent when anything fails. Settings, as environment variables:
 | `GANYMEDE_JOURNAL_STOP` | `off` turns the `Stop` check off. |
 | `GANYMEDE_BIN` | The `ganymede` binary, when it isn't on `PATH`. |
 
-For the agent to see charts, start the server with images on:
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+The agent can look at any chart with [`cell_snapshot`](#snapshots),
+which the skill tells it to do. For images in every `cell_run` reply as
+well, start the server with images on:
 `ganymede serve --mcp` with `mcp_images = true` in its config, or change
 the plugin's server to `ganymede mcp --images` (which always starts a
 server of its own, so a person can't watch live).
@@ -117,6 +123,7 @@ isn't reported to the agent as someone else's edit.
 | `kernel_control` | Interrupt, restart, or shut down the kernel. |
 | `notebook_run_all` | Restart the kernel and run every code cell in order. |
 | `kernelspecs_list`, `notebooks_list` | The kernels available, and the notebooks in a directory. |
+| `cell_snapshot` | Cells as Markdown to show a person: code, images saved as files, tables, text (see [Snapshots](#snapshots)). |
 
 Each notebook is also a `notebook://<path>` resource, and the `journal`
 prompt gives the agent conventions for keeping the record.
@@ -160,6 +167,32 @@ between: keep credentials out of outputs altogether, or look at them
 with `record: false`. A cell still running when the call times out
 writes its outputs to the notebook when it finishes; the reply says so,
 and `cell_clear_outputs` clears them then.
+
+## Snapshots
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`cell_snapshot(ids)` returns cells as Markdown an agent can put in its
+reply to a person, without running anything:
+
+- the code, in a fence tagged with the notebook's language (leave it out
+  with `code: false`)
+- each image output saved as a file and linked with `![...](path)`: PNG,
+  JPEG, GIF and WebP as they are, an SVG drawn as a PNG as described in
+  [What the agent sees](#what-the-agent-sees)
+- an HTML table (pandas, Polars) as a Markdown table, cut to `max_rows`
+  rows (20 by default); Markdown output as it is
+- other output as plain text, without terminal colors; an error as its
+  name and message
+
+The images also come back as MCP image content, whether or not the server
+sends images, so an agent can look at a chart before describing it. Files
+are named `<notebook>-<cell id>-<n>.<ext>` and go to `snapshots` in the
+outputs directory (readable only by you), or with `dir` to a directory
+under the server root, such as `journal/snapshots`, through the contents
+API. `dir` isn't allowed in read-only mode.
 
 ## Changes by others
 
