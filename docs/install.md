@@ -97,7 +97,7 @@ machine:
   "display_name": "TypeScript (cdp-kernel, node)",
   "language": "typescript",
   "interrupt_mode": "message",
-  "metadata": { "runtime": "node", "denoCompat": false, "version": "0.8.0", "debugger": true }
+  "metadata": { "runtime": "node", "denoCompat": false, "version": "0.9.0", "debugger": true }
 }
 ```
 
