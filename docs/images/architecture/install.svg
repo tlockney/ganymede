@@ -61,7 +61,7 @@
   <text class="l" x="678" y="146" text-anchor="end">step 4</text>
   <text class="l" x="382" y="162">~/.local/share/ganymede</text>
   <text class="l" x="382" y="177">~/Library/Application Support/ganymede</text>
-  <text class="m" x="382" y="196">lab/4.6.4/, labextensions/</text>
+  <text class="m" x="382" y="196">lab/4.6.6/, labextensions/</text>
   <line class="ln" x1="210" y1="165" x2="368" y2="165" marker-end="url(#a)"/>
   <text class="l" x="218" y="159">serves JupyterLab from</text>
   <rect class="box" x="370" y="216" width="320" height="79" rx="6"/>

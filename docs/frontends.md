@@ -29,15 +29,19 @@ from PyPI's `jupyterlab` wheel (no Python involved) and checks its SHA-256;
 directory, like `jupyter lab`:
 
 ```sh
-ganymede lab install                    # JupyterLab 4.6.4; --version picks another
+ganymede lab install                    # JupyterLab 4.6.6; --version picks another
 ganymede lab                            # JupyterLab at /lab, opened in the browser
 ganymede lab --no-browser --port 9000   # takes `serve`'s flags
-ganymede serve --lab-version 4.6.4      # the same at /lab, without the browser
+ganymede serve --lab-version 4.6.6      # the same at /lab, without the browser
 ganymede lab list                       # installed versions; --json too
-ganymede lab remove 4.6.4               # fails while an install runs, as uninstall does
+ganymede lab remove 4.6.6               # fails while an install runs, as uninstall does
 ganymede lab clean                      # leftovers of interrupted installs; skips a running one
 ganymede lab uninstall                  # every version and extension
 ```
+
+> [!NOTE]
+> **Unreleased.** The 4.6.6 default is available only from a build of
+> `main` (HEAD), not in the latest release, which installs 4.6.4.
 
 `ganymede lab` prints the URL of `/lab` and opens it (`open` on macOS,
 `xdg-open` on Linux). If port 8888 is taken it tries the next, up to 50

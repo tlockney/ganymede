@@ -16,7 +16,7 @@ differ:
   (step 7). Playwright separately runs jupyter.display cells in JupyterLab.
 - VS Code itself isn't run; validation/vscode.cjs replays the Jupyter
   extension's remote-server requests against `ganymede serve`.
-- `ganymede lab remove 4.6.4`: the script takes the version from
+- `ganymede lab remove 4.6.6`: the script takes the version from
   `ganymede lab list`.
 - Not run by CI, and why:
   - `ganymede console -k cdp-node` is interactive.
@@ -134,13 +134,17 @@ directory: `~/.local/share` (or `$XDG_DATA_HOME`) on Linux,
 `~/Library/Application Support` on macOS, or `$GANYMEDE_DATA_DIR` when that
 is set. The command prints the directory.
 
-It installs JupyterLab 4.6.4 by default; `--version X.Y.Z` picks another,
+It installs JupyterLab 4.6.6 by default; `--version X.Y.Z` picks another,
 and `--force` reinstalls. It also installs the frontend halves of
 `jupyterlab_widgets` and [`anywidget`](https://github.com/manzt/anywidget), so widgets (cdp-kernel's
 `jupyter.widget`) work; `--no-default-extensions` skips them, and
 `ganymede lab extension install <package>` adds other prebuilt extensions
 from PyPI. [JupyterLab and VS Code](frontends.md#extensions) has the
 details.
+
+> [!NOTE]
+> **Unreleased.** The 4.6.6 default is available only from a build of
+> `main` (HEAD), not in the latest release, which installs 4.6.4.
 
 The default extensions are pinned too: each Ganymede release installs set
 versions and checks their wheels' SHA-256, as it does for JupyterLab.
@@ -248,7 +252,7 @@ To uninstall, remove each piece:
 
 ```sh
 ganymede lab list                                             # installed versions
-ganymede lab remove 4.6.4
+ganymede lab remove 4.6.6
 ganymede lab extension remove anywidget jupyterlab-widgets
 cdp-kernel uninstall cdp-node
 npm uninstall -g @tlockney/cdp-kernel
