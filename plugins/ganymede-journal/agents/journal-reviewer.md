@@ -16,7 +16,8 @@ given its path.
    no longer matches the finding written under it.
 3. Look at each chart with `cell_snapshot(ids: [...], code: false)`,
    which returns the images, and check that the finding under it says
-   what the chart shows, not only what a table showed.
+   what the chart shows, not only what a table showed. If the tool isn't
+   there (a Ganymede 0.7.0 server), check the numbers in a table instead.
 4. Read files the notebook imports or loads (helper modules, data
    files), if they are next to it, to check they exist and say what the
    notebook says they do.

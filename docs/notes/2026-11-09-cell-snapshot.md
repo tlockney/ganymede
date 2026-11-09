@@ -33,3 +33,12 @@ non-Error with `inspect`, colours on, so `throw { code: 1 }` arrived as
 `{ code: \x1b[33m1\x1b[39m }` in the `@@output` head. Those two fields are
 stripped now too, and the per-frame strip of tracebacks went, since the
 joined body is stripped anyway.
+
+The review of #613 caught that the image links used the bare path as the
+Markdown destination, so a notebook named `Fremont Bridge.ipynb` gave a
+link that renders as text. Links are now `![…](<path>)`. File names got a
+short hash of the image (a re-snapshot no longer overwrites a file an
+earlier reply links to) and keep only `[A-Za-z0-9_-]` of the cell id,
+which nothing validates. Rows in `<thead>` after the first (Polars'
+dtypes) are left out of tables, and errors and Markdown are cut at 4,000
+characters like other text.

@@ -183,16 +183,19 @@ reply to a person, without running anything:
   JPEG, GIF and WebP as they are, an SVG drawn as a PNG as described in
   [What the agent sees](#what-the-agent-sees)
 - an HTML table (pandas, Polars) as a Markdown table, cut to `max_rows`
-  rows (20 by default); Markdown output as it is
+  rows (20 by default), with extra header rows such as Polars' dtypes
+  left out; Markdown output as it is
 - other output as plain text, without terminal colors; an error as its
   name and message
 
 The images also come back as MCP image content, whether or not the server
 sends images, so an agent can look at a chart before describing it. Files
-are named `<notebook>-<cell id>-<n>.<ext>` and go to `snapshots` in the
-outputs directory (readable only by you), or with `dir` to a directory
+are named `<notebook>-<cell id>-<n>-<hash>.<ext>`, so a later snapshot
+of a re-run cell doesn't replace an earlier one, and go to `snapshots` in
+the outputs directory (readable only by you), or with `dir` to a directory
 under the server root, such as `journal/snapshots`, through the contents
-API. `dir` isn't allowed in read-only mode.
+API. Links put the path in angle brackets, so spaces and parentheses in
+it don't break the Markdown. `dir` isn't allowed in read-only mode.
 
 ## Changes by others
 

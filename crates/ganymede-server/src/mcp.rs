@@ -817,7 +817,10 @@ impl Notebooks {
             .map_err(|e| err(e.to_string()))?;
             parts.push((id.clone(), cell_parts));
         }
-        if let Some(dir) = &dir {
+        let any_image = parts
+            .iter()
+            .any(|(_, ps)| ps.iter().any(|p| matches!(p, snapshot::Part::Image(_))));
+        if let (Some(dir), true) = (&dir, any_image) {
             self.mkdirs(dir).await?;
         }
         let root = self.state.collab.root();
@@ -830,7 +833,7 @@ impl Notebooks {
                     snapshot::Part::Markdown(md) => out.push_str(&md),
                     snapshot::Part::Image(image) => {
                         n += 1;
-                        let name = format!("{stem}-{id}-{n}.{}", image.ext);
+                        let name = snapshot::file_name(&stem, &id, n, &image);
                         let shown = match &dir {
                             Some(dir) => {
                                 let file = if dir.is_empty() {
@@ -853,7 +856,10 @@ impl Notebooks {
                                 .to_string_lossy()
                                 .into_owned(),
                         };
-                        out.push_str(&format!("![Cell `{id}`, image {n}]({shown})\n"));
+                        out.push_str(&format!(
+                            "![Cell `{id}`, image {n}]({})\n",
+                            snapshot::link_destination(&shown)
+                        ));
                         blocks.push(ContentBlock::image(image.data, image.mime));
                     }
                 }

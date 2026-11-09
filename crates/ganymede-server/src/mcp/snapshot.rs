@@ -79,7 +79,7 @@ fn output(o: &Output, max_rows: usize) -> Vec<Part> {
                 v["ename"].as_str().unwrap_or_default(),
                 v["evalue"].as_str().unwrap_or_default()
             );
-            vec![Part::Markdown(fence("text", &clean(&e)))]
+            vec![Part::Markdown(fence("text", &cut(&clean(&e))))]
         }
         _ => {
             let data = &v["data"];
@@ -92,7 +92,9 @@ fn output(o: &Output, max_rows: usize) -> Vec<Part> {
                 }
             }
             match best_text(data) {
-                (Some("text/markdown"), md) => vec![Part::Markdown(format!("{}\n", md.trim_end()))],
+                (Some("text/markdown"), md) => {
+                    vec![Part::Markdown(format!("{}\n", cut(md.trim_end())))]
+                }
                 (_, text) => vec![Part::Markdown(fence("text", &cut(&clean(&text))))],
             }
         }
@@ -125,6 +127,33 @@ pub fn image(data: &Value) -> Option<Image> {
         data: b64.encode(png),
         ext: "png",
     })
+}
+
+/// The file name for a snapshot image: the notebook's stem, the cell id
+/// (only `[A-Za-z0-9_-]` kept, as nbformat allows, since ids aren't
+/// validated), its number, and a short hash of the image, so a later
+/// snapshot of a re-run cell doesn't overwrite a file an earlier reply
+/// links to.
+pub fn file_name(stem: &str, id: &str, n: usize, image: &Image) -> String {
+    use sha2::Digest;
+    let id: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let hash = hex::encode(sha2::Sha256::digest(image.data.as_bytes()));
+    format!("{stem}-{id}-{n}-{}.{}", &hash[..8], image.ext)
+}
+
+/// A path as a Markdown link destination: in angle brackets, so spaces
+/// and parentheses in it don't end the link, with `<` and `>` encoded.
+pub fn link_destination(path: &str) -> String {
+    format!("<{}>", path.replace('<', "%3C").replace('>', "%3E"))
 }
 
 fn clean(s: &str) -> String {
@@ -162,6 +191,9 @@ pub fn html_table(html: &str, max_rows: usize) -> Option<String> {
         .find("</table>")
         .map_or(html.len(), |e| start + e);
     let (html, lower) = (&html[start..end], &lower[start..end]);
+    // Rows in `<thead>` after its first are header too: Polars' dtypes,
+    // pandas' index name. They're left out rather than read as data.
+    let thead_end = lower.find("</thead>");
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut pos = 0;
     while let Some(r) = lower[pos..].find("<tr") {
@@ -169,7 +201,10 @@ pub fn html_table(html: &str, max_rows: usize) -> Option<String> {
         let row_end = lower[row_start + 3..]
             .find("<tr")
             .map_or(lower.len(), |e| row_start + 3 + e);
-        rows.push(cells(&html[row_start..row_end], &lower[row_start..row_end]));
+        let extra_header = !rows.is_empty() && thead_end.is_some_and(|e| row_start < e);
+        if !extra_header {
+            rows.push(cells(&html[row_start..row_end], &lower[row_start..row_end]));
+        }
         pos = row_end;
     }
     rows.retain(|r| !r.is_empty());
@@ -272,6 +307,39 @@ mod tests {
     }
 
     #[test]
+    fn file_names_and_links_survive_odd_names() {
+        let image = |data: &str| Image {
+            mime: "image/png",
+            data: data.into(),
+            ext: "png",
+        };
+        let a = file_name("Fremont Bridge", "a/b c", 1, &image("AAAA"));
+        assert!(
+            a.starts_with("Fremont Bridge-a_b_c-1-") && a.ends_with(".png"),
+            "{a}"
+        );
+        assert_ne!(a, file_name("Fremont Bridge", "a/b c", 1, &image("BBBB")));
+        assert_eq!(
+            link_destination("/x/My (1) <a>.png"),
+            "</x/My (1) %3Ca%3E.png>"
+        );
+    }
+
+    #[test]
+    fn long_errors_and_markdown_are_cut() {
+        let long = "x".repeat(TEXT_LIMIT + 10);
+        let c = code_cell(
+            "",
+            json!([
+                {"output_type": "error", "ename": "E", "evalue": long, "traceback": []},
+                {"output_type": "display_data", "metadata": {}, "data": {"text/markdown": long}},
+            ]),
+        );
+        let md = markdown(&cell(0, &c, "", false, 20));
+        assert_eq!(md.matches("more characters]").count(), 2, "{md}");
+    }
+
+    #[test]
     fn fences_outlast_backticks_in_the_code() {
         assert_eq!(fence("md", "a ```` b"), "`````md\na ```` b\n`````\n");
     }
@@ -287,6 +355,14 @@ mod tests {
             "|  | name | n |\n| --- | --- | --- |\n| 0 | a \\| b | 1 |\n| 1 | c | 2 |\n\n(1 more rows)\n"
         );
         assert_eq!(html_table("<p>no table</p>", 5), None);
+        // Polars: a dtype row in <thead> after the names.
+        let polars =
+            "<table><thead><tr><th>a</th><th>b</th></tr><tr><td>i64</td><td>str</td></tr></thead>\
+            <tbody><tr><td>1</td><td>x</td></tr></tbody></table>";
+        assert_eq!(
+            html_table(polars, 5).unwrap(),
+            "| a | b |\n| --- | --- |\n| 1 | x |\n"
+        );
         let c = code_cell(
             "df",
             json!([{"output_type": "execute_result", "execution_count": 1, "metadata": {},

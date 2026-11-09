@@ -6031,7 +6031,7 @@ async fn mcp_cell_snapshot_saves_images_and_shows_tables() {
         "metadata": {"kernelspec": {"name": "x", "display_name": "X", "language": "typescript"}},
         "nbformat": 4, "nbformat_minor": 5});
     std::fs::create_dir(dir.path().join("j")).unwrap();
-    std::fs::write(dir.path().join("j/n.ipynb"), nb.to_string()).unwrap();
+    std::fs::write(dir.path().join("j/n b.ipynb"), nb.to_string()).unwrap();
     let app = mcp_app(dir.path());
     let sid = mcp_connect(&app, "agent").await;
 
@@ -6039,14 +6039,25 @@ async fn mcp_cell_snapshot_saves_images_and_shows_tables() {
         &app,
         &sid,
         "cell_snapshot",
-        json!({"path": "j/n.ipynb", "ids": ["plot", "tbl"]}),
+        json!({"path": "j/n b.ipynb", "ids": ["plot", "tbl"]}),
     )
     .await;
     let out = mcp_text(&v);
     assert!(out.contains("```typescript\nPlot.plot()\n```"), "{out}");
     assert!(out.contains("| a |\n| --- |\n| 1 |"), "{out}");
-    let saved = dir.path().join("spill/snapshots/n-plot-1.png");
-    assert!(out.contains(&format!("]({})", saved.display())), "{out}");
+    // The link is `](<path>)`, so the space in the name doesn't end it.
+    let start = out.find("](<").expect("image link") + 3;
+    let end = start + out[start..].find(">)").expect("link end");
+    let saved = std::path::PathBuf::from(&out[start..end]);
+    assert!(
+        saved.starts_with(dir.path().join("spill/snapshots")),
+        "{out}"
+    );
+    let name = saved.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(
+        name.starts_with("n b-plot-1-") && name.ends_with(".png"),
+        "{name}"
+    );
     assert_eq!(std::fs::read(&saved).unwrap(), b"\x89PNG\r\n\x1a\n");
     let images: Vec<&Value> = v["result"]["content"]
         .as_array()
@@ -6062,13 +6073,13 @@ async fn mcp_cell_snapshot_saves_images_and_shows_tables() {
             &app,
             &sid,
             "cell_snapshot",
-            json!({"path": "j/n.ipynb", "ids": ["plot"], "dir": "j/snapshots", "code": false}),
+            json!({"path": "j/n b.ipynb", "ids": ["plot"], "dir": "j/snapshots", "code": false}),
         )
         .await,
     );
     assert!(!out.contains("Plot.plot()"), "{out}");
     assert!(
-        dir.path().join("j/snapshots/n-plot-1.png").is_file(),
+        dir.path().join("j/snapshots").join(&name).is_file(),
         "{out}"
     );
 
@@ -6076,7 +6087,7 @@ async fn mcp_cell_snapshot_saves_images_and_shows_tables() {
         &app,
         &sid,
         "cell_snapshot",
-        json!({"path": "j/n.ipynb", "ids": ["nope"]}),
+        json!({"path": "j/n b.ipynb", "ids": ["nope"]}),
     )
     .await;
     assert!(v.to_string().contains("no cell nope"), "{v}");
