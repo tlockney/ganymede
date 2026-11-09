@@ -33,12 +33,22 @@ Edit.
 6. Probe with `cell_run(record: false)`: peeking at a value, checking a
    column name, trying a call. Probes run on the same kernel and leave
    nothing in the notebook.
-7. After a result, a short Markdown finding: what it shows, in a
+7. Keep outputs. They are the record of what the run produced, and the
+   server signs the notebook so charts and HTML render when someone
+   opens it. Leave a cell's outputs out only when they don't belong in
+   the file: too large (a full table dump, thousands of log lines) or
+   private (personal data, internal hosts). Pass
+   `cell_run(keep_outputs: false)`, or call `cell_clear_outputs(id)`
+   after the fact; the code stays, and later runs leave the outputs out
+   too. Say in the next note what the output showed. Never print
+   credentials, even with outputs left out: they reach the notebook
+   while the cell runs.
+8. After a result, a short Markdown finding: what it shows, in a
    sentence or two, with the number that matters.
 
 ## Steps outside the kernel
 
-8. A shell command or a file you wrote is part of the story but didn't
+9. A shell command or a file you wrote is part of the story but didn't
    run in the kernel. Add it with `cell_add(mode: "recorded")`, never as
    kernel output. With this plugin's hooks, a Bash command that ends in
    the comment `# journal` is recorded for you; the hook says so, so
@@ -46,25 +56,25 @@ Edit.
 
 ## Revise, don't append
 
-9. When a finding turns out wrong, fix it where it stands with
+10. When a finding turns out wrong, fix it where it stands with
    `cell_edit` and re-run what depends on it (`cell_edit(run: true)`).
    Don't add a correction at the bottom. The replaced text is kept in
    the cell's metadata.
 
 ## Working with a person
 
-10. A person may watch the notebook in ganymede-ui or JupyterLab and
+11. A person may watch the notebook in ganymede-ui or JupyterLab and
     add or change cells. Cells without `metadata.ganymede.agent` were
     written by a person: read them as input, and say in the next note
     how you used them.
-11. `notebook_read` ends with an `@@read <mark>` line. Before building
+12. `notebook_read` ends with an `@@read <mark>` line. Before building
     on the notebook after a pause, call `notebook_read(since: <mark>)`
     to see what others changed. With this plugin's hooks, those changes
     arrive as context when the user writes; work from what is there.
 
 ## Charts
 
-12. Draw charts with Observable Plot or Vega-Lite, and read the image
+13. Draw charts with Observable Plot or Vega-Lite, and read the image
     that comes back before writing the finding. See
     [typescript.md](typescript.md) for cdp-kernel's display API, Polars
     and Plot. An image reaches you only when the server sends images
@@ -74,10 +84,10 @@ Edit.
 
 ## Finish
 
-13. Run `notebook_run_all`. It restarts the kernel and runs every cell;
+14. Run `notebook_run_all`. It restarts the kernel and runs every cell;
     fix anything that fails, or say plainly why it can't reproduce.
-14. Add a Markdown summary after the title (`cell_add(after: <title
+15. Add a Markdown summary after the title (`cell_add(after: <title
     cell id>)`): the findings as a short numbered list, and what is
     still open.
-15. For a longer journal, ask the `journal-reviewer` agent to read it
+16. For a longer journal, ask the `journal-reviewer` agent to read it
     cold, and fix the gaps it finds.

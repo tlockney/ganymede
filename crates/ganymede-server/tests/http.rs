@@ -4349,6 +4349,17 @@ fn mcp_text(v: &Value) -> String {
 async fn mcp_journals_into_a_notebook() {
     let dir = tempfile::tempdir().unwrap();
     let mut st = state(dir.path());
+    let notary = Arc::new(ganymede_contents::Notary::ephemeral().unwrap());
+    st.contents = Arc::new(
+        FsContents::new(
+            dir.path(),
+            FsOptions {
+                notary: Some(notary.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap(),
+    );
     let app_off = build_router(st.clone());
     let (s, _, _) = mcp_call(&app_off, None, json!({})).await;
     assert_eq!(s, StatusCode::NOT_FOUND, "/mcp is off by default");
@@ -4495,6 +4506,9 @@ async fn mcp_journals_into_a_notebook() {
     assert_eq!(cells[2]["execution_count"], 1);
     assert_eq!(cells[3]["execution_count"], 2);
     assert_eq!(nb["metadata"]["kernelspec"]["name"], "fake");
+    // Its outputs came from runs on this server, so it is signed and
+    // opens trusted: HTML and SVG outputs render in full.
+    assert!(notary.check_signature(&nb), "journal signed");
 }
 
 /// An initialized MCP session on `app`.
@@ -4541,6 +4555,87 @@ fn mcp_app(dir: &std::path::Path) -> axum::Router {
         },
     )));
     build_router(st)
+}
+
+/// `keep_outputs: false` records the code but leaves its outputs out of
+/// the notebook, and they stay out when the cell runs again, until
+/// `cell_clear_outputs(keep: true)`.
+#[tokio::test]
+async fn mcp_keep_outputs_false_leaves_outputs_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = mcp_app(dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    let call = |name: &'static str, args: Value| {
+        let (app, sid) = (app.clone(), sid.clone());
+        async move { mcp_text(&mcp_tool(&app, &sid, name, args).await) }
+    };
+    call("notebook_open", json!({"path": "t.ipynb"})).await;
+    let out = call(
+        "cell_run",
+        json!({"source": "secret", "keep_outputs": false}),
+    )
+    .await;
+    assert!(
+        out.contains("secret") && out.contains("left out of the notebook"),
+        "{out}"
+    );
+    let id = out
+        .split("\"id\":\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .expect("cell id")
+        .to_string();
+    let outputs = |read: &str| read.matches("@@output").count();
+    let read = call("notebook_read", json!({})).await;
+    assert!(read.contains("secret") && outputs(&read) == 0, "{read}");
+
+    // Run again: the agent sees the outputs, the notebook doesn't keep them.
+    let out = call("notebook_run_all", json!({})).await;
+    assert!(out.contains(&format!("Outputs of {id} left out")), "{out}");
+    assert_eq!(outputs(&call("notebook_read", json!({})).await), 0);
+    let out = call(
+        "cell_edit",
+        json!({"id": id, "source": "again", "run": true}),
+    )
+    .await;
+    assert!(out.contains("again") && out.contains("left out"), "{out}");
+    assert_eq!(outputs(&call("notebook_read", json!({})).await), 0);
+
+    // Kept again from the next run.
+    call("cell_clear_outputs", json!({"id": id, "keep": true})).await;
+    let out = call(
+        "cell_edit",
+        json!({"id": id, "source": "kept", "run": true}),
+    )
+    .await;
+    assert!(!out.contains("left out"), "{out}");
+    assert!(outputs(&call("notebook_read", json!({})).await) > 0);
+
+    // Clearing after the fact.
+    call("cell_clear_outputs", json!({"id": id})).await;
+    assert_eq!(outputs(&call("notebook_read", json!({})).await), 0);
+    let file = dir.path().join("t.ipynb");
+    let cell = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(s) = std::fs::read_to_string(&file) {
+                let nb: Value = serde_json::from_str(&s).unwrap();
+                let cell = nb["cells"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|c| c["id"] == id.as_str());
+                if let Some(c) = cell.filter(|c| c["metadata"]["ganymede"]["outputs"] == "dropped")
+                {
+                    return c.clone();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("saved");
+    assert_eq!(cell["outputs"], json!([]));
+    assert_eq!(cell["source"], json!(["kept"]));
 }
 
 /// A scratch run that times out interrupts the kernel, so the next run
