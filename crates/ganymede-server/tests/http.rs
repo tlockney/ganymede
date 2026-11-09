@@ -6010,3 +6010,85 @@ async fn a_second_servers_room_is_read_only_until_the_owner_leaves() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
+
+/// `cell_snapshot` returns a cell as Markdown with its image saved and
+/// sent back, whatever `images` says, and saves into the root on request.
+#[tokio::test]
+async fn mcp_cell_snapshot_saves_images_and_shows_tables() {
+    use base64::Engine as _;
+    let dir = tempfile::tempdir().unwrap();
+    let png = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\n");
+    let nb = json!({"cells": [
+        {"cell_type": "code", "id": "plot", "execution_count": 1, "metadata": {},
+         "source": "Plot.plot()", "outputs": [
+            {"output_type": "display_data", "metadata": {},
+             "data": {"image/png": png, "text/plain": "<Figure>"}}]},
+        {"cell_type": "code", "id": "tbl", "execution_count": 2, "metadata": {},
+         "source": "df", "outputs": [
+            {"output_type": "execute_result", "execution_count": 2, "metadata": {},
+             "data": {"text/html": "<table><tr><th>a</th></tr><tr><td>1</td></tr></table>",
+                      "text/plain": "a\n1"}}]}],
+        "metadata": {"kernelspec": {"name": "x", "display_name": "X", "language": "typescript"}},
+        "nbformat": 4, "nbformat_minor": 5});
+    std::fs::create_dir(dir.path().join("j")).unwrap();
+    std::fs::write(dir.path().join("j/n b.ipynb"), nb.to_string()).unwrap();
+    let app = mcp_app(dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+
+    let v = mcp_tool(
+        &app,
+        &sid,
+        "cell_snapshot",
+        json!({"path": "j/n b.ipynb", "ids": ["plot", "tbl"]}),
+    )
+    .await;
+    let out = mcp_text(&v);
+    assert!(out.contains("```typescript\nPlot.plot()\n```"), "{out}");
+    assert!(out.contains("| a |\n| --- |\n| 1 |"), "{out}");
+    // The link is `](<path>)`, so the space in the name doesn't end it.
+    let start = out.find("](<").expect("image link") + 3;
+    let end = start + out[start..].find(">)").expect("link end");
+    let saved = std::path::PathBuf::from(&out[start..end]);
+    assert!(
+        saved.starts_with(dir.path().join("spill/snapshots")),
+        "{out}"
+    );
+    let name = saved.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(
+        name.starts_with("n b-plot-1-") && name.ends_with(".png"),
+        "{name}"
+    );
+    assert_eq!(std::fs::read(&saved).unwrap(), b"\x89PNG\r\n\x1a\n");
+    let images: Vec<&Value> = v["result"]["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["type"] == "image")
+        .collect();
+    assert_eq!(images.len(), 1, "{v}");
+    assert_eq!(images[0]["data"], png);
+
+    let out = mcp_text(
+        &mcp_tool(
+            &app,
+            &sid,
+            "cell_snapshot",
+            json!({"path": "j/n b.ipynb", "ids": ["plot"], "dir": "j/snapshots", "code": false}),
+        )
+        .await,
+    );
+    assert!(!out.contains("Plot.plot()"), "{out}");
+    assert!(
+        dir.path().join("j/snapshots").join(&name).is_file(),
+        "{out}"
+    );
+
+    let v = mcp_tool(
+        &app,
+        &sid,
+        "cell_snapshot",
+        json!({"path": "j/n b.ipynb", "ids": ["nope"]}),
+    )
+    .await;
+    assert!(v.to_string().contains("no cell nope"), "{v}");
+}

@@ -32,9 +32,9 @@
 //! (see the `marks` module).
 
 mod marks;
+mod snapshot;
 
 use crate::collab::{hold_notebook, notebook_room_id, with_notebook, Hold};
-use crate::svg;
 use crate::AppState;
 use base64::Engine as _;
 use ganymede_api::sessions::KernelRef;
@@ -75,7 +75,8 @@ pub struct McpOptions {
     pub no_execute: bool,
     /// Send images to the model as image content.
     pub images: bool,
-    /// Where long outputs go; the system temp dir when `None`.
+    /// Where long outputs and snapshot images go; `ganymede-mcp-outputs`
+    /// in the Jupyter runtime dir when `None`.
     pub outputs_dir: Option<PathBuf>,
 }
 
@@ -291,6 +292,21 @@ pub struct RunAllArgs {
     /// Restart the kernel first (default true).
     pub restart: Option<bool>,
     pub timeout: Option<u64>,
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SnapshotArgs {
+    /// Cell ids, in the order to show them.
+    pub ids: Vec<String>,
+    /// Save images in this directory under the server root, such as
+    /// `journal/snapshots`, for a report next to the notebook. By default
+    /// they go to a directory outside the root that only you can read.
+    pub dir: Option<String>,
+    /// Include each code cell's source (default true).
+    pub code: Option<bool>,
+    /// Rows to keep of an HTML table (default 20).
+    pub max_rows: Option<usize>,
     pub path: Option<String>,
 }
 
@@ -751,6 +767,109 @@ impl Notebooks {
         text(out)
     }
 
+    #[tool(
+        description = "Snapshot cells as Markdown to show the user: the code in a fenced block, each chart or image saved as a PNG (or its own format) file and linked by path, HTML tables as Markdown tables, other output as text. The images also come back to you as images, whatever the server's image setting, so use this to look at a chart before describing it. Runs nothing."
+    )]
+    async fn cell_snapshot(
+        &self,
+        Parameters(a): Parameters<SnapshotArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if a.ids.is_empty() {
+            return Err(err("ids is empty: name the cells to snapshot"));
+        }
+        let dir = match a.dir.as_deref() {
+            Some(d) => {
+                if self.opts.read_only {
+                    return Err(err(
+                        "can't save into the server root (read-only); leave out dir",
+                    ));
+                }
+                Some(ganymede_contents::normalize_api_path(d))
+            }
+            None => None,
+        };
+        let path = self.path(a.path)?;
+        let nb = self.notebook(&path).await?;
+        let lang = snapshot::language(&nb.metadata);
+        let stem = path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&path)
+            .trim_end_matches(".ipynb")
+            .to_string();
+        let mut parts = Vec::new();
+        for id in &a.ids {
+            let Some((index, cell)) = nb
+                .cells
+                .iter()
+                .enumerate()
+                .find(|(_, c)| c.id() == Some(id.as_str()))
+            else {
+                return Err(err(format!("no cell {id} in {path}")));
+            };
+            let (cell, lang) = (cell.clone(), lang.clone());
+            let (code, max_rows) = (a.code.unwrap_or(true), a.max_rows.unwrap_or(20));
+            // Drawing an SVG is slow work; see `images_off_runtime`.
+            let cell_parts = tokio::task::spawn_blocking(move || {
+                snapshot::cell(index, &cell, &lang, code, max_rows)
+            })
+            .await
+            .map_err(|e| err(e.to_string()))?;
+            parts.push((id.clone(), cell_parts));
+        }
+        let any_image = parts
+            .iter()
+            .any(|(_, ps)| ps.iter().any(|p| matches!(p, snapshot::Part::Image(_))));
+        if let (Some(dir), true) = (&dir, any_image) {
+            self.mkdirs(dir).await?;
+        }
+        let root = self.state.collab.root();
+        let mut out = String::new();
+        let mut blocks = Vec::new();
+        for (id, cell_parts) in parts {
+            let mut n = 0;
+            for part in cell_parts {
+                match part {
+                    snapshot::Part::Markdown(md) => out.push_str(&md),
+                    snapshot::Part::Image(image) => {
+                        n += 1;
+                        let name = snapshot::file_name(&stem, &id, n, &image);
+                        let shown = match &dir {
+                            Some(dir) => {
+                                let file = if dir.is_empty() {
+                                    name
+                                } else {
+                                    format!("{dir}/{name}")
+                                };
+                                self.state
+                                    .contents
+                                    .save(&file, SaveRequest::base64(image.data.clone()))
+                                    .await
+                                    .map_err(|e| err(format!("cannot save {file}: {e}")))?;
+                                match &root {
+                                    Some(r) => r.join(&file).to_string_lossy().into_owned(),
+                                    None => file,
+                                }
+                            }
+                            None => save_snapshot(&self.opts, &name, &image.data)
+                                .map_err(|e| err(format!("cannot save {name}: {e}")))?
+                                .to_string_lossy()
+                                .into_owned(),
+                        };
+                        out.push_str(&format!(
+                            "![Cell `{id}`, image {n}]({})\n",
+                            snapshot::link_destination(&shown)
+                        ));
+                        blocks.push(ContentBlock::image(image.data, image.mime));
+                    }
+                }
+            }
+            out.push('\n');
+        }
+        blocks.insert(0, ContentBlock::text(out));
+        Ok(CallToolResult::success(blocks))
+    }
+
     #[tool(description = "List the kernels that can run notebooks here.")]
     async fn kernelspecs_list(&self) -> Result<CallToolResult, McpError> {
         let specs = self
@@ -825,6 +944,8 @@ Keep a notebook as the record of this analysis while you work, not as a write-up
 - Use `cell_run` with `record: false` for checks that don't belong in the record (peeking at a value, trying a call).
 - When a step happens outside the kernel (a shell command, a file you wrote), add it with `cell_add` and `mode: recorded`.
 - After a result, add a Markdown note with what it shows. Fix a wrong cell with `cell_edit` rather than adding another.
+- Look at a chart before writing what it shows: if `cell_run` returned no image, `cell_snapshot` with the cell's id returns it.
+- To show the user a result, paste what `cell_snapshot` returns for the cells behind it: charts as image files, tables as Markdown, code as a fenced block.
 - A person may edit the notebook while you work. Before building on it again, call `notebook_read` with `since` set to the mark from your last `@@read` line, and work from what they changed.
 - End with a Markdown summary of what was found. `notebook_run_all` checks that the notebook runs top to bottom.";
 
@@ -1225,36 +1346,39 @@ impl Notebooks {
             .collect();
         let nb = json!({"cells": cells, "metadata": metadata, "nbformat": 4, "nbformat_minor": 5});
         // Its directories, as `mkdir -p`.
-        let mut dir = String::new();
-        for part in path
-            .split('/')
-            .collect::<Vec<_>>()
-            .split_last()
-            .map_or(&[][..], |(_, d)| d)
-        {
-            if !dir.is_empty() {
-                dir.push('/');
-            }
-            dir.push_str(part);
-            if self
-                .state
-                .contents
-                .get(&dir, GetOptions::default())
-                .await
-                .is_err()
-            {
-                self.state
-                    .contents
-                    .save(&dir, SaveRequest::directory())
-                    .await
-                    .map_err(|e| err(e.to_string()))?;
-            }
+        if let Some((dir, _)) = path.rsplit_once('/') {
+            self.mkdirs(dir).await?;
         }
         self.state
             .contents
             .save(path, SaveRequest::notebook(nb))
             .await
             .map_err(|e| err(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Make `dir` (an API path) and its parents, as `mkdir -p`.
+    async fn mkdirs(&self, dir: &str) -> Result<(), McpError> {
+        let mut sofar = String::new();
+        for part in dir.split('/').filter(|p| !p.is_empty()) {
+            if !sofar.is_empty() {
+                sofar.push('/');
+            }
+            sofar.push_str(part);
+            if self
+                .state
+                .contents
+                .get(&sofar, GetOptions::default())
+                .await
+                .is_err()
+            {
+                self.state
+                    .contents
+                    .save(&sofar, SaveRequest::directory())
+                    .await
+                    .map_err(|e| err(e.to_string()))?;
+            }
+        }
         Ok(())
     }
 
@@ -1635,14 +1759,21 @@ fn render_outputs(opts: &McpOptions, outputs: &[Output]) -> String {
                 v["text"].as_str().unwrap_or_default().to_string()
             }
             "error" => {
-                head["ename"] = v["ename"].clone();
-                head["evalue"] = v["evalue"].clone();
+                // The message can carry colours too, as cdp-kernel's
+                // `util.inspect` of a thrown non-Error does (#614).
+                let plain = |k: &str| {
+                    json!(ganymede_nbformat::strip_ansi(
+                        v[k].as_str().unwrap_or_default()
+                    ))
+                };
+                head["ename"] = plain("ename");
+                head["evalue"] = plain("evalue");
                 let frames: Vec<String> = v["traceback"]
                     .as_array()
                     .map(|t| {
                         t.iter()
                             .filter_map(Value::as_str)
-                            .map(ganymede_nbformat::strip_ansi)
+                            .map(str::to_string)
                             .collect()
                     })
                     .unwrap_or_default();
@@ -1696,6 +1827,15 @@ fn render_outputs(opts: &McpOptions, outputs: &[Output]) -> String {
 /// under the Jupyter runtime dir, not the shared temp dir. The file is
 /// always written, never trusted because it exists.
 fn spill(opts: &McpOptions, body: &str) -> std::io::Result<PathBuf> {
+    let dir = outputs_dir(opts)?;
+    let name = hex::encode(sha2::Sha256::digest(body.as_bytes()));
+    let path = dir.join(format!("{name}.txt"));
+    std::fs::write(&path, body)?;
+    Ok(path)
+}
+
+/// The outputs directory, made readable only by this user.
+fn outputs_dir(opts: &McpOptions) -> std::io::Result<PathBuf> {
     let dir = opts.outputs_dir.clone().unwrap_or_else(|| {
         ganymede_kernel_host::kernelspec::jupyter_runtime_dir().join("ganymede-mcp-outputs")
     });
@@ -1704,9 +1844,19 @@ fn spill(opts: &McpOptions, body: &str) -> std::io::Result<PathBuf> {
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
     builder.create(&dir)?;
-    let name = hex::encode(sha2::Sha256::digest(body.as_bytes()));
-    let path = dir.join(format!("{name}.txt"));
-    std::fs::write(&path, body)?;
+    Ok(dir)
+}
+
+/// Save a snapshot image (base64 `data`) as `name` in the private outputs
+/// directory's `snapshots`, as [`spill`] does for long text.
+fn save_snapshot(opts: &McpOptions, name: &str, data: &str) -> std::io::Result<PathBuf> {
+    let dir = outputs_dir(opts)?.join("snapshots");
+    std::fs::create_dir_all(&dir)?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let path = dir.join(name);
+    std::fs::write(&path, bytes)?;
     Ok(path)
 }
 
@@ -1773,27 +1923,14 @@ async fn images_off_runtime(outputs: Vec<Output>) -> Vec<ContentBlock> {
 /// as a PNG when the output has no raster image of its own. An SVG that
 /// can't be drawn adds nothing; the text reply still names it.
 fn images(outputs: &[Output]) -> Vec<ContentBlock> {
-    let b64 = &base64::engine::general_purpose::STANDARD;
-    let mut blocks = Vec::new();
-    for o in outputs {
-        let v = serde_json::to_value(o).unwrap_or_default();
-        let before = blocks.len();
-        for mime in ["image/png", "image/jpeg", "image/gif", "image/webp"] {
-            if let Some(data) = v["data"][mime].as_str() {
-                let clean: String = data.chars().filter(|c| !c.is_whitespace()).collect();
-                if b64.decode(&clean).is_ok() {
-                    blocks.push(ContentBlock::image(clean, mime));
-                }
-            }
-        }
-        if blocks.len() == before {
-            if let Some(png) = svg_source(&v["data"]["image/svg+xml"]).and_then(|s| svg::to_png(&s))
-            {
-                blocks.push(ContentBlock::image(b64.encode(png), "image/png"));
-            }
-        }
-    }
-    blocks
+    outputs
+        .iter()
+        .filter_map(|o| {
+            let v = serde_json::to_value(o).unwrap_or_default();
+            snapshot::image(&v["data"])
+        })
+        .map(|i| ContentBlock::image(i.data, i.mime))
+        .collect()
 }
 
 /// An SVG mime bundle value: one string, or lines as nbformat stores them.
@@ -1815,12 +1952,15 @@ mod tests {
             {"output_type": "stream", "name": "stdout", "text": "\u{1b}[1mbold\u{1b}[22m\n"},
             {"output_type": "execute_result", "execution_count": 1, "metadata": {},
              "data": {"text/plain": "[ \u{1b}[32m'day'\u{1b}[39m, \u{1b}[33m3\u{1b}[39m ]"}},
+            {"output_type": "error", "ename": "Uncaught", "traceback": [],
+             "evalue": "{ code: \u{1b}[33m1\u{1b}[39m }"},
         ]))
         .unwrap();
         let s = render_outputs(&McpOptions::default(), &outputs);
         assert!(!s.contains('\u{1b}'), "{s}");
         assert!(s.contains("bold\n"), "{s}");
         assert!(s.contains("[ 'day', 3 ]"), "{s}");
+        assert!(s.contains(r#""evalue":"{ code: 1 }""#), "{s}");
     }
 
     #[test]

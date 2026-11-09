@@ -79,20 +79,33 @@ Edit.
 
 ## Charts
 
-13. Draw charts with Observable Plot or Vega-Lite, and read the image
-    that comes back before writing the finding. See
-    [typescript.md](typescript.md) for cdp-kernel's display API, Polars
-    and Plot. An image reaches you only when the server sends images
-    (`ganymede mcp --images`, or `mcp_images = true` on a shared
-    server); without it, say what the chart is meant to show and check
-    the numbers in a table instead.
+13. Draw charts with Observable Plot or Vega-Lite, and look at the
+    chart before writing the finding: a chart can show what the table
+    you checked doesn't, such as a trend at the end of a series. When
+    the reply to `cell_run` has no image (the server doesn't send them),
+    call `cell_snapshot(ids: [<the cell id>], code: false)`, which always
+    returns the image. See [typescript.md](typescript.md) for
+    cdp-kernel's display API, Polars and Plot. `cell_snapshot` needs a
+    Ganymede newer than 0.7.0; without it, say what the chart is meant
+    to show and check the numbers in a table instead.
+
+## Show the user
+
+14. When you tell the user a finding, show the evidence in your reply,
+    not only the notebook path: call `cell_snapshot` on the cells behind
+    it and paste the Markdown it returns. It gives the chart as an image
+    file linked by path, a table as a Markdown table, and the code as a
+    fenced block. Pick the one or two cells that carry the point; leave
+    out the code (`code: false`) unless the user asked how. For a
+    report next to the notebook, pass `dir: "journal/snapshots"` so
+    the images are saved under the project.
 
 ## Finish
 
-14. Run `notebook_run_all`. It restarts the kernel and runs every cell;
+15. Run `notebook_run_all`. It restarts the kernel and runs every cell;
     fix anything that fails, or say plainly why it can't reproduce.
-15. Add a Markdown summary after the title (`cell_add(after: <title
+16. Add a Markdown summary after the title (`cell_add(after: <title
     cell id>)`): the findings as a short numbered list, and what is
     still open.
-16. For a longer journal, ask the `journal-reviewer` agent to read it
+17. For a longer journal, ask the `journal-reviewer` agent to read it
     cold, and fix the gaps it finds.
