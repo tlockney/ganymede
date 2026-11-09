@@ -6,7 +6,8 @@
 
 Ganymede is local-first. Your notebooks, files and kernel output stay on
 your machine, and Ganymede sends no telemetry. Crash reporting is the
-only exception, and it is off by default everywhere.
+only exception, and it is off by default everywhere. (The Mac app's
+update check, below, fetches a file and reports nothing.)
 
 Features you set up yourself do talk to other machines: a remote kernel
 gateway (`--gateway-url`) gets the code you run and returns its output,
@@ -20,10 +21,11 @@ GitHub, and an agent you connect over MCP sees what its tools return.
 The Mac app checks for a newer release once a day, on by default: it
 downloads the release feed from GitHub
 (`github.com/tlockney/ganymede-ui/releases/latest/download/appcast.xml`)
-and sends nothing about you, your Mac or your notebooks beyond that
-request. An update downloads only when you install it, unless you turn
-on automatic installs. Settings > General in the app turns the check
-off.
+and sends nothing about you, your Mac or your notebooks. The request
+itself carries your IP address and the app's version, in its User-Agent,
+as any download does. An update downloads only when you install it,
+unless you turn on automatic installs. Settings > General in the app
+turns the check off.
 
 ## What crash reporting is for
 
