@@ -173,6 +173,7 @@ impl SessionManager {
             }
             self.sessions.write().unwrap().remove(&existing.id);
         }
+        let name = req.name.unwrap_or_else(|| basename(&req.path));
         let kernel_id = match req.kernel.id {
             Some(id) => {
                 self.kernels.get(&id)?;
@@ -180,14 +181,18 @@ impl SessionManager {
             }
             None => {
                 self.kernels
-                    .start(req.kernel.name.as_deref(), Some(kernel_path(&req.path)))
+                    .start_for_session(
+                        req.kernel.name.as_deref(),
+                        Some(kernel_path(&req.path)),
+                        Some(self.kernels.session_name(&req.path, &name)),
+                    )
                     .await?
                     .id
             }
         };
         let s = Session {
             id: uuid::Uuid::new_v4().to_string(),
-            name: req.name.unwrap_or_else(|| basename(&req.path)),
+            name,
             type_: req.type_.unwrap_or_else(|| "notebook".into()),
             path: req.path,
             kernel_id,
@@ -214,6 +219,7 @@ impl SessionManager {
         let path = current()?.path;
         let changing = PathGuard::lock(&self.path_locks, &path).await;
         let mut s = current()?;
+        let renamed = patch.path.is_some() || patch.name.is_some();
         if let Some(p) = patch.path {
             s.path = p;
         }
@@ -234,7 +240,11 @@ impl SessionManager {
                 (None, Some(name)) => {
                     started = true;
                     self.kernels
-                        .start(Some(&name), Some(kernel_path(&s.path)))
+                        .start_for_session(
+                            Some(&name),
+                            Some(kernel_path(&s.path)),
+                            Some(self.kernels.session_name(&s.path, &s.name)),
+                        )
                         .await?
                         .id
                 }
@@ -253,6 +263,12 @@ impl SessionManager {
             }
             None => false,
         };
+        if kept && renamed && !started {
+            // Takes effect on the kernel's next restart, as in jupyter_server.
+            let _ = self
+                .kernels
+                .set_session_name(&s.kernel_id, self.kernels.session_name(&s.path, &s.name));
+        }
         drop(changing);
         if !kept {
             if started {
@@ -430,6 +446,89 @@ mod tests {
                 Some(r.clone()),
                 Some(r),
             ]
+        );
+    }
+
+    /// Records the `JPY_SESSION_NAME` each launch passes, if any.
+    #[derive(Default)]
+    struct EnvProvisioner(Mutex<Vec<Option<String>>>);
+    #[async_trait]
+    impl Provisioner for EnvProvisioner {
+        async fn launch(
+            &self,
+            spec: &Kernelspec,
+            opts: LaunchOptions,
+        ) -> ganymede_kernel_host::Result<LaunchedKernel> {
+            let name = opts
+                .env
+                .iter()
+                .find(|(k, _)| k == "JPY_SESSION_NAME")
+                .map(|(_, v)| v.clone());
+            self.0.lock().unwrap().push(name);
+            FakeProvisioner.launch(spec, opts).await
+        }
+    }
+
+    /// A session's kernel gets the notebook's OS path in
+    /// `JPY_SESSION_NAME`, as under jupyter_server; a rename applies on the
+    /// next restart; a kernel without a session keeps the host's default.
+    #[tokio::test]
+    async fn session_kernels_get_the_notebook_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("nb")).unwrap();
+        std::fs::write(root.join("nb/x.ipynb"), "{}").unwrap();
+        let provisioner = Arc::new(EnvProvisioner::default());
+        let m = Arc::new(KernelManager::new(
+            Arc::new(StaticKernelspecs(vec![
+                fake_spec("fake"),
+                fake_spec("other"),
+            ])),
+            provisioner.clone(),
+            Arc::new(FakeTransports::default()),
+            KernelManagerConfig {
+                startup_timeout: Duration::from_secs(5),
+                root_dir: root.clone(),
+                ..Default::default()
+            },
+        ));
+        let sm = SessionManager::new(m.clone());
+        let s = sm
+            .create(SessionCreate {
+                path: "nb/x.ipynb".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        m.wait_started(&s.kernel.id).await.unwrap();
+        sm.update(
+            &s.id,
+            SessionPatch {
+                path: Some("y.ipynb".into()),
+                name: Some("y.ipynb".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        m.restart(&s.kernel.id).await.unwrap();
+        sm.update(
+            &s.id,
+            SessionPatch {
+                kernel: Some(KernelRef {
+                    name: Some("other".into()),
+                    id: None,
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        started(&m, None, None).await.unwrap();
+        let path = |p: &str| Some(root.join(p).to_string_lossy().into_owned());
+        assert_eq!(
+            *provisioner.0.lock().unwrap(),
+            [path("nb/x.ipynb"), path("y.ipynb"), path("y.ipynb"), None]
         );
     }
 
