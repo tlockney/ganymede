@@ -50,7 +50,7 @@ machine with no Python or Jupyter, then
 ## Quick start
 
 ```sh
-curl -fsSL https://ganymede-server.com/install.sh | sh   # ganymede, plus cdp-kernel if Node 24+ is there
+curl -fsSL https://ganymede-server.com/install.sh | sh   # ganymede, plus cdp-kernel if Node 22.18+ is there
 ganymede lab install                                     # JupyterLab's frontend, from PyPI, without Python
 ganymede lab                                             # opens JupyterLab in the browser
 ```
@@ -64,7 +64,7 @@ and macOS are tested end to end; the Windows build is untested and best
 effort ([Known gaps](docs/known-gaps.md#platforms)). The
 script above downloads the latest, checks its SHA-256, installs
 `ganymede` into `~/.local/bin`, and installs
-[cdp-kernel](https://cdp-kernel.org) if Node 24 or later is there. Pass
+[cdp-kernel](https://cdp-kernel.org) if Node 22.18 or later is there. Pass
 options after `sh -s --`: `--version 0.1.0` pins a release, `--bin-dir
 DIR` installs elsewhere, `--no-kernel` skips cdp-kernel. To build from
 source: `cargo install --path crates/ganymede-cli`.

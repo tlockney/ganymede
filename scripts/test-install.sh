@@ -3,7 +3,7 @@
 # packaged the way release.yml packages the real one, served over file://.
 # Usage: scripts/test-install.sh [shell]   (default sh; CI also runs bash and dash)
 # With TEST_KERNEL=1 it also installs cdp-kernel through the script, which
-# needs Node 24+ and npm (CI only; it changes the global npm packages).
+# needs Node 22.18+ and npm (CI only; it changes the global npm packages).
 # CDP_KERNEL_VERSION pins the cdp-kernel it installs, as CI does.
 
 set -eu
@@ -107,7 +107,7 @@ if "$sh" "$script" --main --version "$version" --bin-dir "$work/binm2" --no-kern
 fi
 grep -q "not both" "$work/err" || fail "--main --version message: $(cat "$work/err")"
 
-# Without Node 24 the kernel step is skipped with instructions, not an error.
+# Without Node the kernel step is skipped with instructions, not an error.
 PATH=/nonexistent:/usr/bin:/bin "$sh" "$script" --version "$version" --bin-dir "$work/bin5" >"$work/out" 2>&1 ||
 	fail "kernel step without node: $(cat "$work/out")"
 grep -q "npm install -g @tlockney/cdp-kernel" "$work/out" || fail "kernel hint: $(cat "$work/out")"
@@ -134,6 +134,30 @@ grep -q "cdp-kernel install failed" "$work/out" || fail "kernel failure message:
 PATH=$work/kok:$PATH "$sh" "$script" --version "$version" --bin-dir "$work/bin8" >"$work/out" 2>&1 ||
 	fail "stub kernel install: $(cat "$work/out")"
 grep -q "Installed cdp-kernel 1.2.3" "$work/out" || fail "kernel version: $(cat "$work/out")"
+
+# cdp-kernel's floor is Node 22.18: 22.18 and later get the kernel, and
+# anything older gets the upgrade hint and no kernel, without an error.
+n=0
+for v in 22.18.0 22.23.4 23.0.0 26.1.0; do
+	n=$((n + 1))
+	stub "$work/new$n" node "echo $v"
+	stub "$work/new$n" npm 'exit 0'
+	stub "$work/new$n" cdp-kernel 'echo 1.2.3'
+	PATH=$work/new$n:$PATH "$sh" "$script" --version "$version" --bin-dir "$work/binnew$n" >"$work/out" 2>&1 ||
+		fail "kernel install on Node $v: $(cat "$work/out")"
+	grep -q "Installed cdp-kernel 1.2.3" "$work/out" || fail "no kernel on Node $v: $(cat "$work/out")"
+done
+n=0
+for v in 22.17.1 20.19.5 18.20.8; do
+	n=$((n + 1))
+	stub "$work/old$n" node "echo $v"
+	stub "$work/old$n" npm 'echo "npm ran" >&2; exit 1'
+	PATH=$work/old$n:$PATH "$sh" "$script" --version "$version" --bin-dir "$work/binold$n" >"$work/out" 2>&1 ||
+		fail "old Node $v failed the script: $(cat "$work/out")"
+	grep -q "cdp-kernel needs Node 22.18 or later; found $v" "$work/out" || fail "old Node $v message: $(cat "$work/out")"
+	if grep -q "npm ran\|Installing cdp-kernel" "$work/out"; then fail "ran npm on Node $v: $(cat "$work/out")"; fi
+	[ -x "$work/binold$n/ganymede" ] || fail "binary missing on Node $v"
+done
 
 # On Linux, musl and glibc older than 2.35 are refused before downloading.
 if [ "$(uname -s)" = Linux ]; then

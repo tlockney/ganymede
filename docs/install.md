@@ -51,8 +51,8 @@ curl -fsSL https://ganymede-server.com/install.sh | sh
 ```
 
 The script downloads the latest release for your platform, checks its
-SHA-256, and installs `ganymede` into `~/.local/bin`. If Node 24 or later
-is already installed, it also does step 2. If `~/.local/bin` isn't on your
+SHA-256, and installs `ganymede` into `~/.local/bin`. If Node 22.18 or
+later is already installed, it also does step 2. If `~/.local/bin` isn't on your
 `PATH`, it prints the line to add to your shell profile.
 [Install script options](#install-script-options) lists its flags, and
 [By hand](#by-hand) has the same steps without it.
@@ -67,13 +67,13 @@ ganymede run -k fake 'hello'     # prints "echo: hello" and "HELLO"
 ## 2. Install Node and cdp-kernel
 
 [cdp-kernel](https://cdp-kernel.org) is the kernel that runs TypeScript
-cells. It needs Node 24 or later. Check what you have:
+cells. It needs Node 22.18 or later. Check what you have:
 
 ```sh
 node --version
 ```
 
-If that fails or prints a version below 24, install Node from
+If that fails or prints a version below 22.18, install Node from
 [nodejs.org](https://nodejs.org/en/download), which also lists package
 managers and version managers (nvm, fnm, and others). Then install the
 kernel and register it:
@@ -236,7 +236,7 @@ command line.
 
 The steps above put files in these places:
 
-![What the install puts where. The ganymede binary goes in ~/.local/bin. It finds kernels in the Jupyter data dir (~/.local/share/jupyter, or ~/Library/Jupyter on macOS), where cdp-kernel install writes kernels/cdp-node/kernel.json and where notebook signatures are kept; that kernel.json's argv starts cdp-kernel, installed with npm on Node 24 or later. ganymede lab install puts JupyterLab and its extensions in Ganymede's data dir. The Jupyter config dir, ~/.jupyter, holds an optional ganymede.toml and JupyterLab's settings and workspaces, and the runtime dir holds each running kernel's connection file and the cookie secret.](images/architecture/install.svg)
+![What the install puts where. The ganymede binary goes in ~/.local/bin. It finds kernels in the Jupyter data dir (~/.local/share/jupyter, or ~/Library/Jupyter on macOS), where cdp-kernel install writes kernels/cdp-node/kernel.json and where notebook signatures are kept; that kernel.json's argv starts cdp-kernel, installed with npm on Node 22.18 or later. ganymede lab install puts JupyterLab and its extensions in Ganymede's data dir. The Jupyter config dir, ~/.jupyter, holds an optional ganymede.toml and JupyterLab's settings and workspaces, and the runtime dir holds each running kernel's connection file and the cookie secret.](images/architecture/install.svg)
 
 To update Ganymede, run the install command from step 1 again; it replaces
 the binary in place. To update cdp-kernel, rerun step 2's `npm install -g`
