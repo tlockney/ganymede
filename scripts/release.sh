@@ -53,6 +53,12 @@ prepare() {
   cargo release --workspace "$@"
   $execute || exit 0
 
+  # e2e/wasm-smoke is its own workspace, so cargo-release leaves its
+  # lockfile naming the old version of each crate, and CI builds it
+  # --locked (#636). --workspace changes nothing else in the lockfile.
+  cargo update --quiet --workspace --manifest-path e2e/wasm-smoke/Cargo.toml
+  git commit --quiet --amend --no-edit e2e/wasm-smoke/Cargo.lock
+
   version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
   branch="release/v$version"
   if git show-ref --quiet --verify "refs/heads/$branch" ||

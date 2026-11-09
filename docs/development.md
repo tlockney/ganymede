@@ -66,9 +66,14 @@ These variables make the end-to-end tests strict or add to them:
   offline: the port fallback, and the printed URL logging in at `/lab`.
 - [`e2e/wasm-smoke/`](../e2e/wasm-smoke/): the engine built for
   `wasm32-wasip1`, running a notebook on the fake kernel under Node's WASI.
+  It is its own workspace with its own `Cargo.lock`, which CI builds
+  `--locked`. When a change to the engine's dependencies makes that
+  lockfile stale, refresh it:
+  `cargo update --manifest-path e2e/wasm-smoke/Cargo.toml --workspace`.
 
 CI runs the e2e job on Linux and macOS with Node 24, cdp-kernel 0.9.0,
-and ipykernel, plus a portability job for iOS, Android, and wasm. Its
+and ipykernel, plus a portability job for iOS, Android, and wasm, where
+a compiler warning fails the build. Its
 `workstation` job follows [Install](install.md) on Linux and macOS
 with Python hidden from `PATH`
 ([`scripts/test-workstation.sh`](../scripts/test-workstation.sh)): the PR's

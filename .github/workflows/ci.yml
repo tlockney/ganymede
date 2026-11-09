@@ -351,11 +351,15 @@ jobs:
 
   # Targets the desktop CI cannot run: the core libraries must build for
   # iOS, Android, and wasm, and the engine must run a notebook inside wasm.
+  # A warning fails the job: clippy runs for the desktop targets only, so
+  # nothing else sees one that appears only here (#636).
   portability:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -386,10 +390,18 @@ jobs:
         run: cargo test -p ganymede-ffi --no-default-features --features gateway
       - name: Core libraries for browser wasm
         run: cargo check -p ganymede-engine -p ganymede-api -p ganymede-contents --no-default-features --target wasm32-unknown-unknown
+      # e2e/wasm-smoke is its own workspace with its own tracked lockfile,
+      # which no other build reads. --locked fails the job when it is
+      # stale: a workspace crate it depends on changed version (every
+      # release) or dependencies (#636).
       - name: Engine runs a notebook under WASI
         working-directory: e2e/wasm-smoke
         run: |
-          cargo build --release --target wasm32-wasip1
+          if ! cargo metadata --locked --format-version 1 > /dev/null; then
+            echo "::error file=e2e/wasm-smoke/Cargo.lock::e2e/wasm-smoke/Cargo.lock is out of date. Run: cargo update --manifest-path e2e/wasm-smoke/Cargo.toml --workspace"
+            exit 1
+          fi
+          cargo build --release --locked --target wasm32-wasip1
           node run.mjs target/wasm32-wasip1/release/ganymede-wasm-smoke.wasm > out.ipynb
           grep -q '"ONE"' out.ipynb
 
