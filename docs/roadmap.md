@@ -64,7 +64,7 @@ pull request with a GitHub issue, and records what it learned in the
   live notebook as a `yrs` document, reloads it when the file changes on
   disk, merges outside changes cell by cell, and runs cells into it
   through the execute endpoint
-  ([Document model and collaboration](protocol.md#document-model-and-collaboration)).
+  ([Live editing and document rooms](rooms.md)).
 - **Agents.** `ganymede mcp` gives coding agents notebook tools, and the
   ganymede-journal plugin for Claude Code keeps an analysis as a notebook
   while the agent works ([Agents over MCP](mcp.md)).
