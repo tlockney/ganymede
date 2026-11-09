@@ -9,13 +9,21 @@ text fallback showed nothing.
 A room saves through the contents manager like a frontend, and the
 contents manager signs only when every code cell arrives marked
 `trusted`. The room never marked any. Now it marks each code cell
-trusted unless its outputs are among those it read from an unsigned
-file, at load or when it merged a file change in. The room keeps those
-as a set of serialized output lists, not cell ids, because a 4.4
-notebook's cell ids are made up when the room opens it, and matching by
-content fails closed: outputs identical to an untrusted file's stay
-untrusted wherever they move. The set only empties when a save signs
-the file.
+trusted unless it holds outputs the room read from an unsigned file, at
+load or when it merged a file change in. The room keeps, per room cell
+id, digests of those outputs; a run through the execute path (which MCP
+uses) drops the cell's entry, so rerunning an old journal repairs it
+even when the outputs come out the same. Trusting the file with the
+room open (`ganymede trust`, a frontend's Trust) is seen at the next
+save, which finds the file signed and forgets the entries.
+
+The first version keyed by serialized output text and failed open: the
+room gives output objects back with their keys in another order (Yjs
+maps are hash maps), so nothing matched and untrusted HTML got signed.
+Digests now hash a canonical form (keys sorted) of the outputs as the
+room holds them, with the file passed through a throwaway room first so
+numbers match too. Matching per output, not per list, keeps a cell
+untrusted when someone removes only one of its outputs.
 
 Outputs a client writes into the room count as trusted, as they would if
 that client saved through `PUT /api/contents` with its cells marked

@@ -4509,6 +4509,30 @@ async fn mcp_journals_into_a_notebook() {
     // Its outputs came from runs on this server, so it is signed and
     // opens trusted: HTML and SVG outputs render in full.
     assert!(notary.check_signature(&nb), "journal signed");
+
+    // An unsigned copy (a note changed, outputs the same) stays unsigned
+    // until its cells run here, even when the run gives the same outputs.
+    let mut copy = nb.clone();
+    copy["cells"][1]["source"] = json!("Copied.");
+    let copy_file = dir.path().join("copy.ipynb");
+    std::fs::write(&copy_file, copy.to_string()).unwrap();
+    assert!(!notary.check_signature(&copy));
+    tool("notebook_open", json!({"path": "copy.ipynb"})).await;
+    tool("notebook_run_all", json!({})).await;
+    tool("cell_add", json!({"source": "Rerun."})).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(s) = std::fs::read_to_string(&copy_file) {
+                let v: Value = serde_json::from_str(&s).unwrap();
+                if s.contains("Rerun.") && notary.check_signature(&v) {
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the rerun copy is signed");
 }
 
 /// An initialized MCP session on `app`.

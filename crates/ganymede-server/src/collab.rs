@@ -918,10 +918,45 @@ struct Disk {
     last_modified: String,
     /// The notebook as last read or written: the base of a merge.
     base: Notebook,
-    /// Outputs read from a file nobody signed, as [`outputs_key`]s. A
-    /// cell whose outputs are one of these stays untrusted; any other
-    /// outputs came from a run here or a signed file (#597).
-    untrusted: HashSet<String>,
+    /// The file as last read, when nobody had signed it;
+    /// [`Disk::track`] hands its outputs to the room's cells.
+    read_untrusted: Option<Notebook>,
+    /// Per room cell id, the digests of outputs it holds from a file
+    /// nobody signed (#597). A cell with one of them is untrusted until a
+    /// run here writes its outputs, or someone trusts the file. Other
+    /// outputs came from a run here or a signed file.
+    untrusted: HashMap<String, HashSet<String>>,
+}
+
+impl Disk {
+    /// Note which of the room's cells hold outputs from the file as last
+    /// read, when it was unsigned. By content, not cell id: a 4.4
+    /// notebook's ids are made up when the room opens it.
+    fn track(&mut self, room: &Room) {
+        let Some(file) = self.read_untrusted.take() else {
+            return;
+        };
+        // The file's outputs as the room holds them: through Yjs, which
+        // changes numbers and key order, so the digests can match.
+        let read: HashSet<String> = match Room::notebook_room(&file, "").notebook_with_ids() {
+            Some(Ok(nb)) => cell_digests(&nb).into_iter().flat_map(|(_, d)| d).collect(),
+            _ => return,
+        };
+        let Some(Ok(nb)) = room.notebook_with_ids() else {
+            return;
+        };
+        for (id, digests) in cell_digests(&nb) {
+            let held: HashSet<String> = digests.intersection(&read).cloned().collect();
+            if !held.is_empty() {
+                self.untrusted.entry(id).or_default().extend(held);
+            }
+        }
+    }
+
+    /// A run here wrote cell `id`'s outputs: they are trusted.
+    fn ran(&mut self, id: &str) {
+        self.untrusted.remove(id);
+    }
 }
 
 /// Why a notebook didn't load.
@@ -962,11 +997,7 @@ async fn load(contents: &dyn Contents, path: &str) -> Result<(Notebook, Disk), L
         missing: false,
         message: e.to_string(),
     })?;
-    let untrusted = if signed {
-        HashSet::new()
-    } else {
-        untrusted_outputs(&nb)
-    };
+    let read_untrusted = (!signed).then(|| nb.clone());
     Ok((
         nb.clone(),
         Disk {
@@ -974,7 +1005,8 @@ async fn load(contents: &dyn Contents, path: &str) -> Result<(Notebook, Disk), L
             hash: model.hash.unwrap_or_default(),
             last_modified: model.last_modified,
             base: nb,
-            untrusted,
+            read_untrusted,
+            untrusted: HashMap::new(),
         },
     ))
 }
@@ -991,39 +1023,101 @@ fn is_signed(content: &Value) -> bool {
     })
 }
 
-/// A code cell's outputs as a set key: their JSON as the notebook
-/// serializes them.
-fn outputs_key(cell: &Value) -> Option<String> {
-    let outputs = cell.get("outputs")?.as_array()?;
-    (!outputs.is_empty()).then(|| Value::Array(outputs.clone()).to_string())
+/// A digest of one output: its JSON with every object's keys sorted,
+/// since the room gives them back in no set order.
+fn output_digest(output: &Value) -> String {
+    use sha2::Digest as _;
+    fn canonical(v: &Value, out: &mut String) {
+        match v {
+            Value::Object(m) => {
+                let mut keys: Vec<&String> = m.keys().collect();
+                keys.sort();
+                out.push('{');
+                for (i, k) in keys.into_iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&Value::String(k.clone()).to_string());
+                    out.push(':');
+                    canonical(&m[k], out);
+                }
+                out.push('}');
+            }
+            Value::Array(a) => {
+                out.push('[');
+                for (i, x) in a.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    canonical(x, out);
+                }
+                out.push(']');
+            }
+            other => out.push_str(&other.to_string()),
+        }
+    }
+    let mut text = String::new();
+    canonical(output, &mut text);
+    hex::encode(sha2::Sha256::digest(text.as_bytes()))
 }
 
-/// The outputs of `nb`'s code cells, as [`outputs_key`]s.
-fn untrusted_outputs(nb: &Notebook) -> HashSet<String> {
+/// Each code cell's id with the digests of its outputs.
+fn cell_digests(nb: &Notebook) -> Vec<(String, HashSet<String>)> {
     let value = serde_json::to_value(nb).expect("a notebook serializes");
     value["cells"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|c| c["cell_type"] == "code")
-        .filter_map(outputs_key)
+        .map(|c| {
+            let id = c["id"].as_str().unwrap_or_default().to_string();
+            let digests = c["outputs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(output_digest)
+                .collect();
+            (id, digests)
+        })
         .collect()
 }
 
-/// Mark each code cell of `content` trusted unless its outputs are among
-/// `untrusted`, so the contents manager signs the notebook when every
-/// cell is (jupyter_server's `check_and_sign`). Outputs a kernel wrote
-/// into the room, through the execute endpoint, MCP or a client running
-/// the cell, are trusted, as a cell a person runs in JupyterLab is; a
-/// notebook from elsewhere stays untrusted until its cells are run again
-/// or someone trusts it. Returns whether every code cell is trusted.
-fn mark_trusted(content: &mut Value, untrusted: &HashSet<String>) -> bool {
+/// Mark each code cell of `content` trusted unless it holds outputs the
+/// room read from an unsigned file (`untrusted`, by the cell ids of
+/// `with_ids`, the same notebook with the room's ids), so the contents
+/// manager signs the notebook when every cell is (jupyter_server's
+/// `check_and_sign`). Outputs a run here wrote are trusted, as a cell a
+/// person runs in JupyterLab is: through the execute endpoint, MCP, or a
+/// client writing what its kernel sent, which needs the server's token as
+/// a signed `PUT /api/contents` does. Returns whether every code cell is
+/// trusted.
+fn mark_trusted(
+    content: &mut Value,
+    with_ids: Option<&Notebook>,
+    untrusted: &HashMap<String, HashSet<String>>,
+) -> bool {
+    let flags: Vec<bool> = match with_ids {
+        Some(nb) if !untrusted.is_empty() => cell_digests(nb)
+            .into_iter()
+            .map(|(id, digests)| {
+                untrusted
+                    .get(&id)
+                    .is_none_or(|bad| digests.is_disjoint(bad))
+            })
+            .collect(),
+        // Nothing untrusted (or no ids to tell): every cell is trusted
+        // when nothing is held against it.
+        _ => Vec::new(),
+    };
+    let default = untrusted.is_empty();
     let mut all = true;
-    for cell in content["cells"].as_array_mut().into_iter().flatten() {
-        if cell["cell_type"] != "code" {
-            continue;
-        }
-        let trusted = outputs_key(cell).is_none_or(|k| !untrusted.contains(&k));
+    let code = content["cells"]
+        .as_array_mut()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["cell_type"] == "code");
+    for (i, cell) in code.enumerate() {
+        let trusted = flags.get(i).copied().unwrap_or(default);
         all &= trusted;
         if let Some(Value::Object(metadata)) = cell.get_mut("metadata") {
             metadata.insert("trusted".into(), Value::Bool(trusted));
@@ -1044,9 +1138,10 @@ async fn run_room(
     let (mut room, mut disk) = match &path {
         None => (Room::transient(), None),
         Some(path) => match load(contents.as_ref(), path).await {
-            Ok((nb, disk)) => {
+            Ok((nb, mut disk)) => {
                 let mut room = Room::notebook_room(&nb, path);
                 room.saved(0, &disk.hash);
+                disk.track(&room);
                 (room, Some(disk))
             }
             Err(e) => {
@@ -1176,12 +1271,14 @@ async fn run_room(
                                 Err(_) => break,
                             }
                         }
+                        if let Some(d) = disk.as_mut() { d.ran(&cell_id) }
                         let cmd = crate::execute::RoomCmd::Append { cell_id, outputs };
                         let fx = exec.handle(&mut room, cmd);
                         if fx.changed { last_edit = Some(Instant::now()) }
                         dispatch(&clients, fx.send);
                     }
                     Cmd::Exec(cmd) => {
+                        if let (Some(d), Some(id)) = (disk.as_mut(), cmd.ran_cell()) { d.ran(id) }
                         let fx = exec.handle(&mut room, cmd);
                         if fx.changed { last_edit = Some(Instant::now()) }
                         dispatch(&clients, fx.send);
@@ -1462,6 +1559,30 @@ fn dispatch(clients: &HashMap<ConnId, ClientTx>, send: Vec<(Target, Vec<u8>)>) {
     }
 }
 
+/// Before a save while some cells hold untrusted outputs: forget them if
+/// someone trusted the file as the room last read or wrote it (`ganymede
+/// trust`, a frontend's Trust Notebook), and those of cells that are
+/// gone. Returns the room's notebook with its cell ids, to mark by.
+async fn settle_trust(contents: &dyn Contents, room: &Room, disk: &mut Disk) -> Option<Notebook> {
+    let opts = GetOptions {
+        content: true,
+        type_hint: Some(ContentType::Notebook),
+        format: None,
+        hash: true,
+    };
+    if let Ok(model) = contents.get(&disk.path, opts).await {
+        let same = model.hash.as_deref() == Some(disk.hash.as_str());
+        if same && model.content.as_ref().is_some_and(is_signed) {
+            disk.untrusted.clear();
+            return None;
+        }
+    }
+    let nb = room.notebook_with_ids().and_then(Result::ok)?;
+    let ids: HashSet<&str> = nb.cells.iter().filter_map(|c| c.id()).collect();
+    disk.untrusted.retain(|id, _| ids.contains(id.as_str()));
+    Some(nb)
+}
+
 /// Write the room to its file, if it changed or `force`. When the file
 /// changed since it was last read, merge it in first and save the merge.
 /// A forced save (a client's `save`) whose merge let the file win a cell
@@ -1495,7 +1616,12 @@ async fn save_room(
             None => return SaveStatus::Skipped,
         };
         let mut content = serde_json::to_value(&nb).expect("a notebook serializes");
-        let trusted = mark_trusted(&mut content, &disk.untrusted);
+        let with_ids = if disk.untrusted.is_empty() {
+            None
+        } else {
+            settle_trust(contents, room, disk).await
+        };
+        let trusted = mark_trusted(&mut content, with_ids.as_ref(), &disk.untrusted);
         let request =
             SaveRequest::notebook(content).with_if_match(IfMatch::Hashes(vec![disk.hash.clone()]));
         match contents.save(&disk.path, request).await {
@@ -1503,9 +1629,8 @@ async fn save_room(
                 disk.hash = model.hash.unwrap_or_default();
                 disk.last_modified = model.last_modified;
                 disk.base = nb;
-                if trusted {
-                    // Signed: what the file holds is trusted now.
-                    disk.untrusted.clear();
+                if !trusted {
+                    tracing::debug!(path = %disk.path, "saved unsigned: outputs from an unsigned file");
                 }
                 let fx = room.saved(generation, &disk.hash);
                 dispatch(clients, fx.send);
@@ -1581,11 +1706,12 @@ async fn reload(
                 return Reloaded::default(); // touched, not changed (or our own write)
             }
             disk.hash = fresh.hash;
-            // Another program wrote the file: what it brought is trusted
-            // only if it signed it. What was untrusted before stays so.
-            disk.untrusted.extend(fresh.untrusted);
             let (fx, conflicts) = room.merge_disk(&disk.base, &nb, &disk.hash);
             disk.base = nb;
+            // Another program wrote the file: what it brought is trusted
+            // only if it signed it. What was untrusted before stays so.
+            disk.read_untrusted = fresh.read_untrusted;
+            disk.track(room);
             if conflicts.is_empty() {
                 tracing::info!(path = %disk.path, "file changed on disk; merged into the room");
             } else {
@@ -2190,10 +2316,35 @@ mod trust_tests {
     }
 
     async fn open(contents: &FsContents) -> (Room, Disk) {
-        let (nb, disk) = load(contents, "a.ipynb").await.ok().unwrap();
+        let (nb, mut disk) = load(contents, "a.ipynb").await.ok().unwrap();
         let mut room = Room::notebook_room(&nb, "a.ipynb");
         room.saved(0, &disk.hash);
+        disk.track(&room);
         (room, disk)
+    }
+
+    /// The room's id for its code cell.
+    fn code_id(room: &Room) -> String {
+        let nb = room.notebook_with_ids().unwrap().unwrap();
+        nb.cells[1].id().unwrap().to_string()
+    }
+
+    fn untrusted_nb(dir: &std::path::Path, minor: u32) {
+        let ids = |id: &str| {
+            if minor == 5 {
+                format!(r#""id":"{id}","#)
+            } else {
+                String::new()
+            }
+        };
+        let nb = format!(
+            r#"{{"cells":[{{"cell_type":"markdown",{}"metadata":{{}},"source":["note"]}},
+            {{"cell_type":"code",{}"execution_count":1,"metadata":{{}},"outputs":[{HTML}],"source":["show()"]}}],
+            "metadata":{{}},"nbformat":4,"nbformat_minor":{minor}}}"#,
+            ids("m"),
+            ids("c")
+        );
+        std::fs::write(dir.join("a.ipynb"), nb).unwrap();
     }
 
     /// A notebook nobody signed stays unsigned when the room saves it,
@@ -2202,21 +2353,7 @@ mod trust_tests {
     async fn a_room_signs_only_outputs_it_ran() {
         for minor in [4, 5] {
             let dir = tempfile::tempdir().unwrap();
-            let ids = |id: &str| {
-                if minor == 5 {
-                    format!(r#""id":"{id}","#)
-                } else {
-                    String::new()
-                }
-            };
-            let nb = format!(
-                r#"{{"cells":[{{"cell_type":"markdown",{}"metadata":{{}},"source":["note"]}},
-                {{"cell_type":"code",{}"execution_count":1,"metadata":{{}},"outputs":[{HTML}],"source":["show()"]}}],
-                "metadata":{{}},"nbformat":4,"nbformat_minor":{minor}}}"#,
-                ids("m"),
-                ids("c")
-            );
-            std::fs::write(dir.path().join("a.ipynb"), nb).unwrap();
+            untrusted_nb(dir.path(), minor);
             let (contents, notary) = contents(dir.path());
             let (mut room, mut disk) = open(&contents).await;
 
@@ -2235,7 +2372,7 @@ mod trust_tests {
 
             // Reopened, the signed file is trusted and stays signed.
             let (mut room, mut disk) = open(&contents).await;
-            assert!(disk.untrusted.is_empty());
+            assert!(disk.untrusted.is_empty() && disk.read_untrusted.is_none());
             edit_and_save(&contents, &mut room, &mut disk).await;
             assert!(signed(dir.path(), &notary));
         }
@@ -2263,6 +2400,81 @@ mod trust_tests {
         v["cells"][1]["outputs"] = json!([serde_json::from_str::<Value>(HTML).unwrap()]);
         std::fs::write(dir.path().join("a.ipynb"), v.to_string()).unwrap();
         reload(&contents, &mut room, &mut disk, &HashMap::new()).await;
+        edit_and_save(&contents, &mut room, &mut disk).await;
+        assert!(!signed(dir.path(), &notary));
+    }
+
+    /// A run here that writes the same outputs the unsigned file had
+    /// makes them trusted: rerunning an old journal repairs it.
+    #[tokio::test]
+    async fn an_identical_rerun_here_is_trusted() {
+        for minor in [4, 5] {
+            let dir = tempfile::tempdir().unwrap();
+            untrusted_nb(dir.path(), minor);
+            let (contents, notary) = contents(dir.path());
+            let (mut room, mut disk) = open(&contents).await;
+            run_cell(&mut room, vec![serde_json::from_str(HTML).unwrap()]);
+            edit_and_save(&contents, &mut room, &mut disk).await;
+            assert!(!signed(dir.path(), &notary), "same outputs, no run here");
+            disk.ran(&code_id(&room));
+            edit_and_save(&contents, &mut room, &mut disk).await;
+            assert!(signed(dir.path(), &notary), "4.{minor}: rerun here");
+        }
+    }
+
+    /// Trusting the file while the room is open (`ganymede trust`) holds:
+    /// the room's next save signs it.
+    #[tokio::test]
+    async fn trusting_the_file_with_the_room_open_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        untrusted_nb(dir.path(), 5);
+        let (contents, notary) = contents(dir.path());
+        let (mut room, mut disk) = open(&contents).await;
+        let text = std::fs::read_to_string(dir.path().join("a.ipynb")).unwrap();
+        notary.sign(&serde_json::from_str(&text).unwrap()).unwrap();
+        edit_and_save(&contents, &mut room, &mut disk).await;
+        assert!(signed(dir.path(), &notary));
+        assert!(disk.untrusted.is_empty());
+    }
+
+    /// Clearing one of two untrusted outputs leaves the cell untrusted.
+    #[tokio::test]
+    async fn part_of_an_untrusted_output_list_stays_untrusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let two = format!("{HTML},{}", HTML.replace("hi", "two"));
+        let nb = format!(
+            r#"{{"cells":[{{"cell_type":"markdown","id":"m","metadata":{{}},"source":["note"]}},
+            {{"cell_type":"code","id":"c","execution_count":1,"metadata":{{}},"outputs":[{two}],"source":["show()"]}}],
+            "metadata":{{}},"nbformat":4,"nbformat_minor":5}}"#
+        );
+        std::fs::write(dir.path().join("a.ipynb"), nb).unwrap();
+        let (contents, notary) = contents(dir.path());
+        let (mut room, mut disk) = open(&contents).await;
+        run_cell(&mut room, vec![serde_json::from_str(HTML).unwrap()]);
+        edit_and_save(&contents, &mut room, &mut disk).await;
+        assert!(!signed(dir.path(), &notary));
+    }
+
+    /// Outputs whose objects have several keys stay untrusted, though the
+    /// room gives the keys back in another order (review of #598).
+    #[tokio::test]
+    async fn untrusted_outputs_match_whatever_the_key_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta: String = (1..=8)
+            .map(|i| format!(r#""k{i}":{i}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let out = format!(
+            r#"{{"output_type":"display_data","metadata":{{{meta}}},"data":{{"text/html":"<script>x</script>","text/plain":"x","application/json":{{"a":1.5,"b":[1,2],"c":{{"d":1,"e":2}}}}}}}}"#
+        );
+        let nb = format!(
+            r#"{{"cells":[{{"cell_type":"markdown","id":"m","metadata":{{}},"source":["note"]}},
+            {{"cell_type":"code","id":"c","execution_count":1,"metadata":{{}},"outputs":[{out}],"source":["show()"]}}],
+            "metadata":{{}},"nbformat":4,"nbformat_minor":5}}"#
+        );
+        std::fs::write(dir.path().join("a.ipynb"), nb).unwrap();
+        let (contents, notary) = contents(dir.path());
+        let (mut room, mut disk) = open(&contents).await;
         edit_and_save(&contents, &mut room, &mut disk).await;
         assert!(!signed(dir.path(), &notary));
     }
