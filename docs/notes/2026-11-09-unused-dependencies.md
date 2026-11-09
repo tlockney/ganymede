@@ -15,7 +15,7 @@ docs build and the links are clean. What it did find:
   has no chrono dependency otherwise. rustc doesn't warn about an unused
   dependency, and cargo-machete or cargo-udeps isn't in CI.
 - **`e2e/wasm-smoke/Cargo.lock` was three releases behind.** It listed
-  the workspace crates at 0.4.0 and lacked ganymede-exec's `base64`
+  the workspace crates at 0.4.0 and lacked ganymede-nbformat's `base64`
   dependency. The `portability` job builds it without `--locked`, so
   cargo quietly fixed it up in each run. The file is refreshed here; it
   will drift again at the next version bump, since `scripts/release.sh`
