@@ -78,7 +78,7 @@ export function groups(): Group[] {
       items: [
         { text: "jupyter", link: "/cell-api/jupyter" },
         { text: "Widgets and comms", link: "/cell-api/widgets" },
-        { text: "device", link: "/cell-api/device" },
+        { text: "device (macOS and iOS)", link: "/cell-api/device" },
       ],
     },
     {

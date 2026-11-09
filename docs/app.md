@@ -70,8 +70,13 @@ On the iPad, notebooks live in the app's Documents folder (On My iPad in
 the Files app) or a folder you pick, such as one in iCloud Drive. iOS
 doesn't let an app start kernel processes, so the page runs cdp-kernel's
 TypeScript kernel itself, in a Worker.
-TypeScript cells there get a `device` global for native features such
-as the clipboard; see [Device API](ganymede-ui/device.md).
+
+TypeScript cells in the app's own kernel, on the Mac, iPad or iPhone,
+get a `device` global for native features such as the clipboard; see
+[Device API](ganymede-ui/device.md). The device API is macOS and iOS
+only: no other platform has an app to answer it. In a browser, the
+notebook page answers a few methods that need no permission; see
+[In a browser](ganymede-ui/device.md#in-a-browser).
 
 ### Kernels on another machine
 
