@@ -2421,7 +2421,7 @@ mod trust_tests {
     /// Yjs can't keep exactly (review of #598).
     #[tokio::test]
     async fn an_identical_rerun_with_big_numbers_is_trusted() {
-        let big = r#"{"output_type":"display_data","data":{"application/json":{"n":9007199254740993}},"metadata":{}}"#;
+        let big = r#"{"output_type":"display_data","data":{"application/json":{"n":9007199254740993,"x":10000000000.0}},"metadata":{}}"#;
         for minor in [4, 5] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("a.ipynb");
