@@ -23,6 +23,9 @@ pub enum Part {
 
 #[derive(Debug, PartialEq)]
 pub struct Image {
+    /// For a Markdown cell's attachment: its name, whose
+    /// `attachment:<name>` links in the cell's Markdown point at the file.
+    pub attachment: Option<String>,
     pub mime: &'static str,
     /// Base64, as in the notebook.
     pub data: String,
@@ -45,7 +48,7 @@ pub fn language(metadata: &serde_json::Map<String, Value>) -> String {
 /// The snapshot of `cell` (at `index`): a heading, its code when `code`,
 /// then each output.
 pub fn cell(index: usize, cell: &Cell, lang: &str, code: bool, max_rows: usize) -> Vec<Part> {
-    let id = cell.id().unwrap_or("?");
+    let id = safe_name(cell.id().unwrap_or("?"));
     let mut parts = vec![Part::Markdown(format!("### Cell {index} (`{id}`)\n"))];
     match cell {
         Cell::Code(c) => {
@@ -59,7 +62,16 @@ pub fn cell(index: usize, cell: &Cell, lang: &str, code: bool, max_rows: usize) 
                 parts.push(Part::Markdown("(no output)\n".into()));
             }
         }
-        Cell::Markdown(c) => parts.push(Part::Markdown(format!("{}\n", c.source.as_str()))),
+        Cell::Markdown(c) => {
+            parts.push(Part::Markdown(format!("{}\n", c.source.as_str())));
+            for (name, bundle) in c.attachments.iter().flatten() {
+                let data = serde_json::to_value(bundle).unwrap_or_default();
+                if let Some(mut image) = image(&data) {
+                    image.attachment = Some(name.clone());
+                    parts.push(Part::Image(image));
+                }
+            }
+        }
         Cell::Raw(c) => parts.push(Part::Markdown(fence("", c.source.as_str()))),
         _ => {}
     }
@@ -71,7 +83,8 @@ fn output(o: &Output, max_rows: usize) -> Vec<Part> {
     match v["output_type"].as_str().unwrap_or_default() {
         "stream" => {
             let text = v["text"].as_str().unwrap_or_default();
-            vec![Part::Markdown(fence("text", &cut(&clean(text))))]
+            let text = ganymede_nbformat::overwrite_returns(&clean(text));
+            vec![Part::Markdown(fence("text", &cut(&text)))]
         }
         "error" => {
             let e = format!(
@@ -92,9 +105,12 @@ fn output(o: &Output, max_rows: usize) -> Vec<Part> {
                 }
             }
             match best_text(data) {
-                (Some("text/markdown"), md) => {
-                    vec![Part::Markdown(format!("{}\n", cut(md.trim_end())))]
+                // Cut Markdown could end inside a fence and turn the rest
+                // of the snapshot into code, so a long one goes as text.
+                (Some("text/markdown"), md) if md.chars().count() > TEXT_LIMIT => {
+                    vec![Part::Markdown(fence("text", &cut(md.trim_end())))]
                 }
+                (Some("text/markdown"), md) => vec![Part::Markdown(format!("{}\n", md.trim_end()))],
                 (_, text) => vec![Part::Markdown(fence("text", &cut(&clean(&text))))],
             }
         }
@@ -114,6 +130,7 @@ pub fn image(data: &Value) -> Option<Image> {
             let clean: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
             if b64.decode(&clean).is_ok() {
                 return Some(Image {
+                    attachment: None,
                     mime,
                     data: clean,
                     ext,
@@ -123,6 +140,7 @@ pub fn image(data: &Value) -> Option<Image> {
     }
     let png = svg_source(&data["image/svg+xml"]).and_then(|s| svg::to_png(&s))?;
     Some(Image {
+        attachment: None,
         mime: "image/png",
         data: b64.encode(png),
         ext: "png",
@@ -136,8 +154,20 @@ pub fn image(data: &Value) -> Option<Image> {
 /// links to.
 pub fn file_name(stem: &str, id: &str, n: usize, image: &Image) -> String {
     use sha2::Digest;
-    let id: String = id
-        .chars()
+    let hash = hex::encode(sha2::Sha256::digest(image.data.as_bytes()));
+    format!(
+        "{}-{}-{n}-{}.{}",
+        safe_name(stem),
+        safe_name(id),
+        &hash[..8],
+        image.ext
+    )
+}
+
+/// `s` with only `[A-Za-z0-9_-]` kept, the rest `_`: for file names and
+/// Markdown, from a notebook name or a cell id that nothing validates.
+pub fn safe_name(s: &str) -> String {
+    s.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
                 c
@@ -145,15 +175,21 @@ pub fn file_name(stem: &str, id: &str, n: usize, image: &Image) -> String {
                 '_'
             }
         })
-        .collect();
-    let hash = hex::encode(sha2::Sha256::digest(image.data.as_bytes()));
-    format!("{stem}-{id}-{n}-{}.{}", &hash[..8], image.ext)
+        .collect()
 }
 
 /// A path as a Markdown link destination: in angle brackets, so spaces
 /// and parentheses in it don't end the link, with `<` and `>` encoded.
 pub fn link_destination(path: &str) -> String {
-    format!("<{}>", path.replace('<', "%3C").replace('>', "%3E"))
+    // `%` first, so the escapes added after it stay as they are. A `#` or
+    // `?` would start a fragment or query.
+    let encoded = path
+        .replace('%', "%25")
+        .replace('<', "%3C")
+        .replace('>', "%3E")
+        .replace('#', "%23")
+        .replace('?', "%3F");
+    format!("<{encoded}>")
 }
 
 fn clean(s: &str) -> String {
@@ -171,14 +207,7 @@ fn cut(s: &str) -> String {
 
 /// `body` in a fence longer than any backtick run inside it.
 fn fence(lang: &str, body: &str) -> String {
-    let mut longest = 0;
-    let mut run = 0;
-    for c in body.chars() {
-        run = if c == '`' { run + 1 } else { 0 };
-        longest = longest.max(run);
-    }
-    let ticks = "`".repeat((longest + 1).max(3));
-    format!("{ticks}{lang}\n{}\n{ticks}\n", body.trim_end_matches('\n'))
+    format!("{}\n", ganymede_nbformat::fenced(lang, body))
 }
 
 /// The first `<table>` in `html` as a Markdown table: the first row is the
@@ -309,20 +338,69 @@ mod tests {
     #[test]
     fn file_names_and_links_survive_odd_names() {
         let image = |data: &str| Image {
+            attachment: None,
             mime: "image/png",
             data: data.into(),
             ext: "png",
         };
-        let a = file_name("Fremont Bridge", "a/b c", 1, &image("AAAA"));
+        let a = file_name("Q#3 results?", "a/b c", 1, &image("AAAA"));
         assert!(
-            a.starts_with("Fremont Bridge-a_b_c-1-") && a.ends_with(".png"),
+            a.starts_with("Q_3_results_-a_b_c-1-") && a.ends_with(".png"),
             "{a}"
         );
-        assert_ne!(a, file_name("Fremont Bridge", "a/b c", 1, &image("BBBB")));
+        assert_ne!(a, file_name("Q#3 results?", "a/b c", 1, &image("BBBB")));
         assert_eq!(
-            link_destination("/x/My (1) <a>.png"),
-            "</x/My (1) %3Ca%3E.png>"
+            link_destination("/x/My (1) #2? 50% <a>.png"),
+            "</x/My (1) %232%3F 50%25 %3Ca%3E.png>"
         );
+    }
+
+    #[test]
+    fn odd_ids_stay_in_their_code_span() {
+        let mut c = code_cell("1", json!([]));
+        if let Cell::Code(code) = &mut c {
+            code.id = Some("a`b]c".into());
+        }
+        assert!(markdown(&cell(0, &c, "", false, 20)).starts_with("### Cell 0 (`a_b_c`)"));
+    }
+
+    #[test]
+    fn progress_bars_show_their_last_frame() {
+        let c = code_cell(
+            "",
+            json!([{"output_type": "stream", "name": "stdout", "text": "10%\r50%\r100%\ndone\n"}]),
+        );
+        let md = markdown(&cell(0, &c, "", false, 20));
+        assert!(md.contains("```text\n100%\ndone\n```"), "{md}");
+    }
+
+    #[test]
+    fn markdown_attachments_become_images() {
+        let png = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG");
+        let c: Cell = serde_json::from_value(json!({
+            "cell_type": "markdown", "id": "m", "metadata": {},
+            "source": "See ![plot](attachment:p.png)",
+            "attachments": {"p.png": {"image/png": png}}
+        }))
+        .unwrap();
+        let parts = cell(0, &c, "", false, 20);
+        match parts.last() {
+            Some(Part::Image(i)) => assert_eq!(i.attachment.as_deref(), Some("p.png")),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn long_markdown_with_a_fence_is_fenced_as_text() {
+        let md = format!("```\n{}", "x".repeat(TEXT_LIMIT + 10));
+        let c = code_cell(
+            "",
+            json!([{"output_type": "display_data", "metadata": {}, "data": {"text/markdown": md}}]),
+        );
+        let out = markdown(&cell(0, &c, "", false, 20));
+        // The text's own ``` is inside a longer fence, which closes.
+        assert!(out.contains("````text\n```\n"), "{out}");
+        assert!(out.trim_end().ends_with("````"), "{out}");
     }
 
     #[test]

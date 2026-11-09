@@ -827,6 +827,8 @@ impl Notebooks {
         let mut out = String::new();
         let mut blocks = Vec::new();
         for (id, cell_parts) in parts {
+            let id = snapshot::safe_name(&id);
+            let cell_start = out.len();
             let mut n = 0;
             for part in cell_parts {
                 match part {
@@ -856,10 +858,21 @@ impl Notebooks {
                                 .to_string_lossy()
                                 .into_owned(),
                         };
-                        out.push_str(&format!(
-                            "![Cell `{id}`, image {n}]({})\n",
-                            snapshot::link_destination(&shown)
-                        ));
+                        let target = snapshot::link_destination(&shown);
+                        match &image.attachment {
+                            // The cell's Markdown links it: point those
+                            // links at the file.
+                            Some(att) => {
+                                let cell = ganymede_nbformat::replace_attachment_refs(
+                                    &out[cell_start..],
+                                    att,
+                                    &target,
+                                );
+                                out.truncate(cell_start);
+                                out.push_str(&cell);
+                            }
+                            None => out.push_str(&format!("![Cell `{id}`, image {n}]({target})\n")),
+                        }
                         blocks.push(ContentBlock::image(image.data, image.mime));
                     }
                 }
