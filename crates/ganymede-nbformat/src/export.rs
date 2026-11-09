@@ -392,7 +392,10 @@ pub fn fenced(lang: &str, text: &str) -> String {
 
 /// A relative path as a Markdown link target: each byte outside the URL
 /// unreserved set (and `/`) percent-encoded, as nbconvert's `path2url`.
-fn url_path(path: &str) -> String {
+/// `path` percent-encoded for a URL or link target: everything but
+/// `[A-Za-z0-9/_.~-]` escaped, so it works bare, in angle brackets and
+/// in an HTML attribute.
+pub fn url_path(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     for b in path.bytes() {
         if b.is_ascii_alphanumeric() || b"/_.-~".contains(&b) {

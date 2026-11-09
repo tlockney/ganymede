@@ -63,7 +63,7 @@ pub fn cell(index: usize, cell: &Cell, lang: &str, code: bool, max_rows: usize) 
             }
         }
         Cell::Markdown(c) => {
-            parts.push(Part::Markdown(format!("{}\n", c.source.as_str())));
+            parts.push(Part::Markdown(raw_markdown(c.source.as_str())));
             for (name, bundle) in c.attachments.iter().flatten() {
                 let data = serde_json::to_value(bundle).unwrap_or_default();
                 if let Some(mut image) = image(&data) {
@@ -107,10 +107,10 @@ fn output(o: &Output, max_rows: usize) -> Vec<Part> {
             match best_text(data) {
                 // Cut Markdown could end inside a fence and turn the rest
                 // of the snapshot into code, so a long one goes as text.
-                (Some("text/markdown"), md) if md.chars().count() > TEXT_LIMIT => {
+                (Some("text/markdown"), md) if md.trim_end().chars().count() > TEXT_LIMIT => {
                     vec![Part::Markdown(fence("text", &cut(md.trim_end())))]
                 }
-                (Some("text/markdown"), md) => vec![Part::Markdown(format!("{}\n", md.trim_end()))],
+                (Some("text/markdown"), md) => vec![Part::Markdown(raw_markdown(&md))],
                 (_, text) => vec![Part::Markdown(fence("text", &cut(&clean(&text))))],
             }
         }
@@ -147,7 +147,8 @@ pub fn image(data: &Value) -> Option<Image> {
     })
 }
 
-/// The file name for a snapshot image: the notebook's stem, the cell id
+/// The file name for a snapshot image: the notebook's stem (letters and
+/// digits in any script kept), the cell id
 /// (only `[A-Za-z0-9_-]` kept, as nbformat allows, since ids aren't
 /// validated), its number, and a short hash of the image, so a later
 /// snapshot of a re-run cell doesn't overwrite a file an earlier reply
@@ -157,7 +158,7 @@ pub fn file_name(stem: &str, id: &str, n: usize, image: &Image) -> String {
     let hash = hex::encode(sha2::Sha256::digest(image.data.as_bytes()));
     format!(
         "{}-{}-{n}-{}.{}",
-        safe_name(stem),
+        safe_stem(stem),
         safe_name(id),
         &hash[..8],
         image.ext
@@ -176,6 +177,59 @@ pub fn safe_name(s: &str) -> String {
             }
         })
         .collect()
+}
+
+/// A notebook stem for a file name: letters and digits in any script,
+/// `-` and `_` kept, the rest `_`.
+fn safe_stem(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Markdown from a cell or an output, as it is, with a fence it leaves
+/// open closed, so it can't turn the rest of the snapshot into code.
+fn raw_markdown(md: &str) -> String {
+    let mut out = format!("{}\n", md.trim_end());
+    if let Some(close) = open_fence(&out) {
+        out.push_str(&close);
+        out.push('\n');
+    }
+    out
+}
+
+/// The fence that closes one `md` leaves open, if any (CommonMark: a run
+/// of three or more backticks or tildes, indented at most three spaces,
+/// closed by a run of the same character at least as long).
+fn open_fence(md: &str) -> Option<String> {
+    let mut open: Option<(char, usize)> = None;
+    for line in md.lines() {
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        if indent > 3 {
+            continue;
+        }
+        let rest = &line[indent..];
+        let Some(c) = rest.chars().next().filter(|c| *c == '`' || *c == '~') else {
+            continue;
+        };
+        let run = rest.chars().take_while(|x| *x == c).count();
+        if run < 3 {
+            continue;
+        }
+        let after = &rest[run..];
+        match open {
+            None if c == '~' || !after.contains('`') => open = Some((c, run)),
+            Some((oc, on)) if oc == c && run >= on && after.trim().is_empty() => open = None,
+            _ => {}
+        }
+    }
+    open.map(|(c, n)| c.to_string().repeat(n))
 }
 
 /// A path as a Markdown link destination: in angle brackets, so spaces
@@ -353,6 +407,46 @@ mod tests {
             link_destination("/x/My (1) #2? 50% <a>.png"),
             "</x/My (1) %232%3F 50%25 %3Ca%3E.png>"
         );
+    }
+
+    #[test]
+    fn notebook_names_keep_their_letters() {
+        let image = Image {
+            attachment: None,
+            mime: "image/png",
+            data: "AAAA".into(),
+            ext: "png",
+        };
+        let name = file_name("Données 分析", "c", 1, &image);
+        assert!(name.starts_with("Données_分析-c-1-"), "{name}");
+    }
+
+    #[test]
+    fn open_fences_in_markdown_are_closed() {
+        let c = code_cell(
+            "",
+            json!([{"output_type": "display_data", "metadata": {},
+                    "data": {"text/markdown": "```python\nprint(1)"}}]),
+        );
+        assert!(markdown(&cell(0, &c, "", false, 20)).ends_with("print(1)\n```\n"));
+        let m: Cell = serde_json::from_value(json!({
+            "cell_type": "markdown", "id": "m", "metadata": {},
+            "source": "~~~~\ncode\n~~~\nstill code"
+        }))
+        .unwrap();
+        assert!(markdown(&cell(0, &m, "", false, 20)).ends_with("still code\n~~~~\n"));
+        assert_eq!(open_fence("```js\nx\n```\n``x``\n"), None);
+    }
+
+    #[test]
+    fn markdown_under_the_limit_with_trailing_newlines_stays_markdown() {
+        let md = format!("**{}**{}", "x".repeat(TEXT_LIMIT - 10), "\n".repeat(20));
+        let c = code_cell(
+            "",
+            json!([{"output_type": "display_data", "metadata": {},
+                    "data": {"text/markdown": md}}]),
+        );
+        assert!(!markdown(&cell(0, &c, "", false, 20)).contains("```text"));
     }
 
     #[test]

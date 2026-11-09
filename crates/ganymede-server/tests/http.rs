@@ -6020,7 +6020,8 @@ async fn mcp_cell_snapshot_saves_images_and_shows_tables() {
     let png = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\n");
     let nb = json!({"cells": [
         {"cell_type": "markdown", "id": "md", "metadata": {},
-         "source": "See ![p](attachment:p.png)", "attachments": {"p.png": {"image/png": png}}},
+         "source": "See ![p](attachment:p.png) and <img src=\"attachment:p.png\" width=\"40\">",
+         "attachments": {"p.png": {"image/png": png}}},
         {"cell_type": "code", "id": "plot", "execution_count": 1, "metadata": {},
          "source": "Plot.plot()", "outputs": [
             {"output_type": "display_data", "metadata": {},
@@ -6095,8 +6096,14 @@ async fn mcp_cell_snapshot_saves_images_and_shows_tables() {
         )
         .await,
     );
+    // Percent-encoded, not bracketed: the path has a space (`n b`) and
+    // the link must also work inside `<img src="…">`.
     assert!(
-        out.contains("See ![p](<") && !out.contains("attachment:"),
+        !out.contains("attachment:") && !out.contains("](<") && !out.contains("src=\"<"),
+        "{out}"
+    );
+    assert!(
+        out.contains("See ![p](/") && out.contains("<img src=\"/") && out.contains("/n_b-md-1-"),
         "{out}"
     );
 

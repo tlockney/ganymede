@@ -34,8 +34,8 @@ mod writer;
 pub use ansi::strip_ansi;
 pub use atomic::atomic_write;
 pub use export::{
-    fenced, overwrite_returns, replace_attachment_refs, to_markdown, to_script, Export, Resource,
-    ResourceData, BASE64_LENIENT, FORMATS,
+    fenced, overwrite_returns, replace_attachment_refs, to_markdown, to_script, url_path, Export,
+    Resource, ResourceData, BASE64_LENIENT, FORMATS,
 };
 pub use multiline::{splitlines, MultilineString};
 pub use reader::{from_json_slice, read_file, ReadIssue, ReadReport};

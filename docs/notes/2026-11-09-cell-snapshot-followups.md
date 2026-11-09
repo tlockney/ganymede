@@ -15,3 +15,11 @@ image outputs and their `attachment:` links point at the files.
 These reuse `fenced`, `overwrite_returns` and `replace_attachment_refs`
 from `ganymede_nbformat::export`, which are now public; the snapshot's
 own fence helper went.
+
+The review of this change found that attachment links in angle brackets
+broke `<img src="attachment:…">`, the usual way to size an attachment,
+so they now use export's percent-encoded `url_path` (also made public).
+Notebook names keep letters in any script, so `分析.ipynb` keeps its
+name. Raw Markdown, from an output or a Markdown cell, gets a closing
+fence when it leaves one open, and the long-Markdown check counts the
+trimmed text.
