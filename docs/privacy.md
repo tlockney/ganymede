@@ -13,6 +13,18 @@ gateway (`--gateway-url`) gets the code you run and returns its output,
 `ganymede lab install` and `ganymede ui install` download from PyPI and
 GitHub, and an agent you connect over MCP sees what its tools return.
 
+> [!NOTE]
+> **Unreleased in ganymede-ui.** Available only from a build of
+> ganymede-ui's `main`, not in its latest release.
+
+The Mac app checks for a newer release once a day, on by default: it
+downloads the release feed from GitHub
+(`github.com/tlockney/ganymede-ui/releases/latest/download/appcast.xml`)
+and sends nothing about you, your Mac or your notebooks beyond that
+request. An update downloads only when you install it, unless you turn
+on automatic installs. Settings > General in the app turns the check
+off.
+
 ## What crash reporting is for
 
 When you turn it on, a crash in Ganymede's own code (a panic in the
