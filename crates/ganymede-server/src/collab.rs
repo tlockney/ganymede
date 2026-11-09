@@ -1271,7 +1271,6 @@ async fn run_room(
                                 Err(_) => break,
                             }
                         }
-                        if let Some(d) = disk.as_mut() { d.ran(&cell_id) }
                         let cmd = crate::execute::RoomCmd::Append { cell_id, outputs };
                         let fx = exec.handle(&mut room, cmd);
                         if fx.changed { last_edit = Some(Instant::now()) }

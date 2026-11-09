@@ -112,11 +112,16 @@ pub(crate) enum RoomCmd {
 }
 
 impl RoomCmd {
-    /// The cell whose outputs this writes from a run, if it does.
+    /// The cell whose outputs this replaces with a run's, if it does. Not
+    /// an `Append`, which keeps what the cell holds, nor a display update,
+    /// which may not apply.
     pub(crate) fn ran_cell(&self) -> Option<&str> {
         match self {
-            RoomCmd::Outputs { cell_id, .. }
-            | RoomCmd::Append { cell_id, .. }
+            RoomCmd::Outputs {
+                cell_id,
+                only_if: None,
+                ..
+            }
             | RoomCmd::Done {
                 cell_id,
                 outputs: Some(_),
