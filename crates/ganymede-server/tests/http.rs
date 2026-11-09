@@ -4916,6 +4916,23 @@ async fn mcp_notebooks_search_finds_cells_across_notebooks() {
         "{out}"
     );
 
+    // Links back to an ancestor don't repeat it (two make the walk
+    // exponential if followed).
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&journal, journal.join("l1")).unwrap();
+        std::os::unix::fs::symlink(&journal, journal.join("l2")).unwrap();
+        let out = call(
+            "notebooks_search",
+            json!({"query": "workday 2019", "dir": "journal"}),
+        )
+        .await;
+        assert!(
+            out.starts_with("2 matching cells in 2 of 3 notebooks"),
+            "{out}"
+        );
+    }
+
     let v = mcp_tool(&app, &sid, "notebooks_search", json!({"query": "  "})).await;
     assert!(v.get("error").is_some(), "{v}");
     let v = mcp_tool(

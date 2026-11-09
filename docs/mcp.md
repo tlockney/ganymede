@@ -229,7 +229,8 @@ The reply counts the matches, then lists each matching notebook with its
 title (its first heading) and each cell with its index, id, type, where
 it matched, and a line of context. `notebook_read` reads a hit in full.
 A notebook open in a room is read from the room, so edits not yet saved
-count; others are read from disk. A search reads at most 2,000
+count; others are read from disk. A directory reached through a
+symbolic link is searched once. A search reads at most 2,000
 notebooks and says so when it stops early.
 
 ## Changes by others

@@ -335,6 +335,9 @@ pub struct SearchArgs {
 /// Notebooks `notebooks_search` reads at most, so a large tree can't
 /// stall the server.
 const SEARCH_MAX_NOTEBOOKS: usize = 2000;
+/// Directories it lists at most, for contents that aren't a local
+/// directory, where links can't be told apart.
+const SEARCH_MAX_DIRS: usize = 10_000;
 
 #[tool_router]
 impl Notebooks {
@@ -966,7 +969,7 @@ impl Notebooks {
         }
         if truncated {
             summary.push_str(&format!(
-                "; stopped after {SEARCH_MAX_NOTEBOOKS} notebooks (narrow `dir`)"
+                "; stopped after {SEARCH_MAX_NOTEBOOKS} notebooks or {SEARCH_MAX_DIRS} directories (narrow `dir`)"
             ));
         }
         text(format!("{summary}.\n\n{out}"))
@@ -1301,14 +1304,33 @@ impl Notebooks {
             .map_err(|e| err(e.to_string()))
     }
 
-    /// The notebook, and this connection's read mark moved to it.
     /// Notebook paths under `dir`, depth first in name order, skipping
-    /// checkpoints; and whether [`SEARCH_MAX_NOTEBOOKS`] cut the list.
-    /// Hidden files stay out as the contents API leaves them out.
+    /// checkpoints; and whether [`SEARCH_MAX_NOTEBOOKS`] or
+    /// [`SEARCH_MAX_DIRS`] cut the list. Hidden files stay out as the
+    /// contents API leaves them out. A directory reached twice, through a
+    /// symlink to it or to an ancestor, is listed once.
     async fn notebook_paths(&self, dir: &str) -> Result<(Vec<String>, bool), McpError> {
         let mut found = Vec::new();
         let mut dirs = vec![dir.to_string()];
+        let mut visited = std::collections::HashSet::new();
+        let mut listed = 0;
         while let Some(d) = dirs.pop() {
+            if let Some(root) = self.state.collab.root() {
+                // Canonical paths, so every way into a directory is one.
+                match std::fs::canonicalize(root.join(&d)) {
+                    Ok(real) => {
+                        if !visited.insert(real) {
+                            continue;
+                        }
+                    }
+                    Err(_) if d != dir => continue,
+                    Err(_) => {}
+                }
+            }
+            if listed == SEARCH_MAX_DIRS {
+                return Ok((found, true));
+            }
+            listed += 1;
             let model = self
                 .state
                 .contents
@@ -1376,6 +1398,7 @@ impl Notebooks {
         Notebook::from_value(model.content?).ok()
     }
 
+    /// The notebook, and this connection's read mark moved to it.
     async fn read_marked(&self, path: &str) -> Result<(Notebook, String), McpError> {
         let token = self
             .tokens

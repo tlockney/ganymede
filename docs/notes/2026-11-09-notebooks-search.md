@@ -14,7 +14,11 @@ room that is already open; others are read from disk through the contents
 API. So a search opens no rooms, takes no room locks, and adds no rows to
 the file id table. The walk goes through the contents API too, so hidden
 files stay out as they do for the rest of the API, and stops at 2,000
-notebooks.
+notebooks. The review found that the walk followed directory symlinks: a
+link to an ancestor repeated results, and two made the walk exponential.
+It now keeps the canonical path of each directory it lists and skips one
+it has seen; for contents that aren't a local directory, it stops after
+10,000 directories.
 
 Plain substring matching, no index: a journal directory is small, and an
 index (a new dependency such as tantivy) can wait until a search is slow.
