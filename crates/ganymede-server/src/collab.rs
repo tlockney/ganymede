@@ -927,8 +927,6 @@ struct Disk {
     /// someone trusts the file. Other outputs came from a run here or a
     /// signed file.
     untrusted: HashSet<String>,
-    /// When a save last looked for a signature someone added to the file.
-    trust_checked: Option<Instant>,
 }
 
 impl Disk {
@@ -954,13 +952,22 @@ impl Disk {
         if self.untrusted.is_empty() {
             return;
         }
-        let Some(Ok(nb)) = room.notebook_with_ids() else {
+        use ganymede_documents::{schema, yrs::Map, yrs::Transact};
+        // Only this cell's outputs, serialized as the notebook would be.
+        let roots = schema::Roots::get(room.doc());
+        let txn = room.doc().transact();
+        let Some(outputs) =
+            schema::find_cell(&txn, &roots, id).and_then(|c| c.get(&txn, "outputs"))
+        else {
             return;
         };
-        if let Some((_, digests)) = cell_digests(&nb).into_iter().find(|(i, _)| i == id) {
-            for d in digests {
-                self.untrusted.remove(&d);
-            }
+        let outputs = schema::out_to_json(&txn, &outputs);
+        for o in outputs.as_array().into_iter().flatten() {
+            let o = serde_json::from_value::<ganymede_nbformat::Output>(o.clone())
+                .ok()
+                .and_then(|o| serde_json::to_value(o).ok())
+                .unwrap_or_else(|| o.clone());
+            self.untrusted.remove(&output_digest(&o));
         }
     }
 }
@@ -1022,7 +1029,6 @@ async fn load(contents: &dyn Contents, path: &str) -> Result<(Notebook, Disk), L
             base: nb,
             read_untrusted,
             untrusted: HashSet::new(),
-            trust_checked: None,
         },
     ))
 }
@@ -1561,21 +1567,11 @@ fn dispatch(clients: &HashMap<ConnId, ClientTx>, send: Vec<(Target, Vec<u8>)>) {
     }
 }
 
-/// How often a save while some outputs are untrusted reads the file to
-/// see whether someone trusted it.
-const TRUST_CHECK: Duration = Duration::from_secs(10);
-
 /// Before a save while some outputs are untrusted: forget them if someone
 /// trusted the file as the room last read or wrote it (`ganymede trust`,
-/// a frontend's Trust Notebook). Looks at most every [`TRUST_CHECK`].
+/// a frontend's Trust Notebook). Every such save looks: one that missed
+/// the signature would overwrite the trusted file unsigned.
 async fn settle_trust(contents: &dyn Contents, disk: &mut Disk) {
-    if disk
-        .trust_checked
-        .is_some_and(|t| t.elapsed() < TRUST_CHECK)
-    {
-        return;
-    }
-    disk.trust_checked = Some(Instant::now());
     let opts = GetOptions {
         content: true,
         type_hint: Some(ContentType::Notebook),
@@ -1715,8 +1711,8 @@ async fn reload(
             // Another program wrote the file: what it brought is trusted
             // only if it signed it. What was untrusted before stays so.
             disk.read_untrusted = fresh.read_untrusted;
-            disk.track(Some(&disk.base.clone()));
-            disk.base = nb;
+            let before = std::mem::replace(&mut disk.base, nb);
+            disk.track(Some(&before));
             if conflicts.is_empty() {
                 tracing::info!(path = %disk.path, "file changed on disk; merged into the room");
             } else {
@@ -2522,6 +2518,22 @@ mod trust_tests {
         std::fs::write(dir.path().join("a.ipynb"), v.to_string()).unwrap();
         assert!(!signed(dir.path(), &notary));
         reload(&contents, &mut room, &mut disk, &HashMap::new()).await;
+        edit_and_save(&contents, &mut room, &mut disk).await;
+        assert!(signed(dir.path(), &notary));
+    }
+
+    /// Trust given between two saves holds, however soon after the
+    /// last one.
+    #[tokio::test]
+    async fn trust_between_saves_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        untrusted_nb(dir.path(), 5);
+        let (contents, notary) = contents(dir.path());
+        let (mut room, mut disk) = open(&contents).await;
+        edit_and_save(&contents, &mut room, &mut disk).await;
+        assert!(!signed(dir.path(), &notary));
+        let text = std::fs::read_to_string(dir.path().join("a.ipynb")).unwrap();
+        notary.sign(&serde_json::from_str(&text).unwrap()).unwrap();
         edit_and_save(&contents, &mut room, &mut disk).await;
         assert!(signed(dir.path(), &notary));
     }
