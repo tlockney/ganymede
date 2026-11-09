@@ -194,12 +194,15 @@ reply to a person, without running anything:
 The images also come back as MCP image content, whether or not the server
 sends images, so an agent can look at a chart before describing it. Files
 are named `<notebook>-<cell id>-<n>-<hash>.<ext>` (with characters other
-than letters, digits, `-` and `_` made `_`), so a later snapshot
+than letters, digits, `-` and `_` made `_`, and the cell id kept to ASCII), so a later snapshot
 of a re-run cell doesn't replace an earlier one, and go to `snapshots` in
 the outputs directory (readable only by you), or with `dir` to a directory
 under the server root, such as `journal/snapshots`, through the contents
-API. Links put the path in angle brackets and encode `#`, `?` and `%`, so
-the path's characters don't break the Markdown. `dir` isn't allowed in read-only mode.
+API. Links to output images put the path in angle brackets and encode
+`#`, `?` and `%`, so the path's characters don't break the Markdown. A
+Markdown cell's `attachment:` links are percent-encoded instead (a space
+becomes `%20`), so they also work in `<img src>`; decode the path before
+opening the file. `dir` isn't allowed in read-only mode.
 
 ## Changes by others
 
