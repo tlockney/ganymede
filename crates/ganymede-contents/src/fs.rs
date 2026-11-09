@@ -581,11 +581,14 @@ impl Inner {
                 if r.os.is_dir() {
                     return Err(Error::BadRequest(format!("{} is a directory", r.api)));
                 }
-                self.atomic_write(&r.os, &r.api, &bytes)?;
-                hash = Some(sha256_hex(&bytes));
+                // Sign before writing, as jupyter_server's save calls
+                // check_and_sign before _save_notebook: a reader that
+                // sees the new file then finds its signature (#617).
                 if let Some(nb) = sign {
                     self.sign(&r.api, &nb);
                 }
+                self.atomic_write(&r.os, &r.api, &bytes)?;
+                hash = Some(sha256_hex(&bytes));
                 // jupyter_server: "One checkpoint should always exist for
                 // notebooks", so the first save can be reverted to.
                 if request.kind == ContentType::Notebook && !self.checkpoint_path(&r.api).is_file()
@@ -812,25 +815,28 @@ impl Inner {
             to
         };
         let bytes = fs::read(&from.os).map_err(|e| io_to_error(e, &from.api))?;
-        self.atomic_write(&dest.os, &dest.api, &bytes)
-            .inspect_err(|_| {
-                if reserved {
-                    let _ = fs::remove_file(&dest.os);
-                }
-            })?;
         if let Some(notary) = &self.options.notary {
             // jupyter_server copies through get and save, so the copy is
             // signed if the source was trusted or would be on save. The
-            // bytes are the same, so is the signature.
+            // bytes are the same, so is the signature. Signed before the
+            // write, as `save` does (#617).
             if dest.api.name().ends_with(".ipynb") {
-                if let Ok(notebook) = Notebook::from_slice(&bytes) {
-                    let nb = serde_json::to_value(&notebook)?;
+                let nb = Notebook::from_slice(&bytes)
+                    .ok()
+                    .and_then(|n| serde_json::to_value(&n).ok());
+                if let Some(nb) = nb {
                     if notary.check_signature(&nb) || trust::check_cells(&mut nb.clone()) {
                         self.sign(&dest.api, &nb);
                     }
                 }
             }
         }
+        self.atomic_write(&dest.os, &dest.api, &bytes)
+            .inspect_err(|_| {
+                if reserved {
+                    let _ = fs::remove_file(&dest.os);
+                }
+            })?;
         self.get_without_content(&dest.api)
     }
 
