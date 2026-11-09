@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 346" width="900" height="346" role="img" aria-label="A document room. Clients such as JupyterLab tabs, a second person, nb-cli and ganymede mcp connect to ganymede serve over websockets and exchange yjs updates with one document room per open notebook. The room holds the notebook as a yrs document in jupyter_ydoc&#x27;s schema, named for the file&#x27;s id. It autosaves to the notebook file one second after the last edit, with If-Match on the hash it last read. The file stays the source of truth: other programs, such as an agent, git pull, a sync service or an editor, write it, and the room&#x27;s watcher takes their changes in once they settle for half a second, at most five seconds after the first, merging them cell by cell.">
+  <title>A document room. Clients such as JupyterLab tabs, a second person, nb-cli and ganymede mcp connect to ganymede serve over websockets and exchange yjs updates with one document room per open notebook. The room holds the notebook as a yrs document in jupyter_ydoc's schema, named for the file's id. It autosaves to the notebook file one second after the last edit, with If-Match on the hash it last read. The file stays the source of truth: other programs, such as an agent, git pull, a sync service or an editor, write it, and the room's watcher takes their changes in once they settle for half a second, at most five seconds after the first, merging them cell by cell.</title>
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f6f7f9; stroke: #9aa3ad; stroke-width: 1.2; }
+    .inner { fill: #ffffff; stroke: #b8c0c8; stroke-width: 1; }
+    .acc { fill: #e8f0fe; stroke: #3b6fd8; stroke-width: 1.4; }
+    .warn { fill: #fdf0e6; stroke: #c96a1b; stroke-width: 1.4; }
+    .ok { fill: #e7f5ec; stroke: #2f8a4c; stroke-width: 1.4; }
+    .dash { stroke-dasharray: 5 4; }
+    .warnpill { fill: #c96a1b; }
+    .tw { font: 600 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #ffffff; }
+    .t { font: 600 14px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1f2328; }
+    .s { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .m { font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f2328; }
+    .l { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .ln { stroke: #6e7781; stroke-width: 1.4; fill: none; }
+    .life { stroke: #9aa3ad; stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+    .hl { stroke: #3b6fd8; stroke-width: 1.6; fill: none; }
+    .ah { fill: #6e7781; }
+    .ahb { fill: #3b6fd8; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #1b1b1f; }
+      .box { fill: #25262b; stroke: #5c6370; }
+      .inner { fill: #1b1b1f; stroke: #4a505a; }
+      .acc { fill: #1e2a44; stroke: #6b9bff; }
+      .warn { fill: #3a2a1c; stroke: #e0904a; }
+      .ok { fill: #1d3326; stroke: #5cc27e; }
+      .warnpill { fill: #e0904a; }
+      .tw { fill: #1b1b1f; }
+      .t, .m { fill: #e6e8eb; }
+      .s, .l { fill: #b6bcc4; }
+      .ln { stroke: #a0a7b0; }
+      .life { stroke: #5c6370; }
+      .hl { stroke: #6b9bff; }
+      .ah { fill: #a0a7b0; }
+      .ahb { fill: #6b9bff; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ahb" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="900" height="346" rx="8"/>
+  <text class="t" x="30" y="36">Clients</text>
+  <rect class="acc" x="30" y="50" width="210" height="52" rx="4"/>
+  <text class="t" x="44" y="72">JupyterLab</text>
+  <text class="l" x="44" y="90">with the collaboration extensions</text>
+  <line class="hl" x1="242" y1="76" x2="348" y2="76" marker-start="url(#b)" marker-end="url(#b)"/>
+  <rect class="acc" x="30" y="120" width="210" height="52" rx="4"/>
+  <text class="t" x="44" y="142">Another tab or person</text>
+  <text class="l" x="44" y="160">sees edits and cursors</text>
+  <line class="hl" x1="242" y1="146" x2="348" y2="146" marker-start="url(#b)" marker-end="url(#b)"/>
+  <rect class="acc" x="30" y="190" width="210" height="52" rx="4"/>
+  <text class="t" x="44" y="212">nb-cli, ganymede mcp</text>
+  <text class="l" x="44" y="230">agents edit and run cells</text>
+  <line class="hl" x1="242" y1="216" x2="348" y2="216" marker-start="url(#b)" marker-end="url(#b)"/>
+  <text class="l" x="295" y="42" text-anchor="middle">websocket</text>
+  <text class="l" x="295" y="56" text-anchor="middle">yjs updates</text>
+  <rect class="ok" x="350" y="30" width="240" height="212" rx="4"/>
+  <text class="m" x="364" y="54">ganymede serve</text>
+  <rect class="inner" x="366" y="70" width="208" height="156" rx="4"/>
+  <text class="t" x="380" y="94">Document room</text>
+  <text class="l" x="380" y="114">the notebook as a yrs document,</text>
+  <text class="l" x="380" y="129">in jupyter_ydoc’s schema</text>
+  <text class="l" x="380" y="154">named for the file’s id,</text>
+  <text class="l" x="380" y="169">kept across restarts</text>
+  <text class="l" x="380" y="194">one per open notebook, shared</text>
+  <text class="l" x="380" y="209">by all its clients</text>
+  <rect class="box" x="680" y="30" width="200" height="80" rx="4"/>
+  <text class="m" x="694" y="56">analysis.ipynb</text>
+  <text class="l" x="694" y="76">the file is the source</text>
+  <text class="l" x="694" y="92">of truth</text>
+  <line class="hl" x1="592" y1="64" x2="678" y2="64" marker-end="url(#b)"/>
+  <text class="l" x="635" y="50" text-anchor="middle">autosave</text>
+  <line class="ln" x1="678" y1="96" x2="592" y2="96" marker-end="url(#a)"/>
+  <text class="l" x="635" y="116" text-anchor="middle">watcher,</text>
+  <text class="l" x="635" y="130" text-anchor="middle">cell merge</text>
+  <rect class="box" x="680" y="190" width="200" height="70" rx="4"/>
+  <text class="t" x="694" y="214">Other programs</text>
+  <text class="l" x="694" y="232">an agent, git pull, a sync</text>
+  <text class="l" x="694" y="247">service, an editor</text>
+  <line class="ln dash" x1="780" y1="188" x2="780" y2="112" marker-end="url(#a)"/>
+  <text class="l" x="788" y="156">write the file</text>
+  <rect class="inner" x="350" y="262" width="300" height="64" rx="4"/>
+  <text class="l" x="362" y="282">Saves 1 s after the last edit, with If-Match on the</text>
+  <text class="l" x="362" y="298">hash it last read. Looks at the file once changes</text>
+  <text class="l" x="362" y="314">settle for 0.5 s, at most 5 s after the first.</text>
+</svg>

@@ -10,6 +10,8 @@ Ganymede speaks the same protocol as `jupyter-collaboration`, so
 JupyterLab's collaboration extensions work unchanged, and nb-cli and
 [`ganymede mcp`](mcp.md) edit and run notebooks through rooms too.
 
+![A document room. Clients such as JupyterLab tabs, a second person, nb-cli and ganymede mcp connect to ganymede serve over websockets and exchange yjs updates with one document room per open notebook. The room holds the notebook as a yrs document in jupyter_ydoc's schema, named for the file's id. It autosaves to the notebook file one second after the last edit, with If-Match on the hash it last read. The file stays the source of truth: other programs, such as an agent, git pull, a sync service or an editor, write it, and the room's watcher takes their changes in once they settle for half a second, at most five seconds after the first, merging them cell by cell.](images/rooms/overview.svg)
+
 ## Turn it on in JupyterLab
 
 Install the collaboration extensions into the JupyterLab that Ganymede
@@ -51,6 +53,8 @@ cell:
 - Notebook metadata merges key by key the same way.
 - Notebooks older than nbformat 4.5 have no cell ids, so for them the file
   wins outright, as in `jupyter-collaboration`.
+
+![Merging a file change into a room with unsaved edits, cell by cell. A cell only the room edited keeps the room's source. A cell only the file changed, for example with new outputs, takes the file's version. A cell the room edited and another program ran keeps the room's source and takes the file's outputs and execution count. A cell both edited in the same part, or one deleted while the other changed it, takes the file's version and the server logs the cell. A cell the file added is added. Source, outputs with execution count, and each metadata key merge separately; notebook metadata merges key by key. Notebooks before nbformat 4.5 have no cell ids, so the file wins outright. The room saves the merge at once.](images/rooms/merge.svg)
 
 After taking in a change from the file, the room saves its own edits at
 once. A client's explicit save whose merge lets the file win a cell the
@@ -117,6 +121,8 @@ queues them as one batch, and answers `200 null`. It answers `409
 client hashed it, and `408` if `previous_request_id` wasn't queued within
 ten seconds. A cell that fails stops the rest of its batch.
 
+![Running cells into a room. A client such as nb-cli or ganymede mcp sends POST /api/kernels/{id}/execute with the document id and each cell's id and source hash (MurmurHash2, seed 0). Ganymede checks each cell's source in the room against its hash: if one changed it answers 409 source_mismatch, and if the previous request wasn't queued it answers 408, and nothing runs. Otherwise it clears the cells, queues them as one batch and answers 200 null. It sends the cells to the kernel one after another; a cell that fails stops the rest of the batch. As outputs arrive on iopub, Ganymede writes them and the execution count into the room, so every client sees them and autosave writes them to the file even with no client connected. With the optional wait field, the answer comes once the batch has run, with finished and each cell as the room has it.](images/rooms/execute.svg)
+
 ### Waiting for the cells
 
 > [!NOTE]
@@ -150,6 +156,8 @@ run tools return an error), since their outputs would never be saved.
 Once the owner's
 room closes or its server exits, the other room takes the lock within a
 second and saves its own edits from then on.
+
+![Two servers on one notebook on the same machine. Server A opened a room on the file first, so it holds a lock in the runtime dir's ganymede-rooms folder, named for the file's path, while the room is open; its JupyterLab clients edit, and it saves and runs cells. Server B's room on the same file is read-only: it takes in A's saves through its watcher, never saves, undoes edits its clients send, refuses to run cells with 400, and its contents API reports the notebook as not writable. B checks the lock each second and takes it once A's room closes or A exits. Across machines, as with a synced folder, there is no lock and rooms merge through the file. An app that embeds the server takes no lock.](images/rooms/two-servers.svg)
 
 A room that was writable and finds another server owns its file now
 (after a rename, or once the file is reachable by a path another server
