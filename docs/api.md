@@ -350,7 +350,7 @@ What `ganymede serve` answers, beyond the examples above:
   `/lsp/status` and `/lsp/ws/{name}`; `jupyter-collaboration`'s
   `/api/collaboration` rooms with `/api/fileid/*`, and
   `jupyter-server-documents`' `/api/kernels/{id}/execute`
-  ([Document model and collaboration](protocol.md#document-model-and-collaboration)); `jupyter-resource-usage`'s
+  ([Live editing and document rooms](rooms.md)); `jupyter-resource-usage`'s
   `/api/metrics/v1`.
 - Ganymede's own: `/api/kernels/{id}/log`, and `/mcp` with `--mcp`
   ([Agents over MCP](mcp.md)).
