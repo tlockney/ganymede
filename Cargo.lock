@@ -1060,7 +1060,6 @@ dependencies = [
  "futures",
  "ganymede-contents",
  "ganymede-kernel-host",
- "ganymede-protocol",
  "serde",
  "serde_json",
  "tempfile",
@@ -1141,7 +1140,6 @@ dependencies = [
 name = "ganymede-engine"
 version = "0.7.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "ganymede-exec",
  "ganymede-kernel-host",
@@ -1149,7 +1147,6 @@ dependencies = [
  "ganymede-protocol",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -1164,7 +1161,6 @@ dependencies = [
  "chrono",
  "ganymede-kernel-host",
  "ganymede-nbformat",
- "ganymede-protocol",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
@@ -1199,7 +1195,6 @@ dependencies = [
  "reqwest",
  "rustls",
  "rustls-platform-verifier",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1212,10 +1207,8 @@ dependencies = [
 name = "ganymede-kernel-host"
 version = "0.7.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "bytes",
- "chrono",
  "dirs",
  "futures",
  "ganymede-protocol",
@@ -1311,7 +1304,6 @@ dependencies = [
  "sha2",
  "sysinfo",
  "tempfile",
- "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite 0.30.0",
  "toml",

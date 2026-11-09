@@ -1,7 +1,7 @@
 //! A notebook run through the engine on an in-process kernel, with no
 //! sockets, subprocesses, or threads: what an embedded host (an iPad app, a
 //! browser worker) has. Built for `wasm32-wasip1` and run under Node's WASI
-//! by `e2e/wasm-smoke/run.sh`; prints the executed notebook.
+//! by `e2e/wasm-smoke/run.mjs`; prints the executed notebook.
 
 use ganymede_engine::host::testing::{FakeKernel, ReplyOrder};
 use ganymede_engine::host::in_process_pair;

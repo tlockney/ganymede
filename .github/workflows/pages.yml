@@ -66,10 +66,11 @@ jobs:
       # ganymede-ui's docs/*.md, from its main, under /docs/ganymede-ui/.
       - run: npm run fetch-ui
         working-directory: docs
-      # The cell API reference, generated from TSDoc in cdp-kernel and
-      # ganymede-device, from their main, under /docs/cell-api/ (#607).
+      # The docs scripts' own tests (scripts/*.test.mjs).
       - run: npm test
         working-directory: docs
+      # The cell API reference, generated from TSDoc in cdp-kernel and
+      # ganymede-device, from their main, under /docs/cell-api/ (#607).
       - run: npm run fetch-cell-api
         working-directory: docs
       - run: npm run build

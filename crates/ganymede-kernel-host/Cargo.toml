@@ -32,7 +32,6 @@ libc = { version = "0.2", optional = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 tempfile.workspace = true
-anyhow.workspace = true
 tracing-subscriber.workspace = true
 
 # Job objects, so a kernel's process tree dies on kill and with the host.
@@ -45,7 +44,7 @@ windows-sys = { version = "0.61", optional = true, features = [
     "Win32_System_Threading",
 ] }
 
-# Browser wasm has no OS randomness or clock; take both from JavaScript.
+# Browser wasm has no OS randomness; uuid takes it from JavaScript.
+# (ganymede-protocol does the same for chrono's clock.)
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 uuid = { workspace = true, features = ["js"] }
-chrono = { workspace = true, features = ["wasmbind"] }

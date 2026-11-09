@@ -293,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-engine"
-version = "0.4.0"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "ganymede-exec",
@@ -309,14 +309,13 @@ dependencies = [
 
 [[package]]
 name = "ganymede-exec"
-version = "0.4.0"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "base64",
  "chrono",
  "ganymede-kernel-host",
  "ganymede-nbformat",
- "ganymede-protocol",
  "serde_json",
  "thiserror",
  "tokio",
@@ -325,11 +324,10 @@ dependencies = [
 
 [[package]]
 name = "ganymede-kernel-host"
-version = "0.4.0"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "bytes",
- "chrono",
  "dirs",
  "futures",
  "ganymede-protocol",
@@ -343,8 +341,9 @@ dependencies = [
 
 [[package]]
 name = "ganymede-nbformat"
-version = "0.4.0"
+version = "0.7.0"
 dependencies = [
+ "base64",
  "serde",
  "serde_json",
  "tempfile",
@@ -354,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-protocol"
-version = "0.4.0"
+version = "0.7.0"
 dependencies = [
  "bytes",
  "chrono",

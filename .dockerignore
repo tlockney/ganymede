@@ -3,7 +3,7 @@
 .git
 .claude
 target
-node_modules
+**/node_modules
 docs/.vitepress/dist
 docs/.vitepress/cache
 validation/out
