@@ -7,7 +7,7 @@
 //! `ui/<version>/` under the data directory. `ganymede ui` serves the
 //! newest install as `--static-dir`, as `ganymede lab` serves JupyterLab.
 
-use crate::lab::pypi::{agent, https_host, save_checked};
+use crate::lab::pypi::{agent, https_host, retry, save_checked};
 use crate::lab::{replace_dir, version_dir, Limits};
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
@@ -177,20 +177,22 @@ impl Releases {
     /// GETs `url`, following up to five redirects by hand, each to an
     /// allowed host. Following them here, rather than in ureq, leaves each
     /// redirect's body unread: some proxies send GitHub's empty 302 body
-    /// with a chunked framing ureq cannot drain.
+    /// with a chunked framing ureq cannot drain. Each request is sent
+    /// again a few times if the server fails it or it times out
+    /// ([`retry`]).
     fn get(&self, url: &str) -> Result<ureq::http::Response<ureq::Body>> {
         let mut url = url.to_string();
         for _ in 0..=5 {
             self.check(&url)?;
-            let resp = match self
-                .agent
-                .get(&url)
-                .config()
-                .max_redirects(0)
-                .max_redirects_will_error(false)
-                .build()
-                .call()
-            {
+            let resp = match retry(&url, || {
+                self.agent
+                    .get(&url)
+                    .config()
+                    .max_redirects(0)
+                    .max_redirects_will_error(false)
+                    .build()
+                    .call()
+            }) {
                 Err(ureq::Error::StatusCode(404)) => bail!("{url}: not found"),
                 r => r.with_context(|| format!("fetching {url}"))?,
             };

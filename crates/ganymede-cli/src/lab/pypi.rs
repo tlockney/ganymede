@@ -1,7 +1,9 @@
 //! Fetching from PyPI for `ganymede lab install` and `lab extension
 //! install`, with the limits an untrusted network calls for: HTTPS only,
 //! timeouts, a host allowlist (checked after redirects), a download size
-//! cap, yanked releases skipped, and PEP 440 version specifiers.
+//! cap, yanked releases skipped, and PEP 440 version specifiers. A request
+//! the server fails (5xx) or that times out is sent again a few times
+//! ([`retry`]).
 //!
 //! What this does not give is provenance: a wheel's SHA-256 comes from the
 //! same PyPI response as its URL, so it catches corruption, not a
@@ -81,7 +83,7 @@ impl Index {
             }
             None => format!("{}/{project}/json", self.api),
         };
-        match self.agent.get(&url).call() {
+        match retry(&url, || self.agent.get(&url).call()) {
             Ok(mut r) => {
                 check_host(
                     &r.get_uri().to_string(),
@@ -104,11 +106,8 @@ impl Index {
     /// an allowed host, is at most [`MAX_WHEEL_BYTES`], and has `sha256`.
     pub fn download(&self, url: &str, sha256: &str, out: &mut std::fs::File) -> Result<()> {
         check_host(url, &self.file_hosts)?;
-        let resp = self
-            .agent
-            .get(url)
-            .call()
-            .with_context(|| format!("fetching {url}"))?;
+        let resp =
+            retry(url, || self.agent.get(url).call()).with_context(|| format!("fetching {url}"))?;
         // A redirect may only land on an allowed host too.
         check_host(&resp.get_uri().to_string(), &self.file_hosts)?;
         if let Some(len) = resp.body().content_length() {
@@ -141,6 +140,60 @@ pub(crate) fn agent() -> ureq::Agent {
         .user_agent(concat!("ganymede/", env!("CARGO_PKG_VERSION")))
         .build();
     ureq::Agent::new_with_config(config)
+}
+
+/// The wait before each retry of a request: three retries, seven seconds
+/// of waiting in all.
+const RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+];
+
+/// Whether a request that failed with `err` may succeed if sent again:
+/// the server answered 5xx, or a timeout passed. GitHub's release
+/// downloads and PyPI both answer 502 to 504 now and then (#634).
+/// Anything else (404, a refused connection, a TLS failure) would fail
+/// the same way again.
+fn is_transient(err: &ureq::Error) -> bool {
+    matches!(
+        err,
+        ureq::Error::StatusCode(500..=599) | ureq::Error::Timeout(_)
+    )
+}
+
+/// Sends the request for `url` with `call`, and again after each of
+/// [`RETRY_DELAYS`] while it fails with a transient error
+/// ([`is_transient`]), saying so on stderr. Returns the last error when
+/// every attempt fails.
+///
+/// This covers the request up to the response's headers. A body that
+/// stalls or is cut off part way still fails the install.
+pub(crate) fn retry<T>(
+    url: &str,
+    call: impl FnMut() -> Result<T, ureq::Error>,
+) -> Result<T, ureq::Error> {
+    retry_after(url, &RETRY_DELAYS, call)
+}
+
+fn retry_after<T>(
+    url: &str,
+    delays: &[Duration],
+    mut call: impl FnMut() -> Result<T, ureq::Error>,
+) -> Result<T, ureq::Error> {
+    let mut delays = delays.iter();
+    loop {
+        match call() {
+            Err(e) if is_transient(&e) => {
+                let Some(delay) = delays.next() else {
+                    return Err(e);
+                };
+                eprintln!("{url}: {e}; trying again in {}s", delay.as_secs());
+                std::thread::sleep(*delay);
+            }
+            r => return r,
+        }
+    }
 }
 
 /// The lowercase host of an `https://` URL.
@@ -800,6 +853,122 @@ mod tests {
             ["files.pythonhosted.org", "mirror.example", "cdn.example"]
         );
         assert!(Index::new("http://mirror.example/pypi", "").is_err());
+    }
+
+    /// A local HTTP server that answers each connection in turn with the
+    /// next of `responses`: a status to send, or `None` to read the
+    /// request and never answer. It stops listening after the last, so a
+    /// request too many is refused. Returns its URL and the number of
+    /// requests it has had.
+    fn serve(
+        responses: Vec<Option<&'static str>>,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/file", listener.local_addr().unwrap());
+        let requests = std::sync::Arc::new(AtomicUsize::new(0));
+        let seen = requests.clone();
+        std::thread::spawn(move || {
+            for response in responses {
+                let Ok((mut conn, _)) = listener.accept() else {
+                    return;
+                };
+                let mut head = Vec::new();
+                let mut buf = [0; 1024];
+                while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match conn.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => head.extend_from_slice(&buf[..n]),
+                    }
+                }
+                seen.fetch_add(1, SeqCst);
+                match response {
+                    Some(status) => {
+                        let _ = write!(
+                            conn,
+                            "HTTP/1.1 {status}\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                        );
+                    }
+                    // Left open, so the client waits out its timeout.
+                    None => std::mem::forget(conn),
+                }
+            }
+        });
+        (url, requests)
+    }
+
+    /// [`agent`] without HTTPS only (the local server is plain HTTP) or a
+    /// proxy from the environment, waiting `recv_response` for an answer.
+    fn plain_agent(recv_response: Duration) -> ureq::Agent {
+        ureq::Agent::new_with_config(
+            ureq::Agent::config_builder()
+                .proxy(None)
+                .timeout_recv_response(Some(recv_response))
+                .build(),
+        )
+    }
+
+    const NO_WAIT: [Duration; 3] = [Duration::ZERO; 3];
+
+    fn requests(n: &std::sync::atomic::AtomicUsize) -> usize {
+        n.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[test]
+    fn retries_a_request_the_server_fails() {
+        let (url, n) = serve(vec![
+            Some("504 Gateway Timeout"),
+            Some("503 Service Unavailable"),
+            Some("200 OK"),
+        ]);
+        let agent = plain_agent(Duration::from_secs(30));
+        let resp = retry_after(&url, &NO_WAIT, || agent.get(&url).call()).unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(requests(&n), 3);
+    }
+
+    #[test]
+    fn retries_a_request_that_times_out() {
+        let (url, n) = serve(vec![None, Some("200 OK")]);
+        let agent = plain_agent(Duration::from_secs(1));
+        let resp = retry_after(&url, &NO_WAIT, || agent.get(&url).call()).unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(requests(&n), 2);
+    }
+
+    #[test]
+    fn gives_up_after_the_last_retry() {
+        let (url, n) = serve(vec![Some("502 Bad Gateway"); 5]);
+        let agent = plain_agent(Duration::from_secs(30));
+        let err = retry_after(&url, &NO_WAIT, || agent.get(&url).call()).unwrap_err();
+        assert!(matches!(err, ureq::Error::StatusCode(502)), "{err}");
+        // The first attempt and one per delay.
+        assert_eq!(requests(&n), 1 + NO_WAIT.len());
+    }
+
+    #[test]
+    fn does_not_retry_what_would_fail_again() {
+        // Not found: one request, though the next would have succeeded.
+        let (url, n) = serve(vec![Some("404 Not Found"), Some("200 OK")]);
+        let agent = plain_agent(Duration::from_secs(30));
+        let err = retry_after(&url, &NO_WAIT, || agent.get(&url).call()).unwrap_err();
+        assert!(matches!(err, ureq::Error::StatusCode(404)), "{err}");
+        assert_eq!(requests(&n), 1);
+
+        // Nothing listening: refused, and not retried.
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let url = format!("http://127.0.0.1:{port}/file");
+        let mut calls = 0;
+        let err = retry_after(&url, &NO_WAIT, || {
+            calls += 1;
+            agent.get(&url).call()
+        })
+        .unwrap_err();
+        assert!(!is_transient(&err), "{err}");
+        assert_eq!(calls, 1);
     }
 
     #[test]
