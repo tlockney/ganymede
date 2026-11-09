@@ -305,6 +305,27 @@ impl Collab {
         }
     }
 
+    /// The notebook at `path` as its room has it, with cell ids, when a
+    /// room is open on it; `None` otherwise. Opens no room and makes no
+    /// file id, so a search can read many notebooks cheaply.
+    pub(crate) async fn open_notebook(&self, path: &str) -> Option<Notebook> {
+        let p = path.to_string();
+        let id = self.with_ids(move |ids| ids.get(&p)).await?;
+        let room = self
+            .rooms
+            .lock()
+            .expect("rooms")
+            .get(&format!("json:notebook:{id}"))
+            .cloned()?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        room.send(Cmd::With(Box::new(move |room: &mut Room| {
+            let _ = tx.send(room.notebook_with_ids());
+            ganymede_documents::Effects::default()
+        })))
+        .ok()?;
+        rx.await.ok()??.ok()
+    }
+
     /// The contents root on disk, when the contents are a local directory.
     pub(crate) fn root(&self) -> Option<&std::path::Path> {
         self.root.as_deref()

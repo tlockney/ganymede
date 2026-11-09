@@ -32,6 +32,7 @@
 //! (see the `marks` module).
 
 mod marks;
+mod search;
 mod snapshot;
 
 use crate::collab::{hold_notebook, notebook_room_id, with_notebook, Hold};
@@ -315,6 +316,25 @@ pub struct ListArgs {
     /// Directory relative to the server root (default: the root).
     pub dir: Option<String>,
 }
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SearchArgs {
+    /// Words to find, all of them, in any case and order.
+    pub query: String,
+    /// Directory to search, with its subdirectories, relative to the
+    /// server root (default: the root).
+    pub dir: Option<String>,
+    /// Search text outputs too, not only sources (default false).
+    pub outputs: Option<bool>,
+    /// Only cells of this type: `code`, `markdown` or `raw`.
+    pub cell_type: Option<String>,
+    /// Most matching cells to return (default 20, at most 200).
+    pub limit: Option<usize>,
+}
+
+/// Notebooks `notebooks_search` reads at most, so a large tree can't
+/// stall the server.
+const SEARCH_MAX_NOTEBOOKS: usize = 2000;
 
 #[tool_router]
 impl Notebooks {
@@ -887,6 +907,71 @@ impl Notebooks {
         Ok(CallToolResult::success(blocks))
     }
 
+    #[tool(
+        description = "Search notebooks under a directory (default: the root, with subdirectories) for cells containing every word of `query`, ignoring case. Searches sources, and text outputs with `outputs: true`. Returns each matching cell's notebook, title, index, id, type and an excerpt; read a hit in full with `notebook_read`. Use it before starting a journal, to find what earlier notebooks found."
+    )]
+    async fn notebooks_search(
+        &self,
+        Parameters(a): Parameters<SearchArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let words = search::words(&a.query);
+        if words.is_empty() {
+            return Err(err("query is empty"));
+        }
+        if let Some(t) = a.cell_type.as_deref() {
+            if !matches!(t, "code" | "markdown" | "raw") {
+                return Err(err("cell_type must be code, markdown or raw"));
+            }
+        }
+        let scope = search::Scope {
+            outputs: a.outputs.unwrap_or(false),
+            cell_type: a.cell_type.as_deref(),
+        };
+        let limit = a.limit.unwrap_or(20).clamp(1, 200);
+        let dir = ganymede_contents::normalize_api_path(a.dir.as_deref().unwrap_or(""));
+        let (paths, truncated) = self.notebook_paths(&dir).await?;
+        let (mut out, mut shown, mut total, mut notebooks) = (String::new(), 0, 0, 0);
+        for path in &paths {
+            let Some(nb) = self.notebook_for_search(path).await else {
+                continue;
+            };
+            let hits = search::search(&nb, &words, scope);
+            if hits.is_empty() {
+                continue;
+            }
+            total += hits.len();
+            notebooks += 1;
+            if shown >= limit {
+                continue;
+            }
+            let head = json!({"path": path, "title": search::title(&nb)});
+            out.push_str(&format!("@@notebook {head}\n"));
+            for h in hits.into_iter().take(limit - shown) {
+                let head =
+                    json!({"index": h.index, "id": h.id, "cell_type": h.cell_type, "in": h.r#in});
+                out.push_str(&format!("@@cell {head}\n{}\n", h.excerpt));
+                shown += 1;
+            }
+            out.push('\n');
+        }
+        let mut summary = format!(
+            "{total} matching cells in {notebooks} of {} notebooks under {}",
+            paths.len(),
+            if dir.is_empty() { "the root" } else { &dir }
+        );
+        if shown < total {
+            summary.push_str(&format!(
+                "; showing {shown} (raise `limit` or narrow `dir`)"
+            ));
+        }
+        if truncated {
+            summary.push_str(&format!(
+                "; stopped after {SEARCH_MAX_NOTEBOOKS} notebooks (narrow `dir`)"
+            ));
+        }
+        text(format!("{summary}.\n\n{out}"))
+    }
+
     #[tool(description = "List the kernels that can run notebooks here.")]
     async fn kernelspecs_list(&self) -> Result<CallToolResult, McpError> {
         let specs = self
@@ -954,6 +1039,7 @@ impl Notebooks {
 const JOURNAL_PROMPT: &str = "\
 Keep a notebook as the record of this analysis while you work, not as a write-up at the end.
 
+- Before a new notebook, `notebooks_search` for the topic's key words to find what earlier notebooks found, and build on it.
 - Start with `notebook_open` (a new notebook gets a title cell); later tools may leave out `path`.
 - Before each step, add a short Markdown note with `cell_add` saying what you are about to find out and why.
 - Run the code that produces results with `cell_run`, so the notebook keeps both the code and its output. The outputs are the record of the run: keep them.
@@ -1216,6 +1302,80 @@ impl Notebooks {
     }
 
     /// The notebook, and this connection's read mark moved to it.
+    /// Notebook paths under `dir`, depth first in name order, skipping
+    /// checkpoints; and whether [`SEARCH_MAX_NOTEBOOKS`] cut the list.
+    /// Hidden files stay out as the contents API leaves them out.
+    async fn notebook_paths(&self, dir: &str) -> Result<(Vec<String>, bool), McpError> {
+        let mut found = Vec::new();
+        let mut dirs = vec![dir.to_string()];
+        while let Some(d) = dirs.pop() {
+            let model = self
+                .state
+                .contents
+                .get(
+                    &d,
+                    GetOptions {
+                        content: true,
+                        type_hint: Some(ContentType::Directory),
+                        ..Default::default()
+                    },
+                )
+                .await;
+            let items = match model {
+                Ok(m) => match m.content {
+                    Some(Value::Array(items)) => items,
+                    _ => continue,
+                },
+                // The directory asked for must exist; one below it that
+                // went away while walking is skipped.
+                Err(e) if d == dir => return Err(err(e.to_string())),
+                Err(_) => continue,
+            };
+            let mut subdirs = Vec::new();
+            let mut entries: Vec<_> = items.iter().collect();
+            entries.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+            for item in entries {
+                let path = item["path"].as_str().unwrap_or_default().to_string();
+                match item["type"].as_str() {
+                    Some("directory") if item["name"] != ".ipynb_checkpoints" => subdirs.push(path),
+                    Some("notebook") => {
+                        if found.len() == SEARCH_MAX_NOTEBOOKS {
+                            return Ok((found, true));
+                        }
+                        found.push(path);
+                    }
+                    _ => {}
+                }
+            }
+            // Popped from the end: push in reverse for name order.
+            dirs.extend(subdirs.into_iter().rev());
+        }
+        Ok((found, false))
+    }
+
+    /// A notebook for [`Self::notebooks_search`]: from its room when one
+    /// is open, so unsaved edits count, else from disk. `None` when it
+    /// can't be read.
+    async fn notebook_for_search(&self, path: &str) -> Option<Notebook> {
+        if let Some(nb) = self.state.collab.open_notebook(path).await {
+            return Some(nb);
+        }
+        let model = self
+            .state
+            .contents
+            .get(
+                path,
+                GetOptions {
+                    content: true,
+                    type_hint: Some(ContentType::Notebook),
+                    ..Default::default()
+                },
+            )
+            .await
+            .ok()?;
+        Notebook::from_value(model.content?).ok()
+    }
+
     async fn read_marked(&self, path: &str) -> Result<(Notebook, String), McpError> {
         let token = self
             .tokens

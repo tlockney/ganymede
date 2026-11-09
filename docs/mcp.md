@@ -124,6 +124,7 @@ isn't reported to the agent as someone else's edit.
 | `notebook_run_all` | Restart the kernel and run every code cell in order. |
 | `kernelspecs_list`, `notebooks_list` | The kernels available, and the notebooks in a directory. |
 | `cell_snapshot` | Cells as Markdown to show a person: code, images saved as files, tables, text (see [Snapshots](#snapshots)). |
+| `notebooks_search` | Cells across notebooks that contain every word of a query (see [Search](#search)). |
 
 Each notebook is also a `notebook://<path>` resource, and the `journal`
 prompt gives the agent conventions for keeping the record.
@@ -203,6 +204,33 @@ API. Links to output images put the path in angle brackets and encode
 Markdown cell's `attachment:` links are percent-encoded instead (a space
 becomes `%20`), so they also work in `<img src>`; decode the path before
 opening the file. `dir` isn't allowed in read-only mode.
+
+## Search
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`notebooks_search` finds what earlier notebooks found, such as other
+journals on the same data, before an agent starts a new one:
+
+```sh
+ganymede mcp call notebooks_search '{"query": "workday 2019", "dir": "journal"}'
+```
+
+A cell matches when it contains every word of `query`, in any case and
+order. `dir` (default: the root) is searched with its subdirectories,
+skipping hidden ones and checkpoints. Sources are searched; with
+`outputs: true`, text outputs too (streams, the text of results and
+displays, and errors). `cell_type` keeps only `code`, `markdown` or `raw`
+cells, and `limit` (default 20, at most 200) caps the cells returned.
+
+The reply counts the matches, then lists each matching notebook with its
+title (its first heading) and each cell with its index, id, type, where
+it matched, and a line of context. `notebook_read` reads a hit in full.
+A notebook open in a room is read from the room, so edits not yet saved
+count; others are read from disk. A search reads at most 2,000
+notebooks and says so when it stops early.
 
 ## Changes by others
 
