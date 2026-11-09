@@ -26,3 +26,10 @@ The HTML table reader is a small scanner over `<tr>`, `<th>` and `<td>`
 rather than an HTML parser dependency. It takes the first table in the
 output and its first row as the header, which fits pandas and Polars'
 HTML. Vega-Lite specs without an SVG or PNG still come out as text.
+
+The reviewer of #612 found that an error's `ename` and `evalue` still
+reached the agent with colours (#614): cdp-kernel describes a thrown
+non-Error with `inspect`, colours on, so `throw { code: 1 }` arrived as
+`{ code: \x1b[33m1\x1b[39m }` in the `@@output` head. Those two fields are
+stripped now too, and the per-frame strip of tracebacks went, since the
+joined body is stripped anyway.

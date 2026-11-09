@@ -75,7 +75,8 @@ pub struct McpOptions {
     pub no_execute: bool,
     /// Send images to the model as image content.
     pub images: bool,
-    /// Where long outputs go; the system temp dir when `None`.
+    /// Where long outputs and snapshot images go; `ganymede-mcp-outputs`
+    /// in the Jupyter runtime dir when `None`.
     pub outputs_dir: Option<PathBuf>,
 }
 
@@ -1752,14 +1753,21 @@ fn render_outputs(opts: &McpOptions, outputs: &[Output]) -> String {
                 v["text"].as_str().unwrap_or_default().to_string()
             }
             "error" => {
-                head["ename"] = v["ename"].clone();
-                head["evalue"] = v["evalue"].clone();
+                // The message can carry colours too, as cdp-kernel's
+                // `util.inspect` of a thrown non-Error does (#614).
+                let plain = |k: &str| {
+                    json!(ganymede_nbformat::strip_ansi(
+                        v[k].as_str().unwrap_or_default()
+                    ))
+                };
+                head["ename"] = plain("ename");
+                head["evalue"] = plain("evalue");
                 let frames: Vec<String> = v["traceback"]
                     .as_array()
                     .map(|t| {
                         t.iter()
                             .filter_map(Value::as_str)
-                            .map(ganymede_nbformat::strip_ansi)
+                            .map(str::to_string)
                             .collect()
                     })
                     .unwrap_or_default();
@@ -1938,12 +1946,15 @@ mod tests {
             {"output_type": "stream", "name": "stdout", "text": "\u{1b}[1mbold\u{1b}[22m\n"},
             {"output_type": "execute_result", "execution_count": 1, "metadata": {},
              "data": {"text/plain": "[ \u{1b}[32m'day'\u{1b}[39m, \u{1b}[33m3\u{1b}[39m ]"}},
+            {"output_type": "error", "ename": "Uncaught", "traceback": [],
+             "evalue": "{ code: \u{1b}[33m1\u{1b}[39m }"},
         ]))
         .unwrap();
         let s = render_outputs(&McpOptions::default(), &outputs);
         assert!(!s.contains('\u{1b}'), "{s}");
         assert!(s.contains("bold\n"), "{s}");
         assert!(s.contains("[ 'day', 3 ]"), "{s}");
+        assert!(s.contains(r#""evalue":"{ code: 1 }""#), "{s}");
     }
 
     #[test]
