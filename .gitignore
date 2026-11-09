@@ -9,6 +9,7 @@ docs/.vitepress/dist/
 docs/.vitepress/cache/
 THIRD-PARTY-NOTICES
 docs/ganymede-ui/
+docs/cell-api/
 docs/images/themed/
 docs/scripts/work/
 

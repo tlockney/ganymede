@@ -71,6 +71,17 @@ export function groups(): Group[] {
       ],
     },
     {
+      // Generated from TSDoc in cdp-kernel and ganymede-device, copied in
+      // by `npm run fetch-cell-api` (#596, #607).
+      text: "Cell APIs",
+      level: "reference",
+      items: [
+        { text: "jupyter", link: "/cell-api/jupyter" },
+        { text: "Widgets and comms", link: "/cell-api/widgets" },
+        { text: "device", link: "/cell-api/device" },
+      ],
+    },
+    {
       text: "How it works",
       level: "advanced",
       items: [
