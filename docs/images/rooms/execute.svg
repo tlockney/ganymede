@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 460" width="900" height="460" role="img" aria-label="Running cells into a room. A client such as nb-cli or ganymede mcp sends POST /api/kernels/{id}/execute with the document id and each cell&#x27;s id and source hash (MurmurHash2, seed 0). Ganymede checks each cell&#x27;s source in the room against its hash: if one changed it answers 409 source_mismatch, and if the previous request wasn&#x27;t queued within ten seconds it answers 408, and nothing runs. Otherwise it clears the cells, queues them as one batch and answers 200 null. It sends the cells to the kernel one after another; a cell that fails stops the rest of the batch. As outputs arrive on iopub, Ganymede writes them and the execution count into the room, so every client sees them and autosave writes them to the file even with no client connected.">
+  <title>Running cells into a room. A client such as nb-cli or ganymede mcp sends POST /api/kernels/{id}/execute with the document id and each cell's id and source hash (MurmurHash2, seed 0). Ganymede checks each cell's source in the room against its hash: if one changed it answers 409 source_mismatch, and if the previous request wasn't queued within ten seconds it answers 408, and nothing runs. Otherwise it clears the cells, queues them as one batch and answers 200 null. It sends the cells to the kernel one after another; a cell that fails stops the rest of the batch. As outputs arrive on iopub, Ganymede writes them and the execution count into the room, so every client sees them and autosave writes them to the file even with no client connected.</title>
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f6f7f9; stroke: #9aa3ad; stroke-width: 1.2; }
+    .inner { fill: #ffffff; stroke: #b8c0c8; stroke-width: 1; }
+    .acc { fill: #e8f0fe; stroke: #3b6fd8; stroke-width: 1.4; }
+    .warn { fill: #fdf0e6; stroke: #c96a1b; stroke-width: 1.4; }
+    .ok { fill: #e7f5ec; stroke: #2f8a4c; stroke-width: 1.4; }
+    .dash { stroke-dasharray: 5 4; }
+    .warnpill { fill: #c96a1b; }
+    .tw { font: 600 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #ffffff; }
+    .t { font: 600 14px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1f2328; }
+    .s { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .m { font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f2328; }
+    .l { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .ln { stroke: #6e7781; stroke-width: 1.4; fill: none; }
+    .life { stroke: #9aa3ad; stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+    .hl { stroke: #3b6fd8; stroke-width: 1.6; fill: none; }
+    .ah { fill: #6e7781; }
+    .ahb { fill: #3b6fd8; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #1b1b1f; }
+      .box { fill: #25262b; stroke: #5c6370; }
+      .inner { fill: #1b1b1f; stroke: #4a505a; }
+      .acc { fill: #1e2a44; stroke: #6b9bff; }
+      .warn { fill: #3a2a1c; stroke: #e0904a; }
+      .ok { fill: #1d3326; stroke: #5cc27e; }
+      .warnpill { fill: #e0904a; }
+      .tw { fill: #1b1b1f; }
+      .t, .m { fill: #e6e8eb; }
+      .s, .l { fill: #b6bcc4; }
+      .ln { stroke: #a0a7b0; }
+      .life { stroke: #5c6370; }
+      .hl { stroke: #6b9bff; }
+      .ah { fill: #a0a7b0; }
+      .ahb { fill: #6b9bff; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ahb" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="900" height="460" rx="8"/>
+  <rect class="acc" x="20" y="20" width="180" height="44" rx="4"/>
+  <text class="t" x="110" y="39" text-anchor="middle">Client</text>
+  <text class="l" x="110" y="55" text-anchor="middle">nb-cli, ganymede mcp</text>
+  <line class="life" x1="110" y1="64" x2="110" y2="440"/>
+  <rect class="ok" x="280" y="20" width="180" height="44" rx="4"/>
+  <text class="t" x="370" y="39" text-anchor="middle">Ganymede</text>
+  <text class="l" x="370" y="55" text-anchor="middle">execute endpoint</text>
+  <line class="life" x1="370" y1="64" x2="370" y2="440"/>
+  <rect class="box" x="510" y="20" width="180" height="44" rx="4"/>
+  <text class="t" x="600" y="39" text-anchor="middle">Room</text>
+  <text class="l" x="600" y="55" text-anchor="middle">and its clients</text>
+  <line class="life" x1="600" y1="64" x2="600" y2="440"/>
+  <rect class="box" x="735" y="20" width="130" height="44" rx="4"/>
+  <text class="t" x="800" y="39" text-anchor="middle">Kernel</text>
+  <line class="life" x1="800" y1="64" x2="800" y2="440"/>
+  <line class="ln" x1="110" y1="100" x2="368" y2="100" marker-end="url(#a)"/>
+  <text class="s" x="240" y="94" text-anchor="middle">POST /api/kernels/{id}/execute</text>
+  <text class="l" x="240" y="116" text-anchor="middle">document_id, cells: cell_id and</text>
+  <text class="l" x="240" y="130" text-anchor="middle">source_hash (MurmurHash2, seed 0)</text>
+  <line class="ln" x1="370" y1="152" x2="598" y2="152" marker-end="url(#a)"/>
+  <text class="s" x="485" y="146" text-anchor="middle">check each source against its hash</text>
+  <rect class="warn" x="382" y="158" width="206" height="56" rx="4"/>
+  <text class="l" x="392" y="175">changed: 409 source_mismatch</text>
+  <text class="l" x="392" y="191">previous batch not queued</text>
+  <text class="l" x="392" y="207">within 10 s: 408</text>
+  <line class="ln dash" x1="370" y1="186" x2="112" y2="186" marker-end="url(#a)"/>
+  <text class="s" x="240" y="180" text-anchor="middle">409 or 408: nothing runs</text>
+  <line class="ln" x1="370" y1="242" x2="598" y2="242" marker-end="url(#a)"/>
+  <text class="s" x="485" y="236" text-anchor="middle">clear the cells</text>
+  <line class="hl" x1="370" y1="270" x2="112" y2="270" marker-end="url(#b)"/>
+  <text class="s" x="240" y="264" text-anchor="middle">200 null: queued as one batch</text>
+  <line class="ln" x1="370" y1="300" x2="798" y2="300" marker-end="url(#a)"/>
+  <text class="s" x="585" y="294" text-anchor="middle">execute_request, one cell after another</text>
+  <line class="ln" x1="800" y1="336" x2="372" y2="336" marker-end="url(#a)"/>
+  <text class="s" x="585" y="330" text-anchor="middle">outputs on iopub, execute_reply</text>
+  <line class="ln" x1="370" y1="372" x2="598" y2="372" marker-end="url(#a)"/>
+  <text class="s" x="485" y="366" text-anchor="middle">write outputs, execution count</text>
+  <rect class="inner" x="612" y="384" width="268" height="58" rx="4"/>
+  <text class="l" x="622" y="403">every client sees outputs as they arrive;</text>
+  <text class="l" x="622" y="419">autosave writes them to the file, even</text>
+  <text class="l" x="622" y="435">with no client connected</text>
+  <rect class="inner" x="382" y="392" width="206" height="42" rx="4"/>
+  <text class="l" x="392" y="409">a cell that fails stops</text>
+  <text class="l" x="392" y="425">the rest of its batch</text>
+</svg>

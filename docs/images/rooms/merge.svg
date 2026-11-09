@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 428" width="900" height="428" role="img" aria-label="Merging a file change into a room with unsaved edits, cell by cell. A cell only the room edited keeps the room&#x27;s source. A cell only the file changed, for example with new outputs, takes the file&#x27;s version. A cell the room edited and another program ran keeps the room&#x27;s source and takes the file&#x27;s outputs and execution count. A cell both edited in the same part, or one deleted while the other changed it, takes the file&#x27;s version and the server logs the cell. A cell the file added is added. Source, outputs with execution count, and each metadata key merge separately; notebook metadata merges key by key. Notebooks before nbformat 4.5 have no cell ids, so the file wins outright. The room saves the merge at once.">
+  <title>Merging a file change into a room with unsaved edits, cell by cell. A cell only the room edited keeps the room's source. A cell only the file changed, for example with new outputs, takes the file's version. A cell the room edited and another program ran keeps the room's source and takes the file's outputs and execution count. A cell both edited in the same part, or one deleted while the other changed it, takes the file's version and the server logs the cell. A cell the file added is added. Source, outputs with execution count, and each metadata key merge separately; notebook metadata merges key by key. Notebooks before nbformat 4.5 have no cell ids, so the file wins outright. The room saves the merge at once.</title>
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f6f7f9; stroke: #9aa3ad; stroke-width: 1.2; }
+    .inner { fill: #ffffff; stroke: #b8c0c8; stroke-width: 1; }
+    .acc { fill: #e8f0fe; stroke: #3b6fd8; stroke-width: 1.4; }
+    .warn { fill: #fdf0e6; stroke: #c96a1b; stroke-width: 1.4; }
+    .ok { fill: #e7f5ec; stroke: #2f8a4c; stroke-width: 1.4; }
+    .dash { stroke-dasharray: 5 4; }
+    .warnpill { fill: #c96a1b; }
+    .tw { font: 600 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #ffffff; }
+    .t { font: 600 14px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1f2328; }
+    .s { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .m { font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f2328; }
+    .l { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .ln { stroke: #6e7781; stroke-width: 1.4; fill: none; }
+    .life { stroke: #9aa3ad; stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+    .hl { stroke: #3b6fd8; stroke-width: 1.6; fill: none; }
+    .ah { fill: #6e7781; }
+    .ahb { fill: #3b6fd8; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #1b1b1f; }
+      .box { fill: #25262b; stroke: #5c6370; }
+      .inner { fill: #1b1b1f; stroke: #4a505a; }
+      .acc { fill: #1e2a44; stroke: #6b9bff; }
+      .warn { fill: #3a2a1c; stroke: #e0904a; }
+      .ok { fill: #1d3326; stroke: #5cc27e; }
+      .warnpill { fill: #e0904a; }
+      .tw { fill: #1b1b1f; }
+      .t, .m { fill: #e6e8eb; }
+      .s, .l { fill: #b6bcc4; }
+      .ln { stroke: #a0a7b0; }
+      .life { stroke: #5c6370; }
+      .hl { stroke: #6b9bff; }
+      .ah { fill: #a0a7b0; }
+      .ahb { fill: #6b9bff; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ahb" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="900" height="428" rx="8"/>
+  <text class="t" x="30" y="36">Room</text>
+  <text class="l" x="30" y="52">unsaved edits</text>
+  <text class="t" x="330" y="36">File on disk</text>
+  <text class="l" x="330" y="52">changed by another program</text>
+  <text class="t" x="630" y="36">After the merge</text>
+  <text class="l" x="630" y="52">saved to the file at once</text>
+  <rect class="acc" x="30" y="68" width="240" height="34" rx="4"/>
+  <text class="s" x="44" y="90">source edited</text>
+  <rect class="inner" x="330" y="68" width="240" height="34" rx="4"/>
+  <text class="s" x="344" y="90">unchanged</text>
+  <line class="ln" x1="572" y1="85" x2="626" y2="85" marker-end="url(#a)"/>
+  <text class="t" x="300" y="90" text-anchor="middle">+</text>
+  <rect class="acc" x="630" y="68" width="240" height="34" rx="4"/>
+  <text class="s" x="644" y="90">room's source</text>
+  <rect class="inner" x="30" y="114" width="240" height="34" rx="4"/>
+  <text class="s" x="44" y="136">unchanged</text>
+  <rect class="ok" x="330" y="114" width="240" height="34" rx="4"/>
+  <text class="s" x="344" y="136">new outputs</text>
+  <line class="ln" x1="572" y1="131" x2="626" y2="131" marker-end="url(#a)"/>
+  <text class="t" x="300" y="136" text-anchor="middle">+</text>
+  <rect class="ok" x="630" y="114" width="240" height="34" rx="4"/>
+  <text class="s" x="644" y="136">file's outputs</text>
+  <rect class="acc" x="30" y="160" width="240" height="34" rx="4"/>
+  <text class="s" x="44" y="182">source edited</text>
+  <rect class="ok" x="330" y="160" width="240" height="34" rx="4"/>
+  <text class="s" x="344" y="182">cell run: outputs, count</text>
+  <line class="ln" x1="572" y1="177" x2="626" y2="177" marker-end="url(#a)"/>
+  <text class="t" x="300" y="182" text-anchor="middle">+</text>
+  <rect class="acc" x="630" y="160" width="116" height="34" rx="4"/>
+  <text class="s" x="640" y="182">room's source</text>
+  <rect class="ok" x="754" y="160" width="116" height="34" rx="4"/>
+  <text class="s" x="764" y="182">file's outputs</text>
+  <rect class="acc" x="30" y="206" width="240" height="34" rx="4"/>
+  <text class="s" x="44" y="228">source edited</text>
+  <rect class="ok" x="330" y="206" width="240" height="34" rx="4"/>
+  <text class="s" x="344" y="228">source edited</text>
+  <line class="ln" x1="572" y1="223" x2="626" y2="223" marker-end="url(#a)"/>
+  <text class="t" x="300" y="228" text-anchor="middle">+</text>
+  <rect class="warn" x="630" y="206" width="240" height="34" rx="4"/>
+  <text class="s" x="644" y="228">file's source, cell logged</text>
+  <rect class="acc" x="30" y="252" width="240" height="34" rx="4"/>
+  <text class="s" x="44" y="274">source edited</text>
+  <rect class="ok" x="330" y="252" width="240" height="34" rx="4"/>
+  <text class="s" x="344" y="274">cell deleted</text>
+  <line class="ln" x1="572" y1="269" x2="626" y2="269" marker-end="url(#a)"/>
+  <text class="t" x="300" y="274" text-anchor="middle">+</text>
+  <rect class="warn" x="630" y="252" width="240" height="34" rx="4"/>
+  <text class="s" x="644" y="274">deleted, cell logged</text>
+  <rect class="inner" x="30" y="298" width="240" height="34" rx="4"/>
+  <text class="s" x="44" y="320">—</text>
+  <rect class="ok" x="330" y="298" width="240" height="34" rx="4"/>
+  <text class="s" x="344" y="320">cell added</text>
+  <line class="ln" x1="572" y1="315" x2="626" y2="315" marker-end="url(#a)"/>
+  <text class="t" x="300" y="320" text-anchor="middle">+</text>
+  <rect class="ok" x="630" y="298" width="240" height="34" rx="4"/>
+  <text class="s" x="644" y="320">cell added</text>
+  <rect class="inner" x="30" y="352" width="840" height="56" rx="4"/>
+  <text class="l" x="44" y="372">Cells merge one by one, matched by cell id. Within a cell, source, outputs with the execution count, and each metadata key merge separately;</text>
+  <text class="l" x="44" y="390">notebook metadata merges key by key. Where both changed the same part, the file wins. Before nbformat 4.5 (no cell ids) the file wins outright.</text>
+</svg>
