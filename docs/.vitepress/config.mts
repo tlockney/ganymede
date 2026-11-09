@@ -134,10 +134,16 @@ export default defineConfig({
     editLink: {
       // Serialized into the client bundle, so it can't use this module's
       // constants.
+      // The cell API pages are generated from doc comments
+      // (docs/scripts/fetch-cell-api.mjs), so they link to those.
       pattern: ({ filePath }) =>
         filePath.startsWith("ganymede-ui/")
           ? `https://github.com/tlockney/ganymede-ui/edit/main/docs/${filePath.slice("ganymede-ui/".length)}`
-          : `https://github.com/tlockney/ganymede/edit/main/docs/${filePath}`,
+          : filePath === "cell-api/device.md"
+            ? "https://github.com/tlockney/ganymede-device/blob/main/src/device.ts"
+            : filePath.startsWith("cell-api/")
+              ? "https://github.com/tlockney/cdp-kernel/tree/main/runtime"
+              : `https://github.com/tlockney/ganymede/edit/main/docs/${filePath}`,
       text: "Edit this page on GitHub",
     },
     socialLinks: [{ icon: "github", link: repo }],
