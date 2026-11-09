@@ -13,6 +13,9 @@ jupyter_server's `FileContentsManager.save` calls `check_and_sign` before
 signature for contents that never reached disk, as in jupyter_server; it
 does no harm, since nothing on disk matches it.
 
+`copy` signed after writing too, and now signs first as well.
+
 `the_signature_is_stored_before_the_file_is_written` (in
 `crates/ganymede-contents/tests/trust.rs`) uses a signature store that
-records whether the file existed when the signature was stored.
+records whether the file already held contents when the signature was
+stored, for a save and a copy.

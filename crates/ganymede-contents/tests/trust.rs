@@ -309,17 +309,20 @@ async fn v3_notebooks_are_signed_by_their_worksheet_cells() {
     }
 }
 
-/// Records, at each stored signature, whether a file was already there.
+/// Records, at each stored signature, whether the watched file already
+/// held contents (a copy reserves its name with an empty file first).
 #[derive(Debug)]
 struct WatchingStore {
     inner: MemorySignatureStore,
-    file: std::path::PathBuf,
-    saw_file: Arc<std::sync::Mutex<Vec<bool>>>,
+    file: Arc<std::sync::Mutex<std::path::PathBuf>>,
+    saw_contents: Arc<std::sync::Mutex<Vec<bool>>>,
 }
 
 impl trust::SignatureStore for WatchingStore {
     fn store_signature(&self, digest: &str, algorithm: &str) -> ganymede_contents::Result<()> {
-        self.saw_file.lock().unwrap().push(self.file.exists());
+        let file = self.file.lock().unwrap().clone();
+        let written = std::fs::metadata(file).is_ok_and(|m| m.len() > 0);
+        self.saw_contents.lock().unwrap().push(written);
         self.inner.store_signature(digest, algorithm)
     }
     fn check_signature(&self, digest: &str, algorithm: &str) -> ganymede_contents::Result<bool> {
@@ -330,16 +333,17 @@ impl trust::SignatureStore for WatchingStore {
     }
 }
 
-/// The signature is stored before the file is written, so whoever reads
-/// the new file finds it signed (#617).
+/// The signature is stored before the file is written, on save and on
+/// copy, so whoever reads the new file finds it signed (#617).
 #[tokio::test]
 async fn the_signature_is_stored_before_the_file_is_written() {
     let dir = tempfile::tempdir().unwrap();
-    let saw_file = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let file = Arc::new(std::sync::Mutex::new(dir.path().join("a.ipynb")));
+    let saw_contents = Arc::new(std::sync::Mutex::new(Vec::new()));
     let store = WatchingStore {
         inner: MemorySignatureStore::new(),
-        file: dir.path().join("a.ipynb"),
-        saw_file: saw_file.clone(),
+        file: file.clone(),
+        saw_contents: saw_contents.clone(),
     };
     let notary = Arc::new(Notary::new(b"test".to_vec(), Box::new(store)));
     let contents = FsContents::new(
@@ -354,9 +358,13 @@ async fn the_signature_is_stored_before_the_file_is_written() {
         .save("a.ipynb", SaveRequest::notebook(html_notebook(Some(true))))
         .await
         .unwrap();
-    assert_eq!(*saw_file.lock().unwrap(), [false]);
-    let on_disk: Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.path().join("a.ipynb")).unwrap())
-            .unwrap();
-    assert!(notary.check_signature(&on_disk));
+    *file.lock().unwrap() = dir.path().join("a-Copy1.ipynb");
+    let copy = contents.copy("a.ipynb", None).await.unwrap();
+    assert_eq!(copy.path, "a-Copy1.ipynb");
+    assert_eq!(*saw_contents.lock().unwrap(), [false, false]);
+    for name in ["a.ipynb", "a-Copy1.ipynb"] {
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(name)).unwrap()).unwrap();
+        assert!(notary.check_signature(&on_disk), "{name}");
+    }
 }
