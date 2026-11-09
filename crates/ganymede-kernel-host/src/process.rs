@@ -569,13 +569,13 @@ impl Provisioner for SubprocessProvisioner {
         for (k, v) in &spec.env {
             cmd.env(k, expand_env(v, lookup));
         }
-        cmd.env("JPY_PARENT_PID", std::process::id().to_string());
         // A server sets it to the notebook's path for a session's kernel,
         // as jupyter_server does; the kernel id otherwise.
         cmd.env("JPY_SESSION_NAME", &kernel_id);
         for (k, v) in &opts.env {
             cmd.env(k, v);
         }
+        cmd.env("JPY_PARENT_PID", std::process::id().to_string());
         if let Some(cwd) = &opts.cwd {
             cmd.current_dir(cwd);
         }
