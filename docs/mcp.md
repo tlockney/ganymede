@@ -109,10 +109,10 @@ isn't reported to the agent as someone else's edit.
 | --- | --- |
 | `notebook_open` | Open a notebook, creating it (and its directories) when missing, with an optional title cell; start or join its kernel. Later calls may leave out `path`. |
 | `notebook_read` | The notebook as text: cells with ids, sources and outputs, then a read mark. With `since: <mark>`, only what others changed since that read (see [Changes by others](#changes-by-others)). A notebook in nbformat 4.4 or older has no cell ids on disk; the server makes them up when it opens the notebook, and they stay the same while the MCP session lasts. A session ends after an hour without a request, or when the server stops; after that, read the notebook again for new ids. `ganymede mcp` starts a new session by itself. A new session has no notebook open either, so open or read the notebook again, with its `path`, before calls that leave `path` out. |
-| `cell_run` | Run code and return its outputs. Recorded as a new code cell by default; `record: false` runs it as scratch work that leaves nothing in the notebook but shares the kernel's state. `keep_outputs: false` (unreleased) records the code but leaves its outputs out (see [Outputs](#outputs)). |
+| `cell_run` | Run code and return its outputs. Recorded as a new code cell by default; `record: false` runs it as scratch work that leaves nothing in the notebook but shares the kernel's state. `keep_outputs: false` records the code but leaves its outputs out (see [Outputs](#outputs)). |
 | `cell_add` | Add a Markdown note; `mode: recorded` records a step that ran outside the kernel, such as a shell command. |
-| `cell_edit` | Replace a cell's source, keeping the replaced text in the cell's history; `run: true` runs it after, with `keep_outputs` (unreleased) as `cell_run`. |
-| `cell_clear_outputs` | Unreleased. Clear a code cell's outputs and keep them out of the notebook when it runs again; `keep: true` undoes it. |
+| `cell_edit` | Replace a cell's source, keeping the replaced text in the cell's history; `run: true` runs it after, with `keep_outputs` as `cell_run` (see [Outputs](#outputs)). |
+| `cell_clear_outputs` | Clear a code cell's outputs and keep them out of the notebook when it runs again; `keep: true` undoes it (see [Outputs](#outputs)). |
 | `cell_delete`, `cell_move` | Delete a cell, or move it after another. |
 | `kernel_control` | Interrupt, restart, or shut down the kernel. |
 | `notebook_run_all` | Restart the kernel and run every code cell in order. |
