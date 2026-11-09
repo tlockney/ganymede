@@ -4822,6 +4822,129 @@ async fn mcp_works_on_notebooks_without_cell_ids() {
     assert!(saved["cells"][2]["outputs"].to_string().contains("hello"));
 }
 
+/// `notebooks_search` finds cells across notebooks under a directory:
+/// on disk and in open rooms, every word, outputs only when asked.
+#[tokio::test]
+async fn mcp_notebooks_search_finds_cells_across_notebooks() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = dir.path().join("journal");
+    std::fs::create_dir_all(journal.join("old")).unwrap();
+    let nb = |cells: Value| {
+        json!({"cells": cells, "metadata": {}, "nbformat": 4, "nbformat_minor": 5}).to_string()
+    };
+    std::fs::write(
+        journal.join("a.ipynb"),
+        nb(json!([
+            {"cell_type": "markdown", "id": "t", "metadata": {}, "source": "# Fremont Bridge"},
+            {"cell_type": "markdown", "id": "f", "metadata": {},
+             "source": "Workday mornings fell 19% against 2019."}])),
+    )
+    .unwrap();
+    std::fs::write(
+        journal.join("old/b.ipynb"),
+        nb(json!([
+            {"cell_type": "code", "id": "c", "metadata": {}, "execution_count": 1,
+             "source": "rides()", "outputs": [{"output_type": "stream", "name": "stdout",
+             "text": "workday total 2019\n"}]}])),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("elsewhere.ipynb"),
+        nb(json!([
+        {"cell_type": "markdown", "id": "e", "metadata": {}, "source": "workday 2019"}])),
+    )
+    .unwrap();
+    let app = mcp_app(dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    let call = |name: &'static str, args: Value| {
+        let (app, sid) = (app.clone(), sid.clone());
+        async move { mcp_text(&mcp_tool(&app, &sid, name, args).await) }
+    };
+    // A notebook open in a room counts too.
+    call(
+        "notebook_open",
+        json!({"path": "journal/c.ipynb", "title": "Weekday trends"}),
+    )
+    .await;
+    call(
+        "cell_add",
+        json!({"source": "The 2019 WORKDAY baseline holds."}),
+    )
+    .await;
+
+    let out = call(
+        "notebooks_search",
+        json!({"query": "workday 2019", "dir": "journal"}),
+    )
+    .await;
+    assert!(
+        out.starts_with("2 matching cells in 2 of 3 notebooks under journal."),
+        "{out}"
+    );
+    assert!(
+        out.contains(r#"@@notebook {"path":"journal/a.ipynb","title":"Fremont Bridge"}"#),
+        "{out}"
+    );
+    assert!(
+        out.contains(r#""id":"f""#) && out.contains("Workday mornings fell"),
+        "{out}"
+    );
+    assert!(out.contains(r#""title":"Weekday trends""#), "{out}");
+    assert!(
+        !out.contains("old/b.ipynb") && !out.contains("elsewhere"),
+        "{out}"
+    );
+
+    let out = call(
+        "notebooks_search",
+        json!({"query": "workday 2019", "dir": "journal", "outputs": true, "limit": 1}),
+    )
+    .await;
+    assert!(
+        out.starts_with("3 matching cells in 3 of 3 notebooks"),
+        "{out}"
+    );
+    assert!(out.contains("showing 1"), "{out}");
+
+    let out = call(
+        "notebooks_search",
+        json!({"query": "workday", "cell_type": "code", "outputs": true}),
+    )
+    .await;
+    assert!(
+        out.contains(r#""in":"output""#) && out.contains("old/b.ipynb"),
+        "{out}"
+    );
+
+    // Links back to an ancestor don't repeat it (two make the walk
+    // exponential if followed).
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&journal, journal.join("l1")).unwrap();
+        std::os::unix::fs::symlink(&journal, journal.join("l2")).unwrap();
+        let out = call(
+            "notebooks_search",
+            json!({"query": "workday 2019", "dir": "journal"}),
+        )
+        .await;
+        assert!(
+            out.starts_with("2 matching cells in 2 of 3 notebooks"),
+            "{out}"
+        );
+    }
+
+    let v = mcp_tool(&app, &sid, "notebooks_search", json!({"query": "  "})).await;
+    assert!(v.get("error").is_some(), "{v}");
+    let v = mcp_tool(
+        &app,
+        &sid,
+        "notebooks_search",
+        json!({"query": "x", "dir": "nope"}),
+    )
+    .await;
+    assert!(v.get("error").is_some(), "{v}");
+}
+
 /// Cell ids a 4.4 notebook's room made up stay valid while the connection
 /// lasts, though the room would otherwise retire and reload with new ones.
 #[tokio::test]
