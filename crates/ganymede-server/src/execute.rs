@@ -112,6 +112,25 @@ pub(crate) enum RoomCmd {
 }
 
 impl RoomCmd {
+    /// The cell whose outputs this replaces with a run's, if it does. Not
+    /// an `Append`, which keeps what the cell holds, nor a display update,
+    /// which may not apply.
+    pub(crate) fn ran_cell(&self) -> Option<&str> {
+        match self {
+            RoomCmd::Outputs {
+                cell_id,
+                only_if: None,
+                ..
+            }
+            | RoomCmd::Done {
+                cell_id,
+                outputs: Some(_),
+                ..
+            } => Some(cell_id),
+            _ => None,
+        }
+    }
+
     /// The room could not be opened.
     pub(crate) fn unavailable(self, why: &str) {
         if let RoomCmd::Enqueue { reply, .. } = self {

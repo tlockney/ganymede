@@ -494,6 +494,31 @@ impl Room {
         ))
     }
 
+    /// The outputs of code cell `id`, as [`Room::notebook`] would write
+    /// them: numbers Yjs can't hold come back from the file as last read.
+    /// `None` when there is no such cell or the room is transient.
+    pub fn cell_outputs(&self, id: &str) -> Option<Value> {
+        use yrs::{Map, Transact};
+        let roots = self.roots.as_ref()?;
+        let txn = self.doc().transact();
+        let outputs = schema::find_cell(&txn, roots, id)?.get(&txn, "outputs")?;
+        let outputs = schema::out_to_json(&txn, &outputs);
+        // The same cell in the file: by id, or by place in a notebook
+        // that keeps no ids. A wrong match restores nothing.
+        let old = self.baseline.as_ref().and_then(|b| {
+            let cells = b["cells"].as_array()?;
+            cells.iter().find(|c| c["id"] == id).or_else(|| {
+                let i = schema::cell_index(&txn, roots, id)?;
+                cells.get(i as usize).filter(|c| c.get("id").is_none())
+            })
+        });
+        let old = old.map(|c| &c["outputs"]);
+        Some(match old {
+            Some(old) => schema::restore_numbers(outputs, old),
+            None => outputs,
+        })
+    }
+
     /// The host wrote the document as of `generation` to disk, and the
     /// file now hashes to `hash` (contents' sha256). Sets `state.hash`,
     /// which JupyterLab watches to learn of saves, and `state.dirty`.

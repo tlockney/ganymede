@@ -109,9 +109,10 @@ isn't reported to the agent as someone else's edit.
 | --- | --- |
 | `notebook_open` | Open a notebook, creating it (and its directories) when missing, with an optional title cell; start or join its kernel. Later calls may leave out `path`. |
 | `notebook_read` | The notebook as text: cells with ids, sources and outputs, then a read mark. With `since: <mark>`, only what others changed since that read (see [Changes by others](#changes-by-others)). A notebook in nbformat 4.4 or older has no cell ids on disk; the server makes them up when it opens the notebook, and they stay the same while the MCP session lasts. A session ends after an hour without a request, or when the server stops; after that, read the notebook again for new ids. `ganymede mcp` starts a new session by itself. A new session has no notebook open either, so open or read the notebook again, with its `path`, before calls that leave `path` out. |
-| `cell_run` | Run code and return its outputs. Recorded as a new code cell by default; `record: false` runs it as scratch work that leaves nothing in the notebook but shares the kernel's state. |
+| `cell_run` | Run code and return its outputs. Recorded as a new code cell by default; `record: false` runs it as scratch work that leaves nothing in the notebook but shares the kernel's state. `keep_outputs: false` records the code but leaves its outputs out (see [Outputs](#outputs)). |
 | `cell_add` | Add a Markdown note; `mode: recorded` records a step that ran outside the kernel, such as a shell command. |
-| `cell_edit` | Replace a cell's source, keeping the replaced text in the cell's history; `run: true` runs it after. |
+| `cell_edit` | Replace a cell's source, keeping the replaced text in the cell's history; `run: true` runs it after, with `keep_outputs` as `cell_run` (see [Outputs](#outputs)). |
+| `cell_clear_outputs` | Clear a code cell's outputs and keep them out of the notebook when it runs again; `keep: true` undoes it (see [Outputs](#outputs)). |
 | `cell_delete`, `cell_move` | Delete a cell, or move it after another. |
 | `kernel_control` | Interrupt, restart, or shut down the kernel. |
 | `notebook_run_all` | Restart the kernel and run every code cell in order. |
@@ -133,6 +134,32 @@ Cells run through the server, as the
 [execute endpoint](rooms.md#running-cells-into-a-room) runs
 them: outputs go into the document as they arrive, and a person watching
 the notebook sees them live.
+
+## Outputs
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+The notebook keeps each recorded cell's outputs: a journal records what a
+run produced, not only the code. The server signs the notebook when it
+saves it (see [Trust](rooms.md#trust)), so it opens trusted and its
+HTML, JavaScript and SVG outputs render in full in ganymede-ui and
+JupyterLab.
+
+Some outputs don't belong in the file: a dump too large to keep, or
+values too private to share. `cell_run` and `cell_edit` with
+`keep_outputs: false`, or `cell_clear_outputs` after the fact, keep the
+cell's code and leave its outputs out. The agent still gets them in the
+reply. The cell's `metadata.ganymede.outputs` is `"dropped"`, and later
+runs through these tools (`cell_edit` with `run`, `notebook_run_all`)
+leave their outputs out too; a person running the cell in a frontend
+gets them back. Outputs reach the notebook while the cell runs and are
+cleared when it finishes, so a long run can be saved with them in
+between: keep credentials out of outputs altogether, or look at them
+with `record: false`. A cell still running when the call times out
+writes its outputs to the notebook when it finishes; the reply says so,
+and `cell_clear_outputs` clears them then.
 
 ## Changes by others
 

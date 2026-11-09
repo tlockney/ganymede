@@ -65,6 +65,24 @@ A delete through the contents API closes the room's clients with code
 4404, the code a reconnect gets for the dropped file, and the room
 doesn't write the file back.
 
+### Trust
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+The room signs the notebook when it saves it, as jupyter_server signs a
+notebook a frontend saves with every cell trusted, so it opens trusted
+next time. A code cell's outputs are trusted when they came from a run
+on this server: through the [execute endpoint](#running-cells-into-a-room)
+or `ganymede mcp`, or written by a client running the cell. Outputs read
+from a file nobody signed, when the room opened it or merged it in from
+disk, are not: the notebook stays unsigned until each of those cells runs
+again through the server, or someone trusts the notebook (`ganymede
+trust`, or Trust Notebook in a frontend), which holds with the room
+open. A client that writes back the very outputs the unsigned file had
+doesn't make them trusted.
+
 ## Connections
 
 The server pings each room's websocket every 30 seconds and drops a

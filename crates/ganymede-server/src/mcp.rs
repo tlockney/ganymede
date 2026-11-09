@@ -195,6 +195,11 @@ pub struct RunArgs {
     /// Seconds to wait for the result (default 600). A recorded cell
     /// keeps running after a timeout; a scratch run is interrupted.
     pub timeout: Option<u64>,
+    /// Keep the outputs in the notebook (default true). `false` records
+    /// the code but leaves its outputs out of the notebook, now and when
+    /// it runs again: for output too large or too private to keep. You
+    /// still get the outputs back.
+    pub keep_outputs: Option<bool>,
     pub path: Option<String>,
 }
 
@@ -239,6 +244,17 @@ pub struct EditArgs {
     /// Run the cell after editing it (code cells).
     pub run: Option<bool>,
     pub timeout: Option<u64>,
+    /// With `run`: keep the outputs in the notebook (default: as the cell
+    /// had it). `false` leaves them out, as `cell_run`'s `keep_outputs`.
+    pub keep_outputs: Option<bool>,
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ClearOutputsArgs {
+    pub id: String,
+    /// `true` keeps the cell's outputs again from its next run.
+    pub keep: Option<bool>,
     pub path: Option<String>,
 }
 
@@ -411,13 +427,18 @@ impl Notebooks {
         }
         self.can_edit()?;
         let id = new_id();
+        let drop = a.keep_outputs == Some(false);
+        let mut metadata = provenance(&context.peer, "executed");
+        if drop {
+            // Marked before it runs, so a failed run leaves it marked.
+            metadata["ganymede"]["outputs"] = json!("dropped");
+        }
         let cell = json!({
             "cell_type": "code", "execution_count": null, "id": id,
-            "metadata": provenance(&context.peer, "executed"),
-            "outputs": [], "source": a.source,
+            "metadata": metadata, "outputs": [], "source": a.source,
         });
         self.insert(&path, cell, a.after, None).await?;
-        self.run_cells(&path, &kernel_id, vec![id.clone()], timeout)
+        self.run_dropping(&path, &kernel_id, id, timeout, drop)
             .await
     }
 
@@ -523,7 +544,42 @@ impl Notebooks {
         }
         let (kernel_id, _) = self.kernel_for(&path, None).await?;
         let timeout = Duration::from_secs(a.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS));
-        self.run_cells(&path, &kernel_id, vec![a.id], timeout).await
+        let drop = match a.keep_outputs {
+            // Marked (or not) before it runs, so a failed run keeps the choice.
+            Some(keep) => {
+                self.drop_outputs(&path, vec![a.id.clone()], !keep).await?;
+                !keep
+            }
+            // A cell marked earlier leaves out the outputs of this run too.
+            None => !self
+                .dropped_outputs(&self.notebook(&path).await?, Some(&a.id))
+                .is_empty(),
+        };
+        self.run_dropping(&path, &kernel_id, a.id, timeout, drop)
+            .await
+    }
+
+    #[tool(
+        description = "Leave a code cell's outputs out of the notebook: clears them now and whenever the cell runs again through these tools. For output too large or too private to keep; outputs are the record of the run, so keep them otherwise. `keep: true` undoes it for the next run."
+    )]
+    async fn cell_clear_outputs(
+        &self,
+        Parameters(a): Parameters<ClearOutputsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.can_edit()?;
+        let path = self.path(a.path)?;
+        let drop = !a.keep.unwrap_or(false);
+        if !self.drop_outputs(&path, vec![a.id.clone()], drop).await? {
+            return Err(err(format!("no code cell {}", a.id)));
+        }
+        text(if drop {
+            format!(
+                "Cleared the outputs of cell {}; they stay out of the notebook when it runs again.",
+                a.id
+            )
+        } else {
+            format!("Cell {} keeps its outputs the next time it runs.", a.id)
+        })
     }
 
     #[tool(description = "Delete a cell.")]
@@ -672,10 +728,24 @@ impl Notebooks {
         let finished = crate::execute::run_and_wait(&self.state, &path, &kernel_id, ids, timeout)
             .await
             .map_err(err)?;
+        // The reply shows what ran, outputs and all; the notebook keeps
+        // them all but those of the cells marked to leave them out.
         let nb = self.notebook(&path).await?;
+        let dropped = self.dropped_outputs(&nb, None);
         let mut out = String::new();
         if !finished {
             out.push_str("Timed out; cells are still running.\n\n");
+        }
+        if !dropped.is_empty() {
+            out.push_str(&format!(
+                "Outputs of {} left out of the notebook, as marked.",
+                dropped.join(", ")
+            ));
+            if !finished {
+                out.push_str(&format!(" {OUTPUTS_LATER}"));
+            }
+            out.push_str("\n\n");
+            self.drop_outputs(&path, dropped, true).await?;
         }
         out.push_str(&self.render(&nb, true));
         text(out)
@@ -750,7 +820,8 @@ Keep a notebook as the record of this analysis while you work, not as a write-up
 
 - Start with `notebook_open` (a new notebook gets a title cell); later tools may leave out `path`.
 - Before each step, add a short Markdown note with `cell_add` saying what you are about to find out and why.
-- Run the code that produces results with `cell_run`, so the notebook keeps both the code and its output.
+- Run the code that produces results with `cell_run`, so the notebook keeps both the code and its output. The outputs are the record of the run: keep them.
+- When an output is too large or too private to keep, pass `keep_outputs: false` (or call `cell_clear_outputs`): the code stays, the outputs stay out of the notebook. Don't print credentials at all.
 - Use `cell_run` with `record: false` for checks that don't belong in the record (peeking at a value, trying a call).
 - When a step happens outside the kernel (a shell command, a file you wrote), add it with `cell_add` and `mode: recorded`.
 - After a result, add a Markdown note with what it shows. Fix a wrong cell with `cell_edit` rather than adding another.
@@ -837,6 +908,57 @@ fn new_id() -> String {
 
 fn provenance(peer: &Peer<RoleServer>, mode: &str) -> Value {
     json!({"ganymede": {"agent": {"by": client_name(peer), "mode": mode, "at": now()}}})
+}
+
+/// The note a run adds when the notebook leaves out its outputs.
+const OUTPUTS_DROPPED: &str =
+    "Outputs left out of the notebook (keep_outputs: false); they are only in this reply.";
+
+/// The note when a cell that leaves its outputs out is still running.
+const OUTPUTS_LATER: &str = "The cell is still running, and its outputs reach the notebook when it finishes. Call cell_clear_outputs then.";
+
+/// Whether a cell's metadata marks its outputs to stay out of the
+/// notebook: `metadata.ganymede.outputs` is `"dropped"`.
+fn outputs_dropped(metadata: &serde_json::Map<String, Value>) -> bool {
+    metadata
+        .get("ganymede")
+        .and_then(|g| g.get("outputs"))
+        .and_then(Value::as_str)
+        == Some("dropped")
+}
+
+/// Set or clear the mark [`outputs_dropped`] reads.
+fn mark_dropped(txn: &mut TransactionMut, cell: &ganymede_documents::yrs::MapRef, drop: bool) {
+    let meta = match cell.get(txn, "metadata") {
+        Some(Out::YMap(m)) => m,
+        _ => cell.insert(
+            txn,
+            "metadata",
+            ganymede_documents::yrs::MapPrelim::default(),
+        ),
+    };
+    let mut g = meta
+        .get(txn, "ganymede")
+        .map(|o| schema::out_to_json(txn, &o))
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    let had = g["outputs"] == json!("dropped");
+    if had == drop {
+        return;
+    }
+    let obj = g.as_object_mut().expect("an object");
+    if drop {
+        obj.insert("outputs".into(), json!("dropped"));
+    } else {
+        obj.remove("outputs");
+    }
+    meta.insert(txn, "ganymede", schema::json_to_any(&g));
+}
+
+/// `result` with `note` after its text.
+fn with_note(mut result: CallToolResult, note: &str) -> CallToolResult {
+    result.content.push(ContentBlock::text(note));
+    result
 }
 
 /// How many superseded sources a cell's `metadata.ganymede.agent.history`
@@ -1211,13 +1333,89 @@ impl Notebooks {
         r.map_err(err)
     }
 
+    /// Clear the outputs of code cells `ids` and mark them to stay out of
+    /// the notebook (`drop`), or take the mark off. False when no code
+    /// cell has one of the ids.
+    async fn drop_outputs(
+        &self,
+        path: &str,
+        ids: Vec<String>,
+        drop: bool,
+    ) -> Result<bool, McpError> {
+        // No ids for the read marks: clearing outputs changes no source or
+        // place, and taking a source in would hide someone else's edit.
+        self.own_edit(path, Vec::new(), marks::Aspect::Source, None, move |room| {
+            room.edit(|txn, roots| {
+                let mut found = false;
+                for id in &ids {
+                    let Some(cell) = schema::find_cell(txn, roots, id) else {
+                        continue;
+                    };
+                    if cell
+                        .get(txn, "cell_type")
+                        .map(|o| schema::out_to_json(txn, &o))
+                        != Some(json!("code"))
+                    {
+                        continue;
+                    }
+                    found = true;
+                    if drop {
+                        schema::set_outputs(txn, &cell, Vec::new());
+                    }
+                    mark_dropped(txn, &cell, drop);
+                }
+                found
+            })
+        })
+        .await
+    }
+
+    /// The ids of code cells marked to leave their outputs out, among
+    /// all of them or just `only`.
+    fn dropped_outputs(&self, nb: &Notebook, only: Option<&str>) -> Vec<String> {
+        nb.cells
+            .iter()
+            .filter_map(|c| match c {
+                Cell::Code(code) if outputs_dropped(&code.metadata) => code.id.clone(),
+                _ => None,
+            })
+            .filter(|id| only.is_none_or(|o| o == id))
+            .collect()
+    }
+
+    /// Run cell `id`, and when `drop`, clear its outputs after. A cell
+    /// still running at the timeout keeps adding outputs, and the reply
+    /// says so.
+    async fn run_dropping(
+        &self,
+        path: &str,
+        kernel_id: &str,
+        id: String,
+        timeout: Duration,
+        drop: bool,
+    ) -> Result<CallToolResult, McpError> {
+        let (result, finished) = self
+            .run_cells(path, kernel_id, vec![id.clone()], timeout)
+            .await?;
+        if !drop {
+            return Ok(result);
+        }
+        self.drop_outputs(path, vec![id], true).await?;
+        let note = if finished {
+            OUTPUTS_DROPPED
+        } else {
+            OUTPUTS_LATER
+        };
+        Ok(with_note(result, note))
+    }
+
     async fn run_cells(
         &self,
         path: &str,
         kernel_id: &str,
         ids: Vec<String>,
         timeout: Duration,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<(CallToolResult, bool), McpError> {
         let finished =
             crate::execute::run_and_wait(&self.state, path, kernel_id, ids.clone(), timeout)
                 .await
@@ -1241,7 +1439,7 @@ impl Notebooks {
         }
         let mut blocks = images_off_runtime(shown).await;
         blocks.insert(0, ContentBlock::text(out));
-        Ok(CallToolResult::success(blocks))
+        Ok((CallToolResult::success(blocks), finished))
     }
 
     async fn scratch(
