@@ -61,6 +61,10 @@ once. A client's explicit save whose merge lets the file win a cell the
 room had changed (by any client, or by execution outputs) saves the merge
 and answers `failed`, since that change isn't in the file.
 
+A delete through the contents API closes the room's clients with code
+4404, the code a reconnect gets for the dropped file, and the room
+doesn't write the file back.
+
 ### Trust
 
 > [!NOTE]
@@ -78,10 +82,6 @@ again through the server, or someone trusts the notebook (`ganymede
 trust`, or Trust Notebook in a frontend), which holds with the room
 open. A client that writes back the very outputs the unsigned file had
 doesn't make them trusted.
-
-A delete through the contents API closes the room's clients with code
-4404, the code a reconnect gets for the dropped file, and the room
-doesn't write the file back.
 
 ## Connections
 
