@@ -581,11 +581,14 @@ impl Inner {
                 if r.os.is_dir() {
                     return Err(Error::BadRequest(format!("{} is a directory", r.api)));
                 }
-                self.atomic_write(&r.os, &r.api, &bytes)?;
-                hash = Some(sha256_hex(&bytes));
+                // Sign before writing, as jupyter_server's save calls
+                // check_and_sign before _save_notebook: a reader that
+                // sees the new file then finds its signature (#617).
                 if let Some(nb) = sign {
                     self.sign(&r.api, &nb);
                 }
+                self.atomic_write(&r.os, &r.api, &bytes)?;
+                hash = Some(sha256_hex(&bytes));
                 // jupyter_server: "One checkpoint should always exist for
                 // notebooks", so the first save can be reverted to.
                 if request.kind == ContentType::Notebook && !self.checkpoint_path(&r.api).is_file()

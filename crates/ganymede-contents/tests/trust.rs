@@ -308,3 +308,55 @@ async fn v3_notebooks_are_signed_by_their_worksheet_cells() {
         );
     }
 }
+
+/// Records, at each stored signature, whether a file was already there.
+#[derive(Debug)]
+struct WatchingStore {
+    inner: MemorySignatureStore,
+    file: std::path::PathBuf,
+    saw_file: Arc<std::sync::Mutex<Vec<bool>>>,
+}
+
+impl trust::SignatureStore for WatchingStore {
+    fn store_signature(&self, digest: &str, algorithm: &str) -> ganymede_contents::Result<()> {
+        self.saw_file.lock().unwrap().push(self.file.exists());
+        self.inner.store_signature(digest, algorithm)
+    }
+    fn check_signature(&self, digest: &str, algorithm: &str) -> ganymede_contents::Result<bool> {
+        self.inner.check_signature(digest, algorithm)
+    }
+    fn remove_signature(&self, digest: &str, algorithm: &str) -> ganymede_contents::Result<()> {
+        self.inner.remove_signature(digest, algorithm)
+    }
+}
+
+/// The signature is stored before the file is written, so whoever reads
+/// the new file finds it signed (#617).
+#[tokio::test]
+async fn the_signature_is_stored_before_the_file_is_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let saw_file = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let store = WatchingStore {
+        inner: MemorySignatureStore::new(),
+        file: dir.path().join("a.ipynb"),
+        saw_file: saw_file.clone(),
+    };
+    let notary = Arc::new(Notary::new(b"test".to_vec(), Box::new(store)));
+    let contents = FsContents::new(
+        dir.path(),
+        FsOptions {
+            notary: Some(notary.clone()),
+            ..FsOptions::default()
+        },
+    )
+    .unwrap();
+    contents
+        .save("a.ipynb", SaveRequest::notebook(html_notebook(Some(true))))
+        .await
+        .unwrap();
+    assert_eq!(*saw_file.lock().unwrap(), [false]);
+    let on_disk: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("a.ipynb")).unwrap())
+            .unwrap();
+    assert!(notary.check_signature(&on_disk));
+}
