@@ -223,7 +223,7 @@ pub fn to_markdown(nb: &Notebook, name: &str) -> Export {
 /// `attachment:<file>` references in `source` pointed at `target`. A
 /// reference ends where the link target does (`)`, whitespace, a quote,
 /// `>`, or the end), so `a.png` doesn't match the start of `a.png2`.
-fn replace_attachment_refs(source: &str, file: &str, target: &str) -> String {
+pub fn replace_attachment_refs(source: &str, file: &str, target: &str) -> String {
     let needle = format!("attachment:{file}");
     let mut out = String::with_capacity(source.len());
     let mut rest = source;
@@ -351,7 +351,7 @@ fn output_block(
 
 /// Stream text as a terminal shows it: on each line, a carriage return
 /// starts the line over, as progress bars use it.
-fn overwrite_returns(text: &str) -> String {
+pub fn overwrite_returns(text: &str) -> String {
     text.split('\n')
         .map(|line| {
             let line = line.strip_suffix('\r').unwrap_or(line);
@@ -369,7 +369,7 @@ fn text_block(text: &str) -> Option<String> {
 
 /// `text` in a fenced code block, with a fence longer than any run of
 /// backticks in it, so the text can't close the block.
-fn fenced(lang: &str, text: &str) -> String {
+pub fn fenced(lang: &str, text: &str) -> String {
     let mut longest = 0;
     let mut run = 0;
     for c in text.chars() {
@@ -392,7 +392,10 @@ fn fenced(lang: &str, text: &str) -> String {
 
 /// A relative path as a Markdown link target: each byte outside the URL
 /// unreserved set (and `/`) percent-encoded, as nbconvert's `path2url`.
-fn url_path(path: &str) -> String {
+/// `path` percent-encoded for a URL or link target: everything but
+/// `[A-Za-z0-9/_.~-]` escaped, so it works bare, in angle brackets and
+/// in an HTML attribute.
+pub fn url_path(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     for b in path.bytes() {
         if b.is_ascii_alphanumeric() || b"/_.-~".contains(&b) {

@@ -6019,6 +6019,9 @@ async fn mcp_cell_snapshot_saves_images_and_shows_tables() {
     let dir = tempfile::tempdir().unwrap();
     let png = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\n");
     let nb = json!({"cells": [
+        {"cell_type": "markdown", "id": "md", "metadata": {},
+         "source": "See ![p](attachment:p.png) and <img src=\"attachment:p.png\" width=\"40\">",
+         "attachments": {"p.png": {"image/png": png}}},
         {"cell_type": "code", "id": "plot", "execution_count": 1, "metadata": {},
          "source": "Plot.plot()", "outputs": [
             {"output_type": "display_data", "metadata": {},
@@ -6055,7 +6058,7 @@ async fn mcp_cell_snapshot_saves_images_and_shows_tables() {
     );
     let name = saved.file_name().unwrap().to_string_lossy().into_owned();
     assert!(
-        name.starts_with("n b-plot-1-") && name.ends_with(".png"),
+        name.starts_with("n_b-plot-1-") && name.ends_with(".png"),
         "{name}"
     );
     assert_eq!(std::fs::read(&saved).unwrap(), b"\x89PNG\r\n\x1a\n");
@@ -6080,6 +6083,27 @@ async fn mcp_cell_snapshot_saves_images_and_shows_tables() {
     assert!(!out.contains("Plot.plot()"), "{out}");
     assert!(
         dir.path().join("j/snapshots").join(&name).is_file(),
+        "{out}"
+    );
+
+    // A Markdown cell's attachment is saved and its link points at it.
+    let out = mcp_text(
+        &mcp_tool(
+            &app,
+            &sid,
+            "cell_snapshot",
+            json!({"path": "j/n b.ipynb", "ids": ["md"]}),
+        )
+        .await,
+    );
+    // Percent-encoded, not bracketed: the path has a space (`n b`) and
+    // the link must also work inside `<img src="…">`.
+    assert!(
+        !out.contains("attachment:") && !out.contains("](<") && !out.contains("src=\"<"),
+        "{out}"
+    );
+    assert!(
+        out.contains("See ![p](/") && out.contains("<img src=\"/") && out.contains("/n_b-md-1-"),
         "{out}"
     );
 
