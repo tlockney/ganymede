@@ -297,6 +297,21 @@ access-denied page; `--no-redirect-file` opens the URL itself instead, as
 
 `ganymede info` prints every directory in use.
 
+### What a kernel gets
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. The latest release sets `JPY_SESSION_NAME` to the
+> kernel id for every kernel.
+
+A kernel inherits the server's environment, then its kernelspec's `env`,
+and gets two more, as under `jupyter_server`:
+
+| Variable | Value |
+| --- | --- |
+| `JPY_PARENT_PID` | The server's process id. |
+| `JPY_SESSION_NAME` | For a kernel started for a notebook (a session): the notebook's path on disk, so code can find the notebook it runs in. A session renamed or moved changes it on the kernel's next restart. For a kernel started on its own: the kernel id. |
+
 ## Logging
 
 `serve`, `lab` and `ui` log at info level on stderr; `-v` raises it to

@@ -106,6 +106,28 @@ async fn kernel_gets_its_connection_file_env_and_cwd() {
     assert!(!file.exists(), "connection file removed with the kernel");
 }
 
+/// A server passes the notebook's path for a session's kernel; it wins
+/// over the default, the kernel id.
+#[tokio::test]
+async fn launch_env_overrides_the_session_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out");
+    let script = format!(
+        "{{ echo \"$JPY_SESSION_NAME\"; echo done; }} > '{}'; sleep 30",
+        out.display()
+    );
+    let opts = LaunchOptions {
+        env: vec![("JPY_SESSION_NAME".into(), "/r/nb/x.ipynb".into())],
+        kernel_id: Some("k-456".into()),
+        ..Default::default()
+    };
+    let k = launch(dir.path(), &script, opts).await;
+    let text = file_says(&out, "done").await;
+    assert_eq!(text.lines().next(), Some("/r/nb/x.ipynb"));
+    k.process.kill().await.unwrap();
+    k.process.wait().await;
+}
+
 #[tokio::test]
 async fn signal_interrupt_reaches_the_process_group() {
     let dir = tempfile::tempdir().unwrap();

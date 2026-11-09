@@ -94,6 +94,10 @@ pub struct RunningKernel {
     pub started: String,
     /// Working directory, kept so a restart runs where the first launch did.
     cwd: Option<PathBuf>,
+    /// `JPY_SESSION_NAME` for the next launch: the notebook's OS path for
+    /// a kernel started for a session, as jupyter_server sets it. `None`
+    /// leaves the host's default, the kernel id.
+    session_name: Mutex<Option<String>>,
     session: RwLock<KernelSession>,
     launched: Mutex<Option<LaunchedKernel>>,
     pub(crate) clients: Mutex<crate::bridge::Clients>,
@@ -504,6 +508,17 @@ impl KernelManager {
     /// in, as `POST /api/kernels` takes it; a session passes its notebook's
     /// directory.
     pub async fn start(&self, name: Option<&str>, path: Option<&str>) -> Result<KernelModel> {
+        self.start_for_session(name, path, None).await
+    }
+
+    /// [`Self::start`], with `JPY_SESSION_NAME` set to `session_name`
+    /// (see [`Self::session_name`]).
+    pub async fn start_for_session(
+        &self,
+        name: Option<&str>,
+        path: Option<&str>,
+        session_name: Option<String>,
+    ) -> Result<KernelModel> {
         let name = match name {
             Some(n) => n.to_string(),
             None => self.kernelspecs()?.default,
@@ -524,13 +539,17 @@ impl KernelManager {
             None => self.core.config.root_dir.clone(),
         });
         let log = Arc::new(KernelLog::default());
-        let (session, launched) = self.core.launch(&spec, cwd.clone(), &id, &log).await?;
+        let (session, launched) = self
+            .core
+            .launch(&spec, cwd.clone(), session_name.clone(), &id, &log)
+            .await?;
         let kernel = Arc::new(RunningKernel {
             id: id.clone(),
             name: spec.name.clone(),
             spec,
             started: now_iso(),
             cwd,
+            session_name: Mutex::new(session_name),
             session: RwLock::new(session.clone()),
             launched: Mutex::new(Some(launched)),
             clients: Mutex::default(),
@@ -563,6 +582,24 @@ impl KernelManager {
             let _ = core.boot(&booting).await;
         });
         Ok(kernel.model())
+    }
+
+    /// The `JPY_SESSION_NAME` jupyter_server gives a session's kernel: the
+    /// directory the kernel runs in for the session's API `path`, joined
+    /// with the session's `name` (`SessionManager.get_kernel_env`).
+    pub fn session_name(&self, path: &str, name: &str) -> String {
+        ganymede_contents::kernel_cwd(&self.core.config.root_dir, path)
+            .join(name)
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// Change the `JPY_SESSION_NAME` of `id`'s next launch, as
+    /// jupyter_server does when a session's path or name changes. The
+    /// running process keeps the value it started with.
+    pub fn set_session_name(&self, id: &str, session_name: String) -> Result<()> {
+        *self.get(id)?.session_name.lock().unwrap() = Some(session_name);
+        Ok(())
     }
 
     /// Wait for a start or restart of `id` in progress, and its model once
@@ -906,8 +943,15 @@ impl Core {
 
     /// Launch a new session for `kernel` and pump it to the clients.
     async fn relaunch(self: &Arc<Self>, kernel: &Arc<RunningKernel>) -> Result<()> {
+        let session_name = kernel.session_name.lock().unwrap().clone();
         let (session, launched) = self
-            .launch(&kernel.spec, kernel.cwd.clone(), &kernel.id, &kernel.log)
+            .launch(
+                &kernel.spec,
+                kernel.cwd.clone(),
+                session_name,
+                &kernel.id,
+                &kernel.log,
+            )
             .await?;
         *kernel.session.write().unwrap() = session.clone();
         *kernel.launched.lock().unwrap() = Some(launched);
@@ -931,6 +975,7 @@ impl Core {
         &self,
         spec: &Kernelspec,
         cwd: Option<PathBuf>,
+        session_name: Option<String>,
         id: &str,
         log: &Arc<KernelLog>,
     ) -> Result<(KernelSession, LaunchedKernel)> {
@@ -940,7 +985,9 @@ impl Core {
                 spec,
                 LaunchOptions {
                     cwd,
-                    env: vec![],
+                    env: session_name
+                        .map(|n| vec![("JPY_SESSION_NAME".to_string(), n)])
+                        .unwrap_or_default(),
                     kernel_id: Some(id.to_string()),
                     quiet: self.config.quiet,
                     // A server runs many kernels on one stderr.
