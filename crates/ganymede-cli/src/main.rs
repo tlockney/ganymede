@@ -49,8 +49,7 @@ struct Cli {
 }
 
 impl Cli {
-    /// Whether this runs a server, which logs at info level by default as
-    /// the `ganymede-server` binary does.
+    /// Whether this runs a server, which logs at info level by default.
     fn serves(&self) -> bool {
         matches!(
             self.cmd,

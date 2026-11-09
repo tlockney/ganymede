@@ -7,10 +7,6 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[[bin]]
-name = "ganymede-server"
-path = "src/main.rs"
-
 [features]
 default = ["zmq", "subprocess", "gateway", "svg"]
 # The kernels `run_with` makes when `Startup` names none: ZeroMQ transports

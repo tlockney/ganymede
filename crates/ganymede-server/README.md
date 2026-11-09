@@ -1,12 +1,11 @@
 # ganymede-server
 
 `jupyter_server`'s REST and websocket API in axum, over `ganymede-api` and
-`ganymede-contents`. `ganymede serve` and `ganymede lab` run it; the
-crate's own `ganymede-server` binary takes the same flags, for
-development without the CLI.
+`ganymede-contents`. `ganymede serve`, `ganymede lab` and `ganymede ui`
+run it.
 
 ```
-cargo run -p ganymede-server -- --root-dir ~/notebooks --port 8888
+cargo run -p ganymede-cli -- serve --root-dir ~/notebooks --port 8888
 # prints http://127.0.0.1:8888/?token=...
 ```
 
