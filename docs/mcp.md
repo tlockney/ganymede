@@ -202,8 +202,8 @@ way.
 ## What the agent sees
 
 Outputs come back as text in nb-cli's `@@cell` / `@@output` format:
-Markdown or plain text, HTML tags stripped, tracebacks without terminal
-colors and cut to the last frames. An output over 4,000 characters is
+Markdown or plain text, HTML tags stripped, without terminal colors,
+and tracebacks cut to the last frames. An output over 4,000 characters is
 written to a file named by its SHA-256 hash in `ganymede-mcp-outputs`
 in the Jupyter runtime dir (readable only by you), and the reply gives
 its path. Images are left out unless the agent's

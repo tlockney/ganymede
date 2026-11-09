@@ -14,8 +14,8 @@
 //!
 //! What goes back to the model follows nb-cli's format: an `@@cell` line
 //! with the cell's index, id and type, its source, and an `@@output` line
-//! per output with plain text after it. HTML is stripped, tracebacks lose
-//! their ANSI colours and keep the last frames, and an output longer than
+//! per output with plain text after it. HTML is stripped, ANSI colours
+//! are removed, tracebacks keep the last frames, and an output longer than
 //! 4,000 characters is written to a file named by its sha256, whose path
 //! is given instead. Images are sent as image content only with
 //! `--images`.
@@ -1618,88 +1618,96 @@ impl Notebooks {
     }
 
     fn render_outputs(&self, outputs: &[Output]) -> String {
-        let mut s = String::new();
-        for o in outputs {
-            let v = serde_json::to_value(o).unwrap_or_default();
-            let kind = v["output_type"].as_str().unwrap_or_default();
-            let mut head = json!({"output_type": kind});
-            let body = match kind {
-                "stream" => {
-                    head["name"] = v["name"].clone();
-                    v["text"].as_str().unwrap_or_default().to_string()
-                }
-                "error" => {
-                    head["ename"] = v["ename"].clone();
-                    head["evalue"] = v["evalue"].clone();
-                    let frames: Vec<String> = v["traceback"]
-                        .as_array()
-                        .map(|t| {
-                            t.iter()
-                                .filter_map(Value::as_str)
-                                .map(ganymede_nbformat::strip_ansi)
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let skip = frames.len().saturating_sub(TRACEBACK_FRAMES);
-                    let mut b = String::new();
-                    if skip > 0 {
-                        b.push_str(&format!("[{skip} earlier frames]\n"));
-                    }
-                    b.push_str(&frames[skip..].join("\n"));
-                    b
-                }
-                _ => {
-                    if let Some(n) = v.get("execution_count").filter(|n| n.is_number()) {
-                        head["execution_count"] = n.clone();
-                    }
-                    let (mime, body) = best_text(&v["data"]);
-                    if let Some(m) = mime {
-                        head["mime"] = json!(m);
-                    }
-                    body
-                }
-            };
-            let body = if body.chars().count() > INLINE_LIMIT {
-                match self.spill(&body) {
-                    Ok(p) => {
-                        head["path"] = json!(p.to_string_lossy());
-                        let cut: String = body.chars().take(500).collect();
-                        format!(
-                            "{cut}\n[{} characters; the rest is in the file]",
-                            body.chars().count()
-                        )
-                    }
-                    Err(_) => body.chars().take(INLINE_LIMIT).collect(),
-                }
-            } else {
-                body
-            };
-            s.push_str(&format!(
-                "@@output {head}\n{}\n",
-                body.trim_end_matches('\n')
-            ));
-        }
-        s
+        render_outputs(&self.opts, outputs)
     }
+}
 
-    /// Write a long output to a file named by its sha256, in a directory
-    /// only this user can read (outputs may print secrets): by default
-    /// under the Jupyter runtime dir, not the shared temp dir. The file is
-    /// always written, never trusted because it exists.
-    fn spill(&self, body: &str) -> std::io::Result<PathBuf> {
-        let dir = self.opts.outputs_dir.clone().unwrap_or_else(|| {
-            ganymede_kernel_host::kernelspec::jupyter_runtime_dir().join("ganymede-mcp-outputs")
-        });
-        let mut builder = std::fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-        builder.create(&dir)?;
-        let name = hex::encode(sha2::Sha256::digest(body.as_bytes()));
-        let path = dir.join(format!("{name}.txt"));
-        std::fs::write(&path, body)?;
-        Ok(path)
+/// The `@@output` blocks for `outputs`.
+fn render_outputs(opts: &McpOptions, outputs: &[Output]) -> String {
+    let mut s = String::new();
+    for o in outputs {
+        let v = serde_json::to_value(o).unwrap_or_default();
+        let kind = v["output_type"].as_str().unwrap_or_default();
+        let mut head = json!({"output_type": kind});
+        let body = match kind {
+            "stream" => {
+                head["name"] = v["name"].clone();
+                v["text"].as_str().unwrap_or_default().to_string()
+            }
+            "error" => {
+                head["ename"] = v["ename"].clone();
+                head["evalue"] = v["evalue"].clone();
+                let frames: Vec<String> = v["traceback"]
+                    .as_array()
+                    .map(|t| {
+                        t.iter()
+                            .filter_map(Value::as_str)
+                            .map(ganymede_nbformat::strip_ansi)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let skip = frames.len().saturating_sub(TRACEBACK_FRAMES);
+                let mut b = String::new();
+                if skip > 0 {
+                    b.push_str(&format!("[{skip} earlier frames]\n"));
+                }
+                b.push_str(&frames[skip..].join("\n"));
+                b
+            }
+            _ => {
+                if let Some(n) = v.get("execution_count").filter(|n| n.is_number()) {
+                    head["execution_count"] = n.clone();
+                }
+                let (mime, body) = best_text(&v["data"]);
+                if let Some(m) = mime {
+                    head["mime"] = json!(m);
+                }
+                body
+            }
+        };
+        // Kernels colour more than tracebacks (cdp-kernel's results
+        // are `util.inspect` with colours on); the agent gets none of it.
+        let body = ganymede_nbformat::strip_ansi(&body);
+        let body = if body.chars().count() > INLINE_LIMIT {
+            match spill(opts, &body) {
+                Ok(p) => {
+                    head["path"] = json!(p.to_string_lossy());
+                    let cut: String = body.chars().take(500).collect();
+                    format!(
+                        "{cut}\n[{} characters; the rest is in the file]",
+                        body.chars().count()
+                    )
+                }
+                Err(_) => body.chars().take(INLINE_LIMIT).collect(),
+            }
+        } else {
+            body
+        };
+        s.push_str(&format!(
+            "@@output {head}\n{}\n",
+            body.trim_end_matches('\n')
+        ));
     }
+    s
+}
+
+/// Write a long output to a file named by its sha256, in a directory
+/// only this user can read (outputs may print secrets): by default
+/// under the Jupyter runtime dir, not the shared temp dir. The file is
+/// always written, never trusted because it exists.
+fn spill(opts: &McpOptions, body: &str) -> std::io::Result<PathBuf> {
+    let dir = opts.outputs_dir.clone().unwrap_or_else(|| {
+        ganymede_kernel_host::kernelspec::jupyter_runtime_dir().join("ganymede-mcp-outputs")
+    });
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(&dir)?;
+    let name = hex::encode(sha2::Sha256::digest(body.as_bytes()));
+    let path = dir.join(format!("{name}.txt"));
+    std::fs::write(&path, body)?;
+    Ok(path)
 }
 
 /// Markdown, then plain text, then HTML with tags stripped.
@@ -1800,6 +1808,20 @@ fn svg_source(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outputs_reach_the_agent_without_ansi_colours() {
+        let outputs: Vec<Output> = serde_json::from_value(json!([
+            {"output_type": "stream", "name": "stdout", "text": "\u{1b}[1mbold\u{1b}[22m\n"},
+            {"output_type": "execute_result", "execution_count": 1, "metadata": {},
+             "data": {"text/plain": "[ \u{1b}[32m'day'\u{1b}[39m, \u{1b}[33m3\u{1b}[39m ]"}},
+        ]))
+        .unwrap();
+        let s = render_outputs(&McpOptions::default(), &outputs);
+        assert!(!s.contains('\u{1b}'), "{s}");
+        assert!(s.contains("bold\n"), "{s}");
+        assert!(s.contains("[ 'day', 3 ]"), "{s}");
+    }
 
     #[test]
     fn text_helpers() {
