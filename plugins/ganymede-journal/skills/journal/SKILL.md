@@ -32,7 +32,10 @@ Edit.
    `.ts` file the kernel imports), written with your Edit tool.
 6. Probe with `cell_run(record: false)`: peeking at a value, checking a
    column name, trying a call. Probes run on the same kernel and leave
-   nothing in the notebook.
+   nothing in the notebook, but the names they declare stay defined. In
+   TypeScript, wrap a probe in a block, `{ const { hourly } = await
+   import("./data.ts"); hourly().head(); }`, so a later cell's
+   `import { hourly }` or `let` doesn't fail with "already been declared".
 7. Keep outputs. They are the record of what the run produced, and the
    server signs the notebook so charts and HTML render when someone
    opens it. Leave a cell's outputs out only when they don't belong in
