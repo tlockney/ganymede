@@ -68,6 +68,8 @@ jobs:
         working-directory: docs
       # The cell API reference, generated from TSDoc in cdp-kernel and
       # ganymede-device, from their main, under /docs/cell-api/ (#607).
+      - run: npm test
+        working-directory: docs
       - run: npm run fetch-cell-api
         working-directory: docs
       - run: npm run build

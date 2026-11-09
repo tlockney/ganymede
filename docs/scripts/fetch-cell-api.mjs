@@ -18,6 +18,7 @@ import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const docs = new URL("../", import.meta.url).pathname;
 const out = join(docs, "cell-api");
@@ -52,8 +53,19 @@ function checkout(source, tmp) {
   return dir;
 }
 
-/** `markdown` from `source`'s docs/, with its relative links pointed where they resolve on this site. */
+/**
+ * `markdown` from `source`'s docs/, with its relative links pointed where
+ * they resolve on this site. Fenced code is left as it is: `f(x)` after a
+ * `]` there is code, not a link.
+ */
 export function relink(markdown, source) {
+  return markdown
+    .split(/(^ *(?:`{3,}|~{3,})[^\n]*\n[\s\S]*?^ *(?:`{3,}|~{3,})[ \t]*$)/m)
+    .map((part, i) => (i % 2 === 1 ? part : relinkProse(part, source)))
+    .join("");
+}
+
+function relinkProse(markdown, source) {
   const renames = new Map(Object.entries(source.files).map(([from, to]) => [from.replace(/^docs\//, ""), to]));
   return markdown.replace(/\]\(([^)\s]+)\)/g, (link, href) => {
     // Pages of this site, linked absolutely so they work on GitHub too.
@@ -68,7 +80,11 @@ export function relink(markdown, source) {
   });
 }
 
-if (import.meta.main) {
+export { sources };
+
+// Run as a script, not imported by the test. Not `import.meta.main`, which
+// Node before 22.18 lacks.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const tmp = mkdtempSync(join(tmpdir(), "cell-api-"));
   try {
     rmSync(out, { recursive: true, force: true });
