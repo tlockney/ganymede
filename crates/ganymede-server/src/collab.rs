@@ -952,16 +952,10 @@ impl Disk {
         if self.untrusted.is_empty() {
             return;
         }
-        use ganymede_documents::{schema, yrs::Map, yrs::Transact};
         // Only this cell's outputs, serialized as the notebook would be.
-        let roots = schema::Roots::get(room.doc());
-        let txn = room.doc().transact();
-        let Some(outputs) =
-            schema::find_cell(&txn, &roots, id).and_then(|c| c.get(&txn, "outputs"))
-        else {
+        let Some(outputs) = room.cell_outputs(id) else {
             return;
         };
-        let outputs = schema::out_to_json(&txn, &outputs);
         for o in outputs.as_array().into_iter().flatten() {
             let o = serde_json::from_value::<ganymede_nbformat::Output>(o.clone())
                 .ok()
@@ -2420,6 +2414,27 @@ mod trust_tests {
             disk.ran(&room, &code_id(&room));
             edit_and_save(&contents, &mut room, &mut disk).await;
             assert!(signed(dir.path(), &notary), "4.{minor}: rerun here");
+        }
+    }
+
+    /// An identical rerun is trusted even when its outputs hold numbers
+    /// Yjs can't keep exactly (review of #598).
+    #[tokio::test]
+    async fn an_identical_rerun_with_big_numbers_is_trusted() {
+        let big = r#"{"output_type":"display_data","data":{"application/json":{"n":9007199254740993}},"metadata":{}}"#;
+        for minor in [4, 5] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("a.ipynb");
+            untrusted_nb(dir.path(), minor);
+            let text = std::fs::read_to_string(&path).unwrap().replace(HTML, big);
+            std::fs::write(&path, text).unwrap();
+            let (contents, notary) = contents(dir.path());
+            let (mut room, mut disk) = open(&contents).await;
+            run_cell(&mut room, vec![serde_json::from_str(big).unwrap()]);
+            disk.ran(&room, &code_id(&room));
+            assert!(disk.untrusted.is_empty(), "4.{minor}");
+            edit_and_save(&contents, &mut room, &mut disk).await;
+            assert!(signed(dir.path(), &notary), "4.{minor}");
         }
     }
 
