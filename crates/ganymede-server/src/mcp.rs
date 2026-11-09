@@ -915,7 +915,7 @@ const OUTPUTS_DROPPED: &str =
     "Outputs left out of the notebook (keep_outputs: false); they are only in this reply.";
 
 /// The note when a cell that leaves its outputs out is still running.
-const OUTPUTS_LATER: &str = "The cell is still running: its outputs so far are cleared, but what it adds from now on reaches the notebook. Call cell_clear_outputs once it finishes.";
+const OUTPUTS_LATER: &str = "The cell is still running, and its outputs reach the notebook when it finishes. Call cell_clear_outputs then.";
 
 /// Whether a cell's metadata marks its outputs to stay out of the
 /// notebook: `metadata.ganymede.outputs` is `"dropped"`.

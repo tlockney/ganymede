@@ -40,7 +40,9 @@ Edit.
    private (personal data, internal hosts). Pass
    `cell_run(keep_outputs: false)`, or call `cell_clear_outputs(id)`
    after the fact; the code stays, and later runs leave the outputs out
-   too. Say in the next note what the output showed. Never print
+   too. These need a Ganymede newer than 0.7.0: if `cell_clear_outputs`
+   isn't in your tools, the server ignores `keep_outputs`, so use
+   `record: false` for such output instead. Say in the next note what the output showed. Never print
    credentials, even with outputs left out: they reach the notebook
    while the cell runs.
 8. After a result, a short Markdown finding: what it shows, in a

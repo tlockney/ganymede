@@ -157,9 +157,9 @@ leave their outputs out too; a person running the cell in a frontend
 gets them back. Outputs reach the notebook while the cell runs and are
 cleared when it finishes, so a long run can be saved with them in
 between: keep credentials out of outputs altogether, or look at them
-with `record: false`. A cell still running when the call times out keeps
-what it adds after that; the reply says so, and `cell_clear_outputs`
-clears it once the cell finishes.
+with `record: false`. A cell still running when the call times out
+writes its outputs to the notebook when it finishes; the reply says so,
+and `cell_clear_outputs` clears them then.
 
 ## Changes by others
 

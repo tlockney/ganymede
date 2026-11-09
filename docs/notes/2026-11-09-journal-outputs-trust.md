@@ -10,10 +10,13 @@ A room saves through the contents manager like a frontend, and the
 contents manager signs only when every code cell arrives marked
 `trusted`. The room never marked any. Now it marks each code cell
 trusted unless it holds outputs the room read from an unsigned file, at
-load or when it merged a file change in. The room keeps, per room cell
-id, digests of those outputs; a run through the execute path (which MCP
-uses) drops the cell's entry, so rerunning an old journal repairs it
-even when the outputs come out the same. Trusting the file with the
+load or when it merged a file change in (only outputs new in the file,
+so an unsigned write doesn't undo the room's own runs). The room keeps
+one set of digests of those outputs, not one per cell id, since a cell
+cut and pasted gets a new id. When a run through the execute path
+(which MCP uses) replaces a cell's outputs, their digests leave the
+set, so rerunning an old journal repairs it even when the outputs come
+out the same. Trusting the file with the
 room open (`ganymede trust`, a frontend's Trust) is seen at the next
 save, which finds the file signed and forgets the entries.
 
