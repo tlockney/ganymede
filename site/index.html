@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ganymede: a Jupyter server with no Python</title>
-<meta name="description" content="A Jupyter server in Rust with no Python runtime. It runs any installed kernel and serves the jupyter_server API to JupyterLab and VS Code.">
+<title>Ganymede: a Jupyter server in Rust</title>
+<meta name="description" content="A Jupyter server in Rust for TypeScript notebooks, agent journals, and its own Mac, iPad and iPhone apps. JupyterLab and VS Code connect to it unchanged.">
 <link rel="canonical" href="https://ganymede-server.com/">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Ganymede">
-<meta property="og:title" content="Ganymede: a Jupyter server with no Python">
-<meta property="og:description" content="A Jupyter server in Rust. It runs any installed kernel and serves the jupyter_server API to JupyterLab and VS Code, with no Python runtime.">
+<meta property="og:title" content="Ganymede: a Jupyter server in Rust">
+<meta property="og:description" content="A Jupyter server in Rust for TypeScript notebooks, agent journals, and its own Mac, iPad and iPhone apps. JupyterLab and VS Code connect to it unchanged.">
 <meta property="og:url" content="https://ganymede-server.com/">
 <meta property="og:image" content="https://ganymede-server.com/images/jupyterlab.png">
 <meta property="og:image:alt" content="JupyterLab running a TypeScript notebook on Ganymede.">
@@ -44,16 +44,21 @@
 <section class="hero">
   <div class="wrap hero-grid">
   <div class="hero-text">
-    <p class="eyebrow">Jupyter server · Rust · no Python</p>
-    <h1>The Jupyter server, without the Python.</h1>
-    <p class="lede">Ganymede runs your kernels and serves the same API as
-      <code>jupyter_server</code>, so JupyterLab and VS Code connect to it unchanged. It is
-      one Rust binary, or a library to embed, and it needs no Python environment to run a
-      TypeScript notebook, or any other.</p>
-    <p class="lede who">For people who want Jupyter where a Python environment is a burden or
-      impossible: TypeScript notebooks on <a href="https://cdp-kernel.org">cdp-kernel</a>
-      (a kernel that runs TypeScript cells on Node, Deno and more),
-      CI jobs that run notebooks, and apps that embed a notebook server.</p>
+    <p class="eyebrow">Jupyter server · Rust · TypeScript</p>
+    <h1>Notebooks for TypeScript, agents, and your devices.</h1>
+    <p class="lede">Ganymede runs kernels, reads and writes notebooks, and serves the same API
+      as <code>jupyter_server</code>, so JupyterLab and VS Code connect to it unchanged. It is
+      one Rust binary, a library to embed, and the core of its own apps.</p>
+    <ul class="ways">
+      <li><strong>TypeScript notebooks.</strong> <a href="https://cdp-kernel.org">cdp-kernel</a>
+        runs cells on Node, Deno, or in the browser, from JupyterLab, VS Code, or the
+        apps.</li>
+      <li><strong>Agent journals.</strong> <code>ganymede mcp</code> lets Claude Code or
+        another agent record an analysis in a notebook as it works, cells with their output,
+        for you to read or re-run. <a href="docs/mcp">Agents over MCP</a></li>
+      <li><strong>The apps.</strong> Mac, iPad, and iPhone, with the server inside the app;
+        on the iPad and iPhone, TypeScript runs on the device. <a href="#apps">Apps</a></li>
+    </ul>
     <div class="install">
       <div class="tabs" role="tablist">
         <button role="tab" aria-selected="true" data-tab="release">Install script</button>
@@ -66,7 +71,7 @@ ganymede kernelspec list</code></pre>
       <pre data-panel="cargo" hidden><code><span class="c"># Rust toolchain</span>
 cargo install --git https://github.com/tlockney/ganymede ganymede-cli
 ganymede kernelspec list</code></pre>
-      <pre data-panel="docker" hidden><code><span class="c"># JupyterLab and cdp-kernel, no Python</span>
+      <pre data-panel="docker" hidden><code><span class="c"># JupyterLab and cdp-kernel</span>
 docker run --rm -p 8888:8888 ghcr.io/tlockney/ganymede</code></pre>
     </div>
     <p class="platforms">The script also installs cdp-kernel when Node 22.18 or later is
@@ -267,10 +272,11 @@ http://127.0.0.1:8888/?token=<span class="s">4f9c…</span>
   <div class="wrap two">
     <div>
       <h2>Why</h2>
-      <p>Nothing in the Jupyter protocols requires Python, but the server does: running a
-        TypeScript notebook means installing a Python environment first. That rules out
-        places Python can't easily go, such as an iPad app. Ganymede keeps the protocols and
-        the ecosystem and drops the dependency.</p>
+      <p>Ganymede began as a way to write TypeScript notebooks and to run notebooks in an
+        iPad app. The Jupyter protocols suit both; the reference server, a Python program,
+        doesn't travel to an iPad. Keeping the protocols keeps JupyterLab, VS Code, and the
+        existing kernels, ipykernel included. A Rust core lets the same server run as a
+        command, inside an app, or behind an agent's MCP session.</p>
       <p><a href="docs/architecture">Architecture</a> ·
         <a href="docs/python-free">Replacing Python</a></p>
     </div>

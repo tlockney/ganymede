@@ -1,15 +1,15 @@
 # Ganymede
 
-Ganymede is a Jupyter server written in Rust, with no Python anywhere in
-the product. It finds and launches kernels from installed kernelspecs,
-speaks the Jupyter messaging protocol to them, reads and writes notebooks,
-and serves the same REST and websocket API as `jupyter_server`, so
-JupyterLab and VS Code connect to it as they would to Jupyter.
+Ganymede is a Jupyter server written in Rust, for TypeScript notebooks on
+[cdp-kernel](https://cdp-kernel.org), agent journals over
+[MCP](mcp.md), and its own Mac, iPad and iPhone [apps](app.md). It finds
+and launches kernels from installed kernelspecs, speaks the Jupyter
+messaging protocol to them, reads and writes notebooks, and serves the
+same REST and websocket API as `jupyter_server`, so JupyterLab and VS Code
+connect to it as they would to Jupyter.
 
-The first target kernel is [cdp-kernel](https://cdp-kernel.org), for
-TypeScript notebooks. Python kernels still work: a Python kernel is one
-more installed kernelspec, not something the server needs
-([Other kernels](kernels.md)).
+Other kernels work too: a Python kernel is one more installed kernelspec,
+not something the server needs ([Other kernels](kernels.md)).
 
 ## Get started
 

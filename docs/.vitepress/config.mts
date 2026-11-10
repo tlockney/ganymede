@@ -56,7 +56,7 @@ function externalHref(href: string, page: string): string | undefined {
 
 export default defineConfig({
   title: "Ganymede",
-  description: "A Jupyter server in Rust with no Python in the product.",
+  description: "A Jupyter server in Rust for TypeScript notebooks, agent journals, and the Ganymede apps.",
   base,
   cleanUrls: true,
   rewrites: { "README.md": "index.md" },
