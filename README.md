@@ -4,13 +4,17 @@
 [![Release](https://img.shields.io/github/v/release/tlockney/ganymede)](https://github.com/tlockney/ganymede/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-A Jupyter server in Rust, with no Python runtime and no Python dependency.
+A Jupyter server in Rust, for three things: TypeScript notebooks on
+[cdp-kernel](https://cdp-kernel.org), agent journals (a coding agent
+records its analysis in a notebook over MCP, see
+[Agents over MCP](docs/mcp.md)), and its own Mac, iPad and iPhone
+[apps](docs/app.md), which run the server inside the app.
+
 Ganymede launches kernels from installed kernelspecs, speaks the Jupyter
 messaging protocol to them, reads and writes notebooks, and serves the
 same REST and websocket API as `jupyter_server`, so JupyterLab and VS Code
-connect to it unchanged. The first target kernel is
-[cdp-kernel](https://cdp-kernel.org), for TypeScript notebooks; any other
-kernel, Python's included, works once its kernelspec is installed.
+connect to it unchanged. Any other kernel, Python's included, works once
+its kernelspec is installed. The server itself needs no Python runtime.
 
 Named for Jupiter's largest moon, and for the cupbearer who served the
 gods on Olympus.

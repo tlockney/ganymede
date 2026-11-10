@@ -105,7 +105,9 @@ section.alt { background: var(--bg-alt); border-block: 1px solid var(--line); }
 .eyebrow { font-family: var(--mono); font-size: 0.85rem; color: var(--accent); margin: 0 0 12px; }
 .hero h1 { font-size: clamp(2rem, 5vw, 3.2rem); margin: 0 0 16px; max-width: 18ch; }
 .lede { font-size: 1.15rem; color: var(--fg-soft); max-width: 60ch; margin: 0 0 28px; }
-.lede.who { font-size: 1rem; margin-top: -16px; }
+.ways { list-style: none; padding: 0; margin: -12px 0 28px; max-width: 60ch; color: var(--fg-soft); }
+.ways li { margin: 0 0 10px; }
+.ways strong { color: var(--fg); }
 
 pre {
   margin: 0;
