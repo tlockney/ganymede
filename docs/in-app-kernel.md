@@ -96,7 +96,10 @@ The contract:
   both directions.
 - **Lifetime.** Strings passed to a callback are valid during the call.
   `ctx` stays the app's until `release`, which the server calls when it
-  stops. Register after `ganymede_server_start` and before the web view
+  stops. When `ganymede_kernel_register` fails, it never calls `release`
+  and keeps no pointer, so `ctx` stays the app's to free. Registering a
+  name that is already registered fails, and the first registration
+  stays. Register after `ganymede_server_start` and before the web view
   loads the page, so the first kernel list includes the kernel.
 - **Start.** `start` returns at once. The server then waits for
   `kernel_info_reply` within its startup timeout, as for a subprocess
@@ -175,8 +178,11 @@ Kernels differ in what cells can use: real files, `node:` modules, the
 subprocess kernel has, so the picker and errors should say so.
 
 - **Before a kernel starts**, the kernelspec says what it offers, in
-  `metadata.capabilities`, a list of names: `fs`, `node`, `device`,
-  `debugger`, `stdin`. The host passes kernelspec metadata through
+  `metadata.capabilities`, an object keyed by name (`fs`, `node`,
+  `device`, `debugger`, `stdin`), the same shape as
+  `kernel_info_reply.capabilities` below, so a client reads both one way.
+  A value is `true`, or something more specific, such as the methods of a
+  namespace. The host passes kernelspec metadata through
   untouched, so this needs no server change. The kernel picker shows them
   as badges, and lists in-app and remote kernels together.
 - **Once it runs**, `kernel_info_reply.capabilities` says what it got.
