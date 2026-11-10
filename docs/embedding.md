@@ -342,7 +342,7 @@ endpoint as any kernel. The design is
 |---|---|
 | `int ganymede_kernel_register(GanymedeServer *server, const char *spec_json, const GanymedeKernelCallbacks *callbacks, char **error_out)` | Lists `spec_json` (`kernel.json`'s keys plus `"name"`; `argv` may be left out) as a kernelspec the callbacks run. Returns 0, or nonzero for a bad spec, a NULL `start`, `send` or `stop`, or a name already registered; then no callback is ever called, `release` included, and `*error_out` holds a message. |
 | `int ganymede_kernel_deliver(GanymedeServer *server, const char *kernel_id, const char *channel, const char *msg_json)` | A message from the kernel on `shell`, `control`, `stdin` or `iopub`. Any thread; doesn't block. Nonzero when the kernel isn't running or the message can't be read. |
-| `void ganymede_kernel_ended(GanymedeServer *server, const char *kernel_id, const char *reason)` | The kernel ended without being asked to. `"lost"` (the platform ended it) restarts it without counting toward the restart limit, and the `status: restarting` message carries `"reason": "lost"`. Anything else is a crash. |
+| `void ganymede_kernel_ended(GanymedeServer *server, const char *kernel_id, const char *reason)` | The kernel ended without being asked to. `"lost"` (the platform ended it) restarts it, unless restarts are off (`kernel_restart_limit` 0), without counting toward the limit, and the `status: restarting` message carries `"reason": "lost"`. Anything else is a crash. Call it once per run, never for a run already stopped. |
 
 `GanymedeKernelCallbacks` holds `ctx` and four callbacks, each passed
 `ctx`:
@@ -356,7 +356,9 @@ endpoint as any kernel. The design is
 - `send(ctx, kernel_id, channel, msg_json)` hands the kernel a message on
   `shell`, `control` or `stdin`.
 - `stop(ctx, kernel_id)` ends it. A shutdown sends `shutdown_request`
-  first.
+  first. A restart reuses the id, so once `stop` is called, or the app
+  called `ganymede_kernel_ended`, the app delivers nothing more from that
+  run: a late message would reach the new one.
 - `release(ctx)`, which may be NULL, runs once when the server stops,
   after every other callback.
 

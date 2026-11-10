@@ -439,6 +439,14 @@ async fn kernelspec_resource(
         return Err(HttpError(404, "not found".into()));
     }
     let dir = s.kernels.kernelspec_resource_dir(&name)?;
+    // A kernelspec with no directory of its own (one the app registered,
+    // or the gateway's) has no files: never read from the working directory.
+    if !dir.is_absolute() {
+        return Err(HttpError(
+            404,
+            format!("kernelspec {name} has no resources"),
+        ));
+    }
     let path = dir.join(&file);
     let bytes = tokio::fs::read(&path)
         .await

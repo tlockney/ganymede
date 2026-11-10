@@ -40,7 +40,9 @@ typedef struct GanymedeKernelCallbacks {
      * "control" or "stdin". */
     void (*send)(void *ctx, const char *kernel_id, const char *channel,
                  const char *msg_json);
-    /* End the kernel now. */
+    /* End the kernel now. A restart then calls start with the same
+     * kernel_id, so once stop is called (or the app called
+     * ganymede_kernel_ended), deliver nothing more from that run. */
     void (*stop)(void *ctx, const char *kernel_id);
     void (*release)(void *ctx);
 } GanymedeKernelCallbacks;
@@ -61,8 +63,9 @@ int ganymede_kernel_deliver(GanymedeServer *server, const char *kernel_id,
                             const char *channel, const char *msg_json);
 
 /* A registered kernel ended without being asked to. reason "lost" (the
- * platform ended it) restarts it without counting a crash; anything else,
- * or NULL, is a crash. Any thread. */
+ * platform ended it) restarts it, unless restarts are off, without
+ * counting a crash; anything else, or NULL, is a crash. Any thread. Call
+ * it once per run, never for a run already stopped. */
 void ganymede_kernel_ended(GanymedeServer *server, const char *kernel_id,
                            const char *reason);
 

@@ -96,7 +96,7 @@ pull request with a GitHub issue, and records what it learned in the
   `TransportFactory` seams that already accept a kernel with no ZeroMQ.
   The first step registers today's in-app kernel with the embedded
   server ([In-app kernels as server kernels](in-app-kernel.md)): the C
-  functions are in Ganymede, and the apps use them next.
+  functions are on `main` in Ganymede, and the apps use them next.
 - CurveZMQ for the ZeroMQ transport. ipykernel 7 already advertises it.
 - Trusting `tailscale serve`'s identity headers, so a client on the
   tailnet needs no token.

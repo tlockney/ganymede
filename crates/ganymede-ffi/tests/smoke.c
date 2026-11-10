@@ -43,7 +43,13 @@ int main(void) {
         return 1;
     }
     ganymede_string_free(err);
-    if (ganymede_kernel_deliver(server, "no-such-kernel", "iopub", "{}") == 0) {
+    const char *status =
+        "{\"header\": {\"msg_id\": \"m\", \"msg_type\": \"status\", "
+        "\"username\": \"\", \"session\": \"s\", "
+        "\"date\": \"2026-01-01T00:00:00Z\", \"version\": \"5.3\"}, "
+        "\"parent_header\": {}, \"metadata\": {}, "
+        "\"content\": {\"execution_state\": \"idle\"}}";
+    if (ganymede_kernel_deliver(server, "no-such-kernel", "iopub", status) != 2) {
         fprintf(stderr, "delivered to a kernel that isn't running\n");
         return 1;
     }

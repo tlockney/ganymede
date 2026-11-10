@@ -72,7 +72,7 @@ type Fallback = (
 /// hiding one of the same name, and the kernels started from them.
 #[derive(Default)]
 pub struct RegisteredKernels {
-    state: Mutex<State>,
+    state: Arc<Mutex<State>>,
     fallback: OnceLock<Fallback>,
 }
 
@@ -234,7 +234,10 @@ impl Provisioner for RegisteredKernels {
             ended: watch::channel(None).0,
             sending: Mutex::new(()),
         });
-        let process = Arc::new(Process(running.clone()));
+        let process = Arc::new(Process {
+            run: running.clone(),
+            registry: Arc::downgrade(&self.state),
+        });
         {
             let mut state = self.state.lock().unwrap();
             // A restart under the same id: the old run is over.
@@ -318,7 +321,11 @@ impl TransportSink for Sink {
 }
 
 /// A registered kernel's stand-in for a process.
-struct Process(Arc<Running>);
+struct Process {
+    run: Arc<Running>,
+    /// To forget the run once the host stops it.
+    registry: std::sync::Weak<Mutex<State>>,
+}
 
 #[async_trait]
 impl KernelProcess for Process {
@@ -335,20 +342,32 @@ impl KernelProcess for Process {
         Ok(())
     }
     async fn wait(&self) -> Option<i32> {
-        let mut ended = self.0.ended.subscribe();
+        let mut ended = self.run.ended.subscribe();
         let _ = ended.wait_for(Option::is_some).await;
         None
     }
     fn is_alive(&self) -> bool {
-        self.0.ended.borrow().is_none()
+        self.run.ended.borrow().is_none()
     }
     fn kill_now(&self) {
-        if self.0.end(Ended::Stopped) {
-            self.0.app.stop(&self.0.id);
+        if let Some(state) = self.registry.upgrade() {
+            let mut state = state.lock().unwrap();
+            state.unconnected.remove(&(self as *const Self as usize));
+            // Only this run's entry: a restart may already hold the id.
+            if state
+                .running
+                .get(&self.run.id)
+                .is_some_and(|r| Arc::ptr_eq(r, &self.run))
+            {
+                state.running.remove(&self.run.id);
+            }
+        }
+        if self.run.end(Ended::Stopped) {
+            self.run.app.stop(&self.run.id);
         }
     }
     fn exit_reason(&self) -> Option<&'static str> {
-        let ended = *self.0.ended.borrow();
+        let ended = *self.run.ended.borrow();
         ended.map(Ended::as_str)
     }
 }
@@ -484,6 +503,23 @@ mod tests {
         assert_eq!(fake.stops.load(Ordering::SeqCst), 1);
         assert!(!launched.process.is_alive());
         assert_eq!(launched.process.exit_reason(), Some("stopped"));
+        assert!(host.state.lock().unwrap().running.is_empty());
+        assert!(matches!(
+            host.deliver("k1", Channel::IoPub, Message::new("status", "", "", &())),
+            Err(Error::KernelDied)
+        ));
+    }
+
+    #[tokio::test]
+    async fn stopping_an_old_run_keeps_its_restart() {
+        let (host, fake) = host();
+        let (_, first) = start(&host, "k1").await;
+        let (session, _second) = start(&host, "k1").await;
+        assert_eq!(first.process.exit_reason(), Some("stopped"));
+        first.process.kill().await.unwrap();
+        assert_eq!(fake.stops.load(Ordering::SeqCst), 0, "already over");
+        assert!(host.state.lock().unwrap().running.contains_key("k1"));
+        session.nudge(Duration::from_secs(5)).await.unwrap();
     }
 
     #[tokio::test]

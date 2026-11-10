@@ -24,3 +24,11 @@ fake kernel through the C functions over the REST API: a session starts
 it with the notebook's path, `"lost"` restarts it under the same id, a
 DELETE stops it, and `release` runs once at server stop. The apps' side
 is ganymede-ui's next step.
+
+Review fixes: the host's stop now drops the run from the registry (it
+stayed listed before, with its forwarding task), the kernelspec file
+route returns 404 for a kernelspec with no directory instead of reading
+from the working directory, and the header and docs say a stopped run
+delivers nothing more, since a restart reuses its id. Losses don't count
+toward the restart limit, so repeated losses restart without a cap; the
+design note lists that under its open question on restarts.

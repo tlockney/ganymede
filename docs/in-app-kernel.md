@@ -150,8 +150,10 @@ With registration, Swift calls `ganymede_kernel_ended(server, id,
 "lost")` for each kernel the page held. The server treats it as a crash
 with two differences:
 
-- It restarts the kernel without counting toward `restart_limit`, since
-  the platform ended it, not a fault in the kernel.
+- It restarts the kernel, unless restarts are off (`restart_limit` 0),
+  without counting toward `restart_limit`, since the platform ended it,
+  not a fault in the kernel. With no count, a kernel the platform keeps
+  ending restarts each time; see Restart after a loss below.
 - The `status: restarting` message on iopub carries `"reason": "lost"` in
   its content. Clients that don't know the key ignore it, as Jupyter
   clients ignore unknown content keys.
@@ -249,7 +251,10 @@ today's relay already pays.
 - **Restart after a loss.** The proposal restarts at once, so the
   notebook has a kernel when the app comes back. The alternative leaves
   it dead until the person picks Restart or Restore, which starts no
-  kernel the person didn't ask for.
+  kernel the person didn't ask for. Losses don't count toward
+  `restart_limit`, so nothing yet caps or spaces out restarts after
+  repeated losses, such as a page killed under memory pressure each time
+  it starts.
 - **Where the kernel web view lives on the Mac.** WebKit suspends a web
   view in no window. With kernels owned by the app, the kernel web view
   needs a home that outlives any one window.

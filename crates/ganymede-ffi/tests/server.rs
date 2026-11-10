@@ -36,6 +36,9 @@ fn request(url: &str, method: &str, path: &str, body: &str) -> String {
     out
 }
 
+/// A well-formed iopub status message.
+const STATUS: &std::ffi::CStr = c"{\"header\": {\"msg_id\": \"m\", \"msg_type\": \"status\", \"username\": \"\", \"session\": \"s\", \"date\": \"2026-01-01T00:00:00Z\", \"version\": \"5.3\"}, \"parent_header\": {}, \"metadata\": {}, \"content\": {\"execution_state\": \"idle\"}}";
+
 #[test]
 fn starts_serves_and_stops() {
     let root = tempfile::tempdir().unwrap();
@@ -260,6 +263,10 @@ fn runs_a_kernel_the_app_registers() {
     let specs = get(&url, "/api/kernelspecs");
     assert!(specs.contains(r#""app-ts""#), "{specs}");
     assert!(specs.contains(r#""interrupt_mode":"message""#), "{specs}");
+    // It has no directory, so no files: not even ones in the working
+    // directory.
+    let file = get(&url, "/kernelspecs/app-ts/Cargo.toml");
+    assert!(file.starts_with("HTTP/1.1 404"), "{file}");
 
     // A session starts the kernel with the notebook's path.
     let reply = request(
@@ -307,9 +314,12 @@ fn runs_a_kernel_the_app_registers() {
     let reply = request(&url, "DELETE", &format!("/api/kernels/{id}"), "");
     assert!(reply.starts_with("HTTP/1.1 204"), "{reply}");
     assert_eq!(app.stops.load(Ordering::SeqCst), 1);
-    assert_ne!(
-        unsafe { ganymede_kernel_deliver(server, cid.as_ptr(), c"iopub".as_ptr(), c"{}".as_ptr()) },
-        0
+    // A message for it now has no kernel to go to.
+    assert_eq!(
+        unsafe {
+            ganymede_kernel_deliver(server, cid.as_ptr(), c"iopub".as_ptr(), STATUS.as_ptr())
+        },
+        2
     );
 
     assert_eq!(app.released.load(Ordering::SeqCst), 0);
