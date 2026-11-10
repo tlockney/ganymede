@@ -1,6 +1,6 @@
 #!/bin/sh
 # Install Ganymede from a GitHub release on Linux or macOS, then, when
-# Node 24+ is present, cdp-kernel for TypeScript notebooks.
+# Node 22.18+ is present, cdp-kernel for TypeScript notebooks.
 #
 #   curl -fsSL https://ganymede-server.com/install.sh | sh
 #   curl -fsSL https://ganymede-server.com/install.sh | sh -s -- --version 0.1.0 --no-kernel
@@ -118,14 +118,20 @@ install_kernel() { # runtime
 	if ! has node || ! has npm; then
 		say ""
 		say "Node.js not found, so cdp-kernel was not installed. For TypeScript"
-		say "notebooks, install Node 24 or later, then run:"
+		say "notebooks, install Node 22.18 or later, then run:"
 		say "  npm install -g @tlockney/cdp-kernel && cdp-kernel install --runtime $1"
 		return 0
 	fi
-	major=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
-	if [ "$major" -lt 24 ]; then
+	# cdp-kernel's own floor, the "engines" in its package.json: 22.18.
+	node_version=$(node -p 'process.versions.node' 2>/dev/null || echo 0.0)
+	major=${node_version%%.*}
+	minor=${node_version#*.}
+	minor=${minor%%.*}
+	case $major in '' | *[!0-9]*) major=0 ;; esac
+	case $minor in '' | *[!0-9]*) minor=0 ;; esac
+	if [ "$major" -lt 22 ] || { [ "$major" -eq 22 ] && [ "$minor" -lt 18 ]; }; then
 		say ""
-		say "cdp-kernel needs Node 24 or later; found $(node --version). After"
+		say "cdp-kernel needs Node 22.18 or later; found $(node --version). After"
 		say "upgrading Node, run:"
 		say "  npm install -g @tlockney/cdp-kernel && cdp-kernel install --runtime $1"
 		return 0

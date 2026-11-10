@@ -113,13 +113,10 @@ bottom do no I/O, so they build for any target.
 | `ganymede-protocol` | Message types, the ZeroMQ multipart frame layout with HMAC, connection files, the websocket codecs. |
 | `ganymede-nbformat` | nbformat 4.5 reading and writing. |
 
-Outside the Rust core, and outside this repository, the TypeScript for UIs
-that render in a web view lives in
-[tlockney/ganymede-ui](https://github.com/tlockney/ganymede-ui): its
-`packages/client` has protocol types, websocket codecs, a
-`ServerConnection` with injectable `fetch` and `WebSocket`, a REST client,
-and renderer and widget seams. How the app itself is built, including the
-Mac and iPad app around this server, is on ganymede-ui's
+Outside the Rust core, and outside this repository, Ganymede's own UI
+lives in [tlockney/ganymede-ui](https://github.com/tlockney/ganymede-ui):
+a web app that is a client of this server's API, and the Mac and iPad app
+around it. How they are built is on ganymede-ui's
 [architecture](ganymede-ui/architecture.md) page.
 
 ### Seams
