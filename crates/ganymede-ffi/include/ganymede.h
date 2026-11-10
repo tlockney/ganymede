@@ -47,8 +47,10 @@ typedef struct GanymedeKernelCallbacks {
     void (*release)(void *ctx);
 } GanymedeKernelCallbacks;
 
-/* Lists spec_json (kernel.json's keys plus "name") as a kernelspec run by
- * callbacks, before the server's other kernels. Returns 0, or nonzero on
+/* Lists spec_json (kernel.json's keys plus "name", lowercased, of
+ * [a-z0-9._-]) as a kernelspec run by callbacks, after the server's other
+ * kernels and in place of one of the same name, so the default kernel
+ * stays the server's own unless it has none. Returns 0, or nonzero on
  * failure (a name already registered, among others): then no callback is
  * ever called, release included, and *error_out (if error_out is not
  * NULL) is a message to free with ganymede_string_free. */

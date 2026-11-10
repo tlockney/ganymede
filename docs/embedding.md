@@ -333,14 +333,15 @@ ganymede-ui's app does this in `ServerHost.swift`; see its
 
 An app that runs a kernel itself, as the iPad app runs cdp-kernel in a
 web view, registers it with the server. The server lists it as a
-kernelspec, before the gateway's kernels or its own and hiding one of
-the same name, and runs it through the same sessions, rooms and execute
+kernelspec after the gateway's kernels or its own, in place of one of
+the same name (so the default kernel stays the server's own unless it
+has none), and runs it through the same sessions, rooms and execute
 endpoint as any kernel. The design is
 [In-app kernels as server kernels](in-app-kernel.md).
 
 | Function | Contract |
 |---|---|
-| `int ganymede_kernel_register(GanymedeServer *server, const char *spec_json, const GanymedeKernelCallbacks *callbacks, char **error_out)` | Lists `spec_json` (`kernel.json`'s keys plus `"name"`; `argv` may be left out) as a kernelspec the callbacks run. Returns 0, or nonzero for a bad spec, a NULL `start`, `send` or `stop`, or a name already registered; then no callback is ever called, `release` included, and `*error_out` holds a message. |
+| `int ganymede_kernel_register(GanymedeServer *server, const char *spec_json, const GanymedeKernelCallbacks *callbacks, char **error_out)` | Lists `spec_json` (`kernel.json`'s keys plus `"name"`; `argv` may be left out) as a kernelspec the callbacks run. The name is lowercased and, as on disk, takes only `[a-z0-9._-]`. Returns 0, or nonzero for a bad spec or name, a NULL `start`, `send` or `stop`, or a name already registered; then no callback is ever called, `release` included, and `*error_out` holds a message. |
 | `int ganymede_kernel_deliver(GanymedeServer *server, const char *kernel_id, const char *channel, const char *msg_json)` | A message from the kernel on `shell`, `control`, `stdin` or `iopub`. Any thread; doesn't block. Nonzero when the kernel isn't running or the message can't be read. |
 | `void ganymede_kernel_ended(GanymedeServer *server, const char *kernel_id, const char *reason)` | The kernel ended without being asked to. `"lost"` (the platform ended it) restarts it, unless restarts are off (`kernel_restart_limit` 0), without counting toward the limit, and the `status: restarting` message carries `"reason": "lost"`. Anything else is a crash. Call it once per run, never for a run already stopped. |
 

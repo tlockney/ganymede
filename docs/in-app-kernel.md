@@ -6,8 +6,11 @@ in the same app, so it becomes a kernel like any other.
 
 > [!NOTE]
 > **Unreleased.** Ganymede's part, the C functions below, is available
-> only from a build of `main` (HEAD), not in the latest release. The
-> apps' part, in ganymede-ui, is not built yet.
+> only from a build of `main` (HEAD), not in the latest release.
+
+> [!NOTE]
+> **Unreleased in ganymede-ui.** The apps' part is not built yet: no
+> build of ganymede-ui registers its in-app kernel.
 
 ## The problem
 
@@ -114,8 +117,10 @@ The contract:
   `shutdown_request` first, then calls `stop` after the grace period.
 - **Heartbeat.** A registered kernel is alive until `ganymede_kernel_ended`
   or `stop`.
-- **Names.** A registered kernelspec is listed before a kernel server's
-  (`gateway_url`), and hides one of the same name.
+- **Names.** A registered kernelspec's name follows the kernelspec rules
+  (lowercased, `[a-z0-9._-]`). It is listed after a kernel server's
+  (`gateway_url`), in place of one of the same name, so the server's
+  default kernel stays the default unless it has no kernels of its own.
 
 On the Rust side, a `RegisteredKernels` type implements
 `KernelspecSource`, `Provisioner` and `TransportFactory` over the

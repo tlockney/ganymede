@@ -32,3 +32,10 @@ from the working directory, and the header and docs say a stopped run
 delivers nothing more, since a restart reuses its id. Losses don't count
 toward the restart limit, so repeated losses restart without a cap; the
 design note lists that under its open question on restarts.
+
+Second review: the file route checks for an empty resource directory
+rather than a relative one, since kernelspecs under a relative
+`JUPYTER_PATH` have relative directories. Registered kernelspecs are now
+listed after the server's own, so the server's default kernel stays the
+default, and their names follow the on-disk rules (lowercased,
+`[a-z0-9._-]`).

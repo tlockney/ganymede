@@ -68,8 +68,9 @@ type Fallback = (
     Arc<dyn TransportFactory>,
 );
 
-/// Kernelspecs the app registered, listed before the fallback's and
-/// hiding one of the same name, and the kernels started from them.
+/// Kernelspecs the app registered, listed after the fallback's (so the
+/// fallback's first stays the default kernel) and in place of one of the
+/// same name, and the kernels started from them.
 #[derive(Default)]
 pub struct RegisteredKernels {
     state: Arc<Mutex<State>>,
@@ -136,8 +137,13 @@ impl RegisteredKernels {
         mut spec: Kernelspec,
         app: impl FnOnce() -> Arc<dyn AppKernel>,
     ) -> Result<()> {
-        if spec.name.is_empty() {
-            return Err(Error::Registration("the kernelspec has no name".into()));
+        // As kernelspecs on disk are named, so routes and clients match.
+        spec.name = spec.name.to_lowercase();
+        if !crate::kernelspec::is_valid_kernel_name(&spec.name) {
+            return Err(Error::Registration(format!(
+                "{:?} is not a kernelspec name: use letters, digits, '.', '_' and '-'",
+                spec.name
+            )));
         }
         // No process to signal: interrupts go over the control channel.
         spec.interrupt_mode = InterruptMode::Message;
@@ -192,7 +198,7 @@ impl RegisteredKernels {
 
 impl KernelspecSource for RegisteredKernels {
     fn list(&self) -> Result<Vec<Kernelspec>> {
-        let mut specs: Vec<Kernelspec> = self
+        let mut mine: Vec<Kernelspec> = self
             .state
             .lock()
             .unwrap()
@@ -200,14 +206,19 @@ impl KernelspecSource for RegisteredKernels {
             .iter()
             .map(|(s, _)| s.clone())
             .collect();
+        let mut specs = Vec::new();
         if let Some((rest, _, _)) = self.fallback.get() {
-            let others: Vec<Kernelspec> = rest
-                .list()?
-                .into_iter()
-                .filter(|o| !specs.iter().any(|s| s.name.eq_ignore_ascii_case(&o.name)))
-                .collect();
-            specs.extend(others);
+            for other in rest.list()? {
+                match mine
+                    .iter()
+                    .position(|s| s.name.eq_ignore_ascii_case(&other.name))
+                {
+                    Some(i) => specs.push(mine.remove(i)),
+                    None => specs.push(other),
+                }
+            }
         }
+        specs.extend(mine);
         Ok(specs)
     }
 }
@@ -481,12 +492,31 @@ mod tests {
     }
 
     #[test]
-    fn listed_before_the_fallback_and_hiding_its_namesake() {
-        let (host, _) = host();
-        let rest = Arc::new(StaticSpecs(vec![spec("app"), spec("other")]));
+    fn listed_after_the_fallback_and_in_place_of_its_namesake() {
+        let (host, fake) = host();
+        let app: Arc<dyn AppKernel> = fake;
+        host.register(spec("zed"), || app).unwrap();
+        let rest = Arc::new(StaticSpecs(vec![spec("other"), spec("app")]));
         host.set_fallback(rest, Arc::new(Never), Arc::new(Never));
-        let names: Vec<String> = host.list().unwrap().into_iter().map(|s| s.name).collect();
-        assert_eq!(names, ["app", "other"]);
+        let listed = host.list().unwrap();
+        let names: Vec<&str> = listed.iter().map(|s| s.name.as_str()).collect();
+        // The fallback's first stays first, so it stays the default.
+        assert_eq!(names, ["other", "app", "zed"]);
+        assert_eq!(listed[1].interrupt_mode, InterruptMode::Message);
+    }
+
+    #[test]
+    fn names_follow_the_kernelspec_rules() {
+        let (host, fake) = host();
+        let app: Arc<dyn AppKernel> = fake;
+        host.register(spec("App-TS"), || app).unwrap();
+        assert!(host.list().unwrap().iter().any(|s| s.name == "app-ts"));
+        for bad in ["a/b", "App TS"] {
+            assert!(matches!(
+                host.register(spec(bad), || unreachable!()),
+                Err(Error::Registration(_))
+            ));
+        }
     }
 
     #[tokio::test]

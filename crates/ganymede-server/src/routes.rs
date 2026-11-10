@@ -441,7 +441,7 @@ async fn kernelspec_resource(
     let dir = s.kernels.kernelspec_resource_dir(&name)?;
     // A kernelspec with no directory of its own (one the app registered,
     // or the gateway's) has no files: never read from the working directory.
-    if !dir.is_absolute() {
+    if dir.as_os_str().is_empty() {
         return Err(HttpError(
             404,
             format!("kernelspec {name} has no resources"),

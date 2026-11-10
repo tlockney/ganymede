@@ -10,7 +10,7 @@
 //! are owned by the caller and freed with [`ganymede_string_free`].
 //!
 //! An app can also run kernels itself and register them with the server
-//! ([`ganymede_kernel_register`]), as the iPad app does with its in-app
+//! ([`ganymede_kernel_register`]), as the iPad app will with its in-app
 //! kernel (#266, `docs/in-app-kernel.md`).
 //!
 //! Built without the `zmq` or `subprocess` feature, as the iOS slices
@@ -277,7 +277,7 @@ impl AppKernel for CKernel {
     ) -> Result<(), String> {
         let launch = serde_json::json!({
             "kernelspec": spec.name,
-            "cwd": opts.cwd,
+            "cwd": opts.cwd.as_ref().map(|p| p.to_string_lossy()),
             "env": opts
                 .env
                 .iter()
