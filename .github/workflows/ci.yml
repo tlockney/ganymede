@@ -32,7 +32,7 @@ env:
 
   # The lsp job: JupyterLab, its LSP extension and the oracle, and the
   # language servers both sides run.
-  LSP_PYTHON_PACKAGES: jupyterlab==4.6.5 jupyterlab-lsp==5.3.0 jupyter-lsp==2.3.1 ipykernel==7.4.0
+  LSP_PYTHON_PACKAGES: jupyterlab==4.6.6 jupyterlab-lsp==5.3.0 jupyter-lsp==2.3.1 ipykernel==7.4.0
   LSP_NPM_PACKAGES: typescript-language-server@5.3.0 typescript@5.9.3 pyright@1.1.414
 
 jobs:

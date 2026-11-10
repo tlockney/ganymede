@@ -22,8 +22,8 @@ use std::process::ExitCode;
 /// The version `ganymede lab install` installs by default, and its wheel's
 /// SHA-256 as PyPI published it. A mismatch for this version fails the
 /// install even if PyPI's metadata agrees with the download.
-pub const DEFAULT_VERSION: &str = "4.6.4";
-const DEFAULT_SHA256: &str = "15b13f991d3985129c797eb84d9949eeb8b6615e14b444868e642411f2c418b2";
+pub const DEFAULT_VERSION: &str = "4.6.6";
+const DEFAULT_SHA256: &str = "4261910ccf1ecad6e0b3ca0debe96d4fde9735bfc9707509c125aab850e06b81";
 
 /// The parts of JupyterLab's application directory the server reads.
 const APP_DIRS: &[&str] = &["static", "schemas", "themes"];
