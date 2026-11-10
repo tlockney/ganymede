@@ -2,9 +2,12 @@
 
 A design note for [#266](https://github.com/tlockney/ganymede/issues/266):
 registering the kernel the Apple apps run in-app with the server embedded
-in the same app, so it becomes a kernel like any other. Nothing here is
-built. It is a proposal for review, and the code follows once it is
-agreed.
+in the same app, so it becomes a kernel like any other.
+
+> [!NOTE]
+> **Unreleased.** Ganymede's part, the C functions below, is available
+> only from a build of `main` (HEAD), not in the latest release. The
+> apps' part, in ganymede-ui, is not built yet.
 
 ## The problem
 

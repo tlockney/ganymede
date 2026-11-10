@@ -25,6 +25,7 @@
 
 pub mod kernelspec;
 pub mod process;
+pub mod registered;
 pub mod session;
 pub mod testing;
 pub mod transport;
@@ -39,6 +40,7 @@ pub use process::{
     attach, in_process, KernelOutput, KernelProcess, LaunchOptions, LaunchedKernel, OutputSource,
     Provisioner,
 };
+pub use registered::{AppKernel, Ended, RegisteredKernels};
 pub use session::{Execution, Heartbeat, KernelSession, SoFar};
 pub use transport::{
     in_process_pair, KernelSide, KernelTransport, TransportFactory, TransportSink,
@@ -74,6 +76,9 @@ pub enum Error {
     TransportClosed,
     #[error("unsupported: {0}")]
     Unsupported(&'static str),
+    /// Registering an app's kernel, or the app starting one, failed.
+    #[error("{0}")]
+    Registration(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -6,7 +6,7 @@ use crate::AppState;
 use anyhow::{Context, Result};
 use ganymede_api::{KernelManager, KernelManagerConfig, SessionManager, TransportFactory};
 use ganymede_contents::{FsContents, FsOptions, Notary};
-use ganymede_kernel_host::{FsKernelspecs, KernelspecSource, Provisioner};
+use ganymede_kernel_host::{FsKernelspecs, KernelspecSource, Provisioner, RegisteredKernels};
 use ganymede_lsp::{LspConfig, LspManager};
 use ganymede_terminals::{TerminalConfig, TerminalManager};
 use std::future::IntoFuture;
@@ -312,6 +312,9 @@ pub struct Startup {
     pub provisioner: Option<Arc<dyn Provisioner>>,
     /// How the server talks to kernels, instead of over ZeroMQ.
     pub transports: Option<Arc<dyn TransportFactory>>,
+    /// Kernels the app runs itself and registers (#266), listed before
+    /// the others: the gateway's, or those the fields above give.
+    pub registered: Option<Arc<RegisteredKernels>>,
 }
 
 #[cfg(feature = "subprocess")]
@@ -497,6 +500,17 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
                 None => default_transports()?,
             },
         ),
+    };
+    let (specs, provisioner, transports) = match startup.registered {
+        Some(r) => {
+            r.set_fallback(specs, provisioner, transports);
+            (
+                r.clone() as Arc<dyn KernelspecSource>,
+                r.clone() as Arc<dyn Provisioner>,
+                r as Arc<dyn TransportFactory>,
+            )
+        }
+        None => (specs, provisioner, transports),
     };
     let kernels = Arc::new(KernelManager::new(
         specs,

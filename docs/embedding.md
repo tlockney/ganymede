@@ -222,13 +222,12 @@ XCFramework's macOS slice keeps them; its iOS slices are built with
 `--no-default-features --features gateway`. Built without `zmq` or
 `subprocess`, the server in `ganymede-ffi` lists no kernels and refuses
 to start one, rather than failing to start, unless `gateway_url` is
-set. The C functions can't pass an app's own provisioner yet
-([#266](https://github.com/tlockney/ganymede/issues/266); the proposed
-design is [In-app kernels as server kernels](in-app-kernel.md)).
+set. An app's own kernels go through the C functions instead
+([Kernels the app runs](#kernels-the-app-runs)).
 
 ## The server in an app, from C
 
-`ganymede-ffi` is a static library with four C functions, declared in
+`ganymede-ffi` is a static library with these C functions, declared in
 `crates/ganymede-ffi/include/ganymede.h`. The server runs on its own
 thread with its own tokio runtime, so the app needs no Rust or async
 code.
@@ -325,6 +324,50 @@ let url = URL(string: String(cString: ganymede_server_url(server)))!
 
 ganymede-ui's app does this in `ServerHost.swift`; see its
 [architecture](ganymede-ui/architecture.md#mac-and-ipad-app).
+
+### Kernels the app runs
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+An app that runs a kernel itself, as the iPad app runs cdp-kernel in a
+web view, registers it with the server. The server lists it as a
+kernelspec, before the gateway's kernels or its own and hiding one of
+the same name, and runs it through the same sessions, rooms and execute
+endpoint as any kernel. The design is
+[In-app kernels as server kernels](in-app-kernel.md).
+
+| Function | Contract |
+|---|---|
+| `int ganymede_kernel_register(GanymedeServer *server, const char *spec_json, const GanymedeKernelCallbacks *callbacks, char **error_out)` | Lists `spec_json` (`kernel.json`'s keys plus `"name"`; `argv` may be left out) as a kernelspec the callbacks run. Returns 0, or nonzero for a bad spec, a NULL `start`, `send` or `stop`, or a name already registered; then no callback is ever called, `release` included, and `*error_out` holds a message. |
+| `int ganymede_kernel_deliver(GanymedeServer *server, const char *kernel_id, const char *channel, const char *msg_json)` | A message from the kernel on `shell`, `control`, `stdin` or `iopub`. Any thread; doesn't block. Nonzero when the kernel isn't running or the message can't be read. |
+| `void ganymede_kernel_ended(GanymedeServer *server, const char *kernel_id, const char *reason)` | The kernel ended without being asked to. `"lost"` (the platform ended it) restarts it without counting toward the restart limit, and the `status: restarting` message carries `"reason": "lost"`. Anything else is a crash. |
+
+`GanymedeKernelCallbacks` holds `ctx` and four callbacks, each passed
+`ctx`:
+
+- `start(ctx, kernel_id, launch_json)` starts a kernel and returns 0 once
+  the start is under way; the server then waits for its
+  `kernel_info_reply`, as for any kernel. `launch_json` is
+  `{"kernelspec", "cwd", "env"}`, and `env.JPY_SESSION_NAME` is the
+  notebook's path for a notebook's kernel. A restart calls it again with
+  the same id.
+- `send(ctx, kernel_id, channel, msg_json)` hands the kernel a message on
+  `shell`, `control` or `stdin`.
+- `stop(ctx, kernel_id)` ends it. A shutdown sends `shutdown_request`
+  first.
+- `release(ctx)`, which may be NULL, runs once when the server stops,
+  after every other callback.
+
+The server calls them on its own threads, never the app's main thread,
+and maybe at once for different kernels, so they must not block; Swift
+hops to the main actor to reach a web view. Calls to `send` for one
+kernel don't overlap and come in order. Messages are Jupyter JSON in the
+websocket's shape (`header`, `parent_header`, `metadata`, `content`),
+with binary buffers as base64 strings in `buffers`, and nothing is
+signed. Interrupts go over the control channel as `interrupt_request`,
+whatever the kernelspec says.
 
 ## Remote kernels with ganymede-gateway
 

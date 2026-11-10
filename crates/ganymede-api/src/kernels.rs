@@ -826,18 +826,30 @@ impl Core {
         if self.ensure_listed(&kernel).is_err() || kernel.session().session_id() != session_id {
             return;
         }
+        // An app's kernel that the platform ended, as iOS ends a suspended
+        // app's web content, is restarted without counting as a crash:
+        // nothing is wrong with it (docs/in-app-kernel.md).
+        let lost = kernel
+            .launched
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|l| l.process.exit_reason())
+            == Some("lost");
         let count = {
             let mut crashes = kernel.crashes.lock().unwrap();
-            let now = tokio::time::Instant::now();
-            crashes.0 = match crashes.1 {
-                Some(last) if now - last < STABLE_START => crashes.0 + 1,
-                _ => 1,
-            };
-            crashes.1 = Some(now);
+            if !lost {
+                let now = tokio::time::Instant::now();
+                crashes.0 = match crashes.1 {
+                    Some(last) if now - last < STABLE_START => crashes.0 + 1,
+                    _ => 1,
+                };
+                crashes.1 = Some(now);
+            }
             crashes.0
         };
         let limit = self.config.restart_limit;
-        if count > limit {
+        if limit == 0 || count > limit {
             if limit > 0 {
                 // Kernel failures log at `warn`, never `error`: crash
                 // reporting sends Ganymede's `error` events, and a kernel
@@ -854,16 +866,23 @@ impl Core {
             kernel.remove_dead(&self);
             return;
         }
-        tracing::warn!(kernel = %kernel.id, "kernel died; restarting it ({count}/{limit})");
-        kernel
-            .log
-            .host(&format!("the kernel died; restarting it ({count}/{limit})"));
+        let mut status = serde_json::json!({"execution_state": "restarting"});
+        if lost {
+            tracing::info!(kernel = %kernel.id, "the app's kernel was lost; restarting it");
+            kernel
+                .log
+                .host("the platform ended the kernel; restarting it");
+            // Clients that don't know the key ignore it.
+            status["reason"] = "lost".into();
+        } else {
+            tracing::warn!(kernel = %kernel.id, "kernel died; restarting it ({count}/{limit})");
+            kernel
+                .log
+                .host(&format!("the kernel died; restarting it ({count}/{limit})"));
+        }
         kernel.booting.store(true, Ordering::SeqCst);
         kernel.answer_for_crashed_kernel("The kernel died, and is being restarted.");
-        kernel.announce(
-            "status",
-            serde_json::json!({"execution_state": "restarting"}),
-        );
+        kernel.announce("status", status);
         kernel.set_state("restarting");
         kernel.launched.lock().unwrap().take();
         if let Err(e) = self.relaunch(&kernel).await {
