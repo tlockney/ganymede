@@ -312,8 +312,9 @@ pub struct Startup {
     pub provisioner: Option<Arc<dyn Provisioner>>,
     /// How the server talks to kernels, instead of over ZeroMQ.
     pub transports: Option<Arc<dyn TransportFactory>>,
-    /// Kernels the app runs itself and registers (#266), listed before
-    /// the others: the gateway's, or those the fields above give.
+    /// Kernels the app runs itself and registers (#266), listed after
+    /// the others (the gateway's, or those the fields above give) and in
+    /// place of one of the same name.
     pub registered: Option<Arc<RegisteredKernels>>,
 }
 

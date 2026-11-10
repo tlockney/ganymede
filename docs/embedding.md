@@ -236,7 +236,7 @@ code.
 |---|---|
 | `GanymedeServer *ganymede_server_start(const char *config_json, char **error_out)` | Starts a server on loopback and blocks until it listens, or for at most 30 seconds, then fails. On failure returns NULL and, if `error_out` isn't NULL, sets `*error_out` to a message. |
 | `const char *ganymede_server_url(const GanymedeServer *server)` | The URL with its token. The server owns it: don't free it or use it after stop. |
-| `void ganymede_server_stop(GanymedeServer *server)` | Gives open requests a moment, shuts down every kernel, stops the server and frees it. Blocks until done. NULL is ignored. |
+| `void ganymede_server_stop(GanymedeServer *server)` | Gives open requests a moment, shuts down every kernel, stops the server and frees it. Blocks until done. NULL is ignored. With registered kernels whose callbacks need the main thread (Swift's hop to the main actor), call it off the main thread, or each such kernel waits out the shutdown grace period. |
 | `void ganymede_string_free(char *s)` | Frees a string the library returned, such as the error. NULL is ignored. |
 | `void ganymede_set_panic_callback(GanymedePanicCallback cb)` | Calls `cb(message)` on the panicking thread after any panic in the library, with `panicked at <file>:<line>:<col>: <message>`, valid during the call. For the app's crash reporter: a panic in a server task doesn't end the app, so this is how it hears of one. NULL removes it. The library sends nothing itself. |
 | `void ganymede_debug_panic(void)` | Panics on the calling thread, which aborts the process. For testing crash reports. |
@@ -342,8 +342,8 @@ endpoint as any kernel. The design is
 | Function | Contract |
 |---|---|
 | `int ganymede_kernel_register(GanymedeServer *server, const char *spec_json, const GanymedeKernelCallbacks *callbacks, char **error_out)` | Lists `spec_json` (`kernel.json`'s keys plus `"name"`; `argv` may be left out) as a kernelspec the callbacks run. The name is lowercased and, as on disk, takes only `[a-z0-9._-]`. Returns 0, or nonzero for a bad spec or name, a NULL `start`, `send` or `stop`, or a name already registered; then no callback is ever called, `release` included, and `*error_out` holds a message. |
-| `int ganymede_kernel_deliver(GanymedeServer *server, const char *kernel_id, const char *channel, const char *msg_json)` | A message from the kernel on `shell`, `control`, `stdin` or `iopub`. Any thread; doesn't block. Nonzero when the kernel isn't running or the message can't be read. |
-| `void ganymede_kernel_ended(GanymedeServer *server, const char *kernel_id, const char *reason)` | The kernel ended without being asked to. `"lost"` (the platform ended it) restarts it, unless restarts are off (`kernel_restart_limit` 0), without counting toward the limit, and the `status: restarting` message carries `"reason": "lost"`. Anything else is a crash. Call it once per run, never for a run already stopped. |
+| `int ganymede_kernel_deliver(GanymedeServer *server, const char *kernel_id, const char *channel, const char *msg_json)` | A message from the kernel on `shell`, `control`, `stdin` or `iopub`. Any thread; doesn't block. Returns 0; 1 for a NULL string or a message or channel it can't read; 2 when the kernel isn't running, as after a stop. |
+| `void ganymede_kernel_ended(GanymedeServer *server, const char *kernel_id, const char *reason)` | The kernel ended without being asked to. `"lost"` (the platform ended it) restarts it, unless restarts are off (`kernel_restart_limit` 0), without counting toward the limit (a loss before the kernel first answers is a failed start, retried as one), and the `status: restarting` message carries `"reason": "lost"`. Anything else is a crash. Call it once per run, never for a run already stopped. |
 
 `GanymedeKernelCallbacks` holds `ctx` and four callbacks, each passed
 `ctx`:

@@ -158,7 +158,9 @@ with two differences:
 - It restarts the kernel, unless restarts are off (`restart_limit` 0),
   without counting toward `restart_limit`, since the platform ended it,
   not a fault in the kernel. With no count, a kernel the platform keeps
-  ending restarts each time; see Restart after a loss below.
+  ending restarts each time; see Restart after a loss below. A loss
+  before the kernel's first `kernel_info_reply` is a failed start: the
+  server launches it up to three times in all, as for any kernel.
 - The `status: restarting` message on iopub carries `"reason": "lost"` in
   its content. Clients that don't know the key ignore it, as Jupyter
   clients ignore unknown content keys.

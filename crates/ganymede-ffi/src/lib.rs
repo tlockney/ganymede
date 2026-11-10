@@ -36,7 +36,7 @@ use ganymede_server::serve::{gateway_configured, run_with, Startup};
 /// A running server. Opaque to C.
 pub struct GanymedeServer {
     url: CString,
-    /// The kernels the app registers, which the server lists first.
+    /// The kernels the app registers, which the server lists after its own.
     registered: Arc<RegisteredKernels>,
     stop: tokio::sync::mpsc::Sender<()>,
     thread: Option<JoinHandle<()>>,
@@ -361,8 +361,8 @@ unsafe fn from_c<'a>(s: *const c_char) -> Option<std::borrow::Cow<'a, str>> {
 }
 
 /// Lists `spec_json` as a kernelspec whose kernels the app runs through
-/// `callbacks`, before the server's other kernels and hiding one of the
-/// same name. `spec_json` has `kernel.json`'s keys plus `"name"`; `argv`
+/// `callbacks`, after the server's other kernels and in place of one of
+/// the same name. `spec_json` has `kernel.json`'s keys plus `"name"`; `argv`
 /// may be left out. The kernelspec's interrupts go over the control
 /// channel, whatever it says.
 ///
@@ -448,8 +448,9 @@ fn register(
 /// as base64 strings. Takes any thread and doesn't block. Messages for one
 /// kernel reach the server in the order they are delivered.
 ///
-/// Returns 0 on success, nonzero when the kernel isn't running (it ended,
-/// or was never started) or the message can't be read.
+/// Returns 0 on success, 1 for a NULL string or a message or channel
+/// that can't be read, 2 when the kernel isn't running (it ended, or was
+/// never started).
 ///
 /// # Safety
 ///

@@ -39,3 +39,9 @@ rather than a relative one, since kernelspecs under a relative
 listed after the server's own, so the server's default kernel stays the
 default, and their names follow the on-disk rules (lowercased,
 `[a-z0-9._-]`).
+
+Third review (pass) lows: comments that still said registered kernels
+are listed first are fixed; the header documents `deliver`'s return
+codes and that a loss before the kernel first answers is a failed start;
+and the header and embedding page say to stop the server off the main
+thread when registered kernels' callbacks need it.

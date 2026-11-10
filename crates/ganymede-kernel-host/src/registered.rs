@@ -117,8 +117,8 @@ impl RegisteredKernels {
         Self::default()
     }
 
-    /// The kernels to list after the registered ones and to run every
-    /// other kernelspec. Set once, by the server at startup; without it
+    /// The kernels to list before the registered ones (so the default
+    /// kernel stays theirs) and to run every other kernelspec. Set once, by the server at startup; without it
     /// only registered kernels exist.
     pub fn set_fallback(
         &self,

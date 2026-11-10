@@ -19,7 +19,10 @@ GanymedeServer *ganymede_server_start(const char *config_json, char **error_out)
 /* The URL with its token. Owned by the server; valid until it stops. */
 const char *ganymede_server_url(const GanymedeServer *server);
 
-/* Shuts down kernels, stops the server and frees it. NULL is ignored. */
+/* Shuts down kernels, stops the server and frees it. NULL is ignored.
+ * Blocks until done: with registered kernels whose callbacks need the main
+ * thread, call it off the main thread, or each such kernel waits out the
+ * shutdown grace period before it is stopped. */
 void ganymede_server_stop(GanymedeServer *server);
 
 /* Frees a string returned by this library. NULL is ignored. */
@@ -59,14 +62,16 @@ int ganymede_kernel_register(GanymedeServer *server, const char *spec_json,
                              char **error_out);
 
 /* A message from a registered kernel, as JSON, on "shell", "control",
- * "stdin" or "iopub". Any thread; doesn't block. Returns 0, or nonzero
- * when the kernel isn't running or the message can't be read. */
+ * "stdin" or "iopub". Any thread; doesn't block. Returns 0; 1 when a string
+ * is NULL or the message or channel can't be read (the app's
+ * bug); 2 when the kernel isn't running (expected after a stop). */
 int ganymede_kernel_deliver(GanymedeServer *server, const char *kernel_id,
                             const char *channel, const char *msg_json);
 
 /* A registered kernel ended without being asked to. reason "lost" (the
  * platform ended it) restarts it, unless restarts are off, without
- * counting a crash; anything else, or NULL, is a crash. Any thread. Call
+ * counting a crash, once it has started (a loss before its first
+ * kernel_info_reply is a failed start, retried as one); anything else, or NULL, is a crash. Any thread. Call
  * it once per run, never for a run already stopped. */
 void ganymede_kernel_ended(GanymedeServer *server, const char *kernel_id,
                            const char *reason);
