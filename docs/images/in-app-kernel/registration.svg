@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 362" width="900" height="362" role="img" aria-label="Two rows. Today: the notebook page runs a kernel service of its own and relays messages through KernelHost.swift to the kernel page, where cdp-kernel&#x27;s browser kernel runs cells in a Worker; the embedded Ganymede server beside them only serves files. With registration: the notebook page and other clients use the server&#x27;s ordinary HTTP and websocket API; the server&#x27;s sessions, kernels and rooms reach the registered kernel through the C ABI, and KernelHost.swift passes its messages to the same kernel page and Worker.">
+  <title>Two rows. Today: the notebook page runs a kernel service of its own and relays messages through KernelHost.swift to the kernel page, where cdp-kernel's browser kernel runs cells in a Worker; the embedded Ganymede server beside them only serves files. With registration: the notebook page and other clients use the server's ordinary HTTP and websocket API; the server's sessions, kernels and rooms reach the registered kernel through the C ABI, and KernelHost.swift passes its messages to the same kernel page and Worker.</title>
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f6f7f9; stroke: #9aa3ad; stroke-width: 1.2; }
+    .inner { fill: #ffffff; stroke: #b8c0c8; stroke-width: 1; }
+    .acc { fill: #e8f0fe; stroke: #3b6fd8; stroke-width: 1.4; }
+    .warn { fill: #fdf0e6; stroke: #c96a1b; stroke-width: 1.4; }
+    .ok { fill: #e7f5ec; stroke: #2f8a4c; stroke-width: 1.4; }
+    .dash { stroke-dasharray: 5 4; }
+    .warnpill { fill: #c96a1b; }
+    .tw { font: 600 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #ffffff; }
+    .t { font: 600 14px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1f2328; }
+    .s { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .m { font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f2328; }
+    .l { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .ln { stroke: #6e7781; stroke-width: 1.4; fill: none; }
+    .life { stroke: #9aa3ad; stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+    .hl { stroke: #3b6fd8; stroke-width: 1.6; fill: none; }
+    .ah { fill: #6e7781; }
+    .ahb { fill: #3b6fd8; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #1b1b1f; }
+      .box { fill: #25262b; stroke: #5c6370; }
+      .inner { fill: #1b1b1f; stroke: #4a505a; }
+      .acc { fill: #1e2a44; stroke: #6b9bff; }
+      .warn { fill: #3a2a1c; stroke: #e0904a; }
+      .ok { fill: #1d3326; stroke: #5cc27e; }
+      .warnpill { fill: #e0904a; }
+      .tw { fill: #1b1b1f; }
+      .t, .m { fill: #e6e8eb; }
+      .s, .l { fill: #b6bcc4; }
+      .ln { stroke: #a0a7b0; }
+      .life { stroke: #5c6370; }
+      .hl { stroke: #6b9bff; }
+      .ah { fill: #a0a7b0; }
+      .ahb { fill: #6b9bff; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ahb" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="900" height="362" rx="8"/>
+  <text class="t" x="30" y="34">Today on iPad and iPhone</text>
+  <rect class="box" x="30" y="48" width="210" height="92" rx="4"/>
+  <text class="t" x="44" y="70">Notebook page</text>
+  <rect class="inner" x="44" y="84" width="182" height="42" rx="3"/>
+  <text class="s" x="56" y="102">its own kernel service</text>
+  <text class="l" x="56" y="118">@jupyterlite/services</text>
+  <rect class="warn dash" x="290" y="48" width="180" height="52" rx="4"/>
+  <text class="t" x="304" y="70">Embedded server</text>
+  <text class="l" x="304" y="88">stores files, sees no cells</text>
+  <line class="ln" x1="242" y1="70" x2="288" y2="70" marker-start="url(#a)" marker-end="url(#a)"/>
+  <text class="l" x="246" y="62">files</text>
+  <line class="hl" x1="242" y1="122" x2="508" y2="122" marker-start="url(#b)" marker-end="url(#b)"/>
+  <text class="l" x="300" y="116">kernelRelay</text>
+  <rect class="box" x="510" y="96" width="140" height="48" rx="4"/>
+  <text class="m" x="522" y="116">KernelHost.swift</text>
+  <text class="l" x="522" y="134">relays messages</text>
+  <line class="hl" x1="652" y1="122" x2="688" y2="122" marker-start="url(#b)" marker-end="url(#b)"/>
+  <rect class="box" x="690" y="48" width="180" height="96" rx="4"/>
+  <text class="t" x="704" y="70">Kernel page</text>
+  <rect class="inner" x="704" y="84" width="152" height="46" rx="3"/>
+  <text class="s" x="716" y="103">cdp-kernel, Worker</text>
+  <text class="l" x="716" y="120">runs cells</text>
+  <line class="life" x1="30" y1="170" x2="870" y2="170"/>
+  <text class="t" x="30" y="200">With the kernel registered</text>
+  <rect class="box" x="30" y="214" width="190" height="130" rx="4"/>
+  <text class="t" x="44" y="236">Clients</text>
+  <rect class="acc" x="44" y="246" width="162" height="24" rx="3"/>
+  <text class="l" x="54" y="262">Notebook page</text>
+  <rect class="acc" x="44" y="280" width="162" height="24" rx="3"/>
+  <text class="l" x="54" y="296">nb-cli, ganymede mcp</text>
+  <rect class="acc" x="44" y="314" width="162" height="24" rx="3"/>
+  <text class="l" x="54" y="330">Shortcuts, widgets (later)</text>
+  <line class="hl" x1="222" y1="279" x2="288" y2="279" marker-start="url(#b)" marker-end="url(#b)"/>
+  <text class="l" x="228" y="271">HTTP, ws</text>
+  <rect class="ok" x="290" y="214" width="180" height="130" rx="4"/>
+  <text class="t" x="304" y="236">Embedded server</text>
+  <text class="l" x="304" y="258">sessions, kernels</text>
+  <text class="l" x="304" y="276">rooms, execute endpoint</text>
+  <text class="l" x="304" y="294">culling, logs</text>
+  <text class="m" x="304" y="326">RegisteredKernels</text>
+  <line class="hl" x1="472" y1="279" x2="508" y2="279" marker-start="url(#b)" marker-end="url(#b)"/>
+  <text class="l" x="474" y="271">C ABI</text>
+  <rect class="box" x="510" y="254" width="140" height="50" rx="4"/>
+  <text class="m" x="522" y="275">KernelHost.swift</text>
+  <text class="l" x="522" y="293">callbacks, deliver</text>
+  <line class="hl" x1="652" y1="279" x2="688" y2="279" marker-start="url(#b)" marker-end="url(#b)"/>
+  <rect class="box" x="690" y="214" width="180" height="130" rx="4"/>
+  <text class="t" x="704" y="236">Kernel page</text>
+  <rect class="inner" x="704" y="254" width="152" height="50" rx="3"/>
+  <text class="s" x="716" y="275">cdp-kernel, Worker</text>
+  <text class="l" x="716" y="293">unchanged</text>
+</svg>

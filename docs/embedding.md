@@ -223,7 +223,8 @@ XCFramework's macOS slice keeps them; its iOS slices are built with
 `subprocess`, the server in `ganymede-ffi` lists no kernels and refuses
 to start one, rather than failing to start, unless `gateway_url` is
 set. The C functions can't pass an app's own provisioner yet
-([#266](https://github.com/tlockney/ganymede/issues/266)).
+([#266](https://github.com/tlockney/ganymede/issues/266); the proposed
+design is [In-app kernels as server kernels](in-app-kernel.md)).
 
 ## The server in an app, from C
 

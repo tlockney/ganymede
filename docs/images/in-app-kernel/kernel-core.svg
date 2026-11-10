@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" width="900" height="400" role="img" aria-label="Two options for a native engine. In the first, the kernel core stays in the kernel web view, where JavaScriptCore has its JIT; BrowserTarget reaches the native engine through its three-method WorkerLike interface, bridged by Swift to the engine&#x27;s thread, which runs only cells. In the second, the kernel core runs beside the engine in the app&#x27;s process and drives cells over the inspector protocol, with no web view; it brings the debugger and runs where no web view can, at the cost of more new code and running the core without a JIT. Both register with the embedded server through the same C ABI.">
+  <title>Two options for a native engine. In the first, the kernel core stays in the kernel web view, where JavaScriptCore has its JIT; BrowserTarget reaches the native engine through its three-method WorkerLike interface, bridged by Swift to the engine's thread, which runs only cells. In the second, the kernel core runs beside the engine in the app's process and drives cells over the inspector protocol, with no web view; it brings the debugger and runs where no web view can, at the cost of more new code and running the core without a JIT. Both register with the embedded server through the same C ABI.</title>
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f6f7f9; stroke: #9aa3ad; stroke-width: 1.2; }
+    .inner { fill: #ffffff; stroke: #b8c0c8; stroke-width: 1; }
+    .acc { fill: #e8f0fe; stroke: #3b6fd8; stroke-width: 1.4; }
+    .warn { fill: #fdf0e6; stroke: #c96a1b; stroke-width: 1.4; }
+    .ok { fill: #e7f5ec; stroke: #2f8a4c; stroke-width: 1.4; }
+    .dash { stroke-dasharray: 5 4; }
+    .warnpill { fill: #c96a1b; }
+    .tw { font: 600 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #ffffff; }
+    .t { font: 600 14px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1f2328; }
+    .s { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .m { font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f2328; }
+    .l { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .ln { stroke: #6e7781; stroke-width: 1.4; fill: none; }
+    .life { stroke: #9aa3ad; stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+    .hl { stroke: #3b6fd8; stroke-width: 1.6; fill: none; }
+    .ah { fill: #6e7781; }
+    .ahb { fill: #3b6fd8; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #1b1b1f; }
+      .box { fill: #25262b; stroke: #5c6370; }
+      .inner { fill: #1b1b1f; stroke: #4a505a; }
+      .acc { fill: #1e2a44; stroke: #6b9bff; }
+      .warn { fill: #3a2a1c; stroke: #e0904a; }
+      .ok { fill: #1d3326; stroke: #5cc27e; }
+      .warnpill { fill: #e0904a; }
+      .tw { fill: #1b1b1f; }
+      .t, .m { fill: #e6e8eb; }
+      .s, .l { fill: #b6bcc4; }
+      .ln { stroke: #a0a7b0; }
+      .life { stroke: #5c6370; }
+      .hl { stroke: #6b9bff; }
+      .ah { fill: #a0a7b0; }
+      .ahb { fill: #6b9bff; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ahb" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="900" height="400" rx="8"/>
+  <text class="t" x="30" y="34">Core in the web view</text>
+  <rect class="box" x="30" y="48" width="400" height="104" rx="4"/>
+  <text class="t" x="44" y="70">Kernel web view (JavaScriptCore, JIT)</text>
+  <rect class="acc" x="44" y="82" width="372" height="56" rx="3"/>
+  <text class="s" x="56" y="102">kernel core: messages, TS stripping, completion</text>
+  <text class="m" x="56" y="124">BrowserTarget → WorkerLike</text>
+  <line class="hl" x1="230" y1="154" x2="230" y2="196" marker-start="url(#b)" marker-end="url(#b)"/>
+  <text class="l" x="240" y="180">Swift bridge, three methods</text>
+  <rect class="box" x="30" y="198" width="400" height="56" rx="4"/>
+  <text class="t" x="44" y="220">Native engine, cells only</text>
+  <text class="l" x="44" y="240">no JIT; which engine stays open</text>
+  <text class="l" x="30" y="276">Least new code. Needs a web view; no debugger.</text>
+  <text class="t" x="470" y="34">Core beside the engine</text>
+  <rect class="box dash" x="470" y="48" width="400" height="206" rx="4"/>
+  <text class="t" x="484" y="70">App process, no web view</text>
+  <rect class="acc" x="484" y="82" width="372" height="56" rx="3"/>
+  <text class="s" x="496" y="102">kernel core: messages, TS stripping, completion</text>
+  <text class="m" x="496" y="124">CdpSession, no JIT</text>
+  <line class="hl" x1="670" y1="140" x2="670" y2="182" marker-start="url(#b)" marker-end="url(#b)"/>
+  <text class="l" x="680" y="166">inspector protocol</text>
+  <rect class="inner" x="484" y="184" width="372" height="56" rx="3"/>
+  <text class="t" x="496" y="206">Native engine, cells</text>
+  <text class="l" x="496" y="226">brings the debugger</text>
+  <text class="l" x="470" y="276">Runs in a background task or extension. More new code.</text>
+  <line class="ln" x1="230" y1="290" x2="230" y2="326" marker-end="url(#a)"/>
+  <line class="ln" x1="670" y1="290" x2="670" y2="326" marker-end="url(#a)"/>
+  <rect class="ok" x="30" y="328" width="840" height="52" rx="4"/>
+  <text class="t" x="44" y="350">Embedded server</text>
+  <text class="l" x="44" y="368">the same registration through the C ABI for both: ganymede_kernel_register, send, deliver</text>
+</svg>

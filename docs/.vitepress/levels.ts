@@ -97,6 +97,7 @@ export function groups(): Group[] {
         { text: "Protocol and kernel host", link: "/protocol" },
         { text: "User interfaces", link: "/ui" },
         { text: "The iPad use case", link: "/ipados" },
+        { text: "In-app kernels as server kernels", link: "/in-app-kernel" },
         { text: "Other Jupyter clients", link: "/clients" },
         { text: "Prior art", link: "/prior-art" },
       ],
