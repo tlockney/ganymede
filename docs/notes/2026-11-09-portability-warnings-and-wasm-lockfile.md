@@ -31,3 +31,11 @@ that raises a version requirement past what this lockfile holds, now
 fails `portability` until the lockfile is refreshed. That includes a
 Dependabot PR for the main workspace that raises a requirement in a
 manifest. The error names the command.
+
+Two things the review of #637 caught. The refresh in `release.sh` runs
+after cargo-release has committed on `main`, so a failed `cargo update`
+left that commit there with no release branch, and a rerun stopped on
+"HEAD is not origin/main". The script now undoes the commit when the
+refresh fails. And the CI step called every `cargo metadata --locked`
+failure a stale lockfile; it prints cargo's error and adds the
+annotation only when cargo says `--locked` stopped it.

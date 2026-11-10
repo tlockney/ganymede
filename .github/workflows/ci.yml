@@ -397,8 +397,13 @@ jobs:
       - name: Engine runs a notebook under WASI
         working-directory: e2e/wasm-smoke
         run: |
-          if ! cargo metadata --locked --format-version 1 > /dev/null; then
-            echo "::error file=e2e/wasm-smoke/Cargo.lock::e2e/wasm-smoke/Cargo.lock is out of date. Run: cargo update --manifest-path e2e/wasm-smoke/Cargo.toml --workspace"
+          # Cargo's error for a stale lockfile names no fix, so the
+          # annotation does. Any other failure shows as cargo printed it.
+          if ! err=$(cargo metadata --locked --format-version 1 2>&1 > /dev/null); then
+            echo "$err" >&2
+            if grep -q -e '--locked was passed to prevent this' <<< "$err"; then
+              echo "::error file=e2e/wasm-smoke/Cargo.lock::e2e/wasm-smoke/Cargo.lock is out of date. Run: cargo update --manifest-path e2e/wasm-smoke/Cargo.toml --workspace"
+            fi
             exit 1
           fi
           cargo build --release --locked --target wasm32-wasip1
