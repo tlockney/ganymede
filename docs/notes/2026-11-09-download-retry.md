@@ -8,14 +8,17 @@ gave up. `ganymede lab install` and `lab extension install` fetch from
 PyPI through the same agent and gave up the same way.
 
 - `retry` in `crates/ganymede-cli/src/lab/pypi.rs` sends a request again
-  after 1, 2 and 4 seconds while it fails with a 5xx status or a ureq
-  timeout, and prints a line on stderr each time. The three requests
-  that fetch something go through it: PyPI's JSON, a wheel, and a
-  release file (each hop of the redirects `ganymede ui install` follows
-  by hand).
+  after 1, 2 and 4 seconds while it fails with a 5xx status or ureq's
+  timeout for the response, and prints a line on stderr each time. The
+  three requests that fetch something go through it: PyPI's JSON, a
+  wheel, and a release file (each hop of the redirects
+  `ganymede ui install` follows by hand).
 - Nothing else is retried. A 404, a refused connection, a failed name
   lookup or a TLS error would fail the same way again, and someone
-  offline should hear so at once and not seven seconds later.
+  offline should hear so at once and not seven seconds later. The
+  connect and name lookup timeouts are not retried either (the review
+  of #635 caught that the first version matched every timeout): a host
+  that drops packets would have taken four 30 second waits to report.
 - It covers the request up to the response's headers. A body that stalls
   or is cut off part way still fails the install: retrying that means
   starting the file again, and the hash check already catches a short

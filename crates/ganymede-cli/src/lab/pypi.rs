@@ -151,14 +151,16 @@ const RETRY_DELAYS: [Duration; 3] = [
 ];
 
 /// Whether a request that failed with `err` may succeed if sent again:
-/// the server answered 5xx, or a timeout passed. GitHub's release
-/// downloads and PyPI both answer 502 to 504 now and then (#634).
-/// Anything else (404, a refused connection, a TLS failure) would fail
-/// the same way again.
+/// the server answered 5xx, or took the request and sent no response in
+/// time. GitHub's release downloads and PyPI both answer 502 to 504 now
+/// and then (#634). Anything else (404, a refused connection, a TLS
+/// failure) would fail the same way again. So would a host that can't
+/// be reached: retrying the connect timeout would keep someone on a
+/// dead network waiting two minutes for the error.
 fn is_transient(err: &ureq::Error) -> bool {
     matches!(
         err,
-        ureq::Error::StatusCode(500..=599) | ureq::Error::Timeout(_)
+        ureq::Error::StatusCode(500..=599) | ureq::Error::Timeout(ureq::Timeout::RecvResponse)
     )
 }
 
@@ -969,6 +971,12 @@ mod tests {
         .unwrap_err();
         assert!(!is_transient(&err), "{err}");
         assert_eq!(calls, 1);
+
+        // A host that can't be reached, or a name that doesn't resolve
+        // in time: the next attempt would wait as long again.
+        for timeout in [ureq::Timeout::Connect, ureq::Timeout::Resolve] {
+            assert!(!is_transient(&ureq::Error::Timeout(timeout)), "{timeout}");
+        }
     }
 
     #[test]
