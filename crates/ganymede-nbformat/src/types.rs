@@ -129,16 +129,6 @@ impl Cell {
         }
     }
 
-    /// Mutable access to the cell's metadata, as [`Cell::metadata`].
-    pub fn metadata_mut(&mut self) -> Option<&mut Map<String, Value>> {
-        match self {
-            Cell::Code(c) => Some(&mut c.metadata),
-            Cell::Markdown(c) => Some(&mut c.metadata),
-            Cell::Raw(c) => Some(&mut c.metadata),
-            Cell::Unknown(v) => v.get_mut("metadata").and_then(Value::as_object_mut),
-        }
-    }
-
     /// The `cell_type` tag as written on disk, if there is one.
     pub fn cell_type(&self) -> Option<&str> {
         match self {

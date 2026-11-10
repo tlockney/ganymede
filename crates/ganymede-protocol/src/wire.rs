@@ -5,7 +5,7 @@
 //! The signature is the hex HMAC over the four JSON frames in order, or the
 //! empty string when the connection file has no key.
 
-use crate::{Channel, Error, Header, Message, Result};
+use crate::{Error, Header, Message, Result};
 use bytes::Bytes;
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
@@ -198,27 +198,6 @@ pub fn decode_once(
         }
     }
     Ok(w)
-}
-
-/// The iopub topic frame a kernel publishes under. Hosts subscribe to
-/// everything, so this only matters for a host that implements the kernel
-/// side (an in-process kernel, for example).
-pub fn iopub_topic(kernel_id: &str, msg_type: &str) -> Bytes {
-    Bytes::from(format!("kernel.{kernel_id}.{msg_type}"))
-}
-
-/// Which socket type each channel uses on the host side.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SocketKind {
-    Dealer,
-    Sub,
-}
-
-pub fn host_socket_kind(channel: Channel) -> SocketKind {
-    match channel {
-        Channel::IoPub => SocketKind::Sub,
-        _ => SocketKind::Dealer,
-    }
 }
 
 #[cfg(test)]

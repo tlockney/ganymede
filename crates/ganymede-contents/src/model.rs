@@ -99,16 +99,6 @@ pub struct ContentsModel {
     pub message: Option<String>,
 }
 
-impl ContentsModel {
-    /// The same model with `content` and `format` cleared, as children of a
-    /// directory listing and the result of a save are returned.
-    pub fn without_content(mut self) -> Self {
-        self.content = None;
-        self.format = None;
-        self
-    }
-}
-
 /// Options for [`crate::Contents::get`], mirroring the query parameters of
 /// `GET /api/contents/{path}`.
 ///

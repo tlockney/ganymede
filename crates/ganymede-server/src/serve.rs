@@ -1,5 +1,5 @@
 //! Running the server: flags, config, startup, and shutdown. Shared by
-//! `ganymede serve` and the `ganymede-server` binary.
+//! `ganymede serve`, `ganymede mcp`, and the apps (`ganymede-ffi`).
 
 use crate::config::Config;
 use crate::AppState;
