@@ -94,9 +94,9 @@ pull request with a GitHub issue, and records what it learned in the
 - A native on-device kernel for the iPad app: cdp-kernel in the app's
   process instead of the web view, behind the `Provisioner` and
   `TransportFactory` seams that already accept a kernel with no ZeroMQ.
-  The first step, registering today's in-app kernel with the embedded
-  server, has a proposed design:
-  [In-app kernels as server kernels](in-app-kernel.md).
+  The first step registers today's in-app kernel with the embedded
+  server ([In-app kernels as server kernels](in-app-kernel.md)): the C
+  functions are on `main` in Ganymede, and the apps use them next.
 - CurveZMQ for the ZeroMQ transport. ipykernel 7 already advertises it.
 - Trusting `tailscale serve`'s identity headers, so a client on the
   tailnet needs no token.

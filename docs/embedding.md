@@ -222,13 +222,12 @@ XCFramework's macOS slice keeps them; its iOS slices are built with
 `--no-default-features --features gateway`. Built without `zmq` or
 `subprocess`, the server in `ganymede-ffi` lists no kernels and refuses
 to start one, rather than failing to start, unless `gateway_url` is
-set. The C functions can't pass an app's own provisioner yet
-([#266](https://github.com/tlockney/ganymede/issues/266); the proposed
-design is [In-app kernels as server kernels](in-app-kernel.md)).
+set. An app's own kernels go through the C functions instead
+([Kernels the app runs](#kernels-the-app-runs)).
 
 ## The server in an app, from C
 
-`ganymede-ffi` is a static library with four C functions, declared in
+`ganymede-ffi` is a static library with these C functions, declared in
 `crates/ganymede-ffi/include/ganymede.h`. The server runs on its own
 thread with its own tokio runtime, so the app needs no Rust or async
 code.
@@ -237,7 +236,7 @@ code.
 |---|---|
 | `GanymedeServer *ganymede_server_start(const char *config_json, char **error_out)` | Starts a server on loopback and blocks until it listens, or for at most 30 seconds, then fails. On failure returns NULL and, if `error_out` isn't NULL, sets `*error_out` to a message. |
 | `const char *ganymede_server_url(const GanymedeServer *server)` | The URL with its token. The server owns it: don't free it or use it after stop. |
-| `void ganymede_server_stop(GanymedeServer *server)` | Gives open requests a moment, shuts down every kernel, stops the server and frees it. Blocks until done. NULL is ignored. |
+| `void ganymede_server_stop(GanymedeServer *server)` | Gives open requests a moment, shuts down every kernel, stops the server and frees it. Blocks until done. NULL is ignored. With registered kernels whose callbacks need the main thread (Swift's hop to the main actor), call it off the main thread, or each such kernel waits out the shutdown grace period. |
 | `void ganymede_string_free(char *s)` | Frees a string the library returned, such as the error. NULL is ignored. |
 | `void ganymede_set_panic_callback(GanymedePanicCallback cb)` | Calls `cb(message)` on the panicking thread after any panic in the library, with `panicked at <file>:<line>:<col>: <message>`, valid during the call. For the app's crash reporter: a panic in a server task doesn't end the app, so this is how it hears of one. NULL removes it. The library sends nothing itself. |
 | `void ganymede_debug_panic(void)` | Panics on the calling thread, which aborts the process. For testing crash reports. |
@@ -325,6 +324,53 @@ let url = URL(string: String(cString: ganymede_server_url(server)))!
 
 ganymede-ui's app does this in `ServerHost.swift`; see its
 [architecture](ganymede-ui/architecture.md#mac-and-ipad-app).
+
+### Kernels the app runs
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+An app that runs a kernel itself, as the iPad app runs cdp-kernel in a
+web view, registers it with the server. The server lists it as a
+kernelspec after the gateway's kernels or its own, in place of one of
+the same name (so the default kernel stays the server's own unless it
+has none), and runs it through the same sessions, rooms and execute
+endpoint as any kernel. The design is
+[In-app kernels as server kernels](in-app-kernel.md).
+
+| Function | Contract |
+|---|---|
+| `int ganymede_kernel_register(GanymedeServer *server, const char *spec_json, const GanymedeKernelCallbacks *callbacks, char **error_out)` | Lists `spec_json` (`kernel.json`'s keys plus `"name"`; `argv` may be left out) as a kernelspec the callbacks run. The name is lowercased and, as on disk, takes only `[a-z0-9._-]`. Returns 0, or nonzero for a bad spec or name, a NULL `start`, `send` or `stop`, or a name already registered; then no callback is ever called, `release` included, and `*error_out` holds a message. |
+| `int ganymede_kernel_deliver(GanymedeServer *server, const char *kernel_id, const char *channel, const char *msg_json)` | A message from the kernel on `shell`, `control`, `stdin` or `iopub`. Any thread; doesn't block. Returns 0; 1 for a NULL string or a message or channel it can't read; 2 when the kernel isn't running, as after a stop. |
+| `void ganymede_kernel_ended(GanymedeServer *server, const char *kernel_id, const char *reason)` | The kernel ended without being asked to. `"lost"` (the platform ended it) restarts it, unless restarts are off (`kernel_restart_limit` 0), without counting toward the limit (a loss before the kernel first answers is a failed start, retried as one), and the `status: restarting` message carries `"reason": "lost"`. Anything else is a crash. Call it once per run, never for a run already stopped. |
+
+`GanymedeKernelCallbacks` holds `ctx` and four callbacks, each passed
+`ctx`:
+
+- `start(ctx, kernel_id, launch_json)` starts a kernel and returns 0 once
+  the start is under way; the server then waits for its
+  `kernel_info_reply`, as for any kernel. `launch_json` is
+  `{"kernelspec", "cwd", "env"}`, and `env.JPY_SESSION_NAME` is the
+  notebook's path for a notebook's kernel. A restart calls it again with
+  the same id.
+- `send(ctx, kernel_id, channel, msg_json)` hands the kernel a message on
+  `shell`, `control` or `stdin`.
+- `stop(ctx, kernel_id)` ends it. A shutdown sends `shutdown_request`
+  first. A restart reuses the id, so once `stop` is called, or the app
+  called `ganymede_kernel_ended`, the app delivers nothing more from that
+  run: a late message would reach the new one.
+- `release(ctx)`, which may be NULL, runs once when the server stops,
+  after every other callback.
+
+The server calls them on its own threads, never the app's main thread,
+and maybe at once for different kernels, so they must not block; Swift
+hops to the main actor to reach a web view. Calls to `send` for one
+kernel don't overlap and come in order. Messages are Jupyter JSON in the
+websocket's shape (`header`, `parent_header`, `metadata`, `content`),
+with binary buffers as base64 strings in `buffers`, and nothing is
+signed. Interrupts go over the control channel as `interrupt_request`,
+whatever the kernelspec says.
 
 ## Remote kernels with ganymede-gateway
 

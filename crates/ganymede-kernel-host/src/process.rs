@@ -30,6 +30,12 @@ pub trait KernelProcess: Send + Sync {
     fn is_alive(&self) -> bool;
     /// Kill without waiting, for use in `Drop`. Does nothing by default.
     fn kill_now(&self) {}
+    /// Why the kernel ended, when it knows more than an exit code: an
+    /// app's registered kernel says `"lost"` when the platform ended it
+    /// ([`crate::registered::Ended`]). None by default.
+    fn exit_reason(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 pub struct LaunchedKernel {

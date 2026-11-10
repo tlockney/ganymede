@@ -71,7 +71,7 @@ fn deserialize_env<'de, D: serde::Deserializer<'de>>(
 }
 
 /// `jupyter_client.kernelspec._is_valid_kernel_name`: `[a-z0-9._-]+`.
-fn is_valid_kernel_name(name: &str) -> bool {
+pub(crate) fn is_valid_kernel_name(name: &str) -> bool {
     !name.is_empty()
         && name
             .chars()

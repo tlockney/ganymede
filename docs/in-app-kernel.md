@@ -2,9 +2,15 @@
 
 A design note for [#266](https://github.com/tlockney/ganymede/issues/266):
 registering the kernel the Apple apps run in-app with the server embedded
-in the same app, so it becomes a kernel like any other. Nothing here is
-built. It is a proposal for review, and the code follows once it is
-agreed.
+in the same app, so it becomes a kernel like any other.
+
+> [!NOTE]
+> **Unreleased.** Ganymede's part, the C functions below, is available
+> only from a build of `main` (HEAD), not in the latest release.
+
+> [!NOTE]
+> **Unreleased in ganymede-ui.** The apps' part is not built yet: no
+> build of ganymede-ui registers its in-app kernel.
 
 ## The problem
 
@@ -111,8 +117,10 @@ The contract:
   `shutdown_request` first, then calls `stop` after the grace period.
 - **Heartbeat.** A registered kernel is alive until `ganymede_kernel_ended`
   or `stop`.
-- **Names.** A registered kernelspec is listed before a kernel server's
-  (`gateway_url`), and hides one of the same name.
+- **Names.** A registered kernelspec's name follows the kernelspec rules
+  (lowercased, `[a-z0-9._-]`). It is listed after a kernel server's
+  (`gateway_url`), in place of one of the same name, so the server's
+  default kernel stays the default unless it has no kernels of its own.
 
 On the Rust side, a `RegisteredKernels` type implements
 `KernelspecSource`, `Provisioner` and `TransportFactory` over the
@@ -147,8 +155,12 @@ With registration, Swift calls `ganymede_kernel_ended(server, id,
 "lost")` for each kernel the page held. The server treats it as a crash
 with two differences:
 
-- It restarts the kernel without counting toward `restart_limit`, since
-  the platform ended it, not a fault in the kernel.
+- It restarts the kernel, unless restarts are off (`restart_limit` 0),
+  without counting toward `restart_limit`, since the platform ended it,
+  not a fault in the kernel. With no count, a kernel the platform keeps
+  ending restarts each time; see Restart after a loss below. A loss
+  before the kernel's first `kernel_info_reply` is a failed start: the
+  server launches it up to three times in all, as for any kernel.
 - The `status: restarting` message on iopub carries `"reason": "lost"` in
   its content. Clients that don't know the key ignore it, as Jupyter
   clients ignore unknown content keys.
@@ -246,7 +258,10 @@ today's relay already pays.
 - **Restart after a loss.** The proposal restarts at once, so the
   notebook has a kernel when the app comes back. The alternative leaves
   it dead until the person picks Restart or Restore, which starts no
-  kernel the person didn't ask for.
+  kernel the person didn't ask for. Losses don't count toward
+  `restart_limit`, so nothing yet caps or spaces out restarts after
+  repeated losses, such as a page killed under memory pressure each time
+  it starts.
 - **Where the kernel web view lives on the Mac.** WebKit suspends a web
   view in no window. With kernels owned by the app, the kernel web view
   needs a home that outlives any one window.
