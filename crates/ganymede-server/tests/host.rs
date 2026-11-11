@@ -531,6 +531,11 @@ async fn a_notebook_runs_another_under_its_run_grant() {
     let ids = file_ids(dir.path());
     let (id, _) = ids.index("reports/slow.ipynb");
     ids.set_grant(&id, Some(r#"{"read":["journal"]}"#)).unwrap();
+    // The first run's kernel shuts down after its call returns; wait for
+    // it so the loop below finds the slow run's kernel.
+    while !run_kernels(&state).is_empty() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let running = tokio::spawn({
         let (api, caller) = (api.clone(), caller.clone());
         async move {
