@@ -74,7 +74,8 @@ jobs:
       - run: npm run fetch-cell-api
         working-directory: docs
       # The apps' example notebooks, rendered from ganymede-ui's examples/
-      # on its main, under /docs/examples/.
+      # on its main, and the agent journals in examples/journals/, under
+      # /docs/examples/.
       - run: npm run fetch-examples
         working-directory: docs
       - run: npm run build

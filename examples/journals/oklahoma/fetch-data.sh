@@ -1,7 +1,8 @@
 #!/bin/sh
 # Downloads the journal's data into data/, as the recorded cells in the
 # notebook did: USGS earthquake catalogs for Oklahoma and the Oklahoma
-# Corporation Commission's yearly injection volumes (about 51 MB).
+# Corporation Commission's yearly injection volumes: about 55 MB, most of
+# it the workbooks.
 set -eu
 cd "$(dirname "$0")"
 mkdir -p data/occ

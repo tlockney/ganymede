@@ -7,11 +7,13 @@ data as the notebook's recorded cells did, and `prompts.md`.
 `examples/journals/run.sh` fetches the data and runs each notebook in
 place with `ganymede execute --inplace`; data/ is not committed.
 
-Re-run on Ganymede 0.8.0 and cdp-kernel 0.10.0 (cdp-node, Node 22) with
+Re-run on Ganymede 0.9.0 and cdp-kernel 0.10.0 (cdp-node, Node 22) with
 freshly downloaded data, both notebooks ran clean (11 and 30 cells) and
 every output matched the saved one, so the findings still read true.
 Seattle's export now lists rows in a different order but holds the same
-rows. Oklahoma downloads about 55 MB (the OCC injection workbooks) and
+rows. One Oklahoma table lists its network columns in another order
+(`ok` before `us`), since USGS's catalog came back in another order; the
+counts are the same. Oklahoma downloads about 55 MB, most of it the OCC injection workbooks, and
 runs in about a minute.
 
 The Oklahoma prompts come from the session transcript. The Fremont

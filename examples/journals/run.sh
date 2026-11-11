@@ -2,7 +2,8 @@
 # Re-runs the journals: downloads each one's data, then runs the
 # notebook top to bottom and saves its outputs in place. Needs ganymede
 # and cdp-kernel's cdp-node kernel (docs/install.md), Node, curl and
-# network access; about 60 MB of data.
+# network access; about 60 MB of data
+# (Fremont 4 MB, Oklahoma 55 MB).
 #
 #   examples/journals/run.sh            # both
 #   examples/journals/run.sh oklahoma   # one

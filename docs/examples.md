@@ -15,7 +15,7 @@ keeps every step, the dead ends and the revised findings.
 | [Fremont Bridge](examples/journal-fremont.md) | Have bike commutes over Seattle's Fremont Bridge come back since 2019? |
 | [Oklahoma earthquakes](examples/journal-oklahoma.md) | Did Oklahoma's earthquakes stop once wastewater injection was cut back? |
 
-They were kept on 2026-11-09 and re-run on Ganymede 0.8.0 and
+They were kept on 2026-11-09 and re-run on Ganymede 0.9.0 and
 cdp-kernel 0.10.0 with freshly downloaded data. The notebooks, the
 scripts that fetch their data, and `run.sh`, which re-runs them, are in
 [examples/journals/](https://github.com/tlockney/ganymede/tree/main/examples/journals).

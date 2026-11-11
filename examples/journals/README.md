@@ -12,7 +12,7 @@ Each folder has the notebook and the module it imports in `journal/`,
 `prompts.md` with what the person asked, and `fetch-data.sh`, which
 downloads the data the notebook reads into `data/` (not committed).
 
-The notebooks were kept on 2026-11-09 and re-run since on Ganymede 0.8.0
+The notebooks were kept on 2026-11-09 and re-run since on Ganymede 0.9.0
 and cdp-kernel 0.10.0 with freshly downloaded data. To run them again:
 
 ```sh
