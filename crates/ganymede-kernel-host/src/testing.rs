@@ -8,7 +8,8 @@
 //! mid-cell), `display` (display, update, clear, stream), `lines <n>`
 //! (prints n lines, one stream message each), `progress` (clear with wait
 //! and print, three times, then holds 1.5 s), `comm` (opens
-//! a comm from the kernel side); anything else is echoed. Comms: target
+//! a comm from the kernel side), `result <name> <json>` (a named result,
+//! `application/vnd.ganymede.result+json`); anything else is echoed. Comms: target
 //! `echo` sends every message back with its buffers; any other target is
 //! closed at once, as ipykernel does. After an error with
 //! `stop_on_error`, queued `execute_request`s are answered `aborted`.
@@ -480,6 +481,19 @@ impl FakeKernel {
                 msg_type,
                 &serde_json::json!({"data": {"text/markdown": text}, "metadata": {},
                                     "transient": {"display_id": "d1"}}),
+            )
+            .await;
+        } else if let Some(rest) = code.strip_prefix("result ") {
+            let (name, value) = rest.split_once(' ').unwrap_or((rest, "null"));
+            let value: serde_json::Value =
+                serde_json::from_str(value).unwrap_or(serde_json::Value::Null);
+            self.iopub(
+                msg,
+                "display_data",
+                &serde_json::json!({"data": {
+                    "application/vnd.ganymede.result+json": {"name": name, "value": value},
+                    "text/plain": format!("{name} = {value}"),
+                }, "metadata": {}}),
             )
             .await;
         } else if code == "comm" {

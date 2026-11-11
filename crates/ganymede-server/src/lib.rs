@@ -17,6 +17,7 @@ pub mod mcp;
 pub mod metrics;
 pub(crate) mod room_lock;
 pub mod routes;
+pub mod run;
 pub mod serve;
 pub mod server_info;
 pub mod static_headers;

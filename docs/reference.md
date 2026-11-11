@@ -351,7 +351,7 @@ that reads the variable and writes the MIME type takes part.
 
 | What | Format |
 | --- | --- |
-| `GANYMEDE_PARAMS` | Set on every kernel `execute` starts: the parameters from `-p` and `--params-file` as one JSON object, at most 32,767 bytes, or `{}` without them, so a kernel never inherits a parent run's. The executed notebook records them in `metadata.ganymede.params`, and a run without them removes that key. |
+| `GANYMEDE_PARAMS` | Set on every kernel `execute` and `POST /api/notebooks/run` start: the parameters from `-p` and `--params-file` as one JSON object, at most 32,767 bytes, or `{}` without them, so a kernel never inherits a parent run's. The executed notebook records them in `metadata.ganymede.params`, and a run without them removes that key. |
 | `application/vnd.ganymede.result+json` | A named result: a `display_data` or `execute_result` output whose bundle holds `{ "name": string, "value": JSON }`. Add a `text/plain` entry for frontends that don't know the type. |
 | `application/scrapbook.scrap.json+json`, `application/scrapbook.scrap.text+json` | Python scrapbook's scraps (`sb.glue`), read as named results from their `name` and `data`. |
 
@@ -362,6 +362,28 @@ results come only from cells the run executed, so a failed run reports
 what it published before the failure, never what an earlier run saved in
 later cells or in cells skipped by tag. A run that stops on a signal, or
 whose notebook can't be saved, prints its line and ends the command.
+
+`POST /api/notebooks/run` is the same over HTTP, for clients such as the
+apps' links and Shortcuts:
+
+```http
+POST /api/notebooks/run
+{"path": "reports/daily.ipynb", "params": {"day": "2026-11-10"}, "timeout": 600}
+```
+
+It runs the notebook in a fresh kernel from its own kernelspec, with
+`params` (a JSON object, optional) in `GANYMEDE_PARAMS`, and answers when
+the run ends with the body of one `--results` line. `path` is an API
+path; the notebook is read from its room when one is open, so unsaved
+edits run. Nothing is written: not the notebook, not its room, and
+`save` takes only `false`. `timeout` is in seconds for the whole run, at
+most and by default 3600. The run's kernel is listed in `/api/kernels`
+while it runs, and shut down when the run ends, times out, or the client
+disconnects. A missing `path`, bad `params` or `timeout`, or a notebook
+with no `metadata.kernelspec.name`, or one this server doesn't have, is
+`400`, and a notebook that can't be
+read `404`, before any kernel starts; after that, a failure is `200` with
+`"status": "error"`.
 
 ## Logging
 

@@ -85,6 +85,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/kernels/{id}/interrupt", post(interrupt_kernel))
         .route("/api/kernels/{id}/restart", post(restart_kernel))
         .route("/api/kernels/{id}/execute", post(crate::execute::execute))
+        .route("/api/notebooks/run", post(crate::run::run))
         .route("/api/kernels/{id}/channels", get(crate::ws::channels))
         .route("/api/kernels/{id}/log", get(kernel_log))
         .route("/api/metrics/v1", get(crate::metrics::server))

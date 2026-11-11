@@ -98,6 +98,9 @@ pub struct RunningKernel {
     /// a kernel started for a session, as jupyter_server sets it. `None`
     /// leaves the host's default, the kernel id.
     session_name: Mutex<Option<String>>,
+    /// Variables every launch of this kernel gets, restarts included: a
+    /// run's `GANYMEDE_PARAMS` (`start_with_env`).
+    env: Vec<(String, String)>,
     session: RwLock<KernelSession>,
     launched: Mutex<Option<LaunchedKernel>>,
     /// The host API's comm with the current session, once it has booted
@@ -547,6 +550,19 @@ impl KernelManager {
         path: Option<&str>,
         session_name: Option<String>,
     ) -> Result<KernelModel> {
+        self.start_with_env(name, path, session_name, Vec::new())
+            .await
+    }
+
+    /// [`Self::start_for_session`], with `env` set in every launch of the
+    /// kernel, restarts included, over the kernelspec's own.
+    pub async fn start_with_env(
+        &self,
+        name: Option<&str>,
+        path: Option<&str>,
+        session_name: Option<String>,
+        env: Vec<(String, String)>,
+    ) -> Result<KernelModel> {
         let name = match name {
             Some(n) => n.to_string(),
             None => self.kernelspecs()?.default,
@@ -569,7 +585,7 @@ impl KernelManager {
         let log = Arc::new(KernelLog::default());
         let (session, launched) = self
             .core
-            .launch(&spec, cwd.clone(), session_name.clone(), &id, &log)
+            .launch(&spec, cwd.clone(), session_name.clone(), &env, &id, &log)
             .await?;
         let kernel = Arc::new(RunningKernel {
             id: id.clone(),
@@ -578,6 +594,7 @@ impl KernelManager {
             started: now_iso(),
             cwd,
             session_name: Mutex::new(session_name),
+            env,
             session: RwLock::new(session.clone()),
             launched: Mutex::new(Some(launched)),
             host: Mutex::default(),
@@ -1012,6 +1029,7 @@ impl Core {
                 &kernel.spec,
                 kernel.cwd.clone(),
                 session_name,
+                &kernel.env,
                 &kernel.id,
                 &kernel.log,
             )
@@ -1039,18 +1057,21 @@ impl Core {
         spec: &Kernelspec,
         cwd: Option<PathBuf>,
         session_name: Option<String>,
+        env: &[(String, String)],
         id: &str,
         log: &Arc<KernelLog>,
     ) -> Result<(KernelSession, LaunchedKernel)> {
+        let mut vars = env.to_vec();
+        if let Some(n) = session_name {
+            vars.push(("JPY_SESSION_NAME".to_string(), n));
+        }
         let launched = self
             .provisioner
             .launch(
                 spec,
                 LaunchOptions {
                     cwd,
-                    env: session_name
-                        .map(|n| vec![("JPY_SESSION_NAME".to_string(), n)])
-                        .unwrap_or_default(),
+                    env: vars,
                     kernel_id: Some(id.to_string()),
                     quiet: self.config.quiet,
                     // A server runs many kernels on one stderr.
