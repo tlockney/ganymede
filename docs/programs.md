@@ -119,9 +119,10 @@ ganymede grant --list
 ganymede grant --revoke journal/index.ipynb run=reports
 ```
 
-Grants narrow and never widen. A notebook run from another gets the
-intersection of both grants, so it can't reach more than its caller;
-runs nest at most 3 deep. The apps set the same grants under Kernel ›
+A notebook's own grant replaces the defaults key by key, so it can add
+access as well as remove it. A run never widens what its caller holds: a
+notebook run from another gets the intersection of both grants, so it
+can't reach more than its caller. Runs nest at most 3 deep. The apps set the same grants under Kernel ›
 Notebook Access…. [The host API](reference.md#the-host-api) has the config
 keys, the HTTP form, and how a grant follows a renamed notebook.
 
