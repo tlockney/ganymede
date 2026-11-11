@@ -277,6 +277,8 @@ async fn a_read_grant_matches_whole_segments() {
         paths.contains(&"index.ipynb") && paths.contains(&"journal"),
         "{paths:?}"
     );
+    // Not the directories the grant doesn't reach.
+    assert!(!paths.contains(&"journal-private"), "{paths:?}");
     // A directory outside the grant can't be listed.
     let err = api
         .call(&caller, "notebooks.list", json!({"dir": "journal-private"}))
@@ -304,5 +306,105 @@ async fn no_read_grant_leaves_only_its_own_notebook() {
         .unwrap_err()
         .code,
         "denied"
+    );
+}
+
+fn paths_of(v: &Value, key: &str) -> Vec<String> {
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e[key].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn an_empty_grant_still_searches_and_lists_its_own_notebook() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let (api, caller) = setup(dir.path(), "index.ipynb", &[]).await;
+    let found = api
+        .call(&caller, "notebooks.search", json!({"query": "workday"}))
+        .await
+        .unwrap();
+    assert_eq!(paths_of(&found["hits"], "path"), ["index.ipynb"]);
+    let list = api
+        .call(&caller, "notebooks.list", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(paths_of(&list, "path"), ["index.ipynb"]);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlink_in_a_granted_folder_leads_nowhere_else() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    std::os::unix::fs::symlink(
+        dir.path().join("journal-private"),
+        dir.path().join("journal/link"),
+    )
+    .unwrap();
+    let (api, caller) = setup(dir.path(), "index.ipynb", &["journal"]).await;
+    let err = api
+        .call(
+            &caller,
+            "notebooks.read",
+            json!({"path": "journal/link/p.ipynb"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "denied");
+    let found = api
+        .call(
+            &caller,
+            "notebooks.search",
+            json!({"query": "private", "dir": "journal"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(found["hits"], json!([]), "{found}");
+}
+
+#[tokio::test]
+async fn a_notebook_that_joins_the_kernel_does_not_take_its_place() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let state = state(dir.path());
+    let create = |path: String, kernel: Option<String>| SessionCreate {
+        path,
+        name: None,
+        type_: Some("notebook".into()),
+        kernel: ganymede_api::sessions::KernelRef {
+            id: kernel,
+            name: None,
+        },
+    };
+    let first = state
+        .sessions
+        .create(create("index.ipynb".into(), None))
+        .await
+        .unwrap();
+    let caller = Caller {
+        kernel_id: first.kernel.id.clone(),
+    };
+    let api = HostApi::new(state.clone(), &HostConfig { read: vec![] });
+    assert_eq!(
+        api.hello(&caller).await.notebook.as_deref(),
+        Some("index.ipynb")
+    );
+    // Several notebooks join, so one sorts before the first by id.
+    for i in 0..8 {
+        state
+            .sessions
+            .create(create(
+                format!("j{i}.ipynb"),
+                Some(caller.kernel_id.clone()),
+            ))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        api.hello(&caller).await.notebook.as_deref(),
+        Some("index.ipynb")
     );
 }

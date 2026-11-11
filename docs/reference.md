@@ -162,6 +162,10 @@ them.
 | `crash_reporting` | Send crash reports from `ganymede` to Sentry; see [Privacy and crash reporting](privacy.md). Default `false`. |
 | `frame_ancestors` | The CSP sources allowed to frame the server's pages, added to every response as `frame-ancestors <sources>`. Default `'self'`, as `jupyter_server`; add an origin, such as `'self' https://portal.example.com`, to embed `/lab` in that site. See [Security](security.md#defaults). |
 
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
 ### The host API
 
 > [!NOTE]
@@ -173,11 +177,9 @@ them.
 `notebooks.search`. A path covers itself and everything under it, by
 whole segments, so `"journal"` covers `journal/a.ipynb` but not
 `journal-private/`. The default, `[""]`, is the whole root; `[]` leaves
-each notebook only itself.
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
+each notebook only itself. A path is matched where it leads once
+symlinks are resolved, so a symlink in a granted folder doesn't reach
+another.
 
 ## Static headers
 

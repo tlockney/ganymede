@@ -27,7 +27,8 @@ use async_trait::async_trait;
 use ganymede_kernel_host::KernelSession;
 use ganymede_protocol::{Channel, Message};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::task::AbortHandle;
@@ -105,12 +106,37 @@ struct Shared {
     /// The `header.session` of every message the host sends, so replies
     /// and statuses for them can be told apart.
     tag: String,
-    comm_id: Mutex<Option<String>>,
+    /// Every host comm this kernel has had: the host's own, and each the
+    /// kernel opened while the driver ran. Never shrinks, so a message on
+    /// one is recognised whichever of the forwarder and the driver sees
+    /// it first.
+    comm_ids: Mutex<HashSet<String>>,
+    /// The driver is answering: a kernel's open of [`TARGET`] is the
+    /// host's. Before and after, it goes to clients, who close it.
+    live: AtomicBool,
+    /// Calls in flight, by the kernel's id for them.
+    calls: Mutex<HashMap<String, AbortHandle>>,
+}
+
+impl Shared {
+    fn is_host_comm(&self, msg: &Message) -> bool {
+        msg.content["comm_id"]
+            .as_str()
+            .is_some_and(|id| self.comm_ids.lock().unwrap().contains(id))
+    }
+
+    fn abort_calls(&self) {
+        for (_, call) in self.calls.lock().unwrap().drain() {
+            call.abort();
+        }
+    }
 }
 
 impl Drop for HostLink {
     fn drop(&mut self) {
         self.task.abort();
+        self.shared.live.store(false, Ordering::SeqCst);
+        self.shared.abort_calls();
     }
 }
 
@@ -131,11 +157,19 @@ impl HostLink {
             return false;
         }
         match msg.msg_type() {
-            "comm_open" => msg.content["target_name"] == TARGET,
-            "comm_msg" | "comm_close" => {
-                let id = msg.content["comm_id"].as_str();
-                id.is_some() && self.shared.comm_id.lock().unwrap().as_deref() == id
+            // Recorded here, in the order clients would get it, so the
+            // comm's first call can't reach them before the driver sees
+            // the open.
+            "comm_open" if msg.content["target_name"] == TARGET => {
+                if !self.shared.live.load(Ordering::SeqCst) {
+                    return false;
+                }
+                if let Some(id) = msg.content["comm_id"].as_str() {
+                    self.shared.comm_ids.lock().unwrap().insert(id.to_string());
+                }
+                true
             }
+            "comm_msg" | "comm_close" => self.shared.is_host_comm(msg),
             _ => false,
         }
     }
@@ -151,7 +185,9 @@ pub fn attach(
 ) -> HostLink {
     let shared = Arc::new(Shared {
         tag: format!("ganymede-host-{}", uuid::Uuid::new_v4().simple()),
-        comm_id: Mutex::new(None),
+        comm_ids: Mutex::default(),
+        live: AtomicBool::new(false),
+        calls: Mutex::default(),
     });
     // Subscribed before anything is sent, so nothing is missed.
     let rx = session.subscribe_lossless();
@@ -162,7 +198,7 @@ pub fn attach(
         responder,
         version: version.to_string(),
         subshell: String::new(),
-        calls: Arc::default(),
+        current: Mutex::new(None),
     };
     let task = tokio::spawn(driver.run(rx)).abort_handle();
     HostLink { shared, task }
@@ -175,8 +211,17 @@ struct Driver {
     responder: Arc<dyn Responder>,
     version: String,
     subshell: String,
-    /// Calls in flight, by the kernel's id for them.
-    calls: Arc<Mutex<HashMap<String, AbortHandle>>>,
+    /// The comm calls are answered on, if one is open.
+    current: Mutex<Option<String>>,
+}
+
+/// Marks the driver gone, however it ends.
+struct Live(Arc<Shared>);
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        self.0.live.store(false, Ordering::SeqCst);
+    }
 }
 
 impl Driver {
@@ -194,7 +239,10 @@ impl Driver {
             None => return,
         }
         let comm_id = uuid::Uuid::new_v4().simple().to_string();
-        *self.shared.comm_id.lock().unwrap() = Some(comm_id.clone());
+        self.shared.comm_ids.lock().unwrap().insert(comm_id.clone());
+        *self.current.lock().unwrap() = Some(comm_id.clone());
+        self.shared.live.store(true, Ordering::SeqCst);
+        let _live = Live(self.shared.clone());
         let hello = self.hello().await;
         let open = json!({"comm_id": comm_id, "target_name": TARGET, "data": hello});
         if self.send("comm_open", &open).await.is_err() {
@@ -209,10 +257,8 @@ impl Driver {
                 "comm_close" if self.is_ours(&msg) => {
                     // No target in the kernel, or the client closed it. A
                     // client may still open one later.
-                    *self.shared.comm_id.lock().unwrap() = None;
-                    for (_, call) in self.calls.lock().unwrap().drain() {
-                        call.abort();
-                    }
+                    *self.current.lock().unwrap() = None;
+                    self.shared.abort_calls();
                 }
                 "comm_msg" if self.is_ours(&msg) => self.message(&msg),
                 _ => {}
@@ -222,7 +268,7 @@ impl Driver {
 
     fn is_ours(&self, msg: &Message) -> bool {
         let id = msg.content["comm_id"].as_str();
-        id.is_some() && self.shared.comm_id.lock().unwrap().as_deref() == id
+        id.is_some() && self.current.lock().unwrap().as_deref() == id
     }
 
     async fn create_subshell(&self) -> Option<String> {
@@ -262,8 +308,9 @@ impl Driver {
         let Some(id) = msg.content["comm_id"].as_str() else {
             return;
         };
+        self.shared.comm_ids.lock().unwrap().insert(id.to_string());
         let taken = {
-            let mut current = self.shared.comm_id.lock().unwrap();
+            let mut current = self.current.lock().unwrap();
             if current.is_some() {
                 true
             } else {
@@ -294,7 +341,7 @@ impl Driver {
             other => other.to_string(),
         };
         if data["cancel"] == true {
-            if let Some(call) = self.calls.lock().unwrap().remove(&id) {
+            if let Some(call) = self.shared.calls.lock().unwrap().remove(&id) {
                 call.abort();
             }
             return;
@@ -311,7 +358,7 @@ impl Driver {
             tag: self.shared.tag.clone(),
             subshell: self.subshell.clone(),
         };
-        let mut calls = self.calls.lock().unwrap();
+        let mut calls = self.shared.calls.lock().unwrap();
         if calls.len() >= MAX_CALLS {
             let error = json!({"code": "failed", "message": format!("more than {MAX_CALLS} host calls in flight")});
             let reply = json!({"comm_id": comm_id, "data": {"id": id_value, "error": error}});
@@ -321,7 +368,7 @@ impl Driver {
         let responder = self.responder.clone();
         let caller = self.caller.clone();
         let hello = (method == "hello").then(|| (self.responder.clone(), self.version.clone()));
-        let table = self.calls.clone();
+        let table = self.shared.clone();
         let key = id.clone();
         // Registered before the task can finish and remove itself.
         let (start, started) = tokio::sync::oneshot::channel::<()>();
@@ -337,7 +384,7 @@ impl Driver {
             };
             // A cancel that came while the answer was being sent would
             // find nothing to abort; one that came before has aborted us.
-            if table.lock().unwrap().remove(&key).is_none() {
+            if table.calls.lock().unwrap().remove(&key).is_none() {
                 return;
             }
             let data = match answer {

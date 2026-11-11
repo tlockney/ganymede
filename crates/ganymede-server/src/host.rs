@@ -12,9 +12,9 @@
 //!   `notebooks_search`'s matches.
 //!
 //! Reads reach the paths in the `[host]` `read` grant (the whole root by
-//! default), matched by whole path segments; a notebook may always read
-//! itself. A kernel's notebook is the one of the session the server
-//! started it for.
+//! default), matched by whole path segments against where a path leads
+//! once symlinks are resolved; a notebook may always read itself. A
+//! kernel's notebook is the one of the session the server started it for.
 
 use crate::mcp::{notebook_for_search, search, search_notebooks};
 use crate::AppState;
@@ -45,6 +45,10 @@ const METHODS: [&str; 3] = ["notebooks.list", "notebooks.read", "notebooks.searc
 pub struct HostApi {
     state: AppState,
     read: Vec<String>,
+    /// Each kernel's notebook session, as first seen: `hello` at kernel
+    /// start sees the session the kernel was started for, and a notebook
+    /// that joins the kernel later doesn't take its place.
+    sessions: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 
 impl HostApi {
@@ -56,28 +60,77 @@ impl HostApi {
                 .iter()
                 .map(|p| ganymede_contents::normalize_api_path(p))
                 .collect(),
+            sessions: Default::default(),
         }
     }
 
     /// The API path of the notebook `kernel_id` was started for: its
     /// first notebook session's.
     fn notebook(&self, kernel_id: &str) -> Option<String> {
-        self.state
-            .sessions
-            .list()
-            .into_iter()
-            .find(|s| s.kernel.id == kernel_id && s.type_ == "notebook")
-            .map(|s| ganymede_contents::normalize_api_path(&s.path))
+        let sessions = &self.state.sessions;
+        let mut seen = self.sessions.lock().unwrap();
+        // The session it was started for, renamed or not, while it lasts.
+        let path = seen
+            .get(kernel_id)
+            .and_then(|id| sessions.notebook_path(id))
+            .or_else(|| {
+                let (id, path) = sessions.notebook_of_kernel(kernel_id)?;
+                seen.insert(kernel_id.to_string(), id);
+                Some(path)
+            })?;
+        Some(ganymede_contents::normalize_api_path(&path))
     }
 
-    /// Whether `caller` may read `path`, a normalized API path.
+    /// Whether the grant covers the whole root, so no path needs checking.
+    fn reads_everything(&self) -> bool {
+        self.read.iter().any(|g| g.is_empty())
+    }
+
+    /// Where `path` leads once symlinks are resolved, as an API path; the
+    /// path itself when it doesn't exist (or the root is unknown), and
+    /// `None` when it leads outside the root.
+    fn resolved(&self, path: &str) -> Option<String> {
+        let Some(root) = self.state.collab.root() else {
+            return Some(path.to_string());
+        };
+        let Ok(root) = std::fs::canonicalize(root) else {
+            return Some(path.to_string());
+        };
+        let Ok(real) = std::fs::canonicalize(root.join(path)) else {
+            return Some(path.to_string());
+        };
+        let rel = real.strip_prefix(&root).ok()?;
+        let parts: Vec<_> = rel
+            .components()
+            .map(|c| c.as_os_str().to_str())
+            .collect::<Option<_>>()?;
+        Some(parts.join("/"))
+    }
+
+    /// Whether `caller` may read `path`, a normalized API path: where it
+    /// leads must be in the grant, so a symlink in a granted folder
+    /// doesn't open another.
     fn may_read(&self, notebook: Option<&str>, path: &str) -> bool {
-        if notebook == Some(path) {
+        if notebook == Some(path) || self.reads_everything() {
             return true;
         }
+        let Some(real) = self.resolved(path) else {
+            return false;
+        };
         self.read
             .iter()
-            .any(|g| ganymede_contents::path_under(path, g).is_some())
+            .any(|g| ganymede_contents::path_under(&real, g).is_some())
+    }
+
+    /// Whether a directory may be listed or walked: it is readable, or a
+    /// grant or the notebook itself lies under it.
+    fn may_enter(&self, notebook: Option<&str>, dir: &str) -> bool {
+        self.may_read(notebook, dir)
+            || notebook.is_some_and(|n| ganymede_contents::path_under(n, dir).is_some())
+            || self
+                .read
+                .iter()
+                .any(|g| ganymede_contents::path_under(g, dir).is_some())
     }
 
     fn checked_path(
@@ -97,12 +150,12 @@ impl HostApi {
         let path = ganymede_contents::normalize_api_path(raw);
         // A directory to search or list is allowed when anything under it
         // is: the walk then filters what it reads.
-        let dir_reaches_grant = key == "dir"
-            && self
-                .read
-                .iter()
-                .any(|g| ganymede_contents::path_under(g, &path).is_some());
-        if !self.may_read(notebook, &path) && !dir_reaches_grant {
+        let allowed = if key == "dir" {
+            self.may_enter(notebook, &path)
+        } else {
+            self.may_read(notebook, &path)
+        };
+        if !allowed {
             return Err(HostError::denied(format!(
                 "{} is outside this notebook's read grant",
                 if path.is_empty() { "the root" } else { &path }
@@ -133,7 +186,10 @@ impl HostApi {
                 let kind = item["type"].as_str().unwrap_or_default();
                 let modified = item["last_modified"].clone();
                 match kind {
-                    "directory" if item["name"] != ".ipynb_checkpoints" => {
+                    "directory"
+                        if item["name"] != ".ipynb_checkpoints"
+                            && self.may_enter(notebook, &path) =>
+                    {
                         out.push(json!({"path": path, "type": "directory", "modified": modified}));
                     }
                     "notebook" if self.may_read(notebook, &path) => {
@@ -198,11 +254,16 @@ impl HostApi {
             cell_type,
         };
         let limit = params["limit"].as_u64().unwrap_or(20).clamp(1, 200) as usize;
-        let found = search_notebooks(&self.state, &dir, &words, scope, limit, |p| {
-            self.may_read(notebook, p)
-        })
-        .await
-        .map_err(HostError::failed)?;
+        let keep = |p: &str, is_dir: bool| {
+            if is_dir {
+                self.may_enter(notebook, p)
+            } else {
+                self.may_read(notebook, p)
+            }
+        };
+        let found = search_notebooks(&self.state, &dir, &words, scope, limit, &keep)
+            .await
+            .map_err(HostError::failed)?;
         let hits: Vec<Value> = found
             .notebooks
             .iter()

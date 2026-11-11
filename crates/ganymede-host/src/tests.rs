@@ -258,3 +258,105 @@ async fn host_traffic_is_recognised() {
     );
     assert!(!link.is_host_message(Channel::IoPub, &other));
 }
+
+#[tokio::test]
+async fn a_kernel_open_is_recorded_in_forwarding_order() {
+    let s = boot(true).await;
+    let link = link(&s);
+    opened(&s).await;
+    // Seen by the forwarder before the driver: the open and the call
+    // right after it are both the host's.
+    let open = Message::new(
+        "comm_open",
+        "k",
+        "kernel",
+        &json!({"comm_id": "late", "target_name": TARGET, "data": {}}),
+    );
+    assert!(link.is_host_message(Channel::IoPub, &open));
+    let call = Message::new(
+        "comm_msg",
+        "k",
+        "kernel",
+        &json!({"comm_id": "late", "data": {"id": 0, "method": "echo"}}),
+    );
+    assert!(link.is_host_message(Channel::IoPub, &call));
+    let close = Message::new(
+        "comm_close",
+        "k",
+        "kernel",
+        &json!({"comm_id": "late", "data": {}}),
+    );
+    assert!(link.is_host_message(Channel::IoPub, &close));
+}
+
+#[tokio::test]
+async fn without_a_driver_a_kernel_open_goes_to_clients() {
+    let s = boot(false).await;
+    let link = link(&s);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let open = Message::new(
+        "comm_open",
+        "k",
+        "kernel",
+        &json!({"comm_id": "late", "target_name": TARGET, "data": {}}),
+    );
+    assert!(!link.is_host_message(Channel::IoPub, &open));
+}
+
+/// Answers `wait` never, and notes when its call is dropped.
+struct Waits(Arc<std::sync::atomic::AtomicBool>);
+
+struct SetOnDrop(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for SetOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl Responder for Waits {
+    async fn hello(&self, _caller: &Caller) -> Hello {
+        Hello {
+            notebook: None,
+            methods: vec!["wait".into()],
+        }
+    }
+    async fn call(&self, _: &Caller, _: &str, _: Value) -> Result<Value, HostError> {
+        let _guard = SetOnDrop(self.0.clone());
+        std::future::pending::<()>().await;
+        Ok(Value::Null)
+    }
+}
+
+#[tokio::test]
+async fn dropping_the_link_ends_its_calls() {
+    let s = boot(true).await;
+    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let link = attach(
+        &s,
+        Caller {
+            kernel_id: "k".into(),
+        },
+        Arc::new(Waits(dropped.clone())),
+        "1",
+    );
+    opened(&s).await;
+    run(&s, "host wait {}").await;
+    // The call is in flight.
+    for _ in 0..200 {
+        if !link.shared.calls.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(!link.shared.calls.lock().unwrap().is_empty());
+    drop(link);
+    for _ in 0..200 {
+        if dropped.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the call outlived the link");
+}

@@ -138,6 +138,30 @@ impl SessionManager {
         v
     }
 
+    /// A notebook session `kernel_id` runs for, as `(session id, path)`:
+    /// the first by session id when several share the kernel. Read-only:
+    /// it doesn't drop dead kernels' sessions, as [`list`](Self::list)
+    /// does.
+    pub fn notebook_of_kernel(&self, kernel_id: &str) -> Option<(String, String)> {
+        self.sessions
+            .read()
+            .unwrap()
+            .values()
+            .filter(|s| s.kernel_id == kernel_id && s.type_ == "notebook")
+            .min_by(|a, b| a.id.cmp(&b.id))
+            .map(|s| (s.id.clone(), s.path.clone()))
+    }
+
+    /// The path of notebook session `id`, if it still exists.
+    pub fn notebook_path(&self, id: &str) -> Option<String> {
+        self.sessions
+            .read()
+            .unwrap()
+            .get(id)
+            .filter(|s| s.type_ == "notebook")
+            .map(|s| s.path.clone())
+    }
+
     pub fn get(&self, id: &str) -> Result<SessionModel> {
         let s = self
             .sessions

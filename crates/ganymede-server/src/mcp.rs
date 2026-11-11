@@ -932,7 +932,7 @@ impl Notebooks {
         };
         let limit = a.limit.unwrap_or(20).clamp(1, 200);
         let dir = ganymede_contents::normalize_api_path(a.dir.as_deref().unwrap_or(""));
-        let found = search_notebooks(&self.state, &dir, &words, scope, limit, |_| true)
+        let found = search_notebooks(&self.state, &dir, &words, scope, limit, &|_, _| true)
             .await
             .map_err(err)?;
         let mut out = String::new();
@@ -2005,17 +2005,17 @@ impl ganymede_exec::NotebookHandler for Started {
     }
 }
 
-/// [`images`] on a blocking thread: drawing an SVG loads the system fonts
-/// the first time and rasterizes up to 1,600 px square, which would hold
-/// up the runtime's other work (under `serve --mcp`, the whole server).
 /// Notebook paths under `dir`, depth first in name order, skipping
 /// checkpoints; and whether [`SEARCH_MAX_NOTEBOOKS`] or
 /// [`SEARCH_MAX_DIRS`] cut the list. Hidden files stay out as the
 /// contents API leaves them out. A directory reached twice, through a
-/// symlink to it or to an ancestor, is listed once.
+/// symlink to it or to an ancestor, is listed once. `keep(path, is_dir)`
+/// chooses the notebooks listed and the directories entered, before the
+/// caps count them.
 pub(crate) async fn notebook_paths(
     state: &AppState,
     dir: &str,
+    keep: &(dyn Fn(&str, bool) -> bool + Sync),
 ) -> Result<(Vec<String>, bool), String> {
     let mut found = Vec::new();
     let mut dirs = vec![dir.to_string()];
@@ -2065,8 +2065,10 @@ pub(crate) async fn notebook_paths(
         for item in entries {
             let path = item["path"].as_str().unwrap_or_default().to_string();
             match item["type"].as_str() {
-                Some("directory") if item["name"] != ".ipynb_checkpoints" => subdirs.push(path),
-                Some("notebook") => {
+                Some("directory") if item["name"] != ".ipynb_checkpoints" && keep(&path, true) => {
+                    subdirs.push(path)
+                }
+                Some("notebook") if keep(&path, false) => {
                     if found.len() == SEARCH_MAX_NOTEBOOKS {
                         return Ok((found, true));
                     }
@@ -2117,18 +2119,18 @@ pub(crate) struct Found {
     pub truncated: bool,
 }
 
-/// Search the notebooks under `dir` that `allowed` lets through, keeping
-/// at most `limit` hits: `notebooks_search` and the host API's
-/// `notebooks.search`.
+/// Search the notebooks under `dir` that `keep` lets through (see
+/// [`notebook_paths`]), keeping at most `limit` hits: `notebooks_search`
+/// and the host API's `notebooks.search`.
 pub(crate) async fn search_notebooks(
     state: &AppState,
     dir: &str,
     words: &[String],
     scope: search::Scope<'_>,
     limit: usize,
-    allowed: impl Fn(&str) -> bool,
+    keep: &(dyn Fn(&str, bool) -> bool + Sync),
 ) -> Result<Found, String> {
-    let (paths, truncated) = notebook_paths(state, dir).await?;
+    let (paths, truncated) = notebook_paths(state, dir, keep).await?;
     let mut found = Found {
         notebooks: Vec::new(),
         total: 0,
@@ -2137,7 +2139,7 @@ pub(crate) async fn search_notebooks(
         truncated,
     };
     let mut shown = 0;
-    for path in paths.iter().filter(|p| allowed(p)) {
+    for path in &paths {
         found.searched += 1;
         let Some(nb) = notebook_for_search(state, path).await else {
             continue;
@@ -2160,6 +2162,9 @@ pub(crate) async fn search_notebooks(
     Ok(found)
 }
 
+/// [`images`] on a blocking thread: drawing an SVG loads the system fonts
+/// the first time and rasterizes up to 1,600 px square, which would hold
+/// up the runtime's other work (under `serve --mcp`, the whole server).
 async fn images_off_runtime(outputs: Vec<Output>) -> Vec<ContentBlock> {
     if outputs.is_empty() {
         return Vec::new();
