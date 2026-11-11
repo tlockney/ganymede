@@ -6,7 +6,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitepress";
-import { groups, uiUnplaced } from "./levels.ts";
+import { type Group, groups, uiUnplaced } from "./levels.ts";
+import { writeLlms } from "./llms.ts";
 import { notesPlugin } from "./notes.ts";
 import { themedImages, writeThemedSvgs } from "./themed.ts";
 
@@ -44,6 +45,16 @@ function titleOf(file: string): string {
   return heading ? heading[1].trim() : path.basename(file, ".md");
 }
 
+// The sidebar's groups, and a page ganymede-ui added that levels.ts
+// doesn't place yet. llms.txt follows the same order.
+const description = "A Jupyter server in Rust for TypeScript notebooks, agent journals, and the Ganymede apps.";
+const sidebarGroups: Group[] = [
+  ...groups((name) => uiPages.includes(name), examplePages),
+  ...(uiExtra.length
+    ? [{ text: "ganymede-ui", level: "guide" as const, items: uiExtra.map((name) => ({ text: titleOf(path.join(uiDir, `${name}.md`)), link: `/ganymede-ui/${name}` })) }]
+    : []),
+];
+
 // Pages link to each other as `install.md`, which VitePress resolves. Links
 // to anything else (crates/, validation/) point at files VitePress doesn't
 // publish, so send them to GitHub. ganymede-ui's pages sit in its docs/,
@@ -65,7 +76,7 @@ function externalHref(href: string, page: string): string | undefined {
 
 export default defineConfig({
   title: "Ganymede",
-  description: "A Jupyter server in Rust for TypeScript notebooks, agent journals, and the Ganymede apps.",
+  description,
   base,
   cleanUrls: true,
   rewrites: { "README.md": "index.md" },
@@ -90,6 +101,19 @@ export default defineConfig({
     },
   ],
   sitemap: { hostname: `${site}/docs/` },
+  // llms.txt and each page's Markdown, beside the HTML (llms.ts). The
+  // Pages workflow also copies llms.txt to the site's root.
+  // The development log is built by notes.ts, not from notes.md alone, so
+  // it isn't listed.
+  buildEnd: (config) =>
+    writeLlms(
+      config.outDir,
+      docsDir,
+      sidebarGroups.map((g) => ({ ...g, items: g.items.filter((p) => p.link !== "/notes") })),
+      `${site}/docs/`,
+      description,
+      externalHref,
+    ),
   // The landing page's icon, from site/, served at the site's root.
   head: [["link", { rel: "icon", href: `${new URL(site).pathname.replace(/\/$/, "")}/favicon.svg`, type: "image/svg+xml" }]],
   markdown: {
@@ -134,17 +158,11 @@ export default defineConfig({
     ],
     // Groups start open, so every page shows without a click, except the
     // background and contributors' groups, which most readers don't need.
-    sidebar: [
-      ...groups((name) => uiPages.includes(name), examplePages).map(({ text, level, items }) => ({
-        text,
-        items,
-        collapsed: level === "background" || level === "contributor",
-      })),
-      // A page ganymede-ui added that levels.ts doesn't place yet.
-      ...(uiExtra.length
-        ? [{ text: "ganymede-ui", collapsed: false, items: uiExtra.map((name) => ({ text: titleOf(path.join(uiDir, `${name}.md`)), link: `/ganymede-ui/${name}` })) }]
-        : []),
-    ],
+    sidebar: sidebarGroups.map(({ text, level, items }) => ({
+      text,
+      items,
+      collapsed: level === "background" || level === "contributor",
+    })),
     outline: [2, 3],
     search: {
       provider: "local",

@@ -4,9 +4,9 @@ Ganymede serves `jupyter_server`'s REST and websocket API, so its
 [REST reference](https://jupyter-server.readthedocs.io/en/latest/developers/rest-api.html)
 and the [messaging docs](https://jupyter-client.readthedocs.io/en/latest/messaging.html)
 apply. This page shows real exchanges, captured from `ganymede serve`
-with ipykernel, so you can see the shapes without running a proxy. Where
-Ganymede adds something `jupyter_server` doesn't have, the example says
-so.
+with ipykernel (the run example with cdp-kernel), so you can see the
+shapes without running a proxy. Where Ganymede adds something
+`jupyter_server` doesn't have, the example says so.
 
 The examples use a server started like this:
 
@@ -329,6 +329,67 @@ a page ends before `last_seq`, ask again. A kernel the
 server runs no process for, an in-process one or one on a gateway, gets
 `{"kernel_id": ..., "lines": [], "last_seq": 0, "reason": "no_process"}`.
 
+## Run a notebook
+
+Ganymede's own route: the notebook runs top to bottom in a fresh kernel
+with `params`, and the answer carries its named results
+([Notebooks as programs](programs.md)). Nothing is written to the
+notebook.
+
+```http
+POST /api/notebooks/run
+Authorization: token tok
+
+{"path": "reports/package-stats.ipynb", "params": {"pkg": "hono"}}
+```
+
+```json
+{"path": "reports/package-stats.ipynb", "status": "ok",
+ "results": {"package": "hono", "latest": "4.13.18", "stable_releases": 415,
+             "first_release": "2021-12-14", "weekly_downloads": 104726612}}
+```
+
+A run that fails after its kernel started is still `200`, with what was
+published before the failure and the error:
+
+```json
+{"path": "reports/package-stats.ipynb", "status": "error", "results": {},
+ "error": "cell 4 failed: TypeError: Cannot convert undefined or null to object"}
+```
+
+A notebook that can't be read is `404` before any kernel starts:
+`{"message": "cannot read reports/missing.ipynb as a notebook", "reason": null}`.
+[Parameters and named results](reference.md#parameters-and-named-results)
+has `timeout`, `save` and every status.
+
+## Grant a notebook access
+
+Ganymede's own route: what a notebook's cells may reach through the
+[host API](host-api.md), set per notebook. `PUT` replaces the notebook's
+own grant; each key it names replaces the server's default (`defaults`,
+from `[host]` in the config).
+
+```http
+PUT /api/host/grants/reports/package-stats.ipynb
+Authorization: token tok
+
+{"read": ["reports"], "run": []}
+```
+
+```json
+{"path": "reports/package-stats.ipynb",
+ "grant": {"read": ["reports"], "run": []},
+ "defaults": {"read": [""], "edit_self": true, "run": []}}
+```
+
+`GET` answers the same shape, and `DELETE` removes the grant
+(`"grant": {}`). A missing notebook is `404`. A server whose
+[file ids](rooms.md#file-ids) live only in memory answers `409` to `PUT`
+and `DELETE` before it looks for the notebook, since the grant wouldn't
+outlive it. [The host API](reference.md#the-host-api) has the keys and
+the rest of the errors; `ganymede grant` does the same from the command
+line.
+
 ## Every route
 
 What `ganymede serve` answers, beyond the examples above:
@@ -349,8 +410,10 @@ What `ganymede serve` answers, beyond the examples above:
   ([Live editing and document rooms](rooms.md)); `jupyter-resource-usage`'s
   `/api/metrics/v1`.
 - Ganymede's own: `/api/kernels/{id}/log`, `/api/notebooks/run`
-  ([Parameters and named results](reference.md#parameters-and-named-results)),
-  `/api/host/grants/{path}` ([The host API](reference.md#the-host-api)),
+  ([Run a notebook](#run-a-notebook),
+  [Parameters and named results](reference.md#parameters-and-named-results)),
+  `/api/host/grants/{path}` ([Grant a notebook access](#grant-a-notebook-access),
+  [The host API](reference.md#the-host-api)),
   and `/mcp` with `--mcp` ([Agents over MCP](mcp.md)).
 - With JupyterLab (`ganymede lab`): the page, `/static/lab`,
   `/lab/extensions/{name}`, and `/lab/api/` `settings`, `workspaces`,

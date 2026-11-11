@@ -120,6 +120,7 @@ export function groups(has: (name: string) => boolean = () => true, examples: Pa
       level: "reference",
       items: [
         { text: "CLI and configuration", link: "/reference" },
+        { text: "MCP tools", link: "/mcp-tools" },
         { text: "The API by example", link: "/api" },
         { text: "Known gaps", link: "/known-gaps" },
         { text: "Roadmap", link: "/roadmap" },
