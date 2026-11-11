@@ -939,7 +939,7 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
     // Always set, `{}` without parameters, so a kernel never inherits a
     // parent run's GANYMEDE_PARAMS (a notebook that runs another).
     let env = vec![(
-        PARAMS_ENV.to_string(),
+        ganymede_engine::nbformat::PARAMS_ENV.to_string(),
         params_env(params.as_ref().unwrap_or(&Default::default()))?,
     )];
     let opts = ganymede_engine::NotebookOptions {
@@ -971,7 +971,7 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
                 continue;
             }
         };
-        record_params(&mut nb, params.as_ref());
+        ganymede_engine::nbformat::record_params(&mut nb, params.as_ref());
         let name = match &args.kernel {
             Some(k) => k.clone(),
             None => match ganymede_engine::notebook_kernel_name(&nb) {
@@ -1117,15 +1117,6 @@ async fn wait_for_stop() {
 
 // ----- files -----------------------------------------------------------------
 
-/// The environment variable that carries a run's parameters to the
-/// kernel: a JSON object. The host passes data and names no language
-/// (#650); cdp-kernel reads it as `jupyter.params`.
-const PARAMS_ENV: &str = "GANYMEDE_PARAMS";
-
-/// Largest `GANYMEDE_PARAMS`: Windows caps a variable at 32,767
-/// characters, and Linux an argument or variable at 128 KiB.
-const PARAMS_MAX: usize = 32_767;
-
 /// `--params-file`, then each `-p NAME=VALUE` over it. `None` when neither
 /// was given: `execute` then passes `{}` and removes an earlier run's
 /// `metadata.ganymede.params`.
@@ -1160,40 +1151,7 @@ fn run_params(
 }
 
 fn params_env(params: &serde_json::Map<String, serde_json::Value>) -> Result<String> {
-    let text = serde_json::to_string(params)?;
-    if text.len() > PARAMS_MAX {
-        bail!(
-            "parameters are {} bytes as JSON, over the {PARAMS_MAX}-byte limit; pass a path to a file instead",
-            text.len()
-        );
-    }
-    Ok(text)
-}
-
-/// Records a run's parameters in `metadata.ganymede.params`, so the
-/// executed notebook says what it ran with; a run without them removes an
-/// earlier run's.
-fn record_params(nb: &mut Notebook, params: Option<&serde_json::Map<String, serde_json::Value>>) {
-    let Some(params) = params else {
-        if let Some(g) = nb
-            .metadata
-            .get_mut("ganymede")
-            .and_then(|g| g.as_object_mut())
-        {
-            if g.remove("params").is_some() && g.is_empty() {
-                nb.metadata.remove("ganymede");
-            }
-        }
-        return;
-    };
-    let ganymede = nb
-        .metadata
-        .entry("ganymede")
-        .or_insert_with(|| serde_json::Value::Object(Default::default()));
-    if !ganymede.is_object() {
-        *ganymede = serde_json::Value::Object(Default::default());
-    }
-    ganymede["params"] = serde_json::Value::Object(params.clone());
+    ganymede_engine::nbformat::params_env(params).map_err(anyhow::Error::msg)
 }
 
 /// `--results`: one JSON line per notebook, with the named results that
