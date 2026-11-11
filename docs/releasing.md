@@ -95,12 +95,11 @@ request doesn't exist yet. If it stops earlier, the branch doesn't
 exist and a rerun from `main` starts over.
 
 Otherwise find the failed `release.yml` run for the release commit's
-push to `main` in the Actions tab. Until the version is tagged, each
-push to `main` is a release run too, so the next merge publishes
-`vX.Y.Z` from its own commit; its notes are still the section
-`scripts/release.sh` wrote. Once the tag exists, pushes to `main` are
-main builds again. Recover from the release workflow itself, depending
-on how far it got.
+push to `main` in the Actions tab. Only the commit that changed the
+version publishes; later pushes to `main` are main builds, so a merge
+after the release commit can't ship under its notes. Recover from the
+release workflow itself, depending on how far it got: rerun its failed
+jobs, or run `tag-release.yml` by hand when the run can't be rerun.
 
 ### A job failed and nothing was published
 
@@ -125,13 +124,14 @@ gh workflow run tag-release.yml --ref main --repo tlockney/ganymede
 
 A build or version check fails for a reason that needs a code change.
 The tag is made only when the release publishes, so there is none yet:
-fix the problem in a pull request to `main`, as usual. Its merge is a
-release run (above) and publishes `vX.Y.Z` from the fixed commit.
+fix the problem in a pull request to `main`, as usual. Its merge doesn't
+change the version, so it is a main build; once it is on `main`, run
+`tag-release.yml` (above), which tags the fixed commit and releases it.
 
 If a tag was made (by `tag-release.yml`) and no GitHub Release exists
 for it, nobody can have installed it, so move it: delete it with
-`git push origin :refs/tags/vX.Y.Z`, fix the problem on `main`, and the
-next push to `main` releases.
+`git push origin :refs/tags/vX.Y.Z`, fix the problem on `main`, and run
+`tag-release.yml` again.
 
 The changelog section stays as `scripts/release.sh` wrote it; the fix
 appears in the next release's notes.

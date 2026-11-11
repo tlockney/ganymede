@@ -10,8 +10,11 @@ publishes, and skips `main-build`.
 
 Two things change with it. A release build must not be cancelled by the
 next push, so release runs leave the shared `main` concurrency group.
-And until the tag exists every push to main is a release run, so a
-failed release is retried by the next merge; the publish step makes
-the tag only if no other run has, and otherwise does nothing (the image
-too), so two runs can't publish the version twice. `tag-release.yml`
+And only the commit that changed the version is a release run (it
+compares `HEAD^`'s workspace version): a merge that lands before the
+release publishes must not ship under notes that don't list it, nor
+drop out of the next release's notes. A failed release is rerun, or
+released from `tag-release.yml` by hand. The publish step makes the tag
+only if no other run has, and otherwise does nothing (the image too),
+so two runs can't publish the version twice. `tag-release.yml`
 stays, by hand only, to release from a tag when a run can't be rerun.

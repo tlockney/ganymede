@@ -2,8 +2,8 @@
 # Prepare a release: bump the workspace version, regenerate CHANGELOG.md
 # from the merged pull requests, and commit "Release X.Y.Z" on a
 # release/vX.Y.Z branch. With --execute it pushes the branch and, with gh,
-# opens an issue and a PR for it. Merging the PR tags vX.Y.Z
-# (tag-release.yml), which publishes the binaries (release.yml).
+# opens an issue and a PR for it. Merging the PR publishes vX.Y.Z from
+# the release commit's push to main (release.yml).
 #
 #   scripts/release.sh minor            # dry run: shows the bump and changelog
 #   scripts/release.sh minor --execute  # commits, pushes release/vX.Y.Z, opens the PR

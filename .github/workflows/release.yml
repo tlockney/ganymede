@@ -56,6 +56,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # HEAD^ too: a release commit is the one that changed the version.
+          fetch-depth: 2
       - id: version
         name: Read the workspace version; a tag must match it
         run: |
@@ -67,9 +69,13 @@ jobs:
           fi
           label=$version display=$version build= release=false
           if [[ "$GITHUB_REF" == refs/heads/main ]]; then
-            # A version with a CHANGELOG.md section and no tag is a release
-            # commit (what tag-release.yml used to look for).
-            if grep -q "^## \[$version\]" CHANGELOG.md &&
+            # A release commit changed the version, has a CHANGELOG.md
+            # section for it, and isn't tagged yet. Only that commit: a later
+            # merge before the tag would ship a change its notes don't list.
+            previous=$(git show HEAD^:Cargo.toml 2> /dev/null |
+              sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' || true)
+            if [[ "$previous" != "$version" ]] &&
+              grep -q "^## \[$version\]" CHANGELOG.md &&
               ! git ls-remote --exit-code --tags origin "refs/tags/v$version" > /dev/null; then
               release=true
               echo "Release commit: publishing v$version"
