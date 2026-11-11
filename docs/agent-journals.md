@@ -32,10 +32,11 @@ docs as examples.
 Agents and people edit the same live document. Three layers make that
 work, each built on a protocol the Jupyter ecosystem already speaks:
 
-- **Agent tools.** `ganymede mcp` is an MCP server, over stdio or
-  streamable HTTP. With no server running it starts one in its own
-  process; with one running it joins it, so a person watching sees the
-  agent's work. [Agents over MCP](mcp.md) has the setup and every tool;
+- **Agent tools.** `ganymede mcp` is an MCP server over stdio. It joins
+  a running `ganymede serve --mcp` whose root holds the current
+  directory, so a person watching sees the agent's work, and otherwise
+  starts a server in its own process. `serve --mcp` also serves the same
+  tools over streamable HTTP. [Agents over MCP](mcp.md) has the setup and every tool;
   [nb-cli](agents.md), a notebook CLI for agents without MCP, works
   against the same server.
 - **Document rooms.** Each open notebook is a yrs CRDT in the format
