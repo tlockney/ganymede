@@ -371,8 +371,8 @@ install the latest build of `main` with `--main`:
 curl -fsSL https://ganymede-server.com/install.sh | sh -s -- --main
 ```
 
-Every push to `main` that changes code builds the release targets and
-replaces the files of the
+Every push to `main` that changes code, other than a release commit,
+builds the release targets and replaces the files of the
 [`main-build`](https://github.com/tlockney/ganymede/releases/tag/main-build)
 prerelease. Its `ganymede --version` names the commit, such as
 `ganymede 0.5.0+main.0123456789ab`. The archives are named
@@ -462,14 +462,20 @@ The `.sha256` files catch a damaged or truncated download. They come
 from the same place as the archive, so they cannot show that the
 archive is the one this repository built. Each release archive also
 carries a signed build provenance attestation, made by the release
-workflow from the tagged commit. With the [GitHub CLI](https://cli.github.com):
+workflow from the commit the release's tag points at. With the
+[GitHub CLI](https://cli.github.com):
 
 ```sh
 gh attestation verify "$NAME.tar.gz" --repo tlockney/ganymede
 ```
 
 It succeeds only for an archive built by `tlockney/ganymede`'s own
-release workflow, and prints the tag and commit it was built from.
+release workflow, and prints the ref and commit it was built from. A
+release may be built from its tag or from its release commit's push to
+`main`, so check the commit: it is the one the tag points at
+(`git rev-parse vX.Y.Z^{commit}` in a clone). A
+[main build](#latest-main-build)'s attestation names a commit no release tag
+points at.
 
 ### In a container
 

@@ -1,19 +1,23 @@
 name: Release
 
-# scripts/release.sh pushes a `v*` tag, which builds the `ganymede` binary
-# for each target, packages it with SHA-256 checksums, and publishes a
-# GitHub Release whose notes are the version's CHANGELOG.md section, with
-# a build provenance attestation per archive, then pushes the container
-# image (container/Dockerfile) to ghcr.io. The release also carries
-# GanymedeFFI.xcframework.zip for the apps (#456). Pull requests that touch the
-# release tooling, and manual runs on other refs, build and package
-# without publishing. docs/releasing.md says what to do when a run fails.
+# Merging a release PR from scripts/release.sh puts a workspace version
+# on main that has a CHANGELOG.md section and no tag. The main push of
+# that commit is the release (#675): it builds the `ganymede` binary for
+# each target, packages it with SHA-256 checksums, tags the commit
+# vX.Y.Z and publishes a GitHub Release whose notes are the version's
+# CHANGELOG.md section, with a build provenance attestation per archive,
+# then pushes the container image (container/Dockerfile) to ghcr.io. The
+# release also carries GanymedeFFI.xcframework.zip for the apps (#456). A
+# run on a `v*` tag (tag-release.yml, to recover) publishes the same way.
+# Pull requests that touch the release tooling, and manual runs on other
+# refs, build and package without publishing. docs/releasing.md says what
+# to do when a run fails.
 #
-# A push to main (or a manual run on main) builds the same archives as
-# ganymede-main-<target> and replaces the assets of the rolling `main-build`
-# prerelease, which `install.sh --main` installs (#343). Prereleases are
-# skipped by /releases/latest, so the plain install still gets the latest
-# release.
+# Any other push to main (or a manual run on main) builds the same
+# archives as ganymede-main-<target> and replaces the assets of the
+# rolling `main-build` prerelease, which `install.sh --main` installs
+# (#343). Prereleases are skipped by /releases/latest, so the plain
+# install still gets the latest release.
 
 on:
   push:
@@ -46,12 +50,18 @@ jobs:
       display: ${{ steps.version.outputs.display }}
       # GANYMEDE_VERSION_BUILD for the build: `main.<commit>` on main.
       build: ${{ steps.version.outputs.build }}
+      # `true` when this main push is a release commit: it publishes vX.Y.Z.
+      release: ${{ steps.version.outputs.release }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # HEAD^ too: a release commit is the one that changed the version.
+          fetch-depth: 2
       - id: version
         name: Read the workspace version; a tag must match it
+        env:
+          BEFORE: ${{ github.event.before }}
         run: |
           version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
           test -n "$version"
@@ -59,16 +69,37 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME does not match workspace version $version"
             exit 1
           fi
-          label=$version display=$version build=
+          label=$version display=$version build= release=false
           if [[ "$GITHUB_REF" == refs/heads/main ]]; then
-            build="main.${GITHUB_SHA::12}"
-            label=main display="$version+$build"
+            # A release commit changed the version, has a CHANGELOG.md
+            # section for it, and isn't tagged yet. Only that commit: a later
+            # merge before the tag would ship a change its notes don't list.
+            # A push compares with what main was before it, so a release PR
+            # merged by rebase with several commits still counts; a manual
+            # run compares with HEAD^.
+            base=HEAD^
+            if [[ "$GITHUB_EVENT_NAME" == push && -n "$BEFORE" && "$BEFORE" != 0000000000000000000000000000000000000000 ]] &&
+              git fetch --quiet --depth=1 origin "$BEFORE" 2> /dev/null; then
+              base=$BEFORE
+            fi
+            previous=$(git show "$base:Cargo.toml" 2> /dev/null |
+              sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' || true)
+            if [[ "$previous" != "$version" ]] &&
+              grep -q "^## \[$version\]" CHANGELOG.md &&
+              ! git ls-remote --exit-code --tags origin "refs/tags/v$version" > /dev/null; then
+              release=true
+              echo "Release commit: publishing v$version"
+            else
+              build="main.${GITHUB_SHA::12}"
+              label=main display="$version+$build"
+            fi
           fi
           {
             echo "version=$version"
             echo "label=$label"
             echo "display=$display"
             echo "build=$build"
+            echo "release=$release"
           } >> "$GITHUB_OUTPUT"
 
   build:
@@ -84,9 +115,11 @@ jobs:
           - { target: x86_64-pc-windows-msvc, os: windows-latest }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    # A newer main build cancels an older one; a release build is never
+    # cancelled.
     concurrency:
-      group: ${{ github.workflow }}-build-${{ github.ref }}-${{ matrix.target }}-${{ github.ref == 'refs/heads/main' && 'main' || github.run_id }}
-      cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
+      group: ${{ github.workflow }}-build-${{ github.ref }}-${{ matrix.target }}-${{ github.ref == 'refs/heads/main' && needs.version.outputs.release != 'true' && 'main' || github.run_id }}
+      cancel-in-progress: ${{ github.ref == 'refs/heads/main' && needs.version.outputs.release != 'true' }}
     env:
       NAME: ganymede-${{ needs.version.outputs.label }}-${{ matrix.target }}
       TARGET: ${{ matrix.target }}
@@ -200,8 +233,8 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     concurrency:
-      group: ${{ github.workflow }}-xcframework-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && 'main' || github.run_id }}
-      cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
+      group: ${{ github.workflow }}-xcframework-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && needs.version.outputs.release != 'true' && 'main' || github.run_id }}
+      cancel-in-progress: ${{ github.ref == 'refs/heads/main' && needs.version.outputs.release != 'true' }}
     env:
       GANYMEDE_VERSION_BUILD: ${{ needs.version.outputs.build }}
     steps:
@@ -243,10 +276,18 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' || needs.version.outputs.release == 'true'
     needs: [version, build, xcframework]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Two release runs of one version (a push landed before the first
+    # published) publish one at a time; the second finds the tag.
+    concurrency:
+      group: ${{ github.workflow }}-publish-${{ needs.version.outputs.version }}
+      cancel-in-progress: false
+    outputs:
+      # `true` when the tag was there already and nothing was published.
+      skipped: ${{ steps.publish.outputs.skipped }}
     permissions:
       contents: write
       # Dispatch pages.yml to redeploy the site.
@@ -269,9 +310,9 @@ jobs:
           cat ./*.sha256 > SHA256SUMS
           sha256sum -c SHA256SUMS
       # A signed SLSA provenance statement per archive: this repository,
-      # workflow, tag, and commit built it. The checksums only catch a
-      # damaged download; `gh attestation verify <archive> --repo
-      # tlockney/ganymede` checks this (docs/install.md).
+      # workflow, ref (main, or the tag), and commit built it. The
+      # checksums only catch a damaged download; `gh attestation verify
+      # <archive> --repo tlockney/ganymede` checks this (docs/install.md).
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
@@ -288,22 +329,42 @@ jobs:
           fi
           cat "$RUNNER_TEMP/notes.md"
       - name: Publish the release
+        id: publish
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: v${{ needs.version.outputs.version }}
         run: |
           flags=()
           [[ "$TAG" == *-* ]] && flags+=(--prerelease)
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            flags+=(--verify-tag)
+          else
+            # A main push: the release tags this commit. A tag made with
+            # the workflow token starts no other workflow.
+            # An existing tag is fine only on this commit with no release
+            # yet: a rerun after the release was deleted to retry
+            # (docs/releasing.md). Otherwise another run published it.
+            if tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha 2> /dev/null); then
+              if [[ "$tagged" != "$GITHUB_SHA" ]] || gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+                echo "::notice::$TAG exists on ${tagged::12} and another run published it; nothing to do"
+                echo "skipped=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              flags+=(--verify-tag)
+            else
+              flags+=(--target "$GITHUB_SHA")
+            fi
+          fi
           gh release create "$TAG" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "$TAG" \
             --notes-file "$RUNNER_TEMP/notes.md" \
-            --verify-tag \
             "${flags[@]}"
       # Redeploy the site from main (pages.yml) now that this release's
       # binaries are downloadable, so it carries the release's version and
       # changelog.
       - name: Redeploy the site
+        if: steps.publish.outputs.skipped != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main
@@ -317,7 +378,7 @@ jobs:
   # files, and then the tag lags; the notes and the attestation name the
   # commit either way.
   main-build:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && needs.version.outputs.release != 'true'
     needs: [version, build, xcframework]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -379,7 +440,7 @@ jobs:
   # a release that isn't a prerelease, `latest`, for amd64 and arm64. The
   # amd64 build is smoke-tested before anything is pushed.
   image:
-    if: github.ref_type == 'tag'
+    if: (github.ref_type == 'tag' || needs.version.outputs.release == 'true') && needs.release.outputs.skipped != 'true'
     needs: [version, release]
     runs-on: ubuntu-latest
     timeout-minutes: 45

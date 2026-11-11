@@ -55,11 +55,15 @@ latest.
    doc there when it starts naming the release. The script also refreshes
    `e2e/wasm-smoke/Cargo.lock`, a separate workspace's lockfile that
    names each crate's version.
-2. Merging that pull request (with CI green; branch protection on `main`
-   is what guarantees this, since `tag-release.yml` does not check CI
-   itself) runs `tag-release.yml`. It sees a workspace version that has a
-   `CHANGELOG.md` section and no tag, tags the merge commit `vX.Y.Z`, and
-   starts `release.yml` on the tag.
+2. Merging that pull request with a squash merge (with CI green; branch
+   protection on `main` is what guarantees this, since `release.yml`
+   does not check CI itself) starts `release.yml` on the main push. A
+   squash makes the release one commit, which both `release.yml` and
+   `tag-release.yml` recognize. Its `version` job sees
+   a workspace version that has a `CHANGELOG.md` section and no tag, so
+   this run is the release: it builds the commit once, as `X.Y.Z` rather
+   than a main build, and tags it `vX.Y.Z` when it publishes. It does
+   not update `main-build`; the next push to `main` does.
 3. `release.yml` builds the five targets, checks that each binary reports
    the version (x86_64 macOS under Rosetta), packages them with
    `THIRD-PARTY-NOTICES` and SHA-256 checksums, attests their build
@@ -93,7 +97,7 @@ app screenshots ([Development](development.md#app-screenshots)).
 
 ## Main builds
 
-Besides releases, `release.yml` runs on every push to `main` that
+Besides release commits, `release.yml` runs on every push to `main` that
 changes more than docs, and on a manual run on `main`. It builds the
 same five targets with `GANYMEDE_VERSION_BUILD=main.<commit>`, so
 `ganymede --version` prints `X.Y.Z+main.<commit>`, packages them as
@@ -118,15 +122,12 @@ bump, pushes the branch, and opens whichever of the issue and pull
 request doesn't exist yet. If it stops earlier, the branch doesn't
 exist and a rerun from `main` starts over.
 
-If `tag-release.yml` pushed the tag but failed to start `release.yml`,
-rerun it: with the tag on the merge commit and no release run for it,
-it starts the release.
-
-Otherwise find the failed `release.yml` run under the tag in the
-Actions tab. Once it has run, pushing to `main` or rerunning
-`tag-release.yml` does nothing ("vX.Y.Z exists and release.yml has run
-for it"). Recover from the release workflow itself, depending on how
-far it got.
+Otherwise find the failed `release.yml` run for the release commit's
+push to `main` in the Actions tab. Only the commit that changed the
+version publishes; later pushes to `main` are main builds, so a merge
+after the release commit can't ship under its notes. Recover from the
+release workflow itself, depending on how far it got: rerun its failed
+jobs, or run `tag-release.yml` by hand when the run can't be rerun.
 
 ### A job failed and nothing was published
 
@@ -134,24 +135,40 @@ A flaky runner, a network error, or a download that timed out: the code
 is fine. The XCFramework job counts too: the release and `main-build`
 wait for it as well as for the CLI targets, so a failed `xcframework`
 job holds back the whole release until it is rerun. Rerun the failed
-jobs from the run's page, or start a fresh run on the tag:
+jobs from the run's page:
 
 ```sh
 gh run rerun <run-id> --failed --repo tlockney/ganymede
-# or
-gh workflow run release.yml --ref vX.Y.Z --repo tlockney/ganymede
 ```
 
-### The tagged commit cannot be released
+If the run can't be rerun, release from a tag with `tag-release.yml`.
+It tags the release commit (the last commit on `main` that set the
+version), not `main`'s head, so merges since then stay out of the
+release, and starts `release.yml` on the tag:
 
-A build or version check fails for a reason that needs a code change. If
-no GitHub Release exists for the tag, nobody can have installed it, so
-move the tag:
+```sh
+gh workflow run tag-release.yml --ref main --repo tlockney/ganymede
+```
 
-1. Delete the tag: `git push origin :refs/tags/vX.Y.Z`.
-2. Fix the problem in a pull request to `main`, as usual.
-3. Retag the new head of `main` and start the release:
-   `gh workflow run tag-release.yml --ref main --repo tlockney/ganymede`.
+### The release commit cannot be released
+
+A build or version check fails for a reason that needs a code change.
+The tag is made only when the release publishes, so there is none yet:
+fix the problem in a pull request to `main`, as usual. Its merge doesn't
+change the version, so it is a main build; once it is on `main`, run
+`tag-release.yml` with that merge as the commit to tag:
+
+```sh
+gh workflow run tag-release.yml --ref main -f commit=<merge sha> --repo tlockney/ganymede
+```
+
+Anything merged between the release commit and the fix ships in this
+release without a line in its notes, so hold other merges until then.
+
+If a tag was made (by `tag-release.yml`) and no GitHub Release exists
+for it, nobody can have installed it, so move it: delete it with
+`git push origin :refs/tags/vX.Y.Z`, fix the problem on `main`, and run
+`tag-release.yml` again with the fix's merge as `commit`.
 
 The changelog section stays as `scripts/release.sh` wrote it; the fix
 appears in the next release's notes.
@@ -182,5 +199,9 @@ gh run rerun <run-id> --failed --repo tlockney/ganymede
 ```
 
 A rerun of only the failed job reuses the archives the build jobs already
-uploaded, so it attests the same files again, which is harmless. A fresh
-run rebuilds them, and the new archives get their own attestations.
+uploaded, so it attests the same files again, which is harmless. For a
+release published from the main push, rerun only the failed jobs: a
+fresh run of every job finds the tag and becomes a main build: it
+publishes no release and replaces `main-build` with a build of the
+release commit. To rebuild instead, run `tag-release.yml`, which releases from
+the tag.

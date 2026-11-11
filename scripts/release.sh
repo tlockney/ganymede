@@ -4,8 +4,7 @@
 # to their latest releases (scripts/release-pins.sh), and commit
 # "Release X.Y.Z" on a release/vX.Y.Z branch. With --execute it pushes
 # the branch and, with gh, opens an issue and a PR for it. Merging the PR
-# tags vX.Y.Z (tag-release.yml), which publishes the binaries
-# (release.yml).
+# publishes vX.Y.Z from the release commit's push to main (release.yml).
 #
 #   scripts/release.sh minor            # dry run: shows the bump and changelog
 #   scripts/release.sh minor --execute  # commits, pushes release/vX.Y.Z, opens the PR
@@ -172,6 +171,6 @@ fi
 gh pr create --base main --head "$branch" --title "Release v$version" \
   --body "Closes #${issue##*/}
 
-Bumps the workspace to $version and updates CHANGELOG.md. Merging tags v$version, which publishes the release.
+Bumps the workspace to $version and updates CHANGELOG.md. Squash-merge it: the merge's push to main publishes v$version and tags it.
 
 $(git log -1 --format=%b)${unreleased_body:-}"
