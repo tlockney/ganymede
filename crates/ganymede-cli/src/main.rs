@@ -11,6 +11,7 @@ mod lab_start;
 mod mcp;
 mod render;
 mod ui;
+mod update;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -246,6 +247,13 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Replace this binary with the latest release, as install.sh does.
+    ///
+    /// Downloads this platform's archive over HTTPS, checks its SHA-256,
+    /// runs the new binary before it replaces anything, and leaves
+    /// cdp-kernel, JupyterLab and ganymede-ui as they are.
+    /// `GANYMEDE_DOWNLOAD_BASE` points at a mirror of the release downloads.
+    Update(update::UpdateArgs),
     /// Panic, to check crash reporting. Debug builds only.
     #[cfg(debug_assertions)]
     #[command(hide = true)]
@@ -769,6 +777,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Info { json } => info::run(&engine, &cli.kernelspec_root, json),
+        Cmd::Update(args) => tokio::task::spawn_blocking(move || update::run(args)).await?,
         #[cfg(debug_assertions)]
         Cmd::DebugPanic => panic!("ganymede debug-panic: a test crash"),
     }

@@ -47,6 +47,10 @@ uuid.workspace = true
 # the environment) and the wheel's zip format, all in Rust.
 ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier", "json"] }
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# `ganymede update`: the release's .tar.gz, gunzipped with the flate2 (and
+# zlib-rs backend) zip already uses. No default features: no xattrs.
+tar = { version = "0.4", default-features = false }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 # `crash-reporting`: panics and errors to Sentry over the ureq/rustls stack
 # already used above. No default features: no breadcrumbs from logs, no
 # release-health sessions. `debug-images` lists the loaded images once at

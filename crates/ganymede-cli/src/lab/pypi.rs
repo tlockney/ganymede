@@ -249,7 +249,7 @@ pub fn save_checked(
     out.flush()?;
     let got = hex::encode(hash.finalize());
     if !got.eq_ignore_ascii_case(sha256) {
-        bail!("sha256 is {got}, PyPI lists {sha256}");
+        bail!("sha256 is {got}, expected {sha256}");
     }
     Ok(())
 }
@@ -988,7 +988,7 @@ mod tests {
         assert_eq!(out, body);
 
         let err = save_checked(&body[..], &mut Vec::new(), 100, "00").unwrap_err();
-        assert!(err.to_string().contains("PyPI lists 00"), "{err}");
+        assert!(err.to_string().contains("expected 00"), "{err}");
 
         let err = save_checked(&body[..], &mut Vec::new(), 4, &sha).unwrap_err();
         assert!(err.to_string().contains("4 bytes allowed"), "{err}");
