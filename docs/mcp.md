@@ -263,16 +263,20 @@ notebook's content:
 - cell sources and outputs, and no metadata beyond the kernel's name and
   who kept the journal: no provenance history, ids or signatures
 - the server root's absolute path becomes `.`, the home directory `~`,
-  and the token `[token]`, wherever they appear
-- no network requests: images are embedded, and a Markdown image from
-  elsewhere becomes a link
+  and the token `[token]`, wherever they stand as a whole name (not
+  `/home/tommy` for `/home/tom`), each directory as given and resolved
+- no network requests: images are embedded, a Markdown image from
+  elsewhere becomes a link, and HTML outputs run under a policy that
+  loads nothing but their own `data:` images and inline styles
 - no script from the notebook: SVG goes in as an image, HTML output in a
   frame that can't run scripts, raw HTML in Markdown as text, and an
   output that needs JavaScript to show (Vega-Lite, widgets) as another
   entry in its bundle or a note that it was left out
 
 The page goes to `published/<name>.html` beside the notebook, or to
-`out` (a path under the root ending in `.html`); `byline` sets the line
+`out` (a path under the root ending in `.html`). It replaces an earlier
+published page there, but another file only with `overwrite: true`.
+`byline` sets the line
 under the title (default: today's date). It runs nothing, so run the
 notebook first if its outputs may be stale. Not in read-only mode.
 

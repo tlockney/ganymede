@@ -6313,7 +6313,47 @@ async fn mcp_notebook_publish_saves_a_page() {
     let page = std::fs::read_to_string(dir.path().join("site/q.html")).unwrap();
     assert!(!page.contains("load()"));
 
+    // An earlier page is replaced; another HTML file only with overwrite.
+    mcp_text(
+        &mcp_tool(
+            &app,
+            &sid,
+            "notebook_publish",
+            json!({"path": "journal/q.ipynb"}),
+        )
+        .await,
+    );
+    std::fs::write(dir.path().join("index.html"), "<p>mine</p>").unwrap();
+    let v = mcp_tool(
+        &app,
+        &sid,
+        "notebook_publish",
+        json!({"path": "journal/q.ipynb", "out": "index.html"}),
+    )
+    .await;
+    assert!(v.to_string().contains("overwrite: true"), "{v}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("index.html")).unwrap(),
+        "<p>mine</p>"
+    );
+    mcp_text(
+        &mcp_tool(
+            &app,
+            &sid,
+            "notebook_publish",
+            json!({"path": "journal/q.ipynb", "out": "index.html", "overwrite": true}),
+        )
+        .await,
+    );
+    assert!(std::fs::read_to_string(dir.path().join("index.html"))
+        .unwrap()
+        .contains("<h1>Quakes</h1>"));
+
     for (args, want) in [
+        (
+            json!({"path": "journal/q.ipynb", "out": "a/.HTML"}),
+            "ending in .html",
+        ),
         (
             json!({"path": "journal/q.ipynb", "out": "journal/q.ipynb"}),
             "ending in .html",

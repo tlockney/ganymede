@@ -56,6 +56,10 @@ impl std::str::FromStr for CodeMode {
     }
 }
 
+/// How a page [`to_html`] made begins its generator tag, so a tool can
+/// tell such a page from another HTML file before replacing it.
+pub const HTML_GENERATOR_MARK: &str = "<meta name=\"generator\" content=\"Ganymede ";
+
 /// Options for [`to_html`].
 #[derive(Debug, Clone, Default)]
 pub struct HtmlOptions {
@@ -108,6 +112,8 @@ struct Page<'a> {
     /// Whether any cell carries agent provenance: then cells without it
     /// were written by a person, and are marked.
     journal: bool,
+    /// Whether the page marks any cell as a person's.
+    person: bool,
     language: String,
     out: String,
     toc: Vec<(String, String)>,
@@ -120,7 +126,7 @@ impl<'a> Page<'a> {
         let mut redact: Vec<(&str, &str)> = opts
             .redact
             .iter()
-            .filter(|(t, _)| !t.is_empty())
+            .filter(|(t, _)| !is_root_like(t))
             .map(|(t, r)| (t.as_str(), r.as_str()))
             .collect();
         redact.sort_by_key(|(t, _)| std::cmp::Reverse(t.len()));
@@ -141,6 +147,7 @@ impl<'a> Page<'a> {
             opts,
             redact,
             journal: nb.cells.iter().any(|c| agent(c).is_some()),
+            person: false,
             language,
             out: String::new(),
             toc: Vec::new(),
@@ -154,7 +161,7 @@ impl<'a> Page<'a> {
         let mut out = Cow::Borrowed(s);
         for (text, with) in &self.redact {
             if out.contains(text) {
-                out = Cow::Owned(out.replace(text, with));
+                out = Cow::Owned(replace_bounded(&out, text, with));
             }
         }
         out
@@ -182,7 +189,13 @@ impl<'a> Page<'a> {
                         continue;
                     }
                     let html = self.markdown(&source, true);
-                    let class = self.cell_class("note", cell);
+                    // The title cell's rest is the notebook's own lead,
+                    // whoever made the cell.
+                    let class = if index == 0 && title.is_some() {
+                        "cell note".to_owned()
+                    } else {
+                        self.cell_class("note", cell)
+                    };
                     self.out
                         .push_str(&format!("<section class=\"{class}\">{html}</section>\n"));
                 }
@@ -252,14 +265,17 @@ impl<'a> Page<'a> {
 
     /// `cell <kind>`, plus `by-person` for a journal cell a person wrote
     /// and `recorded` for a step that ran outside the kernel.
-    fn cell_class(&self, kind: &str, cell: &Cell) -> String {
+    fn cell_class(&mut self, kind: &str, cell: &Cell) -> String {
         let mut class = format!("cell {kind}");
         match agent(cell) {
             Some(a) if a.get("mode").and_then(Value::as_str) == Some("recorded") => {
                 class.push_str(" recorded")
             }
             Some(_) => {}
-            None if self.journal => class.push_str(" by-person"),
+            None if self.journal => {
+                self.person = true;
+                class.push_str(" by-person")
+            }
             None => {}
         }
         class
@@ -376,17 +392,18 @@ impl<'a> Page<'a> {
     /// for cells (`sections`), headings given ids and listed in the
     /// contents. Headings start at `<h2>`, under the page title.
     fn markdown(&mut self, source: &str, sections: bool) -> String {
-        let options = Options::ENABLE_TABLES
-            | Options::ENABLE_STRIKETHROUGH
-            | Options::ENABLE_TASKLISTS
-            | Options::ENABLE_FOOTNOTES;
+        let options =
+            Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
         let mut events: Vec<Event> = Vec::new();
         // For each open image: whether it was turned into a link.
         let mut images: Vec<bool> = Vec::new();
         let mut heading: Option<(usize, String)> = None;
         for event in Parser::new_ext(source, options) {
             let event = match event {
-                Event::Html(h) | Event::InlineHtml(h) => Event::Text(h),
+                Event::Html(h) | Event::InlineHtml(h) => match inline_img(&h) {
+                    Some(img) => Event::InlineHtml(CowStr::from(img)),
+                    None => Event::Text(h),
+                },
                 Event::Start(Tag::Image {
                     link_type,
                     dest_url,
@@ -509,12 +526,7 @@ impl<'a> Page<'a> {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        let person = self.journal
-            && nb
-                .cells
-                .iter()
-                .skip(1)
-                .any(|c| agent(c).is_none() && !matches!(c, Cell::Unknown(_)));
+        let person = self.person;
         let mut meta: Vec<String> = Vec::new();
         if let Some(byline) = &self.opts.byline {
             meta.push(esc(byline));
@@ -561,7 +573,7 @@ impl<'a> Page<'a> {
         format!(
             "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
              <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-             <meta name=\"generator\" content=\"Ganymede {version}\">\n\
+             {HTML_GENERATOR_MARK}{version}\">\n\
              <title>{title_text}</title>\n<style>{CSS}</style>\n</head>\n<body>\n\
              <div class=\"layout{has_toc}\">\n{toc}\n<main>\n<header class=\"masthead\">\n\
              <h1>{title_html}</h1>\n{meta}\n{legend}\n</header>\n<article>\n{body}</article>\n\
@@ -578,7 +590,8 @@ impl<'a> Page<'a> {
 
     /// One line of Markdown as inline HTML, for the title.
     fn inline_markdown(&self, text: &str) -> String {
-        let events = Parser::new(text).filter_map(|e| match e {
+        let text = escape_block_start(text);
+        let events = Parser::new(&text).filter_map(|e| match e {
             Event::Text(t) => Some(Event::Text(t)),
             Event::Code(t) => Some(Event::Code(t)),
             Event::Html(h) | Event::InlineHtml(h) => Some(Event::Text(h)),
@@ -603,6 +616,54 @@ fn agent(cell: &Cell) -> Option<&Map<String, Value>> {
     metadata.get("ganymede")?.get("agent")?.as_object()
 }
 
+/// Whether a redaction would rewrite text it shouldn't: empty, or a
+/// filesystem root such as `/`, `C:\\` or `\\`, which every path contains.
+fn is_root_like(text: &str) -> bool {
+    let trimmed = text.trim_end_matches(['/', '\\']);
+    trimmed.is_empty() || (trimmed.len() == 2 && trimmed.ends_with(':'))
+}
+
+/// Whether `c` can continue a file or directory name, so a match that
+/// it follows or precedes is part of a longer name.
+fn name_char(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '_' | '-')
+}
+
+/// `text` replaced by `with` wherever it stands on its own: not inside a
+/// longer name (`/home/tom` in `/home/tommy`, `/srv/nb` in
+/// `/srv/nb-old`). A `.` after it ends the match only when no name
+/// character follows the dot, so a sentence can end on the path but
+/// `/srv/nb.bak` is left alone.
+fn replace_bounded(s: &str, text: &str, with: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    let mut prev: Option<char> = None;
+    while let Some(at) = rest.find(text) {
+        let before = rest[..at]
+            .chars()
+            .next_back()
+            .or(if at == 0 { prev } else { None });
+        let after = &rest[at + text.len()..];
+        let mut next = after.chars();
+        let ends = match next.next() {
+            None => true,
+            Some('.') => !next.next().is_some_and(name_char),
+            Some(c) => !name_char(c),
+        };
+        let starts = !before.is_some_and(name_char) || text.starts_with(|c: char| !name_char(c));
+        out.push_str(&rest[..at]);
+        if ends && starts {
+            out.push_str(with);
+        } else {
+            out.push_str(text);
+        }
+        prev = text.chars().next_back();
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
 /// A raw cell's target MIME type.
 fn raw_mimetype(metadata: &Map<String, Value>) -> String {
     metadata
@@ -618,12 +679,26 @@ fn raw_mimetype(metadata: &Map<String, Value>) -> String {
 fn split_title(source: &str) -> Option<(String, String)> {
     let trimmed = source.trim_start();
     let (first, rest) = trimmed.split_once('\n').unwrap_or((trimmed, ""));
-    let title = first
-        .strip_prefix("# ")?
-        .trim()
-        .trim_end_matches('#')
-        .trim();
+    let mut title = first.strip_prefix("# ")?.trim();
+    // A closing run of `#` goes only after a space, as CommonMark's.
+    let closed = title.trim_end_matches('#');
+    if closed.len() < title.len() && (closed.is_empty() || closed.ends_with(' ')) {
+        title = closed.trim_end();
+    }
     (!title.is_empty()).then(|| (title.to_owned(), rest.to_owned()))
+}
+
+/// A line with what would start a block (`1. `, `- `, `> `, `#`) escaped,
+/// so it parses as one inline paragraph.
+fn escape_block_start(text: &str) -> String {
+    let digits = text.chars().take_while(char::is_ascii_digit).count();
+    if digits > 0 && text[digits..].starts_with(['.', ')']) {
+        return format!("{}\\{}", &text[..digits], &text[digits..]);
+    }
+    if text.starts_with(['-', '+', '*', '>', '#', '=', '|']) {
+        return format!("\\{text}");
+    }
+    text.to_owned()
 }
 
 /// The title as plain text, for `<title>`.
@@ -705,7 +780,7 @@ fn pre(class: &str, text: &str) -> String {
 /// frame runs no script of its own to use it.
 fn frame(html: &str) -> String {
     let doc = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><style>{FRAME_CSS}</style></head><body>{html}</body></html>"
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"{FRAME_CSP}\"><style>{FRAME_CSS}</style></head><body>{html}</body></html>"
     );
     format!(
         "<iframe class=\"frame\" sandbox=\"allow-same-origin\" referrerpolicy=\"no-referrer\" title=\"Output\" srcdoc=\"{}\"></iframe>",
@@ -718,14 +793,55 @@ fn frame(html: &str) -> String {
 fn is_inline_image(url: &str) -> bool {
     let lower = url.trim().to_ascii_lowercase();
     [
-        "data:image/png;",
-        "data:image/jpeg;",
-        "data:image/gif;",
-        "data:image/webp;",
-        "data:image/svg+xml;",
+        "data:image/png",
+        "data:image/jpeg",
+        "data:image/gif",
+        "data:image/webp",
+        "data:image/svg+xml",
     ]
     .iter()
-    .any(|p| lower.starts_with(p))
+    .any(|p| {
+        lower
+            .strip_prefix(p)
+            .is_some_and(|r| r.starts_with([';', ',']))
+    })
+}
+
+/// A raw `<img>` tag whose `src` is an inline image (a cell attachment,
+/// after its `attachment:` link was pointed at its data), as a tag of
+/// the page's own making: only `src` and `alt` are kept. Any other raw
+/// HTML is shown as text.
+fn inline_img(html: &str) -> Option<String> {
+    let tag = html.trim();
+    if !tag.get(..4)?.eq_ignore_ascii_case("<img") || !tag.ends_with('>') || tag[1..].contains('<')
+    {
+        return None;
+    }
+    let attr = |name: &str| -> Option<String> {
+        let lower = tag.to_ascii_lowercase();
+        let mut from = 0;
+        while let Some(i) = lower[from..].find(name) {
+            let at = from + i;
+            from = at + name.len();
+            if !lower[..at].ends_with(char::is_whitespace) {
+                continue;
+            }
+            let rest = tag[at + name.len()..]
+                .trim_start()
+                .strip_prefix('=')?
+                .trim_start();
+            let quote = rest.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+            let value = &rest[1..];
+            return Some(value[..value.find(quote)?].to_owned());
+        }
+        None
+    };
+    let src = attr("src")?;
+    if !is_inline_image(&src) {
+        return None;
+    }
+    let alt = attr("alt").unwrap_or_default();
+    Some(format!("<img src=\"{}\" alt=\"{}\">", esc(&src), esc(&alt)))
 }
 
 /// A link target, or `#` when its scheme could run code (`javascript:`)
@@ -766,8 +882,13 @@ fn esc(text: &str) -> String {
     out
 }
 
+/// The policy inside output frames, set before the output so a policy the
+/// output adds can only narrow it: nothing loads from anywhere but the
+/// frame's own `data:` images and inline styles, and no form submits.
+const FRAME_CSP: &str = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; form-action 'none'";
+
 /// Sizes each output frame to its content.
-const SCRIPT: &str = "for(const f of document.querySelectorAll('iframe.frame')){const fit=()=>{try{const d=f.contentDocument;if(d&&d.documentElement){f.style.height=d.documentElement.scrollHeight+'px';}}catch(e){}};f.addEventListener('load',fit);fit();}";
+const SCRIPT: &str = "for(const f of document.querySelectorAll('iframe.frame')){const fit=()=>{try{const d=f.contentDocument;if(d&&d.documentElement){f.style.height=Math.ceil(d.body.getBoundingClientRect().height+4)+'px';}}catch(e){}};f.addEventListener('load',fit);fit();}";
 
 /// The style inside output frames: tables as the page sets them.
 const FRAME_CSS: &str = "\
@@ -1117,6 +1238,99 @@ mod tests {
         );
         let full = "<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
         assert_eq!(standalone_svg(full), full);
+    }
+
+    #[test]
+    fn html_output_frames_load_nothing() {
+        let n = nb(
+            json!([{"cell_type": "code", "metadata": {}, "execution_count": 1, "source": "x",
+            "outputs": [{"output_type": "display_data", "metadata": {},
+                "data": {"text/html": "<img src=\"https://tracker.example/p.gif\">"}}]}]),
+        );
+        let page = html(&n, &HtmlOptions::default());
+        let csp = format!("content=&quot;{FRAME_CSP}&quot;");
+        let at_csp = page.find(&csp.replace('\'', "&#39;")).expect("frame CSP");
+        let at_output = page.find("tracker.example").unwrap();
+        assert!(at_csp < at_output, "the policy comes before the output");
+        assert!(FRAME_CSP.starts_with("default-src 'none'; img-src data:;"));
+    }
+
+    #[test]
+    fn redaction_keeps_to_whole_names() {
+        assert_eq!(
+            replace_bounded(
+                "/home/tom/a /home/tommy/b /home/tom. /home/tom.bak x/home/tom",
+                "/home/tom",
+                "~"
+            ),
+            "~/a /home/tommy/b ~. /home/tom.bak x~"
+        );
+        assert_eq!(
+            replace_bounded("tok123 xtok1234", "tok123", "[t]"),
+            "[t] xtok1234"
+        );
+        for root in ["/", "//", "C:\\", "\\", ""] {
+            assert!(is_root_like(root), "{root}");
+        }
+        assert!(!is_root_like("/srv"));
+        let n =
+            nb(json!([{"cell_type": "markdown", "metadata": {}, "source": "See https://x.org/a"}]));
+        let page = html(
+            &n,
+            &HtmlOptions {
+                redact: vec![("/".into(), ".".into())],
+                ..Default::default()
+            },
+        );
+        assert!(page.contains("https://x.org/a"));
+    }
+
+    #[test]
+    fn titles_keep_their_text() {
+        for (src, want) in [
+            ("# 1. Setup", "<h1>1. Setup</h1>"),
+            ("# 2024) Results", "<h1>2024) Results</h1>"),
+            ("# - draft", "<h1>- draft</h1>"),
+            ("# Intro to C#", "<h1>Intro to C#</h1>"),
+            ("# Closed ##", "<h1>Closed</h1>"),
+        ] {
+            let n = nb(json!([{"cell_type": "markdown", "metadata": {}, "source": src}]));
+            let page = html(&n, &HtmlOptions::default());
+            assert!(
+                page.contains(want),
+                "{src}: {}",
+                &page[page.find("<h1>").unwrap()..][..60]
+            );
+        }
+    }
+
+    #[test]
+    fn raw_img_attachments_and_data_svg() {
+        let n = nb(json!([{"cell_type": "markdown", "metadata": {}, "source":
+            "<img src=\"attachment:a.png\" width=\"40\" onerror=\"x()\">\n\n![s](data:image/svg+xml,%3Csvg%3E)\n\n[^1] footnote",
+            "attachments": {"a.png": {"image/png": "iVBORw0KGgo="}}}]));
+        let page = html(&n, &HtmlOptions::default());
+        assert!(
+            page.contains("<img src=\"data:image/png;base64,iVBORw0KGgo=\" alt=\"\">"),
+            "{page}"
+        );
+        assert!(!page.contains("onerror"));
+        assert!(page.contains("<img src=\"data:image/svg+xml,%3Csvg%3E\""));
+        assert!(!page.contains("footnote-definition") && !page.contains("id=\"1\""));
+    }
+
+    #[test]
+    fn person_mark_follows_shown_cells() {
+        // An empty person cell and the title cell's own text mark nothing.
+        let n = nb(json!([
+            {"cell_type": "markdown", "metadata": {}, "source": "# T\n\nLead."},
+            {"cell_type": "markdown", "metadata": agent_meta("note"), "source": "Note."},
+            {"cell_type": "markdown", "metadata": {}, "source": "  "},
+        ]));
+        let page = html(&n, &HtmlOptions::default());
+        assert!(!page.contains("by-person\""));
+        assert!(!page.contains("a person"));
+        assert!(page.contains("Journal kept by claude-code<"));
     }
 
     #[test]

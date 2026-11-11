@@ -56,3 +56,19 @@ Served from `/nbconvert/html/`, the page runs under the files CSP
 (`sandbox allow-scripts`), whose opaque origin stops the frame-sizing
 script. HTML outputs then show at a fixed height with a scrollbar. The
 downloaded or hosted file is not affected.
+
+The independent review found that the frames stopped scripts but not
+fetches: an HTML output's `<img src="https://…">` or stylesheet still
+loaded in every reader's browser. Each frame's document now starts with
+a `Content-Security-Policy` meta (`default-src 'none'; img-src data:;
+style-src 'unsafe-inline'`), ahead of the output, so a policy the output
+adds can only narrow it. The page itself has no policy, since a host such
+as the artifact viewer may add its own scripts. Redaction now matches
+whole names only, and skips a root such as `/` (a notebook directory or
+server root of `/` had turned every `/` into `.`). The CLI and server
+share one helper, so both redact each directory as given and resolved.
+`notebook_publish` replaces only an earlier published page, recognized by
+its generator tag, unless `overwrite: true`. The title is parsed as
+inline text, so `# 1. Setup` keeps its number. Footnotes are off, since
+each cell renders alone and their ids would collide. A raw `<img>` that
+shows an attachment becomes an image tag of the page's own making.

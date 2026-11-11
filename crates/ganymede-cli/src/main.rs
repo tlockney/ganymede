@@ -1301,16 +1301,10 @@ fn publish(
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "notebook".to_owned());
-    let mut redact = Vec::new();
-    if let Some(dir) = std::path::absolute(notebook)
+    let dir = std::path::absolute(notebook)
         .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf))
-    {
-        redact.push((dir.to_string_lossy().into_owned(), ".".to_owned()));
-    }
-    if let Some(home) = std::env::var_os("HOME").filter(|h| h.len() > 1) {
-        redact.push((home.to_string_lossy().into_owned(), "~".to_owned()));
-    }
+        .and_then(|p| p.parent().map(Path::to_path_buf));
+    let redact = ganymede_server::routes::publish_redactions(dir.as_deref(), None);
     let export = to_html(
         &nb,
         &name,
@@ -1322,6 +1316,12 @@ fn publish(
     );
     for skipped in &export.skipped {
         eprintln!("leaving out {skipped}: bad base64");
+    }
+    if let Some(o) = output.filter(|o| *o != "-") {
+        let lower = o.to_ascii_lowercase();
+        if !lower.ends_with(".html") && !lower.ends_with(".htm") {
+            bail!("the page is HTML: give -o a name ending in .html, not {o}");
+        }
     }
     match output {
         Some("-") => {

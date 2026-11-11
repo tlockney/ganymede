@@ -289,21 +289,35 @@ async fn nbconvert() -> Json<Value> {
 /// What a published page must not show, with what goes in its place: the
 /// server root's absolute path, the home directory, and the token. A
 /// notebook's outputs can hold them (tracebacks, a printed path).
-pub(crate) fn publish_redactions(s: &AppState) -> Vec<(String, String)> {
+pub(crate) fn server_redactions(s: &AppState) -> Vec<(String, String)> {
+    publish_redactions(s.collab.root(), s.token.as_deref())
+}
+
+/// [`server_redactions`] for a given root (`.`) and token (`[token]`),
+/// with the home directory (`~`): `ganymede nb publish` passes the
+/// notebook's directory. Each directory goes in both as given and
+/// resolved, since outputs show whichever the kernel saw (on macOS a
+/// directory under `/var` or `/tmp` is `/private/...` resolved). A root
+/// such as `/` is left out by the exporter.
+pub fn publish_redactions(
+    root: Option<&std::path::Path>,
+    token: Option<&str>,
+) -> Vec<(String, String)> {
     let mut redact = Vec::new();
-    if let Some(root) = s.collab.root() {
-        // Both spellings: outputs show whichever the kernel saw, and on
-        // macOS a temporary root under /var is /private/var resolved.
-        let mut roots = vec![root.to_path_buf()];
-        roots.extend(root.canonicalize().ok().filter(|c| c != root));
-        for r in roots {
-            redact.push((r.to_string_lossy().into_owned(), ".".to_owned()));
+    let mut both = |dir: &std::path::Path, with: &str| {
+        let mut spellings = vec![dir.to_path_buf()];
+        spellings.extend(dir.canonicalize().ok().filter(|c| c != dir));
+        for d in spellings {
+            redact.push((d.to_string_lossy().into_owned(), with.to_owned()));
         }
+    };
+    if let Some(root) = root {
+        both(root, ".");
     }
-    if let Some(home) = dirs::home_dir().filter(|h| h.parent().is_some()) {
-        redact.push((home.to_string_lossy().into_owned(), "~".to_owned()));
+    if let Some(home) = dirs::home_dir() {
+        both(&home, "~");
     }
-    if let Some(token) = s.token.as_deref().filter(|t| t.len() >= 8) {
+    if let Some(token) = token.filter(|t| t.len() >= 8) {
         redact.push((token.to_owned(), "[token]".to_owned()));
     }
     redact
@@ -354,7 +368,7 @@ async fn nbconvert_file(
     // Decoding a notebook's images can take a while: off the runtime.
     let export = {
         let title = title.clone();
-        let redact = publish_redactions(&s);
+        let redact = server_redactions(&s);
         blocking(move || {
             Ok(match format.as_str() {
                 "html" => ganymede_nbformat::to_html(

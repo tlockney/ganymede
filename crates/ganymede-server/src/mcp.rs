@@ -321,6 +321,8 @@ pub struct PublishArgs {
     pub code: Option<String>,
     /// A line under the title. Default: today's date.
     pub byline: Option<String>,
+    /// Replace `out` even when it isn't an earlier published page.
+    pub overwrite: Option<bool>,
     pub path: Option<String>,
 }
 
@@ -924,7 +926,7 @@ impl Notebooks {
     }
 
     #[tool(
-        description = "Publish the notebook as one self-contained HTML page to read and share: title, contents, Markdown as prose, charts and tables inline, code folded under each result, light and dark. The page holds only the notebook's cells and outputs (no metadata), makes no network requests and runs no notebook script; the server root, home directory and token are replaced wherever they appear. Saves it under the server root (default `published/<name>.html` beside the notebook) and returns its path. Runs nothing; run the notebook first so the outputs are current."
+        description = "Publish the notebook as one self-contained HTML page to read and share: title, contents, Markdown as prose, charts and tables inline, code folded under each result, light and dark. The page holds only the notebook's cells and outputs (no metadata), makes no network requests and runs no notebook script; the server root, home directory and token are replaced wherever they appear. Saves it under the server root (default `published/<name>.html` beside the notebook), replacing an earlier published page but no other file unless `overwrite: true`, and returns its path. Runs nothing; run the notebook first so the outputs are current."
     )]
     async fn notebook_publish(
         &self,
@@ -946,10 +948,37 @@ impl Notebooks {
             None if dir.is_empty() => format!("published/{stem}.html"),
             None => format!("{dir}/published/{stem}.html"),
         };
-        if !out.to_ascii_lowercase().ends_with(".html") || out.ends_with("/.html") {
+        let out_name = out.rsplit('/').next().unwrap_or(&out);
+        if !out_name.to_ascii_lowercase().ends_with(".html") || out_name.len() <= ".html".len() {
             return Err(err(format!(
                 "out must be a file ending in .html, not {out:?}"
             )));
+        }
+        // Replace only an earlier published page unless told to.
+        if !a.overwrite.unwrap_or(false) {
+            if let Ok(existing) = self
+                .state
+                .contents
+                .get(
+                    &out,
+                    GetOptions {
+                        content: true,
+                        ..GetOptions::default()
+                    },
+                )
+                .await
+            {
+                let published = existing
+                    .content
+                    .as_ref()
+                    .and_then(Value::as_str)
+                    .is_some_and(|t| t.contains(ganymede_nbformat::HTML_GENERATOR_MARK));
+                if !published {
+                    return Err(err(format!(
+                        "{out} exists and isn't a page published from a notebook; pick another `out`, or pass `overwrite: true` to replace it"
+                    )));
+                }
+            }
         }
         let nb = self.notebook(&path).await?;
         let opts = ganymede_nbformat::HtmlOptions {
@@ -958,7 +987,7 @@ impl Notebooks {
                 a.byline
                     .unwrap_or_else(|| chrono::Local::now().format("%-d %B %Y").to_string()),
             ),
-            redact: crate::routes::publish_redactions(&self.state),
+            redact: crate::routes::server_redactions(&self.state),
         };
         // Encoding a notebook's images can take a while.
         let export =
