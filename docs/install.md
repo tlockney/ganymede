@@ -235,7 +235,34 @@ The steps above put files in these places:
 ![What the install puts where. The ganymede binary goes in ~/.local/bin. It finds kernels in the Jupyter data dir (~/.local/share/jupyter, or ~/Library/Jupyter on macOS), where cdp-kernel install writes kernels/cdp-node/kernel.json and where notebook signatures are kept; that kernel.json's argv starts cdp-kernel, installed with npm on Node 22.18 or later. ganymede lab install puts JupyterLab and its extensions in Ganymede's data dir. The Jupyter config dir, ~/.jupyter, holds an optional ganymede.toml and JupyterLab's settings and workspaces, and the runtime dir holds each running kernel's connection file and the cookie secret.](images/architecture/install.svg)
 
 To update Ganymede, run the install command from step 1 again; it replaces
-the binary in place. To update cdp-kernel, rerun step 2's `npm install -g`
+the binary in place.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+Or run `ganymede update`, which does the same from the binary itself, on
+Linux, macOS and Windows:
+
+```sh
+ganymede update            # the latest release, if it is newer
+ganymede update --check    # only say whether there is one
+ganymede update --version 0.9.0   # a given release, older or newer
+```
+
+It downloads this platform's archive over HTTPS, checks its SHA-256
+against the release's `.sha256`, runs the new binary with `--version`,
+and only then renames it over the old one, so a failed download or a
+binary that won't run leaves the old one in place. A
+[main build](#latest-main-build) updates to the latest main build;
+`--main` switches a release to main, and `--version` switches back. It
+refuses a binary that `cargo install`, Homebrew or Nix put there, or one
+in a cargo `target` directory, and says how to update that instead. On
+Windows the old binary is left as `ganymede.exe.old` until the next
+update removes it. It doesn't update cdp-kernel, JupyterLab or
+ganymede-ui, and prints how to update the ones you have.
+
+To update cdp-kernel, rerun step 2's `npm install -g`
 and `cdp-kernel install` lines. A new Ganymede release can default to a
 newer JupyterLab; run `ganymede lab install` again to get it. Older
 versions stay until you remove them.

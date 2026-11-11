@@ -147,7 +147,7 @@ pub fn run(cmd: UiCmd) -> Result<ExitCode> {
 
 /// Release downloads: the base URL and the hosts allowed to serve them,
 /// checked again after redirects.
-struct Releases {
+pub(crate) struct Releases {
     base: String,
     hosts: Vec<String>,
     agent: ureq::Agent,
@@ -155,12 +155,18 @@ struct Releases {
 
 impl Releases {
     fn from_env() -> Result<Releases> {
-        let base = std::env::var("GANYMEDE_UI_URL")
+        Releases::new("GANYMEDE_UI_URL", DEFAULT_RELEASES)
+    }
+
+    /// Downloads from `$env`, else `default`: an `https://` base laid out
+    /// as `<base>/<tag>/<file>`, plus GitHub's asset hosts.
+    pub(crate) fn new(env: &str, default: &str) -> Result<Releases> {
+        let base = std::env::var(env)
             .ok()
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| DEFAULT_RELEASES.to_string());
+            .unwrap_or_else(|| default.to_string());
         let base = base.trim_end_matches('/').to_string();
-        let host = https_host(&base).with_context(|| format!("{base:?} (GANYMEDE_UI_URL)"))?;
+        let host = https_host(&base).with_context(|| format!("{base:?} ({env})"))?;
         let mut hosts = vec![host];
         hosts.extend(ASSET_HOSTS.iter().map(|h| h.to_string()));
         Ok(Releases {
@@ -171,7 +177,42 @@ impl Releases {
     }
 
     fn url(&self, version: &str, file: &str) -> String {
-        format!("{}/v{version}/{file}", self.base)
+        self.asset(&format!("v{version}"), file)
+    }
+
+    /// The base URL, without a trailing `/`.
+    pub(crate) fn base(&self) -> &str {
+        &self.base
+    }
+
+    /// `file` of the release tagged `tag`.
+    pub(crate) fn asset(&self, tag: &str, file: &str) -> String {
+        format!("{}/{tag}/{file}", self.base)
+    }
+
+    /// Where `url` redirects to, without following it: `None` for an
+    /// answer that is not a redirect.
+    pub(crate) fn location(&self, url: &str) -> Result<Option<String>> {
+        self.check(url)?;
+        let resp = retry(url, || {
+            self.agent
+                .get(url)
+                .config()
+                .max_redirects(0)
+                .max_redirects_will_error(false)
+                .build()
+                .call()
+        })
+        .with_context(|| format!("fetching {url}"))?;
+        if !resp.status().is_redirection() {
+            return Ok(None);
+        }
+        let next = resp
+            .headers()
+            .get(ureq::http::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .with_context(|| format!("{url}: redirect without a location"))?;
+        resolve(url, next).map(Some)
     }
 
     /// GETs `url`, following up to five redirects by hand, each to an
@@ -180,7 +221,7 @@ impl Releases {
     /// with a chunked framing ureq cannot drain. Each request is sent
     /// again a few times if the server fails it or it times out
     /// ([`retry`]).
-    fn get(&self, url: &str) -> Result<ureq::http::Response<ureq::Body>> {
+    pub(crate) fn get(&self, url: &str) -> Result<ureq::http::Response<ureq::Body>> {
         let mut url = url.to_string();
         for _ in 0..=5 {
             self.check(&url)?;
@@ -252,7 +293,7 @@ fn resolve(base: &str, location: &str) -> Result<String> {
 }
 
 /// The hash on `file`'s line of a `sha256sum` listing.
-fn sum_for(sums: &str, file: &str) -> Option<String> {
+pub(crate) fn sum_for(sums: &str, file: &str) -> Option<String> {
     sums.lines().find_map(|line| {
         let (hash, name) = line.split_once(char::is_whitespace)?;
         let name = name.trim_start().trim_start_matches('*');

@@ -27,7 +27,12 @@ same flags. The guides show them in use:
 | `ui`, `ui install`, `list`, `remove` | `serve` with [ganymede-ui](app.md#in-a-browser-from-ganymede) |
 | `mcp`, `mcp call` | Notebook tools for coding agents over MCP on stdio, or one tool call from a script; see [Agents over MCP](mcp.md) |
 | `info` | Versions and the directories in use |
+| `update` | Replace the binary with the latest release, as install.sh does; see [Update and uninstall](install.md#8-update-and-uninstall) |
 | `completions <shell>` | Shell completions for bash, zsh, fish, powershell, elvish |
+
+> [!NOTE]
+> **Unreleased.** `update` is available only from a build of `main`
+> (HEAD), not in the latest release.
 
 The kernel name `fake` is a built-in in-process kernel for trying things
 out.
@@ -360,6 +365,7 @@ access-denied page; `--no-redirect-file` opens the URL itself instead, as
 | `GANYMEDE_DATA_DIR` | Where `lab install` and `ui install` put what they download. |
 | `GANYMEDE_PYPI_URL`, `GANYMEDE_PYPI_HOSTS` | A PyPI mirror, and more hosts allowed to serve wheels; see [What a download trusts](frontends.md#what-a-download-trusts). |
 | `GANYMEDE_UI_URL` | A mirror of ganymede-ui's release downloads. |
+| `GANYMEDE_DOWNLOAD_BASE` | A mirror of Ganymede's release downloads, for `update` and install.sh. |
 | `GANYMEDE_CRASH_REPORTING` | `1` turns crash reporting on and `0` off, overriding `crash_reporting`; see [Privacy and crash reporting](privacy.md). |
 | `RUST_LOG` | The log filter, when `--log-level` isn't given. |
 | `HTTPS_PROXY` | Used for downloads. |

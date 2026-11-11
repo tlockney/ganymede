@@ -24,7 +24,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
     ),
     ("Notebooks", &["nb", "trust", "grant"]),
     ("Servers", &["serve", "lab", "ui", "mcp"]),
-    ("Setup", &["kernelspec", "info", "completions"]),
+    ("Setup", &["kernelspec", "info", "update", "completions"]),
 ];
 
 /// Examples shown at the end of the top-level help: command, what it does.
