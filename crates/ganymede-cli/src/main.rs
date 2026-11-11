@@ -1127,7 +1127,8 @@ const PARAMS_ENV: &str = "GANYMEDE_PARAMS";
 const PARAMS_MAX: usize = 32_767;
 
 /// `--params-file`, then each `-p NAME=VALUE` over it. `None` when neither
-/// was given, so a run without parameters sets no variable.
+/// was given: `execute` then passes `{}` and removes an earlier run's
+/// `metadata.ganymede.params`.
 fn run_params(
     pairs: &[String],
     file: Option<&Path>,
