@@ -1,6 +1,6 @@
 ---
 name: journal
-description: Keep a live Jupyter notebook as the record of a data exploration or analysis while doing it, using the ganymede notebook tools. Use when the user asks to explore, analyze, chart or investigate data, or says "journal" or "keep a notebook".
+description: Keep a live Jupyter notebook as the record of a data exploration or analysis while doing it, using the ganymede notebook tools. Use when the user asks to explore, analyze, chart or investigate data, says "journal" or "keep a notebook", or asks to publish or share a journal as a page.
 ---
 
 # Journal an analysis into a notebook
@@ -114,3 +114,23 @@ Edit.
     still open.
 18. For a longer journal, ask the `journal-reviewer` agent to read it
     cold, and fix the gaps it finds.
+
+## Publish
+
+19. When the user asks to publish or share the journal, finish it first
+    (16-18), then call `notebook_publish`. It saves one self-contained
+    HTML page, `published/<name>.html` beside the notebook, and returns
+    its path on disk. The page holds the notebook's cells and outputs
+    only, with the code folded under each result; pass `code: "hidden"`
+    for readers who don't want code, or `"shown"` for ones who do.
+20. If you have a tool that hosts a page, such as an artifact tool,
+    publish that file with it as it is, and give the user the link.
+    Otherwise give the path. Don't rewrite the page by hand: a fix
+    belongs in the notebook, then publish again.
+21. Before you host it anywhere, read the notebook once for what
+    shouldn't leave the machine. The server replaces its root path, the
+    home directory and its token, but not other hosts, names or values
+    a cell printed: clear those outputs (`cell_clear_outputs`) and
+    publish again. `notebook_publish` needs a Ganymede newer than
+    0.8.0 (`ganymede nb publish <notebook>` makes the same page from
+    the saved file); without either, tell the user it isn't available.

@@ -276,14 +276,37 @@ fn merge(target: &mut Value, update: Value) {
     }
 }
 
-/// Export formats: nbconvert's `markdown` and `script`, the two that need
-/// no Python templates (#235).
+/// Export formats: nbconvert's `html`, `markdown` and `script`, without
+/// Python templates (#235, #677).
 async fn nbconvert() -> Json<Value> {
     let formats: serde_json::Map<String, Value> = ganymede_nbformat::FORMATS
         .iter()
         .map(|(name, mime)| ((*name).to_owned(), json!({"output_mimetype": mime})))
         .collect();
     Json(Value::Object(formats))
+}
+
+/// What a published page must not show, with what goes in its place: the
+/// server root's absolute path, the home directory, and the token. A
+/// notebook's outputs can hold them (tracebacks, a printed path).
+pub(crate) fn publish_redactions(s: &AppState) -> Vec<(String, String)> {
+    let mut redact = Vec::new();
+    if let Some(root) = s.collab.root() {
+        // Both spellings: outputs show whichever the kernel saw, and on
+        // macOS a temporary root under /var is /private/var resolved.
+        let mut roots = vec![root.to_path_buf()];
+        roots.extend(root.canonicalize().ok().filter(|c| c != root));
+        for r in roots {
+            redact.push((r.to_string_lossy().into_owned(), ".".to_owned()));
+        }
+    }
+    if let Some(home) = dirs::home_dir().filter(|h| h.parent().is_some()) {
+        redact.push((home.to_string_lossy().into_owned(), "~".to_owned()));
+    }
+    if let Some(token) = s.token.as_deref().filter(|t| t.len() >= 8) {
+        redact.push((token.to_owned(), "[token]".to_owned()));
+    }
+    redact
 }
 
 #[derive(Deserialize)]
@@ -331,8 +354,17 @@ async fn nbconvert_file(
     // Decoding a notebook's images can take a while: off the runtime.
     let export = {
         let title = title.clone();
+        let redact = publish_redactions(&s);
         blocking(move || {
             Ok(match format.as_str() {
+                "html" => ganymede_nbformat::to_html(
+                    &nb,
+                    &title,
+                    &ganymede_nbformat::HtmlOptions {
+                        redact,
+                        ..Default::default()
+                    },
+                ),
                 "markdown" => ganymede_nbformat::to_markdown(&nb, &title),
                 _ => ganymede_nbformat::to_script(&nb),
             })

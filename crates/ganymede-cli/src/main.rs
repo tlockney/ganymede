@@ -296,6 +296,26 @@ enum NbCmd {
         #[command(flatten)]
         dest: Dest,
     },
+    /// Write the notebook as one self-contained HTML page to share.
+    ///
+    /// Prose, charts and tables, with the code folded under each result.
+    /// The page makes no network requests and runs no script from the
+    /// notebook. Your home directory and the notebook's directory are
+    /// replaced by `~` and `.` wherever they appear.
+    Publish {
+        /// The notebook to publish.
+        notebook: PathBuf,
+        /// Where to write the page; `-` is stdout. Default: the
+        /// notebook's path with `.html`.
+        #[arg(long, short)]
+        output: Option<String>,
+        /// How code shows: `folded` under a toggle, `shown`, or `hidden`.
+        #[arg(long, default_value = "folded")]
+        code: ganymede_engine::nbformat::CodeMode,
+        /// A line under the title, such as the date.
+        #[arg(long)]
+        byline: Option<String>,
+    },
 }
 
 /// Which kernel to talk to: a kernelspec to launch, or a running kernel.
@@ -567,6 +587,18 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             clear_outputs(&mut nb);
             let dest = dest.resolve(&notebook).unwrap_or(Some(notebook.clone()));
             write_notebook(&nb, dest.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Nb {
+            cmd:
+                NbCmd::Publish {
+                    notebook,
+                    output,
+                    code,
+                    byline,
+                },
+        } => {
+            publish(&notebook, output.as_deref(), code, byline)?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Completions { shell } => {
@@ -1253,6 +1285,60 @@ fn trust(notebooks: &[PathBuf], reset: bool, dir: Option<PathBuf>) -> Result<Exi
         sign(&nb, &path.display().to_string())?;
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// `ganymede nb publish`: the notebook as an HTML page.
+fn publish(
+    notebook: &Path,
+    output: Option<&str>,
+    code: ganymede_engine::nbformat::CodeMode,
+    byline: Option<String>,
+) -> Result<()> {
+    use ganymede_engine::nbformat::{to_html, HtmlOptions};
+    let nb = ganymede_engine::nbformat::read_file(notebook)
+        .with_context(|| format!("reading {}", notebook.display()))?;
+    let name = notebook
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "notebook".to_owned());
+    let mut redact = Vec::new();
+    if let Some(dir) = std::path::absolute(notebook)
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+    {
+        redact.push((dir.to_string_lossy().into_owned(), ".".to_owned()));
+    }
+    if let Some(home) = std::env::var_os("HOME").filter(|h| h.len() > 1) {
+        redact.push((home.to_string_lossy().into_owned(), "~".to_owned()));
+    }
+    let export = to_html(
+        &nb,
+        &name,
+        &HtmlOptions {
+            code,
+            byline,
+            redact,
+        },
+    );
+    for skipped in &export.skipped {
+        eprintln!("leaving out {skipped}: bad base64");
+    }
+    match output {
+        Some("-") => {
+            use std::io::Write as _;
+            std::io::stdout().write_all(export.body.as_bytes())?;
+        }
+        _ => {
+            let dest = match output {
+                Some(o) => PathBuf::from(o),
+                None => notebook.with_extension("html"),
+            };
+            std::fs::write(&dest, export.body)
+                .with_context(|| format!("writing {}", dest.display()))?;
+            eprintln!("Published {}", dest.display());
+        }
+    }
+    Ok(())
 }
 
 /// What `jupyter nbconvert --clear-output` removes.

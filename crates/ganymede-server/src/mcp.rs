@@ -312,6 +312,19 @@ pub struct SnapshotArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PublishArgs {
+    /// Where to save the page under the server root, ending in `.html`.
+    /// Default: `published/<name>.html` beside the notebook.
+    pub out: Option<String>,
+    /// How code shows: `folded` under each result (default), `shown`,
+    /// or `hidden`.
+    pub code: Option<String>,
+    /// A line under the title. Default: today's date.
+    pub byline: Option<String>,
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListArgs {
     /// Directory relative to the server root (default: the root).
     pub dir: Option<String>,
@@ -908,6 +921,70 @@ impl Notebooks {
         }
         blocks.insert(0, ContentBlock::text(out));
         Ok(CallToolResult::success(blocks))
+    }
+
+    #[tool(
+        description = "Publish the notebook as one self-contained HTML page to read and share: title, contents, Markdown as prose, charts and tables inline, code folded under each result, light and dark. The page holds only the notebook's cells and outputs (no metadata), makes no network requests and runs no notebook script; the server root, home directory and token are replaced wherever they appear. Saves it under the server root (default `published/<name>.html` beside the notebook) and returns its path. Runs nothing; run the notebook first so the outputs are current."
+    )]
+    async fn notebook_publish(
+        &self,
+        Parameters(a): Parameters<PublishArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if self.opts.read_only {
+            return Err(err("can't save into the server root (read-only)"));
+        }
+        let code: ganymede_nbformat::CodeMode =
+            a.code.as_deref().unwrap_or("folded").parse().map_err(err)?;
+        let path = self.path(a.path)?;
+        let (dir, file) = match path.rsplit_once('/') {
+            Some((d, f)) => (d.to_owned(), f.to_owned()),
+            None => (String::new(), path.clone()),
+        };
+        let stem = file.strip_suffix(".ipynb").unwrap_or(&file).to_owned();
+        let out = match a.out.as_deref() {
+            Some(o) => ganymede_contents::normalize_api_path(o),
+            None if dir.is_empty() => format!("published/{stem}.html"),
+            None => format!("{dir}/published/{stem}.html"),
+        };
+        if !out.to_ascii_lowercase().ends_with(".html") || out.ends_with("/.html") {
+            return Err(err(format!(
+                "out must be a file ending in .html, not {out:?}"
+            )));
+        }
+        let nb = self.notebook(&path).await?;
+        let opts = ganymede_nbformat::HtmlOptions {
+            code,
+            byline: Some(
+                a.byline
+                    .unwrap_or_else(|| chrono::Local::now().format("%-d %B %Y").to_string()),
+            ),
+            redact: crate::routes::publish_redactions(&self.state),
+        };
+        // Encoding a notebook's images can take a while.
+        let export =
+            tokio::task::spawn_blocking(move || ganymede_nbformat::to_html(&nb, &stem, &opts))
+                .await
+                .map_err(|e| err(e.to_string()))?;
+        if let Some((parent, _)) = out.rsplit_once('/') {
+            self.mkdirs(parent).await?;
+        }
+        let size = export.body.len();
+        self.state
+            .contents
+            .save(&out, SaveRequest::text(export.body))
+            .await
+            .map_err(|e| err(format!("cannot save {out}: {e}")))?;
+        let mut msg = format!("Published {path} as {out} ({} KB).", size.div_ceil(1024));
+        if let Some(root) = self.state.collab.root() {
+            msg.push_str(&format!(" On disk: {}", root.join(&out).display()));
+        }
+        if !export.skipped.is_empty() {
+            msg.push_str(&format!(
+                "\nLeft out (bad base64): {}.",
+                export.skipped.join("; ")
+            ));
+        }
+        text(msg)
     }
 
     #[tool(

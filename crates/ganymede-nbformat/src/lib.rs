@@ -25,6 +25,7 @@
 mod ansi;
 mod atomic;
 mod export;
+mod html;
 mod multiline;
 mod params;
 mod reader;
@@ -39,6 +40,7 @@ pub use export::{
     fenced, overwrite_returns, replace_attachment_refs, to_markdown, to_script, url_path, Export,
     Resource, ResourceData, BASE64_LENIENT, FORMATS,
 };
+pub use html::{to_html, CodeMode, HtmlOptions};
 pub use multiline::{splitlines, MultilineString};
 pub use params::{params_env, record_params, PARAMS_ENV, PARAMS_MAX};
 pub use reader::{from_json_slice, read_file, ReadIssue, ReadReport};

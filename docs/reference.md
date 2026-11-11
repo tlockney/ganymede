@@ -15,6 +15,7 @@ same flags. The guides show them in use:
 | `console` | An interactive console on a kernel |
 | `execute` (`exec`) | Run notebooks top to bottom, as `jupyter execute` |
 | `nb clear` | Remove a notebook's outputs |
+| `nb publish` | Write a notebook as one self-contained HTML page; see [Publishing a notebook](mcp.md#publishing-a-notebook) |
 | `trust` | Sign a notebook as trusted, as `jupyter trust` |
 | `grant` | A notebook's own [host API](#the-host-api) grant |
 | `kernel` | Start a kernel and print its connection file, as `jupyter kernel` |
@@ -29,8 +30,8 @@ same flags. The guides show them in use:
 | `completions <shell>` | Shell completions for bash, zsh, fish, powershell, elvish |
 
 > [!NOTE]
-> **Unreleased.** `grant` is available only from a build of `main`
-> (HEAD), not in the latest release.
+> **Unreleased.** `grant` and `nb publish` are available only from a
+> build of `main` (HEAD), not in the latest release.
 
 The kernel name `fake` is a built-in in-process kernel for trying things
 out.

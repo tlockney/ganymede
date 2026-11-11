@@ -826,6 +826,7 @@ async fn server_info_identity_and_config() {
         (
             StatusCode::OK,
             json!({
+                "html": {"output_mimetype": "text/html"},
                 "markdown": {"output_mimetype": "text/markdown"},
                 "script": {"output_mimetype": "text/plain"},
             })
@@ -834,7 +835,7 @@ async fn server_info_identity_and_config() {
 }
 
 #[tokio::test]
-async fn nbconvert_exports_script_and_markdown() {
+async fn nbconvert_exports_script_markdown_and_html() {
     let dir = tempfile::tempdir().unwrap();
     let cell = |source: &str, outputs: Value| {
         json!({"cell_type": "code", "id": source.len().to_string(), "metadata": {},
@@ -885,6 +886,25 @@ async fn nbconvert_exports_script_and_markdown() {
         String::from_utf8(body).unwrap(),
         "# Hi\n\n```typescript\nlet a = 1\n```\n\n```\n1\n```\n"
     );
+    // HTML: one page, with the server root and the token replaced.
+    let root = dir.path().canonicalize().unwrap();
+    let mut leaky = text_nb.clone();
+    leaky["cells"][1] = cell(
+        "load()",
+        json!([{"output_type": "stream", "name": "stdout",
+                "text": format!("{}/data.csv {TOKEN}\n", root.display())}]),
+    );
+    std::fs::write(dir.path().join("leaky.ipynb"), leaky.to_string()).unwrap();
+    let (st, h, body) = raw(&app, get("/nbconvert/html/leaky.ipynb")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(h[header::CONTENT_TYPE], "text/html; charset=utf-8");
+    let page = String::from_utf8(body).unwrap();
+    assert!(page.starts_with("<!doctype html>"), "{page}");
+    assert!(page.contains("<h1>Hi</h1>"), "{page}");
+    assert!(page.contains("./data.csv [token]"), "{page}");
+    assert!(!page.contains(TOKEN));
+    assert!(!page.contains(&root.display().to_string()));
+
     let (_, h, _) = raw(&app, get("/nbconvert/script/my%20nb.ipynb?download=TRUE")).await;
     assert_eq!(
         h[header::CONTENT_DISPOSITION],
@@ -926,7 +946,7 @@ async fn nbconvert_exports_script_and_markdown() {
     assert_eq!(st, StatusCode::SEE_OTHER);
     assert_eq!(h[header::LOCATION], "/files/notes.txt");
     assert_eq!(
-        raw(&app, get("/nbconvert/html/img.ipynb")).await.0,
+        raw(&app, get("/nbconvert/pdf/img.ipynb")).await.0,
         StatusCode::NOT_FOUND
     );
     assert_eq!(
@@ -6239,6 +6259,78 @@ async fn mcp_cell_snapshot_saves_images_and_shows_tables() {
     )
     .await;
     assert!(v.to_string().contains("no cell nope"), "{v}");
+}
+
+/// `notebook_publish` (#677) saves the notebook as one HTML page beside
+/// it, with the root and token replaced, and only as `.html`.
+#[tokio::test]
+async fn mcp_notebook_publish_saves_a_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let nb = json!({"cells": [
+        {"cell_type": "markdown", "id": "t", "metadata": {}, "source": "# Quakes"},
+        {"cell_type": "markdown", "id": "n", "metadata": {"ganymede": {"agent": {"by": "agent", "mode": "note",
+            "history": [{"source": "superseded"}]}}}, "source": "## Per year\n\nCounts."},
+        {"cell_type": "code", "id": "c", "execution_count": 1, "metadata": {},
+         "source": "load()", "outputs": [
+            {"output_type": "stream", "name": "stdout",
+             "text": format!("{}/data.csv {TOKEN}\n", root.display())}]}],
+        "metadata": {"kernelspec": {"name": "x", "display_name": "X", "language": "typescript"}},
+        "nbformat": 4, "nbformat_minor": 5});
+    std::fs::create_dir(dir.path().join("journal")).unwrap();
+    std::fs::write(dir.path().join("journal/q.ipynb"), nb.to_string()).unwrap();
+    let app = mcp_app(dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+
+    let out = mcp_text(
+        &mcp_tool(
+            &app,
+            &sid,
+            "notebook_publish",
+            json!({"path": "journal/q.ipynb", "byline": "11 November 2026"}),
+        )
+        .await,
+    );
+    assert!(out.contains("as journal/published/q.html"), "{out}");
+    let page = std::fs::read_to_string(dir.path().join("journal/published/q.html")).unwrap();
+    assert!(page.contains("<h1>Quakes</h1>"), "{page}");
+    assert!(page.contains("11 November 2026"));
+    assert!(page.contains("<details class=\"code\">"));
+    assert!(page.contains("./data.csv [token]"), "{page}");
+    assert!(!page.contains(TOKEN) && !page.contains("superseded"));
+    assert!(!page.contains(&root.display().to_string()));
+
+    let out = mcp_text(
+        &mcp_tool(
+            &app,
+            &sid,
+            "notebook_publish",
+            json!({"path": "journal/q.ipynb", "out": "site/q.html", "code": "hidden"}),
+        )
+        .await,
+    );
+    assert!(out.contains("as site/q.html"), "{out}");
+    let page = std::fs::read_to_string(dir.path().join("site/q.html")).unwrap();
+    assert!(!page.contains("load()"));
+
+    for (args, want) in [
+        (
+            json!({"path": "journal/q.ipynb", "out": "journal/q.ipynb"}),
+            "ending in .html",
+        ),
+        (
+            json!({"path": "journal/q.ipynb", "code": "open"}),
+            "shown, folded or hidden",
+        ),
+    ] {
+        let v = mcp_tool(&app, &sid, "notebook_publish", args).await;
+        assert!(v.to_string().contains(want), "{v}");
+    }
+    // The notebook is untouched.
+    let after: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("journal/q.ipynb")).unwrap())
+            .unwrap();
+    assert_eq!(after["cells"].as_array().unwrap().len(), 3);
 }
 
 /// Records the environment each launch gets.

@@ -21,6 +21,7 @@ hmac = "0.13"
 sha2 = "0.11"
 hex = "0.4"
 base64 = "0.23"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 bytes = "1"
 # Portable features only; crates that need sockets, processes, or signals
 # add them, so the core libraries build for wasm.
