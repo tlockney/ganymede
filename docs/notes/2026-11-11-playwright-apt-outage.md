@@ -9,7 +9,8 @@ GitHub's Ubuntu image ships Google Chrome, so the libraries Chromium
 needs are already there; `--with-deps` mostly adds fonts. Both jobs now
 download the browser alone, then run `playwright install-deps chromium`
 as best effort: when apt fails they log a warning and carry on with the
-image's libraries.
+image's libraries. During the outage apt took about 10 minutes to give
+up (its own DNS retries), so the step is capped at 5 minutes.
 
 Retrying apt with a backoff wouldn't have helped: the outage lasted
 hours. If a future image drops a library, Chromium fails to launch and
