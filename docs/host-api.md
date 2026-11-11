@@ -167,7 +167,7 @@ version has these:
 | `notebooks.list` | `{ dir? }` | `[{ path, title, kernel, modified }]` for notebooks and directories in `dir` | Yes, under `read` |
 | `notebooks.read` | `{ path }` | `{ notebook, hashes }`: the notebook as nbformat 4 JSON, from its room when one is open, so it includes what isn't saved yet, and each cell's source hash by cell id | Yes, under `read` |
 | `notebooks.search` | `{ query, dir?, outputs?, cell_type?, limit? }` | `{ hits: [{ path, title, index, id, cell_type, in, excerpt }], total, truncated }`, the `notebooks_search` tool's matches as data | Yes, under `read` |
-| `notebooks.results` | `{ path }` | `{ name: value }`: the notebook's named results, from its saved outputs | Yes, under `read` |
+| `notebooks.results` | `{ path }` | `{ name: value }`: the notebook's named results, from its outputs, read from its room when one is open, like `notebooks.read` | Yes, under `read` |
 | `notebooks.run` | `{ path, params?, save?, timeout? }` | `{ status, results, error?, path? }` | No |
 | `self.add` | `{ cell_type, source, after? }` | `{ id }` of the new cell in the calling notebook | Yes |
 | `self.edit` | `{ id, source, source_hash }` | `{}`, or `failed` with `source_mismatch` when the cell changed since it was read | Yes |

@@ -881,6 +881,39 @@ fn grant_stores_lists_and_revokes_a_notebooks_grant() {
     );
     assert_eq!(ok(&["--list"]), "");
 
+    // From outside the root, a relative NOTEBOOK is found under
+    // --root-dir; a symlinked notebook keeps its own name.
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(
+            root.path().join("j/a.ipynb"),
+            root.path().join("link.ipynb"),
+        )
+        .unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let mut c = grant(&["link.ipynb", "edit_self=false"]);
+        c.current_dir(elsewhere.path());
+        assert_eq!(stdout(&run_ok(c)), "link.ipynb edit_self=false\n");
+        assert_eq!(
+            ok(&["--revoke", "link.ipynb"]),
+            "link.ipynb: the [host] defaults\n"
+        );
+    }
+
+    // A data dir that can't hold the database: an error, not a grant kept
+    // in memory and lost.
+    let file = data.path().join("not-a-dir");
+    std::fs::write(&file, "").unwrap();
+    let mut c = grant(&["j/a.ipynb", "edit_self=false"]);
+    c.env("JUPYTER_DATA_DIR", &file);
+    let out = c.output().unwrap();
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("file id database"),
+        "{}",
+        stderr(&out)
+    );
+
     for bad in [
         &["j/a.ipynb", "edit_self=maybe"][..],
         &["j/a.ipynb", "write=x"],
