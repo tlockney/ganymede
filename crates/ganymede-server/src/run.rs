@@ -76,41 +76,97 @@ pub async fn run(
     State(state): State<AppState>,
     LenientJson(body): LenientJson<RunBody>,
 ) -> Result<Json<Value>, HttpError> {
-    let path = body
-        .path
-        .map(|p| p.trim_matches('/').to_string())
-        .filter(|p| !p.is_empty())
-        .ok_or_else(|| bad("path is required"))?;
-    let params = match body.params {
-        None | Some(Value::Null) => Map::new(),
-        Some(Value::Object(m)) => m,
-        Some(other) => return Err(bad(format!("params must be a JSON object, got {other}"))),
-    };
-    let env = params_env(&params).map_err(bad)?;
-    let limit = match body.timeout {
-        None => MAX_RUN,
-        // Clamped first: `from_secs_f64` panics past `Duration::MAX`.
-        Some(t) if t.is_finite() && t > 0.0 => {
-            Duration::from_secs_f64(t.min(MAX_RUN.as_secs_f64()))
+    let request = RunRequest::parse(body).map_err(bad)?;
+    run_notebook(&state, &request, Vec::new())
+        .await
+        .map(Json)
+        .map_err(|e| HttpError(e.status, e.message))
+}
+
+/// A run, checked: what `POST /api/notebooks/run` and the host API's
+/// `notebooks.run` both take.
+pub struct RunRequest {
+    pub path: String,
+    pub params: Map<String, Value>,
+    pub limit: Duration,
+}
+
+impl RunRequest {
+    /// `{ path, params?, timeout?, save? }`, with the HTTP body's checks.
+    pub fn parse(body: RunBody) -> Result<RunRequest, String> {
+        let path = body
+            .path
+            .map(|p| p.trim_matches('/').to_string())
+            .filter(|p| !p.is_empty())
+            .ok_or("path is required")?;
+        let params = match body.params {
+            None | Some(Value::Null) => Map::new(),
+            Some(Value::Object(m)) => m,
+            Some(other) => return Err(format!("params must be a JSON object, got {other}")),
+        };
+        let limit = match body.timeout {
+            None => MAX_RUN,
+            // Clamped first: `from_secs_f64` panics past `Duration::MAX`.
+            Some(t) if t.is_finite() && t > 0.0 => {
+                Duration::from_secs_f64(t.min(MAX_RUN.as_secs_f64()))
+            }
+            Some(t) => {
+                return Err(format!(
+                    "timeout must be a positive number of seconds, got {t}"
+                ))
+            }
+        };
+        match body.save {
+            None | Some(Value::Bool(false)) | Some(Value::Null) => {}
+            Some(other) => {
+                return Err(format!(
+                    "save must be false; this server keeps no copies of runs yet, got {other}"
+                ))
+            }
         }
-        Some(t) => {
-            return Err(bad(format!(
-                "timeout must be a positive number of seconds, got {t}"
-            )))
-        }
-    };
-    match body.save {
-        None | Some(Value::Bool(false)) | Some(Value::Null) => {}
-        Some(other) => {
-            return Err(bad(format!(
-                "save must be false; this server keeps no copies of runs yet, got {other}"
-            )))
-        }
+        Ok(RunRequest {
+            path,
+            params,
+            limit,
+        })
     }
 
-    let mut nb = crate::mcp::notebook_for_search(&state, &path)
+    /// The same checks on a JSON value, as the host API gets it.
+    pub fn from_value(v: Value) -> Result<RunRequest, String> {
+        let body: RunBody =
+            serde_json::from_value(v).map_err(|e| format!("bad notebooks.run params: {e}"))?;
+        Self::parse(body)
+    }
+}
+
+/// Why a run didn't start: an HTTP status and a message.
+#[derive(Debug)]
+pub struct RunError {
+    pub status: u16,
+    pub message: String,
+}
+
+/// Run `request` in a fresh kernel, with `env` added to the kernel's
+/// launch variables beside `GANYMEDE_PARAMS`, and answer with what one
+/// line of `--results` holds. An error is a run that never started.
+pub async fn run_notebook(
+    state: &AppState,
+    request: &RunRequest,
+    mut env: Vec<(String, String)>,
+) -> Result<Value, RunError> {
+    let path = &request.path;
+    let params = params_env(&request.params).map_err(|e| RunError {
+        status: 400,
+        message: e,
+    })?;
+    env.insert(0, (PARAMS_ENV.to_string(), params));
+    let limit = request.limit;
+    let mut nb = crate::mcp::notebook_for_search(state, path)
         .await
-        .ok_or_else(|| HttpError(404, format!("cannot read {path} as a notebook")))?;
+        .ok_or_else(|| RunError {
+            status: 404,
+            message: format!("cannot read {path} as a notebook"),
+        })?;
     let kernel_name = nb
         .metadata
         .get("kernelspec")
@@ -118,25 +174,32 @@ pub async fn run(
         .and_then(Value::as_str)
         .filter(|n| !n.is_empty())
         .map(str::to_string)
-        .ok_or_else(|| bad(format!("{path} has no metadata.kernelspec.name")))?;
+        .ok_or_else(|| RunError {
+            status: 400,
+            message: format!("{path} has no metadata.kernelspec.name"),
+        })?;
 
-    let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+    let name = path.rsplit('/').next().unwrap_or(path).to_string();
     let model = state
         .kernels
         .start_with_env(
             Some(&kernel_name),
-            Some(&path),
-            Some(state.kernels.session_name(&path, &name)),
-            vec![(PARAMS_ENV.to_string(), env)],
+            Some(path),
+            Some(state.kernels.session_name(path, &name)),
+            env,
         )
         .await
         .map_err(|e| match e.status {
             // A kernelspec that isn't installed: the request's fault, and a
             // 404 would read as a missing notebook.
-            404 => bad(format!(
-                "{path} needs the kernel {kernel_name}, which isn't installed"
-            )),
-            _ => HttpError::from(e),
+            404 => RunError {
+                status: 400,
+                message: format!("{path} needs the kernel {kernel_name}, which isn't installed"),
+            },
+            status => RunError {
+                status,
+                message: e.message,
+            },
         })?;
     let _guard = KernelGuard {
         kernels: state.kernels.clone(),
@@ -194,5 +257,5 @@ pub async fn run(
     if let Err(e) = outcome {
         answer["error"] = e.into();
     }
-    Ok(Json(answer))
+    Ok(answer)
 }

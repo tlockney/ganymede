@@ -12,6 +12,12 @@
 //!   `notebooks_search`'s matches.
 //! - `notebooks.results { path }`: `{ name: value }`, the named results in
 //!   the notebook's outputs (the copy `notebooks.read` returns).
+//! - `notebooks.run { path, params?, timeout?, save? }`: runs another
+//!   notebook in a fresh kernel (`POST /api/notebooks/run`'s code) and
+//!   returns `{ path, status, results, error? }`, under the `[host] run`
+//!   grant. The run's kernel gets the intersection of the caller's grant
+//!   and the notebook's, runs nest at most 3 deep, and each kernel has
+//!   at most 2 runs in flight.
 //! - `self.add { cell_type, source, after? }`, `self.edit { id, source,
 //!   source_hash }`, `self.delete { id, source_hash }`: the kernel's own
 //!   notebook, through its room, so every client sees the change. An
@@ -33,6 +39,7 @@ use ganymede_documents::yrs::{Any, Array, GetString, Map, Out};
 use ganymede_host::{Caller, Hello, HostError, Responder};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 /// The `[host]` table of the config file.
 #[derive(Debug, Clone, Deserialize)]
@@ -43,6 +50,9 @@ pub struct HostConfig {
     /// Whether a notebook may add, edit and delete its own cells
     /// (`self.*`).
     pub edit_self: bool,
+    /// Notebooks a notebook may run (`notebooks.run`); `[]` is none, `""`
+    /// is all.
+    pub run: Vec<String>,
 }
 
 impl Default for HostConfig {
@@ -50,6 +60,7 @@ impl Default for HostConfig {
         HostConfig {
             read: vec![String::new()],
             edit_self: true,
+            run: Vec::new(),
         }
     }
 }
@@ -64,6 +75,8 @@ pub struct Grant {
     pub read: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edit_self: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run: Option<Vec<String>>,
 }
 
 impl Grant {
@@ -73,10 +86,15 @@ impl Grant {
 }
 
 /// Who is calling: the kernel's notebook and what it may do.
+#[derive(Clone)]
 struct Who {
     notebook: Option<String>,
     read: Vec<String>,
     edit_self: bool,
+    run: Vec<String>,
+    /// How many `notebooks.run` calls deep this kernel is: 0 for a
+    /// notebook's own kernel.
+    depth: u32,
 }
 
 impl Who {
@@ -98,10 +116,54 @@ const READS: [&str; 4] = [
 ];
 const SELF_EDITS: [&str; 3] = ["self.add", "self.edit", "self.delete"];
 
+/// The launch variable that names a `notebooks.run` kernel's run. The
+/// server reads its own record of the kernel's launch variables, so the
+/// kernel can't claim another run's grant.
+const RUN_VAR: &str = "GANYMEDE_HOST_RUN";
+/// Runs started from runs nest at most this deep.
+const MAX_DEPTH: u32 = 3;
+/// Runs in flight per calling kernel; more wait their turn.
+const WIDTH: usize = 2;
+
+/// The paths covered by both `a` and `b`, as grant lists: a path of one
+/// that lies under a path of the other.
+fn intersect(a: &[String], b: &[String]) -> Vec<String> {
+    let under = |p: &str, list: &[String]| {
+        list.iter()
+            .any(|g| ganymede_contents::path_under(p, g).is_some())
+    };
+    let mut out: Vec<String> = a
+        .iter()
+        .filter(|p| under(p, b))
+        .chain(b.iter().filter(|p| under(p, a)))
+        .cloned()
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Forgets a run's grant when its call ends, however it ends.
+struct RunEntry<'a> {
+    runs: &'a std::sync::Mutex<std::collections::HashMap<String, Who>>,
+    token: String,
+}
+
+impl Drop for RunEntry<'_> {
+    fn drop(&mut self) {
+        self.runs.lock().unwrap().remove(&self.token);
+    }
+}
+
 pub struct HostApi {
     state: AppState,
     read: Vec<String>,
     edit_self: bool,
+    run: Vec<String>,
+    /// The grants of runs in flight, by their `GANYMEDE_HOST_RUN` token.
+    runs: std::sync::Mutex<std::collections::HashMap<String, Who>>,
+    /// Each calling kernel's run slots.
+    slots: std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Semaphore>>>,
     /// Each kernel's notebook session, as first seen: `hello` at kernel
     /// start sees the session the kernel was started for, and a notebook
     /// that joins the kernel later doesn't take its place.
@@ -118,6 +180,13 @@ impl HostApi {
                 .map(|p| ganymede_contents::normalize_api_path(p))
                 .collect(),
             edit_self: config.edit_self,
+            run: config
+                .run
+                .iter()
+                .map(|p| ganymede_contents::normalize_api_path(p))
+                .collect(),
+            runs: Default::default(),
+            slots: Default::default(),
             sessions: Default::default(),
         }
     }
@@ -142,10 +211,37 @@ impl HostApi {
         Some(ganymede_contents::normalize_api_path(&path))
     }
 
-    /// The caller's notebook and its grant: the `[host]` defaults, with
-    /// the notebook's own grant in place of any key it sets.
+    /// The caller's notebook and its grant. A `notebooks.run` kernel has
+    /// the grant its run was given; any other has its notebook's.
     async fn who(&self, caller: &Caller) -> Who {
-        let notebook = self.notebook(&caller.kernel_id);
+        let token = self
+            .state
+            .kernels
+            .get(&caller.kernel_id)
+            .ok()
+            .and_then(|k| k.launch_var(RUN_VAR).map(str::to_string));
+        if let Some(token) = token {
+            // A run whose call has ended has no grant left.
+            return self
+                .runs
+                .lock()
+                .unwrap()
+                .get(&token)
+                .cloned()
+                .unwrap_or(Who {
+                    notebook: None,
+                    read: Vec::new(),
+                    edit_self: false,
+                    run: Vec::new(),
+                    depth: MAX_DEPTH,
+                });
+        }
+        self.grant_for(self.notebook(&caller.kernel_id)).await
+    }
+
+    /// `notebook`'s grant: the `[host]` defaults, with the notebook's own
+    /// grant in place of any key it sets.
+    async fn grant_for(&self, notebook: Option<String>) -> Who {
         let own = match &notebook {
             Some(path) => self.state.collab.grant(path).await,
             None => None,
@@ -166,6 +262,14 @@ impl HostApi {
                 None => self.read.clone(),
             },
             edit_self: own.edit_self.unwrap_or(self.edit_self),
+            run: match own.run {
+                Some(run) => run
+                    .iter()
+                    .map(|p| ganymede_contents::normalize_api_path(p))
+                    .collect(),
+                None => self.run.clone(),
+            },
+            depth: 0,
             notebook,
         }
     }
@@ -198,12 +302,21 @@ impl HostApi {
         if who.notebook() == Some(path) || who.reads_everything() {
             return true;
         }
+        self.covers(&who.read, path)
+    }
+
+    /// Whether `grants` cover `path`, a normalized API path, where it
+    /// leads once symlinks are resolved.
+    fn covers(&self, grants: &[String], path: &str) -> bool {
+        if grants.iter().any(|g| g.is_empty()) {
+            return true;
+        }
         let Some(real) = self.resolved(path) else {
             return false;
         };
         // Grants resolved the same way, so a granted folder that is itself
         // a symlink still covers what is in it.
-        who.read.iter().any(|g| {
+        grants.iter().any(|g| {
             ganymede_contents::path_under(&real, g).is_some()
                 || self
                     .resolved(g)
@@ -334,6 +447,60 @@ impl HostApi {
         Ok(json!({"notebook": notebook, "hashes": hashes}))
     }
 
+    async fn run(&self, caller: &Caller, who: &Who, params: Value) -> Result<Value, HostError> {
+        let mut request = crate::run::RunRequest::from_value(params).map_err(HostError::failed)?;
+        if request.path.split('/').any(|c| c == "..") {
+            return Err(HostError::denied(format!(
+                "{}: `..` is not allowed",
+                request.path
+            )));
+        }
+        let path = ganymede_contents::normalize_api_path(&request.path);
+        if !self.covers(&who.run, &path) {
+            return Err(HostError::denied(format!(
+                "{path} is outside this notebook's run grant (`[host] run`, or `ganymede grant NOTEBOOK run=PATH`)"
+            )));
+        }
+        if who.depth >= MAX_DEPTH {
+            return Err(HostError::denied(format!(
+                "runs nest at most {MAX_DEPTH} deep"
+            )));
+        }
+        // Grants narrow, never widen: the run gets what both the caller
+        // and the notebook it runs may do. A run writes nothing, so it has
+        // no self.* calls.
+        let callee = self.grant_for(Some(path.clone())).await;
+        let grant = Who {
+            read: intersect(&who.read, &callee.read),
+            run: intersect(&who.run, &callee.run),
+            edit_self: false,
+            depth: who.depth + 1,
+            notebook: Some(path.clone()),
+        };
+        let slot = {
+            let mut slots = self.slots.lock().unwrap();
+            slots.retain(|k, _| self.state.kernels.get(k).is_ok());
+            slots
+                .entry(caller.kernel_id.clone())
+                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(WIDTH)))
+                .clone()
+        };
+        let _permit = slot
+            .acquire_owned()
+            .await
+            .map_err(|e| HostError::failed(e.to_string()))?;
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        self.runs.lock().unwrap().insert(token.clone(), grant);
+        let _entry = RunEntry {
+            runs: &self.runs,
+            token: token.clone(),
+        };
+        request.path = path;
+        crate::run::run_notebook(&self.state, &request, vec![(RUN_VAR.to_string(), token)])
+            .await
+            .map_err(|e| HostError::failed(e.message))
+    }
+
     async fn search(&self, who: &Who, params: &Value) -> Result<Value, HostError> {
         let query = params["query"]
             .as_str()
@@ -383,6 +550,9 @@ impl Responder for HostApi {
     async fn hello(&self, caller: &Caller) -> Hello {
         let who = self.who(caller).await;
         let mut methods: Vec<String> = READS.iter().map(|m| m.to_string()).collect();
+        if !who.run.is_empty() && who.depth < MAX_DEPTH {
+            methods.push("notebooks.run".into());
+        }
         if who.edit_self && who.notebook.is_some() {
             methods.extend(SELF_EDITS.iter().map(|m| m.to_string()));
         }
@@ -399,6 +569,7 @@ impl Responder for HostApi {
             "notebooks.read" => self.read(&who, &params).await,
             "notebooks.results" => self.results(&who, &params).await,
             "notebooks.search" => self.search(&who, &params).await,
+            "notebooks.run" => self.run(caller, &who, params).await,
             m if SELF_EDITS.contains(&m) => {
                 if !who.edit_self {
                     return Err(HostError::denied(
@@ -566,5 +737,30 @@ impl HostApi {
             )),
             Refused::Bad(m) => HostError::failed(m),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::intersect;
+
+    fn v(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|p| p.to_string()).collect()
+    }
+
+    #[test]
+    fn intersect_keeps_what_both_grants_cover() {
+        // The root and anything: the narrower side.
+        assert_eq!(intersect(&v(&[""]), &v(&["journal"])), v(&["journal"]));
+        assert_eq!(intersect(&v(&["journal"]), &v(&[""])), v(&["journal"]));
+        // A folder and a path under it: the path.
+        assert_eq!(
+            intersect(&v(&["journal"]), &v(&["journal/2026", "reports"])),
+            v(&["journal/2026"])
+        );
+        // Whole segments: journal doesn't cover journal-private.
+        assert!(intersect(&v(&["journal"]), &v(&["journal-private"])).is_empty());
+        // Nothing on either side is nothing.
+        assert!(intersect(&v(&[]), &v(&[""])).is_empty());
     }
 }

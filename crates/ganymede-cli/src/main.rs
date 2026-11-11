@@ -175,8 +175,8 @@ enum Cmd {
     /// Grant a notebook more or less of the host API than the defaults.
     ///
     /// What a notebook's cells may ask the server for through
-    /// `jupyter.host()`: `read=PATH` (other notebooks it may read) and
-    /// `edit_self` (its own cells). Kept by file id beside the server's
+    /// `jupyter.host()`: `read=PATH` (other notebooks it may read),
+    /// `run=PATH` (notebooks it may run) and `edit_self` (its own cells). Kept by file id beside the server's
     /// file id database in the Jupyter data dir; a running server sees a
     /// change on the next call.
     Grant(grant::GrantArgs),

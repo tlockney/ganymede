@@ -18,10 +18,11 @@ traffic from other clients, and answers `hello`, `notebooks.list`,
 `notebooks.read`, `notebooks.search` and `notebooks.results`, with the `[host] read` grant
 from the config file ([Reference](reference.md#the-host-api)), and
 `self.add`, `self.edit` and `self.delete`, unless `[host] edit_self` is
-off. A notebook's own grant, set with `ganymede grant`, replaces those
-defaults for it. cdp-kernel's client is `jupyter.host()`. The rest of
-this page is the design; `notebooks.run` (and its `run` grant) comes
-next.
+off, and `notebooks.run` under the `[host] run` grant (none by
+default). A notebook's own grant, set with `ganymede grant`, replaces
+those defaults for it. cdp-kernel's client is `jupyter.host()`. The rest
+of this page is the design; a run's `save: "copy"`, `ganymede execute`
+grants and a granting sheet in the apps come next.
 
 ## The problem
 
