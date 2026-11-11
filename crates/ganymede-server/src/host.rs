@@ -508,8 +508,8 @@ impl HostApi {
         let who = &self.who(caller).await;
         self.check_run(who, &path)?;
         // Grants narrow, never widen: the run gets what both the caller
-        // and the notebook it runs may do. A run writes nothing, so it has
-        // no self.* calls.
+        // and the notebook it runs may do. A run never writes its own
+        // notebook (at most a copy under runs/), so it has no self.* calls.
         let callee = self.grant_for(Some(path.clone())).await;
         let grant = Who {
             read: intersect(&who.read, &callee.read),

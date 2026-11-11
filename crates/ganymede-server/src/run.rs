@@ -337,6 +337,10 @@ async fn save_copy(
             .map_err(|e| e.to_string())?;
     }
     let content = serde_json::to_value(nb).map_err(|e| e.to_string())?;
+    // One copy at a time, so two runs started in the same second can't
+    // both find the same name free.
+    static PICKING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _picking = PICKING.lock().await;
     for n in 1..=100 {
         let copy = copy_path(path, started, n);
         let exists = state
@@ -369,4 +373,32 @@ async fn save_copy(
         return Ok(copy);
     }
     Err(format!("too many runs of {path} in one second"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::copy_path;
+
+    #[test]
+    fn copies_are_named_for_the_notebook_and_the_start() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-11-11T19:30:05.250Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            copy_path("reports/daily.ipynb", at, 1),
+            "runs/reports/daily/2026-11-11T193005Z.ipynb"
+        );
+        assert_eq!(
+            copy_path("reports/daily.ipynb", at, 0),
+            copy_path("reports/daily.ipynb", at, 1)
+        );
+        assert_eq!(
+            copy_path("reports/daily.ipynb", at, 2),
+            "runs/reports/daily/2026-11-11T193005Z-2.ipynb"
+        );
+        assert_eq!(
+            copy_path("index.ipynb", at, 3),
+            "runs/index/2026-11-11T193005Z-3.ipynb"
+        );
+    }
 }
