@@ -330,8 +330,11 @@ that reads the variable and writes the MIME type takes part.
 
 When a name appears more than once, the last output wins, as in
 scrapbook. `--results` prints one JSON line per notebook: `{"path",
-"status": "ok" | "error", "results": {name: value}, "error"?}`, with the
-results published before a failure too.
+"status": "ok" | "error", "results": {name: value}, "error"?}`. The
+results come only from cells the run executed, so a failed run reports
+what it published before the failure, never what an earlier run saved in
+later cells or in cells skipped by tag. A run that stops on a signal, or
+whose notebook can't be saved, prints its line and ends the command.
 
 ## Logging
 
