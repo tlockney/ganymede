@@ -837,15 +837,19 @@ pub async fn put_grant(
     }
     let mut grant: Grant =
         serde_json::from_value(body.clone()).map_err(|e| HttpError(400, e.to_string()))?;
-    let normalize = |paths: &mut Option<Vec<String>>| {
-        if let Some(paths) = paths {
-            for p in paths.iter_mut() {
-                *p = ganymede_contents::normalize_api_path(p);
+    // As `ganymede grant`: no `..`, which would read as narrow and could
+    // resolve to the whole root.
+    let normalize = |paths: &mut Option<Vec<String>>| -> Result<(), HttpError> {
+        for p in paths.iter_mut().flatten() {
+            if p.split(['/', '\\']).any(|c| c == "..") {
+                return Err(HttpError(400, format!("{p}: `..` is not allowed")));
             }
+            *p = ganymede_contents::normalize_api_path(p);
         }
+        Ok(())
     };
-    normalize(&mut grant.read);
-    normalize(&mut grant.run);
+    normalize(&mut grant.read)?;
+    normalize(&mut grant.run)?;
     store_grant(&state, &path, grant).await
 }
 

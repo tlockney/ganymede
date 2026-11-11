@@ -1212,6 +1212,16 @@ async fn the_grants_route_sets_reads_and_revokes_a_notebooks_grant() {
     assert_eq!(s, 400);
     let (s, _) = http(&app, "PUT", url, Some(json!(["read"]))).await;
     assert_eq!(s, 400);
+    for bad in ["journal/..", "../x", "a/../journal"] {
+        let (s, v) = http(&app, "PUT", url, Some(json!({ "run": [bad] }))).await;
+        assert_eq!(s, 400, "{bad}");
+        assert!(v["message"].as_str().unwrap().contains("`..`"), "{v}");
+    }
+    // Nothing was stored by the refused ones.
+    assert_eq!(
+        http(&app, "GET", url, None).await.1["grant"],
+        json!({"read": ["journal-private"], "run": ["journal"]})
+    );
     let (s, _) = http(&app, "GET", "/api/host/grants/nope.ipynb", None).await;
     assert_eq!(s, 404);
     // A folder isn't a notebook.
