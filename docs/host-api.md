@@ -59,7 +59,7 @@ host.has("notebooks.run");                     // false unless granted
 
 const journals = await host.notebooks.list({ dir: "journal" });
 const hits = await host.notebooks.search({ query: "weekday drop", dir: "journal", outputs: true });
-const nb = await host.notebooks.read({ path: hits[0].path });  // nbformat JSON
+const { notebook } = await host.notebooks.read({ path: hits[0].path });  // nbformat JSON
 const results = await host.notebooks.results({ path: "journal/2026-11-09-fremont-bridge.ipynb" });
 results.weekday_drop;                          // -0.19
 
