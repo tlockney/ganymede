@@ -18,10 +18,14 @@ not something the server needs ([Other kernels](kernels.md)).
   Jupyter; also the binary by hand or from source.
 - [Getting started](getting-started.md): run code, execute notebooks, and
   serve the API.
+- [Notebooks as programs](programs.md): parameters in, named results
+  out, from the CLI, CI, HTTP, links, Shortcuts and other notebooks.
 - [JupyterLab and VS Code](frontends.md): point an existing frontend at
   Ganymede.
 - [Ganymede's app](app.md): its own notebook app, in a browser and on the
   Mac, iPad and iPhone.
+- [An agent and a person in one notebook](agent-journals.md): why an
+  agent keeps a journal, and how the server makes it live.
 - [Agents over MCP](mcp.md): a coding agent journaling an analysis into
   a notebook, with `ganymede mcp` and the ganymede-journal plugin for
   Claude Code; [nb-cli](agents.md) for agents without MCP.
@@ -39,3 +43,4 @@ suite compares Ganymede against `jupyter execute` and `jupyter server` on
 cdp-kernel and ipykernel. [Known gaps](known-gaps.md) lists what doesn't
 work yet, the [Roadmap](roadmap.md) what is planned, and the
 [development log](notes.md) what each step found.
+[Why Ganymede](why.md) has where it came from and what it is for.

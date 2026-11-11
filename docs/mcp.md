@@ -220,10 +220,6 @@ notebooks and says so when it stops early.
 
 ## Publishing a notebook
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 `notebook_publish` saves the notebook as one HTML page to read and
 share, such as a finished journal:
 

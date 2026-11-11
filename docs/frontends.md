@@ -181,10 +181,6 @@ The exports are `GET /nbconvert/{format}/{path}`, with `?download=true`
 for a download, and `/api/nbconvert` lists the formats. PDF, LaTeX, and
 slides need nbconvert's Python templates and aren't offered.
 
-> [!NOTE]
-> **Unreleased.** The HTML format is available only from a build of
-> `main` (HEAD), not in the latest release.
-
 ## Terminals
 
 JupyterLab's Terminal launcher works: Ganymede serves `/api/terminals` and

@@ -24,10 +24,40 @@ export interface Group {
   items: Page[];
 }
 
-// The sidebar, in reading order. config.mts passes it to VitePress, and the
-// theme looks pages up here to find their level. Add a group here when its
-// first page exists; an empty group renders as a dead heading.
-export function groups(): Group[] {
+// ganymede-ui's pages, copied into docs/ganymede-ui/ by `npm run
+// fetch-ui`, that the sidebar places by name, with their sidebar titles.
+// The titles are set here because the pages' own headings ("Releasing",
+// "Architecture") would repeat Ganymede's in the same group. groups()
+// leaves out any page the copy lacks; uiUnplaced() finds any the copy has
+// and groups() doesn't place, so a new page in ganymede-ui still shows.
+const uiPlaced: Record<string, string> = {
+  apps: "The Mac, iPad and iPhone apps",
+  shortcuts: "Keyboard shortcuts",
+  device: "Device API",
+  architecture: "ganymede-ui architecture",
+  deploying: "Deploying ganymede-ui",
+  releasing: "Releasing ganymede-ui",
+};
+
+function ui(name: string, has: (name: string) => boolean): Page[] {
+  if (!Object.hasOwn(uiPlaced, name)) throw new Error(`levels.ts: no title for ganymede-ui page ${name}`);
+  return has(name) ? [{ text: uiPlaced[name], link: `/ganymede-ui/${name}` }] : [];
+}
+
+// The names of ganymede-ui's copied pages (`pages`, such as "apps") that
+// groups() doesn't place, read from what groups() emits.
+export function uiUnplaced(pages: string[]): string[] {
+  const placed = new Set(groups().flatMap((g) => g.items.map((p) => p.link)));
+  return pages.filter((name) => !placed.has(`/ganymede-ui/${name}`));
+}
+
+// The sidebar, in reading order: grouped by what the reader is doing,
+// whichever repository a page comes from. config.mts passes it to
+// VitePress, and the theme looks pages up here to find their level. `has`
+// says which of ganymede-ui's pages were copied in; the theme passes
+// nothing and gets them all. Add a group here when its first page exists;
+// an empty group renders as a dead heading.
+export function groups(has: (name: string) => boolean = () => true): Group[] {
   return [
     {
       text: "Get started",
@@ -36,27 +66,40 @@ export function groups(): Group[] {
         { text: "Overview", link: "/" },
         { text: "Install", link: "/install" },
         { text: "Getting started", link: "/getting-started" },
-        { text: "Other kernels", link: "/kernels" },
       ],
     },
     {
-      text: "Guides",
+      text: "Use the apps",
+      level: "guide",
+      items: [
+        { text: "Ganymede's app", link: "/app" },
+        ...ui("apps", has),
+        ...ui("shortcuts", has),
+        ...ui("device", has),
+      ],
+    },
+    {
+      text: "Notebooks as programs",
+      level: "guide",
+      items: [{ text: "Parameters, results and runs", link: "/programs" }],
+    },
+    {
+      text: "Work with an agent",
+      level: "guide",
+      items: [
+        { text: "Overview", link: "/agent-journals" },
+        { text: "Agents over MCP", link: "/mcp" },
+        { text: "Agents with nb-cli", link: "/agents" },
+        { text: "Live editing and document rooms", link: "/rooms" },
+      ],
+    },
+    {
+      text: "Use Jupyter tools",
       level: "guide",
       items: [
         { text: "JupyterLab and VS Code", link: "/frontends" },
-        { text: "Live editing and document rooms", link: "/rooms" },
-        { text: "Ganymede's app", link: "/app" },
+        { text: "Other kernels", link: "/kernels" },
         { text: "Switching from jupyter_server", link: "/switching" },
-        { text: "Security", link: "/security" },
-        { text: "Privacy and crash reporting", link: "/privacy" },
-      ],
-    },
-    {
-      text: "Agents",
-      level: "guide",
-      items: [
-        { text: "Agents over MCP", link: "/mcp" },
-        { text: "Agents with nb-cli", link: "/agents" },
       ],
     },
     {
@@ -86,6 +129,8 @@ export function groups(): Group[] {
       level: "advanced",
       items: [
         { text: "Architecture", link: "/architecture" },
+        { text: "Security", link: "/security" },
+        { text: "Privacy and crash reporting", link: "/privacy" },
         { text: "Embedding", link: "/embedding" },
         { text: "Replacing Python", link: "/python-free" },
       ],
@@ -94,6 +139,7 @@ export function groups(): Group[] {
       text: "Background",
       level: "background",
       items: [
+        { text: "Why Ganymede", link: "/why" },
         { text: "Protocol and kernel host", link: "/protocol" },
         { text: "User interfaces", link: "/ui" },
         { text: "The iPad use case", link: "/ipados" },
@@ -109,14 +155,19 @@ export function groups(): Group[] {
       items: [
         { text: "Development", link: "/development" },
         { text: "Releasing", link: "/releasing" },
+        ...ui("architecture", has),
+        ...ui("deploying", has),
+        ...ui("releasing", has),
         { text: "Development log", link: "/notes" },
       ],
     },
   ];
 }
 
-// The level of the page at `relativePath` ("install.md", "README.md"), if any.
+// The level of the page at `relativePath` ("install.md", "README.md"), if
+// any. ganymede-ui's pages get none: the level notes describe Ganymede's.
 export function levelOf(relativePath: string): Level | undefined {
+  if (relativePath.startsWith("ganymede-ui/")) return;
   const link = "/" + relativePath.replace(/(^|\/)(README|index)\.md$/, "$1").replace(/\.md$/, "");
   return groups().find((g) => g.items.some((p) => p.link === link))?.level;
 }
