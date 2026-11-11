@@ -101,7 +101,9 @@ number. Locally: `cargo llvm-cov --workspace --open`.
   at the top of `.github/workflows/ci.yml`. Bump them together in one
   pull request, with the `CDP_KERNEL_VERSION` default in
   `container/Dockerfile` and the
-  [tested versions](architecture.md#tested-versions) table. A weekly
+  [tested versions](architecture.md#tested-versions) table; for
+  cdp-kernel, `scripts/release.sh` does this in the release commit
+  ([Releasing](releasing.md)). A weekly
   scheduled run installs the latest releases instead, so drift shows up
   there first. `NB_CLI_VERSION` (nb-cli, for the workstation job) is
   pinned there too and also goes to the latest release on the scheduled
