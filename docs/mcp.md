@@ -107,6 +107,8 @@ isn't reported to the agent as someone else's edit.
 
 ## Tools
 
+[MCP tools](mcp-tools.md) has each tool's parameters.
+
 | Tool | Does |
 | --- | --- |
 | `notebook_open` | Open a notebook, creating it (and its directories) when missing, with an optional title cell; start or join its kernel. Later calls may leave out `path`. |

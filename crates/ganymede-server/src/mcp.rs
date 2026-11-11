@@ -32,6 +32,8 @@
 //! (see the `marks` module).
 
 mod marks;
+#[cfg(test)]
+mod reference;
 pub(crate) mod search;
 mod snapshot;
 
@@ -202,6 +204,7 @@ pub struct RunArgs {
     /// it runs again: for output too large or too private to keep. You
     /// still get the outputs back.
     pub keep_outputs: Option<bool>,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
 }
 
@@ -225,6 +228,7 @@ pub enum AddMode {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AddArgs {
+    /// The cell's source: Markdown, or the command or step it records.
     pub source: String,
     /// Default markdown.
     pub cell_type: Option<CellKind>,
@@ -232,6 +236,7 @@ pub struct AddArgs {
     pub mode: Option<AddMode>,
     /// Insert after this cell id (default: at the end).
     pub after: Option<String>,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
     /// A read mark (from an `@@read` line) to move past the new cell, as
     /// if its reader had added it: for a hook adding a cell on an agent's
@@ -241,36 +246,47 @@ pub struct AddArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct EditArgs {
+    /// The cell's id.
     pub id: String,
+    /// The new source, in place of the whole cell's.
     pub source: String,
     /// Run the cell after editing it (code cells).
     pub run: Option<bool>,
+    /// With `run`: seconds to wait for the result (default 600). The cell
+    /// keeps running after a timeout.
     pub timeout: Option<u64>,
     /// With `run`: keep the outputs in the notebook (default: as the cell
     /// had it). `false` leaves them out, as `cell_run`'s `keep_outputs`.
     pub keep_outputs: Option<bool>,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ClearOutputsArgs {
+    /// The code cell's id.
     pub id: String,
     /// `true` keeps the cell's outputs again from its next run.
     pub keep: Option<bool>,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct IdArgs {
+    /// The cell's id.
     pub id: String,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct MoveArgs {
+    /// The id of the cell to move.
     pub id: String,
     /// Put the cell after this one; at the top when left out.
     pub after: Option<String>,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
 }
 
@@ -284,7 +300,9 @@ pub enum KernelAction {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct KernelArgs {
+    /// What to do to the notebook's kernel.
     pub action: KernelAction,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
 }
 
@@ -292,7 +310,10 @@ pub struct KernelArgs {
 pub struct RunAllArgs {
     /// Restart the kernel first (default true).
     pub restart: Option<bool>,
+    /// Seconds to wait for every cell to finish (default 600). Cells keep
+    /// running after a timeout.
     pub timeout: Option<u64>,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
 }
 
@@ -308,6 +329,7 @@ pub struct SnapshotArgs {
     pub code: Option<bool>,
     /// Rows to keep of an HTML table (default 20).
     pub max_rows: Option<usize>,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
 }
 
@@ -323,6 +345,7 @@ pub struct PublishArgs {
     pub byline: Option<String>,
     /// Replace `out` even when it isn't an earlier published page.
     pub overwrite: Option<bool>,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
 }
 

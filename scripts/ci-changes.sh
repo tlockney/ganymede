@@ -8,7 +8,8 @@
 # (BASE_SHA, github.event.before), or HEAD^1 without it (#458), so a
 # docs-only merge doesn't run everything either. Docs, the site,
 # Markdown and examples/ can't change what the jobs test (pages.yml
-# builds the site), and neither can spikes/, which no crate depends on;
+# builds the site), except docs/mcp-tools.md, which ganymede-server's
+# tests read, and neither can spikes/, which no crate depends on;
 # site/install.sh can, and anything not listed counts as code. The
 # schedule and manual runs run everything, and so does a push whose
 # base can't be found or diffed.
@@ -44,6 +45,9 @@ while IFS= read -r f; do
   [ -n "$f" ] || continue
   case $f in
     site/install.sh) code=true ;;
+    # Generated from the MCP tools and checked by ganymede-server's
+    # tests (src/mcp/reference.rs).
+    docs/mcp-tools.md) code=true ;;
     *.md | docs/* | site/* | LICENSE | cliff.toml) ;;
     # Example notebooks and their data scripts, which the site renders.
     examples/*) ;;
