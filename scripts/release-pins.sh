@@ -30,6 +30,11 @@ esac
 npm=${GANYMEDE_NPM_URL:-https://registry.npmjs.org}
 github=${GANYMEDE_GITHUB_URL:-https://github.com}
 api=${GANYMEDE_GITHUB_API:-https://api.github.com}
+# A token, when there is one, lifts the GitHub API's 60 calls an hour.
+auth=()
+if [[ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]]; then
+  auth=(-H "Authorization: Bearer ${GH_TOKEN:-$GITHUB_TOKEN}")
+fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -62,13 +67,13 @@ replace_line() {
 # Replaces the text $2 with $3 in the one line of file $1 that contains $2.
 replace_in_line() {
   local file=$1 old=$2 new=$3 line
-  line=$(grep -F -- "$old" "$file" | head -n 1)
+  line=$(grep -F -- "$old" "$file" | head -n 1 || true)
   replace_line "$file" "$old" "${line/"$old"/"$new"}"
 }
 
 # cdp-kernel
 cdp_pin=$(sed -n "s/^  CDP_KERNEL_VERSION: .* || '\([^']*\)' }}$/\1/p" .github/workflows/ci.yml)
-cdp_latest=$(curl -fsSL "$npm/@tlockney%2fcdp-kernel/latest" | jq -r .version)
+cdp_latest=$(curl -fsSL --retry 3 "$npm/@tlockney%2fcdp-kernel/latest" | jq -r .version)
 if [[ -z "$cdp_pin" || -z "$cdp_latest" || "$cdp_latest" == null ]]; then
   echo "error: couldn't read the cdp-kernel pin ($cdp_pin) or npm's latest ($cdp_latest)" >&2
   exit 1
@@ -81,7 +86,7 @@ fi
 # ganymede-ui
 ui=crates/ganymede-cli/src/ui.rs
 ui_pin=$(sed -n 's/^pub const DEFAULT_VERSION: &str = "\(.*\)";$/\1/p' "$ui")
-ui_tag=$(curl -fsSL "$api/repos/tlockney/ganymede-ui/releases/latest" | jq -r .tag_name)
+ui_tag=$(curl -fsSL --retry 3 ${auth[@]+"${auth[@]}"} "$api/repos/tlockney/ganymede-ui/releases/latest" | jq -r .tag_name)
 ui_latest=${ui_tag#v}
 if [[ -z "$ui_pin" || -z "$ui_latest" || "$ui_tag" == null ]]; then
   echo "error: couldn't read the ganymede-ui pin ($ui_pin) or its latest release ($ui_tag)" >&2
@@ -97,9 +102,9 @@ fi
 if [[ "$ui_latest" != "$ui_pin" ]]; then
   zip=ganymede-ui-$ui_latest.zip
   base="$github/tlockney/ganymede-ui/releases/download/$ui_tag"
-  curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"
+  curl -fsSL --retry 3 -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"
   sum=$(awk -v f="$zip" '$2 == f || $2 == "*" f { print tolower($1) }' "$tmp/SHA256SUMS")
-  curl -fsSL -o "$tmp/$zip" "$base/$zip"
+  curl -fsSL --retry 3 -o "$tmp/$zip" "$base/$zip"
   actual=$(sha256sum "$tmp/$zip" 2> /dev/null || shasum -a 256 "$tmp/$zip")
   actual=${actual%% *}
   if [[ ! "$sum" =~ ^[0-9a-f]{64}$ || "$sum" != "$actual" ]]; then
@@ -108,24 +113,33 @@ if [[ "$ui_latest" != "$ui_pin" ]]; then
   fi
 fi
 
-# Report, then write.
-if [[ "$cdp_latest" == "$cdp_pin" ]]; then
-  echo "cdp-kernel $cdp_pin: latest"
-else
-  echo "cdp-kernel $cdp_pin -> $cdp_latest"
-  v=$cdp_latest
-  replace_line .github/workflows/ci.yml "  CDP_KERNEL_VERSION: " \
-    "  CDP_KERNEL_VERSION: \${{ github.event_name == 'schedule' && 'latest' || '$v' }}"
-  replace_line container/Dockerfile "ARG CDP_KERNEL_VERSION=" "ARG CDP_KERNEL_VERSION=$v"
-  replace_in_line docs/architecture.md "cdp-kernel $cdp_pin in the e2e suite" "cdp-kernel $v in the e2e suite"
-  replace_in_line docs/development.md "Node 24, cdp-kernel $cdp_pin," "Node 24, cdp-kernel $v,"
-  replace_in_line docs/install.md "\"version\": \"$cdp_pin\"" "\"version\": \"$v\""
-fi
+# Reports each pin and writes it. Run once with check=true first, so a
+# line the replacements can't find stops the run before anything changes.
+apply() {
+  if [[ "$cdp_latest" == "$cdp_pin" ]]; then
+    echo "cdp-kernel $cdp_pin: latest"
+  else
+    echo "cdp-kernel $cdp_pin -> $cdp_latest"
+    v=$cdp_latest
+    replace_line .github/workflows/ci.yml "  CDP_KERNEL_VERSION: " \
+      "  CDP_KERNEL_VERSION: \${{ github.event_name == 'schedule' && 'latest' || '$v' }}"
+    replace_line container/Dockerfile "ARG CDP_KERNEL_VERSION=" "ARG CDP_KERNEL_VERSION=$v"
+    replace_in_line docs/architecture.md "cdp-kernel $cdp_pin in the e2e suite" "cdp-kernel $v in the e2e suite"
+    replace_in_line docs/development.md "Node 24, cdp-kernel $cdp_pin," "Node 24, cdp-kernel $v,"
+    replace_in_line docs/install.md "\"version\": \"$cdp_pin\"" "\"version\": \"$v\""
+  fi
 
-if [[ "$ui_latest" == "$ui_pin" ]]; then
-  echo "ganymede-ui $ui_pin: latest"
-else
-  echo "ganymede-ui $ui_pin -> $ui_latest (sha256 $sum)"
-  replace_line "$ui" 'pub const DEFAULT_VERSION: &str = ' "pub const DEFAULT_VERSION: &str = \"$ui_latest\";"
-  replace_line "$ui" 'const DEFAULT_SHA256: &str = ' "const DEFAULT_SHA256: &str = \"$sum\";"
+  if [[ "$ui_latest" == "$ui_pin" ]]; then
+    echo "ganymede-ui $ui_pin: latest"
+  else
+    echo "ganymede-ui $ui_pin -> $ui_latest (sha256 $sum)"
+    replace_line "$ui" 'pub const DEFAULT_VERSION: &str = ' "pub const DEFAULT_VERSION: &str = \"$ui_latest\";"
+    replace_line "$ui" 'const DEFAULT_SHA256: &str = ' "const DEFAULT_SHA256: &str = \"$sum\";"
+  fi
+}
+if ! $check; then
+  check=true
+  apply > /dev/null
+  check=false
 fi
+apply

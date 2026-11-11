@@ -29,6 +29,12 @@ for tool in cargo-release git-cliff; do
     exit 1
   fi
 done
+for tool in curl jq; do
+  if ! command -v "$tool" > /dev/null; then
+    echo "error: $tool not found" >&2
+    exit 1
+  fi
+done
 
 cd "$(git rev-parse --show-toplevel)"
 
@@ -79,8 +85,17 @@ prepare() {
     echo "error: couldn't refresh e2e/wasm-smoke/Cargo.lock; the release commit is undone" >&2
     exit 1
   fi
-  # The pins it moved go in the commit message, and from there into the
-  # pull request.
+  # The pins it moved go in the version's CHANGELOG.md section, which is
+  # the release's notes (cliff skips the release commit itself), and in
+  # the commit message, and from there into the pull request.
+  version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+  moved=$(sed -n 's/^\([^ ]*\) [^ ]* -> \([^ ]*\).*/- Pick up \1 \2/p' <<< "$pins")
+  if [[ -n "$moved" ]]; then
+    MOVED=$moved VERSION=$version awk '
+      { print }
+      index($0, "## [" ENVIRON["VERSION"] "]") == 1 { getline; print; print ENVIRON["MOVED"] }' CHANGELOG.md > CHANGELOG.md.new
+    mv CHANGELOG.md.new CHANGELOG.md
+  fi
   git commit --quiet --amend --all -m "$(git log -1 --format=%s)" -m "Pins:
 $pins"
 

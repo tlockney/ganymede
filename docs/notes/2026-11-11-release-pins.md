@@ -23,3 +23,12 @@ The script does every lookup, download and hash check before it writes,
 rejects arguments other than `--check`, and counts a prerelease as older
 than its own release (`sort -V` alone ranks `0.11.0` below
 `0.11.0-rc.1`). The same fixes came out of the review of ganymede-ui#490.
+
+After review: a write run first does every replacement in check mode,
+so a line it can't find stops it before anything changes, and a missing
+line now prints which one. The pins it moved also go into the version's
+CHANGELOG.md section as "Pick up ..." lines, so the GitHub Release notes
+list them; git-cliff skips the release commit, so a later regeneration
+of CHANGELOG.md drops those lines from the file, but the published
+notes keep them. curl retries, and GitHub API calls use `GH_TOKEN` when
+it is set.
