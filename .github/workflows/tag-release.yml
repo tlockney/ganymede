@@ -1,14 +1,22 @@
 name: Tag release
 
 # Recovery only: release.yml publishes a release from the main push of the
-# release commit itself (#675). Run this on main to tag its head vX.Y.Z
-# and start release.yml on the tag, after a release commit's own run
-# could not publish (docs/releasing.md). A tag pushed with GITHUB_TOKEN
+# release commit itself (#675). Run this on main to tag the release
+# commit vX.Y.Z (the last commit that set main's version), or the
+# `commit` given, and start release.yml on the tag, after a release
+# commit's own run could not publish (docs/releasing.md). Tagging the
+# release commit, not main's head, keeps later merges out of a release
+# whose notes don't list them. A tag pushed with GITHUB_TOKEN
 # starts no workflow by itself, so the release is dispatched explicitly.
 
 on:
   # Run on main only: it tags the head of the branch it runs on.
   workflow_dispatch:
+    inputs:
+      commit:
+        description: Commit to tag, on main (default the release commit). Give the fix's merge after a failed release.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -28,9 +36,13 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The history, to find the commit that set the version.
+          fetch-depth: 0
       - name: Tag the version if it is new, and start the release
         env:
           GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ inputs.commit }}
         run: |
           version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
           test -n "$version"
@@ -39,12 +51,29 @@ jobs:
             echo "CHANGELOG.md has no $version section; not a release commit"
             exit 0
           fi
+          if [[ -n "$COMMIT" ]]; then
+            target=$(git rev-parse --verify "$COMMIT^{commit}")
+            git merge-base --is-ancestor "$target" HEAD || { echo "::error::$COMMIT is not on main"; exit 1; }
+          else
+            # The newest first-parent commit on main whose Cargo.toml has
+            # this version and whose parent's doesn't.
+            target=
+            for c in $(git rev-list --first-parent HEAD -- Cargo.toml); do
+              v() { git show "$1:Cargo.toml" 2> /dev/null | sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p'; }
+              if [[ "$(v "$c")" == "$version" && "$(v "$c^")" != "$version" ]]; then
+                target=$c
+                break
+              fi
+            done
+            [[ -n "$target" ]] || { echo "::error::no commit on main sets version $version"; exit 1; }
+          fi
+          echo "Release commit: $target"
           if tagged=$(git ls-remote --exit-code --tags origin "refs/tags/$tag" "refs/tags/$tag^{}"); then
             # A rerun after the tag was pushed but release.yml never
             # started: start it, unless it already ran or the tag is on
             # another commit. An annotated tag's commit is its `^{}` line.
             commit=$(echo "$tagged" | tail -n 1)
-            if [[ "${commit%%[[:space:]]*}" != "$GITHUB_SHA" ]]; then
+            if [[ "${commit%%[[:space:]]*}" != "$target" ]]; then
               echo "$tag exists on another commit; nothing to do"
               exit 0
             fi
@@ -54,8 +83,8 @@ jobs:
               exit 0
             fi
           else
-            git tag "$tag" "$GITHUB_SHA"
+            git tag "$tag" "$target"
             git push origin "refs/tags/$tag"
           fi
           gh workflow run release.yml --ref "$tag"
-          echo "Tagged $GITHUB_SHA as $tag and started release.yml"
+          echo "Tagged $target as $tag and started release.yml"

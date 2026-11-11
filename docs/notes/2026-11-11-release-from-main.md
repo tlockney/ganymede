@@ -18,3 +18,10 @@ released from `tag-release.yml` by hand. The publish step makes the tag
 only if no other run has, and otherwise does nothing (the image too),
 so two runs can't publish the version twice. `tag-release.yml`
 stays, by hand only, to release from a tag when a run can't be rerun.
+
+The release commit is the push that changed the version, compared with
+the commit `main` was at before the push (`github.event.before`), so a
+release PR merged by rebase with several commits still counts.
+`tag-release.yml` tags that commit, found from history, or a commit you
+give it, not `main`'s head, so a recovery doesn't pull later merges
+into the release.

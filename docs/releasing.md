@@ -113,8 +113,10 @@ jobs from the run's page:
 gh run rerun <run-id> --failed --repo tlockney/ganymede
 ```
 
-If the run can't be rerun, tag the head of `main` and release from the
-tag with `tag-release.yml`, which then starts `release.yml` on it:
+If the run can't be rerun, release from a tag with `tag-release.yml`.
+It tags the release commit (the last commit on `main` that set the
+version), not `main`'s head, so merges since then stay out of the
+release, and starts `release.yml` on the tag:
 
 ```sh
 gh workflow run tag-release.yml --ref main --repo tlockney/ganymede
@@ -126,12 +128,19 @@ A build or version check fails for a reason that needs a code change.
 The tag is made only when the release publishes, so there is none yet:
 fix the problem in a pull request to `main`, as usual. Its merge doesn't
 change the version, so it is a main build; once it is on `main`, run
-`tag-release.yml` (above), which tags the fixed commit and releases it.
+`tag-release.yml` with that merge as the commit to tag:
+
+```sh
+gh workflow run tag-release.yml --ref main -f commit=<merge sha> --repo tlockney/ganymede
+```
+
+Anything merged between the release commit and the fix ships in this
+release without a line in its notes, so hold other merges until then.
 
 If a tag was made (by `tag-release.yml`) and no GitHub Release exists
 for it, nobody can have installed it, so move it: delete it with
 `git push origin :refs/tags/vX.Y.Z`, fix the problem on `main`, and run
-`tag-release.yml` again.
+`tag-release.yml` again with the fix's merge as `commit`.
 
 The changelog section stays as `scripts/release.sh` wrote it; the fix
 appears in the next release's notes.

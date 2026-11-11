@@ -60,6 +60,8 @@ jobs:
           fetch-depth: 2
       - id: version
         name: Read the workspace version; a tag must match it
+        env:
+          BEFORE: ${{ github.event.before }}
         run: |
           version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
           test -n "$version"
@@ -72,7 +74,15 @@ jobs:
             # A release commit changed the version, has a CHANGELOG.md
             # section for it, and isn't tagged yet. Only that commit: a later
             # merge before the tag would ship a change its notes don't list.
-            previous=$(git show HEAD^:Cargo.toml 2> /dev/null |
+            # A push compares with what main was before it, so a release PR
+            # merged by rebase with several commits still counts; a manual
+            # run compares with HEAD^.
+            base=HEAD^
+            if [[ "$GITHUB_EVENT_NAME" == push && -n "$BEFORE" && "$BEFORE" != 0000000000000000000000000000000000000000 ]] &&
+              git fetch --quiet --depth=1 origin "$BEFORE" 2> /dev/null; then
+              base=$BEFORE
+            fi
+            previous=$(git show "$base:Cargo.toml" 2> /dev/null |
               sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' || true)
             if [[ "$previous" != "$version" ]] &&
               grep -q "^## \[$version\]" CHANGELOG.md &&
