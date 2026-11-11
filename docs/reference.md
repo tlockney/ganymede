@@ -286,6 +286,8 @@ And the [server flags](#server-flags).
 | --- | --- |
 | `--client <CLIENT>` | The client name the server records in provenance. Default `ganymede-mcp-call`. |
 
+And `mcp`'s flags.
+
 ### `info`
 
 | Flag | Effect |

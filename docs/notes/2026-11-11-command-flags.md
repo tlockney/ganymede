@@ -33,3 +33,8 @@ The "Flags for every command" table is generated now too, from the root
 command, between its own markers, so it uses `--help`'s wording and value
 names. Flags that can repeat say so, since `--help` doesn't. The
 "Server flags" table stays hand-written, because it has the config keys.
+
+The second review's lows: a subcommand of a command with global flags now
+ends with "And `mcp`'s flags." (only `mcp call` today). A third test
+checks that the hand-written "Server flags" table names every `serve`
+flag, so a new one can't miss the page.

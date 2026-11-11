@@ -17,9 +17,7 @@ const GLOBAL_START: &str =
 const GLOBAL_END: &str = "<!-- global-flags:end -->";
 
 /// The command whose flags the hand-written "Server flags" table lists,
-/// with their config keys. Clap hasn't propagated global flags yet, so
-/// each command lists only the flags it declares, and the root's are the
-/// "Flags for every command" table.
+/// with their config keys.
 const SERVER: &str = "serve";
 
 /// Table cell text: one line, with `|` escaped.
@@ -111,7 +109,21 @@ fn table<'a>(flags: impl IntoIterator<Item = &'a clap::Arg>) -> String {
     out
 }
 
+/// Clap hasn't propagated global flags yet, so each command lists only the
+/// flags it declares. The root's are the "Flags for every command" table,
+/// and a subcommand of any other command with global flags says it takes
+/// them (`mcp call` takes `mcp`'s).
 fn walk(cmd: &Command, path: &str, server: &[String], out: &mut String) {
+    walk_under(cmd, path, None, server, out);
+}
+
+fn walk_under(
+    cmd: &Command,
+    path: &str,
+    inherits: Option<&str>,
+    server: &[String],
+    out: &mut String,
+) {
     let flags: Vec<_> = shown(cmd)
         // lab and ui take serve's flags, which the "Server flags" table lists.
         .filter(|a| {
@@ -123,7 +135,12 @@ fn walk(cmd: &Command, path: &str, server: &[String], out: &mut String) {
         if flattens_server(path) {
             out.push_str("\nAnd the [server flags](#server-flags).\n");
         }
+        if let Some(parent) = inherits {
+            out.push_str(&format!("\nAnd `{parent}`'s flags.\n"));
+        }
     }
+    let globals = !path.is_empty() && shown(cmd).any(|a| a.is_global_set());
+    let inherits = if globals { Some(path) } else { inherits };
     for sub in cmd.get_subcommands() {
         if sub.is_hide_set() || sub.get_name() == "help" {
             continue;
@@ -133,7 +150,7 @@ fn walk(cmd: &Command, path: &str, server: &[String], out: &mut String) {
         } else {
             format!("{path} {}", sub.get_name())
         };
-        walk(sub, &p, server, out);
+        walk_under(sub, &p, inherits, server, out);
     }
 }
 
@@ -187,4 +204,25 @@ fn reference_lists_every_command_flag() {
 #[test]
 fn reference_lists_the_flags_for_every_command() {
     check(GLOBAL_START, GLOBAL_END, &global());
+}
+
+/// The hand-written "Server flags" table names every `serve` flag.
+#[test]
+fn server_flags_table_lists_every_serve_flag() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/reference.md");
+    let doc = std::fs::read_to_string(path).unwrap();
+    let start = doc.find("\n## Server flags").expect("Server flags section");
+    let rest = &doc[start + 1..];
+    let table = &rest[..rest[3..].find("\n## ").map_or(rest.len(), |e| e + 3)];
+    let cli = crate::Cli::command();
+    let missing: Vec<_> = shown(cli.find_subcommand(SERVER).expect("serve"))
+        .filter_map(|a| a.get_long())
+        .filter(|long| {
+            !table.contains(&format!("`--{long}`")) && !table.contains(&format!("`--{long} <"))
+        })
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "docs/reference.md's Server flags table is missing {missing:?}"
+    );
 }
