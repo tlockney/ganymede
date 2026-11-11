@@ -3,6 +3,27 @@
 How a release is cut, what it publishes, and what to do when it fails
 partway through.
 
+## Order across the repositories
+
+A round releases cdp-kernel, then Ganymede, then ganymede-ui. Each
+release picks up the ones before it in its own release commit, so no
+separate pull request moves a pin:
+
+- Ganymede's `scripts/release.sh` runs `scripts/release-pins.sh`, which
+  moves CI's and the container image's cdp-kernel to npm's latest
+  release, and `ganymede ui install`'s default to ganymede-ui's latest
+  release, with the SHA-256 that release's `SHA256SUMS` lists and its
+  zip matches.
+- ganymede-ui's release script moves its cdp-kernel and its
+  `GANYMEDE_REF` to the latest releases, so the apps link the
+  XCFramework this release published.
+
+`ganymede ui install` therefore installs the ganymede-ui release from
+before the round until the next Ganymede release; `--version` installs
+a newer one, checked against its release's `SHA256SUMS`. Release
+cdp-kernel first only when it has changes; the scripts take whatever is
+latest.
+
 ## The normal path
 
 1. From an up-to-date `main`, `scripts/release.sh <level>` previews the
@@ -22,6 +43,11 @@ partway through.
    apps, which ship with ganymede-ui's release, and its release script
    opens an issue here to update them then.
 
+   The commit also moves the cdp-kernel and ganymede-ui pins to their
+   latest releases (above); the script prints each, and the commit
+   message and pull request list them. Run `scripts/release-pins.sh
+   --check` to see them without releasing.
+
    The bump also updates the docs that name the current release: the git
    `tag` in [Embedding](embedding.md) and the sample `ganymede_version` in
    [CLI and configuration](reference.md#server-info-file). The list is
@@ -39,7 +65,7 @@ partway through.
    `THIRD-PARTY-NOTICES` and SHA-256 checksums, attests their build
    provenance, and publishes the GitHub Release with the changelog section
    as notes. The release also carries `GanymedeFFI.xcframework.zip`, the
-   library the Mac and iPad app links, with
+   library the Mac, iPad and iPhone app links, with
    `GanymedeFFI.xcframework.zip.sha256` beside it, under the same name
    every release, so ganymede-ui downloads it for the tag it pins instead
    of building it ([Embedding](embedding.md#from-swift)).

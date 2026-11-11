@@ -47,7 +47,7 @@ machine with no Python or Jupyter, then
   connect a remote gateway, and crash reporting is off unless you turn
   it on ([Privacy](docs/privacy.md)).
 - Its own notebook app, [ganymede-ui](docs/app.md), in a browser and as a
-  Mac and iPad app.
+  Mac, iPad and iPhone app.
 - `ganymede-engine`, a library for embedding, which builds for iOS,
   Android, and wasm ([Embedding](docs/embedding.md)).
 

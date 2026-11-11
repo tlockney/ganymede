@@ -23,7 +23,7 @@ env:
   # What the end-to-end jobs install, in one place: e2e and image here,
   # and scripts/test-workstation.sh and scripts/test-install.sh read
   # CDP_KERNEL_VERSION; container/Dockerfile has it as a default too. Bump them together in one pull request
-  # (docs/development.md). The scheduled run takes the latest releases.
+  # (docs/development.md); scripts/release.sh moves CDP_KERNEL_VERSION in the release commit. The scheduled run takes the latest releases.
   CDP_KERNEL_VERSION: ${{ github.event_name == 'schedule' && 'latest' || '0.10.0' }}
   E2E_PYTHON_PACKAGES: ${{ github.event_name == 'schedule' && 'ipykernel nbclient jupyter_server jupyter_ydoc pycrdt websockets' || 'ipykernel==7.4.0 nbclient==0.11.0 jupyter_server==2.21.1 jupyter_ydoc==4.2.0 pycrdt==0.14.10 websockets==17.4' }}
   # nb-cli for validation/nb-cli.sh in the workstation job; empty means
@@ -348,6 +348,12 @@ jobs:
         with:
           persist-credentials: false
       - run: scripts/check-pins.sh
+      # What the next release would move the cdp-kernel and ganymede-ui
+      # pins to (#673); fails only if a pin is ahead of the latest release.
+      - if: ${{ !cancelled() }}
+        run: scripts/release-pins.sh --check
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   # Targets the desktop CI cannot run: the core libraries must build for
   # iOS, Android, and wasm, and the engine must run a notebook inside wasm.
@@ -630,7 +636,11 @@ jobs:
           npm install -g $LSP_NPM_PACKAGES
           cd validation
           npm ci
-          npx playwright install --with-deps chromium
+          npx playwright install chromium
+          # Best effort: the runner image has Chromium's libraries (it
+          # ships Chrome), so an apt mirror outage shouldn't fail the
+          # job (#686). Bounded: apt takes ~10 minutes to give up.
+          timeout 5m npx playwright install-deps chromium || echo "::warning::apt failed; using the runner image's libraries"
       - name: jupyterlab-lsp on Ganymede and on jupyter-lsp
         run: scripts/test-lsp.sh target/release/ganymede
         env:
@@ -691,7 +701,10 @@ jobs:
           cache: npm
           cache-dependency-path: validation/package-lock.json
       # Test tooling only, set up before Python is hidden. The browser
-      # download is cached; the system libraries (--with-deps) are not.
+      # download is cached; the system libraries are not, and installing
+      # them is best effort: the runner image has them (it ships Chrome),
+      # so an apt mirror outage shouldn't fail the job (#686). Bounded:
+      # apt takes ~10 minutes to give up.
       - if: needs.changes.outputs.code != 'false'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -704,7 +717,11 @@ jobs:
         working-directory: validation
         run: |
           npm ci
-          npx playwright install --with-deps chromium
+          npx playwright install chromium
+          # Linux only (macOS has nothing to install, and no `timeout`).
+          if [ "$RUNNER_OS" = Linux ]; then
+            timeout 5m npx playwright install-deps chromium || echo "::warning::apt failed; using the runner image's libraries"
+          fi
       # nb-cli, the notebook CLI for agents (Rust, BSD-3), for
       # validation/nb-cli.sh. A test tool only, built from crates.io.
       # Restore and save are separate so a failing job still keeps the

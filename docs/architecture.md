@@ -99,7 +99,7 @@ bottom do no I/O, so they build for any target.
 | Crate | What it is |
 |---|---|
 | `ganymede-cli` | The `ganymede` binary. |
-| `ganymede-ffi` | A C ABI (`include/ganymede.h`) that runs the server on loopback inside an app and returns its URL. A static library; `scripts/build-xcframework.sh` packages it for the Mac and iPad app. See [Embedding](embedding.md#the-server-in-an-app-from-c). |
+| `ganymede-ffi` | A C ABI (`include/ganymede.h`) that runs the server on loopback inside an app and returns its URL. A static library; `scripts/build-xcframework.sh` packages it for the Mac, iPad and iPhone app. See [Embedding](embedding.md#the-server-in-an-app-from-c). |
 | `ganymede-server` | The HTTP and websocket server. |
 | `ganymede-engine` | The library to embed: find kernelspecs, start or attach to kernels, execute with streaming output, run notebooks. See [Embedding](embedding.md). |
 | `ganymede-api` | Kernel and session managers, response models, the per-client bridge, idle culling. No HTTP. Contents path validation confines kernel working directories to the root. |
@@ -115,7 +115,7 @@ bottom do no I/O, so they build for any target.
 
 Outside the Rust core, and outside this repository, Ganymede's own UI
 lives in [tlockney/ganymede-ui](https://github.com/tlockney/ganymede-ui):
-a web app that is a client of this server's API, and the Mac and iPad app
+a web app that is a client of this server's API, and the Mac, iPad and iPhone app
 around it. How they are built is on ganymede-ui's
 [architecture](ganymede-ui/architecture.md) page.
 
