@@ -644,32 +644,33 @@ fn name_char(c: char) -> bool {
 /// character follows the dot, so a sentence can end on the path but
 /// `/srv/nb.bak` is left alone.
 fn replace_bounded(s: &str, text: &str, with: &str) -> String {
+    let separator_led = text.starts_with(['/', '\\']);
     let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    let mut prev: Option<char> = None;
-    while let Some(at) = rest.find(text) {
-        let before = rest[..at]
-            .chars()
-            .next_back()
-            .or(if at == 0 { prev } else { None });
-        let after = &rest[at + text.len()..];
-        let mut next = after.chars();
+    let mut from = 0;
+    while let Some(i) = s[from..].find(text) {
+        let at = from + i;
+        let end = at + text.len();
+        let mut next = s[end..].chars();
         let ends = match next.next() {
             None => true,
             Some('.') => !next.next().is_some_and(name_char),
             Some(c) => !name_char(c),
         };
-        let starts = !before.is_some_and(name_char);
-        out.push_str(&rest[..at]);
-        if ends && starts {
-            out.push_str(with);
+        // A path is inside a longer one (`/mnt` + `/srv/nb`) when the
+        // name run before it follows a separator; after a flag or word
+        // (`-I/home/tom`, `-v/srv/nb`) it stands on its own.
+        let head = &s[..at];
+        let starts = if separator_led {
+            let run = head.trim_end_matches(name_char);
+            run.len() == head.len() || !run.ends_with(['/', '\\'])
         } else {
-            out.push_str(text);
-        }
-        prev = text.chars().next_back();
-        rest = after;
+            !head.ends_with(name_char)
+        };
+        out.push_str(&s[from..at]);
+        out.push_str(if ends && starts { with } else { text });
+        from = end;
     }
-    out.push_str(rest);
+    out.push_str(&s[from..]);
     out
 }
 
@@ -1274,7 +1275,7 @@ mod tests {
                 "/home/tom",
                 "~"
             ),
-            "~/a /home/tommy/b ~. /home/tom.bak x/home/tom"
+            "~/a /home/tommy/b ~. /home/tom.bak x~"
         );
         assert_eq!(
             replace_bounded("tok123 xtok1234", "tok123", "[t]"),
@@ -1283,6 +1284,18 @@ mod tests {
         assert_eq!(
             replace_bounded("/mnt/srv/nb/x (/srv/nb/y) file:///srv/nb", "/srv/nb", "."),
             "/mnt/srv/nb/x (./y) file://."
+        );
+        assert_eq!(
+            replace_bounded(
+                "cc -I/home/tom/include -L/home/tom/lib -v/srv/nb:/data",
+                "/home/tom",
+                "~"
+            ),
+            "cc -I~/include -L~/lib -v/srv/nb:/data"
+        );
+        assert_eq!(
+            replace_bounded("-v/srv/nb:/data", "/srv/nb", "."),
+            "-v.:/data"
         );
         for root in ["/", "//", "C:\\", "\\", ""] {
             assert!(is_root_like(root), "{root}");
