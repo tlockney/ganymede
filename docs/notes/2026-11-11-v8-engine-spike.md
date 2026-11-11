@@ -101,21 +101,22 @@ What the numbers say, pending a device (Mac medians):
   about 840 KB, and loading the 700 KB stripper bundle took jitless V8
   about 13 ms.
 - **Compute** is where the JIT shows, and WebKit in the apps keeps its
-  JIT on iOS. Jitless V8 is about 2 to 3x slower than WebKit: the CPU
+  JIT on iOS. Jitless V8 is about 2 to 5x slower than WebKit: the CPU
   cell 104 vs 49 ms on a first run (101 vs 34 steady), stripping types
   138 vs 83 ms first (117 vs 25 steady), the allocation-heavy cell 122
-  vs 79 ms. Node with `--jitless` lands with jitless V8, as it should.
+  vs 79 ms. Repeated type stripping is the worst case, about 4.7x
+  slower once WebKit's JIT has warmed up. Node with `--jitless` lands with jitless V8, as it should.
 - **Memory.** Jitless V8 kept the smallest process: about 360 MB peak
   for the whole run, against about 440 MB for V8 with its JIT and about
   610 MB for Node. The `memory` workload's 500,000 objects take about
   270 MB of heap in every V8; rusty_v8 builds without pointer
   compression, which would roughly halve that.
 
-So: about 7 MB to download, a faster start, less memory, and compute at
-a third to a half of WebKit's speed. Whether that is acceptable is the
+So: about 7 MB to download, a faster start, less memory, and compute
+2 to 5x slower than WebKit (5x for repeated type stripping). Whether that is acceptable is the
 call this spike was for. A typical cell (well under 100 ms of work)
 would stay under a quarter of a second; a heavy loop would take two to
-three times as long as it does in today's kernel. The device run will
+five times as long as it does in today's kernel. The device run will
 show whether the ratios hold on an iPad and iPhone, and what iOS's
 memory limit leaves. That run is by hand (the README's steps; listed
 in ganymede-ui#273).
