@@ -81,6 +81,11 @@ pull request with a GitHub issue, and records what it learned in the
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
 > the latest release.
 
+> [!NOTE]
+> **Unreleased in ganymede-ui.** The apps' Notebook Access sheet and
+> parameters on `ganymede://run` links are only in a build of
+> ganymede-ui's `main`, not its latest release.
+
 - **Parameters and named results.** `ganymede execute -p` and
   `--params-file` pass parameters, `--results` prints the named results,
   and `POST /api/notebooks/run` does the same over HTTP
@@ -89,8 +94,10 @@ pull request with a GitHub issue, and records what it learned in the
   own, through the host comm: `notebooks.list`, `read`, `search`,
   `results` and `run`, and `self.*`, under per-notebook grants set with
   `ganymede grant`, the grants route, or the apps' Notebook Access sheet
-  <!-- **Unreleased in ganymede-ui.** The Notebook Access sheet ships in ganymede-ui's release after 0.7.0. -->
   ([A host API for kernels](host-api.md)).
+- **Parameters on app links.** `ganymede://run` links and Shortcuts pass
+  parameters to a run
+  ([ganymede-ui#303](https://github.com/tlockney/ganymede-ui/issues/303)).
 - **In-app kernels as server kernels.** Ganymede's C functions let an
   app register its own kernels with the embedded server
   ([In-app kernels as server kernels](in-app-kernel.md)).
@@ -106,9 +113,7 @@ In order of priority.
    - granting from `ganymede execute`
      ([#647](https://github.com/tlockney/ganymede/issues/647));
    - saving each run as a copy
-     ([#658](https://github.com/tlockney/ganymede/issues/658));
-   - parameters on `ganymede://run` links and in Shortcuts
-     ([ganymede-ui#303](https://github.com/tlockney/ganymede-ui/issues/303)).
+     ([#658](https://github.com/tlockney/ganymede/issues/658)).
 2. **The apps as a full runtime.** The apps run notebooks in-process,
    with no external server. Next:
    - a native in-app engine, jitless V8, unless its size or speed on a
