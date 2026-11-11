@@ -28,3 +28,8 @@ went missing. It also dropped every flag named `--version`, which took
 `lab install --version` and `ui install --version` with clap's own.
 Now only `lab` and `ui` skip the server flags, and only clap's help and
 version actions are skipped.
+
+The "Flags for every command" table is generated now too, from the root
+command, between its own markers, so it uses `--help`'s wording and value
+names. Flags that can repeat say so, since `--help` doesn't. The
+"Server flags" table stays hand-written, because it has the config keys.
