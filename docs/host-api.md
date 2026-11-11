@@ -163,7 +163,9 @@ through its room, so every client sees the change live. They use the
 MCP cell tools' code and the execute endpoint's source hash (MurmurHash2,
 seed 0), so a cell can't overwrite an edit it hasn't seen. The hash
 comes from `notebooks.read`, which returns each cell's beside the
-notebook, so a client needn't compute it. They cover
+notebook, so a client needn't compute it. A notebook may always read
+itself, whatever its `read` grant, so a narrowed grant can't leave
+`self.*` without hashes. They cover
 the most common edit a notebook makes, regenerating a table or summary
 in one of its own cells, such as a journal index. A kernel with no
 notebook has no `self.*` calls.
@@ -222,6 +224,7 @@ server keeps grants; a notebook can't grant itself.
 [host]
 read = [""]          # API paths the notebooks.* reads may reach; "" is the root
 run = []             # notebooks this notebook may run; [] is none, [""] is all
+edit_self = true     # the self.* calls; false turns them off
 ```
 
 - **Defaults** come from `[host]` in the config file. Out of the box a
