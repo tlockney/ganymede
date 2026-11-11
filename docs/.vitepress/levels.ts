@@ -139,6 +139,7 @@ export function groups(has: (name: string) => boolean = () => true): Group[] {
       text: "Background",
       level: "background",
       items: [
+        { text: "Why Ganymede", link: "/why" },
         { text: "Protocol and kernel host", link: "/protocol" },
         { text: "User interfaces", link: "/ui" },
         { text: "The iPad use case", link: "/ipados" },
