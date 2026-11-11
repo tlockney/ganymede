@@ -21,8 +21,12 @@ Edit.
 2. If the user named a notebook, open it. Otherwise make one under
    `journal/`, named `YYYY-MM-DD-<topic>.ipynb`, with
    `notebook_open(path, title, kernel)`. The title is the question.
-   Default kernel: `cdp-node` (TypeScript); call `kernelspecs_list` if
-   it isn't there, and use what the user asks for.
+   Default kernel: `cdp-node` (TypeScript). Its `npm:` imports are
+   fetched when the cell runs, so the notebook names its own libraries
+   and re-runs where cdp-kernel is installed with no install step in
+   the notebook; a Python kernel only has what its environment has.
+   Use what the user asks for, and call `kernelspecs_list` if
+   `cdp-node` isn't there.
 3. Under the title, add a Markdown cell: the goal in a sentence or two,
    the date, who is working, and the kernel.
 4. Later tools may leave out `path`: they use the notebook last opened.
@@ -82,21 +86,46 @@ Edit.
     to see what others changed. With this plugin's hooks, those changes
     arrive as context when the user writes; work from what is there.
 
-## Charts
+## Output, charts and widgets
 
-14. Draw charts with Observable Plot or Vega-Lite, and look at the
-    chart before writing the finding: a chart can show what the table
-    you checked doesn't, such as a trend at the end of a series. When
-    the reply to `cell_run` has no image (the server doesn't send them),
-    call `cell_snapshot(ids: [<the cell id>], code: false)`, which always
-    returns the image. See [typescript.md](typescript.md) for
-    cdp-kernel's display API, Polars and Plot. `cell_snapshot` needs a
-    Ganymede newer than 0.7.0; without it, say what the chart is meant
-    to show and check the numbers in a table instead.
+14. Format results with the kernel's display module rather than
+    printing them: the `jupyter` global in TypeScript (`jupyter.md`,
+    `jupyter.svg`, `jupyter.display`), `IPython.display` in Python
+    (`display`, `Markdown`, `SVG`, `Image`). A Markdown table of the
+    numbers that matter, under a short heading, reads better than a
+    printed data frame, and you can read it back. To show progress or
+    a value that changes, display once with a display id and update it
+    in place instead of printing lines. See
+    [typescript.md](typescript.md) and [python.md](python.md).
+15. When a result needs a chart, pull in a plotting library and pin
+    its version: Observable Plot in TypeScript (an `npm:` import),
+    matplotlib in Python. A Vega-Lite spec suits a chart only the
+    person needs to read (see 16). A Python package the kernel lacks
+    goes in with `%pip install name==version` in a cell of its own, so
+    the notebook says what it needs; a TypeScript cell's import is
+    enough. Prefer TypeScript for a journal that needs libraries the
+    environment may not have.
+16. Look at the chart before writing the finding: a chart can show
+    what the table you checked doesn't, such as a trend at the end of a
+    series. When the reply to `cell_run` has no image (the server
+    doesn't send them), call `cell_snapshot(ids: [<the cell id>], code:
+    false)`, which always returns the image. You can see SVG and PNG
+    charts; charts drawn by JavaScript in the frontend (Vega-Lite,
+    Plotly, Altair) reach you only as text, so draw one you need to
+    read as SVG or PNG. `cell_snapshot` needs a Ganymede newer than
+    0.7.0; without it, say what the chart is meant to show and check
+    the numbers in a table instead.
+17. When a person is watching and would explore a result, such as
+    moving a threshold, picking a date range or a category, add a
+    widget wired to the kernel: `jupyter.widget` in TypeScript,
+    ipywidgets in Python. Widgets show in the Ganymede apps,
+    JupyterLab and VS Code. You can't see or move one, and a published
+    page shows only its plain text, so every finding still rests on a static output
+    (a chart or table) for the value you write about.
 
 ## Show the user
 
-15. When you tell the user a finding, show the evidence in your reply,
+18. When you tell the user a finding, show the evidence in your reply,
     not only the notebook path: call `cell_snapshot` on the cells behind
     it and paste the Markdown it returns. It gives the chart as an image
     file linked by path, a table as a Markdown table, and the code as a
@@ -107,27 +136,27 @@ Edit.
 
 ## Finish
 
-16. Run `notebook_run_all`. It restarts the kernel and runs every cell;
+19. Run `notebook_run_all`. It restarts the kernel and runs every cell;
     fix anything that fails, or say plainly why it can't reproduce.
-17. Add a Markdown summary after the title (`cell_add(after: <title
+20. Add a Markdown summary after the title (`cell_add(after: <title
     cell id>)`): the findings as a short numbered list, and what is
     still open.
-18. For a longer journal, ask the `journal-reviewer` agent to read it
+21. For a longer journal, ask the `journal-reviewer` agent to read it
     cold, and fix the gaps it finds.
 
 ## Publish
 
-19. When the user asks to publish or share the journal, finish it first
-    (16-18), then call `notebook_publish`. It saves one self-contained
+22. When the user asks to publish or share the journal, finish it first
+    (19-21), then call `notebook_publish`. It saves one self-contained
     HTML page, `published/<name>.html` beside the notebook, and returns
     its path on disk. The page holds the notebook's cells and outputs
     only, with the code folded under each result; pass `code: "hidden"`
     for readers who don't want code, or `"shown"` for ones who do.
-20. If you have a tool that hosts a page, such as an artifact tool,
+23. If you have a tool that hosts a page, such as an artifact tool,
     publish that file with it as it is, and give the user the link.
     Otherwise give the path. Don't rewrite the page by hand: a fix
     belongs in the notebook, then publish again.
-21. Before you host it anywhere, read the notebook once for what
+24. Before you host it anywhere, read the notebook once for what
     shouldn't leave the machine. The server replaces its root path, the
     home directory and its token (if 8 characters or more), but not
     other hosts, names or values

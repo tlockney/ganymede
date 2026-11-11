@@ -58,7 +58,7 @@ be on your `PATH`, and its hooks run with `node`.
 | Part | What it does |
 | --- | --- |
 | MCP server `ganymede` | `ganymede mcp`, found or started as [above](#set-up). |
-| Skill `journal` | The conventions: a title and goal, one question per section, scratch probes, recorded steps, revising findings in place, reading a person's cells, looking at charts, showing results to the user with snapshots, finishing with run-all and a summary. Its `typescript.md` covers cdp-kernel's display API, Polars and Observable Plot. |
+| Skill `journal` | The conventions: a title and goal, one question per section, scratch probes, recorded steps, revising findings in place, reading a person's cells, looking at charts, showing results to the user with snapshots, finishing with run-all and a summary, formatting output with the kernel's display module, plotting libraries and widgets. Its `typescript.md` covers cdp-kernel's display API, npm imports, Polars, Observable Plot and widgets; `python.md` covers `IPython.display`, `%pip install`, matplotlib and ipywidgets. |
 | Agent `journal-reviewer` | Reads the notebook cold, re-runs it, looks at its charts, and lists what a stranger couldn't follow or reproduce. It doesn't edit. |
 | Hook `SessionStart` | Says whether a server is running for the directory, its kernels, and the journal open in a resumed session. |
 | Hook `UserPromptSubmit` | Reads the open journal with the agent's [read mark](#changes-by-others) and adds what a person or another agent changed as context. |
