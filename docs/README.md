@@ -21,7 +21,7 @@ not something the server needs ([Other kernels](kernels.md)).
 - [JupyterLab and VS Code](frontends.md): point an existing frontend at
   Ganymede.
 - [Ganymede's app](app.md): its own notebook app, in a browser and on the
-  Mac and iPad.
+  Mac, iPad and iPhone.
 - [Agents over MCP](mcp.md): a coding agent journaling an analysis into
   a notebook, with `ganymede mcp` and the ganymede-journal plugin for
   Claude Code; [nb-cli](agents.md) for agents without MCP.

@@ -9,10 +9,6 @@ says which.
 
 ## What's built
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 The server opens the host comm to every kernel with subshells, keeps its
 traffic from other clients, and answers `hello`, `notebooks.list`,
 `notebooks.read`, `notebooks.search` and `notebooks.results`, with the `[host] read` grant
@@ -21,9 +17,12 @@ from the config file ([Reference](reference.md#the-host-api)), and
 off, and `notebooks.run` under the `[host] run` grant (none by
 default). A notebook's own grant, set with `ganymede grant`, replaces
 those defaults for it, and clients set it over HTTP with
-`/api/host/grants`. cdp-kernel's client is `jupyter.host()`. The rest
-of this page is the design; a run's `save: "copy"`, `ganymede execute`
-grants and a granting sheet in the apps come next.
+`/api/host/grants`. cdp-kernel's client is `jupyter.host()`. In the
+apps, Kernel > Notebook Access… (the ⋯ menu on the iPad and iPhone) shows
+what a notebook asks for and sets its grant.
+
+The rest of this page is the design; a run's `save: "copy"` and
+`ganymede execute` grants come next.
 
 ## The problem
 

@@ -38,11 +38,6 @@ covers problems with the install itself.
   the rest of that output and is told, as `jupyter_server`'s rate limit
   does; replies are never dropped.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release: script and Markdown export. The latest release
-> exports nothing (`/api/nbconvert` reports no exporters).
-
 ## Kernels
 
 - Kernels are found only in the platform Jupyter directories and
@@ -69,7 +64,7 @@ covers problems with the install itself.
 - The Mac app is released, signed and notarized, but not in the Mac App
   Store. The iPad and iPhone app is on TestFlight for internal testers
   only; anyone else builds it from source. See
-  [Ganymede's app](app.md#the-mac-and-ipad-app).
+  [Ganymede's app](app.md#the-mac-ipad-and-iphone-app).
 - The iPad runs only cdp-kernel's TypeScript kernel on the device; other
   kernels need a kernel server.
 

@@ -50,7 +50,7 @@ pull request with a GitHub issue, and records what it learned in the
 - **A UI of our own.** [ganymede-ui](https://github.com/tlockney/ganymede-ui)
   is a notebook app built on JupyterLab's packages, outside the core. It
   runs in a browser against Ganymede or with kernels in the page, and in
-  a Mac and iPad app that runs the core in-process through
+  a Mac, iPad and iPhone app that runs the core in-process through
   `ganymede-ffi`.
 - **Remote kernels.** `--gateway-url` runs kernels on another Jupyter or
   Ganymede server while files stay local, which is how the iPad app gets
@@ -74,13 +74,9 @@ pull request with a GitHub issue, and records what it learned in the
 - **Signed apps.** The Mac app is signed and notarized in each ganymede-ui
   release, and the iPad and iPhone app is on TestFlight for internal
   testers.
-
-### Done on `main`
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
+- **Parameters on app links.** `ganymede://run` links and Shortcuts pass
+  parameters to a run (ganymede-ui 0.7.0)
+  ([ganymede-ui#303](https://github.com/tlockney/ganymede-ui/issues/303)).
 - **Parameters and named results.** `ganymede execute -p` and
   `--params-file` pass parameters, `--results` prints the named results,
   and `POST /api/notebooks/run` does the same over HTTP
@@ -88,7 +84,7 @@ pull request with a GitHub issue, and records what it learned in the
 - **Host API.** Cells read, search and run notebooks, and edit their
   own, through the host comm: `notebooks.list`, `read`, `search`,
   `results` and `run`, and `self.*`, under per-notebook grants set with
-  `ganymede grant`
+  `ganymede grant`, the grants route, or the apps' Notebook Access sheet
   ([A host API for kernels](host-api.md)).
 - **In-app kernels as server kernels.** Ganymede's C functions let an
   app register its own kernels with the embedded server
@@ -102,12 +98,10 @@ In order of priority.
    named results, and runs from the CLI, the server API, app links,
    Shortcuts and other notebooks, through one run contract. Grants are
    per notebook and only narrow. Next:
-   - granting from `ganymede execute` and a granting sheet in the apps
+   - granting from `ganymede execute`
      ([#647](https://github.com/tlockney/ganymede/issues/647));
    - saving each run as a copy
-     ([#658](https://github.com/tlockney/ganymede/issues/658));
-   - parameters on `ganymede://run` links and in Shortcuts
-     ([ganymede-ui#303](https://github.com/tlockney/ganymede-ui/issues/303)).
+     ([#658](https://github.com/tlockney/ganymede/issues/658)).
 2. **The apps as a full runtime.** The apps run notebooks in-process,
    with no external server. Next:
    - a native in-app engine, jitless V8, unless its size or speed on a
@@ -118,6 +112,12 @@ In order of priority.
    - widgets ([ganymede-ui#436](https://github.com/tlockney/ganymede-ui/issues/436))
      and the share extension
      ([ganymede-ui#449](https://github.com/tlockney/ganymede-ui/issues/449)).
+
+     > [!NOTE]
+     > **Unreleased in ganymede-ui.** The share extension is on ganymede-ui's
+     > `main`, off by default behind a Settings switch
+     > ([ganymede-ui#477](https://github.com/tlockney/ganymede-ui/pull/477)),
+     > not in its latest release.
 3. **A person and an agent in one live notebook.** The app opens
    notebooks through rooms, so edits from an agent, another window or
    another device arrive live, and shows the agent's journal as it is

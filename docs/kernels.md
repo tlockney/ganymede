@@ -241,10 +241,6 @@ environment, as `jupyter_server` does, so `"PATH": "/opt/env/bin:${PATH}"`
 puts a directory in front of `PATH`. `$$` is a `$`, and a name that isn't
 set stays as written.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 To install a kernelspec directory by hand, without the kernel's own
 installer:
 

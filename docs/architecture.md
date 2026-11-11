@@ -99,7 +99,7 @@ bottom do no I/O, so they build for any target.
 | Crate | What it is |
 |---|---|
 | `ganymede-cli` | The `ganymede` binary. |
-| `ganymede-ffi` | A C ABI (`include/ganymede.h`) that runs the server on loopback inside an app and returns its URL. A static library; `scripts/build-xcframework.sh` packages it for the Mac and iPad app. See [Embedding](embedding.md#the-server-in-an-app-from-c). |
+| `ganymede-ffi` | A C ABI (`include/ganymede.h`) that runs the server on loopback inside an app and returns its URL. A static library; `scripts/build-xcframework.sh` packages it for the Mac, iPad and iPhone app. See [Embedding](embedding.md#the-server-in-an-app-from-c). |
 | `ganymede-server` | The HTTP and websocket server. |
 | `ganymede-engine` | The library to embed: find kernelspecs, start or attach to kernels, execute with streaming output, run notebooks. See [Embedding](embedding.md). |
 | `ganymede-api` | Kernel and session managers, response models, the per-client bridge, idle culling. No HTTP. Contents path validation confines kernel working directories to the root. |
@@ -115,7 +115,7 @@ bottom do no I/O, so they build for any target.
 
 Outside the Rust core, and outside this repository, Ganymede's own UI
 lives in [tlockney/ganymede-ui](https://github.com/tlockney/ganymede-ui):
-a web app that is a client of this server's API, and the Mac and iPad app
+a web app that is a client of this server's API, and the Mac, iPad and iPhone app
 around it. How they are built is on ganymede-ui's
 [architecture](ganymede-ui/architecture.md) page.
 
@@ -211,7 +211,7 @@ cell is trusted.
 
 ## Where it runs
 
-![Where each piece runs in four setups: on a workstation, the frontend, ganymede serve and each kernel are separate processes; in the Mac app, ganymede-ui and Ganymede run inside the app and kernels are the Mac's processes; in the iPad app everything runs inside the app and the kernel runs in the page; in a browser with no server, the UI, kernels and IndexedDB storage all stay in one tab.](images/architecture/where-kernels-run.svg)
+![Where each piece runs in four setups: on a workstation, the frontend, ganymede serve and each kernel are separate processes; in the Mac app, ganymede-ui and Ganymede run inside the app and kernels are the Mac's processes; in the iPad app everything runs inside the app, including the kernel; in a browser with no server, the UI, kernels and IndexedDB storage all stay in one tab.](images/architecture/where-kernels-run.svg)
 
 The same crates, in four setups:
 
@@ -221,11 +221,13 @@ The same crates, in four setups:
   server instead.
 - **Mac app.** The server runs inside the app through `ganymede-ffi` and
   serves ganymede-ui to a `WKWebView` on loopback. Kernels are the Mac's
-  kernelspecs, or a kernel server set in the app.
+  kernelspecs, cdp-kernel in a hidden web view registered with the
+  server, or a kernel server set in the app.
 - **iPad app.** The same app built for iOS, which doesn't let an app
   launch processes. Ganymede serves notebooks from a folder the app can
-  open; cdp-kernel runs in a Worker in a hidden web view, or kernels come from
-  a kernel server through the gateway.
+  open; cdp-kernel runs in a Worker in a hidden web view, registered with
+  the server as one of its kernels, or kernels come from a kernel server
+  through the gateway.
 - **Any browser, no server.** ganymede-ui alone, with notebooks in
   IndexedDB and kernels in Workers. Ganymede isn't involved.
 

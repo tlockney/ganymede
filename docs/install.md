@@ -142,17 +142,9 @@ and `--force` reinstalls. It also installs the frontend halves of
 from PyPI. [JupyterLab and VS Code](frontends.md#extensions) has the
 details.
 
-> [!NOTE]
-> **Unreleased.** The 4.6.6 default is available only from a build of
-> `main` (HEAD), not in the latest release, which installs 4.6.4.
-
 The default extensions are pinned too: each Ganymede release installs set
 versions and checks their wheels' SHA-256, as it does for JupyterLab.
 `--latest-extensions` takes the newest releases on PyPI instead.
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 ## 5. Start JupyterLab
 

@@ -43,7 +43,7 @@ The UIs, each a separate client of the same API:
    them.
 2. **ganymede-ui**, a TypeScript web app built on JupyterLab's notebook
    packages used as libraries, without the rest of JupyterLab. It runs in
-   a browser, and in the Mac and iPad app: a Swift shell that owns
+   a browser, and in the Mac, iPad and iPhone app: a Swift shell that owns
    windows, files and the app lifecycle, runs Ganymede in-process, and
    shows ganymede-ui in a `WKWebView`. Rendering stays in the web view
    because `text/html` outputs, math, Vega, Plotly and widgets are
