@@ -88,7 +88,8 @@ pull request with a GitHub issue, and records what it learned in the
 - **Host API.** Cells read, search and run notebooks, and edit their
   own, through the host comm: `notebooks.list`, `read`, `search`,
   `results` and `run`, and `self.*`, under per-notebook grants set with
-  `ganymede grant`
+  `ganymede grant`, the grants route, or the apps' Notebook Access sheet
+  (Unreleased in ganymede-ui)
   ([A host API for kernels](host-api.md)).
 - **In-app kernels as server kernels.** Ganymede's C functions let an
   app register its own kernels with the embedded server
@@ -102,7 +103,7 @@ In order of priority.
    named results, and runs from the CLI, the server API, app links,
    Shortcuts and other notebooks, through one run contract. Grants are
    per notebook and only narrow. Next:
-   - granting from `ganymede execute` and a granting sheet in the apps
+   - granting from `ganymede execute`
      ([#647](https://github.com/tlockney/ganymede/issues/647));
    - saving each run as a copy
      ([#658](https://github.com/tlockney/ganymede/issues/658));
