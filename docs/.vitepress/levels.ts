@@ -180,6 +180,8 @@ export function groups(has: (name: string) => boolean = () => true, examples: Pa
 // any. ganymede-ui's pages get none: the level notes describe Ganymede's.
 export function levelOf(relativePath: string): Level | undefined {
   if (relativePath.startsWith("ganymede-ui/")) return;
+  // The example pages aren't in groups() here (config.mts adds them).
+  if (relativePath.startsWith("examples/")) return "guide";
   const link = "/" + relativePath.replace(/(^|\/)(README|index)\.md$/, "$1").replace(/\.md$/, "");
   return groups().find((g) => g.items.some((p) => p.link === link))?.level;
 }
