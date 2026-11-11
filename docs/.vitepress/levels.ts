@@ -87,6 +87,7 @@ export function groups(has: (name: string) => boolean = () => true): Group[] {
       text: "Work with an agent",
       level: "guide",
       items: [
+        { text: "Overview", link: "/agent-journals" },
         { text: "Agents over MCP", link: "/mcp" },
         { text: "Agents with nb-cli", link: "/agents" },
         { text: "Live editing and document rooms", link: "/rooms" },
