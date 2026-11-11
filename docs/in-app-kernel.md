@@ -9,8 +9,9 @@ in the same app, so it becomes a kernel like any other.
 > only from a build of `main` (HEAD), not in the latest release.
 
 > [!NOTE]
-> **Unreleased in ganymede-ui.** The apps' part is not built yet: no
-> build of ganymede-ui registers its in-app kernel.
+> **Unreleased in ganymede-ui.** The apps' part is in ganymede-ui's
+> `main` (ganymede-ui#470), not in its latest release, which still runs
+> the in-app kernel as a page kernel.
 
 ## The problem
 
