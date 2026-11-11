@@ -352,6 +352,8 @@ jobs:
       # pins to (#673); fails only if a pin is ahead of the latest release.
       - if: ${{ !cancelled() }}
         run: scripts/release-pins.sh --check
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   # Targets the desktop CI cannot run: the core libraries must build for
   # iOS, Android, and wasm, and the engine must run a notebook inside wasm.
