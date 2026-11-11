@@ -57,3 +57,13 @@ test("titleOf", () => {
   assert.equal(titleOf(nb([{ cell_type: "markdown", source: "text\n# Start Here\n" }]), "01 Start Here.ipynb"), "Start Here");
   assert.equal(titleOf(nb([]), "02 Web APIs.ipynb"), "Web APIs");
 });
+
+test("a journal's intro carries its prompts", async () => {
+  const { journalIntro } = await import("./fetch-examples.mjs");
+  const intro = journalIntro("fremont", "# Prompts: x\n\nIn order.\n\n1. Ask {{ }}\n");
+  assert.match(intro, /examples\/journals\/fremont\)/);
+  assert.match(intro, /<div v-pre>\n\n::: info What the person asked\nIn order\.\n\n1\. Ask \{\{ \}\}\n:::\n\n<\/div>/);
+  const { markdown } = render(nb([{ cell_type: "markdown", source: "# T\nrest" }]), "journal-fremont.ipynb", intro);
+  assert.ok(markdown.indexOf("What the person asked") > markdown.indexOf("# T"));
+  assert.ok(markdown.indexOf("What the person asked") < markdown.indexOf("rest"));
+});

@@ -3,6 +3,23 @@
 Notebooks to read before running anything: each page shows the code and
 the outputs it saved.
 
+## Agent journals
+
+Two analyses Claude Code kept as notebooks with the
+[ganymede-journal plugin](agent-journals.md), in TypeScript on
+cdp-kernel. Each page starts with what the person asked; the notebook
+keeps every step, the dead ends and the revised findings.
+
+| Journal | The question |
+| :--- | :--- |
+| [Fremont Bridge](examples/journal-fremont.md) | Have bike commutes over Seattle's Fremont Bridge come back since 2019? |
+| [Oklahoma earthquakes](examples/journal-oklahoma.md) | Did Oklahoma's earthquakes stop once wastewater injection was cut back? |
+
+They were kept on 2026-11-09 and re-run on Ganymede 0.9.0 and
+cdp-kernel 0.10.0 with freshly downloaded data. The notebooks, the
+scripts that fetch their data, and `run.sh`, which re-runs them, are in
+[examples/journals/](https://github.com/tlockney/ganymede/tree/main/examples/journals).
+
 ## The apps' example notebooks
 
 The Mac, iPad and iPhone apps copy these TypeScript notebooks into a

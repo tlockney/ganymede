@@ -104,9 +104,10 @@ export function groups(has: (name: string) => boolean = () => true, examples: Pa
       ],
     },
     {
-      // The pages `npm run fetch-examples` rendered; config.mts lists them
-      // from docs/examples/pages.json, since their names come from
-      // ganymede-ui.
+      // The pages `npm run fetch-examples` rendered: the apps' notebooks
+      // from ganymede-ui's examples/, the journals from examples/journals/.
+      // config.mts lists them from docs/examples/pages.json, since the apps'
+      // page names come from ganymede-ui.
       text: "Examples",
       level: "guide",
       items: [
