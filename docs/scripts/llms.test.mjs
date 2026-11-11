@@ -1,7 +1,7 @@
 // llms.txt and the pages' Markdown copies (docs/.vitepress/llms.ts).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { llmsTxt, markdownPath, sourceOf, summaryOf } from "../.vitepress/llms.ts";
+import { llmsTxt, markdownPath, rewriteLinks, sourceOf, summaryOf } from "../.vitepress/llms.ts";
 
 test("a summary is the first sentence of the first paragraph of prose", () => {
   const md = [
@@ -61,5 +61,14 @@ test("llms.txt lists the built pages by group, background and contributors as op
       "- [Why](https://example.com/docs/why.md): Because.",
       "",
     ].join("\n"),
+  );
+});
+
+test("the copies' links and images are rewritten as the HTML's are", () => {
+  const md = "See [install.sh](../site/install.sh), [Install](install.md#a) and ![x](images/a.svg).\n<img src=\"images/b.svg\">";
+  const out = rewriteLinks(md, (href) => (href.endsWith(".md") || href.startsWith("install.md") ? undefined : `https://gh/${href}`));
+  assert.equal(
+    out,
+    "See [install.sh](https://gh/../site/install.sh), [Install](install.md#a) and ![x](https://gh/images/a.svg).\n<img src=\"https://gh/images/b.svg\">",
   );
 });

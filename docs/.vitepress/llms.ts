@@ -69,8 +69,29 @@ export function llmsTxt(groups: Group[], read: (source: string) => string | unde
   return `${lines.join("\n")}\n`;
 }
 
-/** Writes llms.txt and each page's Markdown into the built site at `outDir`. */
-export function writeLlms(outDir: string, docsDir: string, groups: Group[], url: string, description: string): void {
+/**
+ * `markdown` with each link and image target passed through `rewrite`,
+ * which returns a new target or undefined to keep it: the HTML pages
+ * rewrite links that leave docs/, and the copies must too.
+ */
+export function rewriteLinks(markdown: string, rewrite: (href: string) => string | undefined): string {
+  return markdown
+    .replace(/(\]\()(<[^>]+>|[^)\s]+)/g, (m, open, href) => open + (rewrite(href.replace(/^<|>$/g, "")) ?? href))
+    .replace(/(\bsrc=")([^"]+)/g, (m, open, href) => open + (rewrite(href) ?? href));
+}
+
+/**
+ * Writes llms.txt and each page's Markdown into the built site at
+ * `outDir`. `rewrite(href, file)` is the link rewrite the HTML gets.
+ */
+export function writeLlms(
+  outDir: string,
+  docsDir: string,
+  groups: Group[],
+  url: string,
+  description: string,
+  rewrite: (href: string, file: string) => string | undefined = () => undefined,
+): void {
   const read = (source: string) => {
     const file = path.join(docsDir, source);
     return fs.existsSync(file) ? fs.readFileSync(file, "utf8") : undefined;
@@ -79,8 +100,9 @@ export function writeLlms(outDir: string, docsDir: string, groups: Group[], url:
     const md = read(sourceOf(page.link));
     if (md === undefined) continue;
     const out = path.join(outDir, markdownPath(page.link));
+    const file = path.join(docsDir, sourceOf(page.link));
     fs.mkdirSync(path.dirname(out), { recursive: true });
-    fs.writeFileSync(out, md);
+    fs.writeFileSync(out, rewriteLinks(md, (href) => rewrite(href, file)));
   }
   fs.writeFileSync(path.join(outDir, "llms.txt"), llmsTxt(groups, read, url, description));
 }

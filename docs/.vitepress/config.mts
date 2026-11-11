@@ -112,6 +112,7 @@ export default defineConfig({
       sidebarGroups.map((g) => ({ ...g, items: g.items.filter((p) => p.link !== "/notes") })),
       `${site}/docs/`,
       description,
+      externalHref,
     ),
   // The landing page's icon, from site/, served at the site's root.
   head: [["link", { rel: "icon", href: `${new URL(site).pathname.replace(/\/$/, "")}/favicon.svg`, type: "image/svg+xml" }]],
