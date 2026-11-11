@@ -141,6 +141,7 @@ frame_ancestors = "'self'"       # who may frame the server's pages
 # What cells may read through the host API (see A host API for kernels):
 # [host]
 # read = [""]                    # API paths; "" is the root, [] only the cell's own notebook
+# edit_self = true               # self.add/edit/delete: a notebook edits its own cells
 
 # Language servers for jupyterlab-lsp, none by default. One table each:
 # [language_servers.pyright]
@@ -180,6 +181,13 @@ whole segments, so `"journal"` covers `journal/a.ipynb` but not
 each notebook only itself. A path is matched where it leads once
 symlinks are resolved, so a symlink in a granted folder doesn't reach
 another.
+
+`[host] edit_self`, on by default, lets a notebook add, edit and delete
+its own cells (`self.add`, `self.edit`, `self.delete`), through its
+document room, so every client sees the change. An edit or delete names
+the cell's source hash from `notebooks.read`, and fails with
+`source_mismatch` when the cell changed since. `false` takes the calls
+away from every notebook.
 
 ## Static headers
 

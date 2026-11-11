@@ -13,12 +13,14 @@ says which.
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
 > the latest release.
 
-The first step: the server opens the host comm to every kernel with
-subshells, keeps its traffic from other clients, and answers `hello`,
-`notebooks.list`, `notebooks.read` and `notebooks.search`, with the
-`[host] read` grant from the config file
-([Reference](reference.md#the-host-api)). The rest of this page is the
-design; the kernel's client and the other calls come next.
+The server opens the host comm to every kernel with subshells, keeps its
+traffic from other clients, and answers `hello`, `notebooks.list`,
+`notebooks.read` and `notebooks.search`, with the `[host] read` grant
+from the config file ([Reference](reference.md#the-host-api)), and
+`self.add`, `self.edit` and `self.delete`, unless `[host] edit_self` is
+off. cdp-kernel's client is `jupyter.host()`. The rest of this page is
+the design; `notebooks.results`, `notebooks.run` and per-notebook grants
+come next.
 
 ## The problem
 

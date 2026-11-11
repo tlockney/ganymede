@@ -10,16 +10,24 @@
 //!   source hash (MurmurHash2, seed 0) by cell id.
 //! - `notebooks.search { query, dir?, outputs?, cell_type?, limit? }`:
 //!   `notebooks_search`'s matches.
+//! - `self.add { cell_type, source, after? }`, `self.edit { id, source,
+//!   source_hash }`, `self.delete { id, source_hash }`: the kernel's own
+//!   notebook, through its room, so every client sees the change. An
+//!   edit or delete names the source hash it read (`notebooks.read`), and
+//!   fails `source_mismatch` when the cell changed since.
 //!
 //! Reads reach the paths in the `[host]` `read` grant (the whole root by
 //! default), matched by whole path segments against where a path leads
 //! once symlinks are resolved; a notebook may always read itself. A
 //! kernel's notebook is the one of the session the server started it for.
 
+use crate::collab::{notebook_room_id, with_notebook};
 use crate::mcp::{notebook_for_search, search, search_notebooks};
 use crate::AppState;
 use async_trait::async_trait;
 use ganymede_contents::{ContentType, GetOptions};
+use ganymede_documents::schema;
+use ganymede_documents::yrs::{Any, Array, GetString, Map, Out};
 use ganymede_host::{Caller, Hello, HostError, Responder};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -30,21 +38,27 @@ use serde_json::{json, Value};
 pub struct HostConfig {
     /// API paths the `notebooks.*` reads may reach; `""` is the root.
     pub read: Vec<String>,
+    /// Whether a notebook may add, edit and delete its own cells
+    /// (`self.*`).
+    pub edit_self: bool,
 }
 
 impl Default for HostConfig {
     fn default() -> Self {
         HostConfig {
             read: vec![String::new()],
+            edit_self: true,
         }
     }
 }
 
-const METHODS: [&str; 3] = ["notebooks.list", "notebooks.read", "notebooks.search"];
+const READS: [&str; 3] = ["notebooks.list", "notebooks.read", "notebooks.search"];
+const SELF_EDITS: [&str; 3] = ["self.add", "self.edit", "self.delete"];
 
 pub struct HostApi {
     state: AppState,
     read: Vec<String>,
+    edit_self: bool,
     /// Each kernel's notebook session, as first seen: `hello` at kernel
     /// start sees the session the kernel was started for, and a notebook
     /// that joins the kernel later doesn't take its place.
@@ -60,6 +74,7 @@ impl HostApi {
                 .iter()
                 .map(|p| ganymede_contents::normalize_api_path(p))
                 .collect(),
+            edit_self: config.edit_self,
             sessions: Default::default(),
         }
     }
@@ -289,10 +304,12 @@ impl HostApi {
 #[async_trait]
 impl Responder for HostApi {
     async fn hello(&self, caller: &Caller) -> Hello {
-        Hello {
-            notebook: self.notebook(&caller.kernel_id),
-            methods: METHODS.iter().map(|m| m.to_string()).collect(),
+        let notebook = self.notebook(&caller.kernel_id);
+        let mut methods: Vec<String> = READS.iter().map(|m| m.to_string()).collect();
+        if self.edit_self && notebook.is_some() {
+            methods.extend(SELF_EDITS.iter().map(|m| m.to_string()));
         }
+        Hello { notebook, methods }
     }
 
     async fn call(&self, caller: &Caller, method: &str, params: Value) -> Result<Value, HostError> {
@@ -302,7 +319,167 @@ impl Responder for HostApi {
             "notebooks.list" => self.list(notebook, &params).await,
             "notebooks.read" => self.read(notebook, &params).await,
             "notebooks.search" => self.search(notebook, &params).await,
+            m if SELF_EDITS.contains(&m) => {
+                if !self.edit_self {
+                    return Err(HostError::denied(
+                        "this server doesn't let notebooks edit themselves",
+                    ));
+                }
+                let Some(path) = notebook else {
+                    return Err(HostError::unavailable("this kernel has no notebook"));
+                };
+                self.edit_own(path, m, &params).await
+            }
             _ => Err(HostError::unavailable(format!("no host method {method}"))),
         }
+    }
+}
+
+/// Why a `self.*` edit was refused, inside the room.
+enum Refused {
+    NoCell(String),
+    Mismatch(String),
+    Bad(String),
+}
+
+/// A cell's source as a string, however the room stores it.
+fn source_of<T: ganymede_documents::yrs::ReadTxn>(
+    txn: &T,
+    cell: &ganymede_documents::yrs::MapRef,
+) -> String {
+    match cell.get(txn, "source") {
+        Some(Out::YText(t)) => t.get_string(txn),
+        Some(Out::Any(Any::String(s))) => s.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// `params[key]` as a string, or `failed`.
+fn string_param<'a>(params: &'a Value, key: &str) -> Result<&'a str, HostError> {
+    params[key]
+        .as_str()
+        .ok_or_else(|| HostError::failed(format!("`{key}` must be a string")))
+}
+
+impl HostApi {
+    /// `self.add`, `self.edit` or `self.delete` on `path`, the kernel's
+    /// own notebook, through its room.
+    async fn edit_own(&self, path: &str, method: &str, params: &Value) -> Result<Value, HostError> {
+        enum Op {
+            Add {
+                cell: Value,
+                after: Option<String>,
+            },
+            Edit {
+                id: String,
+                source: String,
+                hash: String,
+            },
+            Delete {
+                id: String,
+                hash: String,
+            },
+        }
+        let op = match method {
+            "self.add" => {
+                let source = string_param(params, "source")?.to_string();
+                let id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
+                let cell = match params["cell_type"].as_str().unwrap_or("markdown") {
+                    "code" => json!({"cell_type": "code", "execution_count": null, "id": id,
+                                     "metadata": {}, "outputs": [], "source": source}),
+                    t @ ("markdown" | "raw") => {
+                        json!({"cell_type": t, "id": id, "metadata": {}, "source": source})
+                    }
+                    _ => return Err(HostError::failed("cell_type must be code, markdown or raw")),
+                };
+                let after = match &params["after"] {
+                    Value::Null => None,
+                    Value::String(a) => Some(a.clone()),
+                    _ => return Err(HostError::failed("`after` must be a cell id")),
+                };
+                Op::Add { cell, after }
+            }
+            "self.edit" => Op::Edit {
+                id: string_param(params, "id")?.to_string(),
+                source: string_param(params, "source")?.to_string(),
+                hash: string_param(params, "source_hash")?.to_string(),
+            },
+            _ => Op::Delete {
+                id: string_param(params, "id")?.to_string(),
+                hash: string_param(params, "source_hash")?.to_string(),
+            },
+        };
+        let state = &self.state;
+        let room_id = notebook_room_id(&state.collab, &state.contents, path)
+            .await
+            .map_err(|e| HostError::failed(format!("cannot open {path}: {e}")))?;
+        let outcome = with_notebook(&state.collab, &state.contents, &room_id, move |room| {
+            // Another server owns the file (#272): an edit here would be
+            // undone and never saved.
+            if room.is_read_only() {
+                return (
+                    Err(Refused::Bad(
+                        "the notebook is open in another server on this machine".into(),
+                    )),
+                    Default::default(),
+                );
+            }
+            room.edit(|txn, roots| {
+                let check =
+                    |txn: &mut ganymede_documents::yrs::TransactionMut, id: &str, hash: &str| {
+                        let cell = schema::find_cell(txn, roots, id)
+                            .ok_or_else(|| Refused::NoCell(id.into()))?;
+                        let now = ganymede_documents::murmur2(source_of(txn, &cell).as_bytes(), 0);
+                        if now.to_string() != hash {
+                            return Err(Refused::Mismatch(id.into()));
+                        }
+                        Ok(cell)
+                    };
+                match op {
+                    Op::Add { cell, after } => {
+                        let at = match &after {
+                            None => roots.cells.len(txn),
+                            Some(a) => match schema::cell_index(txn, roots, a) {
+                                Some(i) => i + 1,
+                                None => return Err(Refused::NoCell(a.clone())),
+                            },
+                        };
+                        let id = cell["id"].clone();
+                        schema::insert_cell(txn, &roots.cells, at, cell);
+                        Ok(json!({ "id": id }))
+                    }
+                    Op::Edit { id, source, hash } => {
+                        let cell = check(txn, &id, &hash)?;
+                        match cell.get(txn, "source") {
+                            Some(Out::YText(t)) => schema::set_text(txn, &t, &source),
+                            _ => {
+                                cell.insert(
+                                    txn,
+                                    "source",
+                                    ganymede_documents::yrs::TextPrelim::new(source),
+                                );
+                            }
+                        }
+                        Ok(json!({}))
+                    }
+                    Op::Delete { id, hash } => {
+                        check(txn, &id, &hash)?;
+                        let i = schema::cell_index(txn, roots, &id)
+                            .ok_or_else(|| Refused::NoCell(id.clone()))?;
+                        roots.cells.remove(txn, i);
+                        Ok(json!({}))
+                    }
+                }
+            })
+        })
+        .await
+        .ok_or_else(|| HostError::failed(format!("cannot open {path}")))?;
+        outcome.map_err(|r| match r {
+            Refused::NoCell(id) => HostError::failed(format!("no cell {id}")),
+            Refused::Mismatch(id) => HostError::failed(format!(
+                "source_mismatch: cell {id} changed since it was read; read it again"
+            )),
+            Refused::Bad(m) => HostError::failed(m),
+        })
     }
 }
