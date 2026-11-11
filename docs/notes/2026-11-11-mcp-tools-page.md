@@ -12,6 +12,11 @@ values, and a documented enum (`AddMode`) shows each value's doc comment.
 Nine parameters had no doc comment (`id`, `source`, `action`, two
 `timeout`s), so the page had blank cells and agents saw no description.
 They have one now; the two `timeout`s name their default, 600 seconds.
-A `path` without one is described on the page as on `notebook_read`.
+The ten `path` fields without one have `notebook_read`'s now, and the
+test fails on a parameter with no doc comment, so the page and
+`tools/list` can't differ. Only the part between the markers is
+generated: a tool that the latest release lacks gets its Unreleased note
+above the start marker. `.gitattributes` keeps the page's line endings LF,
+since the test compares bytes.
 scripts/ci-changes.sh counts the page as code, so editing it by hand runs
 the test.

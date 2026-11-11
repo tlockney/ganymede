@@ -6,6 +6,10 @@
 //! ```sh
 //! UPDATE_REFERENCE=1 cargo test -p ganymede-server --lib mcp::reference
 //! ```
+//!
+//! Only the part between the markers is generated. A tool or parameter that
+//! the latest release doesn't have gets its `**Unreleased.**` note (see
+//! CLAUDE.md) above the start marker, naming it.
 
 use serde_json::{Map, Value};
 
@@ -122,14 +126,18 @@ fn page() -> String {
         };
         out.push_str("\n| Parameter | Type | Description |\n| --- | --- | --- |\n");
         for (name, prop) in props {
-            let mut desc = prop
+            let desc = prop
                 .get("description")
                 .and_then(Value::as_str)
                 .map(cell)
                 .unwrap_or_default();
-            if name == "path" && desc.is_empty() {
-                desc = "Notebook path; the one last opened when left out.".into();
-            }
+            // The page shows what `tools/list` shows, so a parameter needs
+            // a doc comment on its field.
+            assert!(
+                !desc.is_empty(),
+                "{}.{name} has no doc comment in mcp.rs",
+                tool.name
+            );
             let name = if required.contains(&name.as_str()) {
                 format!("`{name}` (required)")
             } else {

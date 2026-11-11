@@ -204,6 +204,7 @@ pub struct RunArgs {
     /// it runs again: for output too large or too private to keep. You
     /// still get the outputs back.
     pub keep_outputs: Option<bool>,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
 }
 
@@ -235,6 +236,7 @@ pub struct AddArgs {
     pub mode: Option<AddMode>,
     /// Insert after this cell id (default: at the end).
     pub after: Option<String>,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
     /// A read mark (from an `@@read` line) to move past the new cell, as
     /// if its reader had added it: for a hook adding a cell on an agent's
@@ -256,6 +258,7 @@ pub struct EditArgs {
     /// With `run`: keep the outputs in the notebook (default: as the cell
     /// had it). `false` leaves them out, as `cell_run`'s `keep_outputs`.
     pub keep_outputs: Option<bool>,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
 }
 
@@ -265,6 +268,7 @@ pub struct ClearOutputsArgs {
     pub id: String,
     /// `true` keeps the cell's outputs again from its next run.
     pub keep: Option<bool>,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
 }
 
@@ -272,6 +276,7 @@ pub struct ClearOutputsArgs {
 pub struct IdArgs {
     /// The cell's id.
     pub id: String,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
 }
 
@@ -281,6 +286,7 @@ pub struct MoveArgs {
     pub id: String,
     /// Put the cell after this one; at the top when left out.
     pub after: Option<String>,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
 }
 
@@ -296,6 +302,7 @@ pub enum KernelAction {
 pub struct KernelArgs {
     /// What to do to the notebook's kernel.
     pub action: KernelAction,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
 }
 
@@ -306,6 +313,7 @@ pub struct RunAllArgs {
     /// Seconds to wait for every cell to finish (default 600). Cells keep
     /// running after a timeout.
     pub timeout: Option<u64>,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
 }
 
@@ -321,6 +329,7 @@ pub struct SnapshotArgs {
     pub code: Option<bool>,
     /// Rows to keep of an HTML table (default 20).
     pub max_rows: Option<usize>,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
 }
 
@@ -336,6 +345,7 @@ pub struct PublishArgs {
     pub byline: Option<String>,
     /// Replace `out` even when it isn't an earlier published page.
     pub overwrite: Option<bool>,
+    /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
 }
 
