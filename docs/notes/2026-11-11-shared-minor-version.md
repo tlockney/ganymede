@@ -11,3 +11,8 @@ don't change.
 `ganymede ui install`'s default stays one ganymede-ui release behind
 until Ganymede's next release, as before: Ganymede releases first, so
 its pin can only name the apps' previous release.
+
+docs/reference.md's `ui install` row names that default and the
+`reference` test checks it against the CLI, but `release-pins.sh` moved
+the pin in ui.rs without the docs row, so the next release PR would have
+failed that test. It now rewrites the row with the pin.
