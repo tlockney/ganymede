@@ -39,10 +39,6 @@ ganymede lab clean                      # leftovers of interrupted installs; ski
 ganymede lab uninstall                  # every version and extension
 ```
 
-> [!NOTE]
-> **Unreleased.** The 4.6.6 default is available only from a build of
-> `main` (HEAD), not in the latest release, which installs 4.6.4.
-
 `ganymede lab` prints the URL of `/lab` and opens it (`open` on macOS,
 `xdg-open` on Linux). If port 8888 is taken it tries the next, up to 50
 more, as `jupyter lab` does. It fails, naming `ganymede lab install`, when
@@ -98,10 +94,6 @@ like JupyterLab, so a compromised release on PyPI doesn't reach a new
 install. `--latest-extensions` installs the newest releases and the
 extensions they depend on instead. CI's weekly run fails when PyPI has
 newer releases than the pins.
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 Only the wheel's `share/jupyter/labextensions/` is unpacked, into
 `ganymede/labextensions/` beside the bundles, which `serve` always
@@ -183,10 +175,6 @@ first.
 The exports are `GET /nbconvert/{format}/{path}`, with `?download=true`
 for a download, and `/api/nbconvert` lists the formats. HTML, PDF,
 LaTeX, and slides need nbconvert's Python templates and aren't offered.
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release, whose export menu is empty.
 
 ## Terminals
 

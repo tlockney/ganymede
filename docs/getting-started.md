@@ -80,10 +80,6 @@ kernel.
 
 ### Parameters and named results
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 A notebook can take parameters and hand back named results, so a script,
 a schedule or an agent runs it like a function:
 
