@@ -22,15 +22,27 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 check=false
-[[ "${1:-}" == --check ]] && check=true
+case "${1:-}" in
+  "") ;;
+  --check) check=true ;;
+  *) echo "usage: scripts/release-pins.sh [--check]" >&2; exit 2 ;;
+esac
 npm=${GANYMEDE_NPM_URL:-https://registry.npmjs.org}
 github=${GANYMEDE_GITHUB_URL:-https://github.com}
 api=${GANYMEDE_GITHUB_API:-https://api.github.com}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# Whether $1 is an older version than $2.
-older() { [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)" == "$1" ]]; }
+# Whether version $1 is older than $2. A prerelease is older than its own
+# release (0.11.0-rc.1 < 0.11.0), which sort -V alone gets backwards.
+older() {
+  local a=${1%%-*} b=${2%%-*}
+  if [[ "$a" == "$b" ]]; then
+    [[ "$1" != "$2" && "$1" == *-* && ( "$2" != *-* || "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)" == "$1" ) ]]
+  else
+    [[ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n 1)" == "$a" ]]
+  fi
+}
 
 # Replaces the one line of file $1 that contains the text $2 with $3, and
 # fails unless exactly one line contains it.
@@ -65,18 +77,6 @@ if older "$cdp_latest" "$cdp_pin"; then
   echo "error: npm's latest cdp-kernel $cdp_latest is older than the pin $cdp_pin" >&2
   exit 1
 fi
-if [[ "$cdp_latest" == "$cdp_pin" ]]; then
-  echo "cdp-kernel $cdp_pin: latest"
-else
-  echo "cdp-kernel $cdp_pin -> $cdp_latest"
-  v=$cdp_latest
-  replace_line .github/workflows/ci.yml "  CDP_KERNEL_VERSION: " \
-    "  CDP_KERNEL_VERSION: \${{ github.event_name == 'schedule' && 'latest' || '$v' }}"
-  replace_line container/Dockerfile "ARG CDP_KERNEL_VERSION=" "ARG CDP_KERNEL_VERSION=$v"
-  replace_in_line docs/architecture.md "cdp-kernel $cdp_pin in the e2e suite" "cdp-kernel $v in the e2e suite"
-  replace_in_line docs/development.md "Node 24, cdp-kernel $cdp_pin," "Node 24, cdp-kernel $v,"
-  replace_in_line docs/install.md "\"version\": \"$cdp_pin\"" "\"version\": \"$v\""
-fi
 
 # ganymede-ui
 ui=crates/ganymede-cli/src/ui.rs
@@ -91,9 +91,10 @@ if older "$ui_latest" "$ui_pin"; then
   echo "error: ganymede-ui's latest release $ui_latest is older than the pin $ui_pin" >&2
   exit 1
 fi
-if [[ "$ui_latest" == "$ui_pin" ]]; then
-  echo "ganymede-ui $ui_pin: latest"
-else
+
+# The ui download and hash check run before any write, so a failure
+# changes nothing.
+if [[ "$ui_latest" != "$ui_pin" ]]; then
   zip=ganymede-ui-$ui_latest.zip
   base="$github/tlockney/ganymede-ui/releases/download/$ui_tag"
   curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"
@@ -105,6 +106,25 @@ else
     echo "error: $zip's SHA-256 is $actual; SHA256SUMS says '${sum}'" >&2
     exit 1
   fi
+fi
+
+# Report, then write.
+if [[ "$cdp_latest" == "$cdp_pin" ]]; then
+  echo "cdp-kernel $cdp_pin: latest"
+else
+  echo "cdp-kernel $cdp_pin -> $cdp_latest"
+  v=$cdp_latest
+  replace_line .github/workflows/ci.yml "  CDP_KERNEL_VERSION: " \
+    "  CDP_KERNEL_VERSION: \${{ github.event_name == 'schedule' && 'latest' || '$v' }}"
+  replace_line container/Dockerfile "ARG CDP_KERNEL_VERSION=" "ARG CDP_KERNEL_VERSION=$v"
+  replace_in_line docs/architecture.md "cdp-kernel $cdp_pin in the e2e suite" "cdp-kernel $v in the e2e suite"
+  replace_in_line docs/development.md "Node 24, cdp-kernel $cdp_pin," "Node 24, cdp-kernel $v,"
+  replace_in_line docs/install.md "\"version\": \"$cdp_pin\"" "\"version\": \"$v\""
+fi
+
+if [[ "$ui_latest" == "$ui_pin" ]]; then
+  echo "ganymede-ui $ui_pin: latest"
+else
   echo "ganymede-ui $ui_pin -> $ui_latest (sha256 $sum)"
   replace_line "$ui" 'pub const DEFAULT_VERSION: &str = ' "pub const DEFAULT_VERSION: &str = \"$ui_latest\";"
   replace_line "$ui" 'const DEFAULT_SHA256: &str = ' "const DEFAULT_SHA256: &str = \"$sum\";"

@@ -18,3 +18,8 @@ release after Ganymede.
 The script edits each pin by a fixed string and fails unless exactly one
 line holds it, so a reworded doc fails loudly instead of being skipped.
 It fails too when a latest release is older than the pin on main.
+
+The script does every lookup, download and hash check before it writes,
+rejects arguments other than `--check`, and counts a prerelease as older
+than its own release (`sort -V` alone ranks `0.11.0` below
+`0.11.0-rc.1`). The same fixes came out of the review of ganymede-ui#490.
