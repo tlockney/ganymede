@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 440" width="900" height="440" role="img" aria-label="A host call while a cell runs. The server opened the host comm on a kernel subshell when the kernel started. The cell calls host.notebooks.search, and the kernel sends a comm_msg with the call&#x27;s id, method and params on iopub. The server keeps it out of what other clients receive, checks the notebook&#x27;s grant, runs the search through the notebooks core, and replies with a comm_msg carrying the id and result on shell, on the subshell. The kernel reads the subshell while the cell runs, and the cell&#x27;s await resolves. Other clients see the cell&#x27;s outputs as usual, but not the host messages.">
+  <title>A host call while a cell runs. The server opened the host comm on a kernel subshell when the kernel started. The cell calls host.notebooks.search, and the kernel sends a comm_msg with the call's id, method and params on iopub. The server keeps it out of what other clients receive, checks the notebook's grant, runs the search through the notebooks core, and replies with a comm_msg carrying the id and result on shell, on the subshell. The kernel reads the subshell while the cell runs, and the cell's await resolves. Other clients see the cell's outputs as usual, but not the host messages.</title>
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f6f7f9; stroke: #9aa3ad; stroke-width: 1.2; }
+    .inner { fill: #ffffff; stroke: #b8c0c8; stroke-width: 1; }
+    .acc { fill: #e8f0fe; stroke: #3b6fd8; stroke-width: 1.4; }
+    .warn { fill: #fdf0e6; stroke: #c96a1b; stroke-width: 1.4; }
+    .ok { fill: #e7f5ec; stroke: #2f8a4c; stroke-width: 1.4; }
+    .dash { stroke-dasharray: 5 4; }
+    .warnpill { fill: #c96a1b; }
+    .tw { font: 600 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #ffffff; }
+    .t { font: 600 14px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1f2328; }
+    .s { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .m { font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f2328; }
+    .l { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .ln { stroke: #6e7781; stroke-width: 1.4; fill: none; }
+    .life { stroke: #9aa3ad; stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+    .hl { stroke: #3b6fd8; stroke-width: 1.6; fill: none; }
+    .ah { fill: #6e7781; }
+    .ahb { fill: #3b6fd8; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #1b1b1f; }
+      .box { fill: #25262b; stroke: #5c6370; }
+      .inner { fill: #1b1b1f; stroke: #4a505a; }
+      .acc { fill: #1e2a44; stroke: #6b9bff; }
+      .warn { fill: #3a2a1c; stroke: #e0904a; }
+      .ok { fill: #1d3326; stroke: #5cc27e; }
+      .warnpill { fill: #e0904a; }
+      .tw { fill: #1b1b1f; }
+      .t, .m { fill: #e6e8eb; }
+      .s, .l { fill: #b6bcc4; }
+      .ln { stroke: #a0a7b0; }
+      .life { stroke: #5c6370; }
+      .hl { stroke: #6b9bff; }
+      .ah { fill: #a0a7b0; }
+      .ahb { fill: #6b9bff; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ahb" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="900" height="440" rx="8"/>
+  <rect class="box" x="10" y="24" width="160" height="32" rx="4"/>
+  <text class="t" x="90" y="45" text-anchor="middle">Cell</text>
+  <line class="life" x1="90" y1="58" x2="90" y2="420"/>
+  <rect class="box" x="220" y="24" width="160" height="32" rx="4"/>
+  <text class="t" x="300" y="45" text-anchor="middle">Kernel (cdp-kernel)</text>
+  <line class="life" x1="300" y1="58" x2="300" y2="420"/>
+  <rect class="box" x="480" y="24" width="160" height="32" rx="4"/>
+  <text class="t" x="560" y="45" text-anchor="middle">Ganymede server</text>
+  <line class="life" x1="560" y1="58" x2="560" y2="420"/>
+  <rect class="box" x="720" y="24" width="160" height="32" rx="4"/>
+  <text class="t" x="800" y="45" text-anchor="middle">Other clients</text>
+  <line class="life" x1="800" y1="58" x2="800" y2="420"/>
+  <line class="ln" x1="560" y1="86" x2="302" y2="86" marker-end="url(#a)"/>
+  <text class="l" x="431.0" y="79" text-anchor="middle">comm_open ganymede.host.v1, with hello</text>
+  <text class="l" x="431.0" y="101" text-anchor="middle">at kernel start, shell, on a subshell</text>
+  <line class="hl" x1="90" y1="150" x2="298" y2="150" marker-end="url(#b)"/>
+  <text class="l" x="194.0" y="143" text-anchor="middle">host.notebooks.search()</text>
+  <line class="hl" x1="300" y1="200" x2="558" y2="200" marker-end="url(#b)"/>
+  <text class="l" x="429.0" y="193" text-anchor="middle">comm_msg {id, method, params}</text>
+  <text class="l" x="429.0" y="215" text-anchor="middle">iopub</text>
+  <rect class="warn" x="610" y="186" width="250" height="30" rx="3"/>
+  <text class="l" x="620" y="205">kept out of what other clients get</text>
+  <rect class="acc" x="470" y="236" width="180" height="48" rx="3"/>
+  <text class="l" x="480" y="256">check the notebook's grant</text>
+  <text class="l" x="480" y="274">search via the notebooks core</text>
+  <line class="hl" x1="558" y1="316" x2="302" y2="316" marker-end="url(#b)"/>
+  <text class="l" x="430.0" y="309" text-anchor="middle">comm_msg {id, result}</text>
+  <text class="l" x="430.0" y="331" text-anchor="middle">shell, on the subshell</text>
+  <line class="hl" x1="298" y1="366" x2="92" y2="366" marker-end="url(#b)"/>
+  <text class="l" x="195.0" y="359" text-anchor="middle">await resolves</text>
+  <line class="ln" x1="302" y1="400" x2="798" y2="400" marker-end="url(#a)"/>
+  <text class="l" x="550.0" y="393" text-anchor="middle">the cell's outputs, as usual</text>
+</svg>

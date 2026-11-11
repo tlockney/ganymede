@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 370" width="900" height="370" role="img" aria-label="The parts of a host call. In the kernel, cell code calls jupyter.host, a thin client. It sends each call as a comm message on the host comm, which the server opened when the kernel started. In the Ganymede server, the responder takes the call, checks it against the notebook&#x27;s grant, and calls the notebooks core, which reads files and rooms and runs notebooks. The MCP tools use the same core and render its answers as text for a model. The reply goes back to the kernel on the shell channel, on a kernel subshell, so a waiting cell gets it. The server keeps the host comm&#x27;s messages out of what it forwards to other clients, such as JupyterLab or the apps.">
+  <title>The parts of a host call. In the kernel, cell code calls jupyter.host, a thin client. It sends each call as a comm message on the host comm, which the server opened when the kernel started. In the Ganymede server, the responder takes the call, checks it against the notebook's grant, and calls the notebooks core, which reads files and rooms and runs notebooks. The MCP tools use the same core and render its answers as text for a model. The reply goes back to the kernel on the shell channel, on a kernel subshell, so a waiting cell gets it. The server keeps the host comm's messages out of what it forwards to other clients, such as JupyterLab or the apps.</title>
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f6f7f9; stroke: #9aa3ad; stroke-width: 1.2; }
+    .inner { fill: #ffffff; stroke: #b8c0c8; stroke-width: 1; }
+    .acc { fill: #e8f0fe; stroke: #3b6fd8; stroke-width: 1.4; }
+    .warn { fill: #fdf0e6; stroke: #c96a1b; stroke-width: 1.4; }
+    .ok { fill: #e7f5ec; stroke: #2f8a4c; stroke-width: 1.4; }
+    .dash { stroke-dasharray: 5 4; }
+    .warnpill { fill: #c96a1b; }
+    .tw { font: 600 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #ffffff; }
+    .t { font: 600 14px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1f2328; }
+    .s { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .m { font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f2328; }
+    .l { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .ln { stroke: #6e7781; stroke-width: 1.4; fill: none; }
+    .life { stroke: #9aa3ad; stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+    .hl { stroke: #3b6fd8; stroke-width: 1.6; fill: none; }
+    .ah { fill: #6e7781; }
+    .ahb { fill: #3b6fd8; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #1b1b1f; }
+      .box { fill: #25262b; stroke: #5c6370; }
+      .inner { fill: #1b1b1f; stroke: #4a505a; }
+      .acc { fill: #1e2a44; stroke: #6b9bff; }
+      .warn { fill: #3a2a1c; stroke: #e0904a; }
+      .ok { fill: #1d3326; stroke: #5cc27e; }
+      .warnpill { fill: #e0904a; }
+      .tw { fill: #1b1b1f; }
+      .t, .m { fill: #e6e8eb; }
+      .s, .l { fill: #b6bcc4; }
+      .ln { stroke: #a0a7b0; }
+      .life { stroke: #5c6370; }
+      .hl { stroke: #6b9bff; }
+      .ah { fill: #a0a7b0; }
+      .ahb { fill: #6b9bff; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ahb" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="900" height="370" rx="8"/>
+  <rect class="box" x="30" y="30" width="230" height="310" rx="4"/>
+  <text class="t" x="44" y="54">Kernel</text>
+  <rect class="inner" x="44" y="70" width="202" height="50" rx="3"/>
+  <text class="s" x="56" y="91">cell code</text>
+  <text class="m" x="56" y="109">host.notebooks.search()</text>
+  <line class="ln" x1="145" y1="122" x2="145" y2="150" marker-end="url(#a)"/>
+  <rect class="acc" x="44" y="152" width="202" height="56" rx="3"/>
+  <text class="m" x="56" y="174">jupyter.host</text>
+  <text class="l" x="56" y="192">thin client, ganymede.host.v1</text>
+  <text class="l" x="44" y="236">no token, no server URL</text>
+  <text class="l" x="44" y="254">replies on a kernel subshell</text>
+  <text class="l" x="44" y="272">(cdp-kernel 0.8.0 and later)</text>
+
+  <line class="hl" x1="248" y1="168" x2="328" y2="168" marker-end="url(#b)"/>
+  <text class="l" x="258" y="160">call, iopub</text>
+  <line class="hl" x1="328" y1="194" x2="248" y2="194" marker-end="url(#b)"/>
+  <text class="l" x="258" y="212">reply, shell</text>
+
+  <rect class="ok" x="330" y="30" width="330" height="310" rx="4"/>
+  <text class="t" x="344" y="54">Ganymede server</text>
+  <rect class="acc" x="344" y="70" width="140" height="56" rx="3"/>
+  <text class="m" x="356" y="92">host responder</text>
+  <text class="l" x="356" y="110">opens the comm</text>
+  <rect class="inner" x="504" y="70" width="142" height="56" rx="3"/>
+  <text class="s" x="516" y="92">grants</text>
+  <text class="l" x="516" y="110">per notebook</text>
+  <line class="ln" x1="486" y1="98" x2="502" y2="98" marker-end="url(#a)"/>
+  <rect class="acc" x="344" y="150" width="302" height="56" rx="3"/>
+  <text class="m" x="356" y="172">notebooks core</text>
+  <text class="l" x="356" y="190">list, read, search, results, run</text>
+  <line class="ln" x1="414" y1="128" x2="414" y2="148" marker-end="url(#a)"/>
+  <rect class="inner" x="344" y="230" width="142" height="42" rx="3"/>
+  <text class="m" x="356" y="249">MCP tools</text>
+  <text class="l" x="356" y="264">answers as text</text>
+  <line class="ln" x1="414" y1="228" x2="414" y2="208" marker-end="url(#a)"/>
+  <rect class="inner" x="504" y="230" width="142" height="42" rx="3"/>
+  <text class="s" x="516" y="247">iopub filter</text>
+  <text class="l" x="516" y="264">drops host messages</text>
+
+  <rect class="box" x="740" y="30" width="130" height="310" rx="4"/>
+  <text class="t" x="754" y="54">Other clients</text>
+  <rect class="inner" x="754" y="226" width="102" height="50" rx="3"/>
+  <text class="l" x="766" y="247">JupyterLab,</text>
+  <text class="l" x="766" y="263">the apps</text>
+  <line class="ln" x1="648" y1="251" x2="752" y2="251" marker-end="url(#a)"/>
+  <text class="l" x="666" y="231">outputs, no</text>
+  <text class="l" x="666" y="244">host traffic</text>
+  <rect class="inner" x="754" y="292" width="102" height="36" rx="3"/>
+  <text class="l" x="766" y="314">agents, MCP</text>
+  <path class="ln" d="M752,310 L414,310 L414,274" marker-end="url(#a)"/>
+</svg>

@@ -97,6 +97,10 @@ pull request with a GitHub issue, and records what it learned in the
   The first step registers today's in-app kernel with the embedded
   server ([In-app kernels as server kernels](in-app-kernel.md)): the C
   functions are on `main` in Ganymede, and the apps use them next.
+- A host API for kernels: cells read, search and run other notebooks
+  through calls the server answers over a comm, granted per notebook,
+  with no server token in the kernel. Design note for review:
+  [A host API for kernels](host-api.md).
 - CurveZMQ for the ZeroMQ transport. ipykernel 7 already advertises it.
 - Trusting `tailscale serve`'s identity headers, so a client on the
   tailnet needs no token.
