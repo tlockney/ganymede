@@ -314,6 +314,9 @@ struct Target {
     /// Working directory for a launched kernel.
     #[arg(long)]
     cwd: Option<PathBuf>,
+    /// Added to a launched kernel's environment (`execute -p`).
+    #[arg(skip)]
+    env: Vec<(String, String)>,
 }
 
 #[derive(Args)]
@@ -383,6 +386,18 @@ struct ExecuteArgs {
     /// Do not save widget state in `metadata.widgets`.
     #[arg(long)]
     no_widget_state: bool,
+    /// A parameter for the run, `NAME=VALUE`. Repeatable. VALUE is read
+    /// as JSON when it parses (`7`, `true`, `[1,2]`), else as a string.
+    /// The kernel gets them as a JSON object in `GANYMEDE_PARAMS`.
+    #[arg(long = "param", short = 'p', value_name = "NAME=VALUE")]
+    params: Vec<String>,
+    /// Parameters from a file holding a JSON object; `-p` wins.
+    #[arg(long, value_name = "FILE")]
+    params_file: Option<PathBuf>,
+    /// Print each notebook's named results on stdout, as one JSON line:
+    /// `{"path", "status", "results"}`.
+    #[arg(long)]
+    results: bool,
 }
 
 #[derive(Args, Clone)]
@@ -524,6 +539,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
                     kernel: None,
                     existing: Some(connection_file),
                     cwd: None,
+                    env: vec![],
                 },
                 code,
                 file: vec![],
@@ -634,7 +650,7 @@ async fn open(engine: &Engine, t: &Target, verbose: bool) -> Result<Kernel> {
                     name,
                     StartOptions {
                         cwd: t.cwd.clone(),
-                        env: vec![],
+                        env: t.env.clone(),
                     },
                 )
                 .await
@@ -916,6 +932,14 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
         }
     }
     same_output(&args.dest, &args.notebooks)?;
+    if args.results && args.dest.output.as_deref() == Some("-") {
+        return Err(Usage("--results and --output - both write to stdout".into()).into());
+    }
+    let params = run_params(&args.params, args.params_file.as_deref())?;
+    let env = match &params {
+        Some(p) => vec![(PARAMS_ENV.to_string(), params_env(p)?)],
+        None => vec![],
+    };
     let opts = ganymede_engine::NotebookOptions {
         timeout: (args.timeout > 0).then(|| Duration::from_secs(args.timeout)),
         allow_errors: args.allow_errors,
@@ -940,19 +964,25 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
             Ok(nb) => nb,
             Err(e) => {
                 eprintln!("ganymede: {}", error_chain(&e));
+                print_results(args.results, path, None, Some(&e));
                 status = ExitCode::FAILURE;
                 continue;
             }
         };
+        if let Some(p) = &params {
+            record_params(&mut nb, p);
+        }
         let name = match &args.kernel {
             Some(k) => k.clone(),
             None => match ganymede_engine::notebook_kernel_name(&nb) {
                 Some(n) => n,
                 None => {
-                    eprintln!(
-                        "ganymede: {} has no metadata.kernelspec.name; pass --kernel",
+                    let e = anyhow::anyhow!(
+                        "{} has no metadata.kernelspec.name; pass --kernel",
                         path.display()
                     );
+                    eprintln!("ganymede: {e}");
+                    print_results(args.results, path, None, Some(&e));
                     status = ExitCode::FAILURE;
                     continue;
                 }
@@ -966,12 +996,14 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
             kernel: Some(name),
             existing: None,
             cwd,
+            env: env.clone(),
         };
         eprintln!("executing {}", path.display());
         let kernel = match open(engine, &target, verbose).await {
             Ok(k) => Arc::new(k),
             Err(e) => {
                 eprintln!("  {}", error_chain(&e));
+                print_results(args.results, path, None, Some(&e));
                 status = ExitCode::FAILURE;
                 continue;
             }
@@ -1008,6 +1040,7 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
                 if let Some(dest) = args.dest.resolve(path) {
                     write_notebook(&nb, dest.as_deref())?;
                 }
+                print_results(args.results, path, Some(&nb), None);
             }
             Err(e) => {
                 eprintln!("  {e}");
@@ -1022,6 +1055,8 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
                         }
                     }
                 }
+                // The results published before the failure still count.
+                print_results(args.results, path, Some(&nb), Some(&anyhow::Error::from(e)));
                 status = ExitCode::FAILURE;
             }
         }
@@ -1062,6 +1097,91 @@ async fn wait_for_stop() {
 }
 
 // ----- files -----------------------------------------------------------------
+
+/// The environment variable that carries a run's parameters to the
+/// kernel: a JSON object. The host passes data and names no language
+/// (#650); cdp-kernel reads it as `jupyter.params`.
+const PARAMS_ENV: &str = "GANYMEDE_PARAMS";
+
+/// Largest `GANYMEDE_PARAMS`: Windows caps a variable at 32,767
+/// characters, and Linux an argument or variable at 128 KiB.
+const PARAMS_MAX: usize = 32 * 1024;
+
+/// `--params-file`, then each `-p NAME=VALUE` over it. `None` when neither
+/// was given, so a run without parameters sets no variable.
+fn run_params(
+    pairs: &[String],
+    file: Option<&Path>,
+) -> Result<Option<serde_json::Map<String, serde_json::Value>>> {
+    if pairs.is_empty() && file.is_none() {
+        return Ok(None);
+    }
+    let mut params = match file {
+        Some(f) => {
+            let text =
+                std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?;
+            match serde_json::from_str(&text) {
+                Ok(serde_json::Value::Object(m)) => m,
+                Ok(_) => bail!("{} must hold a JSON object", f.display()),
+                Err(e) => bail!("{} is not JSON: {e}", f.display()),
+            }
+        }
+        None => serde_json::Map::new(),
+    };
+    for pair in pairs {
+        let Some((name, value)) = pair.split_once('=').filter(|(n, _)| !n.is_empty()) else {
+            return Err(Usage(format!("-p {pair}: expected NAME=VALUE")).into());
+        };
+        let value = serde_json::from_str(value)
+            .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
+        params.insert(name.to_string(), value);
+    }
+    Ok(Some(params))
+}
+
+fn params_env(params: &serde_json::Map<String, serde_json::Value>) -> Result<String> {
+    let text = serde_json::to_string(params)?;
+    if text.len() > PARAMS_MAX {
+        bail!(
+            "parameters are {} bytes as JSON, over the {PARAMS_MAX}-byte limit; pass a path to a file instead",
+            text.len()
+        );
+    }
+    Ok(text)
+}
+
+/// Records a run's parameters in `metadata.ganymede.params`, so the
+/// executed notebook says what it ran with.
+fn record_params(nb: &mut Notebook, params: &serde_json::Map<String, serde_json::Value>) {
+    let ganymede = nb
+        .metadata
+        .entry("ganymede")
+        .or_insert_with(|| serde_json::Value::Object(Default::default()));
+    if !ganymede.is_object() {
+        *ganymede = serde_json::Value::Object(Default::default());
+    }
+    ganymede["params"] = serde_json::Value::Object(params.clone());
+}
+
+/// `--results`: one JSON line per notebook, with the named results its
+/// outputs published (#650), also when a cell failed after some.
+fn print_results(on: bool, path: &Path, nb: Option<&Notebook>, error: Option<&anyhow::Error>) {
+    if !on {
+        return;
+    }
+    let results = nb
+        .map(ganymede_engine::nbformat::named_results)
+        .unwrap_or_default();
+    let mut line = serde_json::json!({
+        "path": path.to_string_lossy(),
+        "status": if error.is_some() { "error" } else { "ok" },
+        "results": results,
+    });
+    if let Some(e) = error {
+        line["error"] = error_chain(e).into();
+    }
+    println!("{line}");
+}
 
 fn write_notebook(nb: &Notebook, dest: Option<&Path>) -> Result<()> {
     match dest {

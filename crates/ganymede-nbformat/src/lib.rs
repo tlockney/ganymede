@@ -27,6 +27,7 @@ mod atomic;
 mod export;
 mod multiline;
 mod reader;
+mod results;
 mod types;
 mod upgrade;
 mod writer;
@@ -39,6 +40,10 @@ pub use export::{
 };
 pub use multiline::{splitlines, MultilineString};
 pub use reader::{from_json_slice, read_file, ReadIssue, ReadReport};
+pub use results::{
+    named_result, named_results, named_results_of, RESULT_MIME, SCRAPBOOK_JSON_MIME,
+    SCRAPBOOK_TEXT_MIME,
+};
 pub use types::{
     is_json_mime, is_split_mime, Attachments, Cell, CodeCell, DisplayDataOutput, ErrorOutput,
     ExecuteResultOutput, MarkdownCell, MimeBundle, Notebook, Output, RawCell, StreamOutput,

@@ -78,6 +78,50 @@ too.
 `ganymede nb clear notebook.ipynb --inplace` removes outputs without a
 kernel.
 
+### Parameters and named results
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+A notebook can take parameters and hand back named results, so a script,
+a schedule or an agent runs it like a function:
+
+```sh
+ganymede execute fremont.ipynb -p counter="2nd Ave" -p days=7 --results
+# {"path":"fremont.ipynb","status":"ok","results":{"weekday_drop":-0.19}}
+```
+
+`-p NAME=VALUE` is repeatable; the value is read as JSON when it parses
+(`7`, `true`, `["a","b"]`), else as a string, so `-p 'id="007"'` keeps
+the zeros. `--params-file params.json` takes a JSON object, and `-p`
+wins over it. The kernel gets them as one JSON object in
+`GANYMEDE_PARAMS`. In a TypeScript notebook on cdp-kernel (from its
+release after 0.9.0):
+
+```ts
+const { counter = "Fremont", days = 30 } = jupyter.params as { counter?: string; days?: number };
+// ... the analysis ...
+jupyter.result("weekday_drop", -0.19);
+```
+
+Defaults in the notebook keep it runnable on its own. In Python, read
+the variable and publish a result with scrapbook, whose outputs
+Ganymede reads too, or with Ganymede's MIME type directly:
+
+```python
+import json, os
+from IPython.display import display
+
+params = json.loads(os.environ.get("GANYMEDE_PARAMS", "{}"))
+counter = params.get("counter", "Fremont")
+display({"application/vnd.ganymede.result+json": {"name": "weekday_drop", "value": -0.19},
+         "text/plain": "weekday_drop = -0.19"}, raw=True)
+```
+
+[Parameters and named results](reference.md#parameters-and-named-results)
+has the formats.
+
 In CI, a notebook that fails fails the job. A GitHub Actions workflow
 that runs every notebook in `notebooks/` on cdp-kernel:
 
