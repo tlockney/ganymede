@@ -7,7 +7,8 @@
 # On a push to main the base is the commit main was at before the push
 # (BASE_SHA, github.event.before), or HEAD^1 without it (#458), so a
 # docs-only merge doesn't run everything either. Docs, the site and
-# Markdown can't change what the jobs test (pages.yml builds the site);
+# Markdown can't change what the jobs test (pages.yml builds the site),
+# and neither can spikes/, which no crate depends on;
 # site/install.sh can, and anything not listed counts as code. The
 # schedule and manual runs run everything, and so does a push whose
 # base can't be found or diffed.
@@ -44,6 +45,8 @@ while IFS= read -r f; do
   case $f in
     site/install.sh) code=true ;;
     *.md | docs/* | site/* | LICENSE | cliff.toml) ;;
+    # Spikes with their own workspace and workflow (v8-spike.yml, #646).
+    spikes/* | .github/workflows/v8-spike.yml) ;;
     crates/ganymede-cli/* | crates/ganymede-engine/* | e2e/* | evals/* | plugins/* | validation/* | container/*) code=true ;;
     scripts/build-xcframework.sh | scripts/ffi-smoke.sh | .github/workflows/ci.yml) code=true ffi=true ;;
     scripts/* | .github/*) code=true ;;
