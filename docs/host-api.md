@@ -213,7 +213,9 @@ HTTP endpoint, so it waits on that contract's first step.
   sends `cancel`, and the server shuts the run's kernel down.
 - **Grants narrow, never widen.** The run's kernel gets the intersection
   of the called notebook's grant and the caller's, so a notebook can't
-  reach more by running another one.
+  reach more by running another one. A path must pass each grant up the
+  chain with symlinks resolved, so a grant that names a symlink reaches
+  nothing its caller can't.
 - **Depth and width.** A run started from a run counts one deeper, and
   the server refuses past depth 3 (`denied`). Each kernel has at most
   two runs of its own in flight; more wait their turn. The limit counts

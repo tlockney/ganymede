@@ -95,6 +95,12 @@ struct Who {
     /// How many `notebooks.run` calls deep this kernel is: 0 for a
     /// notebook's own kernel.
     depth: u32,
+    /// For a run, the read and run grants of every kernel up the chain
+    /// that started it. A path must pass each of them as well, checked
+    /// with symlinks resolved, so a grant naming a symlink can't widen
+    /// what the caller may do.
+    outer_read: Vec<Vec<String>>,
+    outer_run: Vec<Vec<String>>,
 }
 
 impl Who {
@@ -234,6 +240,8 @@ impl HostApi {
                     edit_self: false,
                     run: Vec::new(),
                     depth: MAX_DEPTH,
+                    outer_read: Vec::new(),
+                    outer_run: Vec::new(),
                 });
         }
         self.grant_for(self.notebook(&caller.kernel_id)).await
@@ -270,6 +278,8 @@ impl HostApi {
                 None => self.run.clone(),
             },
             depth: 0,
+            outer_read: Vec::new(),
+            outer_run: Vec::new(),
             notebook,
         }
     }
@@ -302,7 +312,12 @@ impl HostApi {
         if who.notebook() == Some(path) || who.reads_everything() {
             return true;
         }
-        self.covers(&who.read, path)
+        self.covers(&who.read, path) && who.outer_read.iter().all(|g| self.covers(g, path))
+    }
+
+    /// Whether `who` may run `path`, a normalized API path.
+    fn may_run(&self, who: &Who, path: &str) -> bool {
+        self.covers(&who.run, path) && who.outer_run.iter().all(|g| self.covers(g, path))
     }
 
     /// Whether `grants` cover `path`, a normalized API path, where it
@@ -456,7 +471,7 @@ impl HostApi {
             )));
         }
         let path = ganymede_contents::normalize_api_path(&request.path);
-        if !self.covers(&who.run, &path) {
+        if !self.may_run(who, &path) {
             return Err(HostError::denied(format!(
                 "{path} is outside this notebook's run grant (`[host] run`, or `ganymede grant NOTEBOOK run=PATH`)"
             )));
@@ -476,6 +491,8 @@ impl HostApi {
             edit_self: false,
             depth: who.depth + 1,
             notebook: Some(path.clone()),
+            outer_read: [who.outer_read.clone(), vec![who.read.clone()]].concat(),
+            outer_run: [who.outer_run.clone(), vec![who.run.clone()]].concat(),
         };
         let slot = {
             let mut slots = self.slots.lock().unwrap();
