@@ -147,7 +147,7 @@ version has these:
 | --- | --- | --- | --- |
 | `hello` | `{}` | `{ protocol: 1, server, notebook, methods }`: the server's version, this kernel's notebook path (or `null`) and the methods it may call | Always |
 | `notebooks.list` | `{ dir? }` | `[{ path, title, kernel, modified }]` for notebooks and directories in `dir` | Yes, under `read` |
-| `notebooks.read` | `{ path }` | The notebook as nbformat 4 JSON, from its room when one is open, so it includes what isn't saved yet | Yes, under `read` |
+| `notebooks.read` | `{ path }` | `{ notebook, hashes }`: the notebook as nbformat 4 JSON, from its room when one is open, so it includes what isn't saved yet, and each cell's source hash by cell id | Yes, under `read` |
 | `notebooks.search` | `{ query, dir?, outputs?, cell_type?, limit? }` | `{ hits: [{ path, title, index, id, cell_type, in, excerpt }], total, truncated }`, the `notebooks_search` tool's matches as data | Yes, under `read` |
 | `notebooks.results` | `{ path }` | `{ name: value }`: the notebook's named results, from its saved outputs | Yes, under `read` |
 | `notebooks.run` | `{ path, params?, save?, timeout? }` | `{ status, results, error?, path? }` | No |
@@ -161,7 +161,9 @@ cell can check before it calls.
 The `self.*` calls edit only the notebook the kernel was started for,
 through its room, so every client sees the change live. They use the
 MCP cell tools' code and the execute endpoint's source hash (MurmurHash2,
-seed 0), so a cell can't overwrite an edit it hasn't seen. They cover
+seed 0), so a cell can't overwrite an edit it hasn't seen. The hash
+comes from `notebooks.read`, which returns each cell's beside the
+notebook, so a client needn't compute it. They cover
 the most common edit a notebook makes, regenerating a table or summary
 in one of its own cells, such as a journal index. A kernel with no
 notebook has no `self.*` calls.
@@ -224,7 +226,7 @@ run = []             # notebooks this notebook may run; [] is none, [""] is all
 
 - **Defaults** come from `[host]` in the config file. Out of the box a
   notebook may list, read, search and read results of notebooks under
-  the root, and may run none. A Node or Deno kernel can read those files
+  the root, may edit its own cells (`self.*`), and may run none. A Node or Deno kernel can read those files
   already, and an in-app kernel needs reads to do anything.
 - **Which notebook.** A kernel gets the grant of the notebook whose
   session the server started it for: that session's API path, mapped to
