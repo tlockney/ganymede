@@ -9,6 +9,8 @@ mod info;
 mod lab;
 mod lab_start;
 mod mcp;
+#[cfg(test)]
+mod reference;
 mod render;
 mod ui;
 mod update;
