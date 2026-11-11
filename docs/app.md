@@ -70,10 +70,12 @@ On the iPad, notebooks live in the app's Documents folder (On My iPad in
 the Files app) or a folder you pick, such as one in iCloud Drive. iOS
 doesn't let an app start kernel processes, so the page runs cdp-kernel's
 TypeScript kernel itself, in a Worker.
-<!-- **Unreleased in ganymede-ui.** Once ganymede-ui#470 ships: both apps
-run their TypeScript kernel in a hidden web view as a kernel of the app's
-server (in-app-kernel.md), so it shows in the server's kernel list and
-outlives a window's reload; the page no longer runs it itself. -->
+
+> [!NOTE]
+> **Unreleased in ganymede-ui.** In a build of ganymede-ui's `main`, both
+> apps run the TypeScript kernel in a hidden web view as a kernel of the
+> app's server ([In-app kernel](in-app-kernel.md)): it is in the server's
+> kernel list and outlives a window's reload.
 
 TypeScript cells in the app's own kernel, on the Mac, iPad or iPhone,
 get a `device` global for native features such as the clipboard; see
@@ -101,9 +103,10 @@ TypeScript kernel, or JupyterLite's JavaScript kernel. Nothing is sent
 anywhere. **Ganymede server** with **Run kernels in this page** keeps
 notebooks on the server and still runs kernels in the page, which is what
 the iPad app does.
-<!-- **Unreleased in ganymede-ui.** Once ganymede-ui#470 ships, drop
-"which is what the iPad app does": the apps open the page with
-`kernels=server`. -->
+
+> [!NOTE]
+> **Unreleased in ganymede-ui.** A build of ganymede-ui's `main` doesn't:
+> the apps run their kernel as a kernel of their server.
 
 ## Using it
 
