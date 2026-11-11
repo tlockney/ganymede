@@ -15,7 +15,15 @@ entries, and a page ganymede-ui adds later lands in a "ganymede-ui"
 group until levels.ts places it. Security and Privacy moved from the
 guides to How it works, rooms to the agents group, Other kernels to
 Use Jupyter tools. The top nav is Home, Get started, Apps, Agents,
-Reference, Roadmap.
+Reference, Roadmap: #689 proposed Home, Apps, Docs, Examples, Roadmap
+and a first group "Start", but Examples doesn't exist yet, and
+"Get started" says what the group is for. Examples joins the nav with
+its pages. ganymede-ui's pages get no reading-level label, since the
+labels describe Ganymede's docs, and keep titles set in levels.ts,
+because their headings ("Releasing", "Architecture") repeat Ganymede's.
+`uiUnplaced()` reads the placed pages from what `groups()` emits, the
+build warns when a ganymede-ui page isn't placed, and
+docs/scripts/levels.test.mjs checks each page shows once.
 
 First step of #689, the restructuring from the docs and web presence
 review; the new guides, examples and reference pages come next, each

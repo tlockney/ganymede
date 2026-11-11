@@ -25,10 +25,12 @@ export interface Group {
 }
 
 // ganymede-ui's pages, copied into docs/ganymede-ui/ by `npm run
-// fetch-ui`, that the sidebar places by name. groups() leaves out any the
-// copy lacks; config.mts lists any page the copy has and this doesn't in
-// a group of its own, so a new page in ganymede-ui still shows.
-export const uiPlaced: Record<string, string> = {
+// fetch-ui`, that the sidebar places by name, with their sidebar titles.
+// The titles are set here because the pages' own headings ("Releasing",
+// "Architecture") would repeat Ganymede's in the same group. groups()
+// leaves out any page the copy lacks; uiUnplaced() finds any the copy has
+// and groups() doesn't place, so a new page in ganymede-ui still shows.
+const uiPlaced: Record<string, string> = {
   apps: "The Mac, iPad and iPhone apps",
   shortcuts: "Keyboard shortcuts",
   device: "Device API",
@@ -38,7 +40,15 @@ export const uiPlaced: Record<string, string> = {
 };
 
 function ui(name: string, has: (name: string) => boolean): Page[] {
+  if (!Object.hasOwn(uiPlaced, name)) throw new Error(`levels.ts: no title for ganymede-ui page ${name}`);
   return has(name) ? [{ text: uiPlaced[name], link: `/ganymede-ui/${name}` }] : [];
+}
+
+// The names of ganymede-ui's copied pages (`pages`, such as "apps") that
+// groups() doesn't place, read from what groups() emits.
+export function uiUnplaced(pages: string[]): string[] {
+  const placed = new Set(groups().flatMap((g) => g.items.map((p) => p.link)));
+  return pages.filter((name) => !placed.has(`/ganymede-ui/${name}`));
 }
 
 // The sidebar, in reading order: grouped by what the reader is doing,
@@ -147,8 +157,10 @@ export function groups(has: (name: string) => boolean = () => true): Group[] {
   ];
 }
 
-// The level of the page at `relativePath` ("install.md", "README.md"), if any.
+// The level of the page at `relativePath` ("install.md", "README.md"), if
+// any. ganymede-ui's pages get none: the level notes describe Ganymede's.
 export function levelOf(relativePath: string): Level | undefined {
+  if (relativePath.startsWith("ganymede-ui/")) return;
   const link = "/" + relativePath.replace(/(^|\/)(README|index)\.md$/, "$1").replace(/\.md$/, "");
   return groups().find((g) => g.items.some((p) => p.link === link))?.level;
 }
