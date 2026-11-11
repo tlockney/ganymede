@@ -104,6 +104,7 @@ fn state_with(
         lsp: None,
         mcp: None,
         metrics: Default::default(),
+        host: Default::default(),
     }
 }
 

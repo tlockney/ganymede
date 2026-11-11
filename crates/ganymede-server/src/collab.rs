@@ -216,6 +216,18 @@ impl Collab {
         self.with_ids(move |ids| ids.grant(&ids.get(&path)?)).await
     }
 
+    /// Stores `grant` (JSON) for the notebook with file id `id`, or
+    /// removes it.
+    pub async fn set_grant(&self, id: String, grant: Option<String>) -> Result<(), String> {
+        self.with_ids(move |ids| ids.set_grant(&id, grant.as_deref()))
+            .await
+    }
+
+    /// Whether the file ids, and so grants, outlive the server.
+    pub async fn is_persistent(&self) -> bool {
+        self.with_ids(|ids| ids.is_persistent()).await
+    }
+
     /// The id for `path`, made the first time; and whether it was new.
     async fn index(&self, path: &str) -> (String, bool) {
         let path = path.to_string();

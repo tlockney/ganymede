@@ -354,6 +354,7 @@ What `ganymede serve` answers, beyond the examples above:
   `/api/metrics/v1`.
 - Ganymede's own: `/api/kernels/{id}/log`, `/api/notebooks/run`
   ([Parameters and named results](reference.md#parameters-and-named-results)),
+  `/api/host/grants/{path}` ([The host API](reference.md#the-host-api)),
   and `/mcp` with `--mcp` ([Agents over MCP](mcp.md)).
 - With JupyterLab (`ganymede lab`): the page, `/static/lab`,
   `/lab/extensions/{name}`, and `/lab/api/` `settings`, `workspaces`,
@@ -361,8 +362,8 @@ What `ganymede serve` answers, beyond the examples above:
 
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release: `/nbconvert/{format}/{path}` and
-> `/api/notebooks/run`. In the latest release, `/api/nbconvert` reports
+> the latest release: `/nbconvert/{format}/{path}`,
+> `/api/notebooks/run` and `/api/host/grants`. In the latest release, `/api/nbconvert` reports
 > no exporters.
 
 The kernel websocket speaks `v1.kernel.websocket.jupyter.org` when the

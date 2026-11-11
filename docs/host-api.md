@@ -20,7 +20,8 @@ from the config file ([Reference](reference.md#the-host-api)), and
 `self.add`, `self.edit` and `self.delete`, unless `[host] edit_self` is
 off, and `notebooks.run` under the `[host] run` grant (none by
 default). A notebook's own grant, set with `ganymede grant`, replaces
-those defaults for it. cdp-kernel's client is `jupyter.host()`. The rest
+those defaults for it, and clients set it over HTTP with
+`/api/host/grants`. cdp-kernel's client is `jupyter.host()`. The rest
 of this page is the design; a run's `save: "copy"`, `ganymede execute`
 grants and a granting sheet in the apps come next.
 

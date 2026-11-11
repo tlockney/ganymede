@@ -88,6 +88,9 @@ pub struct AppState {
     pub mcp: Option<Arc<mcp::McpState>>,
     /// `/api/metrics/v1`: memory and CPU of the server and its kernels.
     pub metrics: Arc<metrics::Metrics>,
+    /// `[host]` from the config: the host API's default grants, shown by
+    /// `/api/host/grants`.
+    pub host: Arc<host::HostConfig>,
 }
 
 /// The API router, login pages, and JupyterLab or generic static assets
