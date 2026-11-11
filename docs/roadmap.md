@@ -85,9 +85,10 @@ pull request with a GitHub issue, and records what it learned in the
   `--params-file` pass parameters, `--results` prints the named results,
   and `POST /api/notebooks/run` does the same over HTTP
   ([Parameters and named results](reference.md#parameters-and-named-results)).
-- **Host API.** Cells read, search, edit and run notebooks through the
-  host comm: `notebooks.list`, `read`, `search`, `results` and `run`,
-  and `self.*`, under per-notebook grants set with `ganymede grant`
+- **Host API.** Cells read, search and run notebooks, and edit their
+  own, through the host comm: `notebooks.list`, `read`, `search`,
+  `results` and `run`, and `self.*`, under per-notebook grants set with
+  `ganymede grant`
   ([A host API for kernels](host-api.md)).
 - **In-app kernels as server kernels.** Ganymede's C functions let an
   app register its own kernels with the embedded server
