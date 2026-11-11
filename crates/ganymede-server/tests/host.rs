@@ -344,7 +344,7 @@ async fn results_come_from_a_notebooks_outputs_under_the_read_grant() {
     let result = |name: &str, value: Value| {
         json!({"output_type": "display_data", "metadata": {},
                "data": {"application/vnd.ganymede.result+json": {"name": name, "value": value},
-                        "text/plain": format!("{name}")}})
+                        "text/plain": name.to_string()}})
     };
     let nb = json!({"cells": [
         {"cell_type": "code", "id": "a", "metadata": {}, "source": "", "execution_count": 1,
