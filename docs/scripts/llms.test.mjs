@@ -72,3 +72,9 @@ test("the copies' links and images are rewritten as the HTML's are", () => {
     "See [install.sh](https://gh/../site/install.sh), [Install](install.md#a) and ![x](https://gh/images/a.svg).\n<img src=\"https://gh/images/b.svg\">",
   );
 });
+
+test("links in code blocks and code spans stay as written", () => {
+  const md = ["Use `[a](b.md)` or [c](d.md).", "", "```md", "[e](f.md)", "```", "", "[g](h.md)"].join("\n");
+  const out = rewriteLinks(md, (href) => `X/${href}`);
+  assert.equal(out, ["Use `[a](b.md)` or [c](X/d.md).", "", "```md", "[e](f.md)", "```", "", "[g](X/h.md)"].join("\n"));
+});

@@ -75,9 +75,15 @@ export function llmsTxt(groups: Group[], read: (source: string) => string | unde
  * rewrite links that leave docs/, and the copies must too.
  */
 export function rewriteLinks(markdown: string, rewrite: (href: string) => string | undefined): string {
+  const links = (text: string) =>
+    text
+      .replace(/(\]\()(<[^>]+>|[^)\s]+)/g, (m, open, href) => open + (rewrite(href.replace(/^<|>$/g, "")) ?? href))
+      .replace(/(\bsrc=")([^"]+)/g, (m, open, href) => open + (rewrite(href) ?? href));
+  // Code blocks and code spans keep their text: a link there is an example.
   return markdown
-    .replace(/(\]\()(<[^>]+>|[^)\s]+)/g, (m, open, href) => open + (rewrite(href.replace(/^<|>$/g, "")) ?? href))
-    .replace(/(\bsrc=")([^"]+)/g, (m, open, href) => open + (rewrite(href) ?? href));
+    .split(/(^(?:```|~~~)[^\n]*\n[\s\S]*?^(?:```|~~~)[^\n]*$|`[^`\n]+`)/m)
+    .map((part, i) => (i % 2 ? part : links(part)))
+    .join("");
 }
 
 /**
