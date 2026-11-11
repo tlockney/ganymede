@@ -258,8 +258,8 @@ binary that won't run leaves the old one in place. A
 `--main` switches a release to main, and `--version` switches back. It
 refuses a binary that `cargo install`, Homebrew or Nix put there, or one
 in a cargo `target` directory, and says how to update that instead. On
-Windows the old binary is left as `ganymede.exe.old` until the next
-update removes it. It doesn't update cdp-kernel, JupyterLab or
+Windows the old binary is left as `ganymede.exe.<pid>.old` until a
+later update removes it. It doesn't update cdp-kernel, JupyterLab or
 ganymede-ui, and prints how to update the ones you have.
 
 To update cdp-kernel, rerun step 2's `npm install -g`

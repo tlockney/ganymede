@@ -27,9 +27,15 @@ installed rather than running npm or more downloads itself. A main build
 to a release. Only newer releases install unless `--version` names one,
 which may be older.
 
+The latest version is always asked of GitHub, as install.sh does;
+`GANYMEDE_DOWNLOAD_BASE` only moves the file downloads to a mirror.
+
 On Windows a running `.exe` can't be overwritten but can be renamed, so
-the old binary moves to `ganymede.exe.old` and the next update removes
-it. That path is untested, like the rest of Windows (best effort).
+the old binary moves to `ganymede.exe.<pid>.old` and a later update
+removes it. The pid keeps a server still running from an earlier update's
+`.old` file from blocking the next one. After a release, main-build lags
+until the next push to main, so `--main` can install a build whose base
+version is older than the release; it says so when that happens. That path is untested, like the rest of Windows (best effort).
 
 New dependencies: `tar` (no default features, so no xattr) to read the
 release's `.tar.gz`, and `flate2` declared directly; it was already in the

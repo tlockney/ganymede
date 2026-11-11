@@ -75,6 +75,7 @@ pub fn run(args: UpdateArgs) -> Result<ExitCode> {
     let releases = Releases::new("GANYMEDE_DOWNLOAD_BASE", DEFAULT_RELEASES)?;
     clean_old(&exe);
 
+    let explicit_version = args.version.is_some();
     let want = if args.main || (args.version.is_none() && is_main_build(current)) {
         if !args.main {
             eprintln!(
@@ -87,7 +88,7 @@ pub fn run(args: UpdateArgs) -> Result<ExitCode> {
         let explicit = args.version.is_some();
         let version = match args.version {
             Some(v) => checked_version(v.trim_start_matches('v'))?,
-            None => latest(&releases)?,
+            None => latest()?,
         };
         match (explicit, compare_versions(&version, current)) {
             (_, Ordering::Equal) if !args.force => {
@@ -108,6 +109,9 @@ pub fn run(args: UpdateArgs) -> Result<ExitCode> {
 
     if args.check {
         match &want {
+            Want::Release(v) if explicit_version => {
+                println!("ganymede {v} is available; `ganymede update --version {v}` installs it")
+            }
             Want::Release(v) => {
                 println!("ganymede {v} is available; `ganymede update` installs it")
             }
@@ -224,6 +228,14 @@ pub fn run(args: UpdateArgs) -> Result<ExitCode> {
         got.trim_start_matches("ganymede "),
         exe.display()
     );
+    let new_base = base_version(got.trim_start_matches("ganymede "));
+    if want == Want::Main && compare_versions(new_base, base_version(current)) == Ordering::Less {
+        eprintln!(
+            "this main build is from before release {}: a release isn't followed by a \
+             main build until the next push to main",
+            base_version(current)
+        );
+    }
     for hint in hints() {
         eprintln!("{hint}");
     }
@@ -294,6 +306,11 @@ fn is_main_build(version: &str) -> bool {
     version.contains("+main")
 }
 
+/// `version` without its `+build` part.
+fn base_version(version: &str) -> &str {
+    version.split('+').next().unwrap_or(version)
+}
+
 /// `version` if it is safe in a URL path: ASCII letters, digits, `.`, `-`.
 fn checked_version(version: &str) -> Result<String> {
     if version.is_empty()
@@ -307,15 +324,14 @@ fn checked_version(version: &str) -> Result<String> {
     Ok(version.to_string())
 }
 
-/// The latest release's version, from where `<repo>/releases/latest`
-/// redirects: `.../releases/tag/vX.Y.Z`.
-fn latest(releases: &Releases) -> Result<String> {
-    let base = releases.base();
-    let Some(repo) = base.strip_suffix("/download") else {
-        bail!("{base} (GANYMEDE_DOWNLOAD_BASE) doesn't end in /releases/download, so the latest release can't be found there; pass --version");
-    };
+/// The latest release's version, from where GitHub's
+/// `<repo>/releases/latest` redirects: `.../releases/tag/vX.Y.Z`. Asked
+/// of GitHub even with a mirror, as install.sh does.
+fn latest() -> Result<String> {
+    let github = Releases::at(DEFAULT_RELEASES)?;
+    let repo = DEFAULT_RELEASES.trim_end_matches("/download");
     let url = format!("{repo}/latest");
-    let location = releases.location(&url)?;
+    let location = github.location(&url)?;
     location
         .as_deref()
         .and_then(tag_version)
@@ -376,27 +392,39 @@ fn trial_run(binary: &Path) -> Result<String> {
     Ok(text)
 }
 
-/// Where Windows keeps the binary that was running during an update.
-fn old_path(exe: &Path) -> PathBuf {
+/// Where Windows moves the binary that was running during an update:
+/// `<exe>.<pid>.old`. The pid keeps it apart from an older one that a
+/// server started before an earlier update may still be running from.
+fn old_path(exe: &Path, pid: u32) -> PathBuf {
     let mut name = exe.file_name().unwrap_or_default().to_os_string();
-    name.push(".old");
+    name.push(format!(".{pid}.old"));
     exe.with_file_name(name)
 }
 
-/// Removes what an earlier update on Windows left behind.
+/// Removes the `<exe>.*.old` files earlier updates on Windows left
+/// behind, except ones still running, which Windows won't delete.
 fn clean_old(exe: &Path) {
-    if cfg!(windows) {
-        let _ = std::fs::remove_file(old_path(exe));
+    if !cfg!(windows) {
+        return;
+    }
+    let (Some(dir), Some(name)) = (exe.parent(), exe.file_name()) else {
+        return;
+    };
+    let prefix = format!("{}.", name.to_string_lossy());
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        if n.starts_with(&prefix) && n.ends_with(".old") {
+            let _ = std::fs::remove_file(e.path());
+        }
     }
 }
 
 /// Renames `new` over `exe`. On Unix a running binary can be replaced
 /// outright. Windows won't replace one, but will rename it, so the old
-/// one moves aside to `<exe>.old` first, and the next update removes it.
+/// one moves aside first ([`old_path`]), and a later update removes it.
 fn replace(new: tempfile::TempPath, exe: &Path) -> Result<()> {
     if cfg!(windows) {
-        let old = old_path(exe);
-        let _ = std::fs::remove_file(&old);
+        let old = old_path(exe, std::process::id());
         std::fs::rename(exe, &old).with_context(|| format!("moving {} aside", exe.display()))?;
         if let Err(e) = new.persist(exe) {
             let _ = std::fs::rename(&old, exe);
@@ -515,6 +543,8 @@ mod tests {
         }
         assert!(is_main_build("0.9.0+main.abc123"));
         assert!(!is_main_build("0.9.0"));
+        assert_eq!(base_version("0.8.0+main.abc123"), "0.8.0");
+        assert_eq!(base_version("0.9.0"), "0.9.0");
         assert_eq!(compare_versions("0.10.0", "0.9.0"), Ordering::Greater);
     }
 
@@ -591,8 +621,8 @@ mod tests {
     #[test]
     fn old_binary_path() {
         assert_eq!(
-            old_path(Path::new("/b/ganymede.exe")),
-            Path::new("/b/ganymede.exe.old")
+            old_path(Path::new("/b/ganymede.exe"), 42),
+            Path::new("/b/ganymede.exe.42.old")
         );
     }
 }

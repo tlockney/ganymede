@@ -165,8 +165,13 @@ impl Releases {
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| default.to_string());
+        Releases::at(&base).with_context(|| format!("{base:?} ({env})"))
+    }
+
+    /// Downloads from `base`, an `https://` URL, plus GitHub's asset hosts.
+    pub(crate) fn at(base: &str) -> Result<Releases> {
         let base = base.trim_end_matches('/').to_string();
-        let host = https_host(&base).with_context(|| format!("{base:?} ({env})"))?;
+        let host = https_host(&base)?;
         let mut hosts = vec![host];
         hosts.extend(ASSET_HOSTS.iter().map(|h| h.to_string()));
         Ok(Releases {
@@ -178,11 +183,6 @@ impl Releases {
 
     fn url(&self, version: &str, file: &str) -> String {
         self.asset(&format!("v{version}"), file)
-    }
-
-    /// The base URL, without a trailing `/`.
-    pub(crate) fn base(&self) -> &str {
-        &self.base
     }
 
     /// `file` of the release tagged `tag`.
