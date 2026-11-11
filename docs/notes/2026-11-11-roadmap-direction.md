@@ -9,9 +9,9 @@ CurveZMQ, and didn't mention parameters, named results or the run
 endpoint.
 
 "Next" is now those four priorities, each with its open issues. Work
-merged since v0.7.0 (run contract, the first host API calls, kernel
-registration through the C ABI; the host API, `notebooks.run` included since #665) sits in a "Done on `main`" list under
-one Unreleased note, so the release moves it into "Done". A new "Not
-now" section holds what is wanted eventually but deferred: Pyodide,
-MCP Apps, a native non-JS kernel and CurveZMQ. "Open" keeps the
-undecided items.
+merged since v0.7.0 (the run contract, the host API including
+`notebooks.run` and grants, kernel registration through the C ABI) sits
+in a "Done on `main`" list under one Unreleased note, so the release
+moves it into "Done". A new "Not now" section holds what is wanted
+eventually but deferred: Pyodide, MCP Apps, a native non-JS kernel and
+CurveZMQ. "Open" keeps the undecided items.
