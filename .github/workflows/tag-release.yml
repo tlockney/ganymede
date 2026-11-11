@@ -1,16 +1,13 @@
 name: Tag release
 
-# When a release PR from scripts/release.sh merges, main has a workspace
-# version with a CHANGELOG.md section and no tag yet: tag the merge commit
-# vX.Y.Z and run release.yml on it. A tag pushed with GITHUB_TOKEN starts
-# no workflow by itself, so the release is dispatched explicitly.
+# Recovery only: release.yml publishes a release from the main push of the
+# release commit itself (#675). Run this on main to tag its head vX.Y.Z
+# and start release.yml on the tag, after a release commit's own run
+# could not publish (docs/releasing.md). A tag pushed with GITHUB_TOKEN
+# starts no workflow by itself, so the release is dispatched explicitly.
 
 on:
-  push:
-    branches: [main]
-    paths: [Cargo.toml]
-  # To retag after a failed release was untagged (docs/releasing.md). Run
-  # on main only: it tags the head of the branch it runs on.
+  # Run on main only: it tags the head of the branch it runs on.
   workflow_dispatch:
 
 permissions:
