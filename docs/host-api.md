@@ -179,7 +179,7 @@ version has these:
 | `notebooks.read` | `{ path }` | `{ notebook, hashes }`: the notebook as nbformat 4 JSON, from its room when one is open, so it includes what isn't saved yet, and each cell's source hash by cell id | Yes, under `read` |
 | `notebooks.search` | `{ query, dir?, outputs?, cell_type?, limit? }` | `{ hits: [{ path, title, index, id, cell_type, in, excerpt }], total, truncated }`, the `notebooks_search` tool's matches as data | Yes, under `read` |
 | `notebooks.results` | `{ path }` | `{ name: value }`: the notebook's named results, from its outputs, read from its room when one is open, like `notebooks.read` | Yes, under `read` |
-| `notebooks.run` | `{ path, params?, save?, timeout? }` | `{ status, results, error?, path? }` | No |
+| `notebooks.run` | `{ path, params?, save?, timeout? }` | `{ status, results, error?, path?, copy? }` | No |
 | `self.add` | `{ cell_type, source, after? }` | `{ id }` of the new cell in the calling notebook | Yes |
 | `self.edit` | `{ id, source, source_hash }` | `{}`, or `failed` with `source_mismatch` when the cell changed since it was read | Yes |
 | `self.delete` | `{ id, source_hash }` | `{}`, with the same check | Yes |
@@ -219,7 +219,8 @@ HTTP endpoint, so it waits on that contract's first step.
 - `save` is `false` by default: the run's outputs go nowhere but the
   result. `"copy"` writes the executed notebook under `runs/` and
   returns its path as `copy`
-  ([Run copies](reference.md#run-copies)). Writing back into the
+  ([Run copies](reference.md#run-copies)), only when the calling
+  notebook may read the notebook it runs as well as run it. Writing back into the
   notebook itself is not offered from a cell.
 - An abort (`{ signal: jupyter.signal }`, which an interrupt aborts)
   sends `cancel`, and the server shuts the run's kernel down.
