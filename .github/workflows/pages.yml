@@ -7,11 +7,11 @@ name: pages
 on:
   push:
     branches: [main]
-    paths: [site/**, docs/**, .github/workflows/pages.yml]
+    paths: [site/**, docs/**, examples/journals/**, .github/workflows/pages.yml]
   # Builds without deploying, so a broken docs page or dead link fails the PR
   # rather than the deploy. README.md is here for the unreleased-note check.
   pull_request:
-    paths: [site/**, docs/**, README.md, .github/workflows/pages.yml]
+    paths: [site/**, docs/**, examples/journals/**, README.md, .github/workflows/pages.yml]
   # ganymede-ui's docs workflow, when its docs/*.md change on its main.
   repository_dispatch:
     types: [ganymede-ui-docs]

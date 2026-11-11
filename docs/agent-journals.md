@@ -21,9 +21,10 @@ rerun from the top, and hand to someone else:
 - The finished notebook reruns from the top, and opens in any Jupyter
   tool.
 
-Two journals from real sessions on cdp-kernel, on Seattle's Fremont
-Bridge bike counts and on Oklahoma's earthquakes, are coming to these
-docs as examples.
+Two journals from sessions on cdp-kernel, on
+[Seattle's Fremont Bridge bike counts](examples/journal-fremont.md) and
+on [Oklahoma's earthquakes](examples/journal-oklahoma.md), are in the
+[Examples](examples.md), with the prompts that steered them.
 
 ## How it works
 

@@ -1,15 +1,17 @@
-// Renders the apps' example notebooks as pages under docs/examples/, which
-// VitePress publishes under /docs/examples/ (#689). The notebooks live in
-// ganymede-ui's examples/, saved with their outputs, so its main is the
-// source and the pages are not committed:
+// Renders example notebooks, saved with their outputs, as pages under
+// docs/examples/, which VitePress publishes under /docs/examples/ (#689).
+// The pages are not committed:
 //
-//   ganymede-ui  examples/01 Start Here.ipynb -> examples/01-start-here.md
-//                (each output image)          -> examples/images/01-start-here-<n>.<ext>
+//   ganymede-ui  examples/01 Start Here.ipynb    -> examples/01-start-here.md
+//   this repo    examples/journals/fremont/      -> examples/journal-fremont.md
+//                (each output image)             -> examples/images/<page>-<n>.<ext>
 //
+// The apps' notebooks come from ganymede-ui's main; the agent journals
+// from this repository, each with its prompts.md shown after the title.
 // pages.json lists the pages and their titles, for the sidebar.
 //
-// A page shows each cell and what it showed when ganymede-ui last ran the
-// notebooks. Markdown, text, JSON, errors, SVG and bitmaps render as they
+// A page shows each cell and what it showed when the notebook last ran.
+// Markdown, text, JSON, errors, SVG and bitmaps render as they
 // are. HTML renders in place, or, when it has a script, in a sandboxed
 // iframe. A widget needs a kernel, so the page says so instead.
 //
@@ -94,11 +96,10 @@ function output(o, slug, files) {
  * The page for notebook `nb` (parsed .ipynb), named `file` in ganymede-ui's
  * examples/. Returns the Markdown and the images it links.
  */
-export function render(nb, file) {
+export function render(nb, file, intro = appIntro(file)) {
   const slug = slugOf(file);
   const files = new Map();
   const lang = nb.metadata?.language_info?.name === "typescript" ? "ts" : (nb.metadata?.language_info?.name ?? "");
-  const source = `https://github.com/${repo}/blob/main/examples/${encodeURIComponent(file)}`;
   const parts = [];
   for (const [i, cell] of nb.cells.entries()) {
     const src = text(cell.source);
@@ -108,9 +109,7 @@ export function render(nb, file) {
       if (title) {
         const at = title.index + title[0].length;
         parts.push(raw(src.slice(0, at)));
-        parts.push(
-          `> [!NOTE]\n> One of the notebooks the apps' **Open Example Notebooks** copies, shown with the outputs it saved when ganymede-ui last ran it. [The notebook](${source}) is in ganymede-ui.`,
-        );
+        parts.push(intro);
         if (src.slice(at).trim()) parts.push(raw(src.slice(at)));
       } else {
         parts.push(raw(src));
@@ -135,6 +134,25 @@ export function titleOf(nb, file) {
   return file.replace(/\.ipynb$/, "").replace(/^\d+\s+/, "");
 }
 
+/** What follows the title of one of the apps' notebooks. */
+function appIntro(file) {
+  const source = `https://github.com/${repo}/blob/main/examples/${encodeURIComponent(file)}`;
+  return `> [!NOTE]\n> One of the notebooks the apps' **Open Example Notebooks** copies, shown with the outputs it saved when ganymede-ui last ran it. [The notebook](${source}) is in ganymede-ui.`;
+}
+
+/**
+ * What follows the title of the journal in examples/journals/`name`/: where
+ * it came from, and its prompts.md without the heading.
+ */
+export function journalIntro(name, prompts) {
+  const source = `https://github.com/tlockney/ganymede/tree/main/examples/journals/${name}`;
+  const body = prompts.replace(/^# .*\n+/, "").trim();
+  return [
+    `> [!NOTE]\n> A journal Claude Code kept with the [ganymede-journal plugin](../agent-journals.md), shown with the outputs of its last run. [The notebook, its data script and its prompts](${source}) are in examples/journals/.`,
+    raw(`::: info What the person asked\n${body}\n:::`),
+  ].join("\n\n");
+}
+
 /** A checkout of ganymede-ui's examples/, or the local one GANYMEDE_UI_DIR names. */
 function checkout(tmp) {
   if (process.env.GANYMEDE_UI_DIR) return process.env.GANYMEDE_UI_DIR;
@@ -157,13 +175,25 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (notebooks.length === 0) throw new Error(`${repo} has no examples/*.ipynb`);
     // The pages, in sidebar order, for config.mts.
     const pages = [];
+    const write = (page, text, { markdown, files }) => {
+      writeFileSync(join(out, `${page}.md`), markdown);
+      for (const [name, body] of files) writeFileSync(join(out, name), body);
+      pages.push({ text, link: `/examples/${page}` });
+      console.log(`  ${page}.md${files.size ? ` (${files.size} images)` : ""}`);
+    };
     for (const file of notebooks) {
       const nb = JSON.parse(readFileSync(join(dir, file), "utf8"));
-      const { markdown, files } = render(nb, file);
-      writeFileSync(join(out, `${slugOf(file)}.md`), markdown);
-      for (const [name, body] of files) writeFileSync(join(out, name), body);
-      pages.push({ text: titleOf(nb, file), link: `/examples/${slugOf(file)}` });
-      console.log(`  ${slugOf(file)}.md${files.size ? ` (${files.size} images)` : ""}`);
+      write(slugOf(file), titleOf(nb, file), render(nb, file));
+    }
+    // The agent journals, one notebook each, titled by their prompts.md
+    // ("# Prompts: Fremont Bridge" -> "Journal: Fremont Bridge").
+    const journals = join(docs, "..", "examples", "journals");
+    for (const name of readdirSync(journals, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort()) {
+      const [file] = readdirSync(join(journals, name, "journal")).filter((f) => f.endsWith(".ipynb"));
+      const nb = JSON.parse(readFileSync(join(journals, name, "journal", file), "utf8"));
+      const prompts = readFileSync(join(journals, name, "prompts.md"), "utf8");
+      const title = `Journal: ${prompts.match(/^# Prompts: (.+)$/m)?.[1] ?? name}`;
+      write(`journal-${name}`, title, render(nb, `journal-${name}.ipynb`, journalIntro(name, prompts)));
     }
     writeFileSync(join(out, "pages.json"), `${JSON.stringify(pages, null, 2)}\n`);
   } finally {
