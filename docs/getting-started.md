@@ -96,8 +96,8 @@ ganymede execute fremont.ipynb -p counter="2nd Ave" -p days=7 --results
 (`7`, `true`, `["a","b"]`), else as a string, so `-p 'id="007"'` keeps
 the zeros. `--params-file params.json` takes a JSON object, and `-p`
 wins over it. The kernel gets them as one JSON object in
-`GANYMEDE_PARAMS`. In a TypeScript notebook on cdp-kernel (from its
-release after 0.9.0):
+`GANYMEDE_PARAMS`. In a TypeScript notebook on cdp-kernel (0.10.0 or
+later):
 
 ```ts
 const { counter = "Fremont", days = 30 } = jupyter.params as { counter?: string; days?: number };
