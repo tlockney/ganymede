@@ -40,8 +40,8 @@ that instance. `init` is V8's one-time setup per process.
 `kernel-start` is today's in-app kernel (cdp-kernel 0.9.0's browser
 kernel in a Worker) started to its first `execute_result`. One run
 alone was misleading: the first draft of this note, from a single run,
-had WebKit's first type strip slower than V8's, which five runs don't
-bear out.
+had WebKit's first type strip slower than V8's. Five runs bear that out
+on Linux (241 vs 214 ms) but not on the Mac (83 vs 138 ms).
 
 #### macOS arm64 (GitHub runner, Apple silicon)
 
@@ -101,11 +101,12 @@ What the numbers say, pending a device (Mac medians):
   about 840 KB, and loading the 700 KB stripper bundle took jitless V8
   about 13 ms.
 - **Compute** is where the JIT shows, and WebKit in the apps keeps its
-  JIT on iOS. Jitless V8 is about 2 to 5x slower than WebKit: the CPU
+  JIT on iOS. Jitless V8 is about 1.5 to 5x slower than WebKit: the CPU
   cell 104 vs 49 ms on a first run (101 vs 34 steady), stripping types
   138 vs 83 ms first (117 vs 25 steady), the allocation-heavy cell 122
   vs 79 ms. Repeated type stripping is the worst case, about 4.7x
-  slower once WebKit's JIT has warmed up. Node with `--jitless` lands with jitless V8, as it should.
+  slower once WebKit's JIT has warmed up. Node with `--jitless` lands
+  with jitless V8, as it should.
 - **Memory.** Jitless V8 kept the smallest process: about 360 MB peak
   for the whole run, against about 440 MB for V8 with its JIT and about
   610 MB for Node. The `memory` workload's 500,000 objects take about
@@ -113,10 +114,11 @@ What the numbers say, pending a device (Mac medians):
   compression, which would roughly halve that.
 
 So: about 7 MB to download, a faster start, less memory, and compute
-2 to 5x slower than WebKit (5x for repeated type stripping). Whether that is acceptable is the
-call this spike was for. A typical cell (well under 100 ms of work)
-would stay under a quarter of a second; a heavy loop would take two to
-five times as long as it does in today's kernel. The device run will
+1.5 to 5x slower than WebKit (5x for repeated type stripping). Whether
+that is acceptable is the call this spike was for. A typical cell (well
+under 100 ms of work) would stay under a quarter of a second; a heavy
+loop would take one and a half to five times as long as it does in
+today's kernel. The device run will
 show whether the ratios hold on an iPad and iPhone, and what iOS's
 memory limit leaves. That run is by hand (the README's steps; listed
 in ganymede-ui#273).

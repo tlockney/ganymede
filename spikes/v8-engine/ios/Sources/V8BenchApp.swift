@@ -24,16 +24,13 @@ final class BenchModel {
     }
 
     /// The reports as a results-<time>.json file, the name the README's
-    /// report step expects.
-    var resultsFile: URL? {
+    /// report step expects. Written once, when a run ends.
+    var resultsFile: URL?
+
+    private func writeResults() {
         let stamp = ISO8601DateFormatter().string(from: .now).replacingOccurrences(of: ":", with: "-")
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("results-\(stamp).json")
-        do {
-            try Data(combined.utf8).write(to: url)
-            return url
-        } catch {
-            return nil
-        }
+        resultsFile = (try? Data(combined.utf8).write(to: url)) != nil ? url : nil
     }
 
     func run(worker: WorkerBench) async {
@@ -45,6 +42,7 @@ final class BenchModel {
         showWorker = true
         workerReport = await worker.run()
         showWorker = false
+        writeResults()
         status = "Done. Share the results. For another sample, quit the app and launch it again."
     }
 }
@@ -60,8 +58,7 @@ struct ContentView: View {
                     Text(model.status)
                     Button("Run") { Task { await model.run(worker: worker) } }
                         .disabled(model.running)
-                    if !model.running, model.v8Report != nil || model.workerReport != nil,
-                       let file = model.resultsFile {
+                    if !model.running, let file = model.resultsFile {
                         ShareLink("Share results", item: file)
                     }
                 }
