@@ -74,6 +74,9 @@ pull request with a GitHub issue, and records what it learned in the
 - **Signed apps.** The Mac app is signed and notarized in each ganymede-ui
   release, and the iPad and iPhone app is on TestFlight for internal
   testers.
+- **Parameters on app links.** `ganymede://run` links and Shortcuts pass
+  parameters to a run (ganymede-ui 0.7.0)
+  ([ganymede-ui#303](https://github.com/tlockney/ganymede-ui/issues/303)).
 
 ### Done on `main`
 
@@ -90,9 +93,6 @@ pull request with a GitHub issue, and records what it learned in the
   `results` and `run`, and `self.*`, under per-notebook grants set with
   `ganymede grant`, the grants route, or the apps' Notebook Access sheet
   ([A host API for kernels](host-api.md)).
-- **Parameters on app links.** `ganymede://run` links and Shortcuts pass
-  parameters to a run
-  ([ganymede-ui#303](https://github.com/tlockney/ganymede-ui/issues/303)).
 - **In-app kernels as server kernels.** Ganymede's C functions let an
   app register its own kernels with the embedded server
   ([In-app kernels as server kernels](in-app-kernel.md)).

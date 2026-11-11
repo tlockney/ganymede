@@ -43,7 +43,7 @@ the [Roadmap](roadmap.md).
 - **Distribution.** The Mac app is signed and notarized in each
   ganymede-ui release, and the iPad and iPhone app goes to TestFlight.
 
-![Where each piece runs in four setups: on a workstation, the frontend, ganymede serve and each kernel are separate processes; in the Mac app, ganymede-ui and Ganymede run inside the app and kernels are the Mac's processes; in the iPad app everything runs inside the app and the kernel runs in the page; in a browser with no server, the UI, kernels and IndexedDB storage all stay in one tab.](images/architecture/where-kernels-run.svg)
+![Where each piece runs in four setups: on a workstation, the frontend, ganymede serve and each kernel are separate processes; in the Mac app, ganymede-ui and Ganymede run inside the app and kernels are the Mac's processes; in the iPad app everything runs inside the app, including the kernel; in a browser with no server, the UI, kernels and IndexedDB storage all stay in one tab.](images/architecture/where-kernels-run.svg)
 
 ## Decisions that came out of it
 

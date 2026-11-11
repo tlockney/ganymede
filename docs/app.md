@@ -10,12 +10,12 @@ list what doesn't work yet.
 There are three ways to run it, and they differ in where notebooks live
 and where kernels run:
 
-![Where each piece runs in four setups: on a workstation, the frontend, ganymede serve and each kernel are separate processes; in the Mac app, ganymede-ui and Ganymede run inside the app and kernels are the Mac's processes; in the iPad app everything runs inside the app and the kernel runs in the page; in a browser with no server, the UI, kernels and IndexedDB storage all stay in one tab.](images/architecture/where-kernels-run.svg)
+![Where each piece runs in four setups: on a workstation, the frontend, ganymede serve and each kernel are separate processes; in the Mac app, ganymede-ui and Ganymede run inside the app and kernels are the Mac's processes; in the iPad app everything runs inside the app, including the kernel; in a browser with no server, the UI, kernels and IndexedDB storage all stay in one tab.](images/architecture/where-kernels-run.svg)
 
 | | Notebooks | Kernels |
 | --- | --- | --- |
 | [`ganymede ui`](#in-a-browser-from-ganymede) | The folder you serve | Your installed kernelspecs |
-| [Mac app](#the-mac-and-ipad-app) | A folder you pick | The Mac's kernelspecs, or a kernel server |
+| [Mac app](#the-mac-and-ipad-app) | A folder you pick | The Mac's kernelspecs and cdp-kernel in the app, or a kernel server |
 | [iPad app](#the-mac-and-ipad-app) | The app's Documents, or a folder you pick | cdp-kernel in the app, or a kernel server |
 | [This browser](#with-no-server) | The browser's storage | cdp-kernel or JavaScript, in the page |
 
