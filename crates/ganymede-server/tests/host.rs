@@ -169,6 +169,7 @@ async fn hello_names_the_notebook_and_methods() {
             "notebooks.list",
             "notebooks.read",
             "notebooks.search",
+            "notebooks.results",
             "self.add",
             "self.edit",
             "self.delete"
@@ -183,7 +184,12 @@ async fn hello_names_the_notebook_and_methods() {
     assert_eq!(none.notebook, None);
     assert_eq!(
         none.methods,
-        ["notebooks.list", "notebooks.read", "notebooks.search"]
+        [
+            "notebooks.list",
+            "notebooks.read",
+            "notebooks.search",
+            "notebooks.results"
+        ]
     );
 }
 
@@ -320,6 +326,53 @@ async fn no_read_grant_leaves_only_its_own_notebook() {
         .code,
         "denied"
     );
+}
+
+#[tokio::test]
+async fn results_come_from_a_notebooks_outputs_under_the_read_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let result = |name: &str, value: Value| {
+        json!({"output_type": "display_data", "metadata": {},
+               "data": {"application/vnd.ganymede.result+json": {"name": name, "value": value},
+                        "text/plain": name.to_string()}})
+    };
+    let nb = json!({"cells": [
+        {"cell_type": "code", "id": "a", "metadata": {}, "source": "", "execution_count": 1,
+         "outputs": [result("weekday_drop", json!(-0.19)), result("days", json!(3))]},
+        {"cell_type": "code", "id": "b", "metadata": {}, "source": "", "execution_count": 2,
+         "outputs": [result("days", json!(5))]}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    for path in ["journal/r.ipynb", "journal-private/r.ipynb"] {
+        std::fs::write(dir.path().join(path), nb.to_string()).unwrap();
+    }
+    let (api, caller) = setup(dir.path(), "index.ipynb", &["journal"]).await;
+    let results = api
+        .call(
+            &caller,
+            "notebooks.results",
+            json!({"path": "journal/r.ipynb"}),
+        )
+        .await
+        .unwrap();
+    // The last output of a name wins.
+    assert_eq!(results, json!({"weekday_drop": -0.19, "days": 5}));
+    // A notebook without results has none.
+    assert_eq!(
+        api.call(&caller, "notebooks.results", json!({"path": "index.ipynb"}))
+            .await
+            .unwrap(),
+        json!({})
+    );
+    let err = api
+        .call(
+            &caller,
+            "notebooks.results",
+            json!({"path": "journal-private/r.ipynb"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "denied");
 }
 
 fn paths_of(v: &Value, key: &str) -> Vec<String> {

@@ -174,8 +174,8 @@ them.
 > the latest release.
 
 `[host] read` lists the API paths that cell code may read through the
-[host API](host-api.md): `notebooks.list`, `notebooks.read` and
-`notebooks.search`. A path covers itself and everything under it, by
+[host API](host-api.md): `notebooks.list`, `notebooks.read`,
+`notebooks.search` and `notebooks.results`. A path covers itself and everything under it, by
 whole segments, so `"journal"` covers `journal/a.ipynb` but not
 `journal-private/`. The default, `[""]`, is the whole root; `[]` leaves
 each notebook only itself. A path is matched where it leads once

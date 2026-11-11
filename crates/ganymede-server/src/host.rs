@@ -10,6 +10,8 @@
 //!   source hash (MurmurHash2, seed 0) by cell id.
 //! - `notebooks.search { query, dir?, outputs?, cell_type?, limit? }`:
 //!   `notebooks_search`'s matches.
+//! - `notebooks.results { path }`: `{ name: value }`, the named results in
+//!   the notebook's outputs (the copy `notebooks.read` returns).
 //! - `self.add { cell_type, source, after? }`, `self.edit { id, source,
 //!   source_hash }`, `self.delete { id, source_hash }`: the kernel's own
 //!   notebook, through its room, so every client sees the change. An
@@ -52,7 +54,12 @@ impl Default for HostConfig {
     }
 }
 
-const READS: [&str; 3] = ["notebooks.list", "notebooks.read", "notebooks.search"];
+const READS: [&str; 4] = [
+    "notebooks.list",
+    "notebooks.read",
+    "notebooks.search",
+    "notebooks.results",
+];
 const SELF_EDITS: [&str; 3] = ["self.add", "self.edit", "self.delete"];
 
 pub struct HostApi {
@@ -235,11 +242,26 @@ impl HostApi {
         Ok(Value::Array(out))
     }
 
-    async fn read(&self, notebook: Option<&str>, params: &Value) -> Result<Value, HostError> {
+    /// The notebook at `params[key]` as `notebooks.read` sees it: from its
+    /// room when one is open, otherwise from disk.
+    async fn load(
+        &self,
+        notebook: Option<&str>,
+        params: &Value,
+    ) -> Result<ganymede_nbformat::Notebook, HostError> {
         let path = self.checked_path(notebook, params, "path")?;
-        let nb = notebook_for_search(&self.state, &path)
+        notebook_for_search(&self.state, &path)
             .await
-            .ok_or_else(|| HostError::failed(format!("cannot read {path} as a notebook")))?;
+            .ok_or_else(|| HostError::failed(format!("cannot read {path} as a notebook")))
+    }
+
+    async fn results(&self, notebook: Option<&str>, params: &Value) -> Result<Value, HostError> {
+        let nb = self.load(notebook, params).await?;
+        Ok(Value::Object(ganymede_nbformat::named_results(&nb)))
+    }
+
+    async fn read(&self, notebook: Option<&str>, params: &Value) -> Result<Value, HostError> {
+        let nb = self.load(notebook, params).await?;
         let hashes: serde_json::Map<String, Value> = nb
             .cells
             .iter()
@@ -318,6 +340,7 @@ impl Responder for HostApi {
         match method {
             "notebooks.list" => self.list(notebook, &params).await,
             "notebooks.read" => self.read(notebook, &params).await,
+            "notebooks.results" => self.results(notebook, &params).await,
             "notebooks.search" => self.search(notebook, &params).await,
             m if SELF_EDITS.contains(&m) => {
                 if !self.edit_self {
