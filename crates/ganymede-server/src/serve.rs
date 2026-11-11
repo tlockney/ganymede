@@ -395,7 +395,7 @@ pub fn notary(dir: Option<PathBuf>) -> Notary {
 
 /// Document rooms' file ids for `root`, kept in the Jupyter data dir's
 /// `ganymede_file_ids.db` when there is one.
-fn file_ids(root: &std::path::Path) -> ganymede_contents::FileIds {
+pub fn file_ids(root: &std::path::Path) -> ganymede_contents::FileIds {
     match ganymede_kernel_host::kernelspec::jupyter_user_data_dir() {
         Some(dir) => ganymede_contents::FileIds::open(&dir.join("ganymede_file_ids.db"), root),
         None => ganymede_contents::FileIds::in_memory(),

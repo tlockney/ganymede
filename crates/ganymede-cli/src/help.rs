@@ -22,7 +22,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
         "Run code",
         &["run", "console", "execute", "kernel", "attach"],
     ),
-    ("Notebooks", &["nb", "trust"]),
+    ("Notebooks", &["nb", "trust", "grant"]),
     ("Servers", &["serve", "lab", "ui", "mcp"]),
     ("Setup", &["kernelspec", "info", "completions"]),
 ];

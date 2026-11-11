@@ -3,6 +3,7 @@
 
 mod console;
 mod crash;
+mod grant;
 mod help;
 mod info;
 mod lab;
@@ -171,6 +172,14 @@ enum Cmd {
         #[command(subcommand)]
         cmd: NbCmd,
     },
+    /// Grant a notebook more or less of the host API than the defaults.
+    ///
+    /// What a notebook's cells may ask the server for through
+    /// `jupyter.host()`: `read=PATH` (other notebooks it may read) and
+    /// `edit_self` (its own cells). Kept by file id beside the server's
+    /// file id database in the Jupyter data dir; a running server sees a
+    /// change on the next call.
+    Grant(grant::GrantArgs),
     /// Trust notebooks' HTML and JavaScript, as jupyter trust does.
     ///
     /// Records each notebook's signature with the key and database Jupyter
@@ -575,6 +584,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             reset,
             notary_dir,
         } => trust(&notebooks, reset, notary_dir),
+        Cmd::Grant(args) => tokio::task::spawn_blocking(move || grant::run(args)).await?,
         // Blocking HTTP and file I/O, off the async workers.
         Cmd::Lab { cmd: Some(cmd), .. } => {
             tokio::task::spawn_blocking(move || lab::run(cmd)).await?

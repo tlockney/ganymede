@@ -827,6 +827,98 @@ fn trust_signs_once_and_reset_forgets() {
 }
 
 #[test]
+fn grant_stores_lists_and_revokes_a_notebooks_grant() {
+    let data = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("j")).unwrap();
+    std::fs::write(root.path().join("j/a.ipynb"), "{}").unwrap();
+    let grant = |args: &[&str]| {
+        let mut c = ganymede(&["grant", "--root-dir", root.path().to_str().unwrap()]);
+        c.args(args)
+            .current_dir(root.path())
+            .env("JUPYTER_DATA_DIR", data.path());
+        c
+    };
+    let ok = |args: &[&str]| stdout(&run_ok(grant(args)));
+
+    assert_eq!(
+        ok(&["--list", "j/a.ipynb"]),
+        "j/a.ipynb: the [host] defaults\n"
+    );
+    assert_eq!(
+        ok(&[
+            "j/a.ipynb",
+            "read=journal",
+            "read=shared/",
+            "edit_self=false"
+        ]),
+        "j/a.ipynb read=\"journal\" read=\"shared\" edit_self=false\n"
+    );
+    assert!(data.path().join("ganymede_file_ids.db").is_file());
+    assert_eq!(
+        ok(&["--revoke", "j/a.ipynb", "read=journal"]),
+        "j/a.ipynb read=\"shared\" edit_self=false\n"
+    );
+    assert_eq!(
+        ok(&["--list"]),
+        "j/a.ipynb read=\"shared\" edit_self=false\n"
+    );
+    assert_eq!(
+        ok(&["--revoke", "j/a.ipynb", "read=shared"]),
+        "j/a.ipynb read=(only itself) edit_self=false\n"
+    );
+    assert_eq!(
+        ok(&["--revoke", "j/a.ipynb"]),
+        "j/a.ipynb: the [host] defaults\n"
+    );
+    assert_eq!(ok(&["--list"]), "");
+
+    // From outside the root, a relative NOTEBOOK is found under
+    // --root-dir; a symlinked notebook keeps its own name.
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(
+            root.path().join("j/a.ipynb"),
+            root.path().join("link.ipynb"),
+        )
+        .unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let mut c = grant(&["link.ipynb", "edit_self=false"]);
+        c.current_dir(elsewhere.path());
+        assert_eq!(stdout(&run_ok(c)), "link.ipynb edit_self=false\n");
+        assert_eq!(
+            ok(&["--revoke", "link.ipynb"]),
+            "link.ipynb: the [host] defaults\n"
+        );
+    }
+
+    // A data dir that can't hold the database: an error, not a grant kept
+    // in memory and lost.
+    let file = data.path().join("not-a-dir");
+    std::fs::write(&file, "").unwrap();
+    let mut c = grant(&["j/a.ipynb", "edit_self=false"]);
+    c.env("JUPYTER_DATA_DIR", &file);
+    let out = c.output().unwrap();
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("file id database"),
+        "{}",
+        stderr(&out)
+    );
+
+    for bad in [
+        &["j/a.ipynb", "edit_self=maybe"][..],
+        &["j/a.ipynb", "run=x"],
+        &["j/a.ipynb", "read=../x"],
+        &["j/a.ipynb"],
+        &["/etc/hosts", "read=x"],
+    ] {
+        let out = grant(bad).output().unwrap();
+        assert!(!out.status.success(), "{bad:?}");
+    }
+}
+
+#[test]
 fn completions_for_each_shell() {
     for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
         let out = stdout(&run_ok(ganymede(&["completions", shell])));

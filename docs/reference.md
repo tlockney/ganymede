@@ -16,6 +16,7 @@ same flags. The guides show them in use:
 | `execute` (`exec`) | Run notebooks top to bottom, as `jupyter execute` |
 | `nb clear` | Remove a notebook's outputs |
 | `trust` | Sign a notebook as trusted, as `jupyter trust` |
+| `grant` | A notebook's own [host API](#the-host-api) grant |
 | `kernel` | Start a kernel and print its connection file, as `jupyter kernel` |
 | `attach` | Run code on a running kernel by its connection file |
 | `serve` | Serve the Jupyter REST and websocket API |
@@ -26,6 +27,10 @@ same flags. The guides show them in use:
 | `mcp`, `mcp call` | Notebook tools for coding agents over MCP on stdio, or one tool call from a script; see [Agents over MCP](mcp.md) |
 | `info` | Versions and the directories in use |
 | `completions <shell>` | Shell completions for bash, zsh, fish, powershell, elvish |
+
+> [!NOTE]
+> **Unreleased.** `grant` is available only from a build of `main`
+> (HEAD), not in the latest release.
 
 The kernel name `fake` is a built-in in-process kernel for trying things
 out.
@@ -187,7 +192,29 @@ its own cells (`self.add`, `self.edit`, `self.delete`), through its
 document room, so every client sees the change. An edit or delete names
 the cell's source hash from `notebooks.read`, and fails with
 `source_mismatch` when the cell changed since. `false` takes the calls
-away from every notebook.
+away from every notebook that doesn't have its own grant.
+
+A notebook's own grant replaces these defaults for the keys it sets.
+`ganymede grant` stores it by the notebook's file id, beside the
+server's file id database in the Jupyter data dir, so it follows a
+rename made through the server and goes when the notebook is deleted
+through it. A notebook deleted outside the server leaves its grant with
+the path, so a new file saved there gets it; `--revoke` it first. A
+running server sees a change on the next call.
+
+```sh
+ganymede grant journal/index.ipynb read=journal   # reads only journal/ (and itself)
+ganymede grant downloaded.ipynb edit_self=false
+ganymede grant --list                             # every notebook's grant
+ganymede grant --revoke journal/index.ipynb read=journal
+ganymede grant --revoke downloaded.ipynb          # back to the defaults
+```
+
+`read=PATH` adds a path to the notebook's own read list, which replaces
+`[host] read` for it, so it can narrow the default or widen it. Revoking
+every path leaves the notebook only itself; `--revoke NOTEBOOK read`
+goes back to the default. `--root-dir` names the server's root when it
+isn't the current directory, since grants are kept per root.
 
 ## Static headers
 

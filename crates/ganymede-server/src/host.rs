@@ -54,6 +54,42 @@ impl Default for HostConfig {
     }
 }
 
+/// A notebook's own grant, kept by file id beside the file id database
+/// (`ganymede grant`). A key that is set replaces the `[host]` default
+/// for that notebook; one that isn't keeps the default.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, Deserialize)]
+#[serde(default)]
+pub struct Grant {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit_self: Option<bool>,
+}
+
+impl Grant {
+    pub fn is_empty(&self) -> bool {
+        self == &Grant::default()
+    }
+}
+
+/// Who is calling: the kernel's notebook and what it may do.
+struct Who {
+    notebook: Option<String>,
+    read: Vec<String>,
+    edit_self: bool,
+}
+
+impl Who {
+    fn notebook(&self) -> Option<&str> {
+        self.notebook.as_deref()
+    }
+
+    /// Whether the grant covers the whole root, so no path needs checking.
+    fn reads_everything(&self) -> bool {
+        self.read.iter().any(|g| g.is_empty())
+    }
+}
+
 const READS: [&str; 4] = [
     "notebooks.list",
     "notebooks.read",
@@ -106,9 +142,32 @@ impl HostApi {
         Some(ganymede_contents::normalize_api_path(&path))
     }
 
-    /// Whether the grant covers the whole root, so no path needs checking.
-    fn reads_everything(&self) -> bool {
-        self.read.iter().any(|g| g.is_empty())
+    /// The caller's notebook and its grant: the `[host]` defaults, with
+    /// the notebook's own grant in place of any key it sets.
+    async fn who(&self, caller: &Caller) -> Who {
+        let notebook = self.notebook(&caller.kernel_id);
+        let own = match &notebook {
+            Some(path) => self.state.collab.grant(path).await,
+            None => None,
+        };
+        let own: Grant = own
+            .and_then(|g| {
+                serde_json::from_str(&g)
+                    .map_err(|e| tracing::warn!("grant for {notebook:?}: {e}"))
+                    .ok()
+            })
+            .unwrap_or_default();
+        Who {
+            read: match own.read {
+                Some(read) => read
+                    .iter()
+                    .map(|p| ganymede_contents::normalize_api_path(p))
+                    .collect(),
+                None => self.read.clone(),
+            },
+            edit_self: own.edit_self.unwrap_or(self.edit_self),
+            notebook,
+        }
     }
 
     /// Where `path` leads once symlinks are resolved, as an API path; the
@@ -135,8 +194,8 @@ impl HostApi {
     /// Whether `caller` may read `path`, a normalized API path: where it
     /// leads must be in the grant, so a symlink in a granted folder
     /// doesn't open another.
-    fn may_read(&self, notebook: Option<&str>, path: &str) -> bool {
-        if notebook == Some(path) || self.reads_everything() {
+    fn may_read(&self, who: &Who, path: &str) -> bool {
+        if who.notebook() == Some(path) || who.reads_everything() {
             return true;
         }
         let Some(real) = self.resolved(path) else {
@@ -144,7 +203,7 @@ impl HostApi {
         };
         // Grants resolved the same way, so a granted folder that is itself
         // a symlink still covers what is in it.
-        self.read.iter().any(|g| {
+        who.read.iter().any(|g| {
             ganymede_contents::path_under(&real, g).is_some()
                 || self
                     .resolved(g)
@@ -154,21 +213,18 @@ impl HostApi {
 
     /// Whether a directory may be listed or walked: it is readable, or a
     /// grant or the notebook itself lies under it.
-    fn may_enter(&self, notebook: Option<&str>, dir: &str) -> bool {
-        self.may_read(notebook, dir)
-            || notebook.is_some_and(|n| ganymede_contents::path_under(n, dir).is_some())
-            || self
+    fn may_enter(&self, who: &Who, dir: &str) -> bool {
+        self.may_read(who, dir)
+            || who
+                .notebook()
+                .is_some_and(|n| ganymede_contents::path_under(n, dir).is_some())
+            || who
                 .read
                 .iter()
                 .any(|g| ganymede_contents::path_under(g, dir).is_some())
     }
 
-    fn checked_path(
-        &self,
-        notebook: Option<&str>,
-        params: &Value,
-        key: &str,
-    ) -> Result<String, HostError> {
+    fn checked_path(&self, who: &Who, params: &Value, key: &str) -> Result<String, HostError> {
         let raw = match params.get(key) {
             None | Some(Value::Null) if key == "dir" => "",
             Some(Value::String(s)) => s.as_str(),
@@ -181,9 +237,9 @@ impl HostApi {
         // A directory to search or list is allowed when anything under it
         // is: the walk then filters what it reads.
         let allowed = if key == "dir" {
-            self.may_enter(notebook, &path)
+            self.may_enter(who, &path)
         } else {
-            self.may_read(notebook, &path)
+            self.may_read(who, &path)
         };
         if !allowed {
             return Err(HostError::denied(format!(
@@ -194,8 +250,8 @@ impl HostApi {
         Ok(path)
     }
 
-    async fn list(&self, notebook: Option<&str>, params: &Value) -> Result<Value, HostError> {
-        let dir = self.checked_path(notebook, params, "dir")?;
+    async fn list(&self, who: &Who, params: &Value) -> Result<Value, HostError> {
+        let dir = self.checked_path(who, params, "dir")?;
         let model = self
             .state
             .contents
@@ -217,12 +273,11 @@ impl HostApi {
                 let modified = item["last_modified"].clone();
                 match kind {
                     "directory"
-                        if item["name"] != ".ipynb_checkpoints"
-                            && self.may_enter(notebook, &path) =>
+                        if item["name"] != ".ipynb_checkpoints" && self.may_enter(who, &path) =>
                     {
                         out.push(json!({"path": path, "type": "directory", "modified": modified}));
                     }
-                    "notebook" if self.may_read(notebook, &path) => {
+                    "notebook" if self.may_read(who, &path) => {
                         let nb = notebook_for_search(&self.state, &path).await;
                         let title = nb.as_ref().and_then(search::title);
                         let kernel = nb.as_ref().and_then(|n| {
@@ -246,22 +301,22 @@ impl HostApi {
     /// room when one is open, otherwise from disk.
     async fn load(
         &self,
-        notebook: Option<&str>,
+        who: &Who,
         params: &Value,
     ) -> Result<ganymede_nbformat::Notebook, HostError> {
-        let path = self.checked_path(notebook, params, "path")?;
+        let path = self.checked_path(who, params, "path")?;
         notebook_for_search(&self.state, &path)
             .await
             .ok_or_else(|| HostError::failed(format!("cannot read {path} as a notebook")))
     }
 
-    async fn results(&self, notebook: Option<&str>, params: &Value) -> Result<Value, HostError> {
-        let nb = self.load(notebook, params).await?;
+    async fn results(&self, who: &Who, params: &Value) -> Result<Value, HostError> {
+        let nb = self.load(who, params).await?;
         Ok(Value::Object(ganymede_nbformat::named_results(&nb)))
     }
 
-    async fn read(&self, notebook: Option<&str>, params: &Value) -> Result<Value, HostError> {
-        let nb = self.load(notebook, params).await?;
+    async fn read(&self, who: &Who, params: &Value) -> Result<Value, HostError> {
+        let nb = self.load(who, params).await?;
         let hashes: serde_json::Map<String, Value> = nb
             .cells
             .iter()
@@ -279,7 +334,7 @@ impl HostApi {
         Ok(json!({"notebook": notebook, "hashes": hashes}))
     }
 
-    async fn search(&self, notebook: Option<&str>, params: &Value) -> Result<Value, HostError> {
+    async fn search(&self, who: &Who, params: &Value) -> Result<Value, HostError> {
         let query = params["query"]
             .as_str()
             .ok_or_else(|| HostError::failed("`query` must be a string"))?;
@@ -293,7 +348,7 @@ impl HostApi {
                 return Err(HostError::failed("cell_type must be code, markdown or raw"));
             }
         }
-        let dir = self.checked_path(notebook, params, "dir")?;
+        let dir = self.checked_path(who, params, "dir")?;
         let scope = search::Scope {
             outputs: params["outputs"].as_bool().unwrap_or(false),
             cell_type,
@@ -301,9 +356,9 @@ impl HostApi {
         let limit = params["limit"].as_u64().unwrap_or(20).clamp(1, 200) as usize;
         let keep = |p: &str, is_dir: bool| {
             if is_dir {
-                self.may_enter(notebook, p)
+                self.may_enter(who, p)
             } else {
-                self.may_read(notebook, p)
+                self.may_read(who, p)
             }
         };
         let found = search_notebooks(&self.state, &dir, &words, scope, limit, &keep)
@@ -326,29 +381,31 @@ impl HostApi {
 #[async_trait]
 impl Responder for HostApi {
     async fn hello(&self, caller: &Caller) -> Hello {
-        let notebook = self.notebook(&caller.kernel_id);
+        let who = self.who(caller).await;
         let mut methods: Vec<String> = READS.iter().map(|m| m.to_string()).collect();
-        if self.edit_self && notebook.is_some() {
+        if who.edit_self && who.notebook.is_some() {
             methods.extend(SELF_EDITS.iter().map(|m| m.to_string()));
         }
-        Hello { notebook, methods }
+        Hello {
+            notebook: who.notebook,
+            methods,
+        }
     }
 
     async fn call(&self, caller: &Caller, method: &str, params: Value) -> Result<Value, HostError> {
-        let notebook = self.notebook(&caller.kernel_id);
-        let notebook = notebook.as_deref();
+        let who = self.who(caller).await;
         match method {
-            "notebooks.list" => self.list(notebook, &params).await,
-            "notebooks.read" => self.read(notebook, &params).await,
-            "notebooks.results" => self.results(notebook, &params).await,
-            "notebooks.search" => self.search(notebook, &params).await,
+            "notebooks.list" => self.list(&who, &params).await,
+            "notebooks.read" => self.read(&who, &params).await,
+            "notebooks.results" => self.results(&who, &params).await,
+            "notebooks.search" => self.search(&who, &params).await,
             m if SELF_EDITS.contains(&m) => {
-                if !self.edit_self {
+                if !who.edit_self {
                     return Err(HostError::denied(
-                        "[host] edit_self is off on this server, so a notebook can't edit its own cells",
+                        "this notebook's edit_self grant is off (`[host] edit_self` or `ganymede grant`), so it can't edit its own cells",
                     ));
                 }
-                let Some(path) = notebook else {
+                let Some(path) = who.notebook() else {
                     return Err(HostError::unavailable("this kernel has no notebook"));
                 };
                 self.edit_own(path, m, &params).await
