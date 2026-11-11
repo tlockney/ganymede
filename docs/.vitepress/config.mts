@@ -113,7 +113,7 @@ export default defineConfig({
       { text: "Home", link: `${site}/`, target: "_self", noIcon: true },
       { text: "Get started", link: "/install" },
       { text: "Apps", link: "/app" },
-      { text: "Agents", link: "/mcp" },
+      { text: "Agents", link: "/agent-journals" },
       { text: "Reference", link: "/reference" },
       { text: "Roadmap", link: "/roadmap" },
     ],

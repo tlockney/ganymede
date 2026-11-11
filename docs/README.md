@@ -24,6 +24,8 @@ not something the server needs ([Other kernels](kernels.md)).
   Ganymede.
 - [Ganymede's app](app.md): its own notebook app, in a browser and on the
   Mac, iPad and iPhone.
+- [An agent and a person in one notebook](agent-journals.md): why an
+  agent keeps a journal, and how the server makes it live.
 - [Agents over MCP](mcp.md): a coding agent journaling an analysis into
   a notebook, with `ganymede mcp` and the ganymede-journal plugin for
   Claude Code; [nb-cli](agents.md) for agents without MCP.
