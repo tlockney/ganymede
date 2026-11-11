@@ -142,6 +142,16 @@ impl std::fmt::Debug for RunningKernel {
 }
 
 impl RunningKernel {
+    /// The value of `key` among the variables the server gave this
+    /// kernel at start ([`KernelManager::start_with_env`]): the server's
+    /// own record, not what the process may have changed since.
+    pub fn launch_var(&self, key: &str) -> Option<&str> {
+        self.env
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
     pub fn session(&self) -> KernelSession {
         self.session.read().unwrap().clone()
     }

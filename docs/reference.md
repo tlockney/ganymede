@@ -147,6 +147,7 @@ frame_ancestors = "'self'"       # who may frame the server's pages
 # [host]
 # read = [""]                    # API paths; "" is the root, [] only the cell's own notebook
 # edit_self = true               # self.add/edit/delete: a notebook edits its own cells
+# run = []                       # notebooks a notebook may run (notebooks.run); [""] is all
 
 # Language servers for jupyterlab-lsp, none by default. One table each:
 # [language_servers.pyright]
@@ -194,26 +195,39 @@ the cell's source hash from `notebooks.read`, and fails with
 `source_mismatch` when the cell changed since. `false` takes the calls
 away from every notebook that doesn't have its own grant.
 
+`[host] run` lists the notebooks a notebook may run with
+`notebooks.run`, matched as `read` is; the default, `[]`, is none. A run
+uses `POST /api/notebooks/run`'s code: a fresh kernel from the
+notebook's own kernelspec, the parameters in `GANYMEDE_PARAMS`, and
+`{ path, status, results, error? }` back, with nothing written. Its
+kernel gets the intersection of the caller's grant and the run
+notebook's, and no `self.*` calls. Runs nest at most 3 deep, a kernel
+has at most 2 runs in flight (more wait), and cancelling the call shuts
+the run's kernel down.
+
 A notebook's own grant replaces these defaults for the keys it sets.
 `ganymede grant` stores it by the notebook's file id, beside the
 server's file id database in the Jupyter data dir, so it follows a
 rename made through the server and goes when the notebook is deleted
 through it. A notebook deleted outside the server leaves its grant with
 the path, so a new file saved there gets it; `--revoke` it first. A
-running server sees a change on the next call.
+running server sees a change on the next call; a `notebooks.run` keeps
+the grant it started with until it ends.
 
 ```sh
 ganymede grant journal/index.ipynb read=journal   # reads only journal/ (and itself)
 ganymede grant downloaded.ipynb edit_self=false
+ganymede grant journal/index.ipynb run=reports   # may run notebooks in reports/
 ganymede grant --list                             # every notebook's grant
 ganymede grant --revoke journal/index.ipynb read=journal
 ganymede grant --revoke downloaded.ipynb          # back to the defaults
 ```
 
 `read=PATH` adds a path to the notebook's own read list, which replaces
-`[host] read` for it, so it can narrow the default or widen it. Revoking
-every path leaves the notebook only itself; `--revoke NOTEBOOK read`
-goes back to the default. `--root-dir` names the server's root when it
+`[host] read` for it, so it can narrow the default or widen it; `run=PATH`
+does the same for `[host] run`. Revoking every read path leaves the
+notebook only itself; `--revoke NOTEBOOK read` (or `run`) goes back to
+the default. `--root-dir` names the server's root when it
 isn't the current directory, since grants are kept per root.
 
 ## Static headers

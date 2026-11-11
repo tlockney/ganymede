@@ -18,10 +18,11 @@ traffic from other clients, and answers `hello`, `notebooks.list`,
 `notebooks.read`, `notebooks.search` and `notebooks.results`, with the `[host] read` grant
 from the config file ([Reference](reference.md#the-host-api)), and
 `self.add`, `self.edit` and `self.delete`, unless `[host] edit_self` is
-off. A notebook's own grant, set with `ganymede grant`, replaces those
-defaults for it. cdp-kernel's client is `jupyter.host()`. The rest of
-this page is the design; `notebooks.run` (and its `run` grant) comes
-next.
+off, and `notebooks.run` under the `[host] run` grant (none by
+default). A notebook's own grant, set with `ganymede grant`, replaces
+those defaults for it. cdp-kernel's client is `jupyter.host()`. The rest
+of this page is the design; a run's `save: "copy"`, `ganymede execute`
+grants and a granting sheet in the apps come next.
 
 ## The problem
 
@@ -212,7 +213,9 @@ HTTP endpoint, so it waits on that contract's first step.
   sends `cancel`, and the server shuts the run's kernel down.
 - **Grants narrow, never widen.** The run's kernel gets the intersection
   of the called notebook's grant and the caller's, so a notebook can't
-  reach more by running another one.
+  reach more by running another one. A path must pass each grant up the
+  chain with symlinks resolved, so a grant that names a symlink reaches
+  nothing its caller can't.
 - **Depth and width.** A run started from a run counts one deeper, and
   the server refuses past depth 3 (`denied`). Each kernel has at most
   two runs of its own in flight; more wait their turn. The limit counts
