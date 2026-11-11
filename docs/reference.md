@@ -230,6 +230,29 @@ notebook only itself; `--revoke NOTEBOOK read` (or `run`) goes back to
 the default. `--root-dir` names the server's root when it
 isn't the current directory, since grants are kept per root.
 
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release: `/api/host/grants`.
+
+Clients such as the apps set the same grants over HTTP, with the
+server's token:
+
+```http
+GET    /api/host/grants/journal/index.ipynb
+PUT    /api/host/grants/journal/index.ipynb
+{"read": ["journal"], "run": ["reports"]}
+DELETE /api/host/grants/journal/index.ipynb
+```
+
+Each answers `{ path, grant, defaults }`: the notebook's own grant (`{}`
+when it has none) and `[host]` from the config, which it replaces key by
+key. `PUT` stores the grant in place of the one the notebook had, and
+`{}` or `DELETE` removes it. A grant has only `read`, `edit_self` and
+`run`; anything else is `400`, and so is a path that isn't a notebook.
+A missing notebook is `404`, and a server whose file ids live only in
+memory answers `409`, since a grant there wouldn't outlive it. A kernel
+holds no token, so it can't grant itself anything.
+
 ## Static headers
 
 `static_headers` adds response headers to files served from a

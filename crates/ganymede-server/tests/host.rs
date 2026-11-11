@@ -111,6 +111,7 @@ fn state_with(
         lsp: None,
         mcp: None,
         metrics: Default::default(),
+        host: Default::default(),
     }
 }
 
@@ -1123,4 +1124,140 @@ async fn a_run_waiting_for_a_slot_sees_a_revoked_grant() {
     let err = waiting.await.unwrap().unwrap_err();
     assert_eq!(err.code, "denied");
     b.abort();
+}
+
+/// `method` on `path` through the server's router, with its token.
+async fn http(app: &axum::Router, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {
+    use tower::ServiceExt;
+    let req = axum::http::Request::builder()
+        .method(method)
+        .uri(path)
+        .header("authorization", format!("token {TOKEN}"))
+        .header("content-type", "application/json");
+    let body = body.map_or_else(axum::body::Body::empty, |b| b.to_string().into());
+    let resp = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+    let status = resp.status().as_u16();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn the_grants_route_sets_reads_and_revokes_a_notebooks_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let mut state = state(dir.path());
+    state.host = Arc::new(HostConfig {
+        read: vec!["journal".into()],
+        ..Default::default()
+    });
+    let session = state
+        .sessions
+        .create(SessionCreate {
+            path: "index.ipynb".into(),
+            name: None,
+            type_: Some("notebook".into()),
+            kernel: Default::default(),
+        })
+        .await
+        .unwrap();
+    let caller = Caller {
+        kernel_id: session.kernel.id.clone(),
+    };
+    let api = HostApi::new(state.clone(), &state.host);
+    let app = ganymede_server::build_router(state.clone());
+    let url = "/api/host/grants/index.ipynb";
+
+    let (s, v) = http(&app, "GET", url, None).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["path"], "index.ipynb");
+    assert_eq!(v["grant"], json!({}));
+    assert_eq!(v["defaults"]["read"], json!(["journal"]));
+    assert_eq!(v["defaults"]["edit_self"], true);
+    assert_eq!(v["defaults"]["run"], json!([]));
+
+    // A grant set here reaches the running kernel on its next call.
+    let (s, v) = http(
+        &app,
+        "PUT",
+        url,
+        Some(json!({"read": ["/journal-private/"], "run": ["journal"]})),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        v["grant"],
+        json!({"read": ["journal-private"], "run": ["journal"]})
+    );
+    assert_eq!(http(&app, "GET", url, None).await.1["grant"], v["grant"]);
+    let hello = api.hello(&caller).await;
+    assert!(hello.methods.contains(&"notebooks.run".to_string()));
+    let read = api
+        .call(
+            &caller,
+            "notebooks.read",
+            json!({"path": "journal/a.ipynb"}),
+        )
+        .await;
+    assert_eq!(read.unwrap_err().code, "denied");
+
+    // Bad grants and missing notebooks.
+    let (s, v) = http(&app, "PUT", url, Some(json!({"reads": ["x"]}))).await;
+    assert_eq!(s, 400, "{v}");
+    let (s, _) = http(&app, "PUT", url, Some(json!({"read": "journal"}))).await;
+    assert_eq!(s, 400);
+    let (s, _) = http(&app, "PUT", url, Some(json!(["read"]))).await;
+    assert_eq!(s, 400);
+    let (s, _) = http(&app, "GET", "/api/host/grants/nope.ipynb", None).await;
+    assert_eq!(s, 404);
+    // A folder isn't a notebook.
+    let (s, _) = http(&app, "PUT", "/api/host/grants/journal", Some(json!({}))).await;
+    assert_eq!(s, 400);
+    // No token, no grant.
+    let req = axum::http::Request::builder()
+        .method("PUT")
+        .uri(url)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(r#"{"read":[""]}"#))
+        .unwrap();
+    let resp = tower::ServiceExt::oneshot(app.clone(), req).await.unwrap();
+    assert_eq!(resp.status().as_u16(), 403);
+
+    // DELETE, and PUT `{}`, both revoke.
+    let (s, v) = http(&app, "DELETE", url, None).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["grant"], json!({}));
+    assert!(!api
+        .hello(&caller)
+        .await
+        .methods
+        .contains(&"notebooks.run".to_string()));
+    http(&app, "PUT", url, Some(json!({"edit_self": false}))).await;
+    let (_, v) = http(&app, "PUT", url, Some(json!({}))).await;
+    assert_eq!(v["grant"], json!({}));
+    assert!(file_ids(dir.path()).grants().is_empty());
+}
+
+#[tokio::test]
+async fn the_grants_route_refuses_when_ids_live_in_memory() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let mut state = state(dir.path());
+    state.collab = Arc::new(ganymede_server::collab::Collab::new(
+        ganymede_contents::FileIds::in_memory(),
+        dir.path().canonicalize().ok(),
+    ));
+    let app = ganymede_server::build_router(state);
+    let (s, v) = http(
+        &app,
+        "PUT",
+        "/api/host/grants/index.ipynb",
+        Some(json!({"run": ["x"]})),
+    )
+    .await;
+    assert_eq!(s, 409, "{v}");
 }

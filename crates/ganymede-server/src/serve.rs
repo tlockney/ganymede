@@ -596,6 +596,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
             }))
         }),
         metrics: Default::default(),
+        host: Arc::new(cfg.host.clone()),
     };
 
     // Kept here for as long as the server runs: the manager holds it

@@ -31,8 +31,11 @@
 
 use crate::collab::{notebook_room_id, with_notebook};
 use crate::mcp::{notebook_for_search, search, search_notebooks};
+use crate::routes::{HttpError, LenientJson};
 use crate::AppState;
 use async_trait::async_trait;
+use axum::extract::{Path, State};
+use axum::Json;
 use ganymede_contents::{ContentType, GetOptions};
 use ganymede_documents::schema;
 use ganymede_documents::yrs::{Any, Array, GetString, Map, Out};
@@ -42,7 +45,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 /// The `[host]` table of the config file.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HostConfig {
     /// API paths the `notebooks.*` reads may reach; `""` is the root.
@@ -766,6 +769,113 @@ impl HostApi {
             Refused::Bad(m) => HostError::failed(m),
         })
     }
+}
+
+/// The notebook at the request's path: its file id, made the first time.
+/// A path that isn't a notebook is a 404.
+async fn grant_target(state: &AppState, path: &str) -> Result<(String, String), HttpError> {
+    let path = ganymede_contents::normalize_api_path(path);
+    let options = GetOptions {
+        content: false,
+        type_hint: Some(ContentType::Notebook),
+        ..Default::default()
+    };
+    let (id, _) = state
+        .collab
+        .index_existing(&state.contents, &path, options)
+        .await
+        .map_err(|e| match e {
+            ganymede_contents::Error::NotFound(_) => {
+                HttpError(404, format!("No notebook at {path:?}"))
+            }
+            e => e.into(),
+        })?;
+    Ok((id, path))
+}
+
+/// The answer to every `/api/host/grants` call: the notebook's own grant
+/// (`{}` when none) and the `[host]` defaults it replaces key by key.
+async fn grant_answer(state: &AppState, path: &str) -> Result<Json<Value>, HttpError> {
+    let grant: Grant = match state.collab.grant(path).await {
+        Some(text) => serde_json::from_str(&text).unwrap_or_default(),
+        None => Grant::default(),
+    };
+    Ok(Json(json!({
+        "path": path,
+        "grant": grant,
+        "defaults": *state.host,
+    })))
+}
+
+/// `GET /api/host/grants/{path}`: a notebook's host API grant.
+pub async fn get_grant(
+    State(state): State<AppState>,
+    Path(path): Path<String>,
+) -> Result<Json<Value>, HttpError> {
+    let (_, path) = grant_target(&state, &path).await?;
+    grant_answer(&state, &path).await
+}
+
+/// `PUT /api/host/grants/{path}`: stores a notebook's grant, as
+/// `ganymede grant` does, in place of the one it had. `{}` removes it.
+pub async fn put_grant(
+    State(state): State<AppState>,
+    Path(path): Path<String>,
+    LenientJson(body): LenientJson<Value>,
+) -> Result<Json<Value>, HttpError> {
+    let Some(keys) = body.as_object() else {
+        return Err(HttpError(400, "A grant is a JSON object".into()));
+    };
+    if let Some(k) = keys
+        .keys()
+        .find(|k| !["read", "edit_self", "run"].contains(&k.as_str()))
+    {
+        return Err(HttpError(
+            400,
+            format!("Unknown grant key {k:?}: a grant has read, edit_self and run"),
+        ));
+    }
+    let mut grant: Grant =
+        serde_json::from_value(body.clone()).map_err(|e| HttpError(400, e.to_string()))?;
+    let normalize = |paths: &mut Option<Vec<String>>| {
+        if let Some(paths) = paths {
+            for p in paths.iter_mut() {
+                *p = ganymede_contents::normalize_api_path(p);
+            }
+        }
+    };
+    normalize(&mut grant.read);
+    normalize(&mut grant.run);
+    store_grant(&state, &path, grant).await
+}
+
+/// `DELETE /api/host/grants/{path}`: removes a notebook's grant, so it
+/// gets the `[host]` defaults.
+pub async fn delete_grant(
+    State(state): State<AppState>,
+    Path(path): Path<String>,
+) -> Result<Json<Value>, HttpError> {
+    store_grant(&state, &path, Grant::default()).await
+}
+
+async fn store_grant(state: &AppState, path: &str, grant: Grant) -> Result<Json<Value>, HttpError> {
+    if !state.collab.is_persistent().await {
+        return Err(HttpError(
+            409,
+            "This server keeps file ids in memory only, so a grant wouldn't outlive it".into(),
+        ));
+    }
+    let (id, path) = grant_target(state, path).await?;
+    let text = (!grant.is_empty())
+        .then(|| serde_json::to_string(&grant))
+        .transpose()
+        .map_err(|e| HttpError(500, e.to_string()))?;
+    state
+        .collab
+        .set_grant(id, text)
+        .await
+        .map_err(|e| HttpError(500, e))?;
+    grant_answer(state, &path).await
 }
 
 #[cfg(test)]
