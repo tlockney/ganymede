@@ -65,6 +65,9 @@ impl Drop for KernelGuard {
     fn drop(&mut self) {
         let (kernels, id) = (self.kernels.clone(), std::mem::take(&mut self.id));
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            if id.is_empty() {
+                return;
+            }
             rt.spawn(async move {
                 let _ = kernels.shutdown(&id).await;
             });
@@ -201,7 +204,7 @@ pub async fn run_notebook(
                 message: e.message,
             },
         })?;
-    let _guard = KernelGuard {
+    let mut guard = KernelGuard {
         kernels: state.kernels.clone(),
         id: model.id.clone(),
     };
@@ -244,6 +247,12 @@ pub async fn run_notebook(
             limit.as_secs_f64()
         ))
     });
+
+    // Shut the kernel down before answering, so a caller that counts
+    // kernels, or waits for a slot, sees it gone. The guard covers a call
+    // dropped before this point.
+    let _ = state.kernels.shutdown(&guard.id).await;
+    guard.id.clear();
 
     let results = named_results_of(ran.iter().flat_map(|&i| match nb.cells.get(i) {
         Some(Cell::Code(c)) => c.outputs.as_slice(),

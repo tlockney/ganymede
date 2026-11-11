@@ -462,16 +462,9 @@ impl HostApi {
         Ok(json!({"notebook": notebook, "hashes": hashes}))
     }
 
-    async fn run(&self, caller: &Caller, who: &Who, params: Value) -> Result<Value, HostError> {
-        let mut request = crate::run::RunRequest::from_value(params).map_err(HostError::failed)?;
-        if request.path.split('/').any(|c| c == "..") {
-            return Err(HostError::denied(format!(
-                "{}: `..` is not allowed",
-                request.path
-            )));
-        }
-        let path = ganymede_contents::normalize_api_path(&request.path);
-        if !self.may_run(who, &path) {
+    /// Whether `who` may start a run of `path` now.
+    fn check_run(&self, who: &Who, path: &str) -> Result<(), HostError> {
+        if !self.may_run(who, path) {
             return Err(HostError::denied(format!(
                 "{path} is outside this notebook's run grant (`[host] run`, or `ganymede grant NOTEBOOK run=PATH`)"
             )));
@@ -481,6 +474,36 @@ impl HostApi {
                 "runs nest at most {MAX_DEPTH} deep"
             )));
         }
+        Ok(())
+    }
+
+    async fn run(&self, caller: &Caller, who: &Who, params: Value) -> Result<Value, HostError> {
+        let mut request = crate::run::RunRequest::from_value(params).map_err(HostError::failed)?;
+        if request.path.split('/').any(|c| c == "..") {
+            return Err(HostError::denied(format!(
+                "{}: `..` is not allowed",
+                request.path
+            )));
+        }
+        let path = ganymede_contents::normalize_api_path(&request.path);
+        self.check_run(who, &path)?;
+        let slot = {
+            let mut slots = self.slots.lock().unwrap();
+            slots.retain(|k, _| self.state.kernels.get(k).is_ok());
+            slots
+                .entry(caller.kernel_id.clone())
+                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(WIDTH)))
+                .clone()
+        };
+        let _permit = slot
+            .acquire_owned()
+            .await
+            .map_err(|e| HostError::failed(e.to_string()))?;
+        // Check again, with the grant as it is now, once a slot is free: a
+        // grant changed while the call waited applies to it. The run then
+        // keeps the grant it starts with.
+        let who = &self.who(caller).await;
+        self.check_run(who, &path)?;
         // Grants narrow, never widen: the run gets what both the caller
         // and the notebook it runs may do. A run writes nothing, so it has
         // no self.* calls.
@@ -494,18 +517,6 @@ impl HostApi {
             outer_read: [who.outer_read.clone(), vec![who.read.clone()]].concat(),
             outer_run: [who.outer_run.clone(), vec![who.run.clone()]].concat(),
         };
-        let slot = {
-            let mut slots = self.slots.lock().unwrap();
-            slots.retain(|k, _| self.state.kernels.get(k).is_ok());
-            slots
-                .entry(caller.kernel_id.clone())
-                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(WIDTH)))
-                .clone()
-        };
-        let _permit = slot
-            .acquire_owned()
-            .await
-            .map_err(|e| HostError::failed(e.to_string()))?;
         let token = uuid::Uuid::new_v4().simple().to_string();
         self.runs.lock().unwrap().insert(token.clone(), grant);
         let _entry = RunEntry {

@@ -1088,3 +1088,39 @@ async fn a_run_reads_through_no_symlink_its_caller_may_not() {
     }
     call.abort();
 }
+
+#[tokio::test]
+async fn a_run_waiting_for_a_slot_sees_a_revoked_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    let (api, state, caller) = run_setup(
+        dir.path(),
+        HostConfig {
+            run: vec!["reports".into()],
+            ..Default::default()
+        },
+    )
+    .await;
+    let (a, _) = start_run(&api, &state, &caller, "reports/slow.ipynb").await;
+    let (b, _) = start_run(&api, &state, &caller, "reports/slow.ipynb").await;
+    // Both slots are taken, so this one waits.
+    let waiting = tokio::spawn({
+        let (api, caller) = (api.clone(), caller.clone());
+        async move {
+            api.call(
+                &caller,
+                "notebooks.run",
+                json!({"path": "reports/slow.ipynb"}),
+            )
+            .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!waiting.is_finished());
+    let ids = file_ids(dir.path());
+    let (id, _) = ids.index("index.ipynb");
+    ids.set_grant(&id, Some(r#"{"run":[]}"#)).unwrap();
+    a.abort();
+    let err = waiting.await.unwrap().unwrap_err();
+    assert_eq!(err.code, "denied");
+    b.abort();
+}
