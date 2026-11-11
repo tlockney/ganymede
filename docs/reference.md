@@ -469,7 +469,10 @@ which writes nothing; any other value is `400`. `runs/` is an ordinary
 folder: browse, read or delete copies through the contents API, and
 leave it out of a notebook's `[host] read` grant to keep runs out of its
 reads and searches. The host API's `notebooks.run` takes the same
-`save`.
+`save`, and keeps a copy only when the calling notebook may read the
+notebook it runs as well as run it. A leading dot in a folder or
+notebook name becomes `_` in the copy's folder (`.private/nb.ipynb`
+goes to `runs/_private/nb/`), so copies are never hidden files.
 
 ## Logging
 

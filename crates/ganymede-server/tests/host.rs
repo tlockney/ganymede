@@ -527,6 +527,29 @@ async fn a_notebook_runs_another_under_its_run_grant() {
     assert_eq!(err.code, "denied");
     assert!(err.message.contains("run grant"), "{}", err.message);
 
+    // A copy holds the source and its outputs, so keeping one needs a
+    // read of the source: a run grant plus a read of runs/ alone must not
+    // turn into a read of the notebook it runs.
+    let narrow = HostApi::new(
+        state.clone(),
+        &HostConfig {
+            read: vec!["runs".into()],
+            run: vec!["reports".into()],
+            ..Default::default()
+        },
+    );
+    let err = narrow
+        .call(
+            &caller,
+            "notebooks.run",
+            json!({"path": "reports/r.ipynb", "save": "copy"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "denied");
+    assert!(err.message.contains("read grant"), "{}", err.message);
+    assert!(!dir.path().join("runs").exists());
+
     // The run's kernel gets the intersection of the two grants: the
     // called notebook may read only journal/, so its run may too.
     let ids = file_ids(dir.path());

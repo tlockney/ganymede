@@ -14,3 +14,10 @@ is shut down, with the parameters in `metadata.ganymede.params` as
 `ganymede execute` records them. A failed run is kept too. If the copy
 can't be written, the answer's status is `error` with the reason, after
 any run error.
+
+From the host API, a copy needs a read of the source as well as a run
+grant. A copy holds the notebook's source and outputs, so without that
+check a notebook allowed to run `secret.ipynb` and read `runs/` could
+read the secret through its copy, and grants only narrow. A leading dot
+in a path part becomes `_` in the copy's folder, so a notebook in a
+hidden folder still gets a copy the contents API can write and read.

@@ -297,7 +297,19 @@ pub async fn run_notebook(
 /// The API path of `path`'s copy for a run started at `started`, `n`
 /// for the nth of that second.
 fn copy_path(path: &str, started: chrono::DateTime<chrono::Utc>, n: u32) -> String {
-    let stem = path.strip_suffix(".ipynb").unwrap_or(path);
+    // A leading dot would hide the copy's folder, and with hidden files
+    // off the copy could not be written or read; `.private` becomes
+    // `_private`.
+    let stem = path
+        .strip_suffix(".ipynb")
+        .unwrap_or(path)
+        .split('/')
+        .map(|part| match part.strip_prefix('.') {
+            Some(rest) => format!("_{rest}"),
+            None => part.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("/");
     let stamp = started.format("%Y-%m-%dT%H%M%SZ");
     match n {
         0 | 1 => format!("{RUNS_DIR}/{stem}/{stamp}.ipynb"),
@@ -399,6 +411,10 @@ mod tests {
         assert_eq!(
             copy_path("index.ipynb", at, 3),
             "runs/index/2026-11-11T193005Z-3.ipynb"
+        );
+        assert_eq!(
+            copy_path(".private/.nb.ipynb", at, 1),
+            "runs/_private/_nb/2026-11-11T193005Z.ipynb"
         );
     }
 }
