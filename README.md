@@ -4,50 +4,62 @@
 [![Release](https://img.shields.io/github/v/release/tlockney/ganymede)](https://github.com/tlockney/ganymede/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-A Jupyter server in Rust, for three things: TypeScript notebooks on
-[cdp-kernel](https://cdp-kernel.org), agent journals (a coding agent
-records its analysis in a notebook over MCP, see
-[Agents over MCP](docs/mcp.md)), and its own Mac, iPad and iPhone
-[apps](docs/app.md), which run the server inside the app.
+A notebook runtime with a Rust core, and the Mac, iPad and iPhone
+[apps](docs/app.md) built on it. The apps run the server inside the app;
+the same core is a command-line server and a library to embed.
 
-Ganymede launches kernels from installed kernelspecs, speaks the Jupyter
-messaging protocol to them, reads and writes notebooks, and serves the
-same REST and websocket API as `jupyter_server`, so JupyterLab and VS Code
-connect to it unchanged. Any other kernel, Python's included, works once
-its kernelspec is installed. The server itself needs no Python runtime.
+- **Notebooks as programs.** A notebook takes parameters and returns
+  named results, so it runs from the command line, CI, HTTP, a
+  `ganymede://` link or Shortcut on the Mac, or another notebook
+  ([Notebooks as programs](docs/programs.md)).
+- **An agent and a person in one notebook.** `ganymede mcp` lets Claude
+  Code or another MCP client work in a notebook as it goes, so the
+  notebook it leaves reruns from the top ([Agents](docs/agent-journals.md)).
+- **TypeScript notebooks** on [cdp-kernel](https://cdp-kernel.org), on
+  Node, Deno, or inside the iPad and iPhone apps.
+- **Works with Jupyter.** Ganymede serves the same REST and websocket API
+  as `jupyter_server` and launches kernels from installed kernelspecs, so
+  JupyterLab, VS Code and ipykernel work with it unchanged. The server
+  itself needs no Python.
 
 Named for Jupiter's largest moon, and for the cupbearer who served the
 gods on Olympus.
 
 **Documentation:** [ganymede-server.com](https://ganymede-server.com/)
 (sources in [`docs/`](docs/)). Start with
-[Install](docs/install.md), step by step from a clean
-machine with no Python or Jupyter, then
-[Getting started](docs/getting-started.md) and
-[Architecture](docs/architecture.md).
+[the apps](docs/app.md), or [Install](docs/install.md) for the command
+line, step by step from a clean machine with no Python or Jupyter. Worked
+notebooks are in [Examples](docs/examples.md), and
+[Why Ganymede](docs/why.md) has the background.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/jupyterlab-dark.png">
-  <img src="docs/images/jupyterlab.png" width="820" alt="JupyterLab served by ganymede lab, with a TypeScript notebook on the cdp-node kernel: a typed array of Jupiter's moons, the largest one's name, and a Markdown table of their radii and orbits.">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/apps/mac-dark.png">
+  <img src="docs/images/apps/mac-light.png" width="820" alt="The Ganymede Mac app: a sidebar listing notebooks, a toolbar with run and kernel controls, and a TypeScript notebook on Jupiter's moons with printed orbital periods, computed ratios, and an HTML result.">
 </picture>
 
 ## Features
 
+- Mac, iPad and iPhone apps with the server in-process
+  ([ganymede-ui](docs/app.md)); the Mac app is
+  [released](https://github.com/tlockney/ganymede-ui/releases/latest),
+  the iPad and iPhone apps are on TestFlight.
+- Parameters and named results: `ganymede execute -p NAME=VALUE
+  --results`, `POST /api/notebooks/run`, and a host API through which a
+  notebook runs others it has been granted ([Host API](docs/host-api.md)).
+- `ganymede mcp` for agents, with `ganymede nb publish` to turn a
+  notebook into a page ([Agents over MCP](docs/mcp.md)).
 - The `jupyter_server` REST and websocket API, so JupyterLab and VS Code
   connect unchanged. `ganymede lab` serves JupyterLab itself.
 - Any installed kernel: cdp-kernel for TypeScript, ipykernel, or any other
   kernelspec. The host has no language-specific code.
-- `ganymede run` and `ganymede execute` for scripts and CI, with output
-  matching `jupyter execute`.
-- Notebook saves that match Python's `nbformat` byte for byte, atomic
-  writes, and checkpoints outside the notebook folder.
+- Output matching `jupyter execute`, and notebook saves that match
+  Python's `nbformat` byte for byte, with atomic writes and checkpoints
+  outside the notebook folder.
 - One binary with a random token, loopback-only by default; see
   [Security](docs/security.md).
 - Local-first: no telemetry, notebooks stay on your machine unless you
   connect a remote gateway, and crash reporting is off unless you turn
   it on ([Privacy](docs/privacy.md)).
-- Its own notebook app, [ganymede-ui](docs/app.md), in a browser and as a
-  Mac, iPad and iPhone app.
 - `ganymede-engine`, a library for embedding, which builds for iOS,
   Android, and wasm ([Embedding](docs/embedding.md)).
 
@@ -99,7 +111,7 @@ JupyterLab's own bundle, served at `/lab`, runs notebooks in a browser. The
 engine builds for iOS, Android, and wasm. See the
 [roadmap](docs/roadmap.md) and [known gaps](docs/known-gaps.md).
 
-"No Python" means no Python runtime and no Python dependency;
+The server has no Python runtime or Python dependency;
 [Replacing Python](docs/python-free.md) says where Python still appears
 and why, and [Switching from jupyter_server](docs/switching.md) what a
 move from Jupyter's own server keeps and loses. UIs are clients of the

@@ -3,17 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ganymede: a Jupyter server in Rust</title>
-<meta name="description" content="A Jupyter server in Rust for TypeScript notebooks, agent journals, and its own Mac, iPad and iPhone apps. JupyterLab and VS Code connect to it unchanged.">
+<title>Ganymede: notebooks as programs, with Mac, iPad and iPhone apps</title>
+<meta name="description" content="A notebook runtime with a Rust core and its own Mac, iPad and iPhone apps. Notebooks run as programs, agents keep journals in them, and JupyterLab and VS Code connect unchanged.">
 <link rel="canonical" href="https://ganymede-server.com/">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Ganymede">
-<meta property="og:title" content="Ganymede: a Jupyter server in Rust">
-<meta property="og:description" content="A Jupyter server in Rust for TypeScript notebooks, agent journals, and its own Mac, iPad and iPhone apps. JupyterLab and VS Code connect to it unchanged.">
+<meta property="og:title" content="Ganymede: notebooks as programs, with Mac, iPad and iPhone apps">
+<meta property="og:description" content="A notebook runtime with a Rust core and its own Mac, iPad and iPhone apps. Notebooks run as programs, agents keep journals in them, and JupyterLab and VS Code connect unchanged.">
 <meta property="og:url" content="https://ganymede-server.com/">
-<meta property="og:image" content="https://ganymede-server.com/images/jupyterlab.png">
-<meta property="og:image:alt" content="JupyterLab running a TypeScript notebook on Ganymede.">
+<meta property="og:image" content="https://ganymede-server.com/images/apps/mac-light.png">
+<meta property="og:image:alt" content="The Ganymede Mac app running a TypeScript notebook.">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="stylesheet" href="style.css">
 <script>
@@ -29,11 +29,11 @@
   <div class="wrap nav">
     <a class="brand" href="./">ganymede</a>
     <nav>
-      <a href="#start">Start</a>
-      <a href="#features">Features</a>
       <a href="#apps">Apps</a>
-      <a href="https://cdp-kernel.org">cdp-kernel</a>
-      <a href="#clients">Frontends</a>
+      <a href="#programs">Programs</a>
+      <a href="#agents">Agents</a>
+      <a href="#typescript">TypeScript</a>
+      <a href="#jupyter">Jupyter</a>
       <a href="docs/">Docs</a>
       <a href="https://github.com/tlockney/ganymede">GitHub</a>
     </nav>
@@ -44,98 +44,46 @@
 <section class="hero">
   <div class="wrap hero-grid">
   <div class="hero-text">
-    <p class="eyebrow">Jupyter server · Rust · TypeScript</p>
-    <h1>Notebooks for TypeScript, agents, and your devices.</h1>
-    <p class="lede">Ganymede runs kernels, reads and writes notebooks, and serves the same API
-      as <code>jupyter_server</code>, so JupyterLab and VS Code connect to it unchanged. It is
-      one Rust binary, a library to embed, and the core of its own apps.</p>
+    <p class="eyebrow">Notebook runtime · Rust core · Mac, iPad, iPhone</p>
+    <h1>Notebooks that run like programs, in apps of their own.</h1>
+    <p class="lede">Ganymede runs notebooks: in its Mac, iPad and iPhone apps, from the
+      command line, and for coding agents. A notebook can take parameters and return named
+      results, so other tools and other notebooks can call it.</p>
     <ul class="ways">
-      <li><strong>TypeScript notebooks.</strong> <a href="https://cdp-kernel.org">cdp-kernel</a>
-        runs cells on Node, Deno, or in the browser, from JupyterLab, VS Code, or the
-        apps.</li>
-      <li><strong>Agent journals.</strong> <code>ganymede mcp</code> lets Claude Code or
-        another agent record an analysis in a notebook as it works, cells with their output,
-        for you to read or re-run. <a href="docs/mcp">Agents over MCP</a></li>
-      <li><strong>The apps.</strong> Mac, iPad, and iPhone, with the server inside the app;
-        on the iPad and iPhone, TypeScript runs on the device. <a href="#apps">Apps</a></li>
+      <li><strong>The apps.</strong> The server runs inside the app. On the Mac it uses the
+        kernels installed there; on the iPad and iPhone, TypeScript runs in the app.
+        <a href="#apps">Apps</a></li>
+      <li><strong>Notebooks as programs.</strong> Run one from the command line, CI, HTTP, a
+        link, a Shortcut, or another notebook, with JSON in and JSON out.
+        <a href="docs/programs">Notebooks as programs</a></li>
+      <li><strong>Agent journals.</strong> An agent works in a notebook over MCP, and the
+        notebook it leaves reruns from the top. <a href="docs/agent-journals">Agents</a></li>
+      <li><strong>TypeScript.</strong> <a href="https://cdp-kernel.org">cdp-kernel</a> runs
+        cells on Node, Deno, or in the app.</li>
     </ul>
-    <div class="install">
-      <div class="tabs" role="tablist">
-        <button role="tab" aria-selected="true" data-tab="release">Install script</button>
-        <button role="tab" aria-selected="false" data-tab="cargo">cargo</button>
-        <button role="tab" aria-selected="false" data-tab="docker">Docker</button>
-      </div>
-      <pre data-panel="release"><code><span class="c"># Linux and macOS</span>
-curl -fsSL https://ganymede-server.com/install.sh | sh
-ganymede kernelspec list</code></pre>
-      <pre data-panel="cargo" hidden><code><span class="c"># Rust toolchain</span>
-cargo install --git https://github.com/tlockney/ganymede ganymede-cli
-ganymede kernelspec list</code></pre>
-      <pre data-panel="docker" hidden><code><span class="c"># JupyterLab and cdp-kernel</span>
-docker run --rm -p 8888:8888 ghcr.io/tlockney/ganymede</code></pre>
-    </div>
-    <p class="platforms">The script also installs cdp-kernel when Node 22.18 or later is
-      there. Linux and macOS are tested end to end; Windows binaries are built but not
-      tested. <a href="docs/install">Other ways to install</a></p>
     <div class="cta">
-      <a class="btn primary" href="docs/install">Get started</a>
-      <a class="btn" href="https://github.com/tlockney/ganymede">View on GitHub</a>
+      <a class="btn primary" id="mac-download" href="https://github.com/tlockney/ganymede-ui/releases/latest">Download for Mac</a>
+      <a class="btn" href="#install">Install the command line</a>
     </div>
     <p class="byline"><a href="https://github.com/tlockney/ganymede/releases/latest">Latest
       release</a> · MIT license · <a href="#status">Early software</a></p>
   </div>
-  <figure class="shot">
-    <img class="only-light" src="images/jupyterlab.png" width="820" height="740"
-      alt="JupyterLab served by ganymede lab, with a TypeScript notebook on the cdp-node kernel: a typed array of Jupiter's moons, the largest one's name, and a Markdown table of their radii and orbits.">
-    <img class="only-dark" src="images/jupyterlab-dark.png" width="820" height="740"
-      alt="JupyterLab served by ganymede lab, with a TypeScript notebook on the cdp-node kernel: a typed array of Jupiter's moons, the largest one's name, and a Markdown table of their radii and orbits.">
-    <figcaption>JupyterLab from <code>ganymede lab</code>, running a TypeScript notebook on
-      cdp-kernel.</figcaption>
+  <figure class="shot app-mac">
+    <img class="only-light" src="images/apps/mac-light.png" width="1280" height="820"
+      alt="The Ganymede Mac app: a sidebar listing notebooks, a toolbar with run and kernel controls, and a TypeScript notebook on Jupiter's moons with printed orbital periods, computed ratios, and an HTML result.">
+    <img class="only-dark" src="images/apps/mac-dark.png" width="1280" height="820"
+      alt="The Ganymede Mac app: a sidebar listing notebooks, a toolbar with run and kernel controls, and a TypeScript notebook on Jupiter's moons with printed orbital periods, computed ratios, and an HTML result.">
+    <figcaption>The Mac app, running a TypeScript notebook.</figcaption>
   </figure>
   </div>
 </section>
 
-<section class="example">
-  <div class="wrap two">
-    <div>
-      <h2>Serve, then connect</h2>
-      <p><code>ganymede serve</code> prints a URL with its token. Paste it into VS Code's
-        <em>Existing Jupyter Server</em>, or open JupyterLab's own bundle from it, and pick any
-        kernel you have installed: <code>cdp-node</code> for TypeScript, <code>python3</code>
-        if ipykernel is there.</p>
-      <p>No server at all for scripts and CI: <code>ganymede run</code> sends code to a
-        kernel and prints the output, and <code>ganymede execute</code> writes the same
-        notebook <code>jupyter execute</code> would.</p>
-    </div>
-    <figure class="nb">
-      <div class="nb-code"><span class="nb-lang">sh</span>
-      <pre><code><span class="k">$</span> ganymede serve --root-dir ~/notebooks
-http://127.0.0.1:8888/?token=<span class="s">4f9c…</span>
-
-<span class="k">$</span> ganymede run -k cdp-node <span class="s">'const x = 2; x * 21'</span>
-42
-
-<span class="k">$</span> ganymede execute report.ipynb --inplace</code></pre></div>
-      <figcaption>One binary covers <code>jupyter server</code>, <code>jupyter execute</code>,
-        <code>jupyter kernel</code>, and <code>jupyter kernelspec</code>.</figcaption>
-    </figure>
-  </div>
-</section>
-
-<section id="apps">
+<section id="apps" class="alt">
   <div class="wrap">
     <h2>Mac, iPad, and iPhone apps</h2>
-    <p class="sub">Ganymede's own notebook app runs the server inside the app, so there is
-      nothing else to install or start. On the Mac, kernels are the ones installed on the
-      Mac; on the iPad and iPhone, TypeScript runs in the app itself. Either can also use
+    <p class="sub">The apps are the main way to use Ganymede. Each one runs the server
+      inside the app, so there is nothing else to install or start, and each can also use
       kernels on another server.</p>
-    <figure class="shot app-mac">
-      <img class="only-light" src="images/apps/mac-light.png" width="1280" height="820" loading="lazy"
-        alt="The Ganymede Mac app: a sidebar listing notebooks, a toolbar with run and kernel controls, and a TypeScript notebook on Jupiter's moons with printed orbital periods, computed ratios, and an HTML result.">
-      <img class="only-dark" src="images/apps/mac-dark.png" width="1280" height="820" loading="lazy"
-        alt="The Ganymede Mac app: a sidebar listing notebooks, a toolbar with run and kernel controls, and a TypeScript notebook on Jupiter's moons with printed orbital periods, computed ratios, and an HTML result.">
-      <figcaption>The Mac app.</figcaption>
-    </figure>
     <div class="app-ios">
       <figure class="shot app-ipad">
         <img class="only-light" src="images/apps/ipad-light.png" width="1376" height="1032" loading="lazy"
@@ -156,10 +104,10 @@ http://127.0.0.1:8888/?token=<span class="s">4f9c…</span>
       <article>
         <h3>Mac</h3>
         <p>macOS 26 or later, Apple silicon. Signed and notarized: unzip it and move
-          <code>Ganymede.app</code> to Applications. It can be the default app for
-          <code>.ipynb</code> files.</p>
+          <code>Ganymede.app</code> to Applications. It updates itself, opens
+          <code>ganymede://</code> links, and gives Shortcuts actions to run notebooks.</p>
         <div class="cta">
-          <a class="btn primary" id="mac-download" href="https://github.com/tlockney/ganymede-ui/releases/latest">Download for Mac</a>
+          <a class="btn primary" href="https://github.com/tlockney/ganymede-ui/releases/latest">Download for Mac</a>
           <a class="btn" href="https://github.com/tlockney/ganymede-ui/releases/latest">Release notes</a>
         </div>
       </article>
@@ -172,99 +120,144 @@ http://127.0.0.1:8888/?token=<span class="s">4f9c…</span>
       </article>
       <article>
         <h3>How it works</h3>
-        <p>The apps are a native shell around ganymede-ui, the same notebook page that runs in a
-          browser, with the Rust core linked in. <a href="docs/app">The app guide</a></p>
+        <p>A native shell around ganymede-ui, the same notebook page that runs in a browser,
+          with the Rust core linked in. <a href="docs/app">The app guide</a></p>
       </article>
     </div>
   </div>
 </section>
 
-<section id="start" class="alt">
-  <div class="wrap">
-    <h2>Get started</h2>
-    <p class="sub">The docs are grouped by how much you already know.</p>
-    <div class="grid paths">
-      <a class="path" href="docs/install">
-        <span class="lvl intro">Introductory</span>
-        <h3>Install</h3>
-        <p>From a clean machine to JupyterLab running TypeScript notebooks, step by step.</p>
-      </a>
-      <a class="path" href="docs/frontends">
-        <span class="lvl guide">Guide</span>
-        <h3>JupyterLab and VS Code</h3>
-        <p>Point an existing Jupyter frontend at Ganymede, and what works so far.</p>
-      </a>
-      <a class="path" href="docs/architecture">
-        <span class="lvl adv">Advanced</span>
-        <h3>Architecture</h3>
-        <p>The Jupyter stack, where Ganymede sits in it, and how its crates fit together.</p>
-      </a>
+<section id="programs">
+  <div class="wrap two">
+    <div>
+      <h2>Notebooks as programs</h2>
+      <p>A notebook reads its parameters in its first cell, with defaults so it still runs on
+        its own, and publishes results by name. Every caller uses the same run: a fresh kernel
+        from the notebook's kernelspec, the parameters as JSON, the named results back as
+        JSON. Nothing is written into the notebook unless you ask.</p>
+      <p>The callers: <code>ganymede execute</code> in a script or CI,
+        <code>POST /api/notebooks/run</code> on a running server, a
+        <code>ganymede://</code> link or a Shortcut on the Mac, and another notebook through
+        the host API, if it has been granted that notebook.</p>
+      <p><a href="docs/programs">Notebooks as programs</a> ·
+        <a href="docs/host-api">The host API</a> ·
+        <a href="docs/examples">Examples</a></p>
     </div>
+    <figure class="nb">
+      <div class="nb-code"><span class="nb-lang">ts</span>
+      <pre><code><span class="k">const</span> { counter = <span class="s">"Fremont"</span>, days = 30 } = jupyter.params;
+<span class="c">// ... the analysis ...</span>
+jupyter.result(<span class="s">"weekday_drop"</span>, -0.19);</code></pre></div>
+      <div class="nb-code"><span class="nb-lang">sh</span>
+      <pre><code><span class="k">$</span> ganymede execute fremont.ipynb -p counter=<span class="s">"2nd Ave"</span> -p days=7 --results
+{"path":"fremont.ipynb","status":"ok","results":{"weekday_drop":-0.19}}</code></pre></div>
+      <figcaption>One notebook, run with parameters from the command line. A link, a
+        Shortcut, or another notebook gets the same JSON back.</figcaption>
+    </figure>
   </div>
 </section>
 
-<section id="features">
+<section id="agents" class="alt">
+  <div class="wrap two">
+    <div>
+      <h2>An agent and a person in one notebook</h2>
+      <p>A coding agent usually explores data in its shell and writes it up afterwards from
+        memory. With <code>ganymede mcp</code>, Claude Code or another MCP client works in the
+        notebook instead: each step is a cell that ran on a real kernel, dead ends stay
+        labelled, and you can watch, add cells of your own, and rerun the result from the
+        top.</p>
+      <p>The ganymede-journal plugin gives the agent a way to keep the notebook as a journal,
+        and <code>ganymede nb publish</code> turns one into a page to share.</p>
+      <p><a href="docs/agent-journals">Agents</a> ·
+        <a href="docs/mcp">Agents over MCP</a> ·
+        <a href="docs/examples">Example journals</a></p>
+    </div>
+    <figure class="shot">
+      <img src="images/publish/journal-page.png" width="1280" height="860" loading="lazy"
+        alt="A published journal on Oklahoma's earthquakes: a contents list of eight questions, a recorded shell command that fetched the data, and a bar chart of earthquakes per year that peaks in 2015.">
+      <figcaption>A journal an agent kept on Oklahoma's earthquakes, published as a
+        page.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="typescript">
+  <div class="wrap two">
+    <div>
+      <h2>TypeScript notebooks</h2>
+      <p><a href="https://cdp-kernel.org">cdp-kernel</a> is a TypeScript kernel built
+        alongside Ganymede. It runs cells on Node, Deno and other runtimes, in a web page,
+        or inside the iPad and iPhone apps. TypeScript, top-level <code>await</code> and
+        <code>npm:</code> imports work, and <code>jupyter.md</code>, <code>jupyter.html</code>,
+        charts and widgets render as rich output.</p>
+      <p>The install script below sets it up when Node 22.18 or later is there.</p>
+      <p><a href="https://cdp-kernel.org">cdp-kernel.org</a> ·
+        <a href="docs/in-app-kernel">The kernel inside the apps</a></p>
+    </div>
+    <figure class="nb">
+      <div class="nb-code"><span class="nb-lang">ts</span>
+      <pre><code><span class="k">type</span> <span class="t">Moon</span> = { name: <span class="t">string</span>; radiusKm: <span class="t">number</span> };
+<span class="k">const</span> moons: <span class="t">Moon</span>[] = [
+  { name: <span class="s">"Io"</span>, radiusKm: 1822 },
+  { name: <span class="s">"Ganymede"</span>, radiusKm: 2634 },
+];
+moons.sort((a, b) =&gt; b.radiusKm - a.radiusKm)[0].name;</code></pre></div>
+      <figcaption>A cell on <code>cdp-node</code>. Its value, <code>'Ganymede'</code>,
+        is the cell's output.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="jupyter" class="alt">
   <div class="wrap">
-    <h2>Features</h2>
+    <h2>Works with Jupyter</h2>
+    <p class="sub">Ganymede serves the same REST and websocket API as
+      <code>jupyter_server</code> and launches kernels from the same kernelspecs, so
+      JupyterLab, VS Code, ipykernel and other Jupyter tools work with it unchanged. The
+      server itself needs no Python.</p>
+    <img class="diagram only-light" src="images/themed/architecture/ganymede.light.svg" width="860" height="532" loading="lazy"
+      alt="Frontends (JupyterLab, VS Code, other clients, and ganymede-ui) call the same REST and websocket API on the Rust core, which launches the same kernelspecs (cdp-kernel, ipykernel, any other) over ZeroMQ, or uses kernels on another server through a gateway.">
+    <img class="diagram only-dark" src="images/themed/architecture/ganymede.dark.svg" width="860" height="532" loading="lazy"
+      alt="Frontends (JupyterLab, VS Code, other clients, and ganymede-ui) call the same REST and websocket API on the Rust core, which launches the same kernelspecs (cdp-kernel, ipykernel, any other) over ZeroMQ, or uses kernels on another server through a gateway.">
     <div class="grid">
       <article>
-        <h3>No Python runtime</h3>
-        <p>The server, kernel host, notebook format, and executor are Rust, with no Python
-          dependency. Python appears only as a kernel someone installed, as the reference
-          CI compares against, and as the format the notebook writer matches.
-          <code>ganymede lab install</code> unpacks JupyterLab's JavaScript from its PyPI
-          wheel without running Python. <a href="docs/python-free">Details</a></p>
+        <h3>Frontends</h3>
+        <p>VS Code's <em>Existing Jupyter Server</em>, JupyterLab served by
+          <code>ganymede lab</code>, and clients of <code>@jupyterlab/services</code>.
+          <a href="docs/frontends">Connecting a frontend</a></p>
       </article>
       <article>
-        <h3>Any kernel</h3>
-        <p>Kernels come from the standard kernelspecs in the Jupyter data directories. The
-          host knows no language; the same tests run on cdp-kernel and ipykernel.</p>
+        <h3>Kernels</h3>
+        <p>Any installed kernelspec: cdp-kernel, ipykernel, or another. The host knows no
+          language, and the same tests run on cdp-kernel and ipykernel.</p>
       </article>
       <article>
-        <h3>Existing frontends</h3>
-        <p>The <code>jupyter_server</code> REST and websocket API, both websocket framings,
-          and JupyterLab's <code>/lab/api/*</code> endpoints.</p>
-      </article>
-      <article>
-        <h3>Parity with <code>jupyter execute</code></h3>
-        <p>Notebooks come out as nbclient writes them, and saves are byte-identical to
-          Python's <code>nbformat</code>, so git sees no churn.</p>
-      </article>
-      <article>
-        <h3>Embeddable</h3>
-        <p><code>ganymede-engine</code> is a library: start kernels, execute with streaming
-          output, run notebooks. It builds for iOS, Android, and wasm.
-          <a href="docs/embedding">Embedding</a></p>
-      </article>
-      <article>
-        <h3>Files as the source of truth</h3>
-        <p>Atomic writes, modification-time conflict checks, and checkpoints outside the
-          notebook folder, so synced folders such as iCloud Drive stay intact.</p>
+        <h3>Notebook files</h3>
+        <p>Executed notebooks come out as <code>jupyter execute</code> writes them, saves match
+          Python's <code>nbformat</code> byte for byte, and writes are atomic, so git and
+          synced folders see no churn.</p>
       </article>
     </div>
-  </div>
-</section>
-
-<section id="clients">
-  <div class="wrap">
-    <h2>Frontends and kernels</h2>
-    <p class="sub">Ganymede takes <code>jupyter_server</code>'s place and keeps both of its
-      interfaces: the API above it and the kernels below.</p>
-    <img class="diagram only-light" src="images/themed/architecture/ganymede.light.svg" width="860" height="532"
-      alt="Frontends (JupyterLab, VS Code, other clients, and ganymede-ui) call the same REST and websocket API on the Rust core, which launches the same kernelspecs (cdp-kernel, ipykernel, any other) over ZeroMQ, or uses kernels on another server through a gateway.">
-    <img class="diagram only-dark" src="images/themed/architecture/ganymede.dark.svg" width="860" height="532"
-      alt="Frontends (JupyterLab, VS Code, other clients, and ganymede-ui) call the same REST and websocket API on the Rust core, which launches the same kernelspecs (cdp-kernel, ipykernel, any other) over ZeroMQ, or uses kernels on another server through a gateway.">
-    <table class="rt">
-      <thead><tr><th>Client</th><th>How it connects</th><th>Status</th></tr></thead>
-      <tbody>
-        <tr><td>VS Code</td><td>The Jupyter extension's <em>Existing Jupyter Server</em>, with the URL and token.</td><td>Works</td></tr>
-        <tr><td>@jupyterlab/services</td><td>JupyterLab's client library: kernels, sessions, contents, interrupt, restart.</td><td>Works</td></tr>
-        <tr><td>JupyterLab</td><td>Its static bundle served by Ganymede at <code>/lab</code>, from <code>ganymede lab</code>.</td><td>Works</td></tr>
-        <tr><td>ganymede-ui</td><td>Ganymede's own notebook app: in a browser, served with <code>--static-dir</code>, or in the Mac, iPad and iPhone app with the core in-process.</td><td>Mac: released. iPad and iPhone: TestFlight</td></tr>
-      </tbody>
-    </table>
-    <p class="more"><a href="docs/frontends">Connecting a frontend</a> ·
-      <a href="docs/roadmap">Roadmap</a></p>
+    <div class="install" id="install">
+      <h3>Install the command line</h3>
+      <div class="tabs" role="tablist">
+        <button role="tab" aria-selected="true" data-tab="release">Install script</button>
+        <button role="tab" aria-selected="false" data-tab="cargo">cargo</button>
+        <button role="tab" aria-selected="false" data-tab="docker">Docker</button>
+      </div>
+      <pre data-panel="release"><code><span class="c"># Linux and macOS</span>
+curl -fsSL https://ganymede-server.com/install.sh | sh
+ganymede lab</code></pre>
+      <pre data-panel="cargo" hidden><code><span class="c"># Rust toolchain</span>
+cargo install --git https://github.com/tlockney/ganymede ganymede-cli
+ganymede kernelspec list</code></pre>
+      <pre data-panel="docker" hidden><code><span class="c"># JupyterLab and cdp-kernel</span>
+docker run --rm -p 8888:8888 ghcr.io/tlockney/ganymede</code></pre>
+      <p class="platforms">One binary for <code>jupyter server</code>, <code>execute</code>,
+        <code>kernel</code> and <code>kernelspec</code>. Linux and macOS are tested end to end;
+        Windows binaries are built but not tested. It also builds as a library to embed.
+        <a href="docs/install">Install</a> · <a href="docs/embedding">Embedding</a></p>
+    </div>
   </div>
 </section>
 
@@ -274,11 +267,12 @@ http://127.0.0.1:8888/?token=<span class="s">4f9c…</span>
       <h2>Why</h2>
       <p>Ganymede began as a way to write TypeScript notebooks and to run notebooks in an
         iPad app. The Jupyter protocols suit both; the reference server, a Python program,
-        doesn't travel to an iPad. Keeping the protocols keeps JupyterLab, VS Code, and the
-        existing kernels, ipykernel included. A Rust core lets the same server run as a
-        command, inside an app, or behind an agent's MCP session.</p>
-      <p><a href="docs/architecture">Architecture</a> ·
-        <a href="docs/python-free">Replacing Python</a></p>
+        doesn't travel to an iPad. A Rust core runs the same server as a command, inside an
+        app, or behind an agent's MCP session, and keeping the protocols keeps the Jupyter
+        tools and kernels people already have.</p>
+      <p><a href="docs/why">Why Ganymede</a> ·
+        <a href="docs/architecture">Architecture</a> ·
+        <a href="docs/roadmap">Roadmap</a></p>
     </div>
     <div class="note" id="status">
       <h3>Status</h3>
