@@ -348,6 +348,10 @@ jobs:
         with:
           persist-credentials: false
       - run: scripts/check-pins.sh
+      # What the next release would move the cdp-kernel and ganymede-ui
+      # pins to (#673); fails only if a pin is ahead of the latest release.
+      - if: ${{ !cancelled() }}
+        run: scripts/release-pins.sh --check
 
   # Targets the desktop CI cannot run: the core libraries must build for
   # iOS, Android, and wasm, and the engine must run a notebook inside wasm.

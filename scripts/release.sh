@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Prepare a release: bump the workspace version, regenerate CHANGELOG.md
-# from the merged pull requests, and commit "Release X.Y.Z" on a
-# release/vX.Y.Z branch. With --execute it pushes the branch and, with gh,
-# opens an issue and a PR for it. Merging the PR tags vX.Y.Z
-# (tag-release.yml), which publishes the binaries (release.yml).
+# from the merged pull requests, move the cdp-kernel and ganymede-ui pins
+# to their latest releases (scripts/release-pins.sh), and commit
+# "Release X.Y.Z" on a release/vX.Y.Z branch. With --execute it pushes
+# the branch and, with gh, opens an issue and a PR for it. Merging the PR
+# tags vX.Y.Z (tag-release.yml), which publishes the binaries
+# (release.yml).
 #
 #   scripts/release.sh minor            # dry run: shows the bump and changelog
 #   scripts/release.sh minor --execute  # commits, pushes release/vX.Y.Z, opens the PR
@@ -12,11 +14,12 @@
 # it pushes the branch and opens the issue and PR it hasn't opened yet.
 #
 # The level is patch, minor, major, or an explicit version (0.2.0-rc.1).
-# Needs cargo-release and git-cliff: cargo install --locked cargo-release git-cliff
+# Needs cargo-release and git-cliff (cargo install --locked cargo-release
+# git-cliff), curl and jq.
 set -euo pipefail
 
 if [[ $# -lt 1 || "$1" == -h || "$1" == --help ]]; then
-  sed -n '2,15s/^# \{0,1\}//p' "$0"
+  sed -n '2,18s/^# \{0,1\}//p' "$0"
   exit 2
 fi
 
@@ -50,8 +53,20 @@ prepare() {
     exit 1
   fi
 
+  # The latest cdp-kernel and ganymede-ui releases go into this release
+  # (scripts/release-pins.sh). Checked first, so a failure leaves main as
+  # it was.
+  scripts/release-pins.sh --check
   cargo release --workspace "$@"
   $execute || exit 0
+
+  if ! pins=$(scripts/release-pins.sh); then
+    git checkout --quiet -- .
+    git reset --quiet --keep HEAD~1
+    echo "error: couldn't update the pins; the release commit is undone" >&2
+    exit 1
+  fi
+  echo "$pins"
 
   # e2e/wasm-smoke is its own workspace, so cargo-release leaves its
   # lockfile naming the old version of each crate, and CI builds it
@@ -59,12 +74,15 @@ prepare() {
   # in the lockfile where they are. If the refresh fails, the commit is
   # undone, so main stays as it was and a rerun starts over.
   if ! cargo update --quiet --workspace --manifest-path e2e/wasm-smoke/Cargo.toml; then
-    git checkout --quiet -- e2e/wasm-smoke/Cargo.lock
+    git checkout --quiet -- .
     git reset --quiet --keep HEAD~1
     echo "error: couldn't refresh e2e/wasm-smoke/Cargo.lock; the release commit is undone" >&2
     exit 1
   fi
-  git commit --quiet --amend --no-edit e2e/wasm-smoke/Cargo.lock
+  # The pins it moved go in the commit message, and from there into the
+  # pull request.
+  git commit --quiet --amend --all -m "$(git log -1 --format=%s)" -m "Pins:
+$pins"
 
   version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
   branch="release/v$version"
@@ -139,4 +157,6 @@ fi
 gh pr create --base main --head "$branch" --title "Release v$version" \
   --body "Closes #${issue##*/}
 
-Bumps the workspace to $version and updates CHANGELOG.md. Merging tags v$version, which publishes the release.${unreleased_body:-}"
+Bumps the workspace to $version and updates CHANGELOG.md. Merging tags v$version, which publishes the release.
+
+$(git log -1 --format=%b)${unreleased_body:-}"
