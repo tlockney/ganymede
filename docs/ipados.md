@@ -20,6 +20,12 @@ the [Roadmap](roadmap.md).
 - **Kernels on the iPad.** iOS doesn't let an app launch processes, so
   the app runs cdp-kernel's TypeScript kernel in a Worker in a hidden
   second web view, and relays its messages to the notebook's page.
+
+  > [!NOTE]
+  > **Unreleased in ganymede-ui.** In a build of ganymede-ui's `main`,
+  > that kernel is registered with the app's server
+  > ([In-app kernel](in-app-kernel.md), #266), which messages it like any
+  > kernel; nothing is relayed to the notebook's page.
 - **Remote kernels.** With a kernel server set, Ganymede in the app sends
   kernels to it through the gateway, as `jupyter_server --gateway-url`
   does, and notebooks stay on the iPad. The kernel server is any Jupyter
