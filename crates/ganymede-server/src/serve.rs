@@ -402,6 +402,122 @@ pub fn file_ids(root: &std::path::Path) -> ganymede_contents::FileIds {
     }
 }
 
+/// The host API without a listener (`docs/host-api.md`): how
+/// `ganymede execute` answers its kernels' calls. API paths are relative
+/// to `root_dir`; the grants are a notebook's own, kept with the file ids
+/// for `root_dir` as `ganymede grant` keeps them, over `cfg.host`. Kernels
+/// it starts are only the runs its kernels ask for (`notebooks.run`),
+/// from `cfg.kernelspec_roots`.
+pub struct LocalHost {
+    api: Arc<crate::host::HostApi>,
+    responder: Arc<dyn ganymede_host::Responder>,
+    state: AppState,
+}
+
+impl LocalHost {
+    pub fn new(cfg: &Config, root_dir: &Path) -> Result<Self> {
+        let root_dir = root_dir
+            .canonicalize()
+            .with_context(|| format!("root dir {}", root_dir.display()))?;
+        let kernels = Arc::new(KernelManager::new(
+            Arc::new(FsKernelspecs::discover(cfg.kernelspec_roots.clone())),
+            default_provisioner()?,
+            default_transports()?,
+            KernelManagerConfig {
+                startup_timeout: Duration::from_secs(cfg.startup_timeout_secs),
+                quiet: cfg.quiet,
+                restart_limit: 0,
+                root_dir: root_dir.clone(),
+                ..Default::default()
+            },
+        ));
+        let state = AppState {
+            sessions: Arc::new(SessionManager::new(kernels.clone())),
+            kernels: kernels.clone(),
+            contents: Arc::new(FsContents::new(&root_dir, FsOptions::default())?),
+            token: None,
+            cookie_secret: Arc::from(&[][..]),
+            allow_origins: Vec::new(),
+            allow_credentials: false,
+            allow_remote_access: false,
+            local_hostnames: Vec::new(),
+            trust_xheaders: false,
+            max_body_size: 0,
+            base_url: "/".into(),
+            config_dir: cfg
+                .config_dir
+                .clone()
+                .unwrap_or_else(ganymede_kernel_host::kernelspec::jupyter_config_dir),
+            lab: None,
+            static_dir: None,
+            static_headers: Arc::new([]),
+            frame_ancestors: crate::frame_ancestors_directive("'self'")?,
+            // The same file ids as a server on this root and `ganymede
+            // grant`, so a notebook's own grant applies here too.
+            collab: Arc::new(crate::collab::Collab::new(
+                file_ids(&root_dir),
+                Some(root_dir),
+            )),
+            terminals: None,
+            lsp: None,
+            mcp: None,
+            metrics: Default::default(),
+            host: Arc::new(cfg.host.clone()),
+        };
+        let api = Arc::new(crate::host::HostApi::new(state.clone(), &cfg.host));
+        let responder: Arc<dyn ganymede_host::Responder> = api.clone();
+        kernels.set_host(&responder, env!("CARGO_PKG_VERSION"));
+        Ok(LocalHost {
+            api,
+            responder,
+            state,
+        })
+    }
+
+    /// Answer `session`'s calls as the kernel of `notebook`, an API path,
+    /// for as long as the link is kept.
+    pub fn attach(
+        &self,
+        session: &ganymede_kernel_host::KernelSession,
+        notebook: Option<String>,
+    ) -> LocalHostLink {
+        let kernel_id = uuid::Uuid::new_v4().simple().to_string();
+        self.api.pin(&kernel_id, notebook);
+        let link = ganymede_host::attach(
+            session,
+            ganymede_host::Caller {
+                kernel_id: kernel_id.clone(),
+            },
+            self.responder.clone(),
+            env!("CARGO_PKG_VERSION"),
+        );
+        LocalHostLink {
+            api: self.api.clone(),
+            kernel_id,
+            _link: link,
+        }
+    }
+
+    /// Stop any run kernels still going.
+    pub async fn shutdown(&self) {
+        self.state.kernels.shutdown_all().await;
+    }
+}
+
+/// One kernel's host comm from [`LocalHost::attach`]. Dropping it stops
+/// answering and forgets the kernel.
+pub struct LocalHostLink {
+    api: Arc<crate::host::HostApi>,
+    kernel_id: String,
+    _link: ganymede_host::HostLink,
+}
+
+impl Drop for LocalHostLink {
+    fn drop(&mut self) {
+        self.api.unpin(&self.kernel_id);
+    }
+}
+
 /// Serve until Ctrl-C, then shut down every kernel. Prints the URL, with
 /// its token, as the only line on stdout, and writes `jpserver-<pid>.json`
 /// in the runtime dir for as long as it serves.

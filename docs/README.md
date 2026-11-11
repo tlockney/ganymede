@@ -29,6 +29,8 @@ not something the server needs ([Other kernels](kernels.md)).
 - [Agents over MCP](mcp.md): a coding agent journaling an analysis into
   a notebook, with `ganymede mcp` and the ganymede-journal plugin for
   Claude Code; [nb-cli](agents.md) for agents without MCP.
+- [Examples](examples.md): the apps' example notebooks, with the
+  outputs they saved.
 - [CLI and configuration](reference.md): every command, flag, config key
   and environment variable.
 - [Architecture](architecture.md): how Ganymede compares to the Jupyter

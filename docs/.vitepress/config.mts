@@ -32,6 +32,13 @@ const uiExtra = uiUnplaced(uiPages);
 if (uiPages.length === 0) console.warn("docs/ganymede-ui/ is empty; run `npm run fetch-ui` to include ganymede-ui's docs.");
 if (uiExtra.length) console.warn(`ganymede-ui pages not placed in levels.ts, listed under "ganymede-ui": ${uiExtra.join(", ")}`);
 
+// The example pages `npm run fetch-examples` rendered, as it lists them in
+// docs/examples/pages.json. Their names follow ganymede-ui's notebooks, so
+// the sidebar is built from the list and a link to one that's gone warns.
+const examplesFile = path.join(docsDir, "examples", "pages.json");
+const examplePages: { text: string; link: string }[] = fs.existsSync(examplesFile) ? JSON.parse(fs.readFileSync(examplesFile, "utf8")) : [];
+if (examplePages.length === 0) console.warn("docs/examples/ is empty; run `npm run fetch-examples` to include the example pages.");
+
 function titleOf(file: string): string {
   const heading = fs.readFileSync(file, "utf8").match(/^# (.+)$/m);
   return heading ? heading[1].trim() : path.basename(file, ".md");
@@ -74,6 +81,13 @@ export default defineConfig({
       console.warn(`ganymede-ui has no docs/${m[1]}.md; the link to it is dead.`);
       return true;
     },
+    // Likewise a link to an example page that wasn't rendered.
+    (link: string) => {
+      const m = link.match(/(?:^|\/)examples\/([^/#?]+?)(?:\.md)?(?:[#?].*)?$/);
+      if (!m || examplePages.some((p) => p.link === `/examples/${m[1]}`)) return false;
+      console.warn(`No example page ${m[1]}; the link to it is dead.`);
+      return true;
+    },
   ],
   sitemap: { hostname: `${site}/docs/` },
   // The landing page's icon, from site/, served at the site's root.
@@ -114,13 +128,14 @@ export default defineConfig({
       { text: "Get started", link: "/install" },
       { text: "Apps", link: "/app" },
       { text: "Agents", link: "/agent-journals" },
+      { text: "Examples", link: "/examples" },
       { text: "Reference", link: "/reference" },
       { text: "Roadmap", link: "/roadmap" },
     ],
     // Groups start open, so every page shows without a click, except the
     // background and contributors' groups, which most readers don't need.
     sidebar: [
-      ...groups((name) => uiPages.includes(name)).map(({ text, level, items }) => ({
+      ...groups((name) => uiPages.includes(name), examplePages).map(({ text, level, items }) => ({
         text,
         items,
         collapsed: level === "background" || level === "contributor",

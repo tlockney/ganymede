@@ -25,12 +25,15 @@ what a notebook asks for and sets its grant.
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
 > the latest release.
 
+`ganymede execute` answers its kernels' calls as well, under `[host]`
+with `--grant read=PATH` or `run=PATH` in place of a key
+([Reference](reference.md#under-ganymede-execute)).
+
 `notebooks.run` (and `POST /api/notebooks/run`) take `save: "copy"`,
 which keeps the executed notebook under `runs/`
 ([Run copies](reference.md#run-copies)).
 
-The rest of this page is the design; `ganymede execute` grants come
-next.
+The rest of this page is the design.
 
 ## The problem
 
@@ -286,8 +289,11 @@ edit_self = true     # the self.* calls; false turns them off
   line first, with `--list` to show a notebook's grants (or every
   notebook's) and `--revoke` to remove one, then a sheet in the apps. A notebook with no file (an
   untitled console) gets the defaults.
-- **`ganymede execute`** has no file id database. It uses `[host]` from
-  the config and `--grant run=<path>` on the command line.
+- **`ganymede execute`** uses `[host]` from the config with
+  `--grant read=<path>` or `--grant run=<path>` in place of a key as the
+  defaults, and a notebook's own grant over them, as a server does. It
+  gives its kernels no `self.*` calls, since it writes the notebook
+  itself when the run ends.
 
 This is the server's half of "scoped kernels" from the direction review:
 it limits what a kernel can ask the server for. It doesn't limit what a
@@ -311,9 +317,10 @@ The comm driver (open on start, the subshell, routing replies, the
 client fan-out filter) and the file-based core go in a new crate,
 `ganymede-host`, with two users. `ganymede-api`'s kernel manager opens
 the comm for the server's kernels and filters host traffic in its iopub
-fan-out (`Clients::dispatch` in `bridge.rs`). `ganymede-engine` does the
-same for its kernels, so `ganymede execute` and an app that embeds the
-engine answer `host` calls with no HTTP server.
+fan-out (`Clients::dispatch` in `bridge.rs`). `ganymede execute`
+answers with the server's own responder and no listener
+(`serve::LocalHost`), so the grant checks and the runs are the same
+code.
 `ganymede-server` adds what needs a server: reads from open rooms, and
 the per-notebook grants. The crates under it stay language-free: the
 server sees method names and JSON.

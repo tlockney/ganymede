@@ -54,10 +54,11 @@ export function uiUnplaced(pages: string[]): string[] {
 // The sidebar, in reading order: grouped by what the reader is doing,
 // whichever repository a page comes from. config.mts passes it to
 // VitePress, and the theme looks pages up here to find their level. `has`
-// says which of ganymede-ui's pages were copied in; the theme passes
-// nothing and gets them all. Add a group here when its first page exists;
+// says which of ganymede-ui's pages were copied in, and `examples` lists
+// the example pages; the theme passes neither, getting every ganymede-ui
+// page and no example pages. Add a group here when its first page exists;
 // an empty group renders as a dead heading.
-export function groups(has: (name: string) => boolean = () => true): Group[] {
+export function groups(has: (name: string) => boolean = () => true, examples: Page[] = []): Group[] {
   return [
     {
       text: "Get started",
@@ -100,6 +101,17 @@ export function groups(has: (name: string) => boolean = () => true): Group[] {
         { text: "JupyterLab and VS Code", link: "/frontends" },
         { text: "Other kernels", link: "/kernels" },
         { text: "Switching from jupyter_server", link: "/switching" },
+      ],
+    },
+    {
+      // The pages `npm run fetch-examples` rendered; config.mts lists them
+      // from docs/examples/pages.json, since their names come from
+      // ganymede-ui.
+      text: "Examples",
+      level: "guide",
+      items: [
+        { text: "All examples", link: "/examples" },
+        ...examples,
       ],
     },
     {
@@ -168,6 +180,8 @@ export function groups(has: (name: string) => boolean = () => true): Group[] {
 // any. ganymede-ui's pages get none: the level notes describe Ganymede's.
 export function levelOf(relativePath: string): Level | undefined {
   if (relativePath.startsWith("ganymede-ui/")) return;
+  // The example pages aren't in groups() here (config.mts adds them).
+  if (relativePath.startsWith("examples/")) return "guide";
   const link = "/" + relativePath.replace(/(^|\/)(README|index)\.md$/, "$1").replace(/\.md$/, "");
   return groups().find((g) => g.items.some((p) => p.link === link))?.level;
 }

@@ -28,3 +28,8 @@ test("ganymede-ui pages get no level", () => {
   assert.equal(levelOf("ganymede-ui/releasing.md"), undefined);
   assert.equal(levelOf("releasing.md"), "contributor");
 });
+
+test("example pages are guides", () => {
+  assert.equal(levelOf("examples/01-start-here.md"), "guide");
+  assert.equal(levelOf("examples.md"), "guide");
+});
