@@ -26,6 +26,7 @@ mod ansi;
 mod atomic;
 mod export;
 mod multiline;
+mod params;
 mod reader;
 mod results;
 mod types;
@@ -39,6 +40,7 @@ pub use export::{
     Resource, ResourceData, BASE64_LENIENT, FORMATS,
 };
 pub use multiline::{splitlines, MultilineString};
+pub use params::{params_env, record_params, PARAMS_ENV, PARAMS_MAX};
 pub use reader::{from_json_slice, read_file, ReadIssue, ReadReport};
 pub use results::{
     named_result, named_results, named_results_of, RESULT_MIME, SCRAPBOOK_JSON_MIME,
