@@ -29,10 +29,6 @@ same flags. The guides show them in use:
 | `info` | Versions and the directories in use |
 | `completions <shell>` | Shell completions for bash, zsh, fish, powershell, elvish |
 
-> [!NOTE]
-> **Unreleased.** `nb publish` is available only from a build of `main`
-> (HEAD), not in the latest release.
-
 The kernel name `fake` is a built-in in-process kernel for trying things
 out.
 
@@ -322,7 +318,7 @@ given them.
 ```json
 {
   "base_url": "/",
-  "ganymede_version": "0.8.0",
+  "ganymede_version": "0.9.0",
   "hostname": "127.0.0.1",
   "password": false,
   "pid": 41237,
