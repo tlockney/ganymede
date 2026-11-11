@@ -15,8 +15,8 @@ and where kernels run:
 | | Notebooks | Kernels |
 | --- | --- | --- |
 | [`ganymede ui`](#in-a-browser-from-ganymede) | The folder you serve | Your installed kernelspecs |
-| [Mac app](#the-mac-and-ipad-app) | A folder you pick | The Mac's kernelspecs and cdp-kernel in the app, or a kernel server |
-| [iPad app](#the-mac-and-ipad-app) | The app's Documents, or a folder you pick | cdp-kernel in the app, or a kernel server |
+| [Mac app](#the-mac-ipad-and-iphone-app) | A folder you pick | The Mac's kernelspecs and cdp-kernel in the app, or a kernel server |
+| [iPad app](#the-mac-ipad-and-iphone-app) | The app's Documents, or a folder you pick | cdp-kernel in the app, or a kernel server |
 | [This browser](#with-no-server) | The browser's storage | cdp-kernel or JavaScript, in the page |
 
 ## In a browser, from Ganymede
@@ -41,7 +41,7 @@ version, otherwise the line in that release's `SHA256SUMS`. It unpacks to
 it), within the same size limits as JupyterLab. `GANYMEDE_UI_URL` points
 at a mirror laid out as `<url>/v<version>/<file>`.
 
-## The Mac and iPad app
+## The Mac, iPad and iPhone app
 
 The app runs Ganymede inside its own process and shows ganymede-ui in a
 web view, so there is nothing else to install or start. It is built from
