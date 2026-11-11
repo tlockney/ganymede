@@ -1,0 +1,35 @@
+# XcodeGen spec for the engine benchmark app (#646): `xcodegen generate`
+# writes V8Bench.xcodeproj (not committed). A spike: not one of the apps,
+# never shipped. See ../README.md for the steps.
+name: V8Bench
+options:
+  bundleIdPrefix: com.ganymede-server.spike
+  deploymentTarget:
+    iOS: '26.0'
+targets:
+  V8Bench:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      # The workloads and the Worker page, staged by ../scripts/stage-ios.sh.
+      - path: Resources/bench
+        type: folder
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ganymede-server.spike.V8Bench
+        PRODUCT_NAME: V8Bench
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: V8 Bench
+        TARGETED_DEVICE_FAMILY: '1,2'
+        SWIFT_VERSION: '6.0'
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/V8Bench-Bridging-Header.h
+        HEADER_SEARCH_PATHS: $(PROJECT_DIR)/../include
+        # The device library from ../scripts/ios-size.sh (or CI's
+        # v8-spike-ios artifact). There is no simulator build.
+        LIBRARY_SEARCH_PATHS: $(PROJECT_DIR)/../target/aarch64-apple-ios/release
+        OTHER_LDFLAGS: -lganymede_v8_spike
+        SUPPORTED_PLATFORMS: iphoneos
+        CODE_SIGN_STYLE: Automatic

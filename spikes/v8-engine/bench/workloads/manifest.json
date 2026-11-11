@@ -1,0 +1,9 @@
+{
+  "workloads": [
+    { "name": "start", "sources": ["workloads/start.js"] },
+    { "name": "cpu", "sources": ["workloads/cpu.js"] },
+    { "name": "ts-strip", "sources": ["dist/strip-bundle.js", "workloads/ts-strip.js"] },
+    { "name": "large-output", "sources": ["workloads/large-output.js"] },
+    { "name": "memory", "sources": ["workloads/memory.js"] }
+  ]
+}

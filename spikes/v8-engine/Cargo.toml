@@ -1,0 +1,37 @@
+[package]
+name = "ganymede-v8-spike"
+version = "0.0.1"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Spike (#646): runs the engine benchmark's workloads on V8 (rusty_v8), jitless or not, to measure V8 for the in-app kernel."
+
+# Not a workspace member: nothing in Ganymede depends on it, and its V8
+# build (from source for iOS) stays out of the main build and lockfile.
+[workspace]
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[[bin]]
+name = "v8-bench"
+path = "src/main.rs"
+
+[features]
+default = ["v8"]
+# Off: the same library without V8, which the size measurement links as
+# the baseline (scripts/ios-size.sh).
+v8 = ["dep:v8"]
+
+[dependencies]
+v8 = { version = "=152.2.0", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
+
+[profile.release]
+# As an app's release build: what the size measurement reports.
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"

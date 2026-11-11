@@ -1,0 +1,6 @@
+/target
+/bench/node_modules
+/bench/dist
+/ios/Resources
+/ios/*.xcodeproj
+/results

@@ -1,0 +1,172 @@
+name: V8 spike
+
+# The engine measurement for the in-app kernel (#646): spikes/v8-engine.
+# Runs only when a pull request changes the spike, or by hand. Not a
+# required check, and nothing in Ganymede depends on it.
+#
+# bench: the same workloads on V8 (prebuilt rusty_v8, jitless and with
+#   JIT), Node (with and without --jitless), and WebKit Workers with
+#   today's browser kernel. The macOS cell (Apple silicon) is the closest
+#   CI gets to an iPad: jitless V8 there runs as it would on the device.
+# ios: rusty_v8 built from source for aarch64-apple-ios (jitless, no
+#   WebAssembly), the size it adds to an app, and the bench app built
+#   unsigned. The V8 build is cached by Cargo.lock; the first build takes
+#   hours.
+on:
+  pull_request:
+    paths:
+      - spikes/v8-engine/**
+      - .github/workflows/v8-spike.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    working-directory: spikes/v8-engine
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: spikes/v8-engine
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Workloads and the browser kernel
+        working-directory: spikes/v8-engine/bench
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          npx playwright install --with-deps webkit
+      - name: Tests
+        run: cargo test --release --locked
+      - name: Run the workloads
+        run: |
+          mkdir -p results
+          cargo run --release --locked --bin v8-bench -- bench > results/v8-jitless.json
+          cargo run --release --locked --bin v8-bench -- --jit bench > results/v8-jit.json
+          node bench/node.mjs > results/node.json
+          node --jitless bench/node.mjs > results/node-jitless.json
+          node bench/web.mjs --browser webkit > results/webkit.json
+      - name: Report
+        run: |
+          node bench/report.mjs --title "${{ runner.os }} ${{ runner.arch }}" \
+            results/v8-jitless.json results/v8-jit.json results/node.json results/node-jitless.json results/webkit.json \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          # A workload that failed fails the job.
+          ! grep -q '"error": "' results/*.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: v8-spike-bench-${{ runner.os }}
+          path: spikes/v8-engine/results/
+
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 360
+    env:
+      PREBUILT: ${{ github.workspace }}/v8-ios-prebuilt
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          targets: aarch64-apple-ios
+      # V8 built for the device: its static library and bindings, keyed by
+      # the lockfile (which pins the v8 crate).
+      - id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: v8-ios-prebuilt
+          key: v8-ios-${{ hashFiles('spikes/v8-engine/Cargo.lock') }}
+      - name: Use the cached V8
+        if: steps.cache.outputs.cache-hit == 'true'
+        run: |
+          echo "RUSTY_V8_ARCHIVE=$PREBUILT/librusty_v8.a" >> "$GITHUB_ENV"
+          echo "RUSTY_V8_SRC_BINDING_PATH=$PREBUILT/src_binding.rs" >> "$GITHUB_ENV"
+      - name: Build V8 from source
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          # bindgen needs libclang 21.1 or later; Xcode's is older.
+          brew install llvm
+          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
+          echo "V8_FROM_SOURCE=1" >> "$GITHUB_ENV"
+      - name: Size added to an app
+        run: |
+          mkdir -p results
+          scripts/ios-size.sh > results/ios-size.json
+          cat results/ios-size.json
+      - name: Keep V8 for the next run
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$PREBUILT"
+          cp target/aarch64-apple-ios/release/gn_out/obj/librusty_v8.a "$PREBUILT/"
+          cp target/aarch64-apple-ios/release/gn_out/src_binding.rs "$PREBUILT/"
+          cp target/aarch64-apple-ios/release/gn_out/args.gn "$PREBUILT/"
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: v8-ios-prebuilt
+          key: v8-ios-${{ hashFiles('spikes/v8-engine/Cargo.lock') }}
+      - name: Report
+        run: |
+          node -e '
+            const s = require("./results/ios-size.json");
+            const mb = (b) => (b / 2 ** 20).toFixed(1) + " MB";
+            console.log([
+              "### iOS device build (aarch64-apple-ios, jitless)", "",
+              "| | size |", "|---|---|",
+              `| V8 added to the app binary (stripped) | ${mb(s.added_bytes)} |`,
+              `| the same, gzip -9 (about what a download adds) | ${mb(s.added_gzip_bytes)} |`,
+              `| stand-in app with V8 | ${mb(s.app_binary_with_v8_bytes)} |`,
+              `| stand-in app without V8 | ${mb(s.app_binary_without_v8_bytes)} |`,
+              `| static library (before linking) | ${mb(s.static_lib_bytes)} |`,
+            ].join("\n"));
+          ' | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ -f "$PREBUILT/args.gn" ]; then
+            { echo; echo "V8's GN args:"; echo; echo '```'; cat "$PREBUILT/args.gn"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Bench app builds (unsigned)
+        run: |
+          (cd bench && npm ci --no-audit --no-fund && npm run build)
+          scripts/stage-ios.sh
+          brew install xcodegen
+          cd ios
+          xcodegen generate
+          xcodebuild build -project V8Bench.xcodeproj -scheme V8Bench \
+            -destination generic/platform=iOS -configuration Release \
+            CODE_SIGNING_ALLOWED=NO | tail -30
+        shell: bash
+      # What the by-hand device run needs (spikes/v8-engine/README.md).
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: v8-spike-ios
+          path: |
+            spikes/v8-engine/results/
+            spikes/v8-engine/target/aarch64-apple-ios/release/libganymede_v8_spike.a
+            v8-ios-prebuilt/
