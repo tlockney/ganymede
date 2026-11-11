@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { render, slugOf } from "./fetch-examples.mjs";
+import { render, slugOf, titleOf } from "./fetch-examples.mjs";
 
 const nb = (cells) => ({ metadata: { language_info: { name: "typescript" } }, cells });
 
@@ -29,6 +29,9 @@ test("outputs", () => {
           { output_type: "display_data", data: { "image/png": "aGk=\n" } },
           { output_type: "display_data", data: { "text/html": "<b>1</b>\n\n<i>2</i>" } },
           { output_type: "display_data", data: { "text/html": "<div></div><script>alert(1)</script>" } },
+          { output_type: "display_data", data: { "text/html": "<style>p{}</style>" } },
+          { output_type: "display_data", data: { "text/html": "<b onclick=\"x()\">b</b>" } },
+          { output_type: "display_data", data: { "text/html": "<pre>a\n\nb</pre>" } },
           { output_type: "display_data", data: { "application/vnd.jupyter.widget-view+json": { model_id: "m" } } },
           { output_type: "execute_result", data: { "text/plain": "```" } },
         ],
@@ -44,6 +47,13 @@ test("outputs", () => {
   assert.match(markdown, /<img src="\.\/images\/02-b-1\.svg"/);
   assert.match(markdown, /<div class="nb-output" v-pre>\n<b>1<\/b>\n<i>2<\/i>\n<\/div>/);
   assert.match(markdown, /sandbox="allow-scripts"[^>]*srcdoc="&lt;div&gt;&lt;\/div&gt;&lt;script&gt;alert\(1\)&lt;\/script&gt;"/);
+  assert.equal(markdown.match(/<iframe /g).length, 4);
+  assert.match(markdown, /srcdoc="&lt;pre&gt;a&#10;&#10;b&lt;\/pre&gt;"/);
   assert.match(markdown, /::: info Widget/);
   assert.match(markdown, /````text\n```\n````/);
+});
+
+test("titleOf", () => {
+  assert.equal(titleOf(nb([{ cell_type: "markdown", source: "text\n# Start Here\n" }]), "01 Start Here.ipynb"), "Start Here");
+  assert.equal(titleOf(nb([]), "02 Web APIs.ipynb"), "Web APIs");
 });

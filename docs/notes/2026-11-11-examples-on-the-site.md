@@ -19,3 +19,10 @@ were drawn for a light notebook.
 
 Fourth item of #689, first half; the Fremont and Oklahoma journals come
 next, re-run on the current release.
+
+The example pages' names follow ganymede-ui's notebook file names, so
+fetch-examples also writes docs/examples/pages.json and config.mts builds
+the sidebar's Examples group from it; a link to an example page that
+wasn't rendered warns instead of failing the build, as links into
+ganymede-ui's docs do. HTML with a `<style>`, `<link>`, `<pre>`, an
+inline `on…=` handler or another embed goes to the sandboxed frame too.

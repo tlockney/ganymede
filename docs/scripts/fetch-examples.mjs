@@ -6,6 +6,8 @@
 //   ganymede-ui  examples/01 Start Here.ipynb -> examples/01-start-here.md
 //                (each output image)          -> examples/images/01-start-here-<n>.<ext>
 //
+// pages.json lists the pages and their titles, for the sidebar.
+//
 // A page shows each cell and what it showed when ganymede-ui last ran the
 // notebooks. Markdown, text, JSON, errors, SVG and bitmaps render as they
 // are. HTML renders in place, or, when it has a script, in a sandboxed
@@ -73,7 +75,10 @@ function output(o, slug, files) {
   }
   if (data["text/html"]) {
     const html = text(data["text/html"]);
-    if (/<script\b/i.test(html)) {
+    // Anything that runs, styles the page, loads something, or keeps its
+    // whitespace goes in a sandboxed frame with an opaque origin; the rest
+    // is plain markup, shown in place.
+    if (/<(script|style|link|iframe|object|embed|pre|textarea)\b|\son\w+\s*=/i.test(html)) {
       return `<iframe class="nb-output" title="Output of the cell above" sandbox="allow-scripts" loading="lazy" srcdoc="${attr(html)}"></iframe>`;
     }
     // A blank line would end the HTML block and turn the rest into Markdown.
@@ -121,6 +126,15 @@ export function render(nb, file) {
   return { markdown: `${parts.join("\n\n")}\n`, files };
 }
 
+/** A notebook's title: its first heading, else its file name. */
+export function titleOf(nb, file) {
+  for (const cell of nb.cells) {
+    const m = cell.cell_type === "markdown" && text(cell.source).match(/^# (.+)$/m);
+    if (m) return m[1].trim();
+  }
+  return file.replace(/\.ipynb$/, "").replace(/^\d+\s+/, "");
+}
+
 /** A checkout of ganymede-ui's examples/, or the local one GANYMEDE_UI_DIR names. */
 function checkout(tmp) {
   if (process.env.GANYMEDE_UI_DIR) return process.env.GANYMEDE_UI_DIR;
@@ -141,12 +155,17 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     mkdirSync(join(out, "images"), { recursive: true });
     const notebooks = readdirSync(dir).filter((f) => f.endsWith(".ipynb")).sort();
     if (notebooks.length === 0) throw new Error(`${repo} has no examples/*.ipynb`);
+    // The pages, in sidebar order, for config.mts.
+    const pages = [];
     for (const file of notebooks) {
-      const { markdown, files } = render(JSON.parse(readFileSync(join(dir, file), "utf8")), file);
+      const nb = JSON.parse(readFileSync(join(dir, file), "utf8"));
+      const { markdown, files } = render(nb, file);
       writeFileSync(join(out, `${slugOf(file)}.md`), markdown);
       for (const [name, body] of files) writeFileSync(join(out, name), body);
+      pages.push({ text: titleOf(nb, file), link: `/examples/${slugOf(file)}` });
       console.log(`  ${slugOf(file)}.md${files.size ? ` (${files.size} images)` : ""}`);
     }
+    writeFileSync(join(out, "pages.json"), `${JSON.stringify(pages, null, 2)}\n`);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

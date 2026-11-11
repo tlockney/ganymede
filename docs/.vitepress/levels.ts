@@ -54,10 +54,11 @@ export function uiUnplaced(pages: string[]): string[] {
 // The sidebar, in reading order: grouped by what the reader is doing,
 // whichever repository a page comes from. config.mts passes it to
 // VitePress, and the theme looks pages up here to find their level. `has`
-// says which of ganymede-ui's pages were copied in; the theme passes
-// nothing and gets them all. Add a group here when its first page exists;
+// says which of ganymede-ui's pages were copied in, and `examples` lists
+// the example pages; the theme passes neither, getting every ganymede-ui
+// page and no example pages. Add a group here when its first page exists;
 // an empty group renders as a dead heading.
-export function groups(has: (name: string) => boolean = () => true): Group[] {
+export function groups(has: (name: string) => boolean = () => true, examples: Page[] = []): Group[] {
   return [
     {
       text: "Get started",
@@ -103,19 +104,14 @@ export function groups(has: (name: string) => boolean = () => true): Group[] {
       ],
     },
     {
-      // Rendered from ganymede-ui's examples/ by `npm run fetch-examples`.
+      // The pages `npm run fetch-examples` rendered; config.mts lists them
+      // from docs/examples/pages.json, since their names come from
+      // ganymede-ui.
       text: "Examples",
       level: "guide",
       items: [
         { text: "All examples", link: "/examples" },
-        { text: "Start Here", link: "/examples/01-start-here" },
-        { text: "Web APIs", link: "/examples/02-web-apis" },
-        { text: "Charts and Diagrams", link: "/examples/03-charts-and-diagrams" },
-        { text: "DuckDB", link: "/examples/04-duckdb" },
-        { text: "Generative Art", link: "/examples/05-generative-art" },
-        { text: "Widgets", link: "/examples/06-widgets" },
-        { text: "UI Frameworks", link: "/examples/07-ui-frameworks" },
-        { text: "Device", link: "/examples/08-device" },
+        ...examples,
       ],
     },
     {
