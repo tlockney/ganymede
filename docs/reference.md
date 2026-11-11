@@ -312,6 +312,30 @@ and gets two more, as under `jupyter_server`:
 | `JPY_PARENT_PID` | The server's process id. |
 | `JPY_SESSION_NAME` | For a kernel started for a notebook (a session): the notebook's path on disk, so code can find the notebook it runs in. A session renamed or moved changes it on the kernel's next restart. For a kernel started on its own: the kernel id. |
 
+### Parameters and named results
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`ganymede execute -p` and `--results` make a notebook a program:
+parameters in, named results out. Neither names a language; any kernel
+that reads the variable and writes the MIME type takes part.
+
+| What | Format |
+| --- | --- |
+| `GANYMEDE_PARAMS` | Set on every kernel `execute` starts: the parameters from `-p` and `--params-file` as one JSON object, at most 32,767 bytes, or `{}` without them, so a kernel never inherits a parent run's. The executed notebook records them in `metadata.ganymede.params`, and a run without them removes that key. |
+| `application/vnd.ganymede.result+json` | A named result: a `display_data` or `execute_result` output whose bundle holds `{ "name": string, "value": JSON }`. Add a `text/plain` entry for frontends that don't know the type. |
+| `application/scrapbook.scrap.json+json`, `application/scrapbook.scrap.text+json` | Python scrapbook's scraps (`sb.glue`), read as named results from their `name` and `data`. |
+
+When a name appears more than once, the last output wins, as in
+scrapbook. `--results` prints one JSON line per notebook: `{"path",
+"status": "ok" | "error", "results": {name: value}, "error"?}`. The
+results come only from cells the run executed, so a failed run reports
+what it published before the failure, never what an earlier run saved in
+later cells or in cells skipped by tag. A run that stops on a signal, or
+whose notebook can't be saved, prints its line and ends the command.
+
 ## Logging
 
 `serve`, `lab` and `ui` log at info level on stderr; `-v` raises it to

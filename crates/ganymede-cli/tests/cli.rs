@@ -337,6 +337,161 @@ fn execute_needs_a_kernel_name() {
 }
 
 #[test]
+fn execute_params_are_recorded_and_results_printed() {
+    // The fake kernel can't read its environment; the real kernels check
+    // that the parameters arrive (tests/kernels.rs).
+    let dir = tempfile::tempdir().unwrap();
+    let nb = dir.path().join("p.ipynb");
+    std::fs::write(
+        &nb,
+        r#"{"nbformat":4,"nbformat_minor":5,"metadata":{"ganymede":{"agent":"x"}},"cells":[
+ {"cell_type":"code","id":"a","metadata":{},"source":"one","outputs":[],"execution_count":null}]}"#,
+    )
+    .unwrap();
+    let file = dir.path().join("params.json");
+    std::fs::write(&file, r#"{"days": 30, "counter": "Fremont"}"#).unwrap();
+    let out_nb = dir.path().join("out.ipynb");
+    let out = run_ok(
+        ganymede(&[
+            "execute",
+            "-k",
+            "fake",
+            "--results",
+            "-p",
+            "counter=2nd Ave",
+        ])
+        .args(["-p", "tags=[1,\"a\"]", "-p", "empty=", "--params-file"])
+        .arg(&file)
+        .arg("-o")
+        .arg(&out_nb)
+        .arg(&nb),
+    );
+    let line: serde_json::Value = serde_json::from_str(stdout(&out).trim()).unwrap();
+    assert_eq!(
+        line,
+        serde_json::json!({ "path": nb.to_string_lossy(), "status": "ok", "results": {} })
+    );
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out_nb).unwrap()).unwrap();
+    assert_eq!(
+        saved["metadata"]["ganymede"],
+        serde_json::json!({
+            "agent": "x",
+            "params": { "days": 30, "counter": "2nd Ave", "tags": [1, "a"], "empty": "" },
+        })
+    );
+
+    // A later run without parameters drops the earlier run's.
+    run_ok(ganymede(&["execute", "-k", "fake", "--inplace"]).arg(&out_nb));
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out_nb).unwrap()).unwrap();
+    assert_eq!(
+        saved["metadata"]["ganymede"],
+        serde_json::json!({ "agent": "x" })
+    );
+
+    // A run whose notebook can't be written still gets a line.
+    let out = ganymede(&["execute", "-k", "fake", "--results", "-o"])
+        .arg(dir.path().join("no/such/dir/out.ipynb"))
+        .arg(&nb)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let line: serde_json::Value = serde_json::from_str(stdout(&out).trim()).unwrap();
+    assert_eq!(line["status"], "error");
+
+    // A notebook that can't be read still gets a line.
+    let missing = dir.path().join("missing.ipynb");
+    let out = ganymede(&["execute", "-k", "fake", "--results"])
+        .arg(&missing)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let line: serde_json::Value = serde_json::from_str(stdout(&out).trim()).unwrap();
+    assert_eq!(line["status"], "error");
+    assert_eq!(line["results"], serde_json::json!({}));
+}
+
+#[test]
+fn execute_results_come_only_from_cells_the_run_executed() {
+    // Saved results from an earlier run: in a cell that runs again (its
+    // outputs are replaced), one skipped by tag, and one after a failure.
+    let dir = tempfile::tempdir().unwrap();
+    let nb = dir.path().join("stale.ipynb");
+    let saved = |name: &str| {
+        serde_json::json!([{ "output_type": "display_data", "metadata": {},
+            "data": { "application/vnd.ganymede.result+json": { "name": name, "value": 1 } } }])
+    };
+    let cell = |id: &str, source: &str, tags: serde_json::Value, name: &str| {
+        serde_json::json!({ "cell_type": "code", "id": id, "metadata": { "tags": tags },
+            "source": source, "execution_count": 1, "outputs": saved(name) })
+    };
+    let doc = |failing: bool| {
+        serde_json::json!({
+            "nbformat": 4, "nbformat_minor": 5, "metadata": {},
+            "cells": [
+                cell("a", "one", serde_json::json!([]), "reran"),
+                cell("b", "two", serde_json::json!(["skip-execution"]), "skipped"),
+                cell("c", if failing { "raise" } else { "two" }, serde_json::json!([]), "failing"),
+                cell("d", "two", serde_json::json!([]), "after"),
+            ],
+        })
+    };
+    for (failing, code) in [(false, 0), (true, 1)] {
+        std::fs::write(&nb, doc(failing).to_string()).unwrap();
+        let out = ganymede(&["execute", "-k", "fake", "--results"])
+            .arg(&nb)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(code), "{}", stderr(&out));
+        let line: serde_json::Value = serde_json::from_str(stdout(&out).trim()).unwrap();
+        assert_eq!(line["results"], serde_json::json!({}), "failing: {failing}");
+    }
+}
+
+#[test]
+fn execute_param_mistakes_are_reported_before_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let nb = fake_notebook(dir.path());
+    let not_object = dir.path().join("list.json");
+    std::fs::write(&not_object, "[1]").unwrap();
+    let big = format!("big={}", "x".repeat(40 * 1024));
+    let cases: Vec<(Vec<&std::ffi::OsStr>, &str, i32)> = vec![
+        (
+            vec!["-p".as_ref(), "novalue".as_ref()],
+            "expected NAME=VALUE",
+            2,
+        ),
+        (vec!["-p".as_ref(), "=x".as_ref()], "expected NAME=VALUE", 2),
+        (
+            vec!["--results".as_ref(), "-o".as_ref(), "-".as_ref()],
+            "both write to stdout",
+            2,
+        ),
+        (
+            vec!["--params-file".as_ref(), not_object.as_os_str()],
+            "must hold a JSON object",
+            1,
+        ),
+        (vec!["-p".as_ref(), big.as_ref()], "limit", 1),
+    ];
+    for (args, says, code) in cases {
+        let out = ganymede(&["execute"])
+            .args(&args)
+            .arg(&nb)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(code), "{args:?}: {}", stderr(&out));
+        assert!(stderr(&out).contains(says), "{args:?}: {}", stderr(&out));
+        assert!(
+            !stderr(&out).contains("executing"),
+            "{args:?} ran: {}",
+            stderr(&out)
+        );
+    }
+}
+
+#[test]
 fn run_with_empty_stdin_is_a_usage_error() {
     for input in ["", "  \n"] {
         let mut child = ganymede(&["run", "-k", "fake"])

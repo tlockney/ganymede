@@ -62,6 +62,9 @@ struct Lang {
     /// Code that hands the kernel's own runtime binding something that is
     /// not JSON, where the language exposes one.
     garbage_binding: Option<&'static str>,
+    /// Publishes `GANYMEDE_PARAMS` as the named result `got`, by hand: a
+    /// raw `application/vnd.ganymede.result+json` output.
+    params_result: &'static str,
 }
 
 const LANGS: &[Lang] = &[
@@ -95,6 +98,7 @@ const LANGS: &[Lang] = &[
         display_update: "console.log('before');\nawait jupyter.display(jupyter.md`one`, { display_id: 'd1' });\nawait jupyter.display(jupyter.md`two`, { display_id: 'd1', update: true });\nconsole.log('after')",
         debug_cell: "const first: number = 20;\nconst second = first + 1;\nsecond * 2",
         garbage_binding: Some("__cdpk_send('not json'); 1"),
+        params_result: "await jupyter.display({ 'application/vnd.ganymede.result+json': { name: 'got', value: JSON.parse(process.env.GANYMEDE_PARAMS ?? '{}') } }, { raw: true })",
     },
     Lang {
         kernel: "python3",
@@ -126,6 +130,7 @@ const LANGS: &[Lang] = &[
         display_update: "from IPython.display import display, Markdown\nprint('before')\nh = display(Markdown('one'), display_id='d1')\nh.update(Markdown('two'))\nprint('after')",
         debug_cell: "first = 20\nsecond = first + 1\nsecond * 2",
         garbage_binding: None,
+        params_result: "import os, json\nfrom IPython.display import display\ndisplay({'application/vnd.ganymede.result+json': {'name': 'got', 'value': json.loads(os.environ.get('GANYMEDE_PARAMS', '{}'))}}, raw=True)",
     },
 ];
 
@@ -805,6 +810,48 @@ fn cli_run_reports_and_exits_by_status() {
         let v: Value = serde_json::from_str(stdout(&out).trim()).unwrap();
         assert_eq!(v["status"], "ok");
         assert_eq!(v["outputs"][0]["output_type"], "execute_result");
+    }
+}
+
+#[test]
+fn cli_execute_passes_params_and_prints_results() {
+    for l in langs() {
+        let dir = tempfile::tempdir().unwrap();
+        let nb = dir.path().join("p.ipynb");
+        let doc = json!({
+            "nbformat": 4, "nbformat_minor": 5,
+            "metadata": { "kernelspec": { "name": l.kernel, "display_name": l.kernel, "language": l.language } },
+            "cells": [{ "cell_type": "code", "id": "a", "metadata": {}, "source": l.params_result, "outputs": [], "execution_count": null }],
+        });
+        std::fs::write(&nb, doc.to_string()).unwrap();
+        let out = run_ok(
+            ganymede(&[
+                "execute",
+                "-q",
+                "--results",
+                "-p",
+                "counter=2nd Ave",
+                "-p",
+                "days=7",
+            ])
+            .arg(&nb),
+        );
+        let line: Value = serde_json::from_str(stdout(&out).trim()).unwrap();
+        assert_eq!(
+            line["results"],
+            json!({ "got": { "counter": "2nd Ave", "days": 7 } }),
+            "{}",
+            l.kernel
+        );
+
+        // Without -p the kernel gets `{}`, not a parent run's parameters.
+        let out = run_ok(
+            ganymede(&["execute", "-q", "--results"])
+                .env("GANYMEDE_PARAMS", r#"{"leaked":1}"#)
+                .arg(&nb),
+        );
+        let line: Value = serde_json::from_str(stdout(&out).trim()).unwrap();
+        assert_eq!(line["results"], json!({ "got": {} }), "{}", l.kernel);
     }
 }
 
