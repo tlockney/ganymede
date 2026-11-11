@@ -12,6 +12,10 @@
 //! Only renames and deletes made through the server move or drop ids
 //! ([`FileIds::moved`], [`FileIds::removed`]); a file moved by another
 //! program gets a new id when it is next opened.
+//!
+//! The host API's per-notebook grants live here too, keyed by file id
+//! ([`FileIds::grant`], [`FileIds::set_grant`]), so they follow a rename
+//! and go with a delete. The store keeps them as opaque JSON text.
 
 use crate::path_under as under;
 use std::collections::HashMap;
@@ -35,6 +39,8 @@ struct Store {
 struct Memory {
     by_path: HashMap<String, String>,
     by_id: HashMap<String, String>,
+    /// Grants by id, for ids kept in memory.
+    grants: HashMap<String, String>,
 }
 
 impl Memory {
@@ -69,6 +75,8 @@ impl Memory {
     fn removed(&mut self, path: &str) {
         self.by_path.retain(|p, _| under(p, path).is_none());
         self.by_id.retain(|_, p| under(p, path).is_none());
+        let by_id = &self.by_id;
+        self.grants.retain(|id, _| by_id.contains_key(id));
     }
 }
 
@@ -190,6 +198,66 @@ impl FileIds {
         None
     }
 
+    /// The grant stored for file id `id`: JSON text, as
+    /// [`FileIds::set_grant`] stored it.
+    pub fn grant(&self, id: &str) -> Option<String> {
+        let store = &*self.lock();
+        if let Some(g) = store.memory.grants.get(id) {
+            return Some(g.clone());
+        }
+        #[cfg(feature = "sqlite")]
+        if let Some((db, _)) = &store.db {
+            return sqlite::grant(db, id).unwrap_or_else(|e| {
+                tracing::warn!("grant for file id {id}: {e}");
+                None
+            });
+        }
+        None
+    }
+
+    /// Store `grant` for file id `id`, or remove it with `None`. Fails
+    /// only when the database does; an id kept in memory keeps its grant
+    /// in memory.
+    pub fn set_grant(&self, id: &str, grant: Option<&str>) -> Result<(), String> {
+        let store = &mut *self.lock();
+        if store.memory.by_id.contains_key(id) {
+            match grant {
+                Some(g) => store.memory.grants.insert(id.to_string(), g.to_string()),
+                None => store.memory.grants.remove(id),
+            };
+            return Ok(());
+        }
+        #[cfg(feature = "sqlite")]
+        if let Some((db, _)) = &store.db {
+            return sqlite::set_grant(db, id, grant).map_err(|e| e.to_string());
+        }
+        match grant {
+            Some(g) => store.memory.grants.insert(id.to_string(), g.to_string()),
+            None => store.memory.grants.remove(id),
+        };
+        Ok(())
+    }
+
+    /// Every stored grant under this root: `(path, grant)`, by path.
+    pub fn grants(&self) -> Vec<(String, String)> {
+        let store = &*self.lock();
+        let mut all: Vec<(String, String)> = store
+            .memory
+            .grants
+            .iter()
+            .filter_map(|(id, g)| Some((store.memory.by_id.get(id)?.clone(), g.clone())))
+            .collect();
+        #[cfg(feature = "sqlite")]
+        if let Some((db, root)) = &store.db {
+            match sqlite::grants(db, root) {
+                Ok(rows) => all.extend(rows),
+                Err(e) => tracing::warn!("listing grants: {e}"),
+            }
+        }
+        all.sort();
+        all
+    }
+
     /// `old` (a file, or a directory and everything under it) is now
     /// `new`; ids follow.
     pub fn moved(&self, old: &str, new: &str) {
@@ -237,6 +305,11 @@ mod sqlite {
                 root text NOT NULL,
                 path text NOT NULL,
                 UNIQUE (root, path)
+            );
+            CREATE TABLE IF NOT EXISTS host_grants
+            (
+                id text PRIMARY KEY,
+                grant_json text NOT NULL
             );",
         )?;
         Ok(db)
@@ -302,10 +375,44 @@ mod sqlite {
 
     pub fn removed(db: &Connection, root: &str, path: &str) -> rusqlite::Result<()> {
         db.execute(
+            &format!("DELETE FROM host_grants WHERE id IN (SELECT id FROM file_ids WHERE {UNDER})"),
+            params![root, path],
+        )?;
+        db.execute(
             &format!("DELETE FROM file_ids WHERE {UNDER}"),
             params![root, path],
         )?;
         Ok(())
+    }
+
+    pub fn grant(db: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
+        db.query_row(
+            "SELECT grant_json FROM host_grants WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()
+    }
+
+    pub fn set_grant(db: &Connection, id: &str, grant: Option<&str>) -> rusqlite::Result<()> {
+        match grant {
+            Some(g) => db.execute(
+                "INSERT INTO host_grants (id, grant_json) VALUES (?1, ?2)
+                ON CONFLICT (id) DO UPDATE SET grant_json = excluded.grant_json",
+                params![id, g],
+            )?,
+            None => db.execute("DELETE FROM host_grants WHERE id = ?1", params![id])?,
+        };
+        Ok(())
+    }
+
+    pub fn grants(db: &Connection, root: &str) -> rusqlite::Result<Vec<(String, String)>> {
+        let mut q = db.prepare(
+            "SELECT f.path, g.grant_json FROM host_grants g JOIN file_ids f ON f.id = g.id
+            WHERE f.root = ?1",
+        )?;
+        let rows = q.query_map(params![root], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
     }
 }
 
@@ -347,6 +454,29 @@ mod tests {
     #[test]
     fn in_memory_ids_follow_moves() {
         exercise(&FileIds::in_memory());
+        grants_follow_moves(&FileIds::in_memory());
+    }
+
+    fn grants_follow_moves(ids: &FileIds) {
+        let (a, _) = ids.index("dir/a.ipynb");
+        let (b, _) = ids.index("b.ipynb");
+        ids.set_grant(&a, Some(r#"{"run":[""]}"#)).unwrap();
+        ids.set_grant(&b, Some("{}")).unwrap();
+        ids.set_grant(&b, Some(r#"{"edit_self":false}"#)).unwrap();
+        assert_eq!(ids.grant(&a).as_deref(), Some(r#"{"run":[""]}"#));
+        ids.moved("dir", "moved");
+        assert_eq!(
+            ids.grants(),
+            [
+                ("b.ipynb".to_string(), r#"{"edit_self":false}"#.to_string()),
+                ("moved/a.ipynb".to_string(), r#"{"run":[""]}"#.to_string()),
+            ]
+        );
+        ids.removed("moved");
+        assert_eq!(ids.grant(&a), None);
+        ids.set_grant(&b, None).unwrap();
+        assert_eq!(ids.grant(&b), None);
+        assert!(ids.grants().is_empty());
     }
 
     #[cfg(feature = "sqlite")]
@@ -365,6 +495,19 @@ mod tests {
         let other = FileIds::open(&db, Path::new("/root2"));
         assert_eq!(other.path(&id), None);
         assert!(other.index("x.ipynb").1);
+
+        grants_follow_moves(&FileIds::open(&db, Path::new("/root3")));
+        // Grants persist, and list only under their own root.
+        let ids = FileIds::open(&db, Path::new("/root1"));
+        ids.set_grant(&id, Some("{}")).unwrap();
+        drop(ids);
+        assert_eq!(
+            FileIds::open(&db, Path::new("/root1"))
+                .grant(&id)
+                .as_deref(),
+            Some("{}")
+        );
+        assert!(other.grants().is_empty());
     }
 
     /// Two servers on one root index the same new path: both get the id

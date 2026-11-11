@@ -210,6 +210,12 @@ impl Collab {
             .expect("file ids task")
     }
 
+    /// The host API grant stored for the notebook at `path`, if any.
+    pub async fn grant(&self, path: &str) -> Option<String> {
+        let path = path.to_string();
+        self.with_ids(move |ids| ids.grant(&ids.get(&path)?)).await
+    }
+
     /// The id for `path`, made the first time; and whether it was new.
     async fn index(&self, path: &str) -> (String, bool) {
         let path = path.to_string();

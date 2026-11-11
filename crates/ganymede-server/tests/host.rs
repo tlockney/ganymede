@@ -46,6 +46,13 @@ impl TransportFactory for FakeTransports {
     }
 }
 
+/// The file ids for `root`, in a database in it.
+fn file_ids(root: &std::path::Path) -> ganymede_contents::FileIds {
+    let root = root.canonicalize().unwrap();
+    let db = root.join(".ids.db");
+    ganymede_contents::FileIds::open(&db, &root)
+}
+
 fn state(root: &std::path::Path) -> AppState {
     state_with(root, Arc::new(FakeProvisioner), Arc::new(FakeTransports))
 }
@@ -94,8 +101,10 @@ fn state_with(
         static_dir: None,
         static_headers: Arc::new([]),
         frame_ancestors: ganymede_server::frame_ancestors_directive("'self'").unwrap(),
+        // File ids in a database, as the server keeps them, so a test can
+        // store a grant from outside, as `ganymede grant` does.
         collab: Arc::new(ganymede_server::collab::Collab::new(
-            ganymede_contents::FileIds::in_memory(),
+            file_ids(root),
             root.canonicalize().ok(),
         )),
         terminals: None,
@@ -373,6 +382,73 @@ async fn results_come_from_a_notebooks_outputs_under_the_read_grant() {
         .await
         .unwrap_err();
     assert_eq!(err.code, "denied");
+}
+
+#[tokio::test]
+async fn a_notebooks_own_grant_replaces_the_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let (api, caller) = setup(dir.path(), "index.ipynb", &[""]).await;
+    let read = |path: &'static str| {
+        let (api, caller) = (&api, &caller);
+        async move {
+            api.call(caller, "notebooks.read", json!({ "path": path }))
+                .await
+                .map(|_| ())
+                .map_err(|e| e.code)
+        }
+    };
+    assert_eq!(read("journal-private/p.ipynb").await, Ok(()));
+
+    // As `ganymede grant index.ipynb read=journal edit_self=false` stores it.
+    let ids = file_ids(dir.path());
+    let (id, _) = ids.index("index.ipynb");
+    ids.set_grant(&id, Some(r#"{"read":["journal"],"edit_self":false}"#))
+        .unwrap();
+    assert_eq!(read("journal-private/p.ipynb").await, Err("denied"));
+    assert_eq!(read("journal/a.ipynb").await, Ok(()));
+    assert_eq!(read("index.ipynb").await, Ok(()));
+    assert!(!api
+        .hello(&caller)
+        .await
+        .methods
+        .iter()
+        .any(|m| m.starts_with("self.")));
+    let err = api
+        .call(&caller, "self.add", json!({"source": "x"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "denied");
+    assert!(err.message.contains("edit_self"), "{}", err.message);
+
+    // The grant follows a rename made through the server.
+    ids.moved("index.ipynb", "home.ipynb");
+    std::fs::rename(
+        dir.path().join("index.ipynb"),
+        dir.path().join("home.ipynb"),
+    )
+    .unwrap();
+    let (api, caller) = setup(dir.path(), "home.ipynb", &[""]).await;
+    let err = api
+        .call(
+            &caller,
+            "notebooks.read",
+            json!({"path": "journal-private/p.ipynb"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "denied");
+
+    // Removed, the defaults apply again.
+    ids.set_grant(&id, None).unwrap();
+    assert!(api
+        .call(
+            &caller,
+            "notebooks.read",
+            json!({"path": "journal-private/p.ipynb"})
+        )
+        .await
+        .is_ok());
 }
 
 fn paths_of(v: &Value, key: &str) -> Vec<String> {
