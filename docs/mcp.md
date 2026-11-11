@@ -249,7 +249,8 @@ ganymede mcp call notebook_publish '{"path": "journal/2026-11-09-oklahoma-quakes
 
 ![A journal published as a page: contents on the left, a step recorded outside the kernel, a section heading, and a chart with its code folded above it](images/publish/journal-page.png)
 
-The page has the notebook's first `# ` heading as its title, a table of
+The page has a `# ` heading at the top of the first cell as its title
+(else the notebook's name), a table of
 contents from its `## ` headings, Markdown cells as prose, and charts,
 images and tables inline. Each code cell's code is folded above its
 output (`code: "shown"` shows it, `"hidden"` leaves it out). In a
@@ -263,7 +264,8 @@ notebook's content:
 - cell sources and outputs, and no metadata beyond the kernel's name and
   who kept the journal: no provenance history, ids or signatures
 - the server root's absolute path becomes `.`, the home directory `~`,
-  and the token `[token]`, wherever they stand as a whole name (not
+  and the token `[token]` (when it has 8 characters or more; a shorter
+  one is left as it is), wherever they stand as a whole name (not
   `/home/tommy` for `/home/tom`), each directory as given and resolved
 - no network requests: images are embedded, a Markdown image from
   elsewhere becomes a link, and HTML outputs run under a policy that
@@ -282,7 +284,8 @@ notebook first if its outputs may be stale. Not in read-only mode.
 
 The same page comes from `ganymede nb publish NOTEBOOK` (with `--code`,
 `--byline` and `-o`; it replaces the home directory and the notebook's
-directory) and from `GET /nbconvert/html/{path}`, JupyterLab's **Save and
+directory, and writes `<name>.html` beside the notebook by default,
+replacing a file there as `jupyter nbconvert` does) and from `GET /nbconvert/html/{path}`, JupyterLab's **Save and
 Export Notebook As > HTML**.
 
 ## Changes by others

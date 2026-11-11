@@ -129,7 +129,8 @@ Edit.
     belongs in the notebook, then publish again.
 21. Before you host it anywhere, read the notebook once for what
     shouldn't leave the machine. The server replaces its root path, the
-    home directory and its token, but not other hosts, names or values
+    home directory and its token (if 8 characters or more), but not
+    other hosts, names or values
     a cell printed: clear those outputs (`cell_clear_outputs`) and
     publish again. `notebook_publish` needs a Ganymede newer than
     0.8.0 (`ganymede nb publish <notebook>` makes the same page from

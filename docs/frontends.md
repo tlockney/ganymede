@@ -182,8 +182,8 @@ first.
 - **HTML**: one self-contained page to read and share, in Ganymede's own
   design rather than nbconvert's templates; see
   [Publishing a notebook](mcp.md#publishing-a-notebook). The server root's
-  path, the home directory and the token are replaced wherever they
-  appear.
+  path, the home directory and a token of 8 characters or more are
+  replaced wherever they appear.
 
 The exports are `GET /nbconvert/{format}/{path}`, with `?download=true`
 for a download, and `/api/nbconvert` lists the formats. PDF, LaTeX, and

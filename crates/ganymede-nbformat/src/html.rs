@@ -392,14 +392,23 @@ impl<'a> Page<'a> {
     /// for cells (`sections`), headings given ids and listed in the
     /// contents. Headings start at `<h2>`, under the page title.
     fn markdown(&mut self, source: &str, sections: bool) -> String {
-        let options =
-            Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+        let options = Options::ENABLE_TABLES
+            | Options::ENABLE_STRIKETHROUGH
+            | Options::ENABLE_TASKLISTS
+            | Options::ENABLE_MATH;
         let mut events: Vec<Event> = Vec::new();
         // For each open image: whether it was turned into a link.
         let mut images: Vec<bool> = Vec::new();
         let mut heading: Option<(usize, String)> = None;
         for event in Parser::new_ext(source, options) {
             let event = match event {
+                // The page can't typeset TeX (no network), so it keeps
+                // the source intact as code.
+                Event::InlineMath(m) => Event::Code(m),
+                Event::DisplayMath(m) => Event::InlineHtml(CowStr::from(format!(
+                    "<code class=\"math\">{}</code>",
+                    esc(&m)
+                ))),
                 Event::Html(h) | Event::InlineHtml(h) => match inline_img(&h) {
                     Some(img) => Event::InlineHtml(CowStr::from(img)),
                     None => Event::Text(h),
@@ -650,7 +659,7 @@ fn replace_bounded(s: &str, text: &str, with: &str) -> String {
             Some('.') => !next.next().is_some_and(name_char),
             Some(c) => !name_char(c),
         };
-        let starts = !before.is_some_and(name_char) || text.starts_with(|c: char| !name_char(c));
+        let starts = !before.is_some_and(name_char);
         out.push_str(&rest[..at]);
         if ends && starts {
             out.push_str(with);
@@ -826,10 +835,12 @@ fn inline_img(html: &str) -> Option<String> {
             if !lower[..at].ends_with(char::is_whitespace) {
                 continue;
             }
-            let rest = tag[at + name.len()..]
-                .trim_start()
-                .strip_prefix('=')?
-                .trim_start();
+            // `srcset` when looking for `src`: try the next one.
+            let Some(rest) = tag[at + name.len()..].trim_start().strip_prefix('=') else {
+                continue;
+            };
+            let rest = rest.trim_start();
+            // Unquoted values aren't read; such a tag shows as text.
             let quote = rest.chars().next().filter(|c| *c == '"' || *c == '\'')?;
             let value = &rest[1..];
             return Some(value[..value.find(quote)?].to_owned());
@@ -1263,11 +1274,15 @@ mod tests {
                 "/home/tom",
                 "~"
             ),
-            "~/a /home/tommy/b ~. /home/tom.bak x~"
+            "~/a /home/tommy/b ~. /home/tom.bak x/home/tom"
         );
         assert_eq!(
             replace_bounded("tok123 xtok1234", "tok123", "[t]"),
             "[t] xtok1234"
+        );
+        assert_eq!(
+            replace_bounded("/mnt/srv/nb/x (/srv/nb/y) file:///srv/nb", "/srv/nb", "."),
+            "/mnt/srv/nb/x (./y) file://."
         );
         for root in ["/", "//", "C:\\", "\\", ""] {
             assert!(is_root_like(root), "{root}");
@@ -1307,7 +1322,7 @@ mod tests {
     #[test]
     fn raw_img_attachments_and_data_svg() {
         let n = nb(json!([{"cell_type": "markdown", "metadata": {}, "source":
-            "<img src=\"attachment:a.png\" width=\"40\" onerror=\"x()\">\n\n![s](data:image/svg+xml,%3Csvg%3E)\n\n[^1] footnote",
+            "<img srcset=\"b.png 2x\" src=\"attachment:a.png\" width=\"40\" onerror=\"x()\">\n\n![s](data:image/svg+xml,%3Csvg%3E)\n\n[^1] footnote",
             "attachments": {"a.png": {"image/png": "iVBORw0KGgo="}}}]));
         let page = html(&n, &HtmlOptions::default());
         assert!(
@@ -1317,6 +1332,15 @@ mod tests {
         assert!(!page.contains("onerror"));
         assert!(page.contains("<img src=\"data:image/svg+xml,%3Csvg%3E\""));
         assert!(!page.contains("footnote-definition") && !page.contains("id=\"1\""));
+        let n = nb(
+            json!([{"cell_type": "markdown", "metadata": {}, "source": "$a*b + c*d$ and\n\n$$x_1 < y$$"}]),
+        );
+        let page = html(&n, &HtmlOptions::default());
+        assert!(page.contains("<code>a*b + c*d</code>"), "{page}");
+        assert!(
+            page.contains("<code class=\"math\">x_1 &lt; y</code>"),
+            "{page}"
+        );
     }
 
     #[test]
