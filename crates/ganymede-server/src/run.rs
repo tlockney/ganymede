@@ -220,10 +220,8 @@ pub async fn run_notebook(
     let outcome = tokio::time::timeout(limit, async {
         let kernel = state.kernels.wait_started(&model.id).await;
         if let Err(e) = kernel {
-            return Err(format!(
-                "the kernel {kernel_name} failed to start: {}",
-                e.message
-            ));
+            // `e` says which kernel and, when its boot failed, why.
+            return Err(format!("{kernel_name}: {}", e.message));
         }
         let session = state
             .kernels
