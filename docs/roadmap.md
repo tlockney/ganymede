@@ -89,7 +89,7 @@ pull request with a GitHub issue, and records what it learned in the
   own, through the host comm: `notebooks.list`, `read`, `search`,
   `results` and `run`, and `self.*`, under per-notebook grants set with
   `ganymede grant`, the grants route, or the apps' Notebook Access sheet
-  (Unreleased in ganymede-ui)
+  <!-- **Unreleased in ganymede-ui.** The Notebook Access sheet ships in ganymede-ui's release after 0.7.0. -->
   ([A host API for kernels](host-api.md)).
 - **In-app kernels as server kernels.** Ganymede's C functions let an
   app register its own kernels with the embedded server
