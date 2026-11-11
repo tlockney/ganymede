@@ -11,7 +11,8 @@ publishes, and skips `main-build`.
 Two things change with it. A release build must not be cancelled by the
 next push, so release runs leave the shared `main` concurrency group.
 And only the commit that changed the version is a release run (it
-compares `HEAD^`'s workspace version): a merge that lands before the
+compares the workspace version with the commit `main` was at before the
+push): a merge that lands before the
 release publishes must not ship under notes that don't list it, nor
 drop out of the next release's notes. A failed release is rerun, or
 released from `tag-release.yml` by hand. The publish step makes the tag

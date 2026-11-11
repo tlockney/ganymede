@@ -379,8 +379,8 @@ install the latest build of `main` with `--main`:
 curl -fsSL https://ganymede-server.com/install.sh | sh -s -- --main
 ```
 
-Every push to `main` that changes code builds the release targets and
-replaces the files of the
+Every push to `main` that changes code, other than a release commit,
+builds the release targets and replaces the files of the
 [`main-build`](https://github.com/tlockney/ganymede/releases/tag/main-build)
 prerelease. Its `ganymede --version` names the commit, such as
 `ganymede 0.5.0+main.0123456789ab`. The archives are named

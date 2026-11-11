@@ -29,9 +29,11 @@ partway through.
    doc there when it starts naming the release. The script also refreshes
    `e2e/wasm-smoke/Cargo.lock`, a separate workspace's lockfile that
    names each crate's version.
-2. Merging that pull request (with CI green; branch protection on `main`
-   is what guarantees this, since `release.yml` does not check CI
-   itself) starts `release.yml` on the main push. Its `version` job sees
+2. Merging that pull request with a squash merge (with CI green; branch
+   protection on `main` is what guarantees this, since `release.yml`
+   does not check CI itself) starts `release.yml` on the main push. A
+   squash makes the release one commit, which both `release.yml` and
+   `tag-release.yml` recognize. Its `version` job sees
    a workspace version that has a `CHANGELOG.md` section and no tag, so
    this run is the release: it builds the commit once, as `X.Y.Z` rather
    than a main build, and tags it `vX.Y.Z` when it publishes. It does
@@ -171,5 +173,8 @@ gh run rerun <run-id> --failed --repo tlockney/ganymede
 ```
 
 A rerun of only the failed job reuses the archives the build jobs already
-uploaded, so it attests the same files again, which is harmless. A fresh
-run rebuilds them, and the new archives get their own attestations.
+uploaded, so it attests the same files again, which is harmless. For a
+release published from the main push, rerun only the failed jobs: a
+fresh run of every job finds the tag, becomes a main build and publishes
+nothing. To rebuild instead, run `tag-release.yml`, which releases from
+the tag.

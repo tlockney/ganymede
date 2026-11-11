@@ -10,7 +10,7 @@ name: Tag release
 # starts no workflow by itself, so the release is dispatched explicitly.
 
 on:
-  # Run on main only: it tags the head of the branch it runs on.
+  # Run on main only: it tags the release commit, or `commit`, on main.
   workflow_dispatch:
     inputs:
       commit:
@@ -44,7 +44,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           COMMIT: ${{ inputs.commit }}
         run: |
-          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          # The workspace version in commit $1's Cargo.toml.
+          v() { git show "$1:Cargo.toml" 2> /dev/null | sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p'; }
+          version=$(v HEAD)
           test -n "$version"
           tag="v$version"
           if ! grep -q "^## \[$version\]" CHANGELOG.md; then
@@ -54,12 +56,12 @@ jobs:
           if [[ -n "$COMMIT" ]]; then
             target=$(git rev-parse --verify "$COMMIT^{commit}")
             git merge-base --is-ancestor "$target" HEAD || { echo "::error::$COMMIT is not on main"; exit 1; }
+            [[ "$(v "$target")" == "$version" ]] || { echo "::error::$COMMIT's version is not $version"; exit 1; }
           else
             # The newest first-parent commit on main whose Cargo.toml has
             # this version and whose parent's doesn't.
             target=
             for c in $(git rev-list --first-parent HEAD -- Cargo.toml); do
-              v() { git show "$1:Cargo.toml" 2> /dev/null | sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p'; }
               if [[ "$(v "$c")" == "$version" && "$(v "$c^")" != "$version" ]]; then
                 target=$c
                 break
