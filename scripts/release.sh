@@ -171,6 +171,6 @@ fi
 gh pr create --base main --head "$branch" --title "Release v$version" \
   --body "Closes #${issue##*/}
 
-Bumps the workspace to $version and updates CHANGELOG.md. Merging tags v$version, which publishes the release.
+Bumps the workspace to $version and updates CHANGELOG.md. Squash-merge it: the merge's push to main publishes v$version and tags it.
 
 $(git log -1 --format=%b)${unreleased_body:-}"
