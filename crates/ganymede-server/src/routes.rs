@@ -293,7 +293,7 @@ pub(crate) fn server_redactions(s: &AppState) -> Vec<(String, String)> {
     publish_redactions(s.collab.root(), s.token.as_deref())
 }
 
-/// [`server_redactions`] for a given root (`.`) and token (`[token]`),
+/// The server's redactions for a given root (`.`) and token (`[token]`),
 /// with the home directory (`~`): `ganymede nb publish` passes the
 /// notebook's directory. Each directory goes in both as given and
 /// resolved, since outputs show whichever the kernel saw (on macOS a
