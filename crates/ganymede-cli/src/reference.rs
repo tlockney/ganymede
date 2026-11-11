@@ -33,11 +33,25 @@ fn flag(arg: &clap::Arg) -> String {
     if let Some(short) = arg.get_short() {
         names.push(format!("`-{short}`"));
     }
+    // A value that may be left out shows as `[<NAME>]`, as in `--help`.
+    let optional = arg.get_num_args().is_some_and(|n| n.min_values() == 0);
     let value = match arg.get_action() {
-        ArgAction::Set | ArgAction::Append => arg
-            .get_value_names()
-            .map(|v| v.iter().map(|n| format!(" <{n}>")).collect::<String>())
-            .unwrap_or_else(|| format!(" <{}>", arg.get_id().as_str().to_uppercase())),
+        ArgAction::Set | ArgAction::Append => {
+            let names = arg
+                .get_value_names()
+                .map(|v| {
+                    v.iter()
+                        .map(|n| format!("<{n}>"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_else(|| format!("<{}>", arg.get_id().as_str().to_uppercase()));
+            if optional {
+                format!(" [{names}]")
+            } else {
+                format!(" {names}")
+            }
+        }
         _ => String::new(),
     };
     names.push(format!("`--{}{value}`", arg.get_long().unwrap_or_default()));

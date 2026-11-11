@@ -115,7 +115,7 @@ the [flags for every command](#flags-for-every-command) and the
 | Flag | Effect |
 | --- | --- |
 | `-k`, `--kernel <KERNEL>` | Kernelspec name, or `fake`. |
-| `--existing <CONNECTION_FILE>` | Connection file of a running kernel instead of launching one. A bare name such as `kernel-<id>.json` or `<id>` is also looked for in the Jupyter runtime dir; with no value, the newest kernel there. |
+| `--existing [<CONNECTION_FILE>]` | Connection file of a running kernel instead of launching one. A bare name such as `kernel-<id>.json` or `<id>` is also looked for in the Jupyter runtime dir; with no value, the newest kernel there. |
 | `--cwd <CWD>` | Working directory for a launched kernel. |
 | `-f`, `--file <FILE>` | File whose contents are one cell. Repeatable; runs after CODE. |
 | `--json` | Print one JSON object per cell (status, count, nbformat outputs) instead of rendering output. A cell that could not finish (a timeout, a dead kernel) gets `"status": "incomplete"` and an `error`. The kernel's input requests get an empty reply. |
@@ -128,7 +128,7 @@ the [flags for every command](#flags-for-every-command) and the
 | Flag | Effect |
 | --- | --- |
 | `-k`, `--kernel <KERNEL>` | Kernelspec name, or `fake`. |
-| `--existing <CONNECTION_FILE>` | Connection file of a running kernel instead of launching one. A bare name such as `kernel-<id>.json` or `<id>` is also looked for in the Jupyter runtime dir; with no value, the newest kernel there. |
+| `--existing [<CONNECTION_FILE>]` | Connection file of a running kernel instead of launching one. A bare name such as `kernel-<id>.json` or `<id>` is also looked for in the Jupyter runtime dir; with no value, the newest kernel there. |
 | `--cwd <CWD>` | Working directory for a launched kernel. |
 
 ### `execute`
