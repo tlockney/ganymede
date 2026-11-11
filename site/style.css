@@ -13,11 +13,7 @@
   --code-string: #032f62;
   --code-type: #6f42c1;
   --inline-code-bg: rgba(142, 150, 170, 0.14);
-  --lvl-intro: #18794e;
-  --lvl-intro-bg: rgba(24, 121, 78, 0.14);
   --accent-soft: rgba(46, 110, 100, 0.14);
-  --lvl-adv: #6f42c1;
-  --lvl-adv-bg: rgba(111, 66, 193, 0.14);
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
 }
@@ -40,11 +36,7 @@
     --code-string: #9ecbff;
     --code-type: #b392f0;
     --inline-code-bg: rgba(101, 117, 133, 0.16);
-    --lvl-intro: #3dd68c;
-    --lvl-intro-bg: rgba(16, 185, 129, 0.16);
     --accent-soft: rgba(90, 168, 155, 0.16);
-    --lvl-adv: #c8abfa;
-    --lvl-adv-bg: rgba(159, 122, 234, 0.16);
   }
 }
 :root[data-theme="dark"] {
@@ -61,11 +53,7 @@
   --code-string: #9ecbff;
   --code-type: #b392f0;
   --inline-code-bg: rgba(101, 117, 133, 0.16);
-  --lvl-intro: #3dd68c;
-  --lvl-intro-bg: rgba(16, 185, 129, 0.16);
   --accent-soft: rgba(90, 168, 155, 0.16);
-  --lvl-adv: #c8abfa;
-  --lvl-adv-bg: rgba(159, 122, 234, 0.16);
 }
 
 * { box-sizing: border-box; }
@@ -79,7 +67,7 @@ body {
 a { color: var(--accent); }
 code { font-family: var(--mono); font-size: 0.875em; }
 :not(pre) > code { padding: 3px 6px; border-radius: 4px; background: var(--inline-code-bg); color: var(--accent); }
-h3 > code, .rt code { color: inherit; }
+h3 > code { color: inherit; }
 h1, h2, h3 { line-height: 1.2; }
 h2 { font-size: 1.6rem; margin: 0 0 0.75rem; }
 h3 { font-size: 1.05rem; margin: 0 0 0.4rem; }
@@ -165,12 +153,6 @@ pre code { font-size: inherit; }
 .grid p { margin: 0; color: var(--fg-soft); font-size: 0.95rem; }
 
 .sub { color: var(--fg-soft); margin: 0 0 20px; }
-.rt { width: 100%; border-collapse: collapse; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
-.rt th, .rt td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
-.rt th { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-soft); }
-.rt td:first-child { font-family: var(--mono); font-weight: 600; white-space: nowrap; }
-.rt tr:last-child td { border-bottom: 0; }
-.more { margin-top: 16px; }
 
 /* A notebook cell as the docs show one: a code block with its output under
    it, behind a tinted rule (docs/.vitepress/theme/custom.css, .nb-*). */
@@ -178,24 +160,9 @@ pre code { font-size: inherit; }
 .nb-code { position: relative; }
 .nb-lang { position: absolute; top: 2px; right: 8px; font: 0.75rem var(--mono); color: var(--code-comment); }
 .nb-out { margin-top: 12px; padding: 4px 0 4px 16px; border-left: 3px solid var(--accent-soft); }
+.nb .nb-code + .nb-code { margin-top: 12px; }
 .nb figcaption { margin-top: 12px; font-size: 0.8rem; color: var(--fg-soft); }
 
-.paths .path { display: block; border: 1px solid var(--line); border-radius: 8px; padding: 20px; background: var(--bg); color: var(--fg); text-decoration: none; }
-.paths .path:hover { border-color: var(--accent); }
-.lvl {
-  display: inline-block;
-  margin-bottom: 10px;
-  padding: 1px 9px;
-  border-radius: 999px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-}
-/* The docs' level badges (docs/.vitepress/theme/custom.css). */
-.lvl.intro { color: var(--lvl-intro); background: var(--lvl-intro-bg); }
-.lvl.guide { color: var(--accent); background: var(--accent-soft); }
-.lvl.adv { color: var(--lvl-adv); background: var(--lvl-adv-bg); }
 .diagram { display: block; width: 100%; height: auto; margin: 0 0 24px; border-radius: 8px; }
 /* Diagrams come in a light and a dark copy, built from docs/images/ by the
    docs build (docs/.vitepress/themed.ts); show the one for the theme. */
@@ -215,8 +182,6 @@ footer { border-top: 1px solid var(--line); padding: 28px 0; color: var(--fg-sof
   .two { grid-template-columns: minmax(0, 1fr); gap: 24px; }
   .grid { grid-template-columns: 1fr; }
   section { padding: 44px 0; }
-  .rt td:first-child { white-space: normal; overflow-wrap: anywhere; }
-  .rt th:last-child, .rt td:last-child { display: none; }
   .nav nav { gap: 14px; }
   .nav nav a[href^="#"] { display: none; }
 }
@@ -250,3 +215,7 @@ footer { border-top: 1px solid var(--line); padding: 28px 0; color: var(--fg-sof
 }
 /* The Mac window is captured with its own rounded corners and no shadow. */
 .app-mac img { border: 0; border-radius: 10px; box-shadow: 0 12px 40px rgb(0 0 0 / 0.18); }
+
+/* The command-line install, under the Jupyter section. */
+#install { margin-top: 40px; }
+#install h3 { margin-bottom: 12px; }
