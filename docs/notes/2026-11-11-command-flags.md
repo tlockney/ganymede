@@ -20,3 +20,11 @@ reference.md (the config file, the host API, exit status) is prose that
 reads better written by hand. scripts/ci-changes.sh now counts
 docs/reference.md as code, so a docs PR that edits the section by hand
 runs the test.
+
+Review fix: the first version left seven flags out. It dropped `serve`'s
+flags from every command, not only from `lab` and `ui`, which take them
+all, so `grant --root-dir`, the `mcp` flags and `trust --notary-dir`
+went missing. It also dropped every flag named `--version`, which took
+`lab install --version` and `ui install --version` with clap's own.
+Now only `lab` and `ui` skip the server flags, and only clap's help and
+version actions are skipped.

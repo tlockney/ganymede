@@ -64,12 +64,21 @@ fn effect(arg: &clap::Arg) -> String {
     cell(&text)
 }
 
+/// Commands that take every `serve` flag.
+fn flattens_server(path: &str) -> bool {
+    path == "lab" || path == "ui"
+}
+
 fn walk(cmd: &Command, path: &str, server: &[String], out: &mut String) {
     let flags: Vec<_> = cmd
         .get_arguments()
         .filter(|a| !a.is_hide_set() && a.get_long().is_some())
-        .filter(|a| !matches!(a.get_long(), Some("help" | "version")))
-        .filter(|a| !server.iter().any(|s| Some(s.as_str()) == a.get_long()))
+        // clap's own --help and --version, not a command's `--version <V>`.
+        .filter(|a| !matches!(a.get_action(), ArgAction::Help | ArgAction::Version))
+        // lab and ui take serve's flags, which the "Server flags" table lists.
+        .filter(|a| {
+            !(flattens_server(path) && server.iter().any(|s| Some(s.as_str()) == a.get_long()))
+        })
         .collect();
     if !path.is_empty() && path != SERVER && !flags.is_empty() {
         out.push_str(&format!(
@@ -78,7 +87,7 @@ fn walk(cmd: &Command, path: &str, server: &[String], out: &mut String) {
         for arg in flags {
             out.push_str(&format!("| {} | {} |\n", flag(arg), effect(arg)));
         }
-        if path == "lab" || path == "ui" {
+        if flattens_server(path) {
             out.push_str("\nAnd the [server flags](#server-flags).\n");
         }
     }

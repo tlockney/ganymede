@@ -185,12 +185,14 @@ the [flags for every command](#flags-for-every-command) and the
 | --- | --- |
 | `--list` | Show the notebook's grant, or every notebook's with no NOTEBOOK. |
 | `--revoke` | Remove what follows instead; with nothing after NOTEBOOK, its whole grant. |
+| `--root-dir <DIR>` | The server's root directory, which API paths are relative to. Default `.`. |
 
 ### `trust`
 
 | Flag | Effect |
 | --- | --- |
 | `--reset` | Delete the trusted signatures and generate a new key. Every notebook becomes untrusted. |
+| `--notary-dir <DIR>` | Directory with the key and signatures instead of the Jupyter data dir. |
 
 ### `lab`
 
@@ -205,6 +207,7 @@ And the [server flags](#server-flags).
 
 | Flag | Effect |
 | --- | --- |
+| `--version <VERSION>` | JupyterLab version, exactly. A yanked release is refused. Default `4.6.6`. |
 | `--force` | Reinstall if this version is already installed. |
 | `--no-default-extensions` | Skip the extensions installed with JupyterLab by default: `jupyterlab_widgets` and `anywidget`, for widgets. |
 | `--latest-extensions` | Install the newest releases of the default extensions instead of the versions this release of Ganymede pins and checks. |
@@ -221,6 +224,18 @@ And the [server flags](#server-flags).
 | Flag | Effect |
 | --- | --- |
 | `--json` | Print a JSON array of `{"name", "version", "extensions", "required_by"}` objects instead. |
+
+### `lab extension disable`
+
+| Flag | Effect |
+| --- | --- |
+| `--config-dir <DIR>` | The config dir `ganymede serve --config-dir` uses, if not the Jupyter config dir. |
+
+### `lab extension enable`
+
+| Flag | Effect |
+| --- | --- |
+| `--config-dir <DIR>` | The config dir `ganymede serve --config-dir` uses, if not the Jupyter config dir. |
 
 ### `lab list`
 
@@ -241,6 +256,7 @@ And the [server flags](#server-flags).
 
 | Flag | Effect |
 | --- | --- |
+| `--version <VERSION>` | ganymede-ui version, exactly. Default `0.7.0`. |
 | `--force` | Reinstall if this version is already installed. |
 
 ### `ui list`
@@ -253,11 +269,14 @@ And the [server flags](#server-flags).
 
 | Flag | Effect |
 | --- | --- |
+| `--root-dir <ROOT_DIR>` | The notebooks' directory. Default: the current directory. |
 | `--server <URL>` | Use this server (its URL with the base URL, such as `http://localhost:8888/`) instead of finding one. |
+| `--token <TOKEN>` | The token for `--server`. |
 | `--own-server` | Start a server in this process even when one is running. |
 | `--read-only` | Read notebooks only: no edits, no execution. Implies --own-server. |
 | `--no-execute` | Edit notebooks but run no code. Implies --own-server. |
 | `--images` | Send images in outputs to the model. Implies --own-server. |
+| `--default-kernel <NAME>` | Kernelspec for new notebooks, on a server this command starts. |
 
 ### `mcp call`
 
