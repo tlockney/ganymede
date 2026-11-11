@@ -74,6 +74,9 @@ impl HostApi {
             .get(kernel_id)
             .and_then(|id| sessions.notebook_path(id))
             .or_else(|| {
+                // Forget kernels that are gone, so the map stays as small
+                // as the set of running kernels.
+                seen.retain(|k, _| self.state.kernels.get(k).is_ok());
                 let (id, path) = sessions.notebook_of_kernel(kernel_id)?;
                 seen.insert(kernel_id.to_string(), id);
                 Some(path)
@@ -117,9 +120,14 @@ impl HostApi {
         let Some(real) = self.resolved(path) else {
             return false;
         };
-        self.read
-            .iter()
-            .any(|g| ganymede_contents::path_under(&real, g).is_some())
+        // Grants resolved the same way, so a granted folder that is itself
+        // a symlink still covers what is in it.
+        self.read.iter().any(|g| {
+            ganymede_contents::path_under(&real, g).is_some()
+                || self
+                    .resolved(g)
+                    .is_some_and(|g| ganymede_contents::path_under(&real, &g).is_some())
+        })
     }
 
     /// Whether a directory may be listed or walked: it is readable, or a

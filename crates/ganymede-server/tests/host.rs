@@ -365,6 +365,33 @@ async fn a_symlink_in_a_granted_folder_leads_nowhere_else() {
     assert_eq!(found["hits"], json!([]), "{found}");
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn a_granted_folder_that_is_a_symlink_still_covers_its_notebooks() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    std::fs::create_dir(dir.path().join("archive")).unwrap();
+    std::fs::rename(
+        dir.path().join("journal"),
+        dir.path().join("archive/journal"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        dir.path().join("archive/journal"),
+        dir.path().join("journal"),
+    )
+    .unwrap();
+    let (api, caller) = setup(dir.path(), "index.ipynb", &["journal"]).await;
+    assert!(api
+        .call(
+            &caller,
+            "notebooks.read",
+            json!({"path": "journal/a.ipynb"})
+        )
+        .await
+        .is_ok());
+}
+
 #[tokio::test]
 async fn a_notebook_that_joins_the_kernel_does_not_take_its_place() {
     let dir = tempfile::tempdir().unwrap();
