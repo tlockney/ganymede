@@ -183,8 +183,11 @@ HTTP endpoint, so it waits on that contract's first step.
   of the called notebook's grant and the caller's, so a notebook can't
   reach more by running another one.
 - **Depth and width.** A run started from a run counts one deeper, and
-  the server refuses past depth 3 (`denied`). Each notebook has at most
-  two runs of its own in flight; more wait their turn.
+  the server refuses past depth 3 (`denied`). Each kernel has at most
+  two runs of its own in flight; more wait their turn. The limit counts
+  per calling kernel, not per notebook, so a notebook that runs itself
+  can't wait on a slot its own caller holds: every run in a chain has
+  its own kernel and its own two slots.
 
 #### Errors and trust
 
@@ -213,6 +216,15 @@ run = []             # notebooks this notebook may run; [] is none, [""] is all
   notebook may list, read, search and read results of notebooks under
   the root, and may run none. A Node or Deno kernel can read those files
   already, and an in-app kernel needs reads to do anything.
+- **Which notebook.** A kernel gets the grant of the notebook it was
+  started for, the path in its `JPY_SESSION_NAME`, which `hello`
+  reports as `notebook`. Another session that joins the same kernel (a
+  console attached to it) adds nothing. A kernel started with no
+  notebook gets the defaults, and `notebook` is `null`.
+- **Paths** in calls and grants are normalized as the contents API
+  normalizes them: relative to the root, with no `..` and no way out of
+  the root through a symlink. A grant's path matches whole segments, so
+  `journal` covers `journal/x.ipynb` but not `journal-private/`.
 - **Per notebook** grants add to or narrow the defaults, keyed by the
   notebook's [file id](rooms.md#file-ids), so they follow a rename or
   move. They live beside the file id database, not in the notebook.
@@ -247,8 +259,11 @@ the same operations returning data. So the work splits the tools in two:
 
 The comm driver (open on start, the subshell, routing replies, the
 client fan-out filter) and the file-based core go in a new crate,
-`ganymede-host`, that `ganymede-engine` uses. `ganymede execute` and an
-app that embeds the engine then answer `host` calls with no HTTP server.
+`ganymede-host`, with two users. `ganymede-api`'s kernel manager opens
+the comm for the server's kernels and filters host traffic in its iopub
+fan-out (`Clients::dispatch` in `bridge.rs`). `ganymede-engine` does the
+same for its kernels, so `ganymede execute` and an app that embeds the
+engine answer `host` calls with no HTTP server.
 `ganymede-server` adds what needs a server: reads from open rooms, and
 the per-notebook grants. The crates under it stay language-free: the
 server sees method names and JSON.
