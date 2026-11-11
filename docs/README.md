@@ -43,3 +43,4 @@ suite compares Ganymede against `jupyter execute` and `jupyter server` on
 cdp-kernel and ipykernel. [Known gaps](known-gaps.md) lists what doesn't
 work yet, the [Roadmap](roadmap.md) what is planned, and the
 [development log](notes.md) what each step found.
+[Why Ganymede](why.md) has where it came from and what it is for.
