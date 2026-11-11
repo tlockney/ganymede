@@ -14,8 +14,8 @@ re-runs anywhere without an install step, where a Python kernel has only
 what its environment has (or what a recorded `%pip install` cell adds).
 
 Widgets are for the person. The agent gets only a widget's `text/plain`,
-and `notebook_publish` leaves widgets out (`html.rs` falls back to a
-note), so the skill and the reviewer ask for a static chart or table
+and `notebook_publish` shows only that text (`html.rs` falls back to
+it), so the skill and the reviewer ask for a static chart or table
 beside any widget a finding depends on. Charts drawn in the frontend
 (Vega-Lite, Altair, Plotly) have the same limit for the agent.
 

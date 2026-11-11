@@ -129,7 +129,7 @@ picker;
 
 Inside `esm`, a `${...}` is filled in by the kernel: write `\${...}` for
 one the view should see. The agent sees only `text/plain` for a widget,
-and a published page leaves it out, so follow the widget with a static
+and a published page shows only that text, so follow the widget with a static
 chart for the value the finding names. cdp-kernel's
 [widgets guide](https://github.com/tlockney/cdp-kernel/blob/main/docs/widgets.md)
 has more: progress bars, binary data, messages.

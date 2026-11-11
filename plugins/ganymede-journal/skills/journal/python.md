@@ -78,5 +78,5 @@ def plot_from(min_runs):
 ```
 
 The agent sees only `text/plain` for a widget, and a published page
-leaves it out, so follow the widget with a static chart for the value
+shows only that text, so follow the widget with a static chart for the value
 the finding names.

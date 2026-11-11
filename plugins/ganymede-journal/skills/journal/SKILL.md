@@ -120,7 +120,7 @@ Edit.
     widget wired to the kernel: `jupyter.widget` in TypeScript,
     ipywidgets in Python. Widgets show in the Ganymede apps,
     JupyterLab and VS Code. You can't see or move one, and a published
-    page leaves it out, so every finding still rests on a static output
+    page shows only its plain text, so every finding still rests on a static output
     (a chart or table) for the value you write about.
 
 ## Show the user
