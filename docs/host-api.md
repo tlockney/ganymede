@@ -275,15 +275,18 @@ passed as data at launch, named results published as outputs, and one
 way to run a notebook. `notebooks.run` and `notebooks.results` depend on
 the last two.
 
-Named results get a MIME type of Ganymede's own, with a name and a JSON
-value, for example `application/vnd.ganymede.result+json` holding
-`{ "name": "weekday_drop", "value": -0.19 }`, which cdp-kernel's
-`jupyter.result()` writes. `notebooks.results` also reads scrapbook's
-`application/scrapbook.scrap.json+json` outputs, so Python notebooks
-written with scrapbook's `glue` work as they are. When a name appears
-more than once, the last output wins, as in scrapbook. The exact shape
-belongs to the run contract's own change; this note relies only on
-results being readable from saved outputs by name.
+The run contract's first step
+([#650](https://github.com/tlockney/ganymede/issues/650)) passes
+parameters as a JSON object in `GANYMEDE_PARAMS`, which cdp-kernel
+exposes as `jupyter.params`. Named results are `display_data` outputs
+with the MIME type `application/vnd.ganymede.result+json`, holding `{
+"name": "weekday_drop", "value": -0.19 }`, which cdp-kernel's
+`jupyter.result()` writes. Scrapbook's `application/scrapbook.scrap.json+json`
+outputs are read too, so Python notebooks written with scrapbook's `glue`
+work as they are, and when a name appears more than once the last output
+wins. A language-free reader in `ganymede-nbformat` collects them, and
+`notebooks.results` and `notebooks.run` use it, so the host API adds no
+channel of its own for parameters or results.
 
 ## What changes in each repository
 
