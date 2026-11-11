@@ -352,16 +352,18 @@ What `ganymede serve` answers, beyond the examples above:
   `jupyter-server-documents`' `/api/kernels/{id}/execute`
   ([Live editing and document rooms](rooms.md)); `jupyter-resource-usage`'s
   `/api/metrics/v1`.
-- Ganymede's own: `/api/kernels/{id}/log`, and `/mcp` with `--mcp`
-  ([Agents over MCP](mcp.md)).
+- Ganymede's own: `/api/kernels/{id}/log`, `/api/notebooks/run`
+  ([Parameters and named results](reference.md#parameters-and-named-results)),
+  and `/mcp` with `--mcp` ([Agents over MCP](mcp.md)).
 - With JupyterLab (`ganymede lab`): the page, `/static/lab`,
   `/lab/extensions/{name}`, and `/lab/api/` `settings`, `workspaces`,
   `translations`, `themes`, `listings`, `plugins`, `licenses`.
 
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release: `/nbconvert/{format}/{path}`. In the latest
-> release, `/api/nbconvert` reports no exporters.
+> the latest release: `/nbconvert/{format}/{path}` and
+> `/api/notebooks/run`. In the latest release, `/api/nbconvert` reports
+> no exporters.
 
 The kernel websocket speaks `v1.kernel.websocket.jupyter.org` when the
 client offers it, and the legacy JSON framing otherwise. JSON bodies are

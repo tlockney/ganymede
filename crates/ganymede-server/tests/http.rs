@@ -6239,3 +6239,167 @@ async fn mcp_cell_snapshot_saves_images_and_shows_tables() {
     .await;
     assert!(v.to_string().contains("no cell nope"), "{v}");
 }
+
+/// Records the environment each launch gets.
+#[derive(Default)]
+struct EnvProvisioner(std::sync::Mutex<Vec<Vec<(String, String)>>>);
+#[async_trait]
+impl Provisioner for EnvProvisioner {
+    async fn launch(
+        &self,
+        _: &Kernelspec,
+        opts: LaunchOptions,
+    ) -> ganymede_kernel_host::Result<LaunchedKernel> {
+        self.0.lock().unwrap().push(opts.env);
+        Ok(attach(ConnectionInfo::new_tcp(
+            "127.0.0.1",
+            [1, 2, 3, 4, 5],
+        )))
+    }
+}
+
+/// `POST /api/notebooks/run` (#652): the run contract over HTTP. A fresh
+/// kernel with the parameters, named results back, nothing written, and
+/// the kernel gone afterwards.
+#[tokio::test]
+async fn notebooks_run_answers_with_named_results() {
+    let dir = tempfile::tempdir().unwrap();
+    let code = |id: &str, src: &str| json!({"cell_type": "code", "execution_count": null, "id": id, "metadata": {}, "outputs": [], "source": src});
+    let write = |name: &str, cells: Vec<Value>| {
+        let nb = json!({"cells": cells, "nbformat": 4, "nbformat_minor": 5,
+            "metadata": {"kernelspec": {"name": "fake", "display_name": "Fake"}}});
+        std::fs::write(
+            dir.path().join(name),
+            serde_json::to_string_pretty(&nb).unwrap(),
+        )
+        .unwrap();
+    };
+    write(
+        "ok.ipynb",
+        vec![
+            code("a", "result total 42"),
+            code("b", "result total 43"),
+            code("c", "result day \"mon\""),
+        ],
+    );
+    write(
+        "fails.ipynb",
+        vec![
+            code("a", "result first 1"),
+            code("b", "raise"),
+            code("c", "result never 2"),
+        ],
+    );
+    write(
+        "slow.ipynb",
+        vec![code("a", "result early true"), code("b", "sleep 5000")],
+    );
+    let before = std::fs::read(dir.path().join("ok.ipynb")).unwrap();
+    let provisioner = Arc::new(EnvProvisioner::default());
+    let app = build_router(state_with(
+        dir.path(),
+        provisioner.clone(),
+        Arc::new(FakeTransports),
+    ));
+    let run = |body: Value| call(&app, "POST", "/api/notebooks/run", Some(body), Some(TOKEN));
+
+    // The parameters reach the kernel; the last result of a name wins.
+    let (s, v) = run(json!({"path": "ok.ipynb", "params": {"day": "mon", "n": 2}})).await;
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert_eq!(
+        v,
+        json!({"path": "ok.ipynb", "status": "ok", "results": {"total": 43, "day": "mon"}})
+    );
+    let envs = provisioner.0.lock().unwrap().clone();
+    let params = envs[0]
+        .iter()
+        .find(|(k, _)| k == "GANYMEDE_PARAMS")
+        .map(|(_, v)| v.clone());
+    let params: Value = serde_json::from_str(&params.expect("GANYMEDE_PARAMS")).unwrap();
+    assert_eq!(params, json!({"day": "mon", "n": 2}));
+    assert_eq!(
+        std::fs::read(dir.path().join("ok.ipynb")).unwrap(),
+        before,
+        "nothing written"
+    );
+
+    // Without parameters the kernel still gets `{}`.
+    let (_, v) = run(json!({"path": "/ok.ipynb"})).await;
+    assert_eq!(v["status"], "ok", "{v:#}");
+    let envs = provisioner.0.lock().unwrap().clone();
+    assert!(
+        envs[1].contains(&("GANYMEDE_PARAMS".into(), "{}".into())),
+        "{envs:?}"
+    );
+
+    // A failing cell: status error, with what came before it.
+    let (s, v) = run(json!({"path": "fails.ipynb"})).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["status"], "error", "{v:#}");
+    assert_eq!(v["results"], json!({"first": 1}));
+    assert!(
+        v["error"].as_str().unwrap().contains("cell 1 failed"),
+        "{v:#}"
+    );
+
+    // A timeout ends the run and keeps the earlier results.
+    let (_, v) = run(json!({"path": "slow.ipynb", "timeout": 0.5})).await;
+    assert_eq!(v["status"], "error", "{v:#}");
+    assert_eq!(v["results"], json!({"early": true}));
+    assert!(
+        v["error"].as_str().unwrap().contains("didn't finish"),
+        "{v:#}"
+    );
+
+    // Each run's kernel is shut down once it ends.
+    let mut left = Value::Null;
+    for _ in 0..50 {
+        left = call(&app, "GET", "/api/kernels", None, Some(TOKEN)).await.1;
+        if left == json!([]) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(left, json!([]));
+
+    // Refused before any kernel starts.
+    for (body, status) in [
+        (json!({}), StatusCode::BAD_REQUEST),
+        (
+            json!({"path": "ok.ipynb", "params": [1]}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"path": "ok.ipynb", "params": {"x": "y".repeat(40_000)}}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"path": "ok.ipynb", "timeout": 0}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"path": "ok.ipynb", "save": "copy"}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (json!({"path": "missing.ipynb"}), StatusCode::NOT_FOUND),
+    ] {
+        let (s, v) = run(body.clone()).await;
+        assert_eq!(s, status, "{body} -> {v:#}");
+    }
+    assert_eq!(
+        provisioner.0.lock().unwrap().len(),
+        4,
+        "no launch for refused runs"
+    );
+
+    // Behind the token like the rest of the API.
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/api/notebooks/run",
+        Some(json!({"path": "ok.ipynb"})),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
