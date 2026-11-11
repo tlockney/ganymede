@@ -19,6 +19,8 @@ set -eu
 cd "$(dirname "$0")/.."
 
 target=aarch64-apple-ios
+# Plain output: libs_of reads rustc's note from the log.
+export CARGO_TERM_COLOR=never
 out=target/ios-size
 mkdir -p "$out"
 
