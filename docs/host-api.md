@@ -216,9 +216,11 @@ run = []             # notebooks this notebook may run; [] is none, [""] is all
   notebook may list, read, search and read results of notebooks under
   the root, and may run none. A Node or Deno kernel can read those files
   already, and an in-app kernel needs reads to do anything.
-- **Which notebook.** A kernel gets the grant of the notebook it was
-  started for, the path in its `JPY_SESSION_NAME`, which `hello`
-  reports as `notebook`. Another session that joins the same kernel (a
+- **Which notebook.** A kernel gets the grant of the notebook whose
+  session the server started it for: that session's API path, mapped to
+  its file id, which `hello` reports as `notebook`. It is the notebook
+  whose OS path goes into `JPY_SESSION_NAME`, but the server reads its
+  own session record, not the variable. Another session that joins the same kernel (a
   console attached to it) adds nothing. A kernel started with no
   notebook gets the defaults, and `notebook` is `null`.
 - **Paths** in calls and grants are normalized as the contents API
@@ -281,8 +283,8 @@ parameters as a JSON object in `GANYMEDE_PARAMS`, which cdp-kernel
 exposes as `jupyter.params`. Named results are `display_data` outputs
 with the MIME type `application/vnd.ganymede.result+json`, holding `{
 "name": "weekday_drop", "value": -0.19 }`, which cdp-kernel's
-`jupyter.result()` writes. Scrapbook's `application/scrapbook.scrap.json+json`
-outputs are read too, so Python notebooks written with scrapbook's `glue`
+`jupyter.result()` writes. Scrapbook's outputs (`application/scrapbook.scrap.json+json` and
+`application/scrapbook.scrap.text+json`) are read too, so Python notebooks written with scrapbook's `glue`
 work as they are, and when a name appears more than once the last output
 wins. A language-free reader in `ganymede-nbformat` collects them, and
 `notebooks.results` and `notebooks.run` use it, so the host API adds no
