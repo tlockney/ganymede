@@ -8,10 +8,9 @@ in the same app, so it becomes a kernel like any other.
 > **Unreleased.** Ganymede's part, the C functions below, is available
 > only from a build of `main` (HEAD), not in the latest release.
 
-> [!NOTE]
-> **Unreleased in ganymede-ui.** The apps' part is in ganymede-ui's
-> `main` (ganymede-ui#470), not in its latest release, which still runs
-> the in-app kernel as a page kernel.
+The apps' part shipped in ganymede-ui 0.7.0
+([ganymede-ui#470](https://github.com/tlockney/ganymede-ui/pull/470)).
+The next section describes the apps before it.
 
 ## The problem
 
