@@ -661,7 +661,8 @@ fn replace_bounded(s: &str, text: &str, with: &str) -> String {
         // (`-I/home/tom`, `-v/srv/nb`) it stands on its own.
         let head = &s[..at];
         let starts = if separator_led {
-            let run = head.trim_end_matches(name_char);
+            // Dots count here: `/mnt/v1.2` and `/mnt/.cache` are directories.
+            let run = head.trim_end_matches(|c| name_char(c) || c == '.');
             run.len() == head.len() || !run.ends_with(['/', '\\'])
         } else {
             !head.ends_with(name_char)
@@ -1296,6 +1297,14 @@ mod tests {
         assert_eq!(
             replace_bounded("-v/srv/nb:/data", "/srv/nb", "."),
             "-v.:/data"
+        );
+        assert_eq!(
+            replace_bounded(
+                "/mnt/v1.2/srv/nb/x /mnt/.cache/srv/nb ./srv/nb/x",
+                "/srv/nb",
+                "."
+            ),
+            "/mnt/v1.2/srv/nb/x /mnt/.cache/srv/nb ./srv/nb/x"
         );
         for root in ["/", "//", "C:\\", "\\", ""] {
             assert!(is_root_like(root), "{root}");
