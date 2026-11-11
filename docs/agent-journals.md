@@ -59,8 +59,8 @@ work, each built on a protocol the Jupyter ecosystem already speaks:
   elsewhere becomes a Markdown cell marked `recorded`, never passed off
   as kernel output, and every agent cell carries
   [provenance](mcp.md#provenance): who wrote it, how, and when.
-- **Revise in place.** `cell_edit` replaces a cell and reruns it, keeping
-  the replaced text in the cell's history.
+- **Revise in place.** `cell_edit` replaces a cell, and with `run: true`
+  reruns it, keeping the replaced text in the cell's history.
 - **A person in the loop.** `notebook_read` with `since` returns only
   what a person added or changed since the agent's last read.
 - **Output shaped for models.** Results come back as compact text with
