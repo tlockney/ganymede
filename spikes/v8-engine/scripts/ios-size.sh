@@ -24,6 +24,10 @@ libs_of() {
   sed -n 's/.*native-static-libs: //p' "$1" | tail -1
 }
 
+if [ -n "${V8_FROM_SOURCE:-}" ]; then
+  scripts/fetch-icu-data.sh
+fi
+
 echo "building with V8 ..." >&2
 cargo rustc --release --locked --target "$target" --lib --crate-type staticlib -- --print native-static-libs 2> "$out/with-v8.log" || {
   tail -50 "$out/with-v8.log" >&2
