@@ -33,81 +33,89 @@ The design note for iPadOS guessed 30 to 50 MB.
 
 ### Speed and memory
 
-One run each on CI runners (not a device), so treat a difference under
-about 30% as noise. `cold` is a new engine instance, loading the
-workload and its first run; `steady` the median of four more runs.
+Five runs of each engine on CI runners (not a device); each cell is the
+median of the five. `cold` is a new engine instance, loading the
+workload and its first run; `steady` the median of four more runs in
+that instance. `init` is V8's one-time setup per process.
 `kernel-start` is today's in-app kernel (cdp-kernel 0.9.0's browser
-kernel in a Worker) started to its first `execute_result`.
+kernel in a Worker) started to its first `execute_result`. One run
+alone was misleading: the first draft of this note, from a single run,
+had WebKit's first type strip slower than V8's, which five runs don't
+bear out.
 
 #### macOS arm64 (GitHub runner, Apple silicon)
 
-| workload | V8 15.2.124.1-rusty, jitless | V8 15.2.124.1-rusty | node | node, jitless | worker (webkit 26.6) |
+| workload | V8 15.2.124.1-rusty, jitless, 5 runs | V8 15.2.124.1-rusty, 5 runs | node, 5 runs | node, jitless, 5 runs | worker (webkit 26.6), 5 runs |
 |---|---|---|---|---|---|
-| start | 12 / 0.0 | 18 / 0.0 | 43 / 0.1 | 60 / 0.1 | 93 / 0.5 |
-| cpu | 112 / 99 | 83 / 52 | 91 / 57 | 151 / 135 | 134 / 52 |
-| ts-strip | 147 / 127 | 69 / 15 | 100 / 22 | 209 / 136 | 349 / 47 |
-| large-output | 44 / 51 | 36 / 48 | 71 / 43 | 75 / 59 | 92 / 44 |
-| memory | 173 / 181 | 69 / 50 | 75 / 49 | 193 / 164 | 182 / 88 |
-| kernel-start | – | – | – | – | 101 / 1.0 |
+| init, once per process | 0.9 | 0.4 | – | – | – |
+| start | 2.9 / 0.0 | 1.3 / 0.0 | 20 / 0.1 | 37 / 0.1 | 17 / 0.0 |
+| cpu | 104 / 101 | 53 / 47 | 66 / 50 | 122 / 106 | 49 / 34 |
+| ts-strip | 138 / 117 | 48 / 10 | 72 / 16 | 153 / 119 | 83 / 25 |
+| large-output | 35 / 38 | 26 / 29 | 51 / 36 | 60 / 31 | 33 / 24 |
+| memory | 122 / 128 | 37 / 43 | 56 / 42 | 147 / 144 | 79 / 53 |
+| kernel-start | – | – | – | – | 41 / 0.5 |
 
 Engine heap after the workload (physical MB), and the process's peak memory (resident set; on iOS, the footprint iOS counts against the app's limit):
 
-| workload | V8 15.2.124.1-rusty, jitless | V8 15.2.124.1-rusty | node | node, jitless | worker (webkit 26.6) |
+| workload | V8 15.2.124.1-rusty, jitless, 5 runs | V8 15.2.124.1-rusty, 5 runs | node, 5 runs | node, jitless, 5 runs | worker (webkit 26.6), 5 runs |
 |---|---|---|---|---|---|
 | start | 1 | 1 | 9 | 7 | – |
-| cpu | 62 | 60 | 61 | 41 | – |
-| ts-strip | 49 | 49 | 56 | 41 | – |
-| large-output | 134 | 85 | 234 | 224 | – |
-| memory | 272 | 250 | 444 | 447 | – |
+| cpu | 62 | 75 | 53 | 52 | – |
+| ts-strip | 49 | 49 | 56 | 47 | – |
+| large-output | 134 | 85 | 227 | 102 | – |
+| memory | 268 | 249 | 444 | 458 | – |
 | kernel-start | – | – | – | – | – |
-| peak RSS, whole run | 353 | 464 | 627 | 623 | – |
+| peak RSS, whole run | 363 | 441 | 604 | 635 | – |
 
 #### Linux x86_64 (GitHub runner)
 
-| workload | V8 15.2.124.1-rusty, jitless | V8 15.2.124.1-rusty | node | node, jitless | worker (webkit 26.6) |
+| workload | V8 15.2.124.1-rusty, jitless, 5 runs | V8 15.2.124.1-rusty, 5 runs | node, 5 runs | node, jitless, 5 runs | worker (webkit 26.6), 5 runs |
 |---|---|---|---|---|---|
-| start | 1.8 / 0.0 | 1.9 / 0.0 | 32 / 0.0 | 40 / 0.0 | 12 / 0.0 |
-| cpu | 67 / 63 | 46 / 47 | 62 / 50 | 86 / 65 | 36 / 27 |
-| ts-strip | 113 / 94 | 57 / 11 | 75 / 18 | 130 / 98 | 152 / 20 |
-| large-output | 33 / 43 | 26 / 29 | 57 / 42 | 68 / 28 | 28 / 24 |
-| memory | 113 / 123 | 40 / 54 | 59 / 53 | 123 / 122 | 55 / 42 |
-| kernel-start | – | – | – | – | 40 / 0.5 |
+| init, once per process | 0.6 | 0.6 | – | – | – |
+| start | 2.4 / 0.0 | 2.6 / 0.0 | 34 / 0.1 | 65 / 0.1 | 19 / 0.0 |
+| cpu | 114 / 107 | 75 / 68 | 97 / 77 | 142 / 114 | 59 / 39 |
+| ts-strip | 214 / 185 | 103 / 22 | 136 / 30 | 240 / 182 | 241 / 37 |
+| large-output | 62 / 75 | 47 / 50 | 96 / 67 | 111 / 48 | 47 / 35 |
+| memory | 206 / 223 | 62 / 84 | 91 / 74 | 220 / 208 | 70 / 60 |
+| kernel-start | – | – | – | – | 58 / 1.0 |
 
 Engine heap after the workload (physical MB), and the process's peak memory (resident set; on iOS, the footprint iOS counts against the app's limit):
 
-| workload | V8 15.2.124.1-rusty, jitless | V8 15.2.124.1-rusty | node | node, jitless | worker (webkit 26.6) |
+| workload | V8 15.2.124.1-rusty, jitless, 5 runs | V8 15.2.124.1-rusty, 5 runs | node, 5 runs | node, jitless, 5 runs | worker (webkit 26.6), 5 runs |
 |---|---|---|---|---|---|
 | start | 1 | 1 | 10 | 8 | – |
-| cpu | 62 | 76 | 67 | 55 | – |
-| ts-strip | 49 | 49 | 56 | 47 | – |
-| large-output | 135 | 85 | 228 | 104 | – |
-| memory | 266 | 250 | 443 | 460 | – |
+| cpu | 62 | 59 | 68 | 57 | – |
+| ts-strip | 49 | 49 | 48 | 47 | – |
+| large-output | 135 | 85 | 227 | 103 | – |
+| memory | 279 | 249 | 463 | 459 | – |
 | kernel-start | – | – | – | – | – |
-| peak RSS, whole run | 358 | 429 | 598 | 615 | – |
+| peak RSS, whole run | 357 | 424 | 612 | 618 | – |
 
-What the numbers say, pending a device:
+What the numbers say, pending a device (Mac medians):
 
 - **Start.** A jitless V8 isolate and context reach a first result in
-  about 12 ms (the first isolate in the process; later ones about 1 ms).
-  The first WebKit Worker in a page takes about 90 ms (later ones about
-  10 ms), and today's kernel about 100 ms to its first result. A V8
+  about 3 ms, plus about 1 ms of one-time init (the first start in a
+  process ran 2 to 12 ms). A WebKit Worker took 17 ms (7 to 115 ms
+  across runs), and today's kernel 41 ms to its first result. A V8
   kernel would add its own code on top: the browser kernel's bundle is
   about 840 KB, and loading the 700 KB stripper bundle took jitless V8
-  13 ms.
-- **Steady work** is where the JIT shows. Jitless V8 is about 1.5 to 2x
-  slower than WebKit's JIT on the CPU cell (99 vs 52 ms), 2.7x on
-  stripping types again (127 vs 47 ms), and 2x on allocation-heavy work
-  (181 vs 88 ms). Cold, it reverses: the first strip took jitless V8
-  134 ms and WebKit 307 ms, before WebKit's JIT warmed up, and a cell
-  usually runs once.
-- **Memory.** Jitless V8 kept the smallest process: 353 MB peak for the
-  whole run on the Mac, against 464 MB for V8 with its JIT and about
-  620 MB for Node. The `memory` workload's 500,000 objects take about
+  about 13 ms.
+- **Compute** is where the JIT shows, and WebKit in the apps keeps its
+  JIT on iOS. Jitless V8 is about 2 to 3x slower than WebKit: the CPU
+  cell 104 vs 49 ms on a first run (101 vs 34 steady), stripping types
+  138 vs 83 ms first (117 vs 25 steady), the allocation-heavy cell 122
+  vs 79 ms. Node with `--jitless` lands with jitless V8, as it should.
+- **Memory.** Jitless V8 kept the smallest process: about 360 MB peak
+  for the whole run, against about 440 MB for V8 with its JIT and about
+  610 MB for Node. The `memory` workload's 500,000 objects take about
   270 MB of heap in every V8; rusty_v8 builds without pointer
   compression, which would roughly halve that.
 
-So far neither size nor speed looks unacceptable: about 7 MB to
-download, a faster start, and steady compute at roughly half a JIT's
-speed. The device run decides it, because iOS's WebKit keeps its JIT
-while V8 can't, and the device's memory limit is real. That run is by
-hand (the README's steps; listed in ganymede-ui#273).
+So: about 7 MB to download, a faster start, less memory, and compute at
+a third to a half of WebKit's speed. Whether that is acceptable is the
+call this spike was for. A typical cell (well under 100 ms of work)
+would stay under a quarter of a second; a heavy loop would take two to
+three times as long as it does in today's kernel. The device run will
+show whether the ratios hold on an iPad and iPhone, and what iOS's
+memory limit leaves. That run is by hand (the README's steps; listed
+in ganymede-ui#273).
