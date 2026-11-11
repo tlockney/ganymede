@@ -263,7 +263,7 @@ And the [server flags](#server-flags).
 
 | Flag | Effect |
 | --- | --- |
-| `--version <VERSION>` | ganymede-ui version, exactly. Default: ganymede-ui's latest release when this Ganymede was released; `ganymede ui install --help` names it. |
+| `--version <VERSION>` | ganymede-ui version, exactly. Default `0.7.0`. |
 | `--force` | Reinstall if this version is already installed. |
 
 ### `ui list`

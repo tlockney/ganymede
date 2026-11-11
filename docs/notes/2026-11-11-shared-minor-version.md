@@ -8,6 +8,6 @@ ganymede-ui's `release.sh minor` takes Ganymede's latest X.Y.0
 round takes the apps from 0.8.0 to 0.10.0. The release order and pins
 don't change.
 
-reference.md named `ganymede ui install`'s default as `0.7.0`, a number
-`release-pins.sh` moves in ui.rs but not in the docs, so it would have
-gone stale each round. It now points at `--help`, which prints the pin.
+`ganymede ui install`'s default stays one ganymede-ui release behind
+until Ganymede's next release, as before: Ganymede releases first, so
+its pin can only name the apps' previous release.
