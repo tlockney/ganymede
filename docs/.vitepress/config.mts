@@ -114,6 +114,7 @@ export default defineConfig({
       { text: "Get started", link: "/install" },
       { text: "Apps", link: "/app" },
       { text: "Agents", link: "/agent-journals" },
+      { text: "Examples", link: "/examples" },
       { text: "Reference", link: "/reference" },
       { text: "Roadmap", link: "/roadmap" },
     ],

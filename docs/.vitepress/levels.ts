@@ -103,6 +103,22 @@ export function groups(has: (name: string) => boolean = () => true): Group[] {
       ],
     },
     {
+      // Rendered from ganymede-ui's examples/ by `npm run fetch-examples`.
+      text: "Examples",
+      level: "guide",
+      items: [
+        { text: "All examples", link: "/examples" },
+        { text: "Start Here", link: "/examples/01-start-here" },
+        { text: "Web APIs", link: "/examples/02-web-apis" },
+        { text: "Charts and Diagrams", link: "/examples/03-charts-and-diagrams" },
+        { text: "DuckDB", link: "/examples/04-duckdb" },
+        { text: "Generative Art", link: "/examples/05-generative-art" },
+        { text: "Widgets", link: "/examples/06-widgets" },
+        { text: "UI Frameworks", link: "/examples/07-ui-frameworks" },
+        { text: "Device", link: "/examples/08-device" },
+      ],
+    },
+    {
       text: "Reference",
       level: "reference",
       items: [
