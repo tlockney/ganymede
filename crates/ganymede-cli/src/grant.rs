@@ -11,7 +11,8 @@ use std::process::ExitCode;
 
 #[derive(Args)]
 pub struct GrantArgs {
-    /// The notebook, a file under the root.
+    /// The notebook, a file under the root: relative to the current
+    /// directory, or else to `--root-dir`.
     notebook: Option<PathBuf>,
     /// What to grant: `read=PATH` adds an API path the notebook may read
     /// (its own list replaces the `[host] read` default; `""` is the
@@ -47,11 +48,30 @@ fn show(path: &str, grant: &Grant) -> String {
     parts.join(" ")
 }
 
-/// `notebook`'s API path under `root` (both canonical).
+/// `notebook`'s API path under `root` (canonical). A relative path is
+/// found from the current directory, or else from `root`. Only its
+/// directory is resolved, so a symlinked notebook keeps its own name, the
+/// path a kernel's session has.
 fn api_path(root: &Path, notebook: &Path) -> Result<String> {
-    let real = notebook
-        .canonicalize()
+    let found = if notebook.exists() || notebook.is_absolute() {
+        notebook.to_path_buf()
+    } else {
+        root.join(notebook)
+    };
+    if !found.is_file() {
+        bail!("no notebook at {}", notebook.display());
+    }
+    let name = found
+        .file_name()
         .with_context(|| format!("notebook {}", notebook.display()))?;
+    let dir = match found.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let real = dir
+        .canonicalize()
+        .with_context(|| format!("notebook {}", notebook.display()))?
+        .join(name);
     let rel = real
         .strip_prefix(root)
         .map_err(|_| anyhow::anyhow!("{} is not under {}", notebook.display(), root.display()))?;
@@ -65,6 +85,11 @@ pub fn run(args: GrantArgs) -> Result<ExitCode> {
         .canonicalize()
         .with_context(|| format!("root dir {}", args.root_dir.display()))?;
     let ids = ganymede_server::serve::file_ids(&root);
+    if !ids.is_persistent() {
+        bail!(
+            "can't open the file id database in the Jupyter data dir, so a grant wouldn't be kept"
+        );
+    }
     let parse = |text: &str| -> Grant {
         serde_json::from_str(text).unwrap_or_else(|e| {
             eprintln!("warning: unreadable grant {text}: {e}");

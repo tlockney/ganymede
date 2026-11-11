@@ -215,12 +215,28 @@ impl FileIds {
         None
     }
 
+    /// Whether ids and grants outlive this process: kept in a database
+    /// that opened.
+    pub fn is_persistent(&self) -> bool {
+        #[cfg(feature = "sqlite")]
+        return self.lock().db.is_some();
+        #[cfg(not(feature = "sqlite"))]
+        false
+    }
+
     /// Store `grant` for file id `id`, or remove it with `None`. Fails
-    /// only when the database does; an id kept in memory keeps its grant
-    /// in memory.
+    /// when the database does, and for an id the database failed to keep
+    /// (kept in memory instead), so a grant never silently lasts only
+    /// this process when a database is in use.
     pub fn set_grant(&self, id: &str, grant: Option<&str>) -> Result<(), String> {
         let store = &mut *self.lock();
         if store.memory.by_id.contains_key(id) {
+            #[cfg(feature = "sqlite")]
+            if store.db.is_some() {
+                return Err(format!(
+                    "file id {id} is kept in memory only; the database failed to store it"
+                ));
+            }
             match grant {
                 Some(g) => store.memory.grants.insert(id.to_string(), g.to_string()),
                 None => store.memory.grants.remove(id),
@@ -542,6 +558,10 @@ mod tests {
         assert_eq!(ids.index("a.ipynb"), (id.clone(), false));
         assert_eq!(ids.path(&id).as_deref(), Some("a.ipynb"));
         assert_eq!(ids.get("a.ipynb"), Some(id.clone()));
+        // A grant on an id the database didn't keep would last only this
+        // process: refused.
+        assert!(ids.set_grant(&id, Some("{}")).is_err());
+        assert!(ids.is_persistent());
         ids.moved("a.ipynb", "b.ipynb");
         assert_eq!(ids.path(&id).as_deref(), Some("b.ipynb"));
         ids.removed("b.ipynb");
