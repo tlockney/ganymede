@@ -39,7 +39,7 @@ partway through.
    `THIRD-PARTY-NOTICES` and SHA-256 checksums, attests their build
    provenance, and publishes the GitHub Release with the changelog section
    as notes. The release also carries `GanymedeFFI.xcframework.zip`, the
-   library the Mac and iPad app links, with
+   library the Mac, iPad and iPhone app links, with
    `GanymedeFFI.xcframework.zip.sha256` beside it, under the same name
    every release, so ganymede-ui downloads it for the tag it pins instead
    of building it ([Embedding](embedding.md#from-swift)).

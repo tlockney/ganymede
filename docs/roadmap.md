@@ -50,7 +50,7 @@ pull request with a GitHub issue, and records what it learned in the
 - **A UI of our own.** [ganymede-ui](https://github.com/tlockney/ganymede-ui)
   is a notebook app built on JupyterLab's packages, outside the core. It
   runs in a browser against Ganymede or with kernels in the page, and in
-  a Mac and iPad app that runs the core in-process through
+  a Mac, iPad and iPhone app that runs the core in-process through
   `ganymede-ffi`.
 - **Remote kernels.** `--gateway-url` runs kernels on another Jupyter or
   Ganymede server while files stay local, which is how the iPad app gets

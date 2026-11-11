@@ -11,7 +11,7 @@ the [Roadmap](roadmap.md).
 
 ## What was built
 
-- **The app.** One SwiftUI app for the Mac and iPad, in ganymede-ui's
+- **The app.** One SwiftUI app for the Mac, iPad and iPhone, in ganymede-ui's
   [`apple/`](https://github.com/tlockney/ganymede-ui/tree/main/apple),
   runs Ganymede in its own process through `ganymede-ffi` and shows
   ganymede-ui in a web view. The plan had the web view reach the core
