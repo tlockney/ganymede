@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitepress";
-import { groups } from "./levels.ts";
+import { groups, uiPlaced } from "./levels.ts";
 import { notesPlugin } from "./notes.ts";
 import { themedImages, writeThemedSvgs } from "./themed.ts";
 
@@ -28,6 +28,7 @@ const uiDir = path.join(docsDir, "ganymede-ui");
 const uiPages = fs.existsSync(uiDir)
   ? fs.readdirSync(uiDir).filter((f) => f.endsWith(".md")).sort((a, b) => (a === "architecture.md" ? -1 : b === "architecture.md" ? 1 : a.localeCompare(b)))
   : [];
+const uiUnplaced = uiPages.filter((f) => !(f.replace(/\.md$/, "") in uiPlaced));
 if (uiPages.length === 0) console.warn("docs/ganymede-ui/ is empty; run `npm run fetch-ui` to include ganymede-ui's docs.");
 
 function titleOf(file: string): string {
@@ -110,16 +111,22 @@ export default defineConfig({
     nav: [
       { text: "Home", link: `${site}/`, target: "_self", noIcon: true },
       { text: "Get started", link: "/install" },
-      { text: "Guides", link: "/frontends" },
-      { text: "How it works", link: "/architecture" },
+      { text: "Apps", link: "/app" },
+      { text: "Agents", link: "/mcp" },
+      { text: "Reference", link: "/reference" },
       { text: "Roadmap", link: "/roadmap" },
     ],
     // Groups start open, so every page shows without a click, except the
     // background and contributors' groups, which most readers don't need.
     sidebar: [
-      ...groups().map(({ text, level, items }) => ({ text, items, collapsed: level === "background" || level === "contributor" })),
-      ...(uiPages.length
-        ? [{ text: "ganymede-ui", collapsed: false, items: uiPages.map((f) => ({ text: titleOf(path.join(uiDir, f)), link: `/ganymede-ui/${f.replace(/\.md$/, "")}` })) }]
+      ...groups((name) => uiPages.includes(`${name}.md`)).map(({ text, level, items }) => ({
+        text,
+        items,
+        collapsed: level === "background" || level === "contributor",
+      })),
+      // A page ganymede-ui added that levels.ts doesn't place yet.
+      ...(uiUnplaced.length
+        ? [{ text: "ganymede-ui", collapsed: false, items: uiUnplaced.map((f) => ({ text: titleOf(path.join(uiDir, f)), link: `/ganymede-ui/${f.replace(/\.md$/, "")}` })) }]
         : []),
     ],
     outline: [2, 3],
