@@ -329,6 +329,62 @@ a page ends before `last_seq`, ask again. A kernel the
 server runs no process for, an in-process one or one on a gateway, gets
 `{"kernel_id": ..., "lines": [], "last_seq": 0, "reason": "no_process"}`.
 
+## Run a notebook
+
+Ganymede's own route: the notebook runs top to bottom in a fresh kernel
+with `params`, and the answer carries its named results
+([Notebooks as programs](programs.md)). Nothing is written to the
+notebook.
+
+```http
+POST /api/notebooks/run
+Authorization: token <token>
+
+{"path": "reports/package-stats.ipynb", "params": {"pkg": "hono"}}
+```
+
+```json
+{"path": "reports/package-stats.ipynb", "status": "ok",
+ "results": {"package": "hono", "latest": "4.13.18", "stable_releases": 415,
+             "first_release": "2021-12-14", "weekly_downloads": 104726612}}
+```
+
+A run that fails after its kernel started is still `200`, with what was
+published before the failure and the error:
+
+```json
+{"path": "reports/package-stats.ipynb", "status": "error", "results": {},
+ "error": "cell 4 failed: TypeError: Cannot convert undefined or null to object"}
+```
+
+A notebook that can't be read is `404` before any kernel starts:
+`{"message": "cannot read reports/missing.ipynb as a notebook", "reason": null}`.
+[Parameters and named results](reference.md#parameters-and-named-results)
+has `timeout`, `save` and every status.
+
+## Grant a notebook access
+
+What a notebook's cells may reach through `jupyter.host()`, set per
+notebook. `PUT` replaces the notebook's own grant; each key it names
+replaces the server's default (`defaults`, from `[host]` in the config).
+
+```http
+PUT /api/host/grants/reports/package-stats.ipynb
+Authorization: token <token>
+
+{"read": ["reports"], "run": []}
+```
+
+```json
+{"path": "reports/package-stats.ipynb",
+ "grant": {"read": ["reports"], "run": []},
+ "defaults": {"read": [""], "edit_self": true, "run": []}}
+```
+
+`GET` answers the same shape, and `DELETE` removes the grant
+(`"grant": {}`). [The host API](reference.md#the-host-api) has the keys
+and the errors; `ganymede grant` does the same from the command line.
+
 ## Every route
 
 What `ganymede serve` answers, beyond the examples above:
