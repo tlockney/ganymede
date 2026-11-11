@@ -10,7 +10,7 @@ endpoint.
 
 "Next" is now those four priorities, each with its open issues. Work
 merged since v0.7.0 (run contract, the first host API calls, kernel
-registration through the C ABI) sits in a "Done on `main`" list under
+registration through the C ABI; the host API, `notebooks.run` included since #665) sits in a "Done on `main`" list under
 one Unreleased note, so the release moves it into "Done". A new "Not
 now" section holds what is wanted eventually but deferred: Pyodide,
 MCP Apps, a native non-JS kernel and CurveZMQ. "Open" keeps the
