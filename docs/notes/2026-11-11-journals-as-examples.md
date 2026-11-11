@@ -18,7 +18,7 @@ The Oklahoma prompts come from the session transcript. The Fremont
 session was driven by a script, so its prompts were written afterwards
 for the example; prompts.md and the page say so.
 
-`npm run fetch-examples` renders both as /docs/examples/journal-<name>,
+`npm run fetch-examples` renders both as `/docs/examples/journal-<name>`,
 with the prompts in a box after the title. pages.yml now runs on changes
 to examples/journals/, and scripts/ci-changes.sh counts examples/ as not
 code.
