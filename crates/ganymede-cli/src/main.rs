@@ -459,10 +459,7 @@ fn execute_grants(
                 .into())
             }
         };
-        let path = ganymede_contents::normalize_api_path(path);
-        if path.split('/').any(|c| c == "..") {
-            return Err(Usage(format!("--grant {g:?}: `..` is not allowed")).into());
-        }
+        let path = grant::grant_path(key, path).map_err(|e| Usage(format!("--grant: {e}")))?;
         let list = list.get_or_insert_with(Vec::new);
         if !list.contains(&path) {
             list.push(path);
@@ -484,15 +481,24 @@ fn execute_host(
     startup_timeout: Option<u64>,
     quiet: bool,
 ) -> Result<Option<ganymede_server::serve::LocalHost>> {
-    let mut cfg = match crash::config_text(None) {
-        Some(text) => ganymede_server::config::Config::from_toml(&text)
-            .context("reading the config file's [host] grants")?,
+    // A config file that doesn't parse leaves the run without a host comm,
+    // as a host that can't start does: `execute` worked without one before.
+    let mut cfg = match crash::config_text(None)
+        .map(|text| ganymede_server::config::Config::from_toml(&text))
+    {
         None => Default::default(),
+        Some(Ok(cfg)) => cfg,
+        Some(Err(e)) => {
+            execute_grants(Default::default(), grants)?;
+            eprintln!("ganymede: no host API for this run: the config file: {e}");
+            return Ok(None);
+        }
     };
     cfg.host = execute_grants(cfg.host, grants)?;
+    // As `serve` takes them: the config's roots, then the flags'.
     for r in kernelspec_roots {
         if !cfg.kernelspec_roots.contains(r) {
-            cfg.kernelspec_roots.insert(0, r.clone());
+            cfg.kernelspec_roots.push(r.clone());
         }
     }
     if let Some(t) = startup_timeout {
@@ -509,16 +515,11 @@ fn execute_host(
     }
 }
 
-/// `path`'s API path under the current directory, if it is under it.
+/// `path`'s API path under the current directory, as `ganymede grant`
+/// finds it, if it is under it.
 fn api_path_of(path: &Path) -> Option<String> {
     let root = std::env::current_dir().ok()?.canonicalize().ok()?;
-    let real = path.canonicalize().ok()?;
-    let rel = real.strip_prefix(&root).ok()?;
-    let parts: Vec<&str> = rel
-        .components()
-        .map(|c| c.as_os_str().to_str())
-        .collect::<Option<_>>()?;
-    Some(parts.join("/"))
+    grant::api_path(&root, path).ok()
 }
 
 #[derive(Args, Clone)]

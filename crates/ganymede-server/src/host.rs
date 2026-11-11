@@ -275,7 +275,14 @@ impl HostApi {
                     outer_run: Vec::new(),
                 });
         }
-        self.grant_for(self.notebook(&caller.kernel_id)).await
+        let mut who = self.grant_for(self.notebook(&caller.kernel_id)).await;
+        // A pinned kernel's notebook is written by whoever pinned it (`ganymede
+        // execute` writes it when the run ends), so it has no self.* calls,
+        // whatever its grant says.
+        if self.pinned.lock().unwrap().contains_key(&caller.kernel_id) {
+            who.edit_self = false;
+        }
+        who
     }
 
     /// `notebook`'s grant: the `[host]` defaults, with the notebook's own

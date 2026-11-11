@@ -1133,11 +1133,24 @@ console.log("HOST " + JSON.stringify(out));"#,
         ),
     )
     .unwrap();
+    // A data dir of its own, for the file ids `ganymede grant` keeps, with
+    // the kernelspec in it.
+    let data = root.join(".data");
+    let spec = engine().kernelspec("cdp-node").unwrap().resource_dir;
+    std::fs::create_dir_all(data.join("kernels/cdp-node")).unwrap();
+    for f in std::fs::read_dir(&spec).unwrap() {
+        let f = f.unwrap();
+        if f.file_type().unwrap().is_file() {
+            std::fs::copy(f.path(), data.join("kernels/cdp-node").join(f.file_name())).unwrap();
+        }
+    }
     let report = |grants: &[&str]| -> Value {
         let mut args = vec!["execute", "main.ipynb", "--output", "-"];
         args.extend(grants);
         let mut cmd = ganymede(&args);
-        cmd.current_dir(root).env("JUPYTER_CONFIG_DIR", &config);
+        cmd.current_dir(root)
+            .env("JUPYTER_CONFIG_DIR", &config)
+            .env("JUPYTER_DATA_DIR", &data);
         let out = run_ok(cmd);
         let nb: Value = serde_json::from_slice(&out.stdout).unwrap();
         let text = nb["cells"][0]["outputs"]
@@ -1168,4 +1181,30 @@ console.log("HOST " + JSON.stringify(out));"#,
     // So does the config file's [host].
     std::fs::write(config.join("ganymede.toml"), "[host]\nread = [\"docs\"]\n").unwrap();
     assert_eq!(report(&[])["secret"], "denied");
+    std::fs::remove_file(config.join("ganymede.toml")).unwrap();
+    // A notebook's own grant, from `ganymede grant`, applies as on a
+    // server, and still gives no self.* calls.
+    let mut grant = ganymede(&["grant", "main.ipynb", "read=docs", "edit_self=true"]);
+    grant
+        .current_dir(root)
+        .env("JUPYTER_CONFIG_DIR", &config)
+        .env("JUPYTER_DATA_DIR", &data);
+    run_ok(grant);
+    let own = report(&["--grant", "read="]);
+    assert_eq!(
+        (&own["secret"], &own["edit"]),
+        (&json!("denied"), &json!(false))
+    );
+    // A config file that doesn't parse leaves the run without the host API.
+    std::fs::write(config.join("ganymede.toml"), "[host\n").unwrap();
+    let mut cmd = ganymede(&["execute", "main.ipynb", "--output", "-"]);
+    cmd.current_dir(root)
+        .env("JUPYTER_CONFIG_DIR", &config)
+        .env("JUPYTER_DATA_DIR", &data);
+    let out = cmd.output().unwrap();
+    assert!(
+        stderr(&out).contains("no host API for this run"),
+        "{}",
+        stderr(&out)
+    );
 }

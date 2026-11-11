@@ -251,14 +251,18 @@ holds no token, so it can't grant itself anything.
 
 `ganymede execute` answers its kernels' host calls too, with no server
 running. API paths are relative to the current directory, and a
-notebook under it is its kernel's own notebook. There is no file id
-database, so no notebook's own grant applies: the grants are `[host]`
-from the config file, with `--grant` in place of each key it names.
-`--grant read=PATH` and `--grant run=PATH` are repeatable and take paths
-as `ganymede grant` does; `""` is the whole current directory. An
-executed notebook's kernel has no `self.*` calls, since `execute` writes
-the notebook itself when the run ends. A `notebooks.run` starts its
-kernel as `execute` does and shuts it down when it answers.
+notebook under it is its kernel's own notebook. The defaults are
+`[host]` from the config file, with `--grant` in place of each key it
+names, and a notebook's own grant from `ganymede grant` (with the
+current directory as its root) replaces them key by key, as on a
+server. `--grant read=PATH` and `--grant run=PATH` are repeatable and
+take paths as `ganymede grant` does; `""` is the whole current
+directory. An executed notebook's kernel has no `self.*` calls, whatever
+its grant, since `execute` writes the notebook itself when the run
+ends. A `notebooks.run` starts its kernel from the kernelspecs `serve`
+would use with the same config and `--kernelspec-root` flags, and shuts
+it down when it answers. A config file that doesn't parse, like a host
+that can't start, leaves the run without the host API, with a warning.
 
 ```sh
 ganymede execute index.ipynb --grant read=journal --grant run=reports

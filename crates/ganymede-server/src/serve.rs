@@ -404,9 +404,10 @@ pub fn file_ids(root: &std::path::Path) -> ganymede_contents::FileIds {
 
 /// The host API without a listener (`docs/host-api.md`): how
 /// `ganymede execute` answers its kernels' calls. API paths are relative
-/// to `root_dir`; the grants are `cfg.host`, since there is no file id
-/// database to keep a notebook's own. Kernels it starts are only the runs
-/// its kernels ask for (`notebooks.run`), from `cfg.kernelspec_roots`.
+/// to `root_dir`; the grants are a notebook's own, kept with the file ids
+/// for `root_dir` as `ganymede grant` keeps them, over `cfg.host`. Kernels
+/// it starts are only the runs its kernels ask for (`notebooks.run`),
+/// from `cfg.kernelspec_roots`.
 pub struct LocalHost {
     api: Arc<crate::host::HostApi>,
     responder: Arc<dyn ganymede_host::Responder>,
@@ -451,8 +452,10 @@ impl LocalHost {
             static_dir: None,
             static_headers: Arc::new([]),
             frame_ancestors: crate::frame_ancestors_directive("'self'")?,
+            // The same file ids as a server on this root and `ganymede
+            // grant`, so a notebook's own grant applies here too.
             collab: Arc::new(crate::collab::Collab::new(
-                ganymede_contents::FileIds::in_memory(),
+                file_ids(&root_dir),
                 Some(root_dir),
             )),
             terminals: None,

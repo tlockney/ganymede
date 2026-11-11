@@ -1273,7 +1273,8 @@ async fn the_grants_route_refuses_when_ids_live_in_memory() {
 }
 
 /// A kernel the server didn't start, such as `ganymede execute`'s, is
-/// its notebook's kernel once pinned, and nobody's once unpinned.
+/// its notebook's kernel once pinned, under that notebook's own grant
+/// with no self.* calls, and nobody's once unpinned.
 #[tokio::test]
 async fn a_pinned_kernel_is_its_notebooks_kernel_until_unpinned() {
     let dir = tempfile::tempdir().unwrap();
@@ -1296,6 +1297,35 @@ async fn a_pinned_kernel_is_its_notebooks_kernel_until_unpinned() {
         .call(&caller, "notebooks.read", json!({"path": "index.ipynb"}))
         .await
         .is_ok());
+    // Its notebook's own grant applies, but never self.*: whoever pinned
+    // the kernel writes the notebook.
+    let ids = file_ids(dir.path());
+    let (id, _) = ids.index("index.ipynb");
+    ids.set_grant(&id, Some(r#"{"read":["journal"],"edit_self":true}"#))
+        .unwrap();
+    assert_eq!(
+        api.call(
+            &caller,
+            "notebooks.read",
+            json!({"path": "journal/a.ipynb"})
+        )
+        .await
+        .map(|_| ()),
+        Ok(())
+    );
+    assert!(!api
+        .hello(&caller)
+        .await
+        .methods
+        .iter()
+        .any(|m| m.starts_with("self.")));
+    assert_eq!(
+        api.call(&caller, "self.add", json!({"source": "x"}))
+            .await
+            .unwrap_err()
+            .code,
+        "denied"
+    );
     api.unpin(&caller.kernel_id);
     assert_eq!(api.hello(&caller).await.notebook, None);
     assert_eq!(

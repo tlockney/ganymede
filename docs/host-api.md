@@ -284,10 +284,11 @@ edit_self = true     # the self.* calls; false turns them off
   line first, with `--list` to show a notebook's grants (or every
   notebook's) and `--revoke` to remove one, then a sheet in the apps. A notebook with no file (an
   untitled console) gets the defaults.
-- **`ganymede execute`** has no file id database. It uses `[host]` from
-  the config and `--grant read=<path>` or `--grant run=<path>` on the
-  command line, and gives its kernels no `self.*` calls, since it writes
-  the notebook itself when the run ends.
+- **`ganymede execute`** uses `[host]` from the config with
+  `--grant read=<path>` or `--grant run=<path>` in place of a key as the
+  defaults, and a notebook's own grant over them, as a server does. It
+  gives its kernels no `self.*` calls, since it writes the notebook
+  itself when the run ends.
 
 This is the server's half of "scoped kernels" from the direction review:
 it limits what a kernel can ask the server for. It doesn't limit what a
