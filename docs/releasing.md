@@ -175,6 +175,7 @@ gh run rerun <run-id> --failed --repo tlockney/ganymede
 A rerun of only the failed job reuses the archives the build jobs already
 uploaded, so it attests the same files again, which is harmless. For a
 release published from the main push, rerun only the failed jobs: a
-fresh run of every job finds the tag, becomes a main build and publishes
-nothing. To rebuild instead, run `tag-release.yml`, which releases from
+fresh run of every job finds the tag and becomes a main build: it
+publishes no release and replaces `main-build` with a build of the
+release commit. To rebuild instead, run `tag-release.yml`, which releases from
 the tag.
