@@ -32,6 +32,8 @@
 //! (see the `marks` module).
 
 mod marks;
+#[cfg(test)]
+mod reference;
 pub(crate) mod search;
 mod snapshot;
 
@@ -225,6 +227,7 @@ pub enum AddMode {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AddArgs {
+    /// The cell's source: Markdown, or the command or step it records.
     pub source: String,
     /// Default markdown.
     pub cell_type: Option<CellKind>,
@@ -241,10 +244,14 @@ pub struct AddArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct EditArgs {
+    /// The cell's id.
     pub id: String,
+    /// The new source, in place of the whole cell's.
     pub source: String,
     /// Run the cell after editing it (code cells).
     pub run: Option<bool>,
+    /// With `run`: seconds to wait for the result (default 600). The cell
+    /// keeps running after a timeout.
     pub timeout: Option<u64>,
     /// With `run`: keep the outputs in the notebook (default: as the cell
     /// had it). `false` leaves them out, as `cell_run`'s `keep_outputs`.
@@ -254,6 +261,7 @@ pub struct EditArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ClearOutputsArgs {
+    /// The code cell's id.
     pub id: String,
     /// `true` keeps the cell's outputs again from its next run.
     pub keep: Option<bool>,
@@ -262,12 +270,14 @@ pub struct ClearOutputsArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct IdArgs {
+    /// The cell's id.
     pub id: String,
     pub path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct MoveArgs {
+    /// The id of the cell to move.
     pub id: String,
     /// Put the cell after this one; at the top when left out.
     pub after: Option<String>,
@@ -284,6 +294,7 @@ pub enum KernelAction {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct KernelArgs {
+    /// What to do to the notebook's kernel.
     pub action: KernelAction,
     pub path: Option<String>,
 }
@@ -292,6 +303,8 @@ pub struct KernelArgs {
 pub struct RunAllArgs {
     /// Restart the kernel first (default true).
     pub restart: Option<bool>,
+    /// Seconds to wait for every cell to finish (default 600). Cells keep
+    /// running after a timeout.
     pub timeout: Option<u64>,
     pub path: Option<String>,
 }
