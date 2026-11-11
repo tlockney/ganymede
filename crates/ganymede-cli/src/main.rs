@@ -1009,7 +1009,14 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
             }
         };
         let _guard = interrupt_on_ctrl_c(&kernel, &stop);
+        // Cells this run started: only their outputs are this run's
+        // results. A cell after a failure, or one skipped by tag, still
+        // holds what an earlier run saved.
+        let mut ran = std::collections::BTreeSet::new();
         let mut on_event = |e: ganymede_engine::exec::Event<'_>| {
+            if let ganymede_engine::exec::Event::CellStarted { index, .. } = e {
+                ran.insert(index);
+            }
             if let (true, ganymede_engine::exec::Event::CellFinished { index, cell, ok }) =
                 (verbose, e)
             {
@@ -1040,7 +1047,7 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
                 if let Some(dest) = args.dest.resolve(path) {
                     write_notebook(&nb, dest.as_deref())?;
                 }
-                print_results(args.results, path, Some(&nb), None);
+                print_results(args.results, path, Some((&nb, &ran)), None);
             }
             Err(e) => {
                 eprintln!("  {e}");
@@ -1056,7 +1063,12 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
                     }
                 }
                 // The results published before the failure still count.
-                print_results(args.results, path, Some(&nb), Some(&anyhow::Error::from(e)));
+                print_results(
+                    args.results,
+                    path,
+                    Some((&nb, &ran)),
+                    Some(&anyhow::Error::from(e)),
+                );
                 status = ExitCode::FAILURE;
             }
         }
@@ -1105,7 +1117,7 @@ const PARAMS_ENV: &str = "GANYMEDE_PARAMS";
 
 /// Largest `GANYMEDE_PARAMS`: Windows caps a variable at 32,767
 /// characters, and Linux an argument or variable at 128 KiB.
-const PARAMS_MAX: usize = 32 * 1024;
+const PARAMS_MAX: usize = 32_767;
 
 /// `--params-file`, then each `-p NAME=VALUE` over it. `None` when neither
 /// was given, so a run without parameters sets no variable.
@@ -1163,14 +1175,27 @@ fn record_params(nb: &mut Notebook, params: &serde_json::Map<String, serde_json:
     ganymede["params"] = serde_json::Value::Object(params.clone());
 }
 
-/// `--results`: one JSON line per notebook, with the named results its
-/// outputs published (#650), also when a cell failed after some.
-fn print_results(on: bool, path: &Path, nb: Option<&Notebook>, error: Option<&anyhow::Error>) {
+/// `--results`: one JSON line per notebook, with the named results that
+/// the cells this run started published (#650), also when a later cell
+/// failed.
+fn print_results(
+    on: bool,
+    path: &Path,
+    run: Option<(&Notebook, &std::collections::BTreeSet<usize>)>,
+    error: Option<&anyhow::Error>,
+) {
     if !on {
         return;
     }
-    let results = nb
-        .map(ganymede_engine::nbformat::named_results)
+    let results = run
+        .map(|(nb, ran)| {
+            ganymede_engine::nbformat::named_results_of(ran.iter().flat_map(|&i| {
+                match nb.cells.get(i) {
+                    Some(Cell::Code(c)) => c.outputs.as_slice(),
+                    _ => &[],
+                }
+            }))
+        })
         .unwrap_or_default();
     let mut line = serde_json::json!({
         "path": path.to_string_lossy(),

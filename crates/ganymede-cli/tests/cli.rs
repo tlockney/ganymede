@@ -394,6 +394,43 @@ fn execute_params_are_recorded_and_results_printed() {
 }
 
 #[test]
+fn execute_results_come_only_from_cells_the_run_executed() {
+    // Saved results from an earlier run: in a cell that runs again (its
+    // outputs are replaced), one skipped by tag, and one after a failure.
+    let dir = tempfile::tempdir().unwrap();
+    let nb = dir.path().join("stale.ipynb");
+    let saved = |name: &str| {
+        serde_json::json!([{ "output_type": "display_data", "metadata": {},
+            "data": { "application/vnd.ganymede.result+json": { "name": name, "value": 1 } } }])
+    };
+    let cell = |id: &str, source: &str, tags: serde_json::Value, name: &str| {
+        serde_json::json!({ "cell_type": "code", "id": id, "metadata": { "tags": tags },
+            "source": source, "execution_count": 1, "outputs": saved(name) })
+    };
+    let doc = |failing: bool| {
+        serde_json::json!({
+            "nbformat": 4, "nbformat_minor": 5, "metadata": {},
+            "cells": [
+                cell("a", "one", serde_json::json!([]), "reran"),
+                cell("b", "two", serde_json::json!(["skip-execution"]), "skipped"),
+                cell("c", if failing { "raise" } else { "two" }, serde_json::json!([]), "failing"),
+                cell("d", "two", serde_json::json!([]), "after"),
+            ],
+        })
+    };
+    for (failing, code) in [(false, 0), (true, 1)] {
+        std::fs::write(&nb, doc(failing).to_string()).unwrap();
+        let out = ganymede(&["execute", "-k", "fake", "--results"])
+            .arg(&nb)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(code), "{}", stderr(&out));
+        let line: serde_json::Value = serde_json::from_str(stdout(&out).trim()).unwrap();
+        assert_eq!(line["results"], serde_json::json!({}), "failing: {failing}");
+    }
+}
+
+#[test]
 fn execute_param_mistakes_are_reported_before_running() {
     let dir = tempfile::tempdir().unwrap();
     let nb = fake_notebook(dir.path());

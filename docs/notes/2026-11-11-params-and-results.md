@@ -8,9 +8,12 @@ reading results as a MIME type, `application/vnd.ganymede.result+json`
 output with a name wins, as in scrapbook.
 
 - An environment variable over a file: every launcher and kernel can
-  use it, and it needs no cleanup. It is capped at 32 KiB, Windows'
-  limit being 32,767 characters; bigger inputs belong in a file whose
+  use it, and it needs no cleanup. It is capped at 32,767 bytes, the
+  Windows limit for a variable; bigger inputs belong in a file whose
   path is a parameter.
+- `--results` reads only the cells the run started. A cell after a
+  failure, or one skipped by tag, still holds outputs an earlier run
+  saved, and those aren't this run's results.
 - Values are read as JSON when they parse, as papermill reads numbers,
   so `-p days=7` is a number. A string that looks like JSON needs its
   quotes (`-p 'id="007"'`).
