@@ -32,8 +32,8 @@ Four priorities, in order:
 1. **The notebook as a program.** A notebook takes parameters, returns
    named results, and runs from the CLI, the server API, app links,
    Shortcuts and other notebooks. A kernel can read and run notebooks
-   through the host API, under per-notebook grants that narrow and never
-   widen. ([Notebooks as programs](programs.md))
+   through the host API, under explicit per-notebook grants; a notebook
+   run from another can't reach more than its caller. ([Notebooks as programs](programs.md))
 2. **The apps as a full runtime.** The apps run notebooks in-process
    with no external server, with device APIs, automation, widgets and
    the share extension, and can switch to a remote server from the
