@@ -844,8 +844,12 @@ fn cli_execute_passes_params_and_prints_results() {
             l.kernel
         );
 
-        // Without -p the kernel gets no variable.
-        let out = run_ok(ganymede(&["execute", "-q", "--results"]).arg(&nb));
+        // Without -p the kernel gets `{}`, not a parent run's parameters.
+        let out = run_ok(
+            ganymede(&["execute", "-q", "--results"])
+                .env("GANYMEDE_PARAMS", r#"{"leaked":1}"#)
+                .arg(&nb),
+        );
         let line: Value = serde_json::from_str(stdout(&out).trim()).unwrap();
         assert_eq!(line["results"], json!({ "got": {} }), "{}", l.kernel);
     }

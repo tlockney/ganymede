@@ -381,6 +381,25 @@ fn execute_params_are_recorded_and_results_printed() {
         })
     );
 
+    // A later run without parameters drops the earlier run's.
+    run_ok(ganymede(&["execute", "-k", "fake", "--inplace"]).arg(&out_nb));
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out_nb).unwrap()).unwrap();
+    assert_eq!(
+        saved["metadata"]["ganymede"],
+        serde_json::json!({ "agent": "x" })
+    );
+
+    // A run whose notebook can't be written still gets a line.
+    let out = ganymede(&["execute", "-k", "fake", "--results", "-o"])
+        .arg(dir.path().join("no/such/dir/out.ipynb"))
+        .arg(&nb)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let line: serde_json::Value = serde_json::from_str(stdout(&out).trim()).unwrap();
+    assert_eq!(line["status"], "error");
+
     // A notebook that can't be read still gets a line.
     let missing = dir.path().join("missing.ipynb");
     let out = ganymede(&["execute", "-k", "fake", "--results"])

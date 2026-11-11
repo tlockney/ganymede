@@ -23,3 +23,7 @@ output with a name wins, as in scrapbook.
 - cdp-kernel's `jupyter.params` / `jupyter.result` (cdp-kernel#456) need
   its next release; the tests here write the MIME type by hand, so they
   pass with any release.
+- `execute` sets `GANYMEDE_PARAMS` on every kernel it starts, `{}`
+  without `-p`, because a kernel's environment adds to the parent's: a
+  notebook that runs `ganymede execute` from a cell would otherwise pass
+  its own parameters on.

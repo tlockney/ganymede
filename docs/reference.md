@@ -324,7 +324,7 @@ that reads the variable and writes the MIME type takes part.
 
 | What | Format |
 | --- | --- |
-| `GANYMEDE_PARAMS` | Set on the kernel when `-p` or `--params-file` is given: the parameters as one JSON object, at most 32,767 bytes. The executed notebook records them in `metadata.ganymede.params`. |
+| `GANYMEDE_PARAMS` | Set on every kernel `execute` starts: the parameters from `-p` and `--params-file` as one JSON object, at most 32,767 bytes, or `{}` without them, so a kernel never inherits a parent run's. The executed notebook records them in `metadata.ganymede.params`, and a run without them removes that key. |
 | `application/vnd.ganymede.result+json` | A named result: a `display_data` or `execute_result` output whose bundle holds `{ "name": string, "value": JSON }`. Add a `text/plain` entry for frontends that don't know the type. |
 | `application/scrapbook.scrap.json+json`, `application/scrapbook.scrap.text+json` | Python scrapbook's scraps (`sb.glue`), read as named results from their `name` and `data`. |
 

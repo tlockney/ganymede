@@ -936,10 +936,12 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
         return Err(Usage("--results and --output - both write to stdout".into()).into());
     }
     let params = run_params(&args.params, args.params_file.as_deref())?;
-    let env = match &params {
-        Some(p) => vec![(PARAMS_ENV.to_string(), params_env(p)?)],
-        None => vec![],
-    };
+    // Always set, `{}` without parameters, so a kernel never inherits a
+    // parent run's GANYMEDE_PARAMS (a notebook that runs another).
+    let env = vec![(
+        PARAMS_ENV.to_string(),
+        params_env(params.as_ref().unwrap_or(&Default::default()))?,
+    )];
     let opts = ganymede_engine::NotebookOptions {
         timeout: (args.timeout > 0).then(|| Duration::from_secs(args.timeout)),
         allow_errors: args.allow_errors,
@@ -969,9 +971,7 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
                 continue;
             }
         };
-        if let Some(p) = &params {
-            record_params(&mut nb, p);
-        }
+        record_params(&mut nb, params.as_ref());
         let name = match &args.kernel {
             Some(k) => k.clone(),
             None => match ganymede_engine::notebook_kernel_name(&nb) {
@@ -1031,10 +1031,14 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
             r = kernel.run_notebook_with(&mut nb, &opts, &mut on_event) => r,
             sig = stop.recv() => {
                 stop_kernel(&kernel, &target).await;
+                print_results(args.results, path, None, Some(&anyhow::anyhow!("stopped by a signal")));
                 return Ok(exit_on_signal(sig));
             }
         };
-        close(&kernel, &target).await?;
+        if let Err(e) = close(&kernel, &target).await {
+            print_results(args.results, path, None, Some(&e));
+            return Err(e);
+        }
         // Like nbclient, a failed run is not saved: the notebook would
         // look executed when it was not.
         match result {
@@ -1045,7 +1049,10 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
                     report.errored.len()
                 );
                 if let Some(dest) = args.dest.resolve(path) {
-                    write_notebook(&nb, dest.as_deref())?;
+                    if let Err(e) = write_notebook(&nb, dest.as_deref()) {
+                        print_results(args.results, path, Some((&nb, &ran)), Some(&e));
+                        return Err(e);
+                    }
                 }
                 print_results(args.results, path, Some((&nb, &ran)), None);
             }
@@ -1163,8 +1170,21 @@ fn params_env(params: &serde_json::Map<String, serde_json::Value>) -> Result<Str
 }
 
 /// Records a run's parameters in `metadata.ganymede.params`, so the
-/// executed notebook says what it ran with.
-fn record_params(nb: &mut Notebook, params: &serde_json::Map<String, serde_json::Value>) {
+/// executed notebook says what it ran with; a run without them removes an
+/// earlier run's.
+fn record_params(nb: &mut Notebook, params: Option<&serde_json::Map<String, serde_json::Value>>) {
+    let Some(params) = params else {
+        if let Some(g) = nb
+            .metadata
+            .get_mut("ganymede")
+            .and_then(|g| g.as_object_mut())
+        {
+            if g.remove("params").is_some() && g.is_empty() {
+                nb.metadata.remove("ganymede");
+            }
+        }
+        return;
+    };
     let ganymede = nb
         .metadata
         .entry("ganymede")
