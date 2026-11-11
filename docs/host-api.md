@@ -9,10 +9,6 @@ says which.
 
 ## What's built
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 The server opens the host comm to every kernel with subshells, keeps its
 traffic from other clients, and answers `hello`, `notebooks.list`,
 `notebooks.read`, `notebooks.search` and `notebooks.results`, with the `[host] read` grant

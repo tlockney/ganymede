@@ -67,10 +67,6 @@ doesn't write the file back.
 
 ### Trust
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 The room signs the notebook when it saves it, as jupyter_server signs a
 notebook a frontend saves with every cell trusted, so it opens trusted
 next time. A code cell's outputs are trusted when they came from a run
@@ -98,10 +94,6 @@ socket. A write to a client may take 30 seconds plus one more for every
 64 KiB, and a write that long counts as hearing from the client, so a
 large notebook's first sync gets through a slow link. A client
 reconnects and resyncs as after any drop.
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 ## File ids
 
@@ -142,10 +134,6 @@ ten seconds. A cell that fails stops the rest of its batch.
 ![Running cells into a room. A client such as nb-cli or ganymede mcp sends POST /api/kernels/{id}/execute with the document id and each cell's id and source hash (MurmurHash2, seed 0). Ganymede checks each cell's source in the room against its hash: if one changed it answers 409 source_mismatch, and if the previous request wasn't queued within ten seconds it answers 408, and nothing runs. Otherwise it clears the cells, queues them as one batch and answers 200 null. It sends the cells to the kernel one after another; a cell that fails stops the rest of the batch. As outputs arrive on iopub, Ganymede writes them and the execution count into the room, so every client sees them and autosave writes them to the file even with no client connected.](images/rooms/execute.svg)
 
 ### Waiting for the cells
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 Ganymede adds an optional `wait` field, in seconds (at most 3600), for
 clients that can't follow the room, such as the apps' Shortcuts actions.

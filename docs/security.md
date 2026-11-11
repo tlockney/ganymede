@@ -30,10 +30,6 @@ in another site, list that origin in `frame_ancestors`
 ([reference](reference.md)); `static_headers` can also set its own
 `frame-ancestors` for a static page.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 ## Tokens and cookies
 
 - The token is checked in an `Authorization: token <t>` (or `Bearer`)

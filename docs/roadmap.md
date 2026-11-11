@@ -77,13 +77,6 @@ pull request with a GitHub issue, and records what it learned in the
 - **Parameters on app links.** `ganymede://run` links and Shortcuts pass
   parameters to a run (ganymede-ui 0.7.0)
   ([ganymede-ui#303](https://github.com/tlockney/ganymede-ui/issues/303)).
-
-### Done on `main`
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 - **Parameters and named results.** `ganymede execute -p` and
   `--params-file` pass parameters, `--results` prints the named results,
   and `POST /api/notebooks/run` does the same over HTTP
