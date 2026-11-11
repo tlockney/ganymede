@@ -75,33 +75,74 @@ pull request with a GitHub issue, and records what it learned in the
   release, and the iPad and iPhone app is on TestFlight for internal
   testers.
 
+### Done on `main`
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+- **Parameters and named results.** `ganymede execute -p` and
+  `--params-file` pass parameters, `--results` prints the named results,
+  and `POST /api/notebooks/run` does the same over HTTP
+  ([Parameters and named results](reference.md#parameters-and-named-results)).
+- **Host API.** Cells read, search and run notebooks, and edit their
+  own, through the host comm: `notebooks.list`, `read`, `search`,
+  `results` and `run`, and `self.*`, under per-notebook grants set with
+  `ganymede grant`
+  ([A host API for kernels](host-api.md)).
+- **In-app kernels as server kernels.** Ganymede's C functions let an
+  app register its own kernels with the embedded server
+  ([In-app kernels as server kernels](in-app-kernel.md)).
+
 ## Next
 
-1. **ganymede-ui on document rooms.** The app opens notebooks through
-   rooms, so edits from an agent, another window or another device arrive
-   live, and shows the agent's journal as it is written
-   ([ganymede-ui#183](https://github.com/tlockney/ganymede-ui/issues/183),
-   [#184](https://github.com/tlockney/ganymede-ui/issues/184)).
-2. **A Python kernel in the apps.** Pyodide, run in the page like the
-   in-app TypeScript kernel, so the iPad and iPhone app runs Python
-   notebooks with no server
-   ([ganymede-ui#258](https://github.com/tlockney/ganymede-ui/issues/258),
-   [#375](https://github.com/tlockney/ganymede/issues/375)). Python stays
-   out of the product: it is a kernel the page loads.
+In order of priority.
+
+1. **The notebook as a program.** A notebook takes parameters, returns
+   named results, and runs from the CLI, the server API, app links,
+   Shortcuts and other notebooks, through one run contract. Grants are
+   per notebook and only narrow. Next:
+   - granting from `ganymede execute` and a granting sheet in the apps
+     ([#647](https://github.com/tlockney/ganymede/issues/647));
+   - saving each run as a copy
+     ([#658](https://github.com/tlockney/ganymede/issues/658));
+   - parameters on `ganymede://run` links and in Shortcuts
+     ([ganymede-ui#303](https://github.com/tlockney/ganymede-ui/issues/303)).
+2. **The apps as a full runtime.** The apps run notebooks in-process,
+   with no external server. Next:
+   - a native in-app engine, jitless V8, unless its size or speed on a
+     device rules it out (measured in `spikes/v8-engine/`);
+   - device APIs ([ganymede-device](https://github.com/tlockney/ganymede-device));
+   - automation: Shortcuts, links, MCP from the Mac app, Spotlight
+     ([ganymede-ui#301](https://github.com/tlockney/ganymede-ui/issues/301));
+   - widgets ([ganymede-ui#436](https://github.com/tlockney/ganymede-ui/issues/436))
+     and the share extension
+     ([ganymede-ui#449](https://github.com/tlockney/ganymede-ui/issues/449)).
+3. **A person and an agent in one live notebook.** The app opens
+   notebooks through rooms, so edits from an agent, another window or
+   another device arrive live, and shows the agent's journal as it is
+   written ([ganymede-ui#183](https://github.com/tlockney/ganymede-ui/issues/183),
+   [#184](https://github.com/tlockney/ganymede-ui/issues/184)). Journal
+   sessions get evals
+   ([#316](https://github.com/tlockney/ganymede/issues/316)).
+4. **TypeScript notebooks for TypeScript developers.**
+   [cdp-kernel](https://github.com/tlockney/cdp-kernel) is the
+   first-class kernel, on Node and Deno first.
+
+## Not now
+
+Wanted eventually, but not being worked on:
+
+- A Python kernel in the apps through Pyodide
+  ([ganymede-ui#258](https://github.com/tlockney/ganymede-ui/issues/258)).
+  Python would stay out of the product: a kernel the page loads.
+- MCP Apps: a read-only notebook view for chat hosts
+  ([#643](https://github.com/tlockney/ganymede/issues/643)).
+- A native kernel for a language other than JavaScript.
+- CurveZMQ for the ZeroMQ transport. ipykernel 7 already advertises it.
 
 ## Open
 
-- A native on-device kernel for the iPad app: cdp-kernel in the app's
-  process instead of the web view, behind the `Provisioner` and
-  `TransportFactory` seams that already accept a kernel with no ZeroMQ.
-  The first step registers today's in-app kernel with the embedded
-  server ([In-app kernels as server kernels](in-app-kernel.md)): the C
-  functions are on `main` in Ganymede, and the apps use them next.
-- A host API for kernels: cells read, search and run other notebooks
-  through calls the server answers over a comm, granted per notebook,
-  with no server token in the kernel. Design agreed:
-  [A host API for kernels](host-api.md).
-- CurveZMQ for the ZeroMQ transport. ipykernel 7 already advertises it.
 - Trusting `tailscale serve`'s identity headers, so a client on the
   tailnet needs no token.
 - A Linux build for musl (Alpine).
