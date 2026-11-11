@@ -148,6 +148,7 @@ async fn setup(root: &std::path::Path, path: &str, read: &[&str]) -> (HostApi, C
         .unwrap();
     let config = HostConfig {
         read: read.iter().map(|s| s.to_string()).collect(),
+        ..Default::default()
     };
     let caller = Caller {
         kernel_id: session.kernel.id.clone(),
@@ -164,14 +165,26 @@ async fn hello_names_the_notebook_and_methods() {
     assert_eq!(hello.notebook.as_deref(), Some("index.ipynb"));
     assert_eq!(
         hello.methods,
-        ["notebooks.list", "notebooks.read", "notebooks.search"]
+        [
+            "notebooks.list",
+            "notebooks.read",
+            "notebooks.search",
+            "self.add",
+            "self.edit",
+            "self.delete"
+        ]
     );
+    // A kernel with no notebook has nothing of its own to edit.
     let none = api
         .hello(&Caller {
             kernel_id: "no-such-kernel".into(),
         })
         .await;
     assert_eq!(none.notebook, None);
+    assert_eq!(
+        none.methods,
+        ["notebooks.list", "notebooks.read", "notebooks.search"]
+    );
 }
 
 #[tokio::test]
@@ -414,7 +427,13 @@ async fn a_notebook_that_joins_the_kernel_does_not_take_its_place() {
     let caller = Caller {
         kernel_id: first.kernel.id.clone(),
     };
-    let api = HostApi::new(state.clone(), &HostConfig { read: vec![] });
+    let api = HostApi::new(
+        state.clone(),
+        &HostConfig {
+            read: vec![],
+            ..Default::default()
+        },
+    );
     assert_eq!(
         api.hello(&caller).await.notebook.as_deref(),
         Some("index.ipynb")
@@ -434,4 +453,177 @@ async fn a_notebook_that_joins_the_kernel_does_not_take_its_place() {
         api.hello(&caller).await.notebook.as_deref(),
         Some("index.ipynb")
     );
+}
+
+/// The cells of `path` as `notebooks.read` returns them: `(id, source, hash)`.
+async fn cells(api: &HostApi, caller: &Caller, path: &str) -> Vec<(String, String, String)> {
+    let read = api
+        .call(caller, "notebooks.read", json!({ "path": path }))
+        .await
+        .unwrap();
+    read["notebook"]["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            let id = c["id"].as_str().unwrap().to_string();
+            let source = match &c["source"] {
+                Value::String(s) => s.clone(),
+                Value::Array(a) => a.iter().filter_map(Value::as_str).collect(),
+                _ => String::new(),
+            };
+            let hash = read["hashes"][&id].as_str().unwrap().to_string();
+            (id, source, hash)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_notebook_adds_edits_and_deletes_its_own_cells() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let (api, caller) = setup(dir.path(), "index.ipynb", &[]).await;
+    let first = cells(&api, &caller, "index.ipynb").await[0].clone();
+
+    let added = api
+        .call(
+            &caller,
+            "self.add",
+            json!({"cell_type": "markdown", "source": "| a |", "after": first.0}),
+        )
+        .await
+        .unwrap();
+    let id = added["id"].as_str().unwrap().to_string();
+    let now = cells(&api, &caller, "index.ipynb").await;
+    assert_eq!(now.len(), 2);
+    assert_eq!(
+        (now[1].0.as_str(), now[1].1.as_str()),
+        (id.as_str(), "| a |")
+    );
+
+    // An edit names the hash it read.
+    let hash = now[1].2.clone();
+    api.call(
+        &caller,
+        "self.edit",
+        json!({"id": id, "source": "| b |", "source_hash": hash}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(cells(&api, &caller, "index.ipynb").await[1].1, "| b |");
+    // The old hash is stale now.
+    let err = api
+        .call(
+            &caller,
+            "self.edit",
+            json!({"id": id, "source": "| c |", "source_hash": hash}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "failed");
+    assert!(
+        err.message.starts_with("source_mismatch"),
+        "{}",
+        err.message
+    );
+    let err = api
+        .call(
+            &caller,
+            "self.delete",
+            json!({"id": id, "source_hash": hash}),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.message.starts_with("source_mismatch"),
+        "{}",
+        err.message
+    );
+
+    let hash = cells(&api, &caller, "index.ipynb").await[1].2.clone();
+    api.call(
+        &caller,
+        "self.delete",
+        json!({"id": id, "source_hash": hash}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(cells(&api, &caller, "index.ipynb").await.len(), 1);
+
+    let err = api
+        .call(
+            &caller,
+            "self.delete",
+            json!({"id": "nope", "source_hash": "0"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.message, "no cell nope");
+
+    // Bad params fail without touching the notebook.
+    for params in [
+        json!({"cell_type": 1, "source": "x = 1"}),
+        json!({"cell_type": "heading", "source": "x"}),
+        json!({"source": "x", "after": "nope"}),
+    ] {
+        let err = api.call(&caller, "self.add", params).await.unwrap_err();
+        assert_eq!(err.code, "failed", "{}", err.message);
+    }
+    assert_eq!(cells(&api, &caller, "index.ipynb").await.len(), 1);
+
+    // A kernel with no notebook has nothing to edit.
+    let err = api
+        .call(
+            &Caller {
+                kernel_id: "no-such-kernel".into(),
+            },
+            "self.add",
+            json!({"source": "x"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "unavailable");
+}
+
+#[tokio::test]
+async fn edit_self_off_takes_the_self_calls_away() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let state = state(dir.path());
+    let session = state
+        .sessions
+        .create(SessionCreate {
+            path: "index.ipynb".into(),
+            name: None,
+            type_: Some("notebook".into()),
+            kernel: Default::default(),
+        })
+        .await
+        .unwrap();
+    let caller = Caller {
+        kernel_id: session.kernel.id.clone(),
+    };
+    let api = HostApi::new(
+        state,
+        &HostConfig {
+            edit_self: false,
+            ..Default::default()
+        },
+    );
+    assert!(!api
+        .hello(&caller)
+        .await
+        .methods
+        .iter()
+        .any(|m| m.starts_with("self.")));
+    let err = api
+        .call(
+            &caller,
+            "self.add",
+            json!({"cell_type": "markdown", "source": "x"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "denied");
+    assert!(err.message.contains("[host] edit_self"), "{}", err.message);
 }
