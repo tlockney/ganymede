@@ -8,10 +8,9 @@ name: V8 spike
 #   JIT), Node (with and without --jitless), and WebKit Workers with
 #   today's browser kernel. The macOS cell (Apple silicon) is the closest
 #   CI gets to an iPad: jitless V8 there runs as it would on the device.
-# ios: rusty_v8 built from source for aarch64-apple-ios (jitless, no
+# ios: rusty_v8's device library for aarch64-apple-ios (jitless, no
 #   WebAssembly), the size it adds to an app, and the bench app built
-#   unsigned. The V8 build is cached by Cargo.lock; the first build takes
-#   hours.
+#   unsigned.
 on:
   pull_request:
     paths:
@@ -82,9 +81,7 @@ jobs:
 
   ios:
     runs-on: macos-latest
-    timeout-minutes: 360
-    env:
-      PREBUILT: ${{ github.workspace }}/v8-ios-prebuilt
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -93,42 +90,14 @@ jobs:
         with:
           toolchain: stable
           targets: aarch64-apple-ios
-      # V8 built for the device: its static library and bindings, keyed by
-      # the lockfile (which pins the v8 crate).
-      - id: cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: v8-ios-prebuilt
-          key: v8-ios-${{ hashFiles('spikes/v8-engine/Cargo.lock') }}
-      - name: Use the cached V8
-        if: steps.cache.outputs.cache-hit == 'true'
-        run: |
-          echo "RUSTY_V8_ARCHIVE=$PREBUILT/librusty_v8.a" >> "$GITHUB_ENV"
-          echo "RUSTY_V8_SRC_BINDING_PATH=$PREBUILT/src_binding.rs" >> "$GITHUB_ENV"
-      - name: Build V8 from source
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: |
-          # bindgen needs libclang 21.1 or later; Xcode's is older.
-          brew install llvm
-          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
-          echo "V8_FROM_SOURCE=1" >> "$GITHUB_ENV"
+      # rusty_v8 publishes the device library it builds in its own CI
+      # (jitless, no WebAssembly, by its build.rs), and the v8 crate's
+      # build downloads it, as it does for every other target.
       - name: Size added to an app
         run: |
           mkdir -p results
           scripts/ios-size.sh > results/ios-size.json
           cat results/ios-size.json
-      - name: Keep V8 for the next run
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p "$PREBUILT"
-          cp target/aarch64-apple-ios/release/gn_out/obj/librusty_v8.a "$PREBUILT/"
-          cp target/aarch64-apple-ios/release/gn_out/src_binding.rs "$PREBUILT/"
-          cp target/aarch64-apple-ios/release/gn_out/args.gn "$PREBUILT/"
-      - if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: v8-ios-prebuilt
-          key: v8-ios-${{ hashFiles('spikes/v8-engine/Cargo.lock') }}
       - name: Report
         run: |
           node -e '
@@ -144,9 +113,6 @@ jobs:
               `| static library (before linking) | ${mb(s.static_lib_bytes)} |`,
             ].join("\n"));
           ' | tee -a "$GITHUB_STEP_SUMMARY"
-          if [ -f "$PREBUILT/args.gn" ]; then
-            { echo; echo "V8's GN args:"; echo; echo '```'; cat "$PREBUILT/args.gn"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          fi
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
@@ -169,4 +135,3 @@ jobs:
           path: |
             spikes/v8-engine/results/
             spikes/v8-engine/target/aarch64-apple-ios/release/libganymede_v8_spike.a
-            v8-ios-prebuilt/

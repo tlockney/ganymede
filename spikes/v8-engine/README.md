@@ -9,10 +9,10 @@ workspace and its own workflow (`.github/workflows/v8-spike.yml`).
 
 It measures two things:
 
-- **Size.** `scripts/ios-size.sh` builds V8 from source for
-  `aarch64-apple-ios` (jitless, no WebAssembly, as rusty_v8's build sets
-  for the device), links it into a stand-in app with and without V8, and
-  reports the difference, stripped and compressed.
+- **Size.** `scripts/ios-size.sh` takes rusty_v8's library for
+  `aarch64-apple-ios` (built jitless and without WebAssembly by rusty_v8's
+  CI, as its build.rs sets for the device), links a stand-in app with and
+  without it, and reports the difference, stripped and compressed.
 - **Performance.** The same workloads on each engine, each workload in a
   fresh engine instance, as a kernel start would be:
 
@@ -61,18 +61,17 @@ By hand, on a device of your own. You need a Mac with Xcode, and a
 signing team (a free Apple ID works for your own device). The app's
 bundle ID, `com.ganymede-server.spike.V8Bench`, is not the Ganymede app's.
 
-1. Get the device library. Either download the `v8-spike-ios` artifact
-   from the latest run of the **V8 spike** workflow, and put its
-   `libganymede_v8_spike.a` at
-   `spikes/v8-engine/target/aarch64-apple-ios/release/`; or build it
-   (the first build of V8 takes an hour or more):
+1. Build the device library (it downloads rusty_v8's, about a minute):
 
    ```sh
-   brew install llvm
    rustup target add aarch64-apple-ios
    cd spikes/v8-engine
-   V8_FROM_SOURCE=1 LIBCLANG_PATH="$(brew --prefix llvm)/lib" scripts/ios-size.sh
+   scripts/ios-size.sh
    ```
+
+   Or download the `v8-spike-ios` artifact from the latest run of the
+   **V8 spike** workflow and put its `libganymede_v8_spike.a` at
+   `spikes/v8-engine/target/aarch64-apple-ios/release/`.
 
 2. Stage the workloads and generate the project:
 
@@ -106,8 +105,8 @@ bundle ID, `com.ganymede-server.spike.V8Bench`, is not the Ganymede app's.
 ## Caveats
 
 - Jitless V8 on a Mac (CI's `--jitless` runs) uses a library built with
-  the JIT and turned off at run time. The device build leaves the JIT
-  out. Both run V8's interpreter, so the Mac numbers are a guide to the
+  the JIT and turned off at run time. The device library leaves the JIT
+  out at build time. Both run V8's interpreter, so the Mac numbers are a guide to the
   device's, not a substitute.
 - `start` for V8 is the isolate and context alone. A V8 kernel would add
   its kernel code (cdp-kernel's core, now run on the page) on top, so

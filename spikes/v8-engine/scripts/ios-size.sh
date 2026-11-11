@@ -1,14 +1,17 @@
 #!/bin/sh
 # What V8 adds to an iOS app binary (#646). On an arm64 Mac with Xcode:
 #
-#   V8_FROM_SOURCE=1 scripts/ios-size.sh
+#   scripts/ios-size.sh
 #
 # Builds the spike's static library for aarch64-apple-ios twice, with V8
-# (rusty_v8 from source: jitless, no WebAssembly, as its build.rs sets for
-# the device) and without, links each into the same stand-in app
-# (size-main.c) with dead-stripping, strips it as an App Store build is
-# stripped, and prints the sizes, raw and compressed, as JSON. The first
-# build of V8 from source takes a long time; later ones reuse target/.
+# and without, links each into the same stand-in app (size-main.c) with
+# dead-stripping, strips it as an App Store build is stripped, and prints
+# the sizes, raw and compressed, as JSON. V8 is rusty_v8's published
+# device library, which its CI builds jitless and without WebAssembly
+# (its build.rs sets that for aarch64-apple-ios). The v8 crate's
+# published source can't build V8 itself: Cargo's packaging drops the
+# vendored crates and ICU's iOS data that V8_FROM_SOURCE=1 needs, so a
+# source build needs a rusty_v8 git checkout with its submodules.
 #
 # Leaves target/aarch64-apple-ios/release/libganymede_v8_spike.a, which
 # the bench app (ios/) links.
@@ -23,10 +26,6 @@ mkdir -p "$out"
 libs_of() {
   sed -n 's/.*native-static-libs: //p' "$1" | tail -1
 }
-
-if [ -n "${V8_FROM_SOURCE:-}" ]; then
-  scripts/fetch-icu-data.sh
-fi
 
 echo "building with V8 ..." >&2
 cargo rustc --release --locked --target "$target" --lib --crate-type staticlib -- --print native-static-libs 2> "$out/with-v8.log" || {
