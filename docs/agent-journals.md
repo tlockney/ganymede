@@ -95,3 +95,10 @@ The Mac, iPad and iPhone apps don't open notebooks through rooms yet,
 so they don't show an agent's edits as they happen. Opening
 notebooks through rooms, so the agent's journal shows live in the app,
 is the [roadmap](roadmap.md)'s third priority.
+
+## These docs, for an agent
+
+[llms.txt](https://ganymede-server.com/llms.txt) indexes this site for
+an agent: every page in sidebar order, with its first sentence, linking
+the page's Markdown. Each page's Markdown is its URL plus `.md`, such as
+[docs/install.md](https://ganymede-server.com/docs/install.md).

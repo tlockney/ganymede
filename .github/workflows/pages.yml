@@ -85,6 +85,8 @@ jobs:
           cp -R site/. "$RUNNER_TEMP/site/"
           cp -R docs/.vitepress/dist "$RUNNER_TEMP/site/docs"
           cp -R docs/images "$RUNNER_TEMP/site/images"
+          # llms.txt at the root too, where agents look for it (llms.ts).
+          cp docs/.vitepress/dist/llms.txt "$RUNNER_TEMP/site/llms.txt"
           # The landing page's diagram is the light and dark copies the docs
           # build writes (docs/.vitepress/themed.ts).
           test -f "$RUNNER_TEMP/site/images/themed/architecture/ganymede.dark.svg"
@@ -114,6 +116,8 @@ jobs:
           check() { curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o /dev/null "$1" && echo "ok $1"; }
           check "$SITE_URL/"
           check "$SITE_URL/install.sh"
+          check "$SITE_URL/llms.txt"
+          check "$SITE_URL/docs/install.md"
           check "$SITE_URL/images/themed/architecture/ganymede.light.svg"
           page=$(curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors "$SITE_URL/docs/install")
           css=$(printf '%s' "$page" | grep -o '/[^"]*/assets/style\.[^"]*\.css' | head -n 1)
