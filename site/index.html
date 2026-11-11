@@ -62,16 +62,18 @@
         cells on Node, Deno, or in the app.</li>
     </ul>
     <div class="cta">
-      <a class="btn primary" id="mac-download" href="https://github.com/tlockney/ganymede-ui/releases/latest">Download for Mac</a>
+      <a class="btn primary mac-download" href="https://github.com/tlockney/ganymede-ui/releases/latest">Download for Mac</a>
       <a class="btn" href="#install">Install the command line</a>
     </div>
+    <p class="platforms">The Mac app needs macOS 26 or later on Apple silicon. The command line
+      runs on Linux and macOS.</p>
     <p class="byline"><a href="https://github.com/tlockney/ganymede/releases/latest">Latest
       release</a> · MIT license · <a href="#status">Early software</a></p>
   </div>
   <figure class="shot app-mac">
-    <img class="only-light" src="images/apps/mac-light.png" width="1280" height="820"
+    <img class="only-light" src="images/apps/mac-light.png" width="1280" height="820" loading="lazy"
       alt="The Ganymede Mac app: a sidebar listing notebooks, a toolbar with run and kernel controls, and a TypeScript notebook on Jupiter's moons with printed orbital periods, computed ratios, and an HTML result.">
-    <img class="only-dark" src="images/apps/mac-dark.png" width="1280" height="820"
+    <img class="only-dark" src="images/apps/mac-dark.png" width="1280" height="820" loading="lazy"
       alt="The Ganymede Mac app: a sidebar listing notebooks, a toolbar with run and kernel controls, and a TypeScript notebook on Jupiter's moons with printed orbital periods, computed ratios, and an HTML result.">
     <figcaption>The Mac app, running a TypeScript notebook.</figcaption>
   </figure>
@@ -107,7 +109,7 @@
           <code>Ganymede.app</code> to Applications. It updates itself, opens
           <code>ganymede://</code> links, and gives Shortcuts actions to run notebooks.</p>
         <div class="cta">
-          <a class="btn primary" href="https://github.com/tlockney/ganymede-ui/releases/latest">Download for Mac</a>
+          <a class="btn primary mac-download" href="https://github.com/tlockney/ganymede-ui/releases/latest">Download for Mac</a>
           <a class="btn" href="https://github.com/tlockney/ganymede-ui/releases/latest">Release notes</a>
         </div>
       </article>
@@ -173,7 +175,9 @@ jupyter.result(<span class="s">"weekday_drop"</span>, -0.19);</code></pre></div>
         <a href="docs/examples">Example journals</a></p>
     </div>
     <figure class="shot">
-      <img src="images/publish/journal-page.png" width="1280" height="860" loading="lazy"
+      <img class="only-light" src="images/publish/journal-page.png" width="1280" height="860" loading="lazy"
+        alt="A published journal on Oklahoma's earthquakes: a contents list of eight questions, a recorded shell command that fetched the data, and a bar chart of earthquakes per year that peaks in 2015.">
+      <img class="only-dark" src="images/publish/journal-page-dark.png" width="1280" height="860" loading="lazy"
         alt="A published journal on Oklahoma's earthquakes: a contents list of eight questions, a recorded shell command that fetched the data, and a bar chart of earthquakes per year that peaks in 2015.">
       <figcaption>A journal an agent kept on Oklahoma's earthquakes, published as a
         page.</figcaption>
@@ -222,8 +226,9 @@ moons.sort((a, b) =&gt; b.radiusKm - a.radiusKm)[0].name;</code></pre></div>
     <div class="grid">
       <article>
         <h3>Frontends</h3>
-        <p>VS Code's <em>Existing Jupyter Server</em>, JupyterLab served by
-          <code>ganymede lab</code>, and clients of <code>@jupyterlab/services</code>.
+        <p><code>ganymede serve</code> prints a URL with its token for VS Code's
+          <em>Existing Jupyter Server</em>; <code>ganymede lab</code> serves JupyterLab, and
+          clients of <code>@jupyterlab/services</code> connect too.
           <a href="docs/frontends">Connecting a frontend</a></p>
       </article>
       <article>
@@ -312,9 +317,10 @@ docker run --rm -p 8888:8888 ghcr.io/tlockney/ganymede</code></pre>
     .then((release) => {
       const zip = release?.assets?.find((a) => /^Ganymede-macOS-\d+\.\d+\.\d+\.zip$/.test(a.name));
       if (zip) {
-        const btn = document.getElementById("mac-download");
-        btn.href = zip.browser_download_url;
-        btn.textContent = `Download for Mac (${release.tag_name})`;
+        for (const btn of document.querySelectorAll(".mac-download")) {
+          btn.href = zip.browser_download_url;
+          btn.textContent = `Download for Mac (${release.tag_name})`;
+        }
       }
     })
     .catch(() => {});
