@@ -247,6 +247,7 @@ moons.sort((a, b) =&gt; b.radiusKm - a.radiusKm)[0].name;</code></pre></div>
       </div>
       <pre data-panel="release"><code><span class="c"># Linux and macOS</span>
 curl -fsSL https://ganymede-server.com/install.sh | sh
+ganymede lab install   <span class="c"># JupyterLab's frontend, without Python</span>
 ganymede lab</code></pre>
       <pre data-panel="cargo" hidden><code><span class="c"># Rust toolchain</span>
 cargo install --git https://github.com/tlockney/ganymede ganymede-cli
