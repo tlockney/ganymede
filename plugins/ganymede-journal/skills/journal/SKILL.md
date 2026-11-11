@@ -22,9 +22,9 @@ Edit.
    `journal/`, named `YYYY-MM-DD-<topic>.ipynb`, with
    `notebook_open(path, title, kernel)`. The title is the question.
    Default kernel: `cdp-node` (TypeScript). Its `npm:` imports are
-   fetched when the cell runs, so the notebook brings its own libraries
-   and re-runs on another machine with nothing to install; a Python
-   kernel only has what its environment has. Use what the user asks
+   fetched when the cell runs, so the notebook names its own libraries
+   and re-runs where cdp-kernel is installed with no install step in
+   the notebook; a Python kernel only has what its environment has. Use what the user asks
    for, and call `kernelspecs_list` if `cdp-node` isn't there.
 3. Under the title, add a Markdown cell: the goal in a sentence or two,
    the date, who is working, and the kernel.
@@ -97,8 +97,9 @@ Edit.
     in place instead of printing lines. See
     [typescript.md](typescript.md) and [python.md](python.md).
 15. When a result needs a chart, pull in a plotting library and pin
-    its version: Observable Plot or Vega-Lite in TypeScript (`npm:`
-    imports), matplotlib in Python. A Python package the kernel lacks
+    its version: Observable Plot in TypeScript (an `npm:` import),
+    matplotlib in Python. A Vega-Lite spec suits a chart only the
+    person needs to read (see 16). A Python package the kernel lacks
     goes in with `%pip install name==version` in a cell of its own, so
     the notebook says what it needs; a TypeScript cell's import is
     enough. Prefer TypeScript for a journal that needs libraries the
