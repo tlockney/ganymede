@@ -243,6 +243,27 @@ A missing notebook is `404`, and a server whose file ids live only in
 memory answers `409`, since a grant there wouldn't outlive it. A kernel
 holds no token, so it can't grant itself anything.
 
+#### Under `ganymede execute`
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`ganymede execute` answers its kernels' host calls too, with no server
+running. API paths are relative to the current directory, and a
+notebook under it is its kernel's own notebook. There is no file id
+database, so no notebook's own grant applies: the grants are `[host]`
+from the config file, with `--grant` in place of each key it names.
+`--grant read=PATH` and `--grant run=PATH` are repeatable and take paths
+as `ganymede grant` does; `""` is the whole current directory. An
+executed notebook's kernel has no `self.*` calls, since `execute` writes
+the notebook itself when the run ends. A `notebooks.run` starts its
+kernel as `execute` does and shuts it down when it answers.
+
+```sh
+ganymede execute index.ipynb --grant read=journal --grant run=reports
+```
+
 ## Static headers
 
 `static_headers` adds response headers to files served from a

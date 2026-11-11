@@ -21,8 +21,15 @@ those defaults for it, and clients set it over HTTP with
 apps, Kernel > Notebook Access… (the ⋯ menu on the iPad and iPhone) shows
 what a notebook asks for and sets its grant.
 
-The rest of this page is the design; a run's `save: "copy"` and
-`ganymede execute` grants come next.
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`ganymede execute` answers its kernels' calls as well, under `[host]`
+with `--grant read=PATH` or `run=PATH` in place of a key
+([Reference](reference.md#under-ganymede-execute)).
+
+The rest of this page is the design; a run's `save: "copy"` comes next.
 
 ## The problem
 
@@ -278,7 +285,9 @@ edit_self = true     # the self.* calls; false turns them off
   notebook's) and `--revoke` to remove one, then a sheet in the apps. A notebook with no file (an
   untitled console) gets the defaults.
 - **`ganymede execute`** has no file id database. It uses `[host]` from
-  the config and `--grant run=<path>` on the command line.
+  the config and `--grant read=<path>` or `--grant run=<path>` on the
+  command line, and gives its kernels no `self.*` calls, since it writes
+  the notebook itself when the run ends.
 
 This is the server's half of "scoped kernels" from the direction review:
 it limits what a kernel can ask the server for. It doesn't limit what a
@@ -302,9 +311,10 @@ The comm driver (open on start, the subshell, routing replies, the
 client fan-out filter) and the file-based core go in a new crate,
 `ganymede-host`, with two users. `ganymede-api`'s kernel manager opens
 the comm for the server's kernels and filters host traffic in its iopub
-fan-out (`Clients::dispatch` in `bridge.rs`). `ganymede-engine` does the
-same for its kernels, so `ganymede execute` and an app that embeds the
-engine answer `host` calls with no HTTP server.
+fan-out (`Clients::dispatch` in `bridge.rs`). `ganymede execute`
+answers with the server's own responder and no listener
+(`serve::LocalHost`), so the grant checks and the runs are the same
+code.
 `ganymede-server` adds what needs a server: reads from open rooms, and
 the per-notebook grants. The crates under it stay language-free: the
 server sees method names and JSON.

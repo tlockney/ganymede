@@ -90,6 +90,16 @@ pull request with a GitHub issue, and records what it learned in the
   app register its own kernels with the embedded server
   ([In-app kernels as server kernels](in-app-kernel.md)).
 
+### Done on `main`
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+- **Host API under `ganymede execute`.** Its kernels read, search and
+  run notebooks under `[host]`, with `--grant` in place of a key
+  ([Reference](reference.md#under-ganymede-execute)).
+
 ## Next
 
 In order of priority.
@@ -98,8 +108,6 @@ In order of priority.
    named results, and runs from the CLI, the server API, app links,
    Shortcuts and other notebooks, through one run contract. Grants are
    per notebook and only narrow. Next:
-   - granting from `ganymede execute`
-     ([#647](https://github.com/tlockney/ganymede/issues/647));
    - saving each run as a copy
      ([#658](https://github.com/tlockney/ganymede/issues/658)).
 2. **The apps as a full runtime.** The apps run notebooks in-process,

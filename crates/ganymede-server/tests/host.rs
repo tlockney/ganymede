@@ -1271,3 +1271,38 @@ async fn the_grants_route_refuses_when_ids_live_in_memory() {
     .await;
     assert_eq!(s, 409, "{v}");
 }
+
+/// A kernel the server didn't start, such as `ganymede execute`'s, is
+/// its notebook's kernel once pinned, and nobody's once unpinned.
+#[tokio::test]
+async fn a_pinned_kernel_is_its_notebooks_kernel_until_unpinned() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let config = HostConfig {
+        read: vec![],
+        ..Default::default()
+    };
+    let api = HostApi::new(state(dir.path()), &config);
+    let caller = Caller {
+        kernel_id: "execute-kernel".into(),
+    };
+    api.pin(&caller.kernel_id, Some("./index.ipynb".into()));
+    assert_eq!(
+        api.hello(&caller).await.notebook.as_deref(),
+        Some("index.ipynb")
+    );
+    // No read grant, but a notebook always reads itself.
+    assert!(api
+        .call(&caller, "notebooks.read", json!({"path": "index.ipynb"}))
+        .await
+        .is_ok());
+    api.unpin(&caller.kernel_id);
+    assert_eq!(api.hello(&caller).await.notebook, None);
+    assert_eq!(
+        api.call(&caller, "notebooks.read", json!({"path": "index.ipynb"}))
+            .await
+            .unwrap_err()
+            .code,
+        "denied"
+    );
+}

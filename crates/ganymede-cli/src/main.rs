@@ -427,6 +427,98 @@ struct ExecuteArgs {
     /// `{"path", "status", "results"}`.
     #[arg(long)]
     results: bool,
+    /// A host API grant for the notebooks' kernels (docs/host-api.md):
+    /// `read=PATH` a path they may read, `run=PATH` a notebook they may
+    /// run. Repeatable. A key given replaces the config file's `[host]`
+    /// default; PATH is relative to the current directory, `""` is all
+    /// of it.
+    #[arg(long = "grant", value_name = "KEY=PATH")]
+    grants: Vec<String>,
+}
+
+/// The host API grants for `ganymede execute`: `base`, the config file's
+/// `[host]`, with each key `grants` names replaced. Its kernels have no
+/// `self.*` calls: the run writes the notebook itself when it ends.
+fn execute_grants(
+    base: ganymede_server::host::HostConfig,
+    grants: &[String],
+) -> Result<ganymede_server::host::HostConfig> {
+    let mut read: Option<Vec<String>> = None;
+    let mut run: Option<Vec<String>> = None;
+    for g in grants {
+        let Some((key, path)) = g.split_once('=') else {
+            return Err(Usage(format!("--grant {g:?}: use read=PATH or run=PATH")).into());
+        };
+        let list = match key {
+            "read" => &mut read,
+            "run" => &mut run,
+            _ => {
+                return Err(Usage(format!(
+                    "--grant {g:?}: use read=PATH or run=PATH (execute has no edit_self)"
+                ))
+                .into())
+            }
+        };
+        let path = ganymede_contents::normalize_api_path(path);
+        if path.split('/').any(|c| c == "..") {
+            return Err(Usage(format!("--grant {g:?}: `..` is not allowed")).into());
+        }
+        let list = list.get_or_insert_with(Vec::new);
+        if !list.contains(&path) {
+            list.push(path);
+        }
+    }
+    Ok(ganymede_server::host::HostConfig {
+        read: read.unwrap_or(base.read),
+        run: run.unwrap_or(base.run),
+        edit_self: false,
+    })
+}
+
+/// What `ganymede execute` answers its kernels' host calls with, rooted
+/// at the current directory. `None`, with a warning, when it can't start:
+/// the notebooks still run, with no host comm.
+fn execute_host(
+    grants: &[String],
+    kernelspec_roots: &[PathBuf],
+    startup_timeout: Option<u64>,
+    quiet: bool,
+) -> Result<Option<ganymede_server::serve::LocalHost>> {
+    let mut cfg = match crash::config_text(None) {
+        Some(text) => ganymede_server::config::Config::from_toml(&text)
+            .context("reading the config file's [host] grants")?,
+        None => Default::default(),
+    };
+    cfg.host = execute_grants(cfg.host, grants)?;
+    for r in kernelspec_roots {
+        if !cfg.kernelspec_roots.contains(r) {
+            cfg.kernelspec_roots.insert(0, r.clone());
+        }
+    }
+    if let Some(t) = startup_timeout {
+        cfg.startup_timeout_secs = t;
+    }
+    cfg.quiet |= quiet;
+    let root = std::env::current_dir().context("the current directory")?;
+    match ganymede_server::serve::LocalHost::new(&cfg, &root) {
+        Ok(h) => Ok(Some(h)),
+        Err(e) => {
+            eprintln!("ganymede: no host API for this run: {}", error_chain(&e));
+            Ok(None)
+        }
+    }
+}
+
+/// `path`'s API path under the current directory, if it is under it.
+fn api_path_of(path: &Path) -> Option<String> {
+    let root = std::env::current_dir().ok()?.canonicalize().ok()?;
+    let real = path.canonicalize().ok()?;
+    let rel = real.strip_prefix(&root).ok()?;
+    let parts: Vec<&str> = rel
+        .components()
+        .map(|c| c.as_os_str().to_str())
+        .collect::<Option<_>>()?;
+    Some(parts.join("/"))
 }
 
 #[derive(Args, Clone)]
@@ -556,7 +648,19 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             close(&kernel, &target).await?;
             r.map(|()| ExitCode::SUCCESS)
         }
-        Cmd::Execute(args) => execute(&engine, args, verbose).await,
+        Cmd::Execute(args) => {
+            let host = execute_host(
+                &args.grants,
+                &cli.kernelspec_root,
+                cli.startup_timeout,
+                cli.quiet,
+            )?;
+            let r = execute(&engine, args, verbose, host.as_ref()).await;
+            if let Some(h) = &host {
+                h.shutdown().await;
+            }
+            r
+        }
         Cmd::Kernel { kernel, cwd } => standalone_kernel(&engine, &kernel, cwd).await,
         Cmd::Attach {
             connection_file,
@@ -965,7 +1069,12 @@ fn same_output(dest: &Dest, notebooks: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<ExitCode> {
+async fn execute(
+    engine: &Engine,
+    args: ExecuteArgs,
+    verbose: bool,
+    host: Option<&ganymede_server::serve::LocalHost>,
+) -> Result<ExitCode> {
     if args.notebooks.len() > 1 {
         if let Some(o) = &args.dest.output {
             if !o.contains("{notebook_name}") {
@@ -1051,6 +1160,7 @@ async fn execute(engine: &Engine, args: ExecuteArgs, verbose: bool) -> Result<Ex
             }
         };
         let _guard = interrupt_on_ctrl_c(&kernel, &stop);
+        let _host = host.map(|h| h.attach(&kernel.session(), api_path_of(path)));
         // Cells this run started: only their outputs are this run's
         // results. A cell after a failure, or one skipped by tag, still
         // holds what an earlier run saved.
@@ -1439,6 +1549,45 @@ fn kernelspec(engine: &Engine, extra_roots: &[PathBuf], cmd: KernelspecCmd) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execute_grants_replace_the_keys_they_name() {
+        let base = ganymede_server::host::HostConfig {
+            read: vec![String::new()],
+            edit_self: true,
+            run: vec!["reports".into()],
+        };
+        let g = execute_grants(base.clone(), &[]).unwrap();
+        assert_eq!(
+            (g.read, g.run, g.edit_self),
+            (vec![String::new()], vec!["reports".into()], false)
+        );
+        let g = execute_grants(
+            base.clone(),
+            &[
+                "read=docs/".into(),
+                "read=./journal".into(),
+                "read=docs".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(g.read, ["docs", "journal"]);
+        assert_eq!(g.run, ["reports"]);
+        let g = execute_grants(base.clone(), &["run=".into()]).unwrap();
+        assert_eq!(g.run, [""]);
+        for bad in [
+            "edit_self=true",
+            "read",
+            "write=x",
+            "read=../up",
+            "run=a/../../b",
+        ] {
+            assert!(
+                execute_grants(base.clone(), &[bad.into()]).is_err(),
+                "{bad}"
+            );
+        }
+    }
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(std::iter::once("ganymede").chain(args.iter().copied())).unwrap()
