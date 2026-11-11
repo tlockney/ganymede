@@ -6294,6 +6294,18 @@ async fn notebooks_run_answers_with_named_results() {
         "slow.ipynb",
         vec![code("a", "result early true"), code("b", "sleep 5000")],
     );
+    std::fs::write(
+        dir.path().join("nospec.ipynb"),
+        json!({"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("other.ipynb"),
+        json!({"cells": [], "nbformat": 4, "nbformat_minor": 5,
+            "metadata": {"kernelspec": {"name": "absent", "display_name": "Absent"}}})
+        .to_string(),
+    )
+    .unwrap();
     let before = std::fs::read(dir.path().join("ok.ipynb")).unwrap();
     let provisioner = Arc::new(EnvProvisioner::default());
     let app = build_router(state_with(
@@ -6381,6 +6393,8 @@ async fn notebooks_run_answers_with_named_results() {
             json!({"path": "ok.ipynb", "save": "copy"}),
             StatusCode::BAD_REQUEST,
         ),
+        (json!({"path": "nospec.ipynb"}), StatusCode::BAD_REQUEST),
+        (json!({"path": "other.ipynb"}), StatusCode::BAD_REQUEST),
         (json!({"path": "missing.ipynb"}), StatusCode::NOT_FOUND),
     ] {
         let (s, v) = run(body.clone()).await;

@@ -372,7 +372,8 @@ edits run. Nothing is written: not the notebook, not its room, and
 most and by default 3600. The run's kernel is listed in `/api/kernels`
 while it runs, and shut down when the run ends, times out, or the client
 disconnects. A missing `path`, bad `params` or `timeout`, or a notebook
-with no `metadata.kernelspec.name` is `400`, and a notebook that can't be
+with no `metadata.kernelspec.name`, or one this server doesn't have, is
+`400`, and a notebook that can't be
 read `404`, before any kernel starts; after that, a failure is `200` with
 `"status": "error"`.
 

@@ -19,7 +19,8 @@
 //! run, and nothing is written: not the notebook, not its room. The run's
 //! kernel is listed in `/api/kernels` while it runs and shut down when the
 //! run ends, times out, or the client goes away. `400` for a bad request
-//! and `404` for a notebook that can't be read are answered before a
+//! (an uninstalled kernelspec among them) and `404` for a notebook that
+//! can't be read are answered before a
 //! kernel starts; once one has, a failure is `200` with `status: "error"`
 //! and the results the cells published before it.
 
@@ -129,7 +130,14 @@ pub async fn run(
             vec![(PARAMS_ENV.to_string(), env)],
         )
         .await
-        .map_err(HttpError::from)?;
+        .map_err(|e| match e.status {
+            // A kernelspec that isn't installed: the request's fault, and a
+            // 404 would read as a missing notebook.
+            404 => bad(format!(
+                "{path} needs the kernel {kernel_name}, which isn't installed"
+            )),
+            _ => HttpError::from(e),
+        })?;
     let _guard = KernelGuard {
         kernels: state.kernels.clone(),
         id: model.id.clone(),
@@ -170,7 +178,7 @@ pub async fn run(
     .unwrap_or_else(|_| {
         Err(format!(
             "the run didn't finish in {} seconds",
-            limit.as_secs()
+            limit.as_secs_f64()
         ))
     });
 
