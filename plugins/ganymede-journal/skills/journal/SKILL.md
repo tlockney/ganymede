@@ -24,8 +24,9 @@ Edit.
    Default kernel: `cdp-node` (TypeScript). Its `npm:` imports are
    fetched when the cell runs, so the notebook names its own libraries
    and re-runs where cdp-kernel is installed with no install step in
-   the notebook; a Python kernel only has what its environment has. Use what the user asks
-   for, and call `kernelspecs_list` if `cdp-node` isn't there.
+   the notebook; a Python kernel only has what its environment has.
+   Use what the user asks for, and call `kernelspecs_list` if
+   `cdp-node` isn't there.
 3. Under the title, add a Markdown cell: the goal in a sentence or two,
    the date, who is working, and the kernel.
 4. Later tools may leave out `path`: they use the notebook last opened.
