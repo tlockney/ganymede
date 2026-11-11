@@ -166,8 +166,9 @@ number. Locally: `cargo llvm-cov --workspace --open`.
 `scripts/release.sh <level>` bumps the workspace version, writes
 `CHANGELOG.md`, commits on `release/vX.Y.Z`, and opens an issue and a PR
 for it. Squash-merging the PR publishes `vX.Y.Z` from the release
-commit's push to `main` and tags it. It is a dry run without `--execute`. [Releasing](releasing.md) has the
-whole path, and what to do when a release fails partway.
+commit's push to `main` and tags it. It is a dry run without
+`--execute`. [Releasing](releasing.md) has the whole path, and what to
+do when a release fails partway.
 
 ## This site
 
