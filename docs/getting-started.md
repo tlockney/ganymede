@@ -116,7 +116,8 @@ display({"application/vnd.ganymede.result+json": {"name": "weekday_drop", "value
 ```
 
 [Parameters and named results](reference.md#parameters-and-named-results)
-has the formats.
+has the formats, and [Notebooks as programs](programs.md) runs the same
+notebook from HTTP, a link, a Shortcut and another notebook.
 
 In CI, a notebook that fails fails the job. A GitHub Actions workflow
 that runs every notebook in `notebooks/` on cdp-kernel:

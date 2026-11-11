@@ -18,6 +18,8 @@ not something the server needs ([Other kernels](kernels.md)).
   Jupyter; also the binary by hand or from source.
 - [Getting started](getting-started.md): run code, execute notebooks, and
   serve the API.
+- [Notebooks as programs](programs.md): parameters in, named results
+  out, from the CLI, CI, HTTP, links, Shortcuts and other notebooks.
 - [JupyterLab and VS Code](frontends.md): point an existing frontend at
   Ganymede.
 - [Ganymede's app](app.md): its own notebook app, in a browser and on the
