@@ -218,7 +218,7 @@ HTTP endpoint, so it waits on that contract's first step.
   itself is not offered from a cell.
 - An abort (`{ signal: jupyter.signal }`, which an interrupt aborts)
   sends `cancel`, and the server shuts the run's kernel down.
-- **Grants narrow, never widen.** The run's kernel gets the intersection
+- **A run never widens its caller's grant.** The run's kernel gets the intersection
   of the called notebook's grant and the caller's, so a notebook can't
   reach more by running another one. A path must pass each grant up the
   chain with symlinks resolved, so a grant that names a symlink reaches
