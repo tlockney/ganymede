@@ -138,7 +138,7 @@ frame_ancestors = "'self'"       # who may frame the server's pages
 # Cross-Origin-Opener-Policy = "same-origin"
 # Cross-Origin-Embedder-Policy = "require-corp"
 
-# What cells may read through the host API (see A host API for kernels):
+# What cells may read and edit through the host API (see A host API for kernels):
 # [host]
 # read = [""]                    # API paths; "" is the root, [] only the cell's own notebook
 # edit_self = true               # self.add/edit/delete: a notebook edits its own cells

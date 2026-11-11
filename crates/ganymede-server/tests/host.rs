@@ -559,6 +559,30 @@ async fn a_notebook_adds_edits_and_deletes_its_own_cells() {
         .await
         .unwrap_err();
     assert_eq!(err.message, "no cell nope");
+
+    // Bad params fail without touching the notebook.
+    for params in [
+        json!({"cell_type": 1, "source": "x = 1"}),
+        json!({"cell_type": "heading", "source": "x"}),
+        json!({"source": "x", "after": "nope"}),
+    ] {
+        let err = api.call(&caller, "self.add", params).await.unwrap_err();
+        assert_eq!(err.code, "failed", "{}", err.message);
+    }
+    assert_eq!(cells(&api, &caller, "index.ipynb").await.len(), 1);
+
+    // A kernel with no notebook has nothing to edit.
+    let err = api
+        .call(
+            &Caller {
+                kernel_id: "no-such-kernel".into(),
+            },
+            "self.add",
+            json!({"source": "x"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "unavailable");
 }
 
 #[tokio::test]
@@ -601,4 +625,5 @@ async fn edit_self_off_takes_the_self_calls_away() {
         .await
         .unwrap_err();
     assert_eq!(err.code, "denied");
+    assert!(err.message.contains("[host] edit_self"), "{}", err.message);
 }

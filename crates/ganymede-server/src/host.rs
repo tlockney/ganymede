@@ -322,7 +322,7 @@ impl Responder for HostApi {
             m if SELF_EDITS.contains(&m) => {
                 if !self.edit_self {
                     return Err(HostError::denied(
-                        "this server doesn't let notebooks edit themselves",
+                        "[host] edit_self is off on this server, so a notebook can't edit its own cells",
                     ));
                 }
                 let Some(path) = notebook else {
@@ -383,8 +383,13 @@ impl HostApi {
         let op = match method {
             "self.add" => {
                 let source = string_param(params, "source")?.to_string();
-                let id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
-                let cell = match params["cell_type"].as_str().unwrap_or("markdown") {
+                let id = crate::mcp::new_id();
+                let cell_type = match &params["cell_type"] {
+                    Value::Null => "markdown",
+                    Value::String(t) => t.as_str(),
+                    _ => "",
+                };
+                let cell = match cell_type {
                     "code" => json!({"cell_type": "code", "execution_count": null, "id": id,
                                      "metadata": {}, "outputs": [], "source": source}),
                     t @ ("markdown" | "raw") => {
