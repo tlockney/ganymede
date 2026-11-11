@@ -19,7 +19,7 @@ use std::process::ExitCode;
 /// The version `ganymede ui install` installs by default, and its zip's
 /// SHA-256 from the release's `SHA256SUMS`. A mismatch fails the install.
 pub const DEFAULT_VERSION: &str = "0.7.0";
-const DEFAULT_SHA256: &str = "57d028ac7ffd7daafe1621891932d4039bb6c34a1185ee73da4deef509026e84";
+const DEFAULT_SHA256: &str = "b35e74069643a6abe1309f3dc25519f9ba8ae0901b8017fc19a66fe223df0d03";
 
 /// Where releases are downloaded from, unless `GANYMEDE_UI_URL` names a
 /// mirror laid out the same way (`<url>/v<version>/<file>`).
@@ -29,7 +29,7 @@ const ASSET_HOSTS: &[&str] = &[
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
 ];
-/// The largest archive downloaded. 0.7.0's is about 4.9 MB.
+/// The largest archive downloaded. 0.7.0's is about 5 MB.
 const MAX_ARCHIVE_BYTES: u64 = 64 << 20;
 /// The largest `SHA256SUMS` read.
 const MAX_SUMS_BYTES: u64 = 64 << 10;
