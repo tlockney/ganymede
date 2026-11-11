@@ -22,7 +22,7 @@ off, and `notebooks.run` under the `[host] run` grant (none by
 default). A notebook's own grant, set with `ganymede grant`, replaces
 those defaults for it, and clients set it over HTTP with
 `/api/host/grants`. cdp-kernel's client is `jupyter.host()`. In the
-apps, File > Notebook Access… (the ⋯ menu on the iPad and iPhone) shows
+apps, Kernel > Notebook Access… (the ⋯ menu on the iPad and iPhone) shows
 what a notebook asks for and sets its grant.
 
 > [!NOTE]
