@@ -664,9 +664,10 @@ fn replace_bounded(s: &str, text: &str, with: &str) -> String {
             // Dots count here: `/mnt/v1.2` and `/mnt/.cache` are directories.
             let run = head.trim_end_matches(|c| name_char(c) || c == '.');
             let prefix = &head[run.len()..];
-            // `./srv/nb` and `../srv/nb` are relative paths, not the root.
-            let relative = !prefix.is_empty() && prefix.chars().all(|c| c == '.');
-            !relative && (prefix.is_empty() || !run.ends_with(['/', '\\']))
+            // A dots-only prefix (`../home/tom`, `.../home/tom`) can still
+            // reach the directory, so it doesn't protect the match.
+            let dots = prefix.chars().all(|c| c == '.');
+            dots || !run.ends_with(['/', '\\'])
         } else {
             !head.ends_with(name_char)
         };
@@ -1307,7 +1308,15 @@ mod tests {
                 "/srv/nb",
                 "."
             ),
-            "/mnt/v1.2/srv/nb/x /mnt/.cache/srv/nb ./srv/nb/x"
+            "/mnt/v1.2/srv/nb/x /mnt/.cache/srv/nb ../x"
+        );
+        assert_eq!(
+            replace_bounded(
+                "cd ../home/tom/x ~/../home/tom .../home/tom/x",
+                "/home/tom",
+                "~"
+            ),
+            "cd ..~/x ~/..~ ...~/x"
         );
         for root in ["/", "//", "C:\\", "\\", ""] {
             assert!(is_root_like(root), "{root}");
