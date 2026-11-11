@@ -177,6 +177,9 @@ pub struct HostApi {
     /// start sees the session the kernel was started for, and a notebook
     /// that joins the kernel later doesn't take its place.
     sessions: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    /// Kernels the server didn't start, with their notebooks:
+    /// `ganymede execute`'s ([`HostApi::pin`]).
+    pinned: std::sync::Mutex<std::collections::HashMap<String, Option<String>>>,
 }
 
 impl HostApi {
@@ -197,12 +200,37 @@ impl HostApi {
             runs: Default::default(),
             slots: Default::default(),
             sessions: Default::default(),
+            pinned: Default::default(),
         }
+    }
+
+    /// Answer for `kernel_id`, a kernel the server didn't start, as the
+    /// kernel of `notebook` (an API path): `ganymede execute` pins each
+    /// kernel it runs a notebook on. [`HostApi::unpin`] forgets it.
+    pub fn pin(&self, kernel_id: &str, notebook: Option<String>) {
+        self.pinned.lock().unwrap().insert(
+            kernel_id.to_string(),
+            notebook.map(|p| ganymede_contents::normalize_api_path(&p)),
+        );
+    }
+
+    pub fn unpin(&self, kernel_id: &str) {
+        self.pinned.lock().unwrap().remove(kernel_id);
+        self.slots.lock().unwrap().remove(kernel_id);
+    }
+
+    /// Whether `kernel_id` is running: one of the server's, or pinned.
+    fn is_live(&self, kernel_id: &str) -> bool {
+        self.state.kernels.get(kernel_id).is_ok()
+            || self.pinned.lock().unwrap().contains_key(kernel_id)
     }
 
     /// The API path of the notebook `kernel_id` was started for: its
     /// first notebook session's.
     fn notebook(&self, kernel_id: &str) -> Option<String> {
+        if let Some(notebook) = self.pinned.lock().unwrap().get(kernel_id) {
+            return notebook.clone();
+        }
         let sessions = &self.state.sessions;
         let mut seen = self.sessions.lock().unwrap();
         // The session it was started for, renamed or not, while it lasts.
@@ -247,7 +275,14 @@ impl HostApi {
                     outer_run: Vec::new(),
                 });
         }
-        self.grant_for(self.notebook(&caller.kernel_id)).await
+        let mut who = self.grant_for(self.notebook(&caller.kernel_id)).await;
+        // A pinned kernel's notebook is written by whoever pinned it (`ganymede
+        // execute` writes it when the run ends), so it has no self.* calls,
+        // whatever its grant says.
+        if self.pinned.lock().unwrap().contains_key(&caller.kernel_id) {
+            who.edit_self = false;
+        }
+        who
     }
 
     /// `notebook`'s grant: the `[host]` defaults, with the notebook's own
@@ -492,7 +527,7 @@ impl HostApi {
         self.check_run(who, &path)?;
         let slot = {
             let mut slots = self.slots.lock().unwrap();
-            slots.retain(|k, _| self.state.kernels.get(k).is_ok());
+            slots.retain(|k, _| self.is_live(k));
             slots
                 .entry(caller.kernel_id.clone())
                 .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(WIDTH)))

@@ -1094,3 +1094,117 @@ fn malformed_stdin_and_garbage_payloads_are_tolerated() {
         });
     }
 }
+
+/// `ganymede execute` answers its kernels' host calls (docs/host-api.md)
+/// under the config's `[host]` grants, with `--grant` in place of a key.
+/// cdp-kernel only: ipykernel has no host client.
+#[test]
+fn execute_answers_host_calls_under_its_grants() {
+    if !have_kernel("cdp-node") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let config = root.join(".config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(root.join("docs")).unwrap();
+    let notebook = |source: &str| {
+        json!({
+            "cells": [{"cell_type": "code", "id": "c1", "metadata": {}, "source": source,
+                       "outputs": [], "execution_count": null}],
+            "metadata": {"kernelspec": {"name": "cdp-node", "display_name": "Node", "language": "typescript"}},
+            "nbformat": 4, "nbformat_minor": 5
+        })
+        .to_string()
+    };
+    std::fs::write(root.join("docs/a.ipynb"), notebook("1 + 1")).unwrap();
+    std::fs::write(root.join("secret.ipynb"), notebook("2 + 2")).unwrap();
+    std::fs::write(
+        root.join("main.ipynb"),
+        notebook(
+            r#"const h = await jupyter.host();
+const out: Record<string, unknown> = { notebook: h?.notebook, run: h?.has("notebooks.run"), edit: h?.has("self.add") };
+const code = (p: Promise<unknown>) => p.then(() => "ok", (e) => e.code);
+out.self = await code(h!.call("notebooks.read", { path: "main.ipynb" }));
+out.docs = await code(h!.call("notebooks.read", { path: "docs/a.ipynb" }));
+out.secret = await code(h!.call("notebooks.read", { path: "secret.ipynb" }));
+if (out.run) out.ran = (await h!.call("notebooks.run", { path: "docs/a.ipynb" })).status;
+console.log("HOST " + JSON.stringify(out));"#,
+        ),
+    )
+    .unwrap();
+    // A data dir of its own, for the file ids `ganymede grant` keeps, with
+    // the kernelspec in it.
+    let data = root.join(".data");
+    let spec = engine().kernelspec("cdp-node").unwrap().resource_dir;
+    std::fs::create_dir_all(data.join("kernels/cdp-node")).unwrap();
+    for f in std::fs::read_dir(&spec).unwrap() {
+        let f = f.unwrap();
+        if f.file_type().unwrap().is_file() {
+            std::fs::copy(f.path(), data.join("kernels/cdp-node").join(f.file_name())).unwrap();
+        }
+    }
+    let report = |grants: &[&str]| -> Value {
+        let mut args = vec!["execute", "main.ipynb", "--output", "-"];
+        args.extend(grants);
+        let mut cmd = ganymede(&args);
+        cmd.current_dir(root)
+            .env("JUPYTER_CONFIG_DIR", &config)
+            .env("JUPYTER_DATA_DIR", &data);
+        let out = run_ok(cmd);
+        let nb: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let text = nb["cells"][0]["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|o| o["text"].as_str().or_else(|| o["text"][0].as_str()))
+            .collect::<String>();
+        let line = text
+            .lines()
+            .find_map(|l| l.strip_prefix("HOST "))
+            .unwrap_or_else(|| panic!("no host report in {nb}"));
+        serde_json::from_str(line).unwrap()
+    };
+    // The defaults: read everything, run nothing, and no self.* calls.
+    assert_eq!(
+        report(&[]),
+        json!({"notebook": "main.ipynb", "run": false, "edit": false,
+               "self": "ok", "docs": "ok", "secret": "ok"})
+    );
+    // --grant replaces a key: reads narrow to docs/ (and the notebook
+    // itself), and docs/ may be run.
+    assert_eq!(
+        report(&["--grant", "read=docs", "--grant", "run=docs"]),
+        json!({"notebook": "main.ipynb", "run": true, "edit": false,
+               "self": "ok", "docs": "ok", "secret": "denied", "ran": "ok"})
+    );
+    // So does the config file's [host].
+    std::fs::write(config.join("ganymede.toml"), "[host]\nread = [\"docs\"]\n").unwrap();
+    assert_eq!(report(&[])["secret"], "denied");
+    std::fs::remove_file(config.join("ganymede.toml")).unwrap();
+    // A notebook's own grant, from `ganymede grant`, applies as on a
+    // server, and still gives no self.* calls.
+    let mut grant = ganymede(&["grant", "main.ipynb", "read=docs", "edit_self=true"]);
+    grant
+        .current_dir(root)
+        .env("JUPYTER_CONFIG_DIR", &config)
+        .env("JUPYTER_DATA_DIR", &data);
+    run_ok(grant);
+    let own = report(&["--grant", "read="]);
+    assert_eq!(
+        (&own["secret"], &own["edit"]),
+        (&json!("denied"), &json!(false))
+    );
+    // A config file that doesn't parse leaves the run without the host API.
+    std::fs::write(config.join("ganymede.toml"), "[host\n").unwrap();
+    let mut cmd = ganymede(&["execute", "main.ipynb", "--output", "-"]);
+    cmd.current_dir(root)
+        .env("JUPYTER_CONFIG_DIR", &config)
+        .env("JUPYTER_DATA_DIR", &data);
+    let out = cmd.output().unwrap();
+    assert!(
+        stderr(&out).contains("no host API for this run"),
+        "{}",
+        stderr(&out)
+    );
+}

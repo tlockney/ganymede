@@ -59,7 +59,7 @@ fn show(path: &str, grant: &Grant) -> String {
 /// found from the current directory, or else from `root`. Only its
 /// directory is resolved, so a symlinked notebook keeps its own name, the
 /// path a kernel's session has.
-fn api_path(root: &Path, notebook: &Path) -> Result<String> {
+pub(crate) fn api_path(root: &Path, notebook: &Path) -> Result<String> {
     let found = if notebook.exists() || notebook.is_absolute() {
         notebook.to_path_buf()
     } else {
@@ -84,6 +84,15 @@ fn api_path(root: &Path, notebook: &Path) -> Result<String> {
         .map_err(|_| anyhow::anyhow!("{} is not under {}", notebook.display(), root.display()))?;
     let parts: Option<Vec<&str>> = rel.components().map(|c| c.as_os_str().to_str()).collect();
     Ok(parts.context("the path isn't UTF-8")?.join("/"))
+}
+
+/// A grant's `read=` or `run=` path as an API path; `..` is refused.
+pub(crate) fn grant_path(key: &str, path: &str) -> Result<String> {
+    let p = ganymede_contents::normalize_api_path(path);
+    if p.split('/').any(|c| c == "..") {
+        bail!("{key}={p}: `..` is not allowed");
+    }
+    Ok(p)
 }
 
 pub fn run(args: GrantArgs) -> Result<ExitCode> {
@@ -141,10 +150,7 @@ pub fn run(args: GrantArgs) -> Result<ExitCode> {
         };
         match (key, value, args.revoke) {
             (k @ ("read" | "run"), Some(p), false) => {
-                let p = ganymede_contents::normalize_api_path(p);
-                if p.split('/').any(|c| c == "..") {
-                    bail!("{k}={p}: `..` is not allowed");
-                }
+                let p = grant_path(k, p)?;
                 let list = if k == "read" {
                     &mut grant.read
                 } else {
