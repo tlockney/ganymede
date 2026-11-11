@@ -124,9 +124,12 @@ In order of priority.
    - widgets ([ganymede-ui#436](https://github.com/tlockney/ganymede-ui/issues/436))
      and the share extension
      ([ganymede-ui#449](https://github.com/tlockney/ganymede-ui/issues/449)).
-     <!-- **Unreleased in ganymede-ui.** The share extension shipped behind
-     a Settings switch (ganymede-ui#477); after its release, move it out of
-     Next. -->
+
+     > [!NOTE]
+     > **Unreleased in ganymede-ui.** The share extension is on ganymede-ui's
+     > `main`, off by default behind a Settings switch
+     > ([ganymede-ui#477](https://github.com/tlockney/ganymede-ui/pull/477)),
+     > not in its latest release.
 3. **A person and an agent in one live notebook.** The app opens
    notebooks through rooms, so edits from an agent, another window or
    another device arrive live, and shows the agent's journal as it is
