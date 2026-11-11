@@ -81,11 +81,6 @@ pull request with a GitHub issue, and records what it learned in the
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
 > the latest release.
 
-> [!NOTE]
-> **Unreleased in ganymede-ui.** The apps' Notebook Access sheet and
-> parameters on `ganymede://run` links are only in a build of
-> ganymede-ui's `main`, not its latest release.
-
 - **Parameters and named results.** `ganymede execute -p` and
   `--params-file` pass parameters, `--results` prints the named results,
   and `POST /api/notebooks/run` does the same over HTTP

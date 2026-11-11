@@ -14,10 +14,6 @@ gateway (`--gateway-url`) gets the code you run and returns its output,
 `ganymede lab install` and `ganymede ui install` download from PyPI and
 GitHub, and an agent you connect over MCP sees what its tools return.
 
-> [!NOTE]
-> **Unreleased in ganymede-ui.** Available only from a build of
-> ganymede-ui's `main`, not in its latest release.
-
 The Mac app checks for a newer release once a day, on by default: it
 downloads the release feed from GitHub
 (`github.com/tlockney/ganymede-ui/releases/latest/download/appcast.xml`)

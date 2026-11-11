@@ -8,11 +8,6 @@ in the same app, so it becomes a kernel like any other.
 > **Unreleased.** Ganymede's part, the C functions below, is available
 > only from a build of `main` (HEAD), not in the latest release.
 
-> [!NOTE]
-> **Unreleased in ganymede-ui.** The apps' part is in ganymede-ui's
-> `main` (ganymede-ui#470), not in its latest release, which still runs
-> the in-app kernel as a page kernel.
-
 ## The problem
 
 On the iPad and iPhone, a cell never reaches Ganymede. The notebook page

@@ -25,10 +25,6 @@ those defaults for it, and clients set it over HTTP with
 apps, Kernel > Notebook Access… (the ⋯ menu on the iPad and iPhone) shows
 what a notebook asks for and sets its grant.
 
-> [!NOTE]
-> **Unreleased in ganymede-ui.** Available only from a build of
-> ganymede-ui's `main`, not in its latest release.
-
 The rest of this page is the design; a run's `save: "copy"` and
 `ganymede execute` grants come next.
 
