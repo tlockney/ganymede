@@ -1,4 +1,4 @@
-// A large output: a 100,000-row CSV (about 4 MB) built as a string and
+// A large output: a 100,000-row CSV (about 3.3 MB) built as a string and
 // handed to the host, as a cell's text/plain or text/csv output would be.
 globalThis.workload = {
   run() {

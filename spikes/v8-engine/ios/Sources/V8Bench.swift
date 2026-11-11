@@ -40,7 +40,7 @@ enum V8Bench {
                     report = String(cString: raw)
                     v8_spike_free(raw)
                 } catch {
-                    done.resume(returning: "{\"error\": \"\(error)\"}")
+                    done.resume(returning: errorReport("\(error)"))
                     return
                 }
                 let after = Footprint.now()
@@ -72,6 +72,12 @@ enum V8Bench {
         uname(&info)
         return withUnsafeBytes(of: &info.machine) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
     }
+}
+
+/// A report holding only an error, as valid JSON.
+func errorReport(_ message: String) -> String {
+    let data = (try? JSONSerialization.data(withJSONObject: ["error": message])) ?? Data("{}".utf8)
+    return String(decoding: data, as: UTF8.self)
 }
 
 /// The app's memory footprint, as iOS counts it against its limit.

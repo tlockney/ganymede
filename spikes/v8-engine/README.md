@@ -88,10 +88,12 @@ bundle ID, `com.ganymede-server.spike.V8Bench`, is not the Ganymede app's.
    configuration (Product > Scheme > Edit Scheme > Run > Build
    Configuration) so the Swift side doesn't skew the numbers.
 4. On the device, tap **Run** and keep the app in front until it says
-   Done (under a minute). Run it three times; the first run after
-   install is the coldest.
-5. Tap **Share results** and send the JSON to your Mac (AirDrop, or
-   Save to Files). Then:
+   Done (under a minute). Take three samples, quitting the app and
+   launching it again between them: V8 initializes once per process,
+   and the footprint peak is the process's since launch.
+5. After each sample, tap **Share results** and send the
+   `results-<time>.json` file to your Mac (AirDrop, or Save to Files).
+   Then:
 
    ```sh
    node bench/report.mjs ~/Downloads/results*.json
@@ -112,5 +114,9 @@ bundle ID, `com.ganymede-server.spike.V8Bench`, is not the Ganymede app's.
   its kernel code (cdp-kernel's core, now run on the page) on top, so
   compare `kernel-start` to V8's `start` + the load of a kernel-sized
   script, roughly `ts-strip`'s `load`.
+- The bench app serves the Worker page from a `bench://` scheme in its
+  bundle; the apps load kernel.html over HTTP from their embedded
+  server. The origin differs, so the device's `kernel-start` is a guide
+  to the apps' kernel start, not the same measurement.
 - V8 runs without pointer compression (rusty_v8's default); with it, the
   heap would be smaller.

@@ -58,18 +58,22 @@ jobs:
           npx playwright install --with-deps webkit
       - name: Tests
         run: cargo test --release --locked
+      # Five runs of each, so the tables are medians, not one noisy run.
       - name: Run the workloads
         run: |
           mkdir -p results
-          cargo run --release --locked --bin v8-bench -- bench > results/v8-jitless.json
-          cargo run --release --locked --bin v8-bench -- --jit bench > results/v8-jit.json
-          node bench/node.mjs > results/node.json
-          node --jitless bench/node.mjs > results/node-jitless.json
-          node bench/web.mjs --browser webkit > results/webkit.json
+          cargo build --release --locked --bin v8-bench
+          for i in 1 2 3 4 5; do
+            target/release/v8-bench bench > "results/v8-jitless-$i.json"
+            target/release/v8-bench --jit bench > "results/v8-jit-$i.json"
+            node bench/node.mjs > "results/node-$i.json"
+            node --jitless bench/node.mjs > "results/node-jitless-$i.json"
+            node bench/web.mjs --browser webkit > "results/webkit-$i.json"
+          done
       - name: Report
         run: |
           node bench/report.mjs --title "${{ runner.os }} ${{ runner.arch }}" \
-            results/v8-jitless.json results/v8-jit.json results/node.json results/node-jitless.json results/webkit.json \
+            results/v8-jitless-*.json results/v8-jit-*.json results/node-[0-9]*.json results/node-jitless-*.json results/webkit-*.json \
             | tee -a "$GITHUB_STEP_SUMMARY"
           # A workload that failed fails the job.
           ! grep -q '"error": "' results/*.json
