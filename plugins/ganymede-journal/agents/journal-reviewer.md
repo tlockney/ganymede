@@ -32,6 +32,10 @@ Check:
   presents shell output as kernel output.
 - Inputs are named: where data came from, when it was fetched, which
   version of a package.
+- Results a reader needs are formatted (a Markdown table, a chart), not
+  a raw dump. A finding about a widget also has a static chart or table
+  for the value it names: the page and a cold reader can't move the
+  widget.
 - The summary after the title matches the findings, and says what is
   still open.
 - No credentials, tokens or private paths in cells or outputs.

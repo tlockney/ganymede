@@ -24,7 +24,23 @@ jupyter.image("chart.png");                                    // PNG or JPEG fr
 
 The agent sees text, Markdown and plain text. HTML is shown with its
 tags stripped, so prefer Markdown tables over HTML for numbers you want
-to read back.
+to read back. A short summary reads well as one Markdown display:
+
+```ts
+jupyter.md`### Weekly failure rate
+
+| week | runs | failed |
+|---|--:|--:|
+${weekly.toRecords().map((r) => `| ${r.week} | ${r.runs} | ${r.failed} |`).join("\n")}`;
+```
+
+## Libraries
+
+Import what a cell needs from npm with an exact version,
+`import * as Plot from "npm:@observablehq/plot@0.6.17"`. The kernel
+fetches it the first time a cell runs, on any machine, so the notebook
+needs no install step. Import in the cell that first uses it, or in the
+module next to the notebook, not in a probe.
 
 ## Polars
 
@@ -77,3 +93,43 @@ await jupyter.display({
 
 JupyterLab renders it; the agent sees only the text. For a chart you
 need to read, use Plot as SVG.
+
+## Widgets
+
+`jupyter.widget` makes an [anywidget](https://anywidget.dev) model the
+person can drive from the notebook. The view is a small ES module that
+runs in their frontend; the kernel keeps the state and reacts to it. To
+let them move a threshold on a chart, keep the plotting in the kernel
+and send the view the SVG:
+
+```ts
+const draw = (min: number) =>
+  Plot.plot({
+    document,
+    marks: [Plot.barY(weekly.toRecords().filter((d) => d.runs >= min), { x: "week", y: "failed" })],
+  }).outerHTML;
+
+const picker = jupyter.widget({
+  esm: `export default {
+    render({ model, el }) {
+      const slider = Object.assign(document.createElement("input"), { type: "range", min: "0", max: "200" });
+      const chart = document.createElement("div");
+      const update = () => { slider.value = String(model.get("min")); chart.innerHTML = model.get("svg"); };
+      slider.oninput = () => { model.set("min", slider.valueAsNumber); model.save_changes(); };
+      model.on("change:svg", update);
+      update();
+      el.append(slider, chart);
+    },
+  };`,
+  state: { min: 0, svg: draw(0) },
+});
+picker.on("change:min", (min) => picker.set("svg", draw(Number(min))));
+picker;
+```
+
+Inside `esm`, a `${...}` is filled in by the kernel: write `\${...}` for
+one the view should see. The agent sees only `text/plain` for a widget,
+and a published page leaves it out, so follow the widget with a static
+chart for the value the finding names. cdp-kernel's
+[widgets guide](https://github.com/tlockney/cdp-kernel/blob/main/docs/widgets.md)
+has more: progress bars, binary data, messages.
