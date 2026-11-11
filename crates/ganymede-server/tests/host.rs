@@ -247,7 +247,7 @@ async fn list_read_and_search_return_data() {
     assert_eq!(found["hits"][0]["title"], "Fremont Bridge");
 
     let err = api
-        .call(&caller, "notebooks.run", json!({}))
+        .call(&caller, "notebooks.edit", json!({}))
         .await
         .unwrap_err();
     assert_eq!(err.code, "unavailable");
@@ -449,6 +449,201 @@ async fn a_notebooks_own_grant_replaces_the_defaults() {
         )
         .await
         .is_ok());
+}
+
+/// The kernels running a `notebooks.run`, by the launch variable the
+/// server gave them.
+fn run_kernels(api_state: &AppState) -> Vec<String> {
+    api_state
+        .kernels
+        .list()
+        .into_iter()
+        .filter(|k| {
+            api_state
+                .kernels
+                .get(&k.id)
+                .is_ok_and(|k| k.launch_var("GANYMEDE_HOST_RUN").is_some())
+        })
+        .map(|k| k.id)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_notebook_runs_another_under_its_run_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let code = |id: &str, src: &str| json!({"cell_type": "code", "execution_count": null, "id": id, "metadata": {}, "outputs": [], "source": src});
+    std::fs::create_dir(dir.path().join("reports")).unwrap();
+    let write = |name: &str, cells: Vec<Value>| {
+        let nb = json!({"cells": cells, "nbformat": 4, "nbformat_minor": 5,
+            "metadata": {"kernelspec": {"name": "fake", "display_name": "Fake"}}});
+        std::fs::write(dir.path().join(name), nb.to_string()).unwrap();
+    };
+    write("reports/r.ipynb", vec![code("a", "result total 42")]);
+    write(
+        "reports/slow.ipynb",
+        vec![code("a", "result early true"), code("b", "sleep 3000")],
+    );
+    let state = state(dir.path());
+    let session = state
+        .sessions
+        .create(SessionCreate {
+            path: "index.ipynb".into(),
+            name: None,
+            type_: Some("notebook".into()),
+            kernel: Default::default(),
+        })
+        .await
+        .unwrap();
+    let caller = Caller {
+        kernel_id: session.kernel.id.clone(),
+    };
+    let api = Arc::new(HostApi::new(
+        state.clone(),
+        &HostConfig {
+            run: vec!["reports".into()],
+            ..Default::default()
+        },
+    ));
+    assert!(api
+        .hello(&caller)
+        .await
+        .methods
+        .contains(&"notebooks.run".to_string()));
+
+    let ran = api
+        .call(&caller, "notebooks.run", json!({"path": "reports/r.ipynb"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        ran,
+        json!({"path": "reports/r.ipynb", "status": "ok", "results": {"total": 42}})
+    );
+    let err = api
+        .call(&caller, "notebooks.run", json!({"path": "journal/a.ipynb"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "denied");
+    assert!(err.message.contains("run grant"), "{}", err.message);
+
+    // The run's kernel gets the intersection of the two grants: the
+    // called notebook may read only journal/, so its run may too.
+    let ids = file_ids(dir.path());
+    let (id, _) = ids.index("reports/slow.ipynb");
+    ids.set_grant(&id, Some(r#"{"read":["journal"]}"#)).unwrap();
+    // The first run's kernel shuts down after its call returns; wait for
+    // it so the loop below finds the slow run's kernel.
+    while !run_kernels(&state).is_empty() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let running = tokio::spawn({
+        let (api, caller) = (api.clone(), caller.clone());
+        async move {
+            api.call(
+                &caller,
+                "notebooks.run",
+                json!({"path": "reports/slow.ipynb"}),
+            )
+            .await
+        }
+    });
+    let run_kernel = loop {
+        if let Some(k) = run_kernels(&state).pop() {
+            break Caller { kernel_id: k };
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    let hello = api.hello(&run_kernel).await;
+    assert_eq!(hello.notebook.as_deref(), Some("reports/slow.ipynb"));
+    assert!(
+        !hello.methods.iter().any(|m| m.starts_with("self.")),
+        "a run writes nothing: {:?}",
+        hello.methods
+    );
+    let read = |path: &'static str| {
+        let (api, k) = (&api, &run_kernel);
+        async move {
+            api.call(k, "notebooks.read", json!({ "path": path }))
+                .await
+                .map(|_| ())
+                .map_err(|e| e.code)
+        }
+    };
+    assert_eq!(read("journal/a.ipynb").await, Ok(()));
+    assert_eq!(read("journal-private/p.ipynb").await, Err("denied"));
+
+    // A run may run another, one deeper, under the narrowed run grant.
+    let nested = api
+        .call(
+            &run_kernel,
+            "notebooks.run",
+            json!({"path": "reports/r.ipynb"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(nested["results"], json!({"total": 42}));
+
+    // Cancelling the call (the comm aborts it) shuts the run's kernel
+    // down.
+    running.abort();
+    let _ = running.await;
+    for _ in 0..200 {
+        if run_kernels(&state).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(run_kernels(&state).is_empty());
+}
+
+#[tokio::test]
+async fn a_kernel_has_two_runs_in_flight_at_most() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let nb = json!({"cells": [{"cell_type": "code", "execution_count": null, "id": "a",
+                               "metadata": {}, "outputs": [], "source": "sleep 400"}],
+                    "nbformat": 4, "nbformat_minor": 5,
+                    "metadata": {"kernelspec": {"name": "fake", "display_name": "Fake"}}});
+    std::fs::write(dir.path().join("slow.ipynb"), nb.to_string()).unwrap();
+    let state = state(dir.path());
+    let session = state
+        .sessions
+        .create(SessionCreate {
+            path: "index.ipynb".into(),
+            name: None,
+            type_: Some("notebook".into()),
+            kernel: Default::default(),
+        })
+        .await
+        .unwrap();
+    let caller = Caller {
+        kernel_id: session.kernel.id.clone(),
+    };
+    let api = Arc::new(HostApi::new(
+        state.clone(),
+        &HostConfig {
+            run: vec![String::new()],
+            ..Default::default()
+        },
+    ));
+    let calls: Vec<_> = (0..3)
+        .map(|_| {
+            let (api, caller) = (api.clone(), caller.clone());
+            tokio::spawn(async move {
+                api.call(&caller, "notebooks.run", json!({"path": "slow.ipynb"}))
+                    .await
+            })
+        })
+        .collect();
+    let mut most = 0;
+    while !calls.iter().all(|c| c.is_finished()) {
+        most = most.max(run_kernels(&state).len());
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    for c in calls {
+        assert_eq!(c.await.unwrap().unwrap()["status"], "ok");
+    }
+    assert_eq!(most, 2);
 }
 
 fn paths_of(v: &Value, key: &str) -> Vec<String> {
@@ -755,4 +950,177 @@ async fn edit_self_off_takes_the_self_calls_away() {
         .unwrap_err();
     assert_eq!(err.code, "denied");
     assert!(err.message.contains("[host] edit_self"), "{}", err.message);
+}
+
+/// Starts `notebooks.run` of `path` from `from` and returns the call and
+/// the run's kernel once it is up.
+async fn start_run(
+    api: &Arc<HostApi>,
+    state: &AppState,
+    from: &Caller,
+    path: &'static str,
+) -> (
+    tokio::task::JoinHandle<Result<Value, ganymede_host::HostError>>,
+    Caller,
+) {
+    let before = run_kernels(state);
+    let call = tokio::spawn({
+        let (api, from) = (api.clone(), from.clone());
+        async move {
+            api.call(&from, "notebooks.run", json!({ "path": path }))
+                .await
+        }
+    });
+    let kernel = loop {
+        if let Some(k) = run_kernels(state).into_iter().find(|k| !before.contains(k)) {
+            break Caller { kernel_id: k };
+        }
+        assert!(
+            !call.is_finished(),
+            "the run ended before its kernel was seen"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    (call, kernel)
+}
+
+/// A caller in a fresh state with a session on index.ipynb and `config`,
+/// and reports/slow.ipynb to run.
+async fn run_setup(root: &std::path::Path, config: HostConfig) -> (Arc<HostApi>, AppState, Caller) {
+    notebooks(root);
+    std::fs::create_dir(root.join("reports")).unwrap();
+    let nb = json!({"cells": [{"cell_type": "code", "execution_count": null, "id": "a",
+        "metadata": {}, "outputs": [], "source": "sleep 3000"}],
+        "nbformat": 4, "nbformat_minor": 5,
+        "metadata": {"kernelspec": {"name": "fake", "display_name": "Fake"}}});
+    std::fs::write(root.join("reports/slow.ipynb"), nb.to_string()).unwrap();
+    let state = state(root);
+    let session = state
+        .sessions
+        .create(SessionCreate {
+            path: "index.ipynb".into(),
+            name: None,
+            type_: Some("notebook".into()),
+            kernel: Default::default(),
+        })
+        .await
+        .unwrap();
+    let caller = Caller {
+        kernel_id: session.kernel.id.clone(),
+    };
+    (
+        Arc::new(HostApi::new(state.clone(), &config)),
+        state,
+        caller,
+    )
+}
+
+#[tokio::test]
+async fn runs_nest_at_most_three_deep() {
+    let dir = tempfile::tempdir().unwrap();
+    let (api, state, caller) = run_setup(
+        dir.path(),
+        HostConfig {
+            run: vec!["reports".into()],
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut from = caller;
+    let mut calls = Vec::new();
+    for depth in 1..=3 {
+        let (call, kernel) = start_run(&api, &state, &from, "reports/slow.ipynb").await;
+        let can_run = api
+            .hello(&kernel)
+            .await
+            .methods
+            .contains(&"notebooks.run".to_string());
+        assert_eq!(can_run, depth < 3, "depth {depth}");
+        calls.push(call);
+        from = kernel;
+    }
+    let err = api
+        .call(
+            &from,
+            "notebooks.run",
+            json!({"path": "reports/slow.ipynb"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "denied");
+    assert!(err.message.contains("3 deep"), "{}", err.message);
+    for c in calls {
+        c.abort();
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_run_reads_through_no_symlink_its_caller_may_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let (api, state, caller) = run_setup(
+        dir.path(),
+        HostConfig {
+            read: vec!["journal".into()],
+            run: vec!["reports".into()],
+            ..Default::default()
+        },
+    )
+    .await;
+    // journal/link leads to journal-private, which the caller may not
+    // read; the run notebook's own grant names the link.
+    std::os::unix::fs::symlink(
+        dir.path().join("journal-private"),
+        dir.path().join("journal/link"),
+    )
+    .unwrap();
+    let ids = file_ids(dir.path());
+    let (id, _) = ids.index("reports/slow.ipynb");
+    ids.set_grant(&id, Some(r#"{"read":["journal/link"]}"#))
+        .unwrap();
+    let (call, run) = start_run(&api, &state, &caller, "reports/slow.ipynb").await;
+    for path in ["journal/link/p.ipynb", "journal-private/p.ipynb"] {
+        let err = api
+            .call(&run, "notebooks.read", json!({ "path": path }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "denied", "{path}");
+    }
+    call.abort();
+}
+
+#[tokio::test]
+async fn a_run_waiting_for_a_slot_sees_a_revoked_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    let (api, state, caller) = run_setup(
+        dir.path(),
+        HostConfig {
+            run: vec!["reports".into()],
+            ..Default::default()
+        },
+    )
+    .await;
+    let (a, _) = start_run(&api, &state, &caller, "reports/slow.ipynb").await;
+    let (b, _) = start_run(&api, &state, &caller, "reports/slow.ipynb").await;
+    // Both slots are taken, so this one waits.
+    let waiting = tokio::spawn({
+        let (api, caller) = (api.clone(), caller.clone());
+        async move {
+            api.call(
+                &caller,
+                "notebooks.run",
+                json!({"path": "reports/slow.ipynb"}),
+            )
+            .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!waiting.is_finished());
+    let ids = file_ids(dir.path());
+    let (id, _) = ids.index("index.ipynb");
+    ids.set_grant(&id, Some(r#"{"run":[]}"#)).unwrap();
+    a.abort();
+    let err = waiting.await.unwrap().unwrap_err();
+    assert_eq!(err.code, "denied");
+    b.abort();
 }

@@ -868,6 +868,14 @@ fn grant_stores_lists_and_revokes_a_notebooks_grant() {
         "j/a.ipynb read=(only itself) edit_self=false\n"
     );
     assert_eq!(
+        ok(&["j/a.ipynb", "run=reports"]),
+        "j/a.ipynb read=(only itself) run=\"reports\" edit_self=false\n"
+    );
+    assert_eq!(
+        ok(&["--revoke", "j/a.ipynb", "run=reports"]),
+        "j/a.ipynb read=(only itself) run=(none) edit_self=false\n"
+    );
+    assert_eq!(
         ok(&["--revoke", "j/a.ipynb"]),
         "j/a.ipynb: the [host] defaults\n"
     );
@@ -908,7 +916,7 @@ fn grant_stores_lists_and_revokes_a_notebooks_grant() {
 
     for bad in [
         &["j/a.ipynb", "edit_self=maybe"][..],
-        &["j/a.ipynb", "run=x"],
+        &["j/a.ipynb", "write=x"],
         &["j/a.ipynb", "read=../x"],
         &["j/a.ipynb"],
         &["/etc/hosts", "read=x"],

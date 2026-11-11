@@ -15,10 +15,11 @@ pub struct GrantArgs {
     /// directory, or else to `--root-dir`.
     notebook: Option<PathBuf>,
     /// What to grant: `read=PATH` adds an API path the notebook may read
-    /// (its own list replaces the `[host] read` default; `""` is the
-    /// root), and `edit_self=true|false` lets it edit its own cells or
-    /// not. With `--revoke`, `read=PATH` removes a path and a bare `read`
-    /// or `edit_self` goes back to the default.
+    /// and `run=PATH` one it may run (its own list replaces the `[host]`
+    /// default; `""` is the root), and `edit_self=true|false` lets it
+    /// edit its own cells or not. With `--revoke`, `read=PATH` or
+    /// `run=PATH` removes a path, and a bare `read`, `run` or `edit_self`
+    /// goes back to the default.
     grants: Vec<String>,
     /// Show the notebook's grant, or every notebook's with no NOTEBOOK.
     #[arg(long, conflicts_with_all = ["revoke", "grants"])]
@@ -41,6 +42,12 @@ fn show(path: &str, grant: &Grant) -> String {
             parts.push("read=(only itself)".into());
         }
         parts.extend(read.iter().map(|p| format!("read={p:?}")));
+    }
+    if let Some(run) = &grant.run {
+        if run.is_empty() {
+            parts.push("run=(none)".into());
+        }
+        parts.extend(run.iter().map(|p| format!("run={p:?}")));
     }
     if let Some(e) = grant.edit_self {
         parts.push(format!("edit_self={e}"));
@@ -120,7 +127,7 @@ pub fn run(args: GrantArgs) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     if args.grants.is_empty() && !args.revoke {
-        bail!("say what to grant, such as read=journal or edit_self=false");
+        bail!("say what to grant, such as read=journal, run=reports or edit_self=false");
     }
     let (id, _) = ids.index(&path);
     let mut grant = ids.grant(&id).map(|t| parse(&t)).unwrap_or_default();
@@ -133,23 +140,34 @@ pub fn run(args: GrantArgs) -> Result<ExitCode> {
             None => (g.as_str(), None),
         };
         match (key, value, args.revoke) {
-            ("read", Some(p), false) => {
+            (k @ ("read" | "run"), Some(p), false) => {
                 let p = ganymede_contents::normalize_api_path(p);
                 if p.split('/').any(|c| c == "..") {
-                    bail!("read={p}: `..` is not allowed");
+                    bail!("{k}={p}: `..` is not allowed");
                 }
-                let read = grant.read.get_or_insert_with(Vec::new);
-                if !read.contains(&p) {
-                    read.push(p);
+                let list = if k == "read" {
+                    &mut grant.read
+                } else {
+                    &mut grant.run
+                };
+                let list = list.get_or_insert_with(Vec::new);
+                if !list.contains(&p) {
+                    list.push(p);
                 }
             }
-            ("read", Some(p), true) => {
+            (k @ ("read" | "run"), Some(p), true) => {
                 let p = ganymede_contents::normalize_api_path(p);
-                if let Some(read) = &mut grant.read {
-                    read.retain(|r| r != &p);
+                let list = if k == "read" {
+                    &mut grant.read
+                } else {
+                    &mut grant.run
+                };
+                if let Some(list) = list {
+                    list.retain(|r| r != &p);
                 }
             }
             ("read", None, true) => grant.read = None,
+            ("run", None, true) => grant.run = None,
             ("edit_self", Some(v), false) => {
                 grant.edit_self = Some(match v {
                     "true" => true,
@@ -159,7 +177,7 @@ pub fn run(args: GrantArgs) -> Result<ExitCode> {
             }
             ("edit_self", None, true) => grant.edit_self = None,
             _ => bail!(
-                "can't {} {g:?}: use read=PATH or edit_self=true|false",
+                "can't {} {g:?}: use read=PATH, run=PATH or edit_self=true|false",
                 if args.revoke { "revoke" } else { "grant" }
             ),
         }
