@@ -6391,6 +6391,102 @@ impl Provisioner for EnvProvisioner {
     }
 }
 
+/// `save: "copy"` (#658) writes the executed notebook under `runs/`,
+/// beside nothing else, and answers its path; the source is unchanged.
+#[tokio::test]
+async fn notebooks_run_saves_a_copy_under_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let code = |id: &str, src: &str| json!({"cell_type": "code", "execution_count": null, "id": id, "metadata": {}, "outputs": [], "source": src});
+    let write = |name: &str, cells: Vec<Value>| {
+        let nb = json!({"cells": cells, "nbformat": 4, "nbformat_minor": 5,
+            "metadata": {"kernelspec": {"name": "fake", "display_name": "Fake"}}});
+        let path = dir.path().join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, serde_json::to_string_pretty(&nb).unwrap()).unwrap();
+    };
+    write("reports/daily.ipynb", vec![code("a", "result total 42")]);
+    write(
+        "fails.ipynb",
+        vec![code("a", "result first 1"), code("b", "raise")],
+    );
+    let before = std::fs::read(dir.path().join("reports/daily.ipynb")).unwrap();
+    let app = build_router(state_with(
+        dir.path(),
+        Arc::new(EnvProvisioner::default()),
+        Arc::new(FakeTransports),
+    ));
+    let run = |body: Value| call(&app, "POST", "/api/notebooks/run", Some(body), Some(TOKEN));
+    let read = |path: &str| -> Value {
+        serde_json::from_slice(&std::fs::read(dir.path().join(path)).unwrap()).unwrap()
+    };
+
+    let (s, v) =
+        run(json!({"path": "reports/daily.ipynb", "params": {"day": "mon"}, "save": "copy"})).await;
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert_eq!(v["status"], "ok", "{v:#}");
+    assert_eq!(v["results"], json!({"total": 42}));
+    let copy = v["copy"].as_str().expect("copy path").to_string();
+    let name = copy
+        .strip_prefix("runs/reports/daily/")
+        .unwrap_or_else(|| panic!("{copy}"));
+    assert!(
+        name.len() == "2026-11-11T193005Z.ipynb".len() && name.ends_with("Z.ipynb"),
+        "{copy}"
+    );
+    let saved = read(&copy);
+    assert_eq!(saved["cells"][0]["execution_count"], 1, "{saved:#}");
+    assert!(!saved["cells"][0]["outputs"].as_array().unwrap().is_empty());
+    assert_eq!(
+        saved["metadata"]["ganymede"]["params"],
+        json!({"day": "mon"})
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("reports/daily.ipynb")).unwrap(),
+        before,
+        "the source is unchanged"
+    );
+    // The copy is readable through the API, as the answer's path says.
+    let (s, _) = call(
+        &app,
+        "GET",
+        &format!("/api/contents/{copy}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // A second run in the same second gets its own copy.
+    let (_, again) = run(json!({"path": "reports/daily.ipynb", "save": "copy"})).await;
+    let again = again["copy"].as_str().unwrap().to_string();
+    assert_ne!(again, copy);
+    assert!(again.starts_with("runs/reports/daily/"), "{again}");
+    assert_eq!(read(&again)["metadata"].get("ganymede"), None, "no params");
+
+    // A failed run is kept too, with its error.
+    let (_, v) = run(json!({"path": "fails.ipynb", "save": "copy"})).await;
+    assert_eq!(v["status"], "error", "{v:#}");
+    let failed = v["copy"].as_str().expect("copy path");
+    assert!(failed.starts_with("runs/fails/"), "{failed}");
+    let saved = read(failed);
+    assert_eq!(
+        saved["cells"][1]["outputs"][0]["output_type"], "error",
+        "{saved:#}"
+    );
+
+    // Without save, nothing is written.
+    let (_, v) = run(json!({"path": "reports/daily.ipynb"})).await;
+    assert_eq!(v.get("copy"), None);
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("runs/reports/daily"))
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().path().extension() == Some("ipynb".as_ref()))
+            .count(),
+        2,
+        "only the two copies"
+    );
+}
+
 /// `POST /api/notebooks/run` (#652): the run contract over HTTP. A fresh
 /// kernel with the parameters, named results back, nothing written, and
 /// the kernel gone afterwards.
@@ -6523,7 +6619,7 @@ async fn notebooks_run_answers_with_named_results() {
             StatusCode::BAD_REQUEST,
         ),
         (
-            json!({"path": "ok.ipynb", "save": "copy"}),
+            json!({"path": "ok.ipynb", "save": "keep"}),
             StatusCode::BAD_REQUEST,
         ),
         (json!({"path": "nospec.ipynb"}), StatusCode::BAD_REQUEST),

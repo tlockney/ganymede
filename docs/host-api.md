@@ -21,8 +21,16 @@ those defaults for it, and clients set it over HTTP with
 apps, Kernel > Notebook Access… (the ⋯ menu on the iPad and iPhone) shows
 what a notebook asks for and sets its grant.
 
-The rest of this page is the design; a run's `save: "copy"` and
-`ganymede execute` grants come next.
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`notebooks.run` (and `POST /api/notebooks/run`) take `save: "copy"`,
+which keeps the executed notebook under `runs/`
+([Run copies](reference.md#run-copies)).
+
+The rest of this page is the design; `ganymede execute` grants come
+next.
 
 ## The problem
 
@@ -206,9 +214,10 @@ HTTP endpoint, so it waits on that contract's first step.
 - The notebook's own kernelspec runs it. A TypeScript notebook can run a
   Python one if the server has a Python kernel.
 - `save` is `false` by default: the run's outputs go nowhere but the
-  result. `"copy"` writes the executed notebook beside the run contract's
-  other copies and returns its `path`. Writing back into the notebook
-  itself is not offered from a cell.
+  result. `"copy"` writes the executed notebook under `runs/` and
+  returns its path as `copy`
+  ([Run copies](reference.md#run-copies)). Writing back into the
+  notebook itself is not offered from a cell.
 - An abort (`{ signal: jupyter.signal }`, which an interrupt aborts)
   sends `cancel`, and the server shuts the run's kernel down.
 - **Grants narrow, never widen.** The run's kernel gets the intersection

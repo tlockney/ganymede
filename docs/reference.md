@@ -412,8 +412,7 @@ It runs the notebook in a fresh kernel from its own kernelspec, with
 `params` (a JSON object, optional) in `GANYMEDE_PARAMS`, and answers when
 the run ends with the body of one `--results` line. `path` is an API
 path; the notebook is read from its room when one is open, so unsaved
-edits run. Nothing is written: not the notebook, not its room, and
-`save` takes only `false`. `timeout` is in seconds for the whole run, at
+edits run. The notebook and its room are never written. `timeout` is in seconds for the whole run, at
 most and by default 3600. The run's kernel is listed in `/api/kernels`
 while it runs, and shut down when the run ends, times out, or the client
 disconnects. A missing `path`, bad `params` or `timeout`, or a notebook
@@ -421,6 +420,35 @@ with no `metadata.kernelspec.name`, or one this server doesn't have, is
 `400`, and a notebook that can't be
 read `404`, before any kernel starts; after that, a failure is `200` with
 `"status": "error"`.
+
+#### Run copies
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`"save": "copy"` keeps the executed notebook. The copy goes under
+`runs/` at the root, in a folder named for the notebook's path without
+`.ipynb`, named for the run's start in UTC, and the answer names it as
+`copy`:
+
+```http
+POST /api/notebooks/run
+{"path": "reports/daily.ipynb", "params": {"day": "2026-11-10"}, "save": "copy"}
+
+{"path": "reports/daily.ipynb", "status": "ok", "results": {...},
+ "copy": "runs/reports/daily/2026-11-11T193005Z.ipynb"}
+```
+
+The copy holds every cell's outputs and the parameters in
+`metadata.ganymede.params`. A failed run is kept too, so the copy shows
+where it stopped. A second run in the same second gets `-2`, `-3`, and
+so on. The source notebook is unchanged. `save` defaults to `false`,
+which writes nothing; any other value is `400`. `runs/` is an ordinary
+folder: browse, read or delete copies through the contents API, and
+leave it out of a notebook's `[host] read` grant to keep runs out of its
+reads and searches. The host API's `notebooks.run` takes the same
+`save`.
 
 ## Logging
 

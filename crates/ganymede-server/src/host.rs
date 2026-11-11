@@ -14,7 +14,7 @@
 //!   the notebook's outputs (the copy `notebooks.read` returns).
 //! - `notebooks.run { path, params?, timeout?, save? }`: runs another
 //!   notebook in a fresh kernel (`POST /api/notebooks/run`'s code) and
-//!   returns `{ path, status, results, error? }`, under the `[host] run`
+//!   returns `{ path, status, results, error?, copy? }`, under the `[host] run`
 //!   grant. The run's kernel gets the intersection of the caller's grant
 //!   and the notebook's, runs nest at most 3 deep, and each kernel has
 //!   at most 2 runs in flight.
