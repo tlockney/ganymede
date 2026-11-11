@@ -248,7 +248,8 @@ Each answers `{ path, grant, defaults }`: the notebook's own grant (`{}`
 when it has none) and `[host]` from the config, which it replaces key by
 key. `PUT` stores the grant in place of the one the notebook had, and
 `{}` or `DELETE` removes it. A grant has only `read`, `edit_self` and
-`run`; anything else is `400`, and so is a path that isn't a notebook.
+`run`; anything else is `400`, as are a grant path with `..` and a path
+that isn't a notebook.
 A missing notebook is `404`, and a server whose file ids live only in
 memory answers `409`, since a grant there wouldn't outlive it. A kernel
 holds no token, so it can't grant itself anything.
