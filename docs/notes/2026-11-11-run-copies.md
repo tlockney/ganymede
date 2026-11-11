@@ -21,3 +21,9 @@ check a notebook allowed to run `secret.ipynb` and read `runs/` could
 read the secret through its copy, and grants only narrow. A leading dot
 in a path part becomes `_` in the copy's folder, so a notebook in a
 hidden folder still gets a copy the contents API can write and read.
+
+Cells a failed or timed-out run never started are cleared in the copy,
+outputs and execution count, so an older run's outputs don't read as
+this run's. The HTTP route normalizes the path as the host API does, so
+`./reports/daily.ipynb` gets the same copy folder as
+`reports/daily.ipynb`.

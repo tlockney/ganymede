@@ -108,7 +108,7 @@ impl RunRequest {
     pub fn parse(body: RunBody) -> Result<RunRequest, String> {
         let path = body
             .path
-            .map(|p| p.trim_matches('/').to_string())
+            .map(|p| ganymede_contents::normalize_api_path(&p))
             .filter(|p| !p.is_empty())
             .ok_or("path is required")?;
         let params = match body.params {
@@ -274,8 +274,18 @@ pub async fn run_notebook(
     if let Err(e) = outcome {
         answer["error"] = e.into();
     }
-    // A failed run is kept too: its copy shows where it stopped.
+    // A failed run is kept too: its copy shows where it stopped. Cells
+    // the run never started lose what an older run saved in them, so
+    // the copy holds only this run's outputs (and results).
     if request.save_copy {
+        for (i, cell) in nb.cells.iter_mut().enumerate() {
+            if let Cell::Code(c) = cell {
+                if !ran.contains(&i) {
+                    c.outputs.clear();
+                    c.execution_count = None;
+                }
+            }
+        }
         // As `ganymede execute` records them: the copy says what it ran with.
         ganymede_nbformat::record_params(
             &mut nb,

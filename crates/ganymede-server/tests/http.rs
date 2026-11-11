@@ -6405,9 +6405,13 @@ async fn notebooks_run_saves_a_copy_under_runs() {
         std::fs::write(path, serde_json::to_string_pretty(&nb).unwrap()).unwrap();
     };
     write("reports/daily.ipynb", vec![code("a", "result total 42")]);
+    // The cell after the failure keeps an older run's output in the file.
+    let stale = json!({"cell_type": "code", "execution_count": 7, "id": "c", "metadata": {},
+        "outputs": [{"output_type": "stream", "name": "stdout", "text": "older run"}],
+        "source": "result second 2"});
     write(
         "fails.ipynb",
-        vec![code("a", "result first 1"), code("b", "raise")],
+        vec![code("a", "result first 1"), code("b", "raise"), stale],
     );
     let before = std::fs::read(dir.path().join("reports/daily.ipynb")).unwrap();
     let app = build_router(state_with(
@@ -6463,8 +6467,10 @@ async fn notebooks_run_saves_a_copy_under_runs() {
     assert!(again.starts_with("runs/reports/daily/"), "{again}");
     assert_eq!(read(&again)["metadata"].get("ganymede"), None, "no params");
 
-    // A failed run is kept too, with its error.
-    let (_, v) = run(json!({"path": "fails.ipynb", "save": "copy"})).await;
+    // A failed run is kept too, with its error, and shows where it
+    // stopped: the cell it never reached has no outputs of an older run.
+    // `./` in the path names the same notebook and the same folder.
+    let (_, v) = run(json!({"path": "./fails.ipynb", "save": "copy"})).await;
     assert_eq!(v["status"], "error", "{v:#}");
     let failed = v["copy"].as_str().expect("copy path");
     assert!(failed.starts_with("runs/fails/"), "{failed}");
@@ -6473,6 +6479,8 @@ async fn notebooks_run_saves_a_copy_under_runs() {
         saved["cells"][1]["outputs"][0]["output_type"], "error",
         "{saved:#}"
     );
+    assert_eq!(saved["cells"][2]["outputs"], json!([]), "{saved:#}");
+    assert_eq!(saved["cells"][2]["execution_count"], Value::Null);
 
     // Without save, nothing is written.
     let (_, v) = run(json!({"path": "reports/daily.ipynb"})).await;

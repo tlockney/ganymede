@@ -463,7 +463,7 @@ POST /api/notebooks/run
 
 The copy holds every cell's outputs and the parameters in
 `metadata.ganymede.params`. A failed run is kept too, so the copy shows
-where it stopped. A second run in the same second gets `-2`, `-3`, and
+where it stopped: cells the run didn't reach have no outputs. A second run in the same second gets `-2`, `-3`, and
 so on. The source notebook is unchanged. `save` defaults to `false`,
 which writes nothing; any other value is `400`. `runs/` is an ordinary
 folder: browse, read or delete copies through the contents API, and
