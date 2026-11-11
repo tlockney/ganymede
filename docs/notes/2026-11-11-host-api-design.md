@@ -17,3 +17,9 @@ every client, so the `device` comm's announce step and pings aren't
 needed. And the MCP tools return nb-cli text, so they need splitting
 into a core that returns data before a second front door can share them;
 `mcp/search.rs` already has that shape.
+
+Thomas agreed the design the same day and settled its four open
+questions: reads cover the whole root by default, grants are kept by file
+id with `ganymede grant --list` and `--revoke`, kernels without subshells
+get no host API, and a notebook may edit its own cells (`self.*`) as the
+step after the read calls.

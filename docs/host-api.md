@@ -3,8 +3,8 @@
 A design note for [#647](https://github.com/tlockney/ganymede/issues/647):
 a way for cell code to ask the Ganymede server for things, such as
 reading, searching and running other notebooks, without giving the
-kernel a server token. It is a proposal for review. Nothing here is
-built yet.
+kernel a server token. The design was agreed on 2026-11-10, with the
+decisions at the end. Nothing here is built yet.
 
 ## The problem
 
@@ -151,15 +151,25 @@ version has these:
 | `notebooks.search` | `{ query, dir?, outputs?, cell_type?, limit? }` | `{ hits: [{ path, title, index, id, cell_type, in, excerpt }], total, truncated }`, the `notebooks_search` tool's matches as data | Yes, under `read` |
 | `notebooks.results` | `{ path }` | `{ name: value }`: the notebook's named results, from its saved outputs | Yes, under `read` |
 | `notebooks.run` | `{ path, params?, save?, timeout? }` | `{ status, results, error?, path? }` | No |
+| `self.add` | `{ cell_type, source, after? }` | `{ id }` of the new cell in the calling notebook | Yes |
+| `self.edit` | `{ id, source, source_hash }` | `{}`, or `failed` with `source_mismatch` when the cell changed since it was read | Yes |
+| `self.delete` | `{ id, source_hash }` | `{}`, with the same check | Yes |
 
 `has(method)` is answered in the kernel from `hello`'s `methods`, so a
 cell can check before it calls.
 
+The `self.*` calls edit only the notebook the kernel was started for,
+through its room, so every client sees the change live. They use the
+MCP cell tools' code and the execute endpoint's source hash (MurmurHash2,
+seed 0), so a cell can't overwrite an edit it hasn't seen. They cover
+the most common edit a notebook makes, regenerating a table or summary
+in one of its own cells, such as a journal index. A kernel with no
+notebook has no `self.*` calls.
+
 Later, on the same channel and the same grants:
 
-- `notebooks.edit`: cell add, edit, delete and move through the room,
-  with the execute endpoint's source-hash guard, as the MCP cell tools
-  do. Not needed by the notebooks-from-notebooks use cases yet.
+- `notebooks.edit`: the `self.*` calls for other notebooks, behind a
+  grant. Not needed by the notebooks-from-notebooks use cases yet.
 - `secrets.get`: a named secret the notebook is granted, from a store
   the server keeps. Its reply is the reason replies stay on shell.
 - `runs.list`: the run ledger, once it exists.
@@ -236,7 +246,8 @@ run = []             # notebooks this notebook may run; [] is none, [""] is all
   Trust Notebook works for outputs. A downloaded notebook that asks for
   everything gets nothing until someone says yes.
 - **Granting** is `ganymede grant <notebook> run=<path>` on the command
-  line first, then a sheet in the apps. A notebook with no file (an
+  line first, with `--list` to show a notebook's grants (or every
+  notebook's) and `--revoke` to remove one, then a sheet in the apps. A notebook with no file (an
   untitled console) gets the defaults.
 - **`ganymede execute`** has no file id database. It uses `[host]` from
   the config and `--grant run=<path>` on the command line.
@@ -306,10 +317,11 @@ channel of its own for parameters or results.
 - **ganymede-device**: none. `device` keeps its transports, since the app
   answers it, not the server.
 
-The order, once this note is agreed: the comm and the read methods in
-Ganymede, then `jupyter.host()` in cdp-kernel, which is enough for the
-journal index and "what do I already know". `notebooks.run` follows the
-run contract's first step. Granting in the apps comes last.
+The order: the comm and the read methods in Ganymede, then
+`jupyter.host()` in cdp-kernel, which is enough for "what do I already
+know". The `self.*` calls come next, which complete the journal index.
+`notebooks.run` follows the run contract's first step. Granting in the
+apps comes last.
 
 ## Why a comm and not a token
 
@@ -334,27 +346,27 @@ without them get no host API, and each language needs a small client.
 That client is a comm target and a request map, about the size of
 `ganymede-device`'s comm transport.
 
-## Open questions
+## Decisions
 
-- **Default reads.** The proposal lets every notebook read the whole
-  root by default, which matches what a Node or Deno kernel can already
-  do. A stricter default (only the notebook's own directory) would make
-  in-app and agent-run notebooks safer, at the cost of a grant for the
-  journal index.
-- **Where grants live.** Keyed by file id beside the file id database,
-  as proposed, or in a file people can read and edit, such as a
-  `[host.notebooks]` table in `ganymede.toml` keyed by path.
-- **Kernels without subshells.** ipykernel 7 has them; older Python
-  kernels and other languages may not. Reads could still work for a
-  client that doesn't await on the main shell (a callback API), but
-  that is a second way to call. The proposal leaves those kernels out.
-- **A cell's own notebook.** Writing to its own notebook (regenerating
-  an index table in a Markdown cell) is the most-asked edit. It could
-  come before general `notebooks.edit`, granted by default for the
-  notebook itself.
+Thomas settled the four open questions on 2026-11-10:
+
+- **Default reads cover the whole root.** A desktop kernel can read
+  those files already, so a narrower default would add a grant without
+  protection, and in the apps the root is the app's own documents.
+  Limiting what an agent's code can do on the machine is the OS
+  sandbox's job.
+- **Grants are kept by file id**, so they follow a notebook that moves.
+  `ganymede grant --list` and `--revoke` show and remove them, in place
+  of editing a file by hand.
+- **Kernels without subshells get no host API.** cdp-kernel and
+  ipykernel 7 have subshells. A second, callback-style way to call
+  waits until a kernel that needs it comes up.
+- **A notebook may edit itself** through the `self.*` calls, granted by
+  default, as the step after the read calls. Editing other notebooks
+  stays for later.
 
 ## What this leaves out
 
-Secrets and their store, the OS sandbox, the run ledger, edits through
-the host API, and where the notebooks read-and-query package lives. Each
+Secrets and their store, the OS sandbox, the run ledger, edits to other
+notebooks, and where the notebooks read-and-query package lives. Each
 builds on this channel and these grants.
