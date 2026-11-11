@@ -634,7 +634,8 @@ mod tests {
         transports
             .host
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        m.set_host(Arc::new(Echo), "1.2.3");
+        let echo: Arc<dyn ganymede_host::Responder> = Arc::new(Echo);
+        m.set_host(&echo, "1.2.3");
         let k = started(&m, Some("fake"), None).await.unwrap();
         let mut c = m.connect_client(&k.id).unwrap();
         let mut seen = Vec::new();

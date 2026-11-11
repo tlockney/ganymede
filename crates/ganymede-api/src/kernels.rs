@@ -397,7 +397,7 @@ struct Core {
     ended: Mutex<VecDeque<(String, Arc<KernelLog>)>>,
     /// What answers the host API, and the version `hello` reports. Unset,
     /// kernels get no host comm.
-    host: OnceLock<(Arc<dyn ganymede_host::Responder>, String)>,
+    host: OnceLock<(std::sync::Weak<dyn ganymede_host::Responder>, String)>,
 }
 
 /// Logs kept for kernels that have been shut down or left dead.
@@ -461,9 +461,14 @@ impl KernelManager {
 
     /// Answer the host API (`docs/host-api.md`) for kernels booted from
     /// now on, reporting `version` in `hello`. Set once; a second call is
-    /// ignored.
-    pub fn set_host(&self, responder: Arc<dyn ganymede_host::Responder>, version: &str) {
-        let _ = self.core.host.set((responder, version.to_string()));
+    /// ignored. The manager keeps only a weak reference: the responder
+    /// usually holds the server's state, which holds this manager, so the
+    /// caller keeps it alive for as long as the server runs.
+    pub fn set_host(&self, responder: &Arc<dyn ganymede_host::Responder>, version: &str) {
+        let _ = self
+            .core
+            .host
+            .set((Arc::downgrade(responder), version.to_string()));
     }
 
     // ----- kernelspecs -------------------------------------------------
@@ -957,7 +962,8 @@ impl Core {
         match result {
             Ok(()) => {
                 let session = kernel.session();
-                if let Some((responder, version)) = self.host.get() {
+                let responder = self.host.get().and_then(|(r, v)| Some((r.upgrade()?, v)));
+                if let Some((responder, version)) = responder {
                     // Stored under the lock the pump checks, so none of the
                     // comm's traffic reaches clients before the link is in.
                     let mut host = kernel.host.lock().unwrap();
