@@ -17,6 +17,7 @@ subprocess = ["ganymede-kernel-host/subprocess"]
 [dependencies]
 ganymede-kernel-host = { path = "../ganymede-kernel-host", default-features = false }
 ganymede-contents = { path = "../ganymede-contents" }
+ganymede-host = { path = "../ganymede-host" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -32,7 +32,7 @@
 //! (see the `marks` module).
 
 mod marks;
-mod search;
+pub(crate) mod search;
 mod snapshot;
 
 use crate::collab::{hold_notebook, notebook_room_id, with_notebook, Hold};
@@ -932,42 +932,34 @@ impl Notebooks {
         };
         let limit = a.limit.unwrap_or(20).clamp(1, 200);
         let dir = ganymede_contents::normalize_api_path(a.dir.as_deref().unwrap_or(""));
-        let (paths, truncated) = self.notebook_paths(&dir).await?;
-        let (mut out, mut shown, mut total, mut notebooks) = (String::new(), 0, 0, 0);
-        for path in &paths {
-            let Some(nb) = self.notebook_for_search(path).await else {
-                continue;
-            };
-            let hits = search::search(&nb, &words, scope);
-            if hits.is_empty() {
-                continue;
-            }
-            total += hits.len();
-            notebooks += 1;
-            if shown >= limit {
-                continue;
-            }
-            let head = json!({"path": path, "title": search::title(&nb)});
+        let found = search_notebooks(&self.state, &dir, &words, scope, limit, |_| true)
+            .await
+            .map_err(err)?;
+        let mut out = String::new();
+        for (path, title, hits) in &found.notebooks {
+            let head = json!({"path": path, "title": title});
             out.push_str(&format!("@@notebook {head}\n"));
-            for h in hits.into_iter().take(limit - shown) {
+            for h in hits {
                 let head =
                     json!({"index": h.index, "id": h.id, "cell_type": h.cell_type, "in": h.r#in});
                 out.push_str(&format!("@@cell {head}\n{}\n", h.excerpt));
-                shown += 1;
             }
             out.push('\n');
         }
+        let shown: usize = found.notebooks.iter().map(|(_, _, h)| h.len()).sum();
         let mut summary = format!(
-            "{total} matching cells in {notebooks} of {} notebooks under {}",
-            paths.len(),
+            "{} matching cells in {} of {} notebooks under {}",
+            found.total,
+            found.matched,
+            found.searched,
             if dir.is_empty() { "the root" } else { &dir }
         );
-        if shown < total {
+        if shown < found.total {
             summary.push_str(&format!(
                 "; showing {shown} (raise `limit` or narrow `dir`)"
             ));
         }
-        if truncated {
+        if found.truncated {
             summary.push_str(&format!(
                 "; stopped after {SEARCH_MAX_NOTEBOOKS} notebooks or {SEARCH_MAX_DIRS} directories (narrow `dir`)"
             ));
@@ -1302,100 +1294,6 @@ impl Notebooks {
             .await?
             .ok_or_else(|| err(format!("{path} is not a notebook")))?
             .map_err(|e| err(e.to_string()))
-    }
-
-    /// Notebook paths under `dir`, depth first in name order, skipping
-    /// checkpoints; and whether [`SEARCH_MAX_NOTEBOOKS`] or
-    /// [`SEARCH_MAX_DIRS`] cut the list. Hidden files stay out as the
-    /// contents API leaves them out. A directory reached twice, through a
-    /// symlink to it or to an ancestor, is listed once.
-    async fn notebook_paths(&self, dir: &str) -> Result<(Vec<String>, bool), McpError> {
-        let mut found = Vec::new();
-        let mut dirs = vec![dir.to_string()];
-        let mut visited = std::collections::HashSet::new();
-        let mut listed = 0;
-        while let Some(d) = dirs.pop() {
-            if let Some(root) = self.state.collab.root() {
-                // Canonical paths, so every way into a directory is one.
-                match std::fs::canonicalize(root.join(&d)) {
-                    Ok(real) => {
-                        if !visited.insert(real) {
-                            continue;
-                        }
-                    }
-                    Err(_) if d != dir => continue,
-                    Err(_) => {}
-                }
-            }
-            if listed == SEARCH_MAX_DIRS {
-                return Ok((found, true));
-            }
-            listed += 1;
-            let model = self
-                .state
-                .contents
-                .get(
-                    &d,
-                    GetOptions {
-                        content: true,
-                        type_hint: Some(ContentType::Directory),
-                        ..Default::default()
-                    },
-                )
-                .await;
-            let items = match model {
-                Ok(m) => match m.content {
-                    Some(Value::Array(items)) => items,
-                    _ => continue,
-                },
-                // The directory asked for must exist; one below it that
-                // went away while walking is skipped.
-                Err(e) if d == dir => return Err(err(e.to_string())),
-                Err(_) => continue,
-            };
-            let mut subdirs = Vec::new();
-            let mut entries: Vec<_> = items.iter().collect();
-            entries.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
-            for item in entries {
-                let path = item["path"].as_str().unwrap_or_default().to_string();
-                match item["type"].as_str() {
-                    Some("directory") if item["name"] != ".ipynb_checkpoints" => subdirs.push(path),
-                    Some("notebook") => {
-                        if found.len() == SEARCH_MAX_NOTEBOOKS {
-                            return Ok((found, true));
-                        }
-                        found.push(path);
-                    }
-                    _ => {}
-                }
-            }
-            // Popped from the end: push in reverse for name order.
-            dirs.extend(subdirs.into_iter().rev());
-        }
-        Ok((found, false))
-    }
-
-    /// A notebook for [`Self::notebooks_search`]: from its room when one
-    /// is open, so unsaved edits count, else from disk. `None` when it
-    /// can't be read.
-    async fn notebook_for_search(&self, path: &str) -> Option<Notebook> {
-        if let Some(nb) = self.state.collab.open_notebook(path).await {
-            return Some(nb);
-        }
-        let model = self
-            .state
-            .contents
-            .get(
-                path,
-                GetOptions {
-                    content: true,
-                    type_hint: Some(ContentType::Notebook),
-                    ..Default::default()
-                },
-            )
-            .await
-            .ok()?;
-        Notebook::from_value(model.content?).ok()
     }
 
     /// The notebook, and this connection's read mark moved to it.
@@ -2110,6 +2008,158 @@ impl ganymede_exec::NotebookHandler for Started {
 /// [`images`] on a blocking thread: drawing an SVG loads the system fonts
 /// the first time and rasterizes up to 1,600 px square, which would hold
 /// up the runtime's other work (under `serve --mcp`, the whole server).
+/// Notebook paths under `dir`, depth first in name order, skipping
+/// checkpoints; and whether [`SEARCH_MAX_NOTEBOOKS`] or
+/// [`SEARCH_MAX_DIRS`] cut the list. Hidden files stay out as the
+/// contents API leaves them out. A directory reached twice, through a
+/// symlink to it or to an ancestor, is listed once.
+pub(crate) async fn notebook_paths(
+    state: &AppState,
+    dir: &str,
+) -> Result<(Vec<String>, bool), String> {
+    let mut found = Vec::new();
+    let mut dirs = vec![dir.to_string()];
+    let mut visited = std::collections::HashSet::new();
+    let mut listed = 0;
+    while let Some(d) = dirs.pop() {
+        if let Some(root) = state.collab.root() {
+            // Canonical paths, so every way into a directory is one.
+            match std::fs::canonicalize(root.join(&d)) {
+                Ok(real) => {
+                    if !visited.insert(real) {
+                        continue;
+                    }
+                }
+                Err(_) if d != dir => continue,
+                Err(_) => {}
+            }
+        }
+        if listed == SEARCH_MAX_DIRS {
+            return Ok((found, true));
+        }
+        listed += 1;
+        let model = state
+            .contents
+            .get(
+                &d,
+                GetOptions {
+                    content: true,
+                    type_hint: Some(ContentType::Directory),
+                    ..Default::default()
+                },
+            )
+            .await;
+        let items = match model {
+            Ok(m) => match m.content {
+                Some(Value::Array(items)) => items,
+                _ => continue,
+            },
+            // The directory asked for must exist; one below it that
+            // went away while walking is skipped.
+            Err(e) if d == dir => return Err(e.to_string()),
+            Err(_) => continue,
+        };
+        let mut subdirs = Vec::new();
+        let mut entries: Vec<_> = items.iter().collect();
+        entries.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+        for item in entries {
+            let path = item["path"].as_str().unwrap_or_default().to_string();
+            match item["type"].as_str() {
+                Some("directory") if item["name"] != ".ipynb_checkpoints" => subdirs.push(path),
+                Some("notebook") => {
+                    if found.len() == SEARCH_MAX_NOTEBOOKS {
+                        return Ok((found, true));
+                    }
+                    found.push(path);
+                }
+                _ => {}
+            }
+        }
+        // Popped from the end: push in reverse for name order.
+        dirs.extend(subdirs.into_iter().rev());
+    }
+    Ok((found, false))
+}
+
+/// A notebook for `notebooks_search` and the host API: from its room when one
+/// is open, so unsaved edits count, else from disk. `None` when it
+/// can't be read.
+pub(crate) async fn notebook_for_search(state: &AppState, path: &str) -> Option<Notebook> {
+    if let Some(nb) = state.collab.open_notebook(path).await {
+        return Some(nb);
+    }
+    let model = state
+        .contents
+        .get(
+            path,
+            GetOptions {
+                content: true,
+                type_hint: Some(ContentType::Notebook),
+                ..Default::default()
+            },
+        )
+        .await
+        .ok()?;
+    Notebook::from_value(model.content?).ok()
+}
+
+/// What [`search_notebooks`] found.
+pub(crate) struct Found {
+    /// Each notebook with hits, its title and the hits shown.
+    pub notebooks: Vec<(String, Option<String>, Vec<search::Hit>)>,
+    /// Matching cells in all, shown or not.
+    pub total: usize,
+    /// Notebooks with a match.
+    pub matched: usize,
+    /// Notebooks searched.
+    pub searched: usize,
+    /// The walk stopped at [`SEARCH_MAX_NOTEBOOKS`] or [`SEARCH_MAX_DIRS`].
+    pub truncated: bool,
+}
+
+/// Search the notebooks under `dir` that `allowed` lets through, keeping
+/// at most `limit` hits: `notebooks_search` and the host API's
+/// `notebooks.search`.
+pub(crate) async fn search_notebooks(
+    state: &AppState,
+    dir: &str,
+    words: &[String],
+    scope: search::Scope<'_>,
+    limit: usize,
+    allowed: impl Fn(&str) -> bool,
+) -> Result<Found, String> {
+    let (paths, truncated) = notebook_paths(state, dir).await?;
+    let mut found = Found {
+        notebooks: Vec::new(),
+        total: 0,
+        matched: 0,
+        searched: 0,
+        truncated,
+    };
+    let mut shown = 0;
+    for path in paths.iter().filter(|p| allowed(p)) {
+        found.searched += 1;
+        let Some(nb) = notebook_for_search(state, path).await else {
+            continue;
+        };
+        let hits = search::search(&nb, words, scope);
+        if hits.is_empty() {
+            continue;
+        }
+        found.total += hits.len();
+        found.matched += 1;
+        if shown >= limit {
+            continue;
+        }
+        let hits: Vec<_> = hits.into_iter().take(limit - shown).collect();
+        shown += hits.len();
+        found
+            .notebooks
+            .push((path.clone(), search::title(&nb), hits));
+    }
+    Ok(found)
+}
+
 async fn images_off_runtime(outputs: Vec<Output>) -> Vec<ContentBlock> {
     if outputs.is_empty() {
         return Vec::new();

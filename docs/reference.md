@@ -138,6 +138,10 @@ frame_ancestors = "'self'"       # who may frame the server's pages
 # Cross-Origin-Opener-Policy = "same-origin"
 # Cross-Origin-Embedder-Policy = "require-corp"
 
+# What cells may read through the host API (see A host API for kernels):
+# [host]
+# read = [""]                    # API paths; "" is the root, [] only the cell's own notebook
+
 # Language servers for jupyterlab-lsp, none by default. One table each:
 # [language_servers.pyright]
 # argv = ["pyright-langserver", "--stdio"]
@@ -157,6 +161,19 @@ them.
 | `max_body_size` | Largest request body, in bytes, which caps a notebook's size. A `/login` form gets at most 64 KiB. Also the largest message a [document room](rooms.md#connections) takes, and how many bytes of messages a room client may fall behind before it is closed, so lowering it to cap uploads also closes slow room clients sooner. Default 512 MiB. |
 | `crash_reporting` | Send crash reports from `ganymede` to Sentry; see [Privacy and crash reporting](privacy.md). Default `false`. |
 | `frame_ancestors` | The CSP sources allowed to frame the server's pages, added to every response as `frame-ancestors <sources>`. Default `'self'`, as `jupyter_server`; add an origin, such as `'self' https://portal.example.com`, to embed `/lab` in that site. See [Security](security.md#defaults). |
+
+### The host API
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`[host] read` lists the API paths that cell code may read through the
+[host API](host-api.md): `notebooks.list`, `notebooks.read` and
+`notebooks.search`. A path covers itself and everything under it, by
+whole segments, so `"journal"` covers `journal/a.ipynb` but not
+`journal-private/`. The default, `[""]`, is the whole root; `[]` leaves
+each notebook only itself.
 
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in

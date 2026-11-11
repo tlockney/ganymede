@@ -598,6 +598,10 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         metrics: Default::default(),
     };
 
+    kernels.set_host(
+        Arc::new(crate::host::HostApi::new(state.clone(), &cfg.host)),
+        env!("CARGO_PKG_VERSION"),
+    );
     let mut app = crate::build_router(state);
     if !base.is_empty() {
         // Paths outside the prefix get the same frame-ancestors.

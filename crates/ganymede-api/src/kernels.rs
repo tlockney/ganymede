@@ -12,7 +12,7 @@ use ganymede_kernel_host::{
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::Duration;
 use tokio::sync::watch;
 
@@ -100,6 +100,9 @@ pub struct RunningKernel {
     session_name: Mutex<Option<String>>,
     session: RwLock<KernelSession>,
     launched: Mutex<Option<LaunchedKernel>>,
+    /// The host API's comm with the current session, once it has booted
+    /// (`docs/host-api.md`). Its traffic stays out of what clients get.
+    host: Mutex<Option<ganymede_host::HostLink>>,
     pub(crate) clients: Mutex<crate::bridge::Clients>,
     /// False once the manager has shut the kernel down. Clients hold an
     /// `Arc` to this struct, so their queues never close; they watch this
@@ -231,6 +234,15 @@ impl RunningKernel {
     }
 
     fn forward(&self, channel: Channel, msg: Message) {
+        if self
+            .host
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|h| h.is_host_message(channel, &msg))
+        {
+            return;
+        }
         self.touch();
         if channel == Channel::Shell {
             if let Some(parent) = msg.parent_id() {
@@ -383,6 +395,9 @@ struct Core {
     /// The logs of the last [`ENDED_LOGS`] kernels to leave the map, newest
     /// last, so a client can still read why a kernel died.
     ended: Mutex<VecDeque<(String, Arc<KernelLog>)>>,
+    /// What answers the host API, and the version `hello` reports. Unset,
+    /// kernels get no host comm.
+    host: OnceLock<(Arc<dyn ganymede_host::Responder>, String)>,
 }
 
 /// Logs kept for kernels that have been shut down or left dead.
@@ -434,6 +449,7 @@ impl KernelManager {
                 kernels: RwLock::new(HashMap::new()),
                 config,
                 ended: Mutex::default(),
+                host: OnceLock::new(),
             }),
             started: now_iso(),
         }
@@ -441,6 +457,13 @@ impl KernelManager {
 
     pub fn config(&self) -> &KernelManagerConfig {
         &self.core.config
+    }
+
+    /// Answer the host API (`docs/host-api.md`) for kernels booted from
+    /// now on, reporting `version` in `hello`. Set once; a second call is
+    /// ignored.
+    pub fn set_host(&self, responder: Arc<dyn ganymede_host::Responder>, version: &str) {
+        let _ = self.core.host.set((responder, version.to_string()));
     }
 
     // ----- kernelspecs -------------------------------------------------
@@ -552,6 +575,7 @@ impl KernelManager {
             session_name: Mutex::new(session_name),
             session: RwLock::new(session.clone()),
             launched: Mutex::new(Some(launched)),
+            host: Mutex::default(),
             clients: Mutex::default(),
             alive: watch::channel(true).0,
             booting: AtomicBool::new(true),
@@ -933,6 +957,20 @@ impl Core {
         match result {
             Ok(()) => {
                 let session = kernel.session();
+                if let Some((responder, version)) = self.host.get() {
+                    // Stored under the lock the pump checks, so none of the
+                    // comm's traffic reaches clients before the link is in.
+                    let mut host = kernel.host.lock().unwrap();
+                    let caller = ganymede_host::Caller {
+                        kernel_id: kernel.id.clone(),
+                    };
+                    *host = Some(ganymede_host::attach(
+                        &session,
+                        caller,
+                        responder.clone(),
+                        version,
+                    ));
+                }
                 // The kernel answered, so it is idle unless a client's
                 // request has made it busy since: the statuses for the
                 // startup `kernel_info_request` are not tracked.

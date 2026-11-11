@@ -1059,6 +1059,7 @@ dependencies = [
  "chrono",
  "futures",
  "ganymede-contents",
+ "ganymede-host",
  "ganymede-kernel-host",
  "serde",
  "serde_json",
@@ -1205,6 +1206,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ganymede-host"
+version = "0.7.0"
+dependencies = [
+ "async-trait",
+ "ganymede-kernel-host",
+ "ganymede-protocol",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ganymede-kernel-host"
 version = "0.7.0"
 dependencies = [
@@ -1287,6 +1302,7 @@ dependencies = [
  "ganymede-documents",
  "ganymede-exec",
  "ganymede-gateway",
+ "ganymede-host",
  "ganymede-kernel-host",
  "ganymede-lsp",
  "ganymede-nbformat",

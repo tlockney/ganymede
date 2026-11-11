@@ -6,6 +6,19 @@ reading, searching and running other notebooks, without giving the
 kernel a server token. The design was agreed on 2026-11-10, with the
 decisions at the end. Nothing here is built yet.
 
+## What's built
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+The first step: the server opens the host comm to every kernel with
+subshells, keeps its traffic from other clients, and answers `hello`,
+`notebooks.list`, `notebooks.read` and `notebooks.search`, with the
+`[host] read` grant from the config file
+([Reference](reference.md#the-host-api)). The rest of this page is the
+design; the kernel's client and the other calls come next.
+
 ## The problem
 
 A cell can ask the app for things through the

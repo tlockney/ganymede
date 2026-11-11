@@ -120,6 +120,10 @@ pub struct Config {
     /// Read by the `ganymede` binary, and only one built with its
     /// `crash-reporting` feature; `GANYMEDE_CRASH_REPORTING` overrides it.
     pub crash_reporting: bool,
+    /// The host API for kernels (`docs/host-api.md`): what cell code may
+    /// ask the server for. `[host] read` lists the API paths reads may
+    /// reach; the root by default.
+    pub host: crate::host::HostConfig,
 }
 
 impl Default for Config {
@@ -161,6 +165,7 @@ impl Default for Config {
             mcp_no_execute: false,
             mcp_images: false,
             crash_reporting: false,
+            host: Default::default(),
         }
     }
 }
