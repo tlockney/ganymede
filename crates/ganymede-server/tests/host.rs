@@ -1039,6 +1039,34 @@ async fn run_setup(root: &std::path::Path, config: HostConfig) -> (Arc<HostApi>,
     )
 }
 
+/// A run may read its own notebook, but may not copy it under runs/ for
+/// a caller that may not read it.
+#[tokio::test]
+async fn a_run_copies_itself_only_for_callers_that_may_read_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (api, state, caller) = run_setup(
+        dir.path(),
+        HostConfig {
+            read: vec!["runs".into()],
+            run: vec!["reports".into()],
+            ..Default::default()
+        },
+    )
+    .await;
+    let (call, run) = start_run(&api, &state, &caller, "reports/slow.ipynb").await;
+    let err = api
+        .call(
+            &run,
+            "notebooks.run",
+            json!({"path": "reports/slow.ipynb", "save": "copy"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "denied");
+    assert!(err.message.contains("read grant"), "{}", err.message);
+    call.abort();
+}
+
 #[tokio::test]
 async fn runs_nest_at_most_three_deep() {
     let dir = tempfile::tempdir().unwrap();

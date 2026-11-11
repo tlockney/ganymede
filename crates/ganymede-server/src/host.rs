@@ -511,7 +511,11 @@ impl HostApi {
         // A copy holds the notebook's source and every output. A run grant
         // alone gives only named results, so keeping a copy, which the
         // caller might read under runs/, needs a read of the source too.
-        if save_copy && !self.may_read(who, path) {
+        // Every outer caller too: a run may read its own notebook, but a
+        // copy of it under runs/ is for whoever may read runs/.
+        if save_copy
+            && !(self.may_read(who, path) && who.outer_read.iter().all(|g| self.covers(g, path)))
+        {
             return Err(HostError::denied(format!(
                 "save: \"copy\" needs {path} inside this notebook's read grant as well as its run grant"
             )));

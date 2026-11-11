@@ -27,3 +27,8 @@ outputs and execution count, so an older run's outputs don't read as
 this run's. The HTTP route normalizes the path as the host API does, so
 `./reports/daily.ipynb` gets the same copy folder as
 `reports/daily.ipynb`.
+
+The read check covers every outer caller too, so a run can't copy its
+own notebook under `runs/` for a caller that may not read it. A read
+grant on `runs/` reads every copy there, whoever made it; reference.md
+says so.
