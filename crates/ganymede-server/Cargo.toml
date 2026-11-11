@@ -24,6 +24,8 @@ ganymede-kernel-host = { path = "../ganymede-kernel-host", default-features = fa
 ganymede-api = { path = "../ganymede-api", default-features = false }
 ganymede-contents = { path = "../ganymede-contents", features = ["sqlite"] }
 ganymede-documents = { path = "../ganymede-documents" }
+ganymede-host = { path = "../ganymede-host" }
+async-trait.workspace = true
 ganymede-exec = { path = "../ganymede-exec" }
 ganymede-nbformat = { path = "../ganymede-nbformat" }
 ganymede-gateway = { path = "../ganymede-gateway", optional = true }
@@ -70,4 +72,3 @@ sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 
 [dev-dependencies]
 tokio-tungstenite.workspace = true
-async-trait.workspace = true

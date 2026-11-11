@@ -138,6 +138,30 @@ impl SessionManager {
         v
     }
 
+    /// A notebook session `kernel_id` runs for, as `(session id, path)`:
+    /// the first by session id when several share the kernel. Read-only:
+    /// it doesn't drop dead kernels' sessions, as [`list`](Self::list)
+    /// does.
+    pub fn notebook_of_kernel(&self, kernel_id: &str) -> Option<(String, String)> {
+        self.sessions
+            .read()
+            .unwrap()
+            .values()
+            .filter(|s| s.kernel_id == kernel_id && s.type_ == "notebook")
+            .min_by(|a, b| a.id.cmp(&b.id))
+            .map(|s| (s.id.clone(), s.path.clone()))
+    }
+
+    /// The path of notebook session `id`, if it still exists.
+    pub fn notebook_path(&self, id: &str) -> Option<String> {
+        self.sessions
+            .read()
+            .unwrap()
+            .get(id)
+            .filter(|s| s.type_ == "notebook")
+            .map(|s| s.path.clone())
+    }
+
     pub fn get(&self, id: &str) -> Result<SessionModel> {
         let s = self
             .sessions
@@ -358,6 +382,8 @@ mod tests {
     #[derive(Default)]
     struct FakeTransports {
         script: Mutex<VecDeque<Launch>>,
+        /// Kernels with subshells and a host API client.
+        host: std::sync::atomic::AtomicBool,
     }
 
     #[async_trait]
@@ -368,6 +394,9 @@ mod tests {
         ) -> ganymede_kernel_host::Result<KernelTransport> {
             let (host, side) = in_process_pair(256);
             match self.script.lock().unwrap().pop_front() {
+                None if self.host.load(std::sync::atomic::Ordering::SeqCst) => {
+                    FakeKernel::spawn_with_host(side, ReplyOrder::ReplyThenIdle);
+                }
                 None => {
                     FakeKernel::spawn(side, ReplyOrder::ReplyThenIdle);
                 }
@@ -599,6 +628,101 @@ mod tests {
         assert!(m.list().is_empty());
         assert_eq!(m.get(&k.id).unwrap_err().status, 404);
         assert_eq!(m.start(Some("nope"), None).await.unwrap_err().status, 404);
+    }
+
+    struct Echo;
+    #[async_trait]
+    impl ganymede_host::Responder for Echo {
+        async fn hello(&self, caller: &ganymede_host::Caller) -> ganymede_host::Hello {
+            ganymede_host::Hello {
+                notebook: Some(caller.kernel_id.clone()),
+                methods: vec!["echo".into()],
+            }
+        }
+        async fn call(
+            &self,
+            _caller: &ganymede_host::Caller,
+            _method: &str,
+            params: serde_json::Value,
+        ) -> std::result::Result<serde_json::Value, ganymede_host::HostError> {
+            Ok(params)
+        }
+    }
+
+    /// The host answers a kernel's calls, and clients see none of the
+    /// comm: not its open, the calls, the replies' statuses, or the
+    /// subshell request. They do see what the cell prints.
+    #[tokio::test]
+    async fn host_calls_stay_out_of_what_clients_see() {
+        let (m, transports) = scripted(None);
+        transports
+            .host
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let echo: Arc<dyn ganymede_host::Responder> = Arc::new(Echo);
+        m.set_host(&echo, "1.2.3");
+        let k = started(&m, Some("fake"), None).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        let mut seen = Vec::new();
+        let mut run = async |c: &mut crate::ClientConnection, code: &str| -> String {
+            let req = Message::new("execute_request", "sess-c", "u", &ExecuteRequest::new(code));
+            c.send(Channel::Shell, req).await.unwrap();
+            let mut out = String::new();
+            loop {
+                let (channel, msg) = tokio::time::timeout(Duration::from_secs(5), c.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if msg.msg_type() == "stream" {
+                    out.push_str(msg.content["text"].as_str().unwrap());
+                }
+                let done = channel == Channel::Shell && msg.msg_type() == "execute_reply";
+                seen.push(msg);
+                if done {
+                    return out;
+                }
+            }
+        };
+        let mut hello = String::new();
+        for _ in 0..200 {
+            hello = run(&mut c, "host-hello").await;
+            if hello != "no host\n" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let hello: serde_json::Value = serde_json::from_str(hello.trim()).unwrap();
+        assert_eq!(hello["notebook"], k.id.as_str());
+        assert_eq!(hello["server"], "1.2.3");
+        run(&mut c, r#"host echo {"x":1}"#).await;
+        let mut answer = String::new();
+        while answer.is_empty() {
+            let (_, msg) = tokio::time::timeout(Duration::from_secs(5), c.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if msg.msg_type() == "stream" {
+                answer = msg.content["text"].as_str().unwrap().to_string();
+            }
+            seen.push(msg);
+        }
+        assert_eq!(answer, "host 0: {\"id\":0,\"result\":{\"x\":1}}\n");
+        // Anything late from the host's side would arrive by now.
+        while let Ok(Some((_, msg))) =
+            tokio::time::timeout(Duration::from_millis(300), c.recv()).await
+        {
+            seen.push(msg);
+        }
+        for msg in &seen {
+            assert!(
+                !msg.msg_type().starts_with("comm_")
+                    && !msg.msg_type().contains("subshell")
+                    && msg
+                        .parent_header
+                        .as_ref()
+                        .is_none_or(|p| !p.session.starts_with("ganymede-host-")),
+                "a client saw host traffic: {msg:?}"
+            );
+        }
     }
 
     #[tokio::test]

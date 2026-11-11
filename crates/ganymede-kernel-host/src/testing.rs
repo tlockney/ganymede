@@ -14,6 +14,15 @@
 //! `stop_on_error`, queued `execute_request`s are answered `aborted`.
 //! `usage_request` is answered only by a kernel from
 //! [`FakeKernel::spawn_with_usage`], with [`fake_usage`].
+//!
+//! A kernel from [`FakeKernel::spawn_with_host`] also lists `kernel
+//! subshells`, answers `create_subshell_request`, and has a client for
+//! the host API (`ganymede.host.v1`): the cell `host <method> <json>`
+//! sends a call and ends at once, and the host's answer is printed as
+//! `host <id>: <answer>` with the calling cell as parent; `host-hello`
+//! prints the open's data; `host-close` closes the comm from the kernel;
+//! `host-open` opens it from the kernel, as a client that loads late
+//! does; `host-cancel <id>` cancels a call.
 
 use crate::transport::KernelSide;
 use ganymede_protocol::content::*;
@@ -47,6 +56,13 @@ pub struct FakeKernel {
     shell_kernel_infos: Arc<AtomicUsize>,
     /// Answer `usage_request` on control.
     usage: bool,
+    /// Subshells and a host API client.
+    host: bool,
+    /// The host comm's id and the `hello` it brought, once open.
+    host_comm: Option<(String, serde_json::Value)>,
+    /// Calls sent and not yet answered: id to the calling cell.
+    host_calls: HashMap<u64, Message>,
+    next_call: u64,
 }
 
 /// The `usage_reply` content of a kernel from [`FakeKernel::spawn_with_usage`].
@@ -69,6 +85,14 @@ impl FakeKernel {
     pub fn spawn_with_usage(side: KernelSide, order: ReplyOrder) -> tokio::task::JoinHandle<()> {
         let mut k = Self::new(side, order, None).0;
         k.usage = true;
+        k.start()
+    }
+
+    /// A kernel with subshells and a host API client (see the module
+    /// docs).
+    pub fn spawn_with_host(side: KernelSide, order: ReplyOrder) -> tokio::task::JoinHandle<()> {
+        let mut k = Self::new(side, order, None).0;
+        k.host = true;
         k.start()
     }
 
@@ -101,6 +125,10 @@ impl FakeKernel {
             shell_ready_at: delay.map(|d| tokio::time::Instant::now() + d),
             shell_kernel_infos: count.clone(),
             usage: false,
+            host: false,
+            host_comm: None,
+            host_calls: HashMap::new(),
+            next_call: 0,
         };
         (k, count)
     }
@@ -157,7 +185,7 @@ impl FakeKernel {
             match (channel, msg.msg_type()) {
                 (Channel::Shell | Channel::Control, "kernel_info_request") => {
                     self.status(&msg, ExecutionState::Busy).await;
-                    self.reply(channel, &msg, "kernel_info_reply", &kernel_info())
+                    self.reply(channel, &msg, "kernel_info_reply", &self.kernel_info())
                         .await;
                     self.status(&msg, ExecutionState::Idle).await;
                 }
@@ -221,6 +249,11 @@ impl FakeKernel {
                     let reply = serde_json::json!({"status": "ok", "comms": comms});
                     self.reply(channel, &msg, "comm_info_reply", &reply).await;
                 }
+                (Channel::Control, "create_subshell_request") if self.host => {
+                    let reply = serde_json::json!({"status": "ok", "subshell_id": "sub-1"});
+                    self.reply(channel, &msg, "create_subshell_reply", &reply)
+                        .await;
+                }
                 (Channel::Control, "usage_request") if self.usage => {
                     self.reply(channel, &msg, "usage_reply", &fake_usage())
                         .await;
@@ -282,9 +315,26 @@ impl FakeKernel {
                 let target = msg.content["target_name"].as_str().unwrap_or_default();
                 if target == "echo" {
                     self.comms.insert(id, target.into());
+                } else if target == HOST_TARGET && self.host {
+                    self.comms.insert(id.clone(), target.into());
+                    self.host_comm = Some((id, msg.content["data"].clone()));
                 } else {
                     let close = serde_json::json!({"comm_id": id, "data": {}});
                     self.iopub(msg, "comm_close", &close).await;
+                }
+            }
+            "comm_msg" if self.host_comm.as_ref().is_some_and(|(h, _)| *h == id) => {
+                let data = &msg.content["data"];
+                if let Some(hello) = data.get("hello") {
+                    // The answer to a comm the kernel opened.
+                    if let Some((_, h)) = self.host_comm.as_mut() {
+                        *h = hello.clone();
+                    }
+                    return;
+                }
+                let call = data["id"].as_u64().unwrap_or(u64::MAX);
+                if let Some(cell) = self.host_calls.remove(&call) {
+                    self.stream(&cell, &format!("host {call}: {data}\n")).await;
                 }
             }
             "comm_msg" if self.comms.contains_key(&id) => {
@@ -294,6 +344,9 @@ impl FakeKernel {
             }
             "comm_close" => {
                 self.comms.remove(&id);
+                if self.host_comm.as_ref().is_some_and(|(h, _)| *h == id) {
+                    self.host_comm = None;
+                }
             }
             _ => {}
         }
@@ -434,6 +487,59 @@ impl FakeKernel {
             self.comms.insert(id.clone(), "fake.target".into());
             let open = serde_json::json!({"comm_id": id, "target_name": "fake.target", "data": {}});
             self.iopub(msg, "comm_open", &open).await;
+        } else if let Some(call) = code.strip_prefix("host ") {
+            let (method, params) = call.split_once(' ').unwrap_or((call, "{}"));
+            match self.host_comm.clone() {
+                Some((comm_id, _)) => {
+                    let id = self.next_call;
+                    self.next_call += 1;
+                    self.host_calls.insert(id, msg.clone());
+                    let params: serde_json::Value =
+                        serde_json::from_str(params).unwrap_or(serde_json::Value::Null);
+                    let data = serde_json::json!({"id": id, "method": method, "params": params});
+                    self.iopub(
+                        msg,
+                        "comm_msg",
+                        &serde_json::json!({"comm_id": comm_id, "data": data}),
+                    )
+                    .await;
+                }
+                None => self.stream(msg, "no host\n").await,
+            }
+        } else if let Some(id) = code.strip_prefix("host-cancel ") {
+            if let Some((comm_id, _)) = self.host_comm.clone() {
+                let id: u64 = id.parse().unwrap_or(0);
+                self.host_calls.remove(&id);
+                let data = serde_json::json!({"id": id, "cancel": true});
+                self.iopub(
+                    msg,
+                    "comm_msg",
+                    &serde_json::json!({"comm_id": comm_id, "data": data}),
+                )
+                .await;
+            }
+        } else if code == "host-hello" {
+            let text = match &self.host_comm {
+                Some((_, hello)) => format!("{hello}\n"),
+                None => "no host\n".into(),
+            };
+            self.stream(msg, &text).await;
+        } else if code == "host-close" {
+            if let Some((comm_id, _)) = self.host_comm.take() {
+                self.comms.remove(&comm_id);
+                self.iopub(
+                    msg,
+                    "comm_close",
+                    &serde_json::json!({"comm_id": comm_id, "data": {}}),
+                )
+                .await;
+            }
+        } else if code == "host-open" {
+            let id = uuid::Uuid::new_v4().simple().to_string();
+            self.comms.insert(id.clone(), HOST_TARGET.into());
+            self.host_comm = Some((id.clone(), serde_json::Value::Null));
+            let open = serde_json::json!({"comm_id": id, "target_name": HOST_TARGET, "data": {}});
+            self.iopub(msg, "comm_open", &open).await;
         } else if code == "progress" {
             // A progress bar: clear (wait) and print, three times, then
             // hold the cell open for a while.
@@ -545,6 +651,14 @@ impl FakeKernel {
         failed
     }
 
+    fn kernel_info(&self) -> KernelInfoReply {
+        let mut info = kernel_info();
+        if self.host {
+            info.supported_features.push("kernel subshells".into());
+        }
+        info
+    }
+
     async fn status(&self, parent: &Message, state: ExecutionState) {
         self.iopub(
             parent,
@@ -587,6 +701,9 @@ impl FakeKernel {
             .await;
     }
 }
+
+/// The host API's comm target, as `ganymede-host` names it.
+const HOST_TARGET: &str = "ganymede.host.v1";
 
 /// The fake's `kernel_info_reply`, with an extra top-level field to prove
 /// unknown fields pass through the host.

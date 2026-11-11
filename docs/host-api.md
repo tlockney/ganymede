@@ -4,7 +4,21 @@ A design note for [#647](https://github.com/tlockney/ganymede/issues/647):
 a way for cell code to ask the Ganymede server for things, such as
 reading, searching and running other notebooks, without giving the
 kernel a server token. The design was agreed on 2026-11-10, with the
-decisions at the end. Nothing here is built yet.
+decisions at the end. The first step is built; [What's built](#what-s-built)
+says which.
+
+## What's built
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+The first step: the server opens the host comm to every kernel with
+subshells, keeps its traffic from other clients, and answers `hello`,
+`notebooks.list`, `notebooks.read` and `notebooks.search`, with the
+`[host] read` grant from the config file
+([Reference](reference.md#the-host-api)). The rest of this page is the
+design; the kernel's client and the other calls come next.
 
 ## The problem
 
@@ -235,13 +249,16 @@ edit_self = true     # the self.* calls; false turns them off
   session the server started it for: that session's API path, mapped to
   its file id, which `hello` reports as `notebook`. It is the notebook
   whose OS path goes into `JPY_SESSION_NAME`, but the server reads its
-  own session record, not the variable. Another session that joins the same kernel (a
+  own session record, the first it sees for the kernel, not the
+  variable. Another session that joins the same kernel (a
   console attached to it) adds nothing. A kernel started with no
   notebook gets the defaults, and `notebook` is `null`.
 - **Paths** in calls and grants are normalized as the contents API
   normalizes them: relative to the root, with no `..` and no way out of
   the root through a symlink. A grant's path matches whole segments, so
-  `journal` covers `journal/x.ipynb` but not `journal-private/`.
+  `journal` covers `journal/x.ipynb` but not `journal-private/`, and is
+  matched against where a path leads once symlinks are resolved, so a
+  symlink in a granted folder doesn't reach another.
 - **Per notebook** grants add to or narrow the defaults, keyed by the
   notebook's [file id](rooms.md#file-ids), so they follow a rename or
   move. They live beside the file id database, not in the notebook.

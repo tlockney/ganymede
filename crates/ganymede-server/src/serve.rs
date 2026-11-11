@@ -598,6 +598,11 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         metrics: Default::default(),
     };
 
+    // Kept here for as long as the server runs: the manager holds it
+    // weakly, since it holds the state that holds the manager.
+    let host: Arc<dyn ganymede_host::Responder> =
+        Arc::new(crate::host::HostApi::new(state.clone(), &cfg.host));
+    kernels.set_host(&host, env!("CARGO_PKG_VERSION"));
     let mut app = crate::build_router(state);
     if !base.is_empty() {
         // Paths outside the prefix get the same frame-ancestors.
@@ -682,6 +687,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         l.shutdown_all();
     }
     kernels.shutdown_all().await;
+    drop(host);
     Ok(())
 }
 

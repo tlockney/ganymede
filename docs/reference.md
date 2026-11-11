@@ -138,6 +138,10 @@ frame_ancestors = "'self'"       # who may frame the server's pages
 # Cross-Origin-Opener-Policy = "same-origin"
 # Cross-Origin-Embedder-Policy = "require-corp"
 
+# What cells may read through the host API (see A host API for kernels):
+# [host]
+# read = [""]                    # API paths; "" is the root, [] only the cell's own notebook
+
 # Language servers for jupyterlab-lsp, none by default. One table each:
 # [language_servers.pyright]
 # argv = ["pyright-langserver", "--stdio"]
@@ -161,6 +165,21 @@ them.
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
 > the latest release.
+
+### The host API
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`[host] read` lists the API paths that cell code may read through the
+[host API](host-api.md): `notebooks.list`, `notebooks.read` and
+`notebooks.search`. A path covers itself and everything under it, by
+whole segments, so `"journal"` covers `journal/a.ipynb` but not
+`journal-private/`. The default, `[""]`, is the whole root; `[]` leaves
+each notebook only itself. A path is matched where it leads once
+symlinks are resolved, so a symlink in a granted folder doesn't reach
+another.
 
 ## Static headers
 
