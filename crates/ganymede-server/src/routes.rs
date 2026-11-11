@@ -276,14 +276,51 @@ fn merge(target: &mut Value, update: Value) {
     }
 }
 
-/// Export formats: nbconvert's `markdown` and `script`, the two that need
-/// no Python templates (#235).
+/// Export formats: nbconvert's `html`, `markdown` and `script`, without
+/// Python templates (#235, #677).
 async fn nbconvert() -> Json<Value> {
     let formats: serde_json::Map<String, Value> = ganymede_nbformat::FORMATS
         .iter()
         .map(|(name, mime)| ((*name).to_owned(), json!({"output_mimetype": mime})))
         .collect();
     Json(Value::Object(formats))
+}
+
+/// What a published page must not show, with what goes in its place: the
+/// server root's absolute path, the home directory, and the token. A
+/// notebook's outputs can hold them (tracebacks, a printed path).
+pub(crate) fn server_redactions(s: &AppState) -> Vec<(String, String)> {
+    publish_redactions(s.collab.root(), s.token.as_deref())
+}
+
+/// The server's redactions for a given root (`.`) and token (`[token]`),
+/// with the home directory (`~`): `ganymede nb publish` passes the
+/// notebook's directory. Each directory goes in both as given and
+/// resolved, since outputs show whichever the kernel saw (on macOS a
+/// directory under `/var` or `/tmp` is `/private/...` resolved). A root
+/// such as `/` is left out by the exporter.
+pub fn publish_redactions(
+    root: Option<&std::path::Path>,
+    token: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut redact = Vec::new();
+    let mut both = |dir: &std::path::Path, with: &str| {
+        let mut spellings = vec![dir.to_path_buf()];
+        spellings.extend(dir.canonicalize().ok().filter(|c| c != dir));
+        for d in spellings {
+            redact.push((d.to_string_lossy().into_owned(), with.to_owned()));
+        }
+    };
+    if let Some(root) = root {
+        both(root, ".");
+    }
+    if let Some(home) = dirs::home_dir() {
+        both(&home, "~");
+    }
+    if let Some(token) = token.filter(|t| t.len() >= 8) {
+        redact.push((token.to_owned(), "[token]".to_owned()));
+    }
+    redact
 }
 
 #[derive(Deserialize)]
@@ -331,8 +368,17 @@ async fn nbconvert_file(
     // Decoding a notebook's images can take a while: off the runtime.
     let export = {
         let title = title.clone();
+        let redact = server_redactions(&s);
         blocking(move || {
             Ok(match format.as_str() {
+                "html" => ganymede_nbformat::to_html(
+                    &nb,
+                    &title,
+                    &ganymede_nbformat::HtmlOptions {
+                        redact,
+                        ..Default::default()
+                    },
+                ),
                 "markdown" => ganymede_nbformat::to_markdown(&nb, &title),
                 _ => ganymede_nbformat::to_script(&nb),
             })

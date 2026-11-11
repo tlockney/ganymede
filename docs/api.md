@@ -339,7 +339,7 @@ What `ganymede serve` answers, beyond the examples above:
   `/kernelspecs/{name}/{file}`, `/api/kernels` with `interrupt`,
   `restart` and the `channels` websocket, `/api/sessions`,
   `/api/contents/{path}` with checkpoints and `trust`, `/files/{path}`,
-  `/nbconvert/{format}/{path}` for `script` and `markdown`
+  `/nbconvert/{format}/{path}` for `script`, `markdown` and `html`
   ([Export](frontends.md#export)),
   `/api/terminals` and `/terminals/websocket/{name}`.
 - Extensions' routes, with no Python behind them: `jupyter-lsp`'s

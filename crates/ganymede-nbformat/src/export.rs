@@ -1,6 +1,6 @@
-//! Exporting a notebook as a script or as Markdown, the two nbconvert
-//! formats that need no templates and no knowledge of the kernel's
-//! language beyond `metadata.language_info`.
+//! Exporting a notebook as a script or as Markdown, two nbconvert formats
+//! that need no templates and no knowledge of the kernel's language beyond
+//! `metadata.language_info`. The third, HTML, is in the `html` module.
 //!
 //! - [`to_script`]: the code cells, joined. The file extension and MIME
 //!   type come from `language_info` (`file_extension`, `mimetype`), with
@@ -64,7 +64,7 @@ pub const BASE64_LENIENT: GeneralPurpose = GeneralPurpose::new(
 /// Decodes nbformat's base64, which may contain line breaks. `None` when
 /// it isn't valid base64, so the export can leave the file out and not
 /// link to it.
-fn decode_base64(text: &str) -> Option<Vec<u8>> {
+pub(crate) fn decode_base64(text: &str) -> Option<Vec<u8>> {
     let compact: String = text.split_whitespace().collect();
     BASE64_LENIENT.decode(compact).ok()
 }
@@ -72,7 +72,11 @@ fn decode_base64(text: &str) -> Option<Vec<u8>> {
 /// The export formats, by their nbconvert names, with the MIME type
 /// `/api/nbconvert` reports for each. A script's actual type depends on
 /// the notebook's language.
-pub const FORMATS: &[(&str, &str)] = &[("markdown", "text/markdown"), ("script", "text/plain")];
+pub const FORMATS: &[(&str, &str)] = &[
+    ("html", "text/html"),
+    ("markdown", "text/markdown"),
+    ("script", "text/plain"),
+];
 
 /// The notebook's `metadata.language_info`.
 fn language_info(nb: &Notebook) -> Option<&Map<String, Value>> {

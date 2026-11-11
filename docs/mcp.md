@@ -121,6 +121,7 @@ isn't reported to the agent as someone else's edit.
 | `kernelspecs_list`, `notebooks_list` | The kernels available, and the notebooks in a directory. |
 | `cell_snapshot` | Cells as Markdown to show a person: code, images saved as files, tables, text (see [Snapshots](#snapshots)). |
 | `notebooks_search` | Cells across notebooks that contain every word of a query (see [Search](#search)). |
+| `notebook_publish` | The notebook as one self-contained HTML page, saved under the root (see [Publishing a notebook](#publishing-a-notebook)). |
 
 Each notebook is also a `notebook://<path>` resource, and the `journal`
 prompt gives the agent conventions for keeping the record.
@@ -216,6 +217,60 @@ A notebook open in a room is read from the room, so edits not yet saved
 count; others are read from disk. A directory reached through a
 symbolic link is searched once. A search reads at most 2,000
 notebooks and says so when it stops early.
+
+## Publishing a notebook
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`notebook_publish` saves the notebook as one HTML page to read and
+share, such as a finished journal:
+
+```sh
+ganymede mcp call notebook_publish '{"path": "journal/2026-11-09-oklahoma-quakes.ipynb"}'
+```
+
+![A journal published as a page: contents on the left, a step recorded outside the kernel, a section heading, and a chart with its code folded above it](images/publish/journal-page.png)
+
+The page has a `# ` heading at the top of the first cell as its title
+(else the notebook's name), a table of
+contents from its `## ` headings, Markdown cells as prose, and charts,
+images and tables inline. Each code cell's code is folded above its
+output (`code: "shown"` shows it, `"hidden"` leaves it out). In a
+journal, cells a person wrote are marked, and steps recorded outside the
+kernel are set apart. It follows the reader's light or dark setting.
+
+It is one file, so it opens anywhere and can be hosted as it is, for
+example as a Claude artifact or on a static site. It holds only the
+notebook's content:
+
+- cell sources and outputs, and no metadata beyond the kernel's name and
+  who kept the journal: no provenance history, ids or signatures
+- the server root's absolute path becomes `.`, the home directory `~`,
+  and the token `[token]` (when it has 8 characters or more; a shorter
+  one is left as it is), wherever they stand as a whole name (not
+  `/home/tommy` for `/home/tom`), each directory as given and resolved
+- no network requests: images are embedded, a Markdown image from
+  elsewhere becomes a link, and HTML outputs run under a policy that
+  loads nothing but their own `data:` images and inline styles
+- no script from the notebook: SVG goes in as an image, HTML output in a
+  frame that can't run scripts, raw HTML in Markdown as text, and an
+  output that needs JavaScript to show (Vega-Lite, widgets) as another
+  entry in its bundle or a note that it was left out
+
+The page goes to `published/<name>.html` beside the notebook, or to
+`out` (a path under the root ending in `.html`). It replaces an earlier
+published page there, but another file only with `overwrite: true`.
+`byline` sets the line
+under the title (default: today's date). It runs nothing, so run the
+notebook first if its outputs may be stale. Not in read-only mode.
+
+The same page comes from `ganymede nb publish NOTEBOOK` (with `--code`,
+`--byline` and `-o`; it replaces the home directory and the notebook's
+directory, and writes `<name>.html` beside the notebook by default,
+replacing a file there as `jupyter nbconvert` does) and from `GET /nbconvert/html/{path}`, JupyterLab's **Save and
+Export Notebook As > HTML**.
 
 ## Changes by others
 

@@ -158,8 +158,8 @@ first.
 
 ### Export
 
-**File > Save and Export Notebook As** offers two formats, nbconvert's
-`script` and `markdown`, built in Rust from the notebook alone:
+**File > Save and Export Notebook As** offers nbconvert's `script`,
+`markdown` and `html` formats, built in Rust from the notebook alone:
 
 - **Executable Script**: the code cells, and raw cells with no MIME
   type, separated by blank lines. The file extension and MIME type come
@@ -171,10 +171,19 @@ first.
   fenced blocks; HTML, LaTeX and Markdown outputs inline. Images and
   cell attachments go in `<name>_files/`, and the download is then a zip
   of the `.md` file and that folder, as nbconvert's.
+- **HTML**: one self-contained page to read and share, in Ganymede's own
+  design rather than nbconvert's templates; see
+  [Publishing a notebook](mcp.md#publishing-a-notebook). The server root's
+  path, the home directory and a token of 8 characters or more are
+  replaced wherever they appear.
 
 The exports are `GET /nbconvert/{format}/{path}`, with `?download=true`
-for a download, and `/api/nbconvert` lists the formats. HTML, PDF,
-LaTeX, and slides need nbconvert's Python templates and aren't offered.
+for a download, and `/api/nbconvert` lists the formats. PDF, LaTeX, and
+slides need nbconvert's Python templates and aren't offered.
+
+> [!NOTE]
+> **Unreleased.** The HTML format is available only from a build of
+> `main` (HEAD), not in the latest release.
 
 ## Terminals
 
