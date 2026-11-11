@@ -1447,7 +1447,14 @@ mod tests {
     async fn start_gives_up_after_three_launches() {
         let (m, t) = scripted(None);
         t.script.lock().unwrap().extend([Launch::Die; 3]);
-        assert!(started(&m, Some("fake"), None).await.is_err());
+        let e = started(&m, Some("fake"), None).await.unwrap_err();
+        // Says why, not only that the kernel is gone.
+        assert_eq!(e.status, 404);
+        assert!(
+            e.message.contains("did not start: kernel died"),
+            "{}",
+            e.message
+        );
         assert!(m.list().is_empty());
     }
 

@@ -114,6 +114,9 @@ pub struct RunningKernel {
     /// Set while a start or restart replaces the session, so the death of
     /// a session being replaced is not reported as the kernel's.
     booting: AtomicBool,
+    /// Why the last start or restart failed, for [`KernelManager::wait_started`]
+    /// to say once the kernel has been removed.
+    start_failure: Mutex<Option<String>>,
     /// Held across start, restart, and shutdown, so they do not interleave.
     /// In an `Arc` so the start's background boot can own its guard.
     pub(crate) lifecycle: Arc<tokio::sync::Mutex<()>>,
@@ -611,6 +614,7 @@ impl KernelManager {
             clients: Mutex::default(),
             alive: watch::channel(true).0,
             booting: AtomicBool::new(true),
+            start_failure: Mutex::new(None),
             lifecycle: Arc::default(),
             last_activity: Mutex::new(now_iso()),
             execution_state: Mutex::new("starting".into()),
@@ -660,11 +664,19 @@ impl KernelManager {
 
     /// Wait for a start or restart of `id` in progress, and its model once
     /// the kernel has answered. 404 when the kernel did not come up: it was
-    /// reported dead and removed.
+    /// reported dead and removed, saying why when the boot failed.
     pub async fn wait_started(&self, id: &str) -> Result<KernelModel> {
         let kernel = self.get(id)?;
         let _guard = kernel.lifecycle.lock().await;
-        self.core.ensure_listed(&kernel)?;
+        if let Err(e) = self.core.ensure_listed(&kernel) {
+            return match kernel.start_failure.lock().unwrap().clone() {
+                Some(why) => Err(ApiError::new(
+                    e.status,
+                    format!("kernel {id} did not start: {why}"),
+                )),
+                None => Err(e),
+            };
+        }
         Ok(kernel.model())
     }
 
@@ -1025,6 +1037,7 @@ impl Core {
             Err(e) => {
                 tracing::warn!(kernel = %kernel.id, "kernel failed to start: {e}");
                 kernel.log.host(&format!("the kernel failed to start: {e}"));
+                *kernel.start_failure.lock().unwrap() = Some(e.message.clone());
                 kernel.remove_dead(self);
                 Err(e)
             }

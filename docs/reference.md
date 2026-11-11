@@ -299,6 +299,15 @@ And `mcp`'s flags.
 | --- | --- |
 | `--json` | Print one JSON object instead. |
 
+### `update`
+
+| Flag | Effect |
+| --- | --- |
+| `--version <X.Y.Z>` | Install this release instead of the latest. It may be older. |
+| `--main` | Install the latest build of main instead of a release. |
+| `--check` | Only say whether a newer release is available. |
+| `--force` | Reinstall even when this version is already installed. |
+
 <!-- command-flags:end -->
 
 ## Config file
