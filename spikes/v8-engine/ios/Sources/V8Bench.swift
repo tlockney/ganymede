@@ -88,6 +88,6 @@ struct Footprint {
             }
         }
         guard rc == KERN_SUCCESS else { return Footprint(current: 0, peak: 0) }
-        return Footprint(current: info.phys_footprint, peak: info.ledger_phys_footprint_peak)
+        return Footprint(current: info.phys_footprint, peak: UInt64(max(0, info.ledger_phys_footprint_peak)))
     }
 }
