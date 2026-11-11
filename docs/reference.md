@@ -30,8 +30,8 @@ same flags. The guides show them in use:
 | `completions <shell>` | Shell completions for bash, zsh, fish, powershell, elvish |
 
 > [!NOTE]
-> **Unreleased.** `grant` and `nb publish` are available only from a
-> build of `main` (HEAD), not in the latest release.
+> **Unreleased.** `nb publish` is available only from a build of `main`
+> (HEAD), not in the latest release.
 
 The kernel name `fake` is a built-in in-process kernel for trying things
 out.
@@ -170,15 +170,7 @@ them.
 | `crash_reporting` | Send crash reports from `ganymede` to Sentry; see [Privacy and crash reporting](privacy.md). Default `false`. |
 | `frame_ancestors` | The CSP sources allowed to frame the server's pages, added to every response as `frame-ancestors <sources>`. Default `'self'`, as `jupyter_server`; add an origin, such as `'self' https://portal.example.com`, to embed `/lab` in that site. See [Security](security.md#defaults). |
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 ### The host API
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 `[host] read` lists the API paths that cell code may read through the
 [host API](host-api.md): `notebooks.list`, `notebooks.read`,
@@ -231,10 +223,6 @@ notebook only itself; `--revoke NOTEBOOK read` (or `run`) goes back to
 the default. `--root-dir` names the server's root when it
 isn't the current directory, since grants are kept per root.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release: `/api/host/grants`.
-
 Clients such as the apps set the same grants over HTTP, with the
 server's token:
 
@@ -271,10 +259,6 @@ wins, and a configured header replaces one the server set. The
 `frame_ancestors` directive is appended to a `Content-Security-Policy`
 set here unless it already has a `frame-ancestors` directive, so a page
 can set its own.
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 A page that needs `SharedArrayBuffer`, such as one hosting a
 kernel in a web worker, must be cross-origin isolated:
@@ -338,7 +322,7 @@ given them.
 ```json
 {
   "base_url": "/",
-  "ganymede_version": "0.7.0",
+  "ganymede_version": "0.8.0",
   "hostname": "127.0.0.1",
   "password": false,
   "pid": 41237,
@@ -368,10 +352,6 @@ Ubuntu 22.04 and later, can't read the runtime dir and show an
 access-denied page; `--no-redirect-file` opens the URL itself instead, as
 `jupyter_server`'s `use_redirect_file = False` does.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 ## Environment variables
 
 | Variable | Effect |
@@ -392,11 +372,6 @@ access-denied page; `--no-redirect-file` opens the URL itself instead, as
 
 ### What a kernel gets
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. The latest release sets `JPY_SESSION_NAME` to the
-> kernel id for every kernel.
-
 A kernel inherits the server's environment, then its kernelspec's `env`,
 and gets two more, as under `jupyter_server`:
 
@@ -406,10 +381,6 @@ and gets two more, as under `jupyter_server`:
 | `JPY_SESSION_NAME` | For a kernel started for a notebook (a session): the notebook's path on disk, so code can find the notebook it runs in. A session renamed or moved changes it on the kernel's next restart. For a kernel started on its own: the kernel id. |
 
 ### Parameters and named results
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 `ganymede execute -p` and `--results` make a notebook a program:
 parameters in, named results out. Neither names a language; any kernel

@@ -77,10 +77,6 @@ stay silent when anything fails. Settings, as environment variables:
 | `GANYMEDE_JOURNAL_STOP` | `off` turns the `Stop` check off. |
 | `GANYMEDE_BIN` | The `ganymede` binary, when it isn't on `PATH`. |
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 The agent can look at any chart with [`cell_snapshot`](#snapshots),
 which the skill tells it to do. For images in every `cell_run` reply as
 well, start the server with images on:
@@ -146,10 +142,6 @@ the notebook sees them live.
 
 ## Outputs
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 The notebook keeps each recorded cell's outputs: a journal records what a
 run produced, not only the code. The server signs the notebook when it
 saves it (see [Trust](rooms.md#trust)), so it opens trusted and its
@@ -171,10 +163,6 @@ writes its outputs to the notebook when it finishes; the reply says so,
 and `cell_clear_outputs` clears them then.
 
 ## Snapshots
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 `cell_snapshot(ids)` returns cells as Markdown an agent can put in its
 reply to a person, without running anything:
@@ -207,10 +195,6 @@ becomes `%20`), so they also work in `<img src>`; decode the path before
 opening the file. `dir` isn't allowed in read-only mode.
 
 ## Search
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 `notebooks_search` finds what earlier notebooks found, such as other
 journals on the same data, before an agent starts a new one:

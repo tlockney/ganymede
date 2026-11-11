@@ -17,7 +17,7 @@ design is on [The iPad use case](ipados.md).
 ![Three ways to embed Ganymede: a Rust app calling the engine in-process; an app whose web view talks HTTP to the server that ganymede-ffi runs on loopback; and a wasm or iOS build with zmq and subprocess off, where the kernel sits behind an in-process transport.](images/architecture/embedding.svg)
 
 The crates are not on crates.io, so depend on them from git:
-`ganymede-engine = { git = "https://github.com/tlockney/ganymede", tag = "v0.7.0" }`.
+`ganymede-engine = { git = "https://github.com/tlockney/ganymede", tag = "v0.8.0" }`.
 
 ## The engine in a Rust app
 
@@ -56,10 +56,6 @@ stores them, the `execute_reply` content, and every iopub message.
 and no timeout; a cell that runs past its `timeout` is interrupted. A
 request still queued behind another client's cell when it times out is
 not: the interrupt would stop that cell instead.
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release, which returns `Host(Timeout)` for both.
 
 A timed-out cell that started fails with `Host(Timeout)`; one still
 queued fails with `Queued`, and the kernel runs it when its turn comes.
@@ -279,22 +275,12 @@ with the system libraries `rustc --print native-static-libs` names.
 
 ### From Swift
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release: the latest release's script also builds
-> `x86_64-apple-darwin` (joined by `lipo`) and defaults to macOS 13.0 and
-> iOS 16.0.
-
 On macOS with Xcode, `scripts/build-xcframework.sh` builds the library
 for `aarch64-apple-darwin` (Apple silicon only), `aarch64-apple-ios` and
 `aarch64-apple-ios-sim`, and writes
 `target/xcframework/GanymedeFFI.xcframework` and a zip of it.
 `MACOSX_DEPLOYMENT_TARGET` (26.0) and `IPHONEOS_DEPLOYMENT_TARGET` (26.0)
 set the minimums.
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release: the latest release has no XCFramework asset.
 
 Each release, and the `main-build` prerelease, carries the zip as
 `GanymedeFFI.xcframework.zip` with `GanymedeFFI.xcframework.zip.sha256`
@@ -326,10 +312,6 @@ ganymede-ui's app does this in `ServerHost.swift`; see its
 [architecture](ganymede-ui/architecture.md#mac-and-ipad-app).
 
 ### Kernels the app runs
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 An app that runs a kernel itself, as the iPad app runs cdp-kernel in a
 web view, registers it with the server. The server lists it as a

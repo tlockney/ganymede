@@ -19,13 +19,9 @@ the [Roadmap](roadmap.md).
   loopback inside the app was simpler and needed no second API.
 - **Kernels on the iPad.** iOS doesn't let an app launch processes, so
   the app runs cdp-kernel's TypeScript kernel in a Worker in a hidden
-  second web view, and relays its messages to the notebook's page.
-
-  > [!NOTE]
-  > **Unreleased in ganymede-ui.** In a build of ganymede-ui's `main`,
-  > that kernel is registered with the app's server
-  > ([In-app kernel](in-app-kernel.md), #266), which messages it like any
-  > kernel; nothing is relayed to the notebook's page.
+  second web view. That kernel is registered with the app's server
+  ([In-app kernel](in-app-kernel.md), #266), which messages it like any
+  kernel.
 - **Remote kernels.** With a kernel server set, Ganymede in the app sends
   kernels to it through the gateway, as `jupyter_server --gateway-url`
   does, and notebooks stay on the iPad. The kernel server is any Jupyter
@@ -47,7 +43,7 @@ the [Roadmap](roadmap.md).
 - **Distribution.** The Mac app is signed and notarized in each
   ganymede-ui release, and the iPad and iPhone app goes to TestFlight.
 
-![Where each piece runs in four setups: on a workstation, the frontend, ganymede serve and each kernel are separate processes; in the Mac app, ganymede-ui and Ganymede run inside the app and kernels are the Mac's processes; in the iPad app everything runs inside the app and the kernel runs in the page; in a browser with no server, the UI, kernels and IndexedDB storage all stay in one tab.](images/architecture/where-kernels-run.svg)
+![Where each piece runs in four setups: on a workstation, the frontend, ganymede serve and each kernel are separate processes; in the Mac app, ganymede-ui and Ganymede run inside the app and kernels are the Mac's processes; in the iPad app everything runs inside the app, including the kernel; in a browser with no server, the UI, kernels and IndexedDB storage all stay in one tab.](images/architecture/where-kernels-run.svg)
 
 ## Decisions that came out of it
 

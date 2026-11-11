@@ -10,12 +10,12 @@ list what doesn't work yet.
 There are three ways to run it, and they differ in where notebooks live
 and where kernels run:
 
-![Where each piece runs in four setups: on a workstation, the frontend, ganymede serve and each kernel are separate processes; in the Mac app, ganymede-ui and Ganymede run inside the app and kernels are the Mac's processes; in the iPad app everything runs inside the app and the kernel runs in the page; in a browser with no server, the UI, kernels and IndexedDB storage all stay in one tab.](images/architecture/where-kernels-run.svg)
+![Where each piece runs in four setups: on a workstation, the frontend, ganymede serve and each kernel are separate processes; in the Mac app, ganymede-ui and Ganymede run inside the app and kernels are the Mac's processes; in the iPad app everything runs inside the app, including the kernel; in a browser with no server, the UI, kernels and IndexedDB storage all stay in one tab.](images/architecture/where-kernels-run.svg)
 
 | | Notebooks | Kernels |
 | --- | --- | --- |
 | [`ganymede ui`](#in-a-browser-from-ganymede) | The folder you serve | Your installed kernelspecs |
-| [Mac app](#the-mac-and-ipad-app) | A folder you pick | The Mac's kernelspecs, or a kernel server |
+| [Mac app](#the-mac-and-ipad-app) | A folder you pick | The Mac's kernelspecs and cdp-kernel in the app, or a kernel server |
 | [iPad app](#the-mac-and-ipad-app) | The app's Documents, or a folder you pick | cdp-kernel in the app, or a kernel server |
 | [This browser](#with-no-server) | The browser's storage | cdp-kernel or JavaScript, in the page |
 
@@ -68,14 +68,10 @@ serve`. The app takes `PATH` from your login shell, so kernels that run
 
 On the iPad, notebooks live in the app's Documents folder (On My iPad in
 the Files app) or a folder you pick, such as one in iCloud Drive. iOS
-doesn't let an app start kernel processes, so the page runs cdp-kernel's
-TypeScript kernel itself, in a Worker.
-
-> [!NOTE]
-> **Unreleased in ganymede-ui.** In a build of ganymede-ui's `main`, both
-> apps run the TypeScript kernel in a hidden web view as a kernel of the
-> app's server ([In-app kernel](in-app-kernel.md)): it is in the server's
-> kernel list and outlives a window's reload.
+doesn't let an app start kernel processes, so the app runs cdp-kernel's
+TypeScript kernel itself. Both apps run it in a hidden web view as a
+kernel of the app's server ([In-app kernel](in-app-kernel.md)): it is in
+the server's kernel list and outlives a window's reload.
 
 TypeScript cells in the app's own kernel, on the Mac, iPad or iPhone,
 get a `device` global for native features such as the clipboard; see
@@ -101,12 +97,8 @@ In the connect sheet, **This browser** keeps notebooks in the browser's
 storage (IndexedDB) and runs kernels in Workers in the page: cdp-kernel's
 TypeScript kernel, or JupyterLite's JavaScript kernel. Nothing is sent
 anywhere. **Ganymede server** with **Run kernels in this page** keeps
-notebooks on the server and still runs kernels in the page, which is what
-the iPad app does.
-
-> [!NOTE]
-> **Unreleased in ganymede-ui.** A build of ganymede-ui's `main` doesn't:
-> the apps run their kernel as a kernel of their server.
+notebooks on the server and still runs kernels in the page. The apps
+don't use it: they run their kernel as a kernel of their server.
 
 ## Using it
 

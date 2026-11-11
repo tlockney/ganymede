@@ -36,10 +36,6 @@ set-cookie: username-localhost-8888=2|1:0|10:…; expires=…; HttpOnly; Path=/;
 API paths and `/files/` and `/nbconvert/` downloads keep the token, so
 `curl 'http://127.0.0.1:8888/files/data.csv?token=tok'` gets the file.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release, which redirects `/files/` too.
-
 Requests that authenticate with that cookie and change state must also
 send the `_xsrf` cookie's value as `X-XSRFToken`.
 [Security](security.md#tokens-and-cookies) has the rules.
@@ -359,12 +355,6 @@ What `ganymede serve` answers, beyond the examples above:
 - With JupyterLab (`ganymede lab`): the page, `/static/lab`,
   `/lab/extensions/{name}`, and `/lab/api/` `settings`, `workspaces`,
   `translations`, `themes`, `listings`, `plugins`, `licenses`.
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release: `/nbconvert/{format}/{path}`,
-> `/api/notebooks/run` and `/api/host/grants`. In the latest release, `/api/nbconvert` reports
-> no exporters.
 
 The kernel websocket speaks `v1.kernel.websocket.jupyter.org` when the
 client offers it, and the legacy JSON framing otherwise. JSON bodies are
