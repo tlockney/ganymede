@@ -79,6 +79,11 @@ export function groups(has: (name: string) => boolean = () => true): Group[] {
       ],
     },
     {
+      text: "Notebooks as programs",
+      level: "guide",
+      items: [{ text: "Parameters, results and runs", link: "/programs" }],
+    },
+    {
       text: "Work with an agent",
       level: "guide",
       items: [
