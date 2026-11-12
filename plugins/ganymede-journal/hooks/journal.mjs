@@ -161,6 +161,9 @@ export function handle(event, input, env = process.env) {
           const mark = readMark(text);
           if (mark && path) {
             if (path !== state.path) state.dirty = false;
+            // `home` is set at session-start; without one (the plugin
+            // enabled mid-session, or older state) the folder at this
+            // open is a best effort.
             Object.assign(state, { path, mark, home: home() });
           }
         } else if (path && path === state.path) {

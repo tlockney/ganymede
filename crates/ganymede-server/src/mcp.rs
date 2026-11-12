@@ -1340,7 +1340,7 @@ impl ServerHandler for Notebooks {
         let path = self.resolve(path);
         if !path.ends_with(".ipynb") {
             return Err(McpError::resource_not_found(
-                format!("not a notebook: {path}"),
+                format!("not a notebook: {}", self.show(&path)),
                 None,
             ));
         }

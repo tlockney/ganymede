@@ -5367,6 +5367,19 @@ async fn mcp_connection_directory_in_resources_and_errors() {
     let e = v.to_string();
     assert!(e.contains("not \\\"page.txt\\\""), "{e}");
     assert!(!e.contains("sub/page.txt"), "{e}");
+
+    // The open notebook is listed by the name this connection reads back.
+    mcp_tool(&app, &sid, "notebook_open", json!({"path": "m.ipynb"})).await;
+    let (_, _, list) = mcp_call(
+        &app,
+        Some(&sid),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "resources/list"}),
+    )
+    .await;
+    assert_eq!(
+        list["result"]["resources"][0]["uri"], "notebook://m.ipynb",
+        "{list}"
+    );
 }
 
 /// Each connection has its own current notebook, and kernel_control
