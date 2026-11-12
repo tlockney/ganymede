@@ -36,6 +36,7 @@ env:
   LSP_NPM_PACKAGES: typescript-language-server@5.3.0 typescript@5.9.3 pyright@1.1.414
 
 jobs:
+  # Every job is listed in `report`'s `needs` at the end of this file.
   # Whether a pull request, or a push to main, needs the jobs below:
   # scripts/ci-changes.sh says no when it changes only docs, the site or
   # Markdown (#418, #458). The jobs
@@ -164,7 +165,8 @@ jobs:
         with:
           tool: cargo-deny
       - run: cargo deny --locked check bans sources
-      - if: github.event_name != 'pull_request' || needs.changes.outputs.deps != 'false'
+      # Runs even when bans or sources failed, so both results show.
+      - if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.deps != 'false') }}
         run: cargo deny --locked check advisories
 
   # The end-to-end suite with real kernels and the Jupyter reference
@@ -794,9 +796,11 @@ jobs:
   # A failed scheduled run opens an issue, or comments on the open one
   # (#737): nobody watches the weekly run, and it is where drift in the
   # latest cdp-kernel and Jupyter, stale pins and new advisories show up.
+  # A job that times out ends as cancelled, so that counts too. Add every
+  # new job to `needs`, or its failures go unreported.
   report:
     needs: [changes, rust, msrv, audit, e2e, coverage, e2e-cdp-kernel-main, pins, portability, ffi, install-script, image, plugin, linux-release, lsp, workstation, workstation-macos]
-    if: failure() && github.event_name == 'schedule'
+    if: ${{ github.event_name == 'schedule' && (failure() || contains(needs.*.result, 'cancelled')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

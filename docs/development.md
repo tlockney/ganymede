@@ -119,8 +119,9 @@ number. Locally: `cargo llvm-cov --workspace --open`.
   RustSec advisories fail it, duplicate versions show as warnings. A pull
   request checks advisories only when it changes `Cargo.lock`, a
   `Cargo.toml` or `deny.toml` (the `changes` job's `deps` output), so a
-  new advisory doesn't fail unrelated pull requests; pushes to `main` and
-  the weekly run check them every time. Licenses are checked by `cargo about` against `about.toml`.
+  new advisory doesn't fail unrelated pull requests; pushes to `main`,
+  the weekly run and manual runs check them every time. Licenses are
+  checked by `cargo about` against `about.toml`.
   Dependabot (`.github/dependabot.yml`) opens weekly grouped bumps for
   Cargo, npm, and the actions; its pull requests are exempt from the
   linked-issue check.
