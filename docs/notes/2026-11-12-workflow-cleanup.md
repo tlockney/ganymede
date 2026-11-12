@@ -30,3 +30,7 @@ pinned by SHA and every job has a timeout. The changes, one PR per repo:
 "Review gate" still shows in each repo's Actions sidebar although no repo
 has the file: GitHub lists a workflow while any of its runs exist.
 Deleting its runs removes it.
+
+Rust 1.100 (2026-11-09) warns on an unused `ExitCode`, and CI's clippy
+denies warnings, so four `set_disabled` calls in ganymede-cli's tests
+now discard the code with `let _ =`.

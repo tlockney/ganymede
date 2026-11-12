@@ -1113,12 +1113,12 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, r#"{"other": 1, "disabledExtensions": ["old"]}"#).unwrap();
         let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        set_disabled(&path, &names(&["@a/b", "c:plugin"]), true).unwrap();
+        let _ = set_disabled(&path, &names(&["@a/b", "c:plugin"]), true).unwrap();
         assert_eq!(
             ganymede_server::lab::disabled_extensions(&path),
             ["@a/b", "c:plugin", "old"]
         );
-        set_disabled(&path, &names(&["@a/b"]), false).unwrap();
+        let _ = set_disabled(&path, &names(&["@a/b"]), false).unwrap();
         assert_eq!(
             ganymede_server::lab::disabled_extensions(&path),
             ["c:plugin", "old"]
@@ -1128,7 +1128,7 @@ mod tests {
         assert_eq!(v["disabledExtensions"]["@a/b"], false);
 
         let fresh = ganymede_server::lab::page_config_file(&dir.path().join("new"));
-        set_disabled(&fresh, &names(&["x"]), true).unwrap();
+        let _ = set_disabled(&fresh, &names(&["x"]), true).unwrap();
         assert_eq!(ganymede_server::lab::disabled_extensions(&fresh), ["x"]);
     }
 
@@ -1144,7 +1144,7 @@ mod tests {
         std::fs::write(&path, old).unwrap();
         let link = dir.path().join("page_config.link");
         std::fs::hard_link(&path, &link).unwrap();
-        set_disabled(&path, &["new".to_string()], true).unwrap();
+        let _ = set_disabled(&path, &["new".to_string()], true).unwrap();
         assert_eq!(std::fs::read_to_string(&link).unwrap(), old);
         assert_eq!(
             ganymede_server::lab::disabled_extensions(&path),
