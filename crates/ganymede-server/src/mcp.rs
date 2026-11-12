@@ -168,6 +168,12 @@ pub struct Notebooks {
 /// it, so an agent's `a.ipynb` is the file in its own folder.
 pub const DIR_META: &str = "ganymede/dir";
 
+/// Whether `dir` can be a connection's directory: no `..` segment and no
+/// backslash, so it stays under the root.
+fn valid_dir(dir: &str) -> bool {
+    !dir.contains('\\') && dir.split('/').all(|part| part != "..")
+}
+
 /// `path` (an API path from the root) as a connection whose directory is
 /// `dir` sees it: relative to `dir` when below it, otherwise (`dir`
 /// itself too) from the root with a leading `/`.
@@ -203,7 +209,9 @@ fn text(s: impl Into<String>) -> Result<CallToolResult, McpError> {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct OpenArgs {
-    /// Notebook path relative to the server root, such as `analysis/run.ipynb`.
+    /// Notebook path, such as `analysis/run.ipynb`, relative to this
+    /// connection's directory (`notebook_open` names it); a leading `/`
+    /// starts at the server root.
     pub path: String,
     /// Kernelspec name for a new notebook or a new kernel (default: the
     /// notebook's own, else the server's default).
@@ -358,9 +366,10 @@ pub struct RunAllArgs {
 pub struct SnapshotArgs {
     /// Cell ids, in the order to show them.
     pub ids: Vec<String>,
-    /// Save images in this directory under the server root, such as
-    /// `journal/snapshots`, for a report next to the notebook. By default
-    /// they go to a directory outside the root that only you can read.
+    /// Save images in this directory, relative to this connection's
+    /// directory, such as `journal/snapshots`, for a report next to the
+    /// notebook. By default they go to a directory outside the server
+    /// root that only you can read.
     pub dir: Option<String>,
     /// Include each code cell's source (default true).
     pub code: Option<bool>,
@@ -372,8 +381,9 @@ pub struct SnapshotArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PublishArgs {
-    /// Where to save the page under the server root, ending in `.html`.
-    /// Default: `published/<name>.html` beside the notebook.
+    /// Where to save the page, relative to this connection's directory,
+    /// ending in `.html`. Default: `published/<name>.html` beside the
+    /// notebook.
     pub out: Option<String>,
     /// How code shows: `folded` under each result (default), `shown`,
     /// or `hidden`.
@@ -388,7 +398,8 @@ pub struct PublishArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListArgs {
-    /// Directory relative to the server root (default: the root).
+    /// Directory relative to this connection's directory (default: that
+    /// directory); a leading `/` starts at the server root.
     pub dir: Option<String>,
 }
 
@@ -396,8 +407,9 @@ pub struct ListArgs {
 pub struct SearchArgs {
     /// Words to find, all of them, in any case and order.
     pub query: String,
-    /// Directory to search, with its subdirectories, relative to the
-    /// server root (default: the root).
+    /// Directory to search, with its subdirectories, relative to this
+    /// connection's directory (default: that directory); a leading `/`
+    /// starts at the server root.
     pub dir: Option<String>,
     /// Search text outputs too, not only sources (default false).
     pub outputs: Option<bool>,
@@ -1008,7 +1020,7 @@ impl Notebooks {
     }
 
     #[tool(
-        description = "Publish the notebook as one self-contained HTML page to read and share: title, contents, Markdown as prose, charts and tables inline, code folded under each result, light and dark. The page holds only the notebook's cells and outputs (no metadata), makes no network requests and runs no notebook script; the server root, home directory and token (8 characters or more) are replaced wherever they appear as a whole name. Saves it under the server root (default `published/<name>.html` beside the notebook), replacing an earlier published page but no other file unless `overwrite: true`, and returns its path. Runs nothing; run the notebook first so the outputs are current."
+        description = "Publish the notebook as one self-contained HTML page to read and share: title, contents, Markdown as prose, charts and tables inline, code folded under each result, light and dark. The page holds only the notebook's cells and outputs (no metadata), makes no network requests and runs no notebook script; the server root, home directory and token (8 characters or more) are replaced wherever they appear as a whole name. Saves it under the server root, at `out` relative to this connection's directory (default `published/<name>.html` beside the notebook), replacing an earlier published page but no other file unless `overwrite: true`, and returns its path. Runs nothing; run the notebook first so the outputs are current."
     )]
     async fn notebook_publish(
         &self,
@@ -1033,7 +1045,8 @@ impl Notebooks {
         let out_name = out.rsplit('/').next().unwrap_or(&out);
         if !out_name.to_ascii_lowercase().ends_with(".html") || out_name.len() <= ".html".len() {
             return Err(err(format!(
-                "out must be a file ending in .html, not {out:?}"
+                "out must be a file ending in .html, not {:?}",
+                self.show(&out)
             )));
         }
         // Replace only an earlier published page unless told to.
@@ -1057,7 +1070,8 @@ impl Notebooks {
                     .is_some_and(|t| t.contains(ganymede_nbformat::HTML_GENERATOR_MARK));
                 if !published {
                     return Err(err(format!(
-                        "{out} exists and isn't a page published from a notebook; pick another `out`, or pass `overwrite: true` to replace it"
+                        "{} exists and isn't a page published from a notebook; pick another `out`, or pass `overwrite: true` to replace it",
+                        self.show(&out)
                     )));
                 }
             }
@@ -1104,7 +1118,7 @@ impl Notebooks {
     }
 
     #[tool(
-        description = "Search notebooks under a directory (default: the root, with subdirectories) for cells containing every word of `query`, ignoring case. Searches sources, and text outputs with `outputs: true`. Returns each matching cell's notebook, title, index, id, type and an excerpt; read a hit in full with `notebook_read`. Use it before starting a journal, to find what earlier notebooks found."
+        description = "Search notebooks under a directory (default: this connection's directory, with subdirectories) for cells containing every word of `query`, ignoring case. Searches sources, and text outputs with `outputs: true`. Returns each matching cell's notebook, title, index, id, type and an excerpt; read a hit in full with `notebook_read`. Use it before starting a journal, to find what earlier notebooks found."
     )]
     async fn notebooks_search(
         &self,
@@ -1256,12 +1270,20 @@ impl ServerHandler for Notebooks {
     ) -> Result<InitializeResult, McpError> {
         // `ganymede mcp` names the agent's folder when it forwards to a
         // server rooted above it (`DIR_META`).
-        let dir = request
+        let raw = request
             .meta
             .as_ref()
             .and_then(|m| m.get(DIR_META))
             .or_else(|| context.meta.get(DIR_META))
-            .and_then(Value::as_str)
+            .and_then(Value::as_str);
+        // A bad folder fails here, not as an outside-root error on every
+        // later call that names the agent's path instead.
+        if let Some(raw) = raw.filter(|d| !valid_dir(d)) {
+            return Err(err(format!(
+                "{DIR_META} must be a folder under the server root, without `..` or `\\`: {raw:?}"
+            )));
+        }
+        let dir = raw
             .map(ganymede_contents::normalize_api_path)
             .filter(|d| !d.is_empty());
         *self.dir.lock().expect("dir") = dir;
@@ -1294,7 +1316,9 @@ impl ServerHandler for Notebooks {
         let resources = current
             .into_iter()
             .map(|p| {
-                Resource::new(format!("notebook://{p}"), p.clone()).with_mime_type("text/markdown")
+                // Named as this connection's tools name the notebook.
+                let shown = self.show(&p);
+                Resource::new(format!("notebook://{shown}"), shown).with_mime_type("text/markdown")
             })
             .collect();
         Ok(ListResourcesResult::with_all_items(resources))
@@ -1311,11 +1335,12 @@ impl ServerHandler for Notebooks {
                 None,
             ));
         };
-        // The tools' paths are normalized, so one file is one room.
-        let path = ganymede_contents::normalize_api_path(path);
+        // From this connection's directory, as the tools' paths; they are
+        // normalized, so one file is one room.
+        let path = self.resolve(path);
         if !path.ends_with(".ipynb") {
             return Err(McpError::resource_not_found(
-                format!("not a notebook: {path}"),
+                format!("not a notebook: {}", self.show(&path)),
                 None,
             ));
         }
@@ -2452,6 +2477,16 @@ mod tests {
         // What it shows, it reads back.
         for p in ["Users/me/proj/x/a.ipynb", "tmp/a.ipynb", "Users/me/proj"] {
             assert_eq!(resolve_from(d, &show_from(d, p)), p);
+        }
+    }
+
+    #[test]
+    fn a_connections_directory_stays_under_the_root() {
+        for ok in ["Users/me/proj", "/Users/me/proj/", "a..b/c", "", "."] {
+            assert!(valid_dir(ok), "{ok}");
+        }
+        for bad in ["..", "../x", "Users/../..", "a/..", "a\\b", "C:\\Users"] {
+            assert!(!valid_dir(bad), "{bad}");
         }
     }
 

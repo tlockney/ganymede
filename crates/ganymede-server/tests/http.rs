@@ -5315,6 +5315,73 @@ async fn mcp_cell_move_and_resource_paths() {
     assert!(res.get("error").is_some(), "{res}");
 }
 
+/// A connection with a directory (`ganymede/dir`, sent by `ganymede mcp`
+/// when it forwards): resource URIs and error messages use its paths, and
+/// a directory outside the root fails at initialize (#732).
+#[tokio::test]
+async fn mcp_connection_directory_in_resources_and_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    let nb = json!({"cells": [{"cell_type": "markdown", "id": "a", "metadata": {},
+        "source": "in sub"}], "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.path().join("sub/m.ipynb"), nb.to_string()).unwrap();
+    let app = mcp_app(dir.path());
+    let init = |meta: Value| {
+        json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "agent", "version": "1"}, "_meta": meta}})
+    };
+
+    let (_, _, v) = mcp_call(&app, None, init(json!({"ganymede/dir": "../up"}))).await;
+    let e = v["error"]["message"].as_str().unwrap_or_default();
+    assert!(e.contains("ganymede/dir") && e.contains("../up"), "{v}");
+
+    let (s, sid, v) = mcp_call(&app, None, init(json!({"ganymede/dir": "sub"}))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let sid = sid.unwrap();
+    mcp_call(
+        &app,
+        Some(&sid),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )
+    .await;
+    let (_, _, res) = mcp_call(
+        &app,
+        Some(&sid),
+        json!({"jsonrpc": "2.0", "id": 1, "method": "resources/read",
+        "params": {"uri": "notebook://m.ipynb"}}),
+    )
+    .await;
+    let text = res["result"]["contents"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(text.contains("in sub"), "{res}");
+
+    let v = mcp_tool(
+        &app,
+        &sid,
+        "notebook_publish",
+        json!({"path": "m.ipynb", "out": "page.txt"}),
+    )
+    .await;
+    let e = v.to_string();
+    assert!(e.contains("not \\\"page.txt\\\""), "{e}");
+    assert!(!e.contains("sub/page.txt"), "{e}");
+
+    // The open notebook is listed by the name this connection reads back.
+    mcp_tool(&app, &sid, "notebook_open", json!({"path": "m.ipynb"})).await;
+    let (_, _, list) = mcp_call(
+        &app,
+        Some(&sid),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "resources/list"}),
+    )
+    .await;
+    assert_eq!(
+        list["result"]["resources"][0]["uri"], "notebook://m.ipynb",
+        "{list}"
+    );
+}
+
 /// Each connection has its own current notebook, and kernel_control
 /// answers what it did.
 #[tokio::test]

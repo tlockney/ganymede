@@ -83,7 +83,7 @@ Snapshot cells as Markdown to show the user: the code in a fenced block, each ch
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `ids` (required) | array of string | Cell ids, in the order to show them. |
-| `dir` | string | Save images in this directory under the server root, such as `journal/snapshots`, for a report next to the notebook. By default they go to a directory outside the root that only you can read. |
+| `dir` | string | Save images in this directory, relative to this connection's directory, such as `journal/snapshots`, for a report next to the notebook. By default they go to a directory outside the server root that only you can read. |
 | `code` | boolean | Include each code cell's source (default true). |
 | `max_rows` | integer | Rows to keep of an HTML table (default 20). |
 | `path` | string | Notebook path; the one last opened when left out. |
@@ -109,17 +109,17 @@ Open a notebook, creating it if it doesn't exist, and start or join its kernel. 
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| `path` (required) | string | Notebook path relative to the server root, such as `analysis/run.ipynb`. |
+| `path` (required) | string | Notebook path, such as `analysis/run.ipynb`, relative to this connection's directory (`notebook_open` names it); a leading `/` starts at the server root. |
 | `kernel` | string | Kernelspec name for a new notebook or a new kernel (default: the notebook's own, else the server's default). |
 | `title` | string | For a new notebook: a title, written as a first Markdown cell. |
 
 ## `notebook_publish`
 
-Publish the notebook as one self-contained HTML page to read and share: title, contents, Markdown as prose, charts and tables inline, code folded under each result, light and dark. The page holds only the notebook's cells and outputs (no metadata), makes no network requests and runs no notebook script; the server root, home directory and token (8 characters or more) are replaced wherever they appear as a whole name. Saves it under the server root (default `published/<name>.html` beside the notebook), replacing an earlier published page but no other file unless `overwrite: true`, and returns its path. Runs nothing; run the notebook first so the outputs are current.
+Publish the notebook as one self-contained HTML page to read and share: title, contents, Markdown as prose, charts and tables inline, code folded under each result, light and dark. The page holds only the notebook's cells and outputs (no metadata), makes no network requests and runs no notebook script; the server root, home directory and token (8 characters or more) are replaced wherever they appear as a whole name. Saves it under the server root, at `out` relative to this connection's directory (default `published/<name>.html` beside the notebook), replacing an earlier published page but no other file unless `overwrite: true`, and returns its path. Runs nothing; run the notebook first so the outputs are current.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| `out` | string | Where to save the page under the server root, ending in `.html`. Default: `published/<name>.html` beside the notebook. |
+| `out` | string | Where to save the page, relative to this connection's directory, ending in `.html`. Default: `published/<name>.html` beside the notebook. |
 | `code` | string | How code shows: `folded` under each result (default), `shown`, or `hidden`. |
 | `byline` | string | A line under the title. Default: today's date. |
 | `overwrite` | boolean | Replace `out` even when it isn't an earlier published page. |
@@ -150,16 +150,16 @@ List notebooks and directories in a directory.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| `dir` | string | Directory relative to the server root (default: the root). |
+| `dir` | string | Directory relative to this connection's directory (default: that directory); a leading `/` starts at the server root. |
 
 ## `notebooks_search`
 
-Search notebooks under a directory (default: the root, with subdirectories) for cells containing every word of `query`, ignoring case. Searches sources, and text outputs with `outputs: true`. Returns each matching cell's notebook, title, index, id, type and an excerpt; read a hit in full with `notebook_read`. Use it before starting a journal, to find what earlier notebooks found.
+Search notebooks under a directory (default: this connection's directory, with subdirectories) for cells containing every word of `query`, ignoring case. Searches sources, and text outputs with `outputs: true`. Returns each matching cell's notebook, title, index, id, type and an excerpt; read a hit in full with `notebook_read`. Use it before starting a journal, to find what earlier notebooks found.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `query` (required) | string | Words to find, all of them, in any case and order. |
-| `dir` | string | Directory to search, with its subdirectories, relative to the server root (default: the root). |
+| `dir` | string | Directory to search, with its subdirectories, relative to this connection's directory (default: that directory); a leading `/` starts at the server root. |
 | `outputs` | boolean | Search text outputs too, not only sources (default false). |
 | `cell_type` | string | Only cells of this type: `code`, `markdown` or `raw`. |
 | `limit` | integer | Most matching cells to return (default 20, at most 200). |

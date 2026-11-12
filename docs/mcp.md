@@ -15,7 +15,8 @@ claude mcp add ganymede -- ganymede mcp
 ```
 
 Other clients take the same command (`ganymede mcp`) in their MCP
-settings. Paths in the tools are relative to the server's root.
+settings. Paths in the tools are relative to the connection's
+directory: the server's root, unless the section below applies.
 
 ### Paths when the server's root is above the agent's folder
 
