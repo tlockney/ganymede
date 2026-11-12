@@ -377,11 +377,16 @@ mod tests {
         /// The kernel exits before it answers, as the loser of a port
         /// collision does.
         Die,
+        /// The kernel stays connected and never answers, as an app's
+        /// kernel whose page never loaded (#727).
+        Silent,
     }
 
     #[derive(Default)]
     struct FakeTransports {
         script: Mutex<VecDeque<Launch>>,
+        /// The kernel ends of [`Launch::Silent`] kernels, kept open.
+        silent: Mutex<Vec<ganymede_kernel_host::KernelSide>>,
         /// Kernels with subshells and a host API client.
         host: std::sync::atomic::AtomicBool,
     }
@@ -401,6 +406,7 @@ mod tests {
                     FakeKernel::spawn(side, ReplyOrder::ReplyThenIdle);
                 }
                 Some(Launch::Die) => drop(side),
+                Some(Launch::Silent) => self.silent.lock().unwrap().push(side),
                 Some(Launch::Fail) => return Err(ganymede_kernel_host::Error::TransportClosed),
             }
             Ok(host)
@@ -1499,14 +1505,164 @@ mod tests {
         assert!(m.list().is_empty());
     }
 
+    /// A kernel that never answers holds its start for the whole startup
+    /// timeout (60 s by default, three attempts). A shutdown, a restart,
+    /// a session's kernel change and the server's stop don't wait for that
+    /// (#727).
+    #[tokio::test]
+    async fn a_kernel_that_never_answers_does_not_hold_up_shutdown_or_restart() {
+        let quick = Duration::from_secs(5);
+
+        // Shutdown, as a client's DELETE.
+        let (m, t) = scripted(None);
+        t.script.lock().unwrap().push_back(Launch::Silent);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        tokio::time::timeout(quick, m.shutdown(&k.id))
+            .await
+            .expect("shutdown waits for the start")
+            .unwrap();
+        assert!(m.list().is_empty());
+        assert_eq!(m.wait_started(&k.id).await.unwrap_err().status, 404);
+
+        // Restart: the new launch answers.
+        t.script.lock().unwrap().push_back(Launch::Silent);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let restarted = tokio::time::timeout(quick, m.restart(&k.id))
+            .await
+            .expect("restart waits for the start")
+            .unwrap();
+        assert_eq!(restarted.execution_state, "idle");
+        m.shutdown(&k.id).await.unwrap();
+
+        // A session's kernel change shuts the silent kernel down.
+        let sessions = SessionManager::new(m.clone());
+        t.script.lock().unwrap().push_back(Launch::Silent);
+        let s = sessions
+            .create(SessionCreate {
+                path: "a.ipynb".into(),
+                kernel: KernelRef {
+                    id: None,
+                    name: Some("fake".into()),
+                },
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let old = s.kernel.id.clone();
+        let changed = tokio::time::timeout(
+            quick,
+            sessions.update(
+                &s.id,
+                SessionPatch {
+                    kernel: Some(KernelRef {
+                        id: None,
+                        name: Some("other".into()),
+                    }),
+                    ..Default::default()
+                },
+            ),
+        )
+        .await
+        .expect("kernel change waits for the old kernel's start")
+        .unwrap();
+        assert_ne!(changed.kernel.id, old);
+        assert!(m.get(&old).is_err());
+        sessions.delete(&s.id).await.unwrap();
+
+        // The server's stop.
+        t.script.lock().unwrap().push_back(Launch::Silent);
+        m.start(Some("fake"), None).await.unwrap();
+        tokio::time::timeout(quick, m.shutdown_all())
+            .await
+            .expect("stop waits for the start");
+        assert!(m.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_shutdown_queued_behind_two_restarts_stops_the_second_ones_start() {
+        // Restart twice, then quit, on a kernel that never answers: each
+        // call stops the start of the one before, so the quit doesn't wait
+        // for the second restart's kernel (#727).
+        let (m, t) = scripted(None);
+        for _ in 0..3 {
+            t.script.lock().unwrap().push_back(Launch::Silent);
+        }
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let first = tokio::spawn({
+            let (m, id) = (m.clone(), k.id.clone());
+            async move { m.restart(&id).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let second = tokio::spawn({
+            let (m, id) = (m.clone(), k.id.clone());
+            async move { m.restart(&id).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::timeout(Duration::from_secs(5), m.shutdown_all())
+            .await
+            .expect("stop waits for neither restart's start");
+        assert!(m.list().is_empty());
+        let first = first.await.unwrap().unwrap_err();
+        assert_eq!(first.status, 409, "{}", first.message);
+        let second = second.await.unwrap().unwrap_err();
+        assert!(matches!(second.status, 404 | 409), "{}", second.message);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_restart_leaves_the_kernel_running() {
+        // A restart whose caller goes away while it waits for the lock
+        // still stops the stuck start; the dead session is then restarted
+        // as a crash, and the next launch answers.
+        let (m, t) = scripted(None);
+        t.script.lock().unwrap().push_back(Launch::Silent);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let dropped = tokio::time::timeout(Duration::from_millis(20), m.restart(&k.id)).await;
+        assert!(dropped.is_err(), "the restart waits for the start's lock");
+        let model = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(model) = m.wait_started(&k.id).await {
+                    break model;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the kernel comes back");
+        assert_eq!(model.execution_state, "idle");
+        m.shutdown(&k.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn waiting_for_a_start_that_a_shutdown_cuts_short_answers_409() {
+        let (m, t) = scripted(None);
+        t.script.lock().unwrap().push_back(Launch::Silent);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let waiting = tokio::spawn({
+            let (m, id) = (m.clone(), k.id.clone());
+            async move { m.wait_started(&id).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::timeout(Duration::from_secs(5), m.shutdown(&k.id))
+            .await
+            .expect("shutdown waits for the start")
+            .unwrap();
+        let e = waiting.await.unwrap().unwrap_err();
+        assert_eq!(e.status, 409, "{}", e.message);
+        assert!(m.list().is_empty());
+    }
+
     #[tokio::test]
     async fn restart_racing_shutdown_leaves_nothing_running() {
         let m = manager(None);
         let k = started(&m, Some("fake"), None).await.unwrap();
         let weak = Arc::downgrade(&m.get(&k.id).unwrap());
-        // The shutdown waits for the restart, then stops the new kernel.
+        // The shutdown doesn't wait for the restart's new kernel to answer
+        // (#727): `join!` polls the restart first, so it holds the lock,
+        // sees the shutdown's bump, and stops waiting.
         let (restart, shutdown) = tokio::join!(m.restart(&k.id), m.shutdown(&k.id));
-        assert!(restart.is_ok() && shutdown.is_ok());
+        assert!(shutdown.is_ok());
+        let e = restart.unwrap_err();
+        assert_eq!(e.status, 409, "{}", e.message);
         assert!(m.list().is_empty());
 
         // A restart that waited for a shutdown finds the kernel gone.

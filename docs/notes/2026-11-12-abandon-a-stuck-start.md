@@ -1,0 +1,56 @@
+## 2026-11-12, a kernel that never answers no longer holds up shutdown (#727)
+
+The Mac app's in-app kernel once never loaded its page, so it never
+answered `kernel_info_request`. Interrupt gave up after 10 s, but
+Restart, a session's kernel change and quitting the app hung. The cause
+was the lifecycle lock: a start holds it while it waits for the kernel's
+first reply, which is up to `startup_timeout` (60 s) for each of three
+launches, and shutdown, restart and the server's stop (`shutdown_all`)
+all wait for that lock. A kernel change shuts the old kernel down, so it
+waited too, and the app's quit waited on the server's stop.
+
+Now each kernel has an `abandon_boot` counter. A shutdown (a client's
+DELETE, a kernel change, the server's stop) or a restart bumps it before
+it waits for the lock. `Core::boot` races its `nudge` against the counter
+moving from the value its caller saw before queuing for the lock;
+when it moves, the
+boot ends the session, leaves the kernel listed, returns an error, and
+releases the lock, so the shutdown or restart goes ahead at once. A
+restart takes its baseline from its own bump, and the crash handler reads
+the counter before it waits for the lock: a call that queues behind
+either still stops its boot (restart, restart, quit on a silent kernel
+would otherwise wait out the second restart's start). A `wait_started`
+caller that gets the lock after an abandoned boot answers 409 rather
+than a model for a kernel with no session. A restart that finds the counter moved
+once it holds the lock answers 409 without launching. If the caller
+that bumped the counter goes away before taking the lock (a client
+disconnects), the abandoned boot hands its dead session to the crash
+path, so the kernel is relaunched rather than left listed and dead. That
+path treats it as a crash: it counts toward `restart_limit`, logs a
+death, answers queued requests as died, removes the kernel when restarts
+are off, and a dropped DELETE ends in a relaunch rather than a shutdown.
+All beat a listed, dead kernel.
+`abandon_boot` reads the new value inside `send_modify`, so a bump made
+at the same moment can't fold into a restart's baseline. Culling idle kernels doesn't abandon a boot:
+a booting kernel isn't idle.
+
+A start nobody interrupts still fails as before: up to three launches,
+then the kernel is reported dead and removed. A restart cancelled by a
+shutdown or by another restart answers 409, even when its new kernel
+was only slow; the kernel is restarted either way.
+
+Test: `a_kernel_that_never_answers_does_not_hold_up_shutdown_or_restart`
+(`sessions.rs`) starts a kernel that stays connected and never answers,
+then checks a shutdown, a restart, a session's kernel change and
+`shutdown_all` each finish within 5 s. Each waited the full start before.
+`a_shutdown_queued_behind_two_restarts_stops_the_second_ones_start`
+runs restart, restart, `shutdown_all` against silent kernels; it timed
+out before the baseline moved ahead of the lock.
+`waiting_for_a_start_that_a_shutdown_cuts_short_answers_409` covers the
+queued `wait_started`. `a_dropped_restart_leaves_the_kernel_running` is
+a regression guard only: it passes without the change too, because the
+pump reports the death after `booting` clears in that schedule.
+
+`restart_racing_shutdown_leaves_nothing_running` said the shutdown
+waited for the restart to finish; now the restart may answer 409
+instead, and the test accepts either.

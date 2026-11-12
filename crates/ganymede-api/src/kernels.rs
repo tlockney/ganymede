@@ -114,6 +114,11 @@ pub struct RunningKernel {
     /// Set while a start or restart replaces the session, so the death of
     /// a session being replaced is not reported as the kernel's.
     booting: AtomicBool,
+    /// Bumped by a shutdown or restart before it waits for the lifecycle
+    /// lock: a boot in progress that sees it change stops waiting for its
+    /// kernel to answer and lets go of the lock, so a kernel that never
+    /// answers doesn't hold them up for the whole start (#727).
+    abandon_boot: watch::Sender<u64>,
     /// Why the last start or restart failed, for [`KernelManager::wait_started`]
     /// to say once the kernel has been removed.
     start_failure: Mutex<Option<String>>,
@@ -368,6 +373,17 @@ impl RunningKernel {
         }
     }
 
+    /// Tell a boot in progress to stop waiting (see [`Core::boot`]), and
+    /// return the counter's new value.
+    fn abandon_boot(&self) -> u64 {
+        let mut now = 0;
+        self.abandon_boot.send_modify(|n| {
+            *n = n.wrapping_add(1);
+            now = *n;
+        });
+        now
+    }
+
     /// Drop a dead kernel from the map, tell clients `status: dead`, and
     /// close them, as `jupyter_server` does when a kernel dies and is not
     /// restarted.
@@ -614,6 +630,7 @@ impl KernelManager {
             clients: Mutex::default(),
             alive: watch::channel(true).0,
             booting: AtomicBool::new(true),
+            abandon_boot: watch::channel(0).0,
             start_failure: Mutex::new(None),
             lifecycle: Arc::default(),
             last_activity: Mutex::new(now_iso()),
@@ -639,7 +656,7 @@ impl KernelManager {
         let (core, booting) = (self.core.clone(), kernel.clone());
         tokio::spawn(async move {
             let _guard = guard;
-            let _ = core.boot(&booting).await;
+            let _ = core.boot(&booting, 0).await;
         });
         Ok(kernel.model())
     }
@@ -677,6 +694,16 @@ impl KernelManager {
                 None => Err(e),
             };
         }
+        // A boot that a shutdown or restart cut short, or a crash not yet
+        // handled, leaves the kernel listed with no running session.
+        if !kernel.session().is_alive() {
+            return Err(ApiError::new(
+                409,
+                format!(
+                    "kernel {id} has no running session (shutting down, restarting or crashed)"
+                ),
+            ));
+        }
         Ok(kernel.model())
     }
 
@@ -684,8 +711,12 @@ impl KernelManager {
         self.shutdown_because(id, "at a client's request").await
     }
 
-    /// [`Self::shutdown`], saying why in the kernel's log.
+    /// [`Self::shutdown`], saying why in the kernel's log. A start or
+    /// restart still waiting for the kernel to answer stops waiting.
     async fn shutdown_because(&self, id: &str, why: &str) -> Result<()> {
+        if let Ok(kernel) = self.get(id) {
+            let _ = kernel.abandon_boot();
+        }
         self.shutdown_if(id, why, |_| true).await.map(|_| ())
     }
 
@@ -774,8 +805,21 @@ impl KernelManager {
     /// On failure the kernel is reported dead and removed.
     pub async fn restart(&self, id: &str) -> Result<KernelModel> {
         let kernel = self.get(id)?;
+        // A start still waiting for its kernel to answer stops: this
+        // restart replaces that kernel anyway. The value is taken now, not
+        // once the lock is held, so a shutdown or restart that queues
+        // behind this one still stops this one's boot.
+        let since = kernel.abandon_boot();
         let _guard = kernel.lifecycle.lock().await;
         self.core.ensure_listed(&kernel)?;
+        // A shutdown or restart queued meanwhile replaces this one: don't
+        // launch a kernel only for its boot to stop at once.
+        if *kernel.abandon_boot.borrow() != since {
+            return Err(ApiError::new(
+                409,
+                format!("kernel {id} was shut down or restarted while restarting"),
+            ));
+        }
         kernel.booting.store(true, Ordering::SeqCst);
         kernel.log.host("restarting at a client's request");
         kernel.announce(
@@ -795,7 +839,7 @@ impl KernelManager {
             kernel.remove_dead(&self.core);
             return Err(e);
         }
-        self.core.boot(&kernel).await?;
+        self.core.boot(&kernel, since).await?;
         kernel.touch();
         Ok(kernel.model())
     }
@@ -888,6 +932,9 @@ impl Core {
     /// new kernel's own statuses. After `restart_limit` crashes in a row,
     /// each within [`STABLE_START`] of the last restart, it is left dead.
     async fn crashed(self: Arc<Self>, kernel: Arc<RunningKernel>, session_id: String) {
+        // Read before the lock, so a shutdown or restart that queues
+        // behind this handler still stops its boot.
+        let since = *kernel.abandon_boot.borrow();
         let _guard = kernel.lifecycle.lock().await;
         // A shutdown or restart that held the lock first has already
         // dealt with this session.
@@ -960,7 +1007,7 @@ impl Core {
             return;
         }
         // On failure `boot` reports the kernel dead and removes it.
-        if self.boot(&kernel).await.is_ok() {
+        if self.boot(&kernel, since).await.is_ok() {
             kernel.touch();
         }
     }
@@ -971,13 +1018,36 @@ impl Core {
     /// kernels launched at once can be given the same one. The engine's
     /// `Relaunch::start` does the same. Runs with `booting` set, under the
     /// lifecycle lock. On failure the kernel is reported dead and removed.
-    async fn boot(self: &Arc<Self>, kernel: &Arc<RunningKernel>) -> Result<()> {
+    ///
+    /// `since` is [`RunningKernel::abandon_boot`] as it was before the
+    /// caller queued for the lock. When a shutdown or restart changes it, the boot stops
+    /// waiting, ends the session, and returns an error, leaving the kernel
+    /// listed for the shutdown or restart to deal with (#727).
+    async fn boot(self: &Arc<Self>, kernel: &Arc<RunningKernel>, since: u64) -> Result<()> {
+        let mut abandon = kernel.abandon_boot.subscribe();
         let mut attempt = 1;
+        let mut abandoned = false;
         let result = loop {
             let session = kernel.session();
-            let e = match session.nudge(self.config.startup_timeout).await {
-                Ok(_) => break Ok(()),
-                Err(e) => e,
+            let answered = tokio::select! {
+                r = session.nudge(self.config.startup_timeout) => Some(r),
+                _ = abandon.wait_for(|n| *n != since) => None,
+            };
+            let e = match answered {
+                Some(Ok(_)) => break Ok(()),
+                Some(Err(e)) => e,
+                None => {
+                    abandoned = true;
+                    let _ = session.shutdown(false, Duration::from_millis(200)).await;
+                    kernel.launched.lock().unwrap().take();
+                    break Err(ApiError::new(
+                        409,
+                        format!(
+                            "kernel {} was shut down or restarted while starting",
+                            kernel.id
+                        ),
+                    ));
+                }
             };
             let _ = session.shutdown(false, Duration::from_millis(200)).await;
             kernel.launched.lock().unwrap().take();
@@ -1033,6 +1103,22 @@ impl Core {
                     kernel.session_died(session.session_id(), self);
                 }
                 Ok(())
+            }
+            Err(e) if abandoned => {
+                tracing::info!(kernel = %kernel.id, "stopped waiting for the kernel to start");
+                kernel.log.host(
+                    "stopped waiting for the kernel to answer: it is being shut down or restarted",
+                );
+                // The shutdown or restart that cut the boot short normally
+                // holds the lock next. If its caller went away before
+                // taking it, the dead session is handled as any death: a
+                // crash handler queued behind a shutdown or restart finds
+                // the kernel removed or its session replaced.
+                let session = kernel.session();
+                if !session.is_alive() {
+                    kernel.session_died(session.session_id(), self);
+                }
+                Err(e)
             }
             Err(e) => {
                 tracing::warn!(kernel = %kernel.id, "kernel failed to start: {e}");
