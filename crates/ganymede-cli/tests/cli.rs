@@ -1165,15 +1165,20 @@ fn mcp_on_stdio_uses_a_running_server() {
         .read_line(&mut line)
         .unwrap();
 
-    // Run from a directory under the server's root.
+    // Run from a directory under the server's root: relative paths start
+    // there, and a leading / at the server's root.
     let mut cmd = ganymede(&["mcp"]);
     cmd.current_dir(root.path().join("sub"));
     env(&mut cmd);
     let mut mcp = McpClient::start(cmd);
-    let out = mcp.tool("notebook_read", serde_json::json!({"path": "sub/a.ipynb"}));
+    let out = mcp.tool("notebook_read", serde_json::json!({"path": "a.ipynb"}));
     assert!(out.contains("from disk"), "{out}");
-    let out = mcp.tool("notebooks_list", serde_json::json!({"dir": "sub"}));
-    assert!(out.contains("a.ipynb"), "{out}");
+    let out = mcp.tool("notebook_read", serde_json::json!({"path": "/sub/a.ipynb"}));
+    assert!(out.contains("from disk"), "{out}");
+    let out = mcp.tool("notebooks_list", serde_json::json!({}));
+    assert_eq!(out, "a.ipynb\n");
+    let out = mcp.tool("notebooks_list", serde_json::json!({"dir": "/"}));
+    assert_eq!(out, "/sub/\n");
     assert!(mcp.finish().success());
     // No second server: `ganymede mcp` wrote no server info file.
     let files = std::fs::read_dir(state.path().join("runtime"))
