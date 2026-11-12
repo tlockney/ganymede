@@ -1084,7 +1084,7 @@ impl Notebooks {
             .contents
             .save(&out, SaveRequest::text(export.body))
             .await
-            .map_err(|e| err(format!("cannot save {out}: {e}")))?;
+            .map_err(|e| err(format!("cannot save {out}: {e}", out = self.show(&out))))?;
         let mut msg = format!(
             "Published {} as {} ({} KB).",
             self.show(&path),
@@ -2429,6 +2429,7 @@ fn svg_source(value: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     #[test]
     fn paths_from_a_connections_directory() {
@@ -2453,7 +2454,6 @@ mod tests {
             assert_eq!(resolve_from(d, &show_from(d, p)), p);
         }
     }
-    use super::*;
 
     #[test]
     fn outputs_reach_the_agent_without_ansi_colours() {
