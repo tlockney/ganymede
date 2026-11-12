@@ -527,6 +527,29 @@ async fn a_notebook_runs_another_under_its_run_grant() {
     assert_eq!(err.code, "denied");
     assert!(err.message.contains("run grant"), "{}", err.message);
 
+    // A copy holds the source and its outputs, so keeping one needs a
+    // read of the source: a run grant plus a read of runs/ alone must not
+    // turn into a read of the notebook it runs.
+    let narrow = HostApi::new(
+        state.clone(),
+        &HostConfig {
+            read: vec!["runs".into()],
+            run: vec!["reports".into()],
+            ..Default::default()
+        },
+    );
+    let err = narrow
+        .call(
+            &caller,
+            "notebooks.run",
+            json!({"path": "reports/r.ipynb", "save": "copy"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "denied");
+    assert!(err.message.contains("read grant"), "{}", err.message);
+    assert!(!dir.path().join("runs").exists());
+
     // The run's kernel gets the intersection of the two grants: the
     // called notebook may read only journal/, so its run may too.
     let ids = file_ids(dir.path());
@@ -1014,6 +1037,34 @@ async fn run_setup(root: &std::path::Path, config: HostConfig) -> (Arc<HostApi>,
         state,
         caller,
     )
+}
+
+/// A run may read its own notebook, but may not copy it under runs/ for
+/// a caller that may not read it.
+#[tokio::test]
+async fn a_run_copies_itself_only_for_callers_that_may_read_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (api, state, caller) = run_setup(
+        dir.path(),
+        HostConfig {
+            read: vec!["runs".into()],
+            run: vec!["reports".into()],
+            ..Default::default()
+        },
+    )
+    .await;
+    let (call, run) = start_run(&api, &state, &caller, "reports/slow.ipynb").await;
+    let err = api
+        .call(
+            &run,
+            "notebooks.run",
+            json!({"path": "reports/slow.ipynb", "save": "copy"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "denied");
+    assert!(err.message.contains("read grant"), "{}", err.message);
+    call.abort();
 }
 
 #[tokio::test]

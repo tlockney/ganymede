@@ -99,6 +99,8 @@ pull request with a GitHub issue, and records what it learned in the
 - **Host API under `ganymede execute`.** Its kernels read, search and
   run notebooks under `[host]`, with `--grant` in place of a key
   ([Reference](reference.md#under-ganymede-execute)).
+- **Run copies.** `save: "copy"` on a run keeps the executed notebook
+  under `runs/` ([Run copies](reference.md#run-copies)).
 
 ## Next
 
@@ -107,9 +109,8 @@ In order of priority.
 1. **The notebook as a program.** A notebook takes parameters, returns
    named results, and runs from the CLI, the server API, app links,
    Shortcuts and other notebooks, through one run contract. Grants are
-   per notebook and only narrow. Next:
-   - saving each run as a copy
-     ([#658](https://github.com/tlockney/ganymede/issues/658)).
+   per notebook and only narrow. Next: what's left of the host API
+   ([#647](https://github.com/tlockney/ganymede/issues/647)).
 2. **The apps as a full runtime.** The apps run notebooks in-process,
    with no external server. Next:
    - a native in-app engine, jitless V8, unless its size or speed on a

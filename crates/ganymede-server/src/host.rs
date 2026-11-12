@@ -14,7 +14,7 @@
 //!   the notebook's outputs (the copy `notebooks.read` returns).
 //! - `notebooks.run { path, params?, timeout?, save? }`: runs another
 //!   notebook in a fresh kernel (`POST /api/notebooks/run`'s code) and
-//!   returns `{ path, status, results, error? }`, under the `[host] run`
+//!   returns `{ path, status, results, error?, copy? }`, under the `[host] run`
 //!   grant. The run's kernel gets the intersection of the caller's grant
 //!   and the notebook's, runs nest at most 3 deep, and each kernel has
 //!   at most 2 runs in flight.
@@ -500,11 +500,24 @@ impl HostApi {
         Ok(json!({"notebook": notebook, "hashes": hashes}))
     }
 
-    /// Whether `who` may start a run of `path` now.
-    fn check_run(&self, who: &Who, path: &str) -> Result<(), HostError> {
+    /// Whether `who` may start a run of `path` now, keeping a copy if
+    /// `save_copy`.
+    fn check_run(&self, who: &Who, path: &str, save_copy: bool) -> Result<(), HostError> {
         if !self.may_run(who, path) {
             return Err(HostError::denied(format!(
                 "{path} is outside this notebook's run grant (`[host] run`, or `ganymede grant NOTEBOOK run=PATH`)"
+            )));
+        }
+        // A copy holds the notebook's source and every output. A run grant
+        // alone gives only named results, so keeping a copy, which the
+        // caller might read under runs/, needs a read of the source too.
+        // Every outer caller too: a run may read its own notebook, but a
+        // copy of it under runs/ is for whoever may read runs/.
+        if save_copy
+            && !(self.may_read(who, path) && who.outer_read.iter().all(|g| self.covers(g, path)))
+        {
+            return Err(HostError::denied(format!(
+                "save: \"copy\" needs {path} inside this notebook's read grant as well as its run grant"
             )));
         }
         if who.depth >= MAX_DEPTH {
@@ -524,7 +537,7 @@ impl HostApi {
             )));
         }
         let path = ganymede_contents::normalize_api_path(&request.path);
-        self.check_run(who, &path)?;
+        self.check_run(who, &path, request.save_copy)?;
         let slot = {
             let mut slots = self.slots.lock().unwrap();
             slots.retain(|k, _| self.is_live(k));
@@ -541,10 +554,10 @@ impl HostApi {
         // grant changed while the call waited applies to it. The run then
         // keeps the grant it starts with.
         let who = &self.who(caller).await;
-        self.check_run(who, &path)?;
+        self.check_run(who, &path, request.save_copy)?;
         // Grants narrow, never widen: the run gets what both the caller
-        // and the notebook it runs may do. A run writes nothing, so it has
-        // no self.* calls.
+        // and the notebook it runs may do. A run never writes its own
+        // notebook (at most a copy under runs/), so it has no self.* calls.
         let callee = self.grant_for(Some(path.clone())).await;
         let grant = Who {
             read: intersect(&who.read, &callee.read),

@@ -16,7 +16,9 @@
 //! ```
 //!
 //! The notebook is read from its room when one is open, so unsaved edits
-//! run, and nothing is written: not the notebook, not its room. The run's
+//! run, and neither the notebook nor its room is written. `"save":
+//! "copy"` (#658) keeps the executed notebook under [`RUNS_DIR`] and adds
+//! its path to the answer as `copy`. The run's
 //! kernel is listed in `/api/kernels` while it runs and shut down when the
 //! run ends, times out, or the client goes away. `400` for a bad request
 //! (an uninstalled kernelspec among them) and `404` for a notebook that
@@ -40,13 +42,18 @@ use std::time::Duration;
 /// The longest run, and the run's limit when the request names none.
 const MAX_RUN: Duration = Duration::from_secs(3600);
 
+/// Where `save: "copy"` writes runs, under the root: `runs/<notebook's
+/// path without .ipynb>/<UTC start time>.ipynb`.
+pub const RUNS_DIR: &str = "runs";
+
 #[derive(Deserialize, Default)]
 pub struct RunBody {
     path: Option<String>,
     params: Option<Value>,
     /// Seconds for the whole run.
     timeout: Option<f64>,
-    /// Only `false` for now: the run contract's copies (#652) come later.
+    /// `false` (the default) writes nothing; `"copy"` writes the executed
+    /// notebook under [`RUNS_DIR`] and answers its path as `copy`.
     save: Option<Value>,
 }
 
@@ -92,6 +99,8 @@ pub struct RunRequest {
     pub path: String,
     pub params: Map<String, Value>,
     pub limit: Duration,
+    /// Write the executed notebook as a copy (`save: "copy"`).
+    pub save_copy: bool,
 }
 
 impl RunRequest {
@@ -99,7 +108,7 @@ impl RunRequest {
     pub fn parse(body: RunBody) -> Result<RunRequest, String> {
         let path = body
             .path
-            .map(|p| p.trim_matches('/').to_string())
+            .map(|p| ganymede_contents::normalize_api_path(&p))
             .filter(|p| !p.is_empty())
             .ok_or("path is required")?;
         let params = match body.params {
@@ -119,18 +128,16 @@ impl RunRequest {
                 ))
             }
         };
-        match body.save {
-            None | Some(Value::Bool(false)) | Some(Value::Null) => {}
-            Some(other) => {
-                return Err(format!(
-                    "save must be false; this server keeps no copies of runs yet, got {other}"
-                ))
-            }
-        }
+        let save_copy = match body.save {
+            None | Some(Value::Bool(false)) | Some(Value::Null) => false,
+            Some(Value::String(s)) if s == "copy" => true,
+            Some(other) => return Err(format!("save must be false or \"copy\", got {other}")),
+        };
         Ok(RunRequest {
             path,
             params,
             limit,
+            save_copy,
         })
     }
 
@@ -164,6 +171,7 @@ pub async fn run_notebook(
     })?;
     env.insert(0, (PARAMS_ENV.to_string(), params));
     let limit = request.limit;
+    let started = chrono::Utc::now();
     let mut nb = crate::mcp::notebook_for_search(state, path)
         .await
         .ok_or_else(|| RunError {
@@ -264,5 +272,157 @@ pub async fn run_notebook(
     if let Err(e) = outcome {
         answer["error"] = e.into();
     }
+    // A failed run is kept too: its copy shows where it stopped. Cells
+    // the run never started lose what an older run saved in them, so
+    // the copy holds only this run's outputs (and results).
+    if request.save_copy {
+        for (i, cell) in nb.cells.iter_mut().enumerate() {
+            if let Cell::Code(c) = cell {
+                if !ran.contains(&i) {
+                    c.outputs.clear();
+                    c.execution_count = None;
+                }
+            }
+        }
+        // As `ganymede execute` records them: the copy says what it ran with.
+        ganymede_nbformat::record_params(
+            &mut nb,
+            (!request.params.is_empty()).then_some(&request.params),
+        );
+        match save_copy(state, path, &nb, started).await {
+            Ok(copy) => answer["copy"] = copy.into(),
+            Err(e) => {
+                answer["status"] = "error".into();
+                let before = answer["error"].as_str().map(|b| format!("{b}; "));
+                answer["error"] =
+                    format!("{}the copy wasn't saved: {e}", before.unwrap_or_default()).into();
+            }
+        }
+    }
     Ok(answer)
+}
+
+/// The API path of `path`'s copy for a run started at `started`, `n`
+/// for the nth of that second.
+fn copy_path(path: &str, started: chrono::DateTime<chrono::Utc>, n: u32) -> String {
+    // A leading dot would hide the copy's folder, and with hidden files
+    // off the copy could not be written or read; `.private` becomes
+    // `_private`.
+    let stem = path
+        .strip_suffix(".ipynb")
+        .unwrap_or(path)
+        .split('/')
+        .map(|part| match part.strip_prefix('.') {
+            Some(rest) => format!("_{rest}"),
+            None => part.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    let stamp = started.format("%Y-%m-%dT%H%M%SZ");
+    match n {
+        0 | 1 => format!("{RUNS_DIR}/{stem}/{stamp}.ipynb"),
+        n => format!("{RUNS_DIR}/{stem}/{stamp}-{n}.ipynb"),
+    }
+}
+
+/// Write the executed notebook as `path`'s copy for this run, and return
+/// the copy's API path. The source notebook and its room are untouched.
+async fn save_copy(
+    state: &AppState,
+    path: &str,
+    nb: &ganymede_nbformat::Notebook,
+    started: chrono::DateTime<chrono::Utc>,
+) -> Result<String, String> {
+    use ganymede_contents::{ContentType, Format, GetOptions, SaveRequest};
+    let first = copy_path(path, started, 0);
+    let dir = first.rsplit_once('/').map(|(d, _)| d).unwrap_or_default();
+    let mut at = String::new();
+    for part in dir.split('/') {
+        if !at.is_empty() {
+            at.push('/');
+        }
+        at.push_str(part);
+        let request = SaveRequest {
+            kind: ContentType::Directory,
+            format: None,
+            content: None,
+            last_modified: None,
+            chunk: None,
+            if_match: None,
+        };
+        state
+            .contents
+            .save(&at, request)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let content = serde_json::to_value(nb).map_err(|e| e.to_string())?;
+    // One copy at a time, so two runs started in the same second can't
+    // both find the same name free.
+    static PICKING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _picking = PICKING.lock().await;
+    for n in 1..=100 {
+        let copy = copy_path(path, started, n);
+        let exists = state
+            .contents
+            .get(
+                &copy,
+                GetOptions {
+                    content: false,
+                    ..Default::default()
+                },
+            )
+            .await
+            .is_ok();
+        if exists {
+            continue;
+        }
+        let request = SaveRequest {
+            kind: ContentType::Notebook,
+            format: Some(Format::Json),
+            content: Some(content),
+            last_modified: None,
+            chunk: None,
+            if_match: None,
+        };
+        state
+            .contents
+            .save(&copy, request)
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(copy);
+    }
+    Err(format!("too many runs of {path} in one second"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::copy_path;
+
+    #[test]
+    fn copies_are_named_for_the_notebook_and_the_start() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-11-11T19:30:05.250Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            copy_path("reports/daily.ipynb", at, 1),
+            "runs/reports/daily/2026-11-11T193005Z.ipynb"
+        );
+        assert_eq!(
+            copy_path("reports/daily.ipynb", at, 0),
+            copy_path("reports/daily.ipynb", at, 1)
+        );
+        assert_eq!(
+            copy_path("reports/daily.ipynb", at, 2),
+            "runs/reports/daily/2026-11-11T193005Z-2.ipynb"
+        );
+        assert_eq!(
+            copy_path("index.ipynb", at, 3),
+            "runs/index/2026-11-11T193005Z-3.ipynb"
+        );
+        assert_eq!(
+            copy_path(".private/.nb.ipynb", at, 1),
+            "runs/_private/_nb/2026-11-11T193005Z.ipynb"
+        );
+    }
 }
