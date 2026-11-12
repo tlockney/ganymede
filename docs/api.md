@@ -96,7 +96,9 @@ The reply comes as soon as the kernel process is running, as it does from
 `jupyter_server`. The kernel then has `--startup-timeout` seconds to answer;
 connect to its websocket meanwhile and watch for `status: idle`. A kernel
 that never answers is launched again, up to three times, and is then
-reported `status: dead` and removed. `POST /api/sessions` does the same
+reported `status: dead` and removed. A delete, a restart or a session's
+kernel change made meanwhile doesn't wait for that: the server stops
+waiting for the kernel and goes ahead. `POST /api/sessions` does the same
 for a notebook path, and is what JupyterLab and VS Code call.
 
 ## Run code over the websocket
