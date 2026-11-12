@@ -280,12 +280,14 @@ Export Notebook As > HTML**.
 ## Changes by others
 
 A person may edit the notebook in JupyterLab or ganymede-ui while the
-agent works. `notebook_open` and `notebook_read` end with a read mark:
+agent works.
 
 > [!NOTE]
 > **Unreleased in ganymede-ui.** Editing alongside the agent in
 > ganymede-ui needs a build of its `main`; its latest release locks the
 > notebook each time the agent writes.
+
+`notebook_open` and `notebook_read` end with a read mark:
 
 ```text
 @@read 3f2a9c0d1b7e4a65

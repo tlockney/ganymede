@@ -179,7 +179,6 @@ cells", a server operation any client can call.
 > **Unreleased in ganymede-ui.** A build of ganymede-ui's `main` opens
 > notebooks through rooms on a Ganymede server
 > ([ganymede-ui#510](https://github.com/tlockney/ganymede-ui/pull/510)).
-> On its release, the two "once" clauses above become present tense.
 
 `"exited"` is a kernel that ended for its own reasons, such as a Worker
 that failed to load. It follows the ordinary crash path and counts
