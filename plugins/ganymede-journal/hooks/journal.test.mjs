@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -33,7 +33,7 @@ function fake(answers) {
     `#!/usr/bin/env node
 const fs = require("node:fs");
 const [, , , , tool, args] = process.argv;
-fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ tool, args: JSON.parse(args) }) + "\\n");
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ tool, args: JSON.parse(args), cwd: fs.realpathSync(process.cwd()) }) + "\\n");
 const answers = ${JSON.stringify(answers)};
 if (!(tool in answers)) { process.stderr.write("no server"); process.exit(1); }
 process.stdout.write(answers[tool]);
@@ -113,7 +113,8 @@ test("prompt passes on others' changes, and nothing else", () => {
   assert.equal(out.hookSpecificOutput.hookEventName, "UserPromptSubmit");
   assert.match(out.hookSpecificOutput.additionalContext, /j\.ipynb changed since your last read/);
   assert.match(out.hookSpecificOutput.additionalContext, /"change":\["added"\]/);
-  assert.deepEqual(f.calls()[0], { tool: "notebook_read", args: { path: "j.ipynb", since: "m1" } });
+  const [read] = f.calls();
+  assert.deepEqual({ tool: read.tool, args: read.args }, { tool: "notebook_read", args: { path: "j.ipynb", since: "m1" } });
 
   const quiet = fake({ notebook_read: "No changes by others since that read.\n@@read m1\n" });
   handle(
@@ -171,6 +172,32 @@ test("post-tool records marked Bash commands into the open journal", () => {
     { ...f.env, GANYMEDE_JOURNAL_RECORD: "all" },
   );
   assert.equal(f.calls().length, 2);
+});
+
+test("calls run from the session's start folder after a cd in Bash", () => {
+  const f = fake({ kernelspecs_list: "default: cdp-node\n", cell_add: "Added cell abc", notebook_read: "changed\n" });
+  const start = realpathSync(f.dir);
+  const sub = join(start, "sub");
+  mkdirSync(sub);
+  handle("session-start", base(f.dir), f.env);
+  handle(
+    "post-tool",
+    { ...base(f.dir), tool_name: `${TOOL}notebook_open`, tool_input: { path: "journal/a.ipynb" },
+      tool_response: "@@read m1\n" },
+    f.env,
+  );
+  // The agent ran `cd sub`: Claude Code reports the new folder.
+  const moved = { session_id: "s1", cwd: sub };
+  handle(
+    "post-tool",
+    { ...moved, tool_name: "Bash", tool_input: { command: "ls # journal" }, tool_response: "" },
+    f.env,
+  );
+  handle("prompt", moved, f.env);
+  const calls = f.calls();
+  assert.deepEqual(calls.map((c) => c.tool), ["kernelspecs_list", "cell_add", "notebook_read"]);
+  for (const c of calls) assert.equal(c.cwd, start, c.tool);
+  assert.equal(calls[1].args.path, "journal/a.ipynb");
 });
 
 test("stop blocks once per round of edits since a clean run-all", () => {

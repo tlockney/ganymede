@@ -119,10 +119,19 @@ export function handle(event, input, env = process.env) {
   const sid = input.session_id;
   const cwd = input.cwd || process.cwd();
   const state = load(env, sid);
+  // The folder the session started in, where the agent's `ganymede mcp`
+  // runs: tool paths are relative to it (#730), and `ganymede mcp call`
+  // resolves them against its own folder, which a `cd` in Bash would
+  // move (#732). Kept from session start, or from the journal's open.
+  const home = () => state.home || cwd;
   switch (event) {
     case "session-start": {
+      if (!state.home) {
+        state.home = cwd;
+        save(env, sid, state);
+      }
       const lines = [];
-      const kernels = call(env, cwd, "kernelspecs_list", {}, 10_000);
+      const kernels = call(env, home(), "kernelspecs_list", {}, 10_000);
       if (kernels === null) {
         lines.push(
           "Ganymede: no server is running for this directory, or `ganymede` isn't installed. " +
@@ -152,7 +161,7 @@ export function handle(event, input, env = process.env) {
           const mark = readMark(text);
           if (mark && path) {
             if (path !== state.path) state.dirty = false;
-            Object.assign(state, { path, mark });
+            Object.assign(state, { path, mark, home: home() });
           }
         } else if (path && path === state.path) {
           if (EDITS.has(tool) || (tool === "cell_run" && args.record !== false)) {
@@ -169,7 +178,7 @@ export function handle(event, input, env = process.env) {
         const command = args.command || "";
         if (!shouldRecord(command, env.GANYMEDE_JOURNAL_RECORD || "marked")) return "";
         const source = recordedSource(command, text);
-        const out = call(env, cwd, "cell_add", {
+        const out = call(env, home(), "cell_add", {
           path: state.path,
           source,
           mode: "recorded",
@@ -187,7 +196,7 @@ export function handle(event, input, env = process.env) {
     }
     case "prompt": {
       if (!state.path || !state.mark) return "";
-      const out = call(env, cwd, "notebook_read", { path: state.path, since: state.mark });
+      const out = call(env, home(), "notebook_read", { path: state.path, since: state.mark });
       if (out === null || out.startsWith("No changes")) return "";
       if (out.startsWith("Read mark")) {
         state.mark = readMark(out) || state.mark;
