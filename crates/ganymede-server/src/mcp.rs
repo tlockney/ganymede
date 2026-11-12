@@ -203,7 +203,8 @@ fn text(s: impl Into<String>) -> Result<CallToolResult, McpError> {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct OpenArgs {
-    /// Notebook path relative to the server root, such as `analysis/run.ipynb`.
+    /// Notebook path, such as `analysis/run.ipynb`, relative to the
+    /// directory `notebook_open` names (a leading `/` is the server root).
     pub path: String,
     /// Kernelspec name for a new notebook or a new kernel (default: the
     /// notebook's own, else the server's default).
@@ -358,9 +359,10 @@ pub struct RunAllArgs {
 pub struct SnapshotArgs {
     /// Cell ids, in the order to show them.
     pub ids: Vec<String>,
-    /// Save images in this directory under the server root, such as
+    /// Save images in this directory, a path like `path`, such as
     /// `journal/snapshots`, for a report next to the notebook. By default
-    /// they go to a directory outside the root that only you can read.
+    /// they go to a directory outside the server root that only you can
+    /// read.
     pub dir: Option<String>,
     /// Include each code cell's source (default true).
     pub code: Option<bool>,
@@ -372,7 +374,7 @@ pub struct SnapshotArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PublishArgs {
-    /// Where to save the page under the server root, ending in `.html`.
+    /// Where to save the page, a path like `path`, ending in `.html`.
     /// Default: `published/<name>.html` beside the notebook.
     pub out: Option<String>,
     /// How code shows: `folded` under each result (default), `shown`,
@@ -388,7 +390,8 @@ pub struct PublishArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListArgs {
-    /// Directory relative to the server root (default: the root).
+    /// Directory, a path like `path` (default: the directory
+    /// `notebook_open` names).
     pub dir: Option<String>,
 }
 
@@ -396,8 +399,8 @@ pub struct ListArgs {
 pub struct SearchArgs {
     /// Words to find, all of them, in any case and order.
     pub query: String,
-    /// Directory to search, with its subdirectories, relative to the
-    /// server root (default: the root).
+    /// Directory to search, with its subdirectories, a path like `path`
+    /// (default: the directory `notebook_open` names).
     pub dir: Option<String>,
     /// Search text outputs too, not only sources (default false).
     pub outputs: Option<bool>,
@@ -1008,7 +1011,7 @@ impl Notebooks {
     }
 
     #[tool(
-        description = "Publish the notebook as one self-contained HTML page to read and share: title, contents, Markdown as prose, charts and tables inline, code folded under each result, light and dark. The page holds only the notebook's cells and outputs (no metadata), makes no network requests and runs no notebook script; the server root, home directory and token (8 characters or more) are replaced wherever they appear as a whole name. Saves it under the server root (default `published/<name>.html` beside the notebook), replacing an earlier published page but no other file unless `overwrite: true`, and returns its path. Runs nothing; run the notebook first so the outputs are current."
+        description = "Publish the notebook as one self-contained HTML page to read and share: title, contents, Markdown as prose, charts and tables inline, code folded under each result, light and dark. The page holds only the notebook's cells and outputs (no metadata), makes no network requests and runs no notebook script; the server root, home directory and token (8 characters or more) are replaced wherever they appear as a whole name. Saves it in the server root's tree (default `published/<name>.html` beside the notebook), replacing an earlier published page but no other file unless `overwrite: true`, and returns its path. Runs nothing; run the notebook first so the outputs are current."
     )]
     async fn notebook_publish(
         &self,
@@ -1033,7 +1036,8 @@ impl Notebooks {
         let out_name = out.rsplit('/').next().unwrap_or(&out);
         if !out_name.to_ascii_lowercase().ends_with(".html") || out_name.len() <= ".html".len() {
             return Err(err(format!(
-                "out must be a file ending in .html, not {out:?}"
+                "out must be a file ending in .html, not {:?}",
+                self.show(&out)
             )));
         }
         // Replace only an earlier published page unless told to.
@@ -1057,7 +1061,8 @@ impl Notebooks {
                     .is_some_and(|t| t.contains(ganymede_nbformat::HTML_GENERATOR_MARK));
                 if !published {
                     return Err(err(format!(
-                        "{out} exists and isn't a page published from a notebook; pick another `out`, or pass `overwrite: true` to replace it"
+                        "{} exists and isn't a page published from a notebook; pick another `out`, or pass `overwrite: true` to replace it",
+                        self.show(&out)
                     )));
                 }
             }
@@ -1104,7 +1109,7 @@ impl Notebooks {
     }
 
     #[tool(
-        description = "Search notebooks under a directory (default: the root, with subdirectories) for cells containing every word of `query`, ignoring case. Searches sources, and text outputs with `outputs: true`. Returns each matching cell's notebook, title, index, id, type and an excerpt; read a hit in full with `notebook_read`. Use it before starting a journal, to find what earlier notebooks found."
+        description = "Search notebooks under a directory (default: the directory `notebook_open` names, with subdirectories) for cells containing every word of `query`, ignoring case. Searches sources, and text outputs with `outputs: true`. Returns each matching cell's notebook, title, index, id, type and an excerpt; read a hit in full with `notebook_read`. Use it before starting a journal, to find what earlier notebooks found."
     )]
     async fn notebooks_search(
         &self,
@@ -1264,6 +1269,16 @@ impl ServerHandler for Notebooks {
             .and_then(Value::as_str)
             .map(ganymede_contents::normalize_api_path)
             .filter(|d| !d.is_empty());
+        // A folder outside the root would make every later call fail
+        // with a confusing path; refuse it here.
+        if let Some(d) = &dir {
+            if d.split('/').any(|c| c == "..") || d.contains('\\') {
+                return Err(McpError::invalid_params(
+                    format!("{DIR_META} must be a folder under the server root, not {d:?}"),
+                    None,
+                ));
+            }
+        }
         *self.dir.lock().expect("dir") = dir;
         context.peer.set_peer_info(request.clone());
         self.negotiate_initialize(&request)

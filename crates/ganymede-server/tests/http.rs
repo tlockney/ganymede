@@ -6781,3 +6781,37 @@ async fn notebooks_run_answers_with_named_results() {
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
+
+/// A connection's folder (`_meta["ganymede/dir"]`) must stay under the
+/// root: `..` is refused at `initialize`, a folder below it is kept.
+#[tokio::test]
+async fn mcp_refuses_a_folder_outside_the_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    st.mcp = Some(Arc::new(ganymede_server::mcp::McpState::new(
+        ganymede_server::mcp::McpOptions {
+            read_only: true,
+            no_execute: true,
+            images: false,
+            outputs_dir: Some(dir.path().join("spill")),
+        },
+    )));
+    let app = build_router(st);
+    let init = |d: &str| {
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "t", "version": "1"},
+            "_meta": {"ganymede/dir": d}}})
+    };
+    let (_, _, v) = mcp_call(&app, None, init("../up")).await;
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("under the server root")),
+        "{v}"
+    );
+    let (s, sid, v) = mcp_call(&app, None, init("sub")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v.get("error").is_none(), "{v}");
+    assert!(sid.is_some());
+}

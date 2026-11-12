@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -272,6 +272,15 @@ test("hooks against a real ganymede mcp", { skip: !process.env.GANYMEDE_E2E_BIN 
     assert.doesNotMatch(ctx, /echo 42/);
     // The prompt hook moved the mark: the agent's own read sees nothing new.
     assert.equal(handle("prompt", input, env), "");
+    // After the agent `cd`s into a subdirectory, the hook still reaches the
+    // journal: it calls from the project dir, as the agent's tools do.
+    mkdirSync(join(root, "sub"), { recursive: true });
+    const moved = handle(
+      "post-tool",
+      { ...input, cwd: join(root, "sub"), tool_name: "Bash", tool_input: { command: "echo 7 # journal" }, tool_response: { stdout: "7", stderr: "" } },
+      { ...env, CLAUDE_PROJECT_DIR: root },
+    );
+    assert.match(moved.hookSpecificOutput.additionalContext, /recorded this command/);
     // The journal has edits and no run-all: stopping is blocked once.
     assert.equal(handle("stop", input, env).decision, "block");
   } finally {

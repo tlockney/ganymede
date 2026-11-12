@@ -117,7 +117,11 @@ function context(event, text) {
 /** The hook for `event`: returns what to print (a string or an object). */
 export function handle(event, input, env = process.env) {
   const sid = input.session_id;
-  const cwd = input.cwd || process.cwd();
+  // Where the agent's `ganymede mcp` started: the project dir, not the
+  // Bash tool's current dir, which `cd` moves. `ganymede mcp call` from
+  // there finds the same server and starts relative paths in the same
+  // folder as the agent's tools (#730).
+  const cwd = env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
   const state = load(env, sid);
   switch (event) {
     case "session-start": {
