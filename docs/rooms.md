@@ -101,7 +101,9 @@ A room is named for its file's id, not its path. Ids are kept in
 `ganymede_file_ids.db` in the Jupyter data dir, so a client keeps its room
 across a server restart. A rename or delete through the contents API
 moves or drops the id, and a room open on a renamed file follows it. A
-file moved by another program gets a new id. If the database can't be
+file moved by another program gets a new id. When another program
+deletes or moves a file with an open room, the room closes its clients
+with 4404, as for a delete through the API. If the database can't be
 read or written, ids handed out meanwhile are kept in memory and resolve
 until the server stops.
 
