@@ -18,8 +18,8 @@ use std::process::ExitCode;
 
 /// The version `ganymede ui install` installs by default, and its zip's
 /// SHA-256 from the release's `SHA256SUMS`. A mismatch fails the install.
-pub const DEFAULT_VERSION: &str = "0.7.0";
-const DEFAULT_SHA256: &str = "b35e74069643a6abe1309f3dc25519f9ba8ae0901b8017fc19a66fe223df0d03";
+pub const DEFAULT_VERSION: &str = "0.8.0";
+const DEFAULT_SHA256: &str = "31bf4ebf4e6df72c6f9a3500a658a11973457324e83327aa37953978c411b38a";
 
 /// Where releases are downloaded from, unless `GANYMEDE_UI_URL` names a
 /// mirror laid out the same way (`<url>/v<version>/<file>`).

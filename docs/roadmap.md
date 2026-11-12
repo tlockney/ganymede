@@ -89,13 +89,6 @@ pull request with a GitHub issue, and records what it learned in the
 - **In-app kernels as server kernels.** Ganymede's C functions let an
   app register its own kernels with the embedded server
   ([In-app kernels as server kernels](in-app-kernel.md)).
-
-### Done on `main`
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 - **Host API under `ganymede execute`.** Its kernels read, search and
   run notebooks under `[host]`, with `--grant` in place of a key
   ([Reference](reference.md#under-ganymede-execute)).

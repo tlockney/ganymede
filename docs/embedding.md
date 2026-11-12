@@ -17,7 +17,7 @@ design is on [The iPad use case](ipados.md).
 ![Three ways to embed Ganymede: a Rust app calling the engine in-process; an app whose web view talks HTTP to the server that ganymede-ffi runs on loopback; and a wasm or iOS build with zmq and subprocess off, where the kernel sits behind an in-process transport.](images/architecture/embedding.svg)
 
 The crates are not on crates.io, so depend on them from git:
-`ganymede-engine = { git = "https://github.com/tlockney/ganymede", tag = "v0.9.0" }`.
+`ganymede-engine = { git = "https://github.com/tlockney/ganymede", tag = "v0.10.0" }`.
 
 ## The engine in a Rust app
 
