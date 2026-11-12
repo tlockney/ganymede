@@ -1359,7 +1359,10 @@ async fn run_room(
                     disk_event = None;
                     first_disk_event = None;
                     last_poll = Instant::now();
-                    let needs_save = reload(contents.as_ref(), &mut room, d, &clients).await.needs_save;
+                    let reloaded = reload(contents.as_ref(), &mut room, d, &clients).await;
+                    // Saving now would write the deleted file back.
+                    if reloaded.gone && file_gone(&collab, contents.as_ref(), &d.path).await { continue }
+                    let needs_save = reloaded.needs_save;
                     // Save the room's edits now, just after taking in the
                     // file, so the save rarely meets a newer one. Waiting
                     // for autosave instead starves it while the file keeps
@@ -1371,7 +1374,9 @@ async fn run_room(
                     }
                 } else if last_poll.elapsed() >= poll_every && disk_event.is_none() {
                     last_poll = Instant::now();
-                    if poll(contents.as_ref(), &mut room, d, &clients).await {
+                    let polled = poll(contents.as_ref(), &mut room, d, &clients).await;
+                    if polled.gone && file_gone(&collab, contents.as_ref(), &d.path).await { continue }
+                    if polled.needs_save {
                         // As after a reload.
                         let status = save_room(contents.as_ref(), &mut room, d, &clients, false).await;
                         after_save(status, &mut last_edit, &mut save_failures);
@@ -1676,7 +1681,13 @@ async fn save_room(
             }
             Err(e) if e.status() == 412 => {
                 tracing::info!(path = %disk.path, "file changed on disk; merging before saving");
-                lost |= reload(contents, room, disk, clients).await.lost;
+                let reloaded = reload(contents, room, disk, clients).await;
+                if reloaded.gone {
+                    // Deleted outside the API: the room's next look at the
+                    // file closes it (#719).
+                    return SaveStatus::Failed;
+                }
+                lost |= reloaded.lost;
             }
             Err(e) => {
                 tracing::warn!(path = %disk.path, "room save failed: {e}");
@@ -1687,21 +1698,49 @@ async fn save_room(
     SaveStatus::Failed
 }
 
-/// Merge the file in when it changed and it was not our write. True when
-/// the room needs saving after.
+/// Merge the file in when it changed and it was not our write.
 async fn poll(
     contents: &dyn Contents,
     room: &mut Room,
     disk: &mut Disk,
     clients: &HashMap<ConnId, ClientTx>,
-) -> bool {
-    let Ok(model) = contents.get(&disk.path, GetOptions::default()).await else {
-        return false; // gone or unreadable: keep the room as it is
+) -> Reloaded {
+    let model = match contents.get(&disk.path, GetOptions::default()).await {
+        Ok(model) => model,
+        Err(ganymede_contents::Error::NotFound(_) | ganymede_contents::Error::Hidden(_)) => {
+            return Reloaded {
+                gone: true,
+                ..Reloaded::default()
+            };
+        }
+        Err(_) => return Reloaded::default(), // unreadable: keep the room as it is
     };
     if model.last_modified == disk.last_modified {
-        return false;
+        return Reloaded::default();
     }
-    reload(contents, room, disk, clients).await.needs_save
+    reload(contents, room, disk, clients).await
+}
+
+/// The room's file was found gone from disk, deleted by another program
+/// rather than through the contents API (#719). Under
+/// [`Collab::begin_move`]'s lock, as [`Collab::delete`], and only if it is
+/// still gone, drop its ids and close the rooms on it, so a file made
+/// later at the path gets a new id and room instead of joining this one.
+/// True when it did; the room's own [`Cmd::Removed`] is then queued.
+async fn file_gone(collab: &Collab, contents: &dyn Contents, path: &str) -> bool {
+    let _deleting = collab.begin_move().await;
+    let gone = matches!(
+        contents.get(path, GetOptions::default()).await,
+        Err(ganymede_contents::Error::NotFound(_) | ganymede_contents::Error::Hidden(_))
+    );
+    if gone {
+        tracing::info!(
+            path,
+            "file deleted outside the contents API; closing its room"
+        );
+        collab.removed(path).await;
+    }
+    gone
 }
 
 /// What [`reload`] did.
@@ -1711,6 +1750,8 @@ struct Reloaded {
     needs_save: bool,
     /// The file won a cell the room had changed.
     lost: bool,
+    /// The file is gone: deleted outside the contents API (#719).
+    gone: bool,
 }
 
 /// Read the file and merge it into the room, unless it is what we last
@@ -1759,6 +1800,14 @@ async fn reload(
             Reloaded {
                 needs_save: room.is_dirty(),
                 lost: !conflicts.is_empty(),
+                gone: false,
+            }
+        }
+        Err(e) if e.missing => {
+            tracing::info!(path = %disk.path, "file deleted on disk");
+            Reloaded {
+                gone: true,
+                ..Reloaded::default()
             }
         }
         Err(e) => {
