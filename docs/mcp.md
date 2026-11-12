@@ -17,6 +17,21 @@ claude mcp add ganymede -- ganymede mcp
 Other clients take the same command (`ganymede mcp`) in their MCP
 settings. Paths in the tools are relative to the server's root.
 
+### Paths when the server's root is above the agent's folder
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+When `ganymede mcp` forwards to a running server rooted above the
+directory it started in (or `--root-dir`), that directory becomes the
+connection's own: the agent's `a.ipynb` is the file in its folder, and a
+leading `/` starts at the server's root. Paths in answers follow the same
+rule, so the agent can pass them back as they are. On a server rooted at
+`/`, such as the Mac app's, a leading `/` path is the file's absolute
+path. `notebook_open` names the folder. Clients that connect to `/mcp`
+themselves are unchanged: their paths start at the root.
+
 `ganymede mcp` connects to a server in this order:
 
 1. `--server URL` (with `--token` or `JUPYTER_TOKEN`).

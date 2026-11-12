@@ -152,8 +152,45 @@ pub struct Notebooks {
     marks: Arc<Mutex<marks::Marks>>,
     /// This connection's read mark token for each notebook it read.
     tokens: Arc<Mutex<HashMap<String, String>>>,
+    /// The directory, under the root, that this connection's relative
+    /// paths start from: the agent's own folder, which `ganymede mcp`
+    /// sends as [`DIR_META`] when it forwards to a server rooted above
+    /// it. `None` resolves paths against the root, as before.
+    dir: Arc<Mutex<Option<String>>>,
     tool_router: ToolRouter<Self>,
     prompt_router: PromptRouter<Self>,
+}
+
+/// The `_meta` key on `initialize` that sets a connection's directory:
+/// the agent's folder relative to the server root, such as
+/// `Users/me/analysis` on a server rooted at `/`. Paths without a
+/// leading `/` then start from it, and paths in answers are shown from
+/// it, so an agent's `a.ipynb` is the file in its own folder.
+pub const DIR_META: &str = "ganymede/dir";
+
+/// `path` (an API path from the root) as a connection whose directory is
+/// `dir` sees it: relative to `dir` when below it, otherwise (`dir`
+/// itself too) from the root with a leading `/`.
+fn show_from(dir: Option<&str>, path: &str) -> String {
+    let Some(dir) = dir.filter(|d| !d.is_empty()) else {
+        return path.to_string();
+    };
+    match ganymede_contents::path_under(path, dir) {
+        Some(rest) if !rest.is_empty() => rest.trim_start_matches('/').to_string(),
+        _ => format!("/{path}"),
+    }
+}
+
+/// `path` from a connection whose directory is `dir`, as an API path
+/// from the root: a leading `/` starts at the root, anything else at
+/// `dir`.
+fn resolve_from(dir: Option<&str>, path: &str) -> String {
+    match dir {
+        Some(d) if !path.starts_with('/') => {
+            ganymede_contents::normalize_api_path(&format!("{d}/{path}"))
+        }
+        _ => ganymede_contents::normalize_api_path(path),
+    }
 }
 
 fn err(msg: impl Into<String>) -> McpError {
@@ -387,19 +424,20 @@ impl Notebooks {
             holds: Arc::default(),
             marks,
             tokens: Arc::default(),
+            dir: Arc::default(),
             tool_router: Self::tool_router(),
             prompt_router: Self::prompt_router(),
         }
     }
 
     #[tool(
-        description = "Open a notebook, creating it if it doesn't exist, and start or join its kernel. Later calls may leave out `path`. Paths are relative to the server's root directory, which the reply names. Returns a compact view of the notebook."
+        description = "Open a notebook, creating it if it doesn't exist, and start or join its kernel. Later calls may leave out `path`. Paths are relative to the directory the reply names: the server's root, or your own folder when `ganymede mcp` forwards to a server rooted above it, where a leading / starts at the root. Returns a compact view of the notebook."
     )]
     async fn notebook_open(
         &self,
         Parameters(a): Parameters<OpenArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let path = ganymede_contents::normalize_api_path(&a.path);
+        let path = self.resolve(&a.path);
         if !path.ends_with(".ipynb") {
             return Err(err("path must end in .ipynb"));
         }
@@ -408,11 +446,19 @@ impl Notebooks {
         let exists = match self.state.contents.get(&path, GetOptions::default()).await {
             Ok(_) => true,
             Err(ganymede_contents::Error::NotFound(_)) => false,
-            Err(e) => return Err(err(format!("cannot open {path}: {e}"))),
+            Err(e) => {
+                return Err(err(format!(
+                    "cannot open {path}: {e}",
+                    path = self.show(&path)
+                )))
+            }
         };
         if !exists {
             if self.opts.read_only {
-                return Err(err(format!("{path} doesn't exist (read-only)")));
+                return Err(err(format!(
+                    "{path} doesn't exist (read-only)",
+                    path = self.show(&path)
+                )));
             }
             self.create(&path, a.kernel.as_deref(), a.title.as_deref())
                 .await?;
@@ -424,13 +470,20 @@ impl Notebooks {
             Some(self.kernel_for(&path, a.kernel.as_deref()).await?)
         };
         let (nb, token) = self.read_marked(&path).await?;
-        let root = match self.state.collab.root() {
-            Some(r) => format!(" (server root {})", r.display()),
-            None => String::new(),
+        let dir = self.dir.lock().expect("dir").clone();
+        let root = match (self.state.collab.root(), dir) {
+            (Some(r), Some(d)) => format!(
+                " (paths start in {}; a leading / is the server root, {})",
+                r.join(&d).display(),
+                r.display()
+            ),
+            (Some(r), None) => format!(" (server root {})", r.display()),
+            (None, _) => String::new(),
         };
         let mut out = format!(
-            "{} {path}{root}{}\n\n",
+            "{} {}{root}{}\n\n",
             if exists { "Opened" } else { "Created" },
+            self.show(&path),
             match &kernel {
                 Some((_, name)) => format!(" on kernel {name}"),
                 None => String::new(),
@@ -752,9 +805,12 @@ impl Notebooks {
         // shut down without one.
         let (kernel_id, name) = match a.action {
             KernelAction::Restart => self.kernel_for(&path, None).await?,
-            _ => self
-                .running_kernel(&path)
-                .ok_or_else(|| err(format!("no kernel is running for {path}")))?,
+            _ => self.running_kernel(&path).ok_or_else(|| {
+                err(format!(
+                    "no kernel is running for {path}",
+                    path = self.show(&path)
+                ))
+            })?,
         };
         let kernels = &self.state.kernels;
         let r = match a.action {
@@ -845,7 +901,7 @@ impl Notebooks {
                         "can't save into the server root (read-only); leave out dir",
                     ));
                 }
-                Some(ganymede_contents::normalize_api_path(d))
+                Some(self.resolve(d))
             }
             None => None,
         };
@@ -866,7 +922,10 @@ impl Notebooks {
                 .enumerate()
                 .find(|(_, c)| c.id() == Some(id.as_str()))
             else {
-                return Err(err(format!("no cell {id} in {path}")));
+                return Err(err(format!(
+                    "no cell {id} in {path}",
+                    path = self.show(&path)
+                )));
             };
             let (cell, lang) = (cell.clone(), lang.clone());
             let (code, max_rows) = (a.code.unwrap_or(true), a.max_rows.unwrap_or(20));
@@ -967,7 +1026,7 @@ impl Notebooks {
         };
         let stem = file.strip_suffix(".ipynb").unwrap_or(&file).to_owned();
         let out = match a.out.as_deref() {
-            Some(o) => ganymede_contents::normalize_api_path(o),
+            Some(o) => self.resolve(o),
             None if dir.is_empty() => format!("published/{stem}.html"),
             None => format!("{dir}/published/{stem}.html"),
         };
@@ -1025,8 +1084,13 @@ impl Notebooks {
             .contents
             .save(&out, SaveRequest::text(export.body))
             .await
-            .map_err(|e| err(format!("cannot save {out}: {e}")))?;
-        let mut msg = format!("Published {path} as {out} ({} KB).", size.div_ceil(1024));
+            .map_err(|e| err(format!("cannot save {out}: {e}", out = self.show(&out))))?;
+        let mut msg = format!(
+            "Published {} as {} ({} KB).",
+            self.show(&path),
+            self.show(&out),
+            size.div_ceil(1024)
+        );
         if let Some(root) = self.state.collab.root() {
             msg.push_str(&format!(" On disk: {}", root.join(&out).display()));
         }
@@ -1060,13 +1124,13 @@ impl Notebooks {
             cell_type: a.cell_type.as_deref(),
         };
         let limit = a.limit.unwrap_or(20).clamp(1, 200);
-        let dir = ganymede_contents::normalize_api_path(a.dir.as_deref().unwrap_or(""));
+        let dir = self.resolve(a.dir.as_deref().unwrap_or(""));
         let found = search_notebooks(&self.state, &dir, &words, scope, limit, &|_, _| true)
             .await
             .map_err(err)?;
         let mut out = String::new();
         for (path, title, hits) in &found.notebooks {
-            let head = json!({"path": path, "title": title});
+            let head = json!({"path": self.show(path), "title": title});
             out.push_str(&format!("@@notebook {head}\n"));
             for h in hits {
                 let head =
@@ -1081,7 +1145,13 @@ impl Notebooks {
             found.total,
             found.matched,
             found.searched,
-            if dir.is_empty() { "the root" } else { &dir }
+            if self.dir.lock().expect("dir").is_some() {
+                self.show(&dir)
+            } else if dir.is_empty() {
+                "the root".to_string()
+            } else {
+                dir.clone()
+            }
         );
         if shown < found.total {
             summary.push_str(&format!(
@@ -1118,7 +1188,7 @@ impl Notebooks {
         &self,
         Parameters(a): Parameters<ListArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let dir = ganymede_contents::normalize_api_path(a.dir.as_deref().unwrap_or(""));
+        let dir = self.resolve(a.dir.as_deref().unwrap_or(""));
         let model = self
             .state
             .contents
@@ -1136,7 +1206,7 @@ impl Notebooks {
         if let Some(Value::Array(items)) = model.content {
             for item in items {
                 let kind = item["type"].as_str().unwrap_or_default();
-                let path = item["path"].as_str().unwrap_or_default();
+                let path = self.show(item["path"].as_str().unwrap_or_default());
                 match kind {
                     "directory" => out.push_str(&format!("{path}/\n")),
                     "notebook" => out.push_str(&format!("{path}\n")),
@@ -1179,6 +1249,26 @@ Keep a notebook as the record of this analysis while you work, not as a write-up
 #[tool_handler(router = self.tool_router)]
 #[prompt_handler(router = self.prompt_router)]
 impl ServerHandler for Notebooks {
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, McpError> {
+        // `ganymede mcp` names the agent's folder when it forwards to a
+        // server rooted above it (`DIR_META`).
+        let dir = request
+            .meta
+            .as_ref()
+            .and_then(|m| m.get(DIR_META))
+            .or_else(|| context.meta.get(DIR_META))
+            .and_then(Value::as_str)
+            .map(ganymede_contents::normalize_api_path)
+            .filter(|d| !d.is_empty());
+        *self.dir.lock().expect("dir") = dir;
+        context.peer.set_peer_info(request.clone());
+        self.negotiate_initialize(&request)
+    }
+
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(
             ServerCapabilities::builder()
@@ -1375,9 +1465,19 @@ impl Notebooks {
         Ok(())
     }
 
+    /// `path` from this connection, as an API path from the root.
+    fn resolve(&self, path: &str) -> String {
+        resolve_from(self.dir.lock().expect("dir").as_deref(), path)
+    }
+
+    /// API path `path` as this connection sees it.
+    fn show(&self, path: &str) -> String {
+        show_from(self.dir.lock().expect("dir").as_deref(), path)
+    }
+
     fn path(&self, path: Option<String>) -> Result<String, McpError> {
         match path {
-            Some(p) => Ok(ganymede_contents::normalize_api_path(&p)),
+            Some(p) => Ok(self.resolve(&p)),
             None => self
                 .current
                 .lock()
@@ -1396,7 +1496,7 @@ impl Notebooks {
         // is held too; a room that stopped is held again.
         let room_id = notebook_room_id(&self.state.collab, &self.state.contents, path)
             .await
-            .map_err(|e| err(format!("cannot open {path}: {e}")))?;
+            .map_err(|e| err(format!("cannot open {path}: {e}", path = self.show(path))))?;
         let held = self
             .holds
             .lock()
@@ -1415,13 +1515,13 @@ impl Notebooks {
         // the room follows its file id.
         with_notebook(&self.state.collab, &self.state.contents, &room_id, f)
             .await
-            .ok_or_else(|| err(format!("cannot open {path}")))
+            .ok_or_else(|| err(format!("cannot open {path}", path = self.show(path))))
     }
 
     async fn notebook(&self, path: &str) -> Result<Notebook, McpError> {
         self.room(path, |room| (room.notebook_with_ids(), Effects::default()))
             .await?
-            .ok_or_else(|| err(format!("{path} is not a notebook")))?
+            .ok_or_else(|| err(format!("{path} is not a notebook", path = self.show(path))))?
             .map_err(|e| err(e.to_string()))
     }
 
@@ -1448,7 +1548,7 @@ impl Notebooks {
                 (nb, Effects::default())
             })
             .await?
-            .ok_or_else(|| err(format!("{path} is not a notebook")))?
+            .ok_or_else(|| err(format!("{path} is not a notebook", path = self.show(path))))?
             .map_err(|e| err(e.to_string()))?;
         Ok((nb, token))
     }
@@ -1489,7 +1589,7 @@ impl Notebooks {
                 (r, Effects::default())
             })
             .await?;
-        r.map_err(|e| err(format!("{path}: {e}")))
+        r.map_err(|e| err(format!("{path}: {e}", path = self.show(path))))
     }
 
     /// Edit the notebook's room with `f`, moving this connection's read
@@ -1543,7 +1643,8 @@ impl Notebooks {
         .await?
         .ok_or_else(|| {
             err(format!(
-                "{path} is open in another server on this machine, so it is read-only here"
+                "{path} is open in another server on this machine, so it is read-only here",
+                path = self.show(path)
             ))
         })
     }
@@ -2329,6 +2430,30 @@ fn svg_source(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paths_from_a_connections_directory() {
+        let d = Some("Users/me/proj");
+        assert_eq!(resolve_from(d, "a.ipynb"), "Users/me/proj/a.ipynb");
+        assert_eq!(
+            resolve_from(d, "./x/../b.ipynb"),
+            "Users/me/proj/x/../b.ipynb"
+        );
+        assert_eq!(resolve_from(d, "/tmp/a.ipynb"), "tmp/a.ipynb");
+        assert_eq!(resolve_from(d, ""), "Users/me/proj");
+        assert_eq!(resolve_from(None, "/a/b.ipynb"), "a/b.ipynb");
+        assert_eq!(show_from(d, "Users/me/proj/x/a.ipynb"), "x/a.ipynb");
+        assert_eq!(show_from(d, "Users/me/proj"), "/Users/me/proj");
+        assert_eq!(
+            show_from(d, "Users/me/project/a.ipynb"),
+            "/Users/me/project/a.ipynb"
+        );
+        assert_eq!(show_from(None, "a.ipynb"), "a.ipynb");
+        // What it shows, it reads back.
+        for p in ["Users/me/proj/x/a.ipynb", "tmp/a.ipynb", "Users/me/proj"] {
+            assert_eq!(resolve_from(d, &show_from(d, p)), p);
+        }
+    }
 
     #[test]
     fn outputs_reach_the_agent_without_ansi_colours() {

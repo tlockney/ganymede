@@ -82,6 +82,22 @@ pub struct CallArgs {
 struct Endpoint {
     url: String,
     token: Option<String>,
+    /// The agent's folder relative to the server's root, when the server
+    /// is rooted above it: sent on `initialize` so the agent's relative
+    /// paths start there (`ganymede_server::mcp::DIR_META`).
+    dir: Option<String>,
+}
+
+/// `root` relative to `server_root` (which holds it), as an API path;
+/// `None` when they are the same directory.
+fn dir_under(root: &Path, server_root: &Path) -> Option<String> {
+    let rest = root.strip_prefix(server_root).ok()?;
+    let dir = rest
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    (!dir.is_empty()).then_some(dir)
 }
 
 pub async fn run(
@@ -101,6 +117,7 @@ pub async fn run(
             Some(server) => Some(Endpoint {
                 url: mcp_url(server),
                 token: args.token.clone(),
+                dir: None,
             }),
             None => {
                 let root = root.clone();
@@ -139,6 +156,7 @@ pub async fn run(
         let ep = Endpoint {
             url: mcp_url(server),
             token: args.token.clone(),
+            dir: None,
         };
         return tokio::task::spawn_blocking(move || proxy(ep)).await?;
     }
@@ -198,6 +216,7 @@ pub async fn run(
     let ep = Endpoint {
         url: mcp_url(&base),
         token,
+        dir: None,
     };
     let announced = announce(&base, ep.token.as_deref(), root);
     let proxying = tokio::task::spawn_blocking(move || proxy(ep));
@@ -298,6 +317,7 @@ fn find_own(root: &Path) -> Option<Endpoint> {
         let ep = Endpoint {
             url: mcp_url(url),
             token: info["token"].as_str().map(String::from),
+            dir: dir_under(root, &server_root),
         };
         let modified = entry
             .metadata()
@@ -411,6 +431,7 @@ fn find_server(root: &Path) -> Option<Endpoint> {
                 .as_str()
                 .filter(|t| !t.is_empty())
                 .map(String::from),
+            dir: dir_under(root, &server_root),
         };
         if serves_mcp(&ep) {
             found.push((server_root.components().count(), ep));
@@ -682,6 +703,19 @@ fn send_with(
     }
     if let Some(v) = version {
         req = req.header("MCP-Protocol-Version", v);
+    }
+    if let (Some(dir), Some("initialize")) = (&ep.dir, msg["method"].as_str()) {
+        let mut msg = msg.clone();
+        if let Some(params) = msg.get_mut("params").and_then(Value::as_object_mut) {
+            let meta = params.entry("_meta").or_insert_with(|| json!({}));
+            if let Some(meta) = meta.as_object_mut() {
+                meta.insert(
+                    ganymede_server::mcp::DIR_META.to_string(),
+                    Value::String(dir.clone()),
+                );
+            }
+        }
+        return req.send(msg.to_string());
     }
     req.send(msg.to_string())
 }
