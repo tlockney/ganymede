@@ -29,6 +29,13 @@ settings. Paths in the tools are relative to the server's root.
    port with a random token, rooted at the current directory. It stops,
    saving open notebooks, when the agent closes the connection.
 
+> [!NOTE]
+> **Unreleased in ganymede-ui.** ganymede-ui shows the edits live only
+> from a build of its `main`
+> ([ganymede-ui#510](https://github.com/tlockney/ganymede-ui/pull/510)).
+> Its latest release locks the notebook each time the agent writes;
+> **Reload** loads the agent's version, dropping unsaved edits.
+
 Start a shared server with:
 
 ```sh
@@ -273,7 +280,14 @@ Export Notebook As > HTML**.
 ## Changes by others
 
 A person may edit the notebook in JupyterLab or ganymede-ui while the
-agent works. `notebook_open` and `notebook_read` end with a read mark:
+agent works.
+
+> [!NOTE]
+> **Unreleased in ganymede-ui.** Editing alongside the agent in
+> ganymede-ui needs a build of its `main`; its latest release locks the
+> notebook each time the agent writes.
+
+`notebook_open` and `notebook_read` end with a read mark:
 
 ```text
 @@read 3f2a9c0d1b7e4a65

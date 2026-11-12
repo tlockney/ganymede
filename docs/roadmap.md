@@ -134,6 +134,12 @@ In order of priority.
    [#184](https://github.com/tlockney/ganymede-ui/issues/184)). Journal
    sessions get evals
    ([#316](https://github.com/tlockney/ganymede/issues/316)).
+
+   > [!NOTE]
+   > **Unreleased in ganymede-ui.** Opening notebooks through rooms is on
+   > ganymede-ui's `main`
+   > ([ganymede-ui#510](https://github.com/tlockney/ganymede-ui/pull/510)),
+   > not in its latest release.
 4. **TypeScript notebooks for TypeScript developers.**
    [cdp-kernel](https://github.com/tlockney/cdp-kernel) is the
    first-class kernel, on Node and Deno first.
