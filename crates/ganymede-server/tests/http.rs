@@ -2900,6 +2900,133 @@ async fn collaboration_room_syncs_saves_and_reloads() {
     assert!(!moved_file.exists(), "the room doesn't save the file back");
 }
 
+/// A notebook deleted by another program, not through the contents API,
+/// closes its room with 4404 and drops its id, so a file made later at the
+/// same path opens with its own content in a new room (#719).
+#[tokio::test]
+async fn collaboration_room_closes_when_its_file_is_deleted_outside_the_api() {
+    use ganymede_documents::schema::Roots;
+    use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
+    use ganymede_documents::yrs::updates::decoder::Decode;
+    use ganymede_documents::yrs::updates::encoder::Encode;
+    use ganymede_documents::yrs::{Array, Doc, GetString, Map, Out, ReadTxn, Transact, Update};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+
+    let nb = |source: &str| {
+        json!({
+            "cells": [{"cell_type": "markdown", "id": "a", "metadata": {}, "source": source}],
+            "metadata": {},
+            "nbformat": 4,
+            "nbformat_minor": 5
+        })
+        .to_string()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.ipynb");
+    std::fs::write(&file, nb("old")).unwrap();
+    let app = build_router(state(dir.path()));
+    let session = |app: axum::Router| async move {
+        let (s, v) = call(
+            &app,
+            "PUT",
+            "/api/collaboration/session/a.ipynb",
+            Some(json!({"format": "json", "type": "notebook"})),
+            Some(TOKEN),
+        )
+        .await;
+        assert!(s.is_success(), "{s} {v}");
+        v
+    };
+    let first = session(app.clone()).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app2 = app.clone();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let connect = |v: serde_json::Value| async move {
+        let mut req = format!(
+            "ws://{addr}/api/collaboration/room/json:notebook:{}?sessionId={}",
+            v["fileId"].as_str().unwrap(),
+            v["sessionId"].as_str().unwrap()
+        )
+        .into_client_request()
+        .unwrap();
+        req.headers_mut()
+            .insert("Authorization", format!("token {TOKEN}").parse().unwrap());
+        let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        ws.send(TMsg::Binary(
+            YMsg::Sync(SyncMessage::SyncStep1(Doc::new().transact().state_vector()))
+                .encode_v1()
+                .into(),
+        ))
+        .await
+        .unwrap();
+        ws
+    };
+    // The first cell's source once the room has sent it.
+    let source = |doc: &Doc| {
+        let roots = Roots::get(doc);
+        let txn = doc.transact();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+            return None;
+        };
+        let Some(Out::YText(t)) = cell.get(&txn, "source") else {
+            return None;
+        };
+        Some(t.get_string(&txn))
+    };
+    async fn sync<S>(ws: &mut S, doc: &Doc, until: impl Fn(&Doc) -> bool)
+    where
+        S: futures::Stream<Item = Result<TMsg, tokio_tungstenite::tungstenite::Error>> + Unpin,
+    {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while !until(doc) {
+            let msg = tokio::time::timeout_at(deadline, ws.next())
+                .await
+                .expect("timed out waiting for the room")
+                .unwrap()
+                .unwrap();
+            let TMsg::Binary(b) = msg else { continue };
+            if let Ok(YMsg::Sync(SyncMessage::SyncStep2(u) | SyncMessage::Update(u))) =
+                YMsg::decode_v1(&b)
+            {
+                doc.transact_mut()
+                    .apply_update(Update::decode_v1(&u).unwrap())
+                    .unwrap();
+            }
+        }
+    }
+
+    let mut ws = connect(first.clone()).await;
+    let doc = Doc::new();
+    sync(&mut ws, &doc, |d| source(d).as_deref() == Some("old")).await;
+
+    // Another program deletes the file: the room closes its client.
+    std::fs::remove_file(&file).unwrap();
+    loop {
+        let msg = tokio::time::timeout(Duration::from_secs(20), ws.next())
+            .await
+            .expect("the room closes after an outside delete");
+        match msg {
+            Some(Ok(TMsg::Close(Some(frame)))) => {
+                assert_eq!(u16::from(frame.code), 4404);
+                break;
+            }
+            Some(Ok(_)) => continue,
+            other => panic!("expected a close, got {other:?}"),
+        }
+    }
+    assert!(!file.exists(), "the room doesn't save the file back");
+
+    // A new file at the path gets a new id and opens with its own cells.
+    std::fs::write(&file, nb("new")).unwrap();
+    let second = session(app2).await;
+    assert_ne!(second["fileId"], first["fileId"]);
+    let mut ws = connect(second).await;
+    let doc = Doc::new();
+    sync(&mut ws, &doc, |d| source(d).is_some()).await;
+    assert_eq!(source(&doc).as_deref(), Some("new"));
+}
+
 /// A file rewritten more often than the debounce still reaches the room,
 /// once the first unsettled event is 5 s old (#279).
 #[tokio::test]
