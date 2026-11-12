@@ -25,15 +25,16 @@ settings. Paths in the tools are relative to the server's root.
    [server info file](reference.md#server-info-file). Edits go through
    the server's document rooms, so they show live in JupyterLab (with
    `jupyter-collaboration`) or ganymede-ui while the agent works.
-
-   > [!NOTE]
-   > **Unreleased in ganymede-ui.** ganymede-ui shows the edits live only
-   > from a build of its `main`
-   > ([ganymede-ui#510](https://github.com/tlockney/ganymede-ui/pull/510));
-   > its latest release shows them after a reload.
 3. Otherwise, a server of its own in the same process, on a loopback
    port with a random token, rooted at the current directory. It stops,
    saving open notebooks, when the agent closes the connection.
+
+> [!NOTE]
+> **Unreleased in ganymede-ui.** ganymede-ui shows the edits live only
+> from a build of its `main`
+> ([ganymede-ui#510](https://github.com/tlockney/ganymede-ui/pull/510)).
+> Its latest release locks the notebook each time the agent writes;
+> **Reload** loads the agent's version, dropping unsaved edits.
 
 Start a shared server with:
 
@@ -280,6 +281,11 @@ Export Notebook As > HTML**.
 
 A person may edit the notebook in JupyterLab or ganymede-ui while the
 agent works. `notebook_open` and `notebook_read` end with a read mark:
+
+> [!NOTE]
+> **Unreleased in ganymede-ui.** Editing alongside the agent in
+> ganymede-ui needs a build of its `main`; its latest release locks the
+> notebook each time the agent writes.
 
 ```text
 @@read 3f2a9c0d1b7e4a65

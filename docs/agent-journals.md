@@ -101,7 +101,6 @@ is the [roadmap](roadmap.md)'s third priority.
 > **Unreleased in ganymede-ui.** A build of ganymede-ui's `main` opens
 > notebooks through rooms on a Ganymede server, so an agent's edits show
 > live there ([ganymede-ui#510](https://github.com/tlockney/ganymede-ui/pull/510)).
-> Once that is released, this section says so.
 
 ## These docs, for an agent
 
