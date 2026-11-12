@@ -167,18 +167,13 @@ kernel, the cells that had run, in the order of their execution counts,
 and stops at the first error. It runs each cell's current source, so a
 cell edited after it ran runs as edited; the action lists the cells
 before it runs them. Outputs survive the loss because they live in the
-notebook (and, once ganymede-ui opens notebooks through rooms, in the
+notebook (and, since ganymede-ui opens notebooks through rooms, in the
 server's document), not in the kernel.
 
 The first version of Restore is a ganymede-ui action over the ordinary
-kernel client, or over the execute endpoint once the app uses rooms.
+kernel client, or over the execute endpoint now that the app uses rooms.
 When the run contract lands, it becomes "run this notebook's executed
 cells", a server operation any client can call.
-
-> [!NOTE]
-> **Unreleased in ganymede-ui.** A build of ganymede-ui's `main` opens
-> notebooks through rooms on a Ganymede server
-> ([ganymede-ui#510](https://github.com/tlockney/ganymede-ui/pull/510)).
 
 `"exited"` is a kernel that ended for its own reasons, such as a Worker
 that failed to load. It follows the ordinary crash path and counts

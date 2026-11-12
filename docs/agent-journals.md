@@ -92,15 +92,9 @@ each part, and how to watch live in JupyterLab.
 
 ## In the apps
 
-The Mac, iPad and iPhone apps don't open notebooks through rooms yet,
-so they don't show an agent's edits as they happen. Opening
-notebooks through rooms, so the agent's journal shows live in the app,
-is the [roadmap](roadmap.md)'s third priority.
-
-> [!NOTE]
-> **Unreleased in ganymede-ui.** A build of ganymede-ui's `main` opens
-> notebooks through rooms on a Ganymede server, so an agent's edits show
-> live there ([ganymede-ui#510](https://github.com/tlockney/ganymede-ui/pull/510)).
+The Mac, iPad and iPhone apps open notebooks through rooms on a
+Ganymede server, including their own, so an agent's edits show as they
+happen ([ganymede-ui#510](https://github.com/tlockney/ganymede-ui/pull/510)).
 
 ## These docs, for an agent
 
