@@ -585,6 +585,9 @@ the server with the token. Both are readable only by you, since they hold
 the token, and are removed when the server stops; a file left by a server
 that was killed names a process that is gone, which `jupyter server list`
 checks and cleans up. A server embedded in an app writes neither.
+<!-- **Unreleased in ganymede-ui.** Once ganymede-ui#525 ships, say: the
+Mac app writes `jpserver-<pid>.json` (no open page) while its MCP setting
+is on, so `ganymede mcp` finds it. -->
 
 `lab` and `ui` open the browser on `jpserver-<pid>-open.html`, as
 `jupyter_server` does, so the token is not in the browser command's
