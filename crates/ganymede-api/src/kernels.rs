@@ -376,8 +376,12 @@ impl RunningKernel {
     /// Tell a boot in progress to stop waiting (see [`Core::boot`]), and
     /// return the counter's new value.
     fn abandon_boot(&self) -> u64 {
-        self.abandon_boot.send_modify(|n| *n = n.wrapping_add(1));
-        *self.abandon_boot.borrow()
+        let mut now = 0;
+        self.abandon_boot.send_modify(|n| {
+            *n = n.wrapping_add(1);
+            now = *n;
+        });
+        now
     }
 
     /// Drop a dead kernel from the map, tell clients `status: dead`, and
@@ -690,12 +694,14 @@ impl KernelManager {
                 None => Err(e),
             };
         }
-        // A boot that a shutdown or restart cut short leaves the kernel
-        // listed with no session for that shutdown or restart to finish.
+        // A boot that a shutdown or restart cut short, or a crash not yet
+        // handled, leaves the kernel listed with no running session.
         if !kernel.session().is_alive() {
             return Err(ApiError::new(
                 409,
-                format!("kernel {id} is being shut down or restarted"),
+                format!(
+                    "kernel {id} has no running session (shutting down, restarting or crashed)"
+                ),
             ));
         }
         Ok(kernel.model())
@@ -806,6 +812,14 @@ impl KernelManager {
         let since = kernel.abandon_boot();
         let _guard = kernel.lifecycle.lock().await;
         self.core.ensure_listed(&kernel)?;
+        // A shutdown or restart queued meanwhile replaces this one: don't
+        // launch a kernel only for its boot to stop at once.
+        if *kernel.abandon_boot.borrow() != since {
+            return Err(ApiError::new(
+                409,
+                format!("kernel {id} was shut down or restarted while restarting"),
+            ));
+        }
         kernel.booting.store(true, Ordering::SeqCst);
         kernel.log.host("restarting at a client's request");
         kernel.announce(
@@ -1095,6 +1109,15 @@ impl Core {
                 kernel.log.host(
                     "stopped waiting for the kernel to answer: it is being shut down or restarted",
                 );
+                // The shutdown or restart that cut the boot short normally
+                // holds the lock next. If its caller went away before
+                // taking it, the dead session is handled as any death: a
+                // crash handler queued behind a shutdown or restart finds
+                // the kernel removed or its session replaced.
+                let session = kernel.session();
+                if !session.is_alive() {
+                    kernel.session_died(session.session_id(), self);
+                }
                 Err(e)
             }
             Err(e) => {

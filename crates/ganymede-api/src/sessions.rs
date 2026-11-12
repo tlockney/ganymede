@@ -1609,17 +1609,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_dropped_restart_leaves_the_kernel_running() {
+        // A restart whose caller goes away while it waits for the lock
+        // still stops the stuck start; the dead session is then restarted
+        // as a crash, and the next launch answers.
+        let (m, t) = scripted(None);
+        t.script.lock().unwrap().push_back(Launch::Silent);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let dropped = tokio::time::timeout(Duration::from_millis(20), m.restart(&k.id)).await;
+        assert!(dropped.is_err(), "the restart waits for the start's lock");
+        let model = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(model) = m.wait_started(&k.id).await {
+                    break model;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the kernel comes back");
+        assert_eq!(model.execution_state, "idle");
+        m.shutdown(&k.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn waiting_for_a_start_that_a_shutdown_cuts_short_answers_409() {
+        let (m, t) = scripted(None);
+        t.script.lock().unwrap().push_back(Launch::Silent);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let waiting = tokio::spawn({
+            let (m, id) = (m.clone(), k.id.clone());
+            async move { m.wait_started(&id).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::timeout(Duration::from_secs(5), m.shutdown(&k.id))
+            .await
+            .expect("shutdown waits for the start")
+            .unwrap();
+        let e = waiting.await.unwrap().unwrap_err();
+        assert_eq!(e.status, 409, "{}", e.message);
+        assert!(m.list().is_empty());
+    }
+
+    #[tokio::test]
     async fn restart_racing_shutdown_leaves_nothing_running() {
         let m = manager(None);
         let k = started(&m, Some("fake"), None).await.unwrap();
         let weak = Arc::downgrade(&m.get(&k.id).unwrap());
         // The shutdown doesn't wait for the restart's new kernel to answer
-        // (#727): the restart stops waiting and fails, or finished first.
+        // (#727): `join!` polls the restart first, so it holds the lock,
+        // sees the shutdown's bump, and stops waiting.
         let (restart, shutdown) = tokio::join!(m.restart(&k.id), m.shutdown(&k.id));
         assert!(shutdown.is_ok());
-        if let Err(e) = restart {
-            assert_eq!(e.status, 409, "{}", e.message);
-        }
+        let e = restart.unwrap_err();
+        assert_eq!(e.status, 409, "{}", e.message);
         assert!(m.list().is_empty());
 
         // A restart that waited for a shutdown finds the kernel gone.

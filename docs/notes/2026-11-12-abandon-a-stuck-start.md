@@ -21,7 +21,13 @@ the counter before it waits for the lock: a call that queues behind
 either still stops its boot (restart, restart, quit on a silent kernel
 would otherwise wait out the second restart's start). A `wait_started`
 caller that gets the lock after an abandoned boot answers 409 rather
-than a model for a kernel with no session. Culling idle kernels doesn't abandon a boot:
+than a model for a kernel with no session. A restart that finds the counter moved
+once it holds the lock answers 409 without launching. If the caller
+that bumped the counter goes away before taking the lock (a client
+disconnects), the abandoned boot hands its dead session to the crash
+path, so the kernel is relaunched rather than left listed and dead.
+`abandon_boot` reads the new value inside `send_modify`, so a bump made
+at the same moment can't fold into a restart's baseline. Culling idle kernels doesn't abandon a boot:
 a booting kernel isn't idle.
 
 A start nobody interrupts still fails as before: up to three launches,
@@ -36,6 +42,9 @@ then checks a shutdown, a restart, a session's kernel change and
 `a_shutdown_queued_behind_two_restarts_stops_the_second_ones_start`
 runs restart, restart, `shutdown_all` against silent kernels; it timed
 out before the baseline moved ahead of the lock.
+`a_dropped_restart_leaves_the_kernel_running` and
+`waiting_for_a_start_that_a_shutdown_cuts_short_answers_409` cover the
+dropped caller and the queued `wait_started`.
 
 `restart_racing_shutdown_leaves_nothing_running` said the shutdown
 waited for the restart to finish; now the restart may answer 409
