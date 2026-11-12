@@ -51,6 +51,7 @@ jobs:
     outputs:
       code: ${{ steps.changes.outputs.code }}
       ffi: ${{ steps.changes.outputs.ffi }}
+      deps: ${{ steps.changes.outputs.deps }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -145,7 +146,11 @@ jobs:
 
   # RustSec advisories against Cargo.lock, duplicate crate versions (as
   # warnings), and crate sources (deny.toml). Licenses are the rust job's
-  # cargo-about step.
+  # cargo-about step. A pull request checks advisories only when it can
+  # change the dependency graph (the changes job's deps output, #737), so
+  # an advisory published today fails the PR that touches dependencies,
+  # not every PR; pushes to main, the weekly run (which reports a
+  # failure as an issue) and manual runs check them every time.
   audit:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
@@ -158,7 +163,9 @@ jobs:
       - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: cargo-deny
-      - run: cargo deny --locked check advisories bans sources
+      - run: cargo deny --locked check bans sources
+      - if: github.event_name != 'pull_request' || needs.changes.outputs.deps != 'false'
+        run: cargo deny --locked check advisories
 
   # The end-to-end suite with real kernels and the Jupyter reference
   # implementation installed, so nothing in it skips: notebooks against
@@ -783,3 +790,28 @@ jobs:
     runs-on: ${{ needs.changes.outputs.code == 'false' && 'ubuntu-latest' || matrix.os }}
     timeout-minutes: 40
     steps: *workstation-steps
+
+  # A failed scheduled run opens an issue, or comments on the open one
+  # (#737): nobody watches the weekly run, and it is where drift in the
+  # latest cdp-kernel and Jupyter, stale pins and new advisories show up.
+  report:
+    needs: [changes, rust, msrv, audit, e2e, coverage, e2e-cdp-kernel-main, pins, portability, ffi, install-script, image, plugin, linux-release, lsp, workstation, workstation-macos]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TITLE: "Weekly CI run failed"
+      RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - run: |
+          open=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number,title \
+            --jq "map(select(.title == env.TITLE)) | .[0].number // empty")
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body "Failed again: $RUN"
+          else
+            gh issue create --title "$TITLE" --body "The [weekly CI run]($RUN) failed. It tests the latest cdp-kernel and Jupyter releases, checks the pins, and checks new RustSec advisories."
+          fi

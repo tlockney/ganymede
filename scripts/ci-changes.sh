@@ -1,6 +1,7 @@
 #!/bin/sh
 # Whether a pull request needs the build and test jobs in ci.yml (#418).
-# Prints `code=true|false` and `ffi=true|false`, for $GITHUB_OUTPUT.
+# Prints `code=true|false`, `ffi=true|false` and `deps=true|false`, for
+# $GITHUB_OUTPUT.
 #
 # On a pull request, actions/checkout checks out the merge commit, so
 # HEAD^1 is the base and `git diff HEAD^1 HEAD` is what the PR changes.
@@ -19,11 +20,18 @@
 # macOS ffi cell (the XCFramework) needs (#457): false when only code
 # outside its dependency tree changed. ganymede-cli and ganymede-engine
 # aren't in that tree; ci.yml's ffi job fails if either joins it.
+#
+# deps is whether the change can change the Rust dependency graph
+# (Cargo.lock, a Cargo.toml, deny.toml), which is when a pull request
+# checks RustSec advisories (#737): an advisory published since main
+# last passed then fails the PR that changed dependencies, not an
+# unrelated one. Every other event checks them regardless.
 set -eu
 
 everything() {
   echo code=true
   echo ffi=true
+  echo deps=true
   exit 0
 }
 
@@ -42,8 +50,12 @@ esac
 files=$(git diff --no-renames --name-only "$base" HEAD) || everything
 code=false
 ffi=false
+deps=false
 while IFS= read -r f; do
   [ -n "$f" ] || continue
+  case $f in
+    Cargo.lock | Cargo.toml | */Cargo.toml | deny.toml) deps=true ;;
+  esac
   case $f in
     site/install.sh) code=true ;;
     # Its command flags are checked against the CLI (ganymede-cli's
@@ -68,3 +80,4 @@ EOF2
 
 echo "code=$code"
 echo "ffi=$ffi"
+echo "deps=$deps"

@@ -116,17 +116,21 @@ number. Locally: `cargo llvm-cov --workspace --open`.
   the workspace `Cargo.toml` is the oldest supported Rust, and the `msrv`
   job builds with exactly that; raise it on purpose.
 - **Dependencies.** The `audit` job runs `cargo deny` (`deny.toml`):
-  RustSec advisories fail it, duplicate versions show as warnings. It also
-  runs weekly. Licenses are checked by `cargo about` against `about.toml`.
+  RustSec advisories fail it, duplicate versions show as warnings. A pull
+  request checks advisories only when it changes `Cargo.lock`, a
+  `Cargo.toml` or `deny.toml` (the `changes` job's `deps` output), so a
+  new advisory doesn't fail unrelated pull requests; pushes to `main` and
+  the weekly run check them every time. Licenses are checked by `cargo about` against `about.toml`.
   Dependabot (`.github/dependabot.yml`) opens weekly grouped bumps for
   Cargo, npm, and the actions; its pull requests are exempt from the
   linked-issue check.
 - **Docs-only changes.** A pull request, or a push to `main`, that
   changes only `docs/`, `site/` (other than `site/install.sh`), or
   Markdown builds nothing: the `changes` job (`scripts/ci-changes.sh`)
-  says so, and every job reports success without running. The `pages`
+  says so, and every job reports success without running. The `Pages`
   workflow still builds the site. Anything else, the weekly schedule and
-  manual runs run the whole CI. Add a path to the script's list only if
+  manual runs run the whole CI. A failed weekly run opens a "Weekly CI run
+  failed" issue, or comments on the open one. Add a path to the script's list only if
   no job can be affected by it.
 - **The XCFramework.** `ffi (macos-latest)` builds it only when the change
   can affect ganymede-ffi (the script's `ffi` output: anything but
@@ -203,7 +207,7 @@ checkout. Edit the doc comments there. The script points links to
 cdp-kernel's guides at cdp-kernel.org, and other links that leave the
 pages at GitHub. The site picks up changes to them on its next build.
 
-The `pages` workflow builds both on every pull request that touches them,
+The `Pages` workflow builds both on every pull request that touches them,
 so a broken page or dead link fails the PR. It deploys them to GitHub
 Pages from `main` on every merge that touches them, and again after each
 release. `install.sh` installs the latest release, so docs for a feature
@@ -219,7 +223,7 @@ adds, next to it in the docs page, README, or landing page:
 Keep the words `**Unreleased.**` as they are: the release looks for them
 and removes the notes ([Releasing](releasing.md)). Don't say it any other
 way, such as a word in parentheses after the feature: the release
-wouldn't find it. `npm run check-unreleased` in `docs/`, which the `pages`
+wouldn't find it. `npm run check-unreleased` in `docs/`, which the `Pages`
 workflow runs, fails on one. A change to a feature that is already
 released needs no note.
 `site/install.sh` goes live on merge too, and must work with the latest

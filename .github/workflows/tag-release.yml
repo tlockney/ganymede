@@ -1,4 +1,4 @@
-name: Tag release
+name: Tag release (recovery)
 
 # Recovery only: release.yml publishes a release from the main push of the
 # release commit itself (#675). Run this on main to tag the release

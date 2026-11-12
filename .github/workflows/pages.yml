@@ -1,4 +1,4 @@
-name: pages
+name: Pages
 # The site deploys from main on every merge that touches it. Docs for a
 # feature the latest release doesn't have say so (CLAUDE.md), since
 # install.sh installs the latest release. release.yml also dispatches this
