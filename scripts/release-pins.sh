@@ -135,6 +135,9 @@ apply() {
     echo "ganymede-ui $ui_pin -> $ui_latest (sha256 $sum)"
     replace_line "$ui" 'pub const DEFAULT_VERSION: &str = ' "pub const DEFAULT_VERSION: &str = \"$ui_latest\";"
     replace_line "$ui" 'const DEFAULT_SHA256: &str = ' "const DEFAULT_SHA256: &str = \"$sum\";"
+    # The reference test checks this row against the CLI (reference.rs).
+    replace_in_line docs/reference.md "ganymede-ui version, exactly. Default \`$ui_pin\`." \
+      "ganymede-ui version, exactly. Default \`$ui_latest\`."
   fi
 }
 if ! $check; then

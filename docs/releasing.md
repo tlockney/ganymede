@@ -24,6 +24,16 @@ a newer one, checked against its release's `SHA256SUMS`. Release
 cdp-kernel first only when it has changes; the scripts take whatever is
 latest.
 
+## Version numbers
+
+Ganymede and ganymede-ui share their minor version, so a round shows one
+number: Ganymede 0.10.0 and the apps 0.10.0. A round that changes either
+one's minor releases both, Ganymede first; ganymede-ui's
+`scripts/release.sh minor` then takes the X.Y.0 Ganymede just released,
+and stops if Ganymede hasn't released a newer minor. A fix to one ships
+as its own patch release (0.10.1) without a release of the other.
+cdp-kernel keeps its own numbers.
+
 ## The normal path
 
 1. From an up-to-date `main`, `scripts/release.sh <level>` previews the
