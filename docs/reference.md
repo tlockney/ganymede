@@ -586,6 +586,11 @@ the token, and are removed when the server stops; a file left by a server
 that was killed names a process that is gone, which `jupyter server list`
 checks and cleans up. A server embedded in an app writes neither.
 
+> [!NOTE]
+> **Unreleased in ganymede-ui.** From a build of ganymede-ui's `main`,
+> the Mac app writes `jpserver-<pid>.json` (no open page) while its MCP
+> setting is on, so `ganymede mcp` finds it.
+
 `lab` and `ui` open the browser on `jpserver-<pid>-open.html`, as
 `jupyter_server` does, so the token is not in the browser command's
 arguments. Snap and Flatpak browsers, the default Firefox and Chromium on
