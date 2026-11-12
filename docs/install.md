@@ -237,10 +237,6 @@ The steps above put files in these places:
 To update Ganymede, run the install command from step 1 again; it replaces
 the binary in place.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 Or run `ganymede update`, which does the same from the binary itself, on
 Linux, macOS and Windows:
 

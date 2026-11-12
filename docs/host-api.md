@@ -21,10 +21,6 @@ those defaults for it, and clients set it over HTTP with
 apps, Kernel > Notebook Access… (the ⋯ menu on the iPad and iPhone) shows
 what a notebook asks for and sets its grant.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 `ganymede execute` answers its kernels' calls as well, under `[host]`
 with `--grant read=PATH` or `run=PATH` in place of a key
 ([Reference](reference.md#under-ganymede-execute)).
