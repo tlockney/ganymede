@@ -1579,6 +1579,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_shutdown_queued_behind_two_restarts_stops_the_second_ones_start() {
+        // Restart twice, then quit, on a kernel that never answers: each
+        // call stops the start of the one before, so the quit doesn't wait
+        // for the second restart's kernel (#727).
+        let (m, t) = scripted(None);
+        for _ in 0..3 {
+            t.script.lock().unwrap().push_back(Launch::Silent);
+        }
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let first = tokio::spawn({
+            let (m, id) = (m.clone(), k.id.clone());
+            async move { m.restart(&id).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let second = tokio::spawn({
+            let (m, id) = (m.clone(), k.id.clone());
+            async move { m.restart(&id).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::timeout(Duration::from_secs(5), m.shutdown_all())
+            .await
+            .expect("stop waits for neither restart's start");
+        assert!(m.list().is_empty());
+        let first = first.await.unwrap().unwrap_err();
+        assert_eq!(first.status, 409, "{}", first.message);
+        let second = second.await.unwrap().unwrap_err();
+        assert!(matches!(second.status, 404 | 409), "{}", second.message);
+    }
+
+    #[tokio::test]
     async fn restart_racing_shutdown_leaves_nothing_running() {
         let m = manager(None);
         let k = started(&m, Some("fake"), None).await.unwrap();

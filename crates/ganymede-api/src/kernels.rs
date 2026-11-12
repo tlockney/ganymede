@@ -373,9 +373,11 @@ impl RunningKernel {
         }
     }
 
-    /// Tell a boot in progress to stop waiting (see [`Core::boot`]).
-    fn abandon_boot(&self) {
+    /// Tell a boot in progress to stop waiting (see [`Core::boot`]), and
+    /// return the counter's new value.
+    fn abandon_boot(&self) -> u64 {
         self.abandon_boot.send_modify(|n| *n = n.wrapping_add(1));
+        *self.abandon_boot.borrow()
     }
 
     /// Drop a dead kernel from the map, tell clients `status: dead`, and
@@ -688,6 +690,14 @@ impl KernelManager {
                 None => Err(e),
             };
         }
+        // A boot that a shutdown or restart cut short leaves the kernel
+        // listed with no session for that shutdown or restart to finish.
+        if !kernel.session().is_alive() {
+            return Err(ApiError::new(
+                409,
+                format!("kernel {id} is being shut down or restarted"),
+            ));
+        }
         Ok(kernel.model())
     }
 
@@ -699,7 +709,7 @@ impl KernelManager {
     /// restart still waiting for the kernel to answer stops waiting.
     async fn shutdown_because(&self, id: &str, why: &str) -> Result<()> {
         if let Ok(kernel) = self.get(id) {
-            kernel.abandon_boot();
+            let _ = kernel.abandon_boot();
         }
         self.shutdown_if(id, why, |_| true).await.map(|_| ())
     }
@@ -790,10 +800,11 @@ impl KernelManager {
     pub async fn restart(&self, id: &str) -> Result<KernelModel> {
         let kernel = self.get(id)?;
         // A start still waiting for its kernel to answer stops: this
-        // restart replaces that kernel anyway.
-        kernel.abandon_boot();
+        // restart replaces that kernel anyway. The value is taken now, not
+        // once the lock is held, so a shutdown or restart that queues
+        // behind this one still stops this one's boot.
+        let since = kernel.abandon_boot();
         let _guard = kernel.lifecycle.lock().await;
-        let since = *kernel.abandon_boot.borrow();
         self.core.ensure_listed(&kernel)?;
         kernel.booting.store(true, Ordering::SeqCst);
         kernel.log.host("restarting at a client's request");
@@ -907,8 +918,10 @@ impl Core {
     /// new kernel's own statuses. After `restart_limit` crashes in a row,
     /// each within [`STABLE_START`] of the last restart, it is left dead.
     async fn crashed(self: Arc<Self>, kernel: Arc<RunningKernel>, session_id: String) {
-        let _guard = kernel.lifecycle.lock().await;
+        // Read before the lock, so a shutdown or restart that queues
+        // behind this handler still stops its boot.
         let since = *kernel.abandon_boot.borrow();
+        let _guard = kernel.lifecycle.lock().await;
         // A shutdown or restart that held the lock first has already
         // dealt with this session.
         if self.ensure_listed(&kernel).is_err() || kernel.session().session_id() != session_id {
@@ -992,8 +1005,8 @@ impl Core {
     /// `Relaunch::start` does the same. Runs with `booting` set, under the
     /// lifecycle lock. On failure the kernel is reported dead and removed.
     ///
-    /// `since` is [`RunningKernel::abandon_boot`] as it was when the lock
-    /// was taken. When a shutdown or restart changes it, the boot stops
+    /// `since` is [`RunningKernel::abandon_boot`] as it was before the
+    /// caller queued for the lock. When a shutdown or restart changes it, the boot stops
     /// waiting, ends the session, and returns an error, leaving the kernel
     /// listed for the shutdown or restart to deal with (#727).
     async fn boot(self: &Arc<Self>, kernel: &Arc<RunningKernel>, since: u64) -> Result<()> {

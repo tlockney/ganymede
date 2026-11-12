@@ -12,21 +12,30 @@ waited too, and the app's quit waited on the server's stop.
 Now each kernel has an `abandon_boot` counter. A shutdown (a client's
 DELETE, a kernel change, the server's stop) or a restart bumps it before
 it waits for the lock. `Core::boot` races its `nudge` against the counter
-moving from the value it saw when it took the lock; when it moves, the
+moving from the value its caller saw before queuing for the lock;
+when it moves, the
 boot ends the session, leaves the kernel listed, returns an error, and
 releases the lock, so the shutdown or restart goes ahead at once. A
-restart reads the counter after taking the lock, so its own bump doesn't
-cancel the boot it then runs. Culling idle kernels doesn't abandon a boot:
+restart takes its baseline from its own bump, and the crash handler reads
+the counter before it waits for the lock: a call that queues behind
+either still stops its boot (restart, restart, quit on a silent kernel
+would otherwise wait out the second restart's start). A `wait_started`
+caller that gets the lock after an abandoned boot answers 409 rather
+than a model for a kernel with no session. Culling idle kernels doesn't abandon a boot:
 a booting kernel isn't idle.
 
 A start nobody interrupts still fails as before: up to three launches,
 then the kernel is reported dead and removed. A restart cancelled by a
-shutdown answers 409.
+shutdown or by another restart answers 409, even when its new kernel
+was only slow; the kernel is restarted either way.
 
 Test: `a_kernel_that_never_answers_does_not_hold_up_shutdown_or_restart`
 (`sessions.rs`) starts a kernel that stays connected and never answers,
 then checks a shutdown, a restart, a session's kernel change and
 `shutdown_all` each finish within 5 s. Each waited the full start before.
+`a_shutdown_queued_behind_two_restarts_stops_the_second_ones_start`
+runs restart, restart, `shutdown_all` against silent kernels; it timed
+out before the baseline moved ahead of the lock.
 
 `restart_racing_shutdown_leaves_nothing_running` said the shutdown
 waited for the restart to finish; now the restart may answer 409

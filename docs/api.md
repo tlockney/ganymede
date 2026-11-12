@@ -98,7 +98,9 @@ connect to its websocket meanwhile and watch for `status: idle`. A kernel
 that never answers is launched again, up to three times, and is then
 reported `status: dead` and removed. A delete, a restart or a session's
 kernel change made meanwhile doesn't wait for that: the server stops
-waiting for the kernel and goes ahead. `POST /api/sessions` does the same
+waiting for the kernel and goes ahead. A restart cut short this way, by a
+delete or by another restart, answers 409; the kernel is still shut down
+or restarted. `POST /api/sessions` does the same
 for a notebook path, and is what JupyterLab and VS Code call.
 
 ## Run code over the websocket
