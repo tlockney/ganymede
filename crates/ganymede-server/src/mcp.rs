@@ -446,11 +446,19 @@ impl Notebooks {
         let exists = match self.state.contents.get(&path, GetOptions::default()).await {
             Ok(_) => true,
             Err(ganymede_contents::Error::NotFound(_)) => false,
-            Err(e) => return Err(err(format!("cannot open {path}: {e}"))),
+            Err(e) => {
+                return Err(err(format!(
+                    "cannot open {path}: {e}",
+                    path = self.show(&path)
+                )))
+            }
         };
         if !exists {
             if self.opts.read_only {
-                return Err(err(format!("{path} doesn't exist (read-only)")));
+                return Err(err(format!(
+                    "{path} doesn't exist (read-only)",
+                    path = self.show(&path)
+                )));
             }
             self.create(&path, a.kernel.as_deref(), a.title.as_deref())
                 .await?;
@@ -797,9 +805,12 @@ impl Notebooks {
         // shut down without one.
         let (kernel_id, name) = match a.action {
             KernelAction::Restart => self.kernel_for(&path, None).await?,
-            _ => self
-                .running_kernel(&path)
-                .ok_or_else(|| err(format!("no kernel is running for {path}")))?,
+            _ => self.running_kernel(&path).ok_or_else(|| {
+                err(format!(
+                    "no kernel is running for {path}",
+                    path = self.show(&path)
+                ))
+            })?,
         };
         let kernels = &self.state.kernels;
         let r = match a.action {
@@ -911,7 +922,10 @@ impl Notebooks {
                 .enumerate()
                 .find(|(_, c)| c.id() == Some(id.as_str()))
             else {
-                return Err(err(format!("no cell {id} in {path}")));
+                return Err(err(format!(
+                    "no cell {id} in {path}",
+                    path = self.show(&path)
+                )));
             };
             let (cell, lang) = (cell.clone(), lang.clone());
             let (code, max_rows) = (a.code.unwrap_or(true), a.max_rows.unwrap_or(20));
@@ -1482,7 +1496,7 @@ impl Notebooks {
         // is held too; a room that stopped is held again.
         let room_id = notebook_room_id(&self.state.collab, &self.state.contents, path)
             .await
-            .map_err(|e| err(format!("cannot open {path}: {e}")))?;
+            .map_err(|e| err(format!("cannot open {path}: {e}", path = self.show(path))))?;
         let held = self
             .holds
             .lock()
@@ -1501,13 +1515,13 @@ impl Notebooks {
         // the room follows its file id.
         with_notebook(&self.state.collab, &self.state.contents, &room_id, f)
             .await
-            .ok_or_else(|| err(format!("cannot open {path}")))
+            .ok_or_else(|| err(format!("cannot open {path}", path = self.show(path))))
     }
 
     async fn notebook(&self, path: &str) -> Result<Notebook, McpError> {
         self.room(path, |room| (room.notebook_with_ids(), Effects::default()))
             .await?
-            .ok_or_else(|| err(format!("{path} is not a notebook")))?
+            .ok_or_else(|| err(format!("{path} is not a notebook", path = self.show(path))))?
             .map_err(|e| err(e.to_string()))
     }
 
@@ -1534,7 +1548,7 @@ impl Notebooks {
                 (nb, Effects::default())
             })
             .await?
-            .ok_or_else(|| err(format!("{path} is not a notebook")))?
+            .ok_or_else(|| err(format!("{path} is not a notebook", path = self.show(path))))?
             .map_err(|e| err(e.to_string()))?;
         Ok((nb, token))
     }
@@ -1575,7 +1589,7 @@ impl Notebooks {
                 (r, Effects::default())
             })
             .await?;
-        r.map_err(|e| err(format!("{path}: {e}")))
+        r.map_err(|e| err(format!("{path}: {e}", path = self.show(path))))
     }
 
     /// Edit the notebook's room with `f`, moving this connection's read
@@ -1629,7 +1643,8 @@ impl Notebooks {
         .await?
         .ok_or_else(|| {
             err(format!(
-                "{path} is open in another server on this machine, so it is read-only here"
+                "{path} is open in another server on this machine, so it is read-only here",
+                path = self.show(path)
             ))
         })
     }

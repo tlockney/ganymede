@@ -1179,6 +1179,13 @@ fn mcp_on_stdio_uses_a_running_server() {
     assert_eq!(out, "a.ipynb\n");
     let out = mcp.tool("notebooks_list", serde_json::json!({"dir": "/"}));
     assert_eq!(out, "/sub/\n");
+    // Errors name paths the same way.
+    let v = mcp.request(
+        "tools/call",
+        serde_json::json!({"name": "notebook_read", "arguments": {"path": "nope.ipynb"}}),
+    );
+    let msg = v["error"]["message"].as_str().unwrap_or_default();
+    assert!(msg.starts_with("cannot open nope.ipynb"), "{v}");
     assert!(mcp.finish().success());
     // No second server: `ganymede mcp` wrote no server info file.
     let files = std::fs::read_dir(state.path().join("runtime"))
