@@ -25,9 +25,10 @@ Edit.
    `YYYY-MM-DD-<topic>.ipynb`, with `notebook_open(path, title)`. The
    title is the question. Choose the kernel in this order:
    - the one the user asks for;
-   - a folder default: when `kernelspecs_list` (or the session-start
-     note) shows `folder default ... (from <file>)`, leave `kernel` out
-     and the server uses it. Someone chose it; don't second-guess it.
+   - a folder default: call `kernelspecs_list(dir: <the notebook's
+     folder>)`, such as `dir: "journal"`; when it shows `folder default
+     ... (from <file>)`, leave `kernel` out and the server uses it. (The
+     session-start note covers only the session's own folder.) Someone chose it; don't second-guess it.
      (Folder defaults need a Ganymede newer than 0.10.0; an older one
      shows none, so infer);
    - otherwise infer it: a preference the project states (CLAUDE.md,
