@@ -279,8 +279,23 @@ impl HostApi {
                     outer_run: Vec::new(),
                 });
         }
-        if let Some(path) = run_of {
-            let mut who = self.grant_for(Some(path)).await;
+        if let Some(id) = run_of {
+            // Where the notebook is now; a notebook that is gone leaves no
+            // grant, never the defaults.
+            let Some(path) = self.state.collab.path_of(&id).await else {
+                return Who {
+                    notebook: None,
+                    read: Vec::new(),
+                    edit_self: false,
+                    run: Vec::new(),
+                    depth: MAX_DEPTH,
+                    outer_read: Vec::new(),
+                    outer_run: Vec::new(),
+                };
+            };
+            let mut who = self
+                .grant_for(Some(ganymede_contents::normalize_api_path(&path)))
+                .await;
             who.edit_self = false;
             return who;
         }

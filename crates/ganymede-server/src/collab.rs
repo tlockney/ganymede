@@ -216,6 +216,11 @@ impl Collab {
         self.with_ids(move |ids| ids.grant(&ids.get(&path)?)).await
     }
 
+    /// The file id of the notebook at `path`, made the first time.
+    pub async fn file_id(&self, path: &str) -> String {
+        self.index(path).await.0
+    }
+
     /// Stores `grant` (JSON) for the notebook with file id `id`, or
     /// removes it.
     pub async fn set_grant(&self, id: String, grant: Option<String>) -> Result<(), String> {
@@ -295,8 +300,8 @@ impl Collab {
         .await
     }
 
-    /// The path a file id names now.
-    async fn path_of(&self, id: &str) -> Option<String> {
+    /// The path a file id names now, if the file still exists.
+    pub async fn path_of(&self, id: &str) -> Option<String> {
         let id = id.to_string();
         self.with_ids(move |ids| ids.path(&id)).await
     }

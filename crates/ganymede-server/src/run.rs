@@ -156,9 +156,10 @@ pub struct RunError {
     pub message: String,
 }
 
-/// The launch variable naming the notebook a run's kernel runs, an API
-/// path. The host API answers that kernel as the notebook's, with its
-/// grant (#745): a run has no session to find it by.
+/// The launch variable naming the notebook a run's kernel runs, by its
+/// file id, so a rename during the run keeps its grant. The host API
+/// answers that kernel as the notebook's, with its grant (#745): a run
+/// has no session to find it by.
 pub const NOTEBOOK_ENV: &str = "GANYMEDE_HOST_NOTEBOOK";
 
 /// Run `request` in a fresh kernel, with `env` added to the kernel's
@@ -178,10 +179,7 @@ pub async fn run_notebook(
     env.insert(0, (PARAMS_ENV.to_string(), params));
     env.insert(
         1,
-        (
-            NOTEBOOK_ENV.to_string(),
-            ganymede_contents::normalize_api_path(path),
-        ),
+        (NOTEBOOK_ENV.to_string(), state.collab.file_id(path).await),
     );
     let limit = request.limit;
     let started = chrono::Utc::now();

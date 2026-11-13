@@ -1167,7 +1167,7 @@ async fn an_http_run_has_its_notebooks_grant() {
             .into_iter()
             .filter(|k| {
                 state.kernels.get(&k.id).is_ok_and(|k| {
-                    k.launch_var("GANYMEDE_HOST_NOTEBOOK").is_some()
+                    k.launch_var(ganymede_server::run::NOTEBOOK_ENV).is_some()
                         && k.launch_var("GANYMEDE_HOST_RUN").is_none()
                 })
             })
@@ -1216,6 +1216,29 @@ async fn an_http_run_has_its_notebooks_grant() {
             "self.add",
             json!({"cell_type": "markdown", "source": "x"}),
         )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "denied");
+
+    // Renamed during the run, as the contents API records a rename: the
+    // run keeps its notebook's grant, and another notebook moved to the
+    // old path doesn't lend it its own.
+    ids.moved("reports/slow.ipynb", "reports/renamed.ipynb");
+    let (other, _) = ids.index("reports/slow.ipynb");
+    ids.set_grant(&other, Some(r#"{"read":[""]}"#)).unwrap();
+    assert_eq!(
+        api.hello(&run).await.notebook.as_deref(),
+        Some("reports/renamed.ipynb")
+    );
+    let err = api
+        .call(&run, "notebooks.read", json!({"path": "index.ipynb"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "denied");
+    // Gone: no grant at all, not the defaults.
+    ids.removed("reports/renamed.ipynb");
+    let err = api
+        .call(&run, "notebooks.read", json!({"path": "journal/a.ipynb"}))
         .await
         .unwrap_err();
     assert_eq!(err.code, "denied");
