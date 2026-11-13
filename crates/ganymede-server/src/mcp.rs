@@ -486,19 +486,25 @@ impl Notebooks {
                 Some(k) => Some(k.clone()),
                 None => {
                     folder_default = self.folder_kernel(folder::dir_of(&path))?;
+                    if let Some(f) = &folder_default {
+                        let specs = self
+                            .state
+                            .kernels
+                            .kernelspecs()
+                            .map_err(|e| err(e.message))?;
+                        if !specs.kernelspecs.contains_key(&f.kernel) {
+                            return Err(err(format!(
+                                "{} sets kernel {}, which isn't installed here (see kernelspecs_list); pass `kernel` to choose another",
+                                self.show(&f.file),
+                                f.kernel
+                            )));
+                        }
+                    }
                     folder_default.as_ref().map(|f| f.kernel.clone())
                 }
             };
             self.create(&path, kernel.as_deref(), a.title.as_deref())
-                .await
-                .map_err(|e| match &folder_default {
-                    Some(f) => err(format!(
-                        "{} sets kernel {}, which isn't installed here (see kernelspecs_list); pass `kernel` to choose another",
-                        self.show(&f.file),
-                        f.kernel
-                    )),
-                    None => e,
-                })?;
+                .await?;
         }
         *self.current.lock().expect("current") = Some(path.clone());
         let kernel = if self.opts.read_only || self.opts.no_execute {
@@ -1299,7 +1305,7 @@ Keep a notebook as the record of this analysis while you work, not as a write-up
 
 - Before a new notebook, `notebooks_search` for the topic's key words to find what earlier notebooks found, and build on it.
 - Start with `notebook_open` (a new notebook gets a title cell); later tools may leave out `path`.
-- For a new notebook, leave out `kernel` when `kernelspecs_list` shows a folder default (a `.ganymede.toml`); otherwise use the kernel the user asks for, else the one their notebooks nearby use.
+- For a new notebook, call `kernelspecs_list` with `dir` set to the notebook's folder, and leave out `kernel` when it shows a folder default (a `.ganymede.toml`); otherwise use the kernel the user asks for, else the one their notebooks nearby use.
 - Before each step, add a short Markdown note with `cell_add` saying what you are about to find out and why.
 - Run the code that produces results with `cell_run`, so the notebook keeps both the code and its output. The outputs are the record of the run: keep them.
 - When an output is too large or too private to keep, pass `keep_outputs: false` (or call `cell_clear_outputs`): the code stays, the outputs stay out of the notebook. Don't print credentials at all.
@@ -1796,8 +1802,6 @@ impl Notebooks {
             .map(|s| (s.kernel.id, s.kernel.name))
     }
 
-    /// The kernel of the notebook's session, started (with a session, so
-    /// JupyterLab joins the same kernel) when there is none.
     /// The default kernel a `.ganymede.toml` sets for API directory
     /// `dir`, when the contents are a local directory.
     fn folder_kernel(&self, dir: &str) -> Result<Option<folder::FolderKernel>, McpError> {
@@ -1807,6 +1811,8 @@ impl Notebooks {
         }
     }
 
+    /// The kernel of the notebook's session, started (with a session, so
+    /// JupyterLab joins the same kernel) when there is none.
     async fn kernel_for(
         &self,
         path: &str,
