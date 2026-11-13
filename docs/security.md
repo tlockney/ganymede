@@ -42,6 +42,10 @@ in another site, list that origin in `frame_ancestors`
   Ganymede can only know through a proxy and `trust_xheaders`. Without a
   cookie or token, a page redirects to `/login`, which asks for the
   token. `/logout` clears the cookie.
+- `mcp_token`, when set, is a second token that only `/mcp` accepts,
+  with no login cookie, for agents ([MCP](mcp.md#a-token-for-agents-only)).
+  It keeps an agent off the REST API only while the agent can't run
+  code: a cell can read the server's token as any kernel code can.
 - The cookie signing key is `jupyter_cookie_secret` in the Jupyter
   runtime directory, created owner-only on first start (the file
   `jupyter_server` uses). Delete it to log every browser out.

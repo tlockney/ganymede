@@ -356,7 +356,7 @@ mcp_enabled = false              # true: notebook tools for agents at /mcp
 mcp_read_only = false            # /mcp reads notebooks only
 mcp_no_execute = false           # /mcp edits notebooks but runs no code
 mcp_images = false               # /mcp sends images in outputs to the model
-# mcp_token = "..."              # a token only /mcp accepts (see MCP)
+# mcp_token = "..."              # a token only /mcp accepts (unreleased; see MCP)
 crash_reporting = false          # true: send crash reports (see Privacy)
 frame_ancestors = "'self'"       # who may frame the server's pages
 

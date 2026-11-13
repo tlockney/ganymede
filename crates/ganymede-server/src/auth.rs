@@ -442,7 +442,7 @@ pub(crate) fn sends_token(expected: &str, headers: &HeaderMap, query: Option<&st
 /// when neither authenticates. Only meaningful when auth is on.
 pub fn identify(state: &AppState, headers: &HeaderMap, query: Option<&str>) -> Option<Via> {
     let expected = state.token.as_deref()?;
-    if token_matches(expected, sent_token(headers, query).as_deref()) {
+    if sends_token(expected, headers, query) {
         return Some(Via::Token);
     }
     has_login_cookie(state, headers).then_some(Via::Cookie)

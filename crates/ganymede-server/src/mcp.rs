@@ -113,14 +113,16 @@ impl McpState {
 /// `ganymede mcp` starts a new one when the server has ended its own.
 const SESSION_IDLE: Duration = Duration::from_secs(60 * 60);
 
-/// `/mcp`, streamable HTTP, behind the API's auth. The `Host` check is the
-/// server's own (`allow_remote_access`), so rmcp's is off.
+/// `/mcp`, streamable HTTP, behind the API's auth or `mcp_token`
+/// (`auth` below). The `Host` check is the server's own
+/// (`allow_remote_access`), so rmcp's is off.
 pub fn router(state: AppState, mcp: &McpState) -> axum::Router {
     use rmcp::transport::streamable_http_server::{
         session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
     };
     let opts = mcp.opts.clone();
     let marks = mcp.marks.clone();
+    let mcp_token = mcp.token.clone();
     let app_state = state.clone();
     // rmcp ends a session after 5 idle minutes; an agent often waits
     // longer on its user. A session holds its notebooks' rooms open, so
@@ -129,11 +131,10 @@ pub fn router(state: AppState, mcp: &McpState) -> axum::Router {
     sessions.session_config.keep_alive = Some(SESSION_IDLE);
     let service: StreamableHttpService<Notebooks, LocalSessionManager> = StreamableHttpService::new(
         move || {
-            Ok(Notebooks::new(
-                app_state.clone(),
-                opts.clone(),
-                marks.clone(),
-            ))
+            Ok(
+                Notebooks::new(app_state.clone(), opts.clone(), marks.clone())
+                    .with_mcp_token(mcp_token.clone()),
+            )
         },
         Arc::new(sessions),
         StreamableHttpServerConfig::default().disable_allowed_hosts(),
@@ -183,6 +184,9 @@ pub struct Notebooks {
     /// sends as [`DIR_META`] when it forwards to a server rooted above
     /// it. `None` resolves paths against the root, as before.
     dir: Arc<Mutex<Option<String>>>,
+    /// `mcp_token`, which a published page leaves out as it does the
+    /// server's token.
+    mcp_token: Option<Arc<str>>,
     tool_router: ToolRouter<Self>,
     prompt_router: PromptRouter<Self>,
 }
@@ -475,6 +479,13 @@ const SEARCH_MAX_DIRS: usize = 10_000;
 
 #[tool_router]
 impl Notebooks {
+    /// The `mcp_token` this server accepts, for `nb_publish` to replace
+    /// as it does the server's token.
+    pub fn with_mcp_token(mut self, token: Option<Arc<str>>) -> Self {
+        self.mcp_token = token;
+        self
+    }
+
     pub fn new(state: AppState, opts: Arc<McpOptions>, marks: Arc<Mutex<marks::Marks>>) -> Self {
         Notebooks {
             state,
@@ -484,6 +495,7 @@ impl Notebooks {
             marks,
             tokens: Arc::default(),
             dir: Arc::default(),
+            mcp_token: None,
             tool_router: Self::tool_router(),
             prompt_router: Self::prompt_router(),
         }
@@ -1148,7 +1160,14 @@ impl Notebooks {
                 a.byline
                     .unwrap_or_else(|| chrono::Local::now().format("%-d %B %Y").to_string()),
             ),
-            redact: crate::routes::server_redactions(&self.state),
+            redact: {
+                let mut redact = crate::routes::server_redactions(&self.state);
+                // As the server's token: only one long enough to be no word.
+                if let Some(token) = self.mcp_token.as_deref().filter(|t| t.len() >= 8) {
+                    redact.push((token.to_owned(), "[token]".to_owned()));
+                }
+                redact
+            },
             download: a
                 .download
                 .unwrap_or(code != ganymede_nbformat::CodeMode::Hidden),

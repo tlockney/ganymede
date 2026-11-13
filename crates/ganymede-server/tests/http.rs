@@ -4709,6 +4709,35 @@ async fn the_mcp_token_reaches_only_mcp() {
     }
 }
 
+/// With `mcp_token` set, `/mcp` still takes the server's token; an empty
+/// `mcp_token` is none, so an empty `Authorization: token` gets nowhere.
+#[tokio::test]
+async fn the_server_token_still_reaches_mcp_and_an_empty_mcp_token_is_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let app_with = |token: &str| {
+        let mut st = state(dir.path());
+        st.mcp = Some(Arc::new(
+            ganymede_server::mcp::McpState::new(ganymede_server::mcp::McpOptions {
+                read_only: true,
+                no_execute: false,
+                images: false,
+                outputs_dir: Some(dir.path().join("spill")),
+            })
+            .with_token(Some(token.into())),
+        ));
+        build_router(st)
+    };
+    let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": {"name": "agent", "version": "1"}}});
+    let (status, sid, _) =
+        mcp_call_as(&app_with("agent-only-token"), TOKEN, None, init.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(sid.is_some());
+    let (status, _, _) = mcp_call_as(&app_with(""), "", None, init).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
 #[tokio::test]
 async fn mcp_journals_into_a_notebook() {
     let dir = tempfile::tempdir().unwrap();

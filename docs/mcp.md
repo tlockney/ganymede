@@ -76,7 +76,13 @@ mcp_token = "a-long-random-string"
 route answers 403, and it sets no login cookie. `/mcp` takes the
 server's token too, so the page and `ganymede mcp` keep working, and
 the server info file keeps the server's token. With auth off (an empty
-`token`) it adds nothing, since every route is open.
+`token`) it adds nothing, since every route is open. A page an agent
+publishes replaces `mcp_token` as it does the server's token.
+
+`mcp_token` limits the agent only while it can't run code, with
+`mcp_read_only` or `mcp_no_execute`. A cell it runs can read the
+server's token from the server info file or the config, as any code in
+a kernel can.
 
 ## The ganymede-journal plugin for Claude Code
 
