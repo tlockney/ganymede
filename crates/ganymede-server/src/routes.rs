@@ -326,6 +326,26 @@ pub fn publish_redactions(
 #[derive(Deserialize)]
 struct NbconvertQuery {
     download: Option<String>,
+    /// HTML only, as `nb publish --code`: `folded`, `shown` or `hidden`.
+    code: Option<String>,
+    /// HTML only: a line under the title, as `nb publish --byline`.
+    byline: Option<String>,
+    /// HTML only: `true` puts the redacted notebook copy and its Download
+    /// notebook button in the page, as `nb publish` does by default.
+    copy: Option<String>,
+}
+
+/// A query flag: `true` or `false`, any case.
+fn query_flag(name: &str, value: Option<&str>) -> HttpResult<Option<bool>> {
+    match value {
+        None => Ok(None),
+        Some(v) if v.eq_ignore_ascii_case("true") => Ok(Some(true)),
+        Some(v) if v.eq_ignore_ascii_case("false") => Ok(Some(false)),
+        Some(v) => Err(HttpError(
+            400,
+            format!("{name} must be true or false, not {v:?}"),
+        )),
+    }
 }
 
 /// `GET /nbconvert/{format}/{path}`: the notebook exported, as
@@ -333,7 +353,9 @@ struct NbconvertQuery {
 /// Save and Export Notebook As menu. A path that isn't a notebook
 /// redirects to `/files`. An export with files (Markdown with images) is
 /// a zip of the text and the files, always as a download; otherwise the
-/// text, as a download with `?download=true`.
+/// text, as a download with `?download=true`. The HTML page takes `nb
+/// publish`'s options as `code`, `byline` and `copy`; without them it
+/// is the default page, code folded and no notebook copy.
 async fn nbconvert_file(
     State(s): State<AppState>,
     Path((format, path)): Path<(String, String)>,
@@ -342,6 +364,14 @@ async fn nbconvert_file(
     if !ganymede_nbformat::FORMATS.iter().any(|(f, _)| *f == format) {
         return Err(HttpError(404, format!("No exporter for format: {format}")));
     }
+    // The page's options; other formats ignore them.
+    let html = format == "html";
+    let code: ganymede_nbformat::CodeMode = match q.code.as_deref().filter(|_| html) {
+        None => Default::default(),
+        Some(c) => c.parse().map_err(|e: String| HttpError(400, e))?,
+    };
+    let copy = query_flag("copy", q.copy.as_deref().filter(|_| html))?.unwrap_or(false);
+    let byline = q.byline.clone().filter(|b| !b.trim().is_empty());
     let path = path.trim_matches('/').to_owned();
     let model = s
         .contents
@@ -375,8 +405,10 @@ async fn nbconvert_file(
                     &nb,
                     &title,
                     &ganymede_nbformat::HtmlOptions {
+                        code,
+                        byline,
                         redact,
-                        ..Default::default()
+                        download: copy,
                     },
                 ),
                 "markdown" => ganymede_nbformat::to_markdown(&nb, &title),
