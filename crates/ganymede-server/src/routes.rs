@@ -375,13 +375,12 @@ async fn nbconvert_file(
     let html = format == "html";
     let code: ganymede_nbformat::CodeMode = match page_option(html, q.code.as_deref()) {
         None => Default::default(),
-        Some(c) => c
-            .to_ascii_lowercase()
-            .parse()
-            .map_err(|e: String| HttpError(400, e))?,
+        Some(c) => c.parse().map_err(|e: String| HttpError(400, e))?,
     };
     let copy = query_flag("copy", page_option(html, q.copy.as_deref()))?.unwrap_or(false);
-    let byline = page_option(html, q.byline.as_deref()).map(str::to_owned);
+    // The byline as given, as `nb publish` and MCP take it; trimmed only
+    // to tell an empty one.
+    let byline = q.byline.clone().filter(|b| html && !b.trim().is_empty());
     let path = path.trim_matches('/').to_owned();
     let model = s
         .contents

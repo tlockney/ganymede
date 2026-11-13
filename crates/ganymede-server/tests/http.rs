@@ -949,6 +949,7 @@ async fn nbconvert_exports_script_markdown_and_html() {
         "{csp}"
     );
     let page = String::from_utf8(body).unwrap();
+    assert!(page.contains("<meta name=\"ganymede-code\" content=\"hidden\">"));
     assert!(!page.contains("<details"), "{page}");
     assert!(page.contains("id=\"notebook\""), "{page}");
     assert!(!page.contains(TOKEN));

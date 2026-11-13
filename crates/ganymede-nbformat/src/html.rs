@@ -65,14 +65,13 @@ impl CodeMode {
 impl std::str::FromStr for CodeMode {
     type Err = String;
 
+    /// Any case, so `Hidden` works wherever a mode is taken.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
+        match s.to_ascii_lowercase().as_str() {
             "shown" => Ok(CodeMode::Shown),
             "folded" => Ok(CodeMode::Folded),
             "hidden" => Ok(CodeMode::Hidden),
-            other => Err(format!(
-                "code must be shown, folded or hidden, not {other:?}"
-            )),
+            _ => Err(format!("code must be shown, folded or hidden, not {s:?}")),
         }
     }
 }
@@ -1624,6 +1623,8 @@ mod tests {
                 "{mode:?}"
             );
             assert_eq!(mode.name().parse::<CodeMode>().unwrap(), mode);
+            let upper = mode.name().to_ascii_uppercase();
+            assert_eq!(upper.parse::<CodeMode>().unwrap(), mode);
         }
     }
 
