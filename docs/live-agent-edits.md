@@ -143,9 +143,9 @@ agent's session is open counts as a request, as the attribution in 1
 records it. An `@agent` cell already in a file, such as a notebook
 someone sent you, one written to disk by another program, or one an
 agent or a kernel (through the host API) wrote, is read as text, never
-as an instruction. After a server restart, with no attribution, no cell
-counts as a request until a person edits it again, so a notebook can't carry orders to your
-agent. A request still asks; the agent's tools and grants are the same
+as an instruction, so a notebook can't carry orders to your agent.
+After a server restart, with no attribution, no cell counts as a
+request until a person edits it again. A request still asks; the agent's tools and grants are the same
 as for your message.
 
 ### 6. Don't overwrite an edit the agent hasn't seen
