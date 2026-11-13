@@ -3825,6 +3825,20 @@ async fn files_serves_raw_bytes() {
     .unwrap();
     std::fs::write(dir.path().join("notes.txt"), "hello").unwrap();
     std::fs::write(dir.path().join("page.html"), "<script>1</script>").unwrap();
+    let nb = json!({"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    let published = ganymede_nbformat::to_html(
+        &serde_json::from_value(nb).unwrap(),
+        "n.ipynb",
+        &ganymede_nbformat::HtmlOptions::default(),
+    );
+    std::fs::write(dir.path().join("published.html"), published.body).unwrap();
+    // The generator tag past the head doesn't count.
+    let late = format!(
+        "<!doctype html><p>{}</p>{}",
+        "x".repeat(600),
+        ganymede_nbformat::HTML_GENERATOR_MARK
+    );
+    std::fs::write(dir.path().join("late.html"), late).unwrap();
     std::fs::write(dir.path().join("a.ipynb"), "{\"cells\": []}").unwrap();
     std::fs::write(dir.path().join("blob"), [0xff, 0xfe]).unwrap();
     std::fs::write(dir.path().join(".secret"), "no").unwrap();
@@ -3851,6 +3865,19 @@ async fn files_serves_raw_bytes() {
     // HTML runs sandboxed in an opaque origin, as jupyter_server's.
     let (st, h, _) = raw(&app, get("/files/page.html")).await;
     assert_eq!(st, StatusCode::OK);
+    assert_eq!(
+        h[header::CONTENT_SECURITY_POLICY],
+        "sandbox allow-scripts; frame-ancestors 'self'"
+    );
+    // A page Ganymede published may download its notebook copy (#758);
+    // other HTML may not.
+    let (st, h, _) = raw(&app, get("/files/published.html")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(
+        h[header::CONTENT_SECURITY_POLICY],
+        "sandbox allow-scripts allow-downloads; frame-ancestors 'self'"
+    );
+    let (_, h, _) = raw(&app, get("/files/late.html")).await;
     assert_eq!(
         h[header::CONTENT_SECURITY_POLICY],
         "sandbox allow-scripts; frame-ancestors 'self'"

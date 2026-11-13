@@ -246,7 +246,13 @@ directory gets `400`.
 Every response carries `Content-Security-Policy: sandbox allow-scripts`,
 as jupyter_server's does. An HTML or SVG file opened from `/files` runs
 its scripts in an opaque origin, so it can't read the UI's token or
-storage.
+storage. A page `ganymede nb publish` or MCP `notebook_publish` wrote
+(its generator tag in the first 512 bytes) also gets `allow-downloads`,
+so its Download notebook button works.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
 
 ## Check memory and CPU
 
