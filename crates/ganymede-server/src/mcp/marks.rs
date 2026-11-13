@@ -15,6 +15,7 @@
 //! ask on the agent's behalf; that read moves the agent's mark. Marks
 //! live in memory: a restarted server knows none.
 
+use ganymede_documents::{Author, Room};
 use ganymede_nbformat::{Cell, Notebook};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -75,6 +76,29 @@ impl Marks {
 /// A new token.
 pub fn token() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..16].to_string()
+}
+
+/// Whether `cell` asks the agent something: a Markdown cell whose text
+/// starts with `@agent`, or `@` and the client's name (`@claude-code`) or
+/// its first part (`@claude`), ignoring case, followed by a space, a
+/// punctuation mark or nothing. Who wrote it is checked by the caller: only
+/// a person's cell counts.
+pub fn is_request(cell: &Cell, client: &str) -> bool {
+    let Cell::Markdown(m) = cell else {
+        return false;
+    };
+    let text = m.source.trim_start();
+    let Some(rest) = text.strip_prefix('@') else {
+        return false;
+    };
+    let word: String = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    let word = word.to_lowercase();
+    let client = client.to_lowercase();
+    let short = client.split(['-', '_', ' ']).next().unwrap_or_default();
+    !word.is_empty() && (word == "agent" || word == client || word == short)
 }
 
 /// The cells of `nb` as a mark holds them. Cells without an id are left
@@ -156,9 +180,47 @@ pub struct Changes {
     pub edited: Vec<String>,
     pub moved: Vec<String>,
     pub deleted: Vec<String>,
+    /// Who last changed each added or edited cell, where the room knows
+    /// (see [`Changes::credit`]).
+    pub by: HashMap<String, Author>,
+    /// The added or edited cells that are requests to the agent (see
+    /// [`is_request`]).
+    pub requests: Vec<String>,
 }
 
 impl Changes {
+    /// Fill in [`Changes::by`] and [`Changes::requests`] from the room
+    /// that holds `nb`, for a reader whose client is named `client`.
+    pub fn credit(&mut self, room: &Room, nb: &Notebook, client: &str) {
+        for id in self.added.iter().chain(&self.edited) {
+            if let Some(a) = room.author(id) {
+                self.by.insert(id.clone(), a.clone());
+            }
+        }
+        self.requests = nb
+            .cells
+            .iter()
+            .filter_map(|c| {
+                let id = c.id()?;
+                let by = self.by.get(id)?;
+                (by.person && is_request(c, client)).then(|| id.to_string())
+            })
+            .collect();
+    }
+
+    /// The distinct names behind the added and edited cells, in order.
+    pub fn names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = Vec::new();
+        for id in self.added.iter().chain(&self.edited) {
+            if let Some(a) = self.by.get(id) {
+                if !names.contains(&a.name.as_str()) {
+                    names.push(&a.name);
+                }
+            }
+        }
+        names
+    }
+
     pub fn is_empty(&self) -> bool {
         self.added.is_empty()
             && self.edited.is_empty()
@@ -312,6 +374,29 @@ mod tests {
         assert!(unseen(&mark, &now, "b"), "edited since");
         assert!(unseen(&mark, &now, "c"), "added since");
         assert!(!unseen(&mark, &now, "gone"), "not there now");
+    }
+
+    #[test]
+    fn requests_name_the_agent_first() {
+        let cell = |c: serde_json::Value| {
+            let nb = serde_json::json!({"cells": [c], "metadata": {},
+                "nbformat": 4, "nbformat_minor": 5});
+            Notebook::from_value(nb).unwrap().cells.remove(0)
+        };
+        let md = |s: &str| {
+            cell(serde_json::json!({"cell_type": "markdown", "id": "x",
+                "metadata": {}, "source": s}))
+        };
+        assert!(is_request(&md("@agent check the 2019 rows"), "claude-code"));
+        assert!(is_request(&md("  @Claude, why?"), "claude-code"));
+        assert!(is_request(&md("@claude-code why"), "claude-code"));
+        assert!(is_request(&md("@agent"), "x"));
+        assert!(!is_request(&md("@agents are"), "x"), "another word");
+        assert!(!is_request(&md("see @agent"), "x"), "not first");
+        assert!(!is_request(&md("@someone"), "claude-code"));
+        let code = cell(serde_json::json!({"cell_type": "code", "id": "y",
+            "metadata": {}, "source": "@agent", "outputs": [], "execution_count": null}));
+        assert!(!is_request(&code, "x"), "only Markdown");
     }
 
     #[test]

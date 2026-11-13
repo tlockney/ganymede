@@ -153,6 +153,9 @@ pub struct Notebooks {
     marks: Arc<Mutex<marks::Marks>>,
     /// This connection's read mark token for each notebook it read.
     tokens: Arc<Mutex<HashMap<String, String>>>,
+    /// The name the MCP client gave when it connected, for crediting its
+    /// edits in the room and recognising requests to it.
+    client: Arc<Mutex<String>>,
     /// The directory, under the root, that this connection's relative
     /// paths start from: the agent's own folder, which `ganymede mcp`
     /// sends as [`DIR_META`] when it forwards to a server rooted above
@@ -458,6 +461,7 @@ impl Notebooks {
             holds: Arc::default(),
             marks,
             tokens: Arc::default(),
+            client: Arc::new(Mutex::new("agent".into())),
             dir: Arc::default(),
             tool_router: Self::tool_router(),
             prompt_router: Self::prompt_router(),
@@ -1379,6 +1383,10 @@ impl ServerHandler for Notebooks {
             .filter(|d| !d.is_empty());
         *self.dir.lock().expect("dir") = dir;
         context.peer.set_peer_info(request.clone());
+        let name = ganymede_documents::clean_name(&request.client_info.name);
+        if !name.is_empty() {
+            *self.client.lock().expect("client") = name;
+        }
         self.negotiate_initialize(&request)
     }
 
@@ -1447,7 +1455,7 @@ impl ServerHandler for Notebooks {
 /// Client name for provenance.
 fn client_name(peer: &Peer<RoleServer>) -> String {
     peer.peer_info()
-        .map(|i| i.client_info.name.clone())
+        .map(|i| ganymede_documents::clean_name(&i.client_info.name))
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| "agent".into())
 }
@@ -1634,6 +1642,11 @@ impl Notebooks {
             .ok_or_else(|| err(format!("cannot open {path}", path = self.show(path))))
     }
 
+    /// The name this connection's client gave.
+    fn client_name(&self) -> String {
+        self.client.lock().expect("client").clone()
+    }
+
     /// `f` in the notebook's room if this connection holds it open now;
     /// `None` otherwise, without opening or holding it.
     async fn held_room<R: Send + 'static>(
@@ -1709,15 +1722,20 @@ impl Notebooks {
             // only in a room this connection still holds, so a notebook it
             // finished with isn't opened again.
             let (marks, t, p) = (self.marks.clone(), token.clone(), path.clone());
+            let client = self.client_name();
             let diffed = self
                 .held_room(&path, move |room| {
                     let c = match room.notebook_with_ids() {
                         Some(Ok(nb)) => {
                             let now = marks::snapshot(&nb);
-                            match marks.lock().expect("marks").get(&t) {
+                            let found = match marks.lock().expect("marks").get(&t) {
                                 Some(m) if m.path == p => Some(marks::diff(&m.cells, &now)),
                                 _ => None,
-                            }
+                            };
+                            found.map(|mut c| {
+                                c.credit(room, &nb, &client);
+                                c
+                            })
                         }
                         _ => None,
                     };
@@ -1741,8 +1759,32 @@ impl Notebooks {
             .map(|(n, w)| format!("{n} {w}"))
             .collect();
             let shown = self.show(&path);
+            let names = c.names();
+            // Someone the line doesn't name made some of the counted
+            // changes: say so, rather than credit them to the names.
+            let unnamed = !c.moved.is_empty()
+                || !c.deleted.is_empty()
+                || c.added
+                    .iter()
+                    .chain(&c.edited)
+                    .any(|id| !c.by.contains_key(id));
+            let by = if names.is_empty() {
+                String::new()
+            } else if unnamed {
+                let quoted: Vec<String> = names.iter().map(|n| json!(n).to_string()).collect();
+                format!(" by {} and others", quoted.join(", "))
+            } else {
+                // Quoted, as JSON strings: the names are the clients' own.
+                let quoted: Vec<String> = names.iter().map(|n| json!(n).to_string()).collect();
+                format!(" by {}", quoted.join(", "))
+            };
+            let asks = match c.requests.len() {
+                0 => String::new(),
+                1 => ", including a request to you".to_string(),
+                n => format!(", including {n} requests to you"),
+            };
             out.push_str(&format!(
-                "@@changed {shown}: cells changed by others since your last read ({}). \
+                "@@changed {shown}: cells changed{by} since your last read ({}{asks}). \
                  Call notebook_read(path: \"{shown}\", since: \"{token}\") before building on it.\n",
                 what.join(", ")
             ));
@@ -1765,6 +1807,7 @@ impl Notebooks {
             _ => return Ok(None),
         }
         let (marks, t, p) = (self.marks.clone(), since.to_string(), path.to_string());
+        let client = self.client_name();
         let r = self
             .room(path, move |room| {
                 let r = match room.notebook_with_ids() {
@@ -1773,8 +1816,9 @@ impl Notebooks {
                         let mut marks = marks.lock().expect("marks");
                         match marks.get(&t).filter(|m| m.path == p) {
                             Some(m) => {
-                                let changes = marks::diff(&m.cells, &now);
+                                let mut changes = marks::diff(&m.cells, &now);
                                 m.cells = now;
+                                changes.credit(room, &nb, &client);
                                 Ok(Some((nb, changes)))
                             }
                             None => Ok(None),
@@ -1815,6 +1859,7 @@ impl Notebooks {
         tokens.extend(also.filter(|t| !tokens.contains(t)));
         let (marks, p) = (self.marks.clone(), path.to_string());
         let checked = ids.clone();
+        let client = self.client_name();
         let r = self
             .room(path, move |room| {
                 // Another server owns the file (#272): its room would undo
@@ -1846,6 +1891,15 @@ impl Notebooks {
                     }
                 }
                 let (r, fx) = f(room);
+                // The agent's own source changes are credited to it, not
+                // to a person; a move changes no source.
+                if fx.changed && aspect != marks::Aspect::Place {
+                    let author = ganymede_documents::Author {
+                        name: client,
+                        person: false,
+                    };
+                    room.set_author(&ids, &author);
+                }
                 if tokens.is_empty() || !fx.changed {
                     return (Ok(r), fx);
                 }
@@ -2287,8 +2341,12 @@ impl Notebooks {
             if has(&c.moved) {
                 how.push("moved");
             }
+            if has(&c.requests) {
+                how.push("request");
+            }
             if !how.is_empty() {
-                out.push_str(&self.render_cell_as(index, cell, true, Some(&how)));
+                let by = c.by.get(id).map(|a| a.name.as_str());
+                out.push_str(&self.render_cell_as(index, cell, true, Some((&how, by))));
                 out.push('\n');
             }
         }
@@ -2308,7 +2366,7 @@ impl Notebooks {
         index: usize,
         cell: &Cell,
         outputs: bool,
-        change: Option<&[&str]>,
+        change: Option<(&[&str], Option<&str>)>,
     ) -> String {
         let (kind, count, source, outs) = match cell {
             Cell::Code(c) => (
@@ -2325,8 +2383,11 @@ impl Notebooks {
         if let Some(n) = count {
             head["execution_count"] = json!(n);
         }
-        if let Some(how) = change {
+        if let Some((how, by)) = change {
             head["change"] = json!(how);
+            if let Some(by) = by {
+                head["by"] = json!(by);
+            }
         }
         let mut s = format!("@@cell {head}\n");
         if kind == "code" {

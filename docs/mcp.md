@@ -407,7 +407,7 @@ line like this when others changed a notebook the connection has open and a mark
 for:
 
 ```text
-@@changed j.ipynb: cells changed by others since your last read (1 edited). Call notebook_read(path: "j.ipynb", since: "3f2a9c0d1b7e4a65") before building on it.
+@@changed j.ipynb: cells changed by "Thomas" since your last read (1 edited). Call notebook_read(path: "j.ipynb", since: "3f2a9c0d1b7e4a65") before building on it.
 ```
 
 So an agent in the middle of its work learns of a person's edit on its
@@ -420,6 +420,29 @@ cell as it is now and the `notebook_read(since)` call that takes the
 change in; after that read, the agent redoes its edit on top. A refused
 edit moves no mark. A connection with no mark for the notebook, or one
 whose mark the server forgot, isn't checked.
+
+A changed cell's head names who last changed it, as `"by"`, when the
+server saw the change while the notebook was open: a person in
+JupyterLab or the apps by the name their frontend gives (JupyterLab's
+user name), or "a person" when it gives none; another agent by the name
+its MCP client gave; a change taken in from the file as "another
+program (the file)"; a change the server made for someone else, such
+as a kernel through the host API, as "the server". The `@@changed`
+line names them too, quoted, and adds "and others" when some of the
+changes it counts, such as a deletion, have no name. Names are cut to 64 characters, without
+control characters. These are
+kept in memory: after a restart, cells nobody has changed since carry
+no `"by"`.
+
+A Markdown cell that starts with `@agent`, or `@` and the agent's client
+name or its first part (`@claude` for `claude-code`), is a request to
+the agent when a person added or edited it through the room since the
+agent's mark: its change includes `"request"`, and the `@@changed` line
+says "including a request to you". The same text in a cell another
+agent or a kernel wrote, or that one of them changed after the person,
+or one that was already in the file, is not a request, so a notebook
+can't carry instructions to an agent. A deleted cell that comes back
+unchanged, as on an undo, keeps the author it had.
 
 ## What the agent sees
 
