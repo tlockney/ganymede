@@ -15,6 +15,9 @@
 //!   SVG's scripts don't run.
 //! - `text/html` outputs go in `<iframe sandbox srcdoc>` frames without
 //!   `allow-scripts`. The page's one script sizes those frames.
+//! - Table output (`application/vnd.dataresource+json`, from cdp-kernel's
+//!   `jupyter.table` and `jupyter.sql`) is drawn from its JSON rows as a
+//!   plain HTML table, every value escaped.
 //! - Outputs that need JavaScript to show (Vega-Lite, widgets) fall back
 //!   to another entry in their bundle, or to a short note.
 //!
@@ -103,6 +106,11 @@ pub fn to_html(nb: &Notebook, name: &str, opts: &HtmlOptions) -> Export {
         skipped: page.skipped,
     }
 }
+
+/// Table output: Table Schema fields and JSON rows (ganymede#747).
+const TABLE_MIME: &str = "application/vnd.dataresource+json";
+/// Rows of a table output the page shows; the rest stay in the notebook.
+const TABLE_ROWS: usize = 100;
 
 /// Output MIME types in the order the page prefers them. Unlike the
 /// Markdown export, images come before HTML: an image shows the same in
@@ -351,6 +359,9 @@ impl<'a> Page<'a> {
             .map(|t| self.r(t.trim()).into_owned())
             .filter(|t| !t.is_empty() && t.chars().count() <= 200)
             .unwrap_or_else(|| "Output image".to_owned());
+        if let Some(table) = data.get(TABLE_MIME).and_then(|v| self.table(v)) {
+            return table;
+        }
         for mime in PRIORITY {
             let Some(value) = data.get_str(mime) else {
                 continue;
@@ -403,6 +414,99 @@ impl<'a> Page<'a> {
             "<p class=\"left-out\">An interactive output ({}) is left out: it needs the notebook to show.</p>",
             esc(&kinds.join(", "))
         )
+    }
+
+    /// A table output as an HTML table: its first [`TABLE_ROWS`] rows,
+    /// each column's type under its name, and how many rows there are.
+    /// `None` when the entry isn't a table, so the bundle's other entries
+    /// show instead.
+    fn table(&self, resource: &Value) -> Option<String> {
+        let fields = resource.get("schema")?.get("fields")?.as_array()?;
+        let rows = resource.get("data")?.as_array()?;
+        let fields: Vec<(String, String)> = fields
+            .iter()
+            .map(|f| {
+                let name = f.get("name").and_then(Value::as_str).unwrap_or_default();
+                let kind = f.get("type").and_then(Value::as_str).unwrap_or_default();
+                (name.to_owned(), kind.to_owned())
+            })
+            .collect();
+        if fields.is_empty() {
+            return None;
+        }
+        let numeric = |kind: &str| matches!(kind, "integer" | "number");
+        let extra = resource.get("ganymede");
+        let total = extra
+            .and_then(|g| g.get("rows"))
+            .and_then(Value::as_u64)
+            .map_or(rows.len(), |n| (n as usize).max(rows.len()));
+        let mut html = String::from("<div class=\"table\"><div class=\"table-scroll\"><table>");
+        if let Some(title) = extra.and_then(|g| g.get("title")).and_then(Value::as_str) {
+            html.push_str(&format!("<caption>{}</caption>", esc(&self.r(title))));
+        }
+        html.push_str("<thead><tr>");
+        for (name, kind) in &fields {
+            let class = if numeric(kind) { " class=\"num\"" } else { "" };
+            html.push_str(&format!("<th{class}>{}", esc(&self.r(name))));
+            if !kind.is_empty() {
+                html.push_str(&format!("<span class=\"type\">{}</span>", esc(kind)));
+            }
+            html.push_str("</th>");
+        }
+        html.push_str("</tr></thead><tbody>");
+        for row in rows.iter().take(TABLE_ROWS) {
+            html.push_str("<tr>");
+            for (i, (name, kind)) in fields.iter().enumerate() {
+                let value = match row {
+                    Value::Array(cells) => cells.get(i),
+                    Value::Object(cells) => cells.get(name),
+                    _ => None,
+                };
+                let (text, null) = match value {
+                    None | Some(Value::Null) => ("null".to_owned(), true),
+                    Some(Value::String(s)) => (s.clone(), false),
+                    Some(v) => (v.to_string(), false),
+                };
+                let mut classes = Vec::new();
+                if numeric(kind) {
+                    classes.push("num");
+                }
+                if null {
+                    classes.push("null");
+                }
+                let class = if classes.is_empty() {
+                    String::new()
+                } else {
+                    format!(" class=\"{}\"", classes.join(" "))
+                };
+                html.push_str(&format!("<td{class}>{}</td>", esc(&self.r(&text))));
+            }
+            html.push_str("</tr>");
+        }
+        html.push_str("</tbody></table></div>");
+        let shown = rows.len().min(TABLE_ROWS);
+        let count = |n: usize| {
+            let digits = n.to_string();
+            let mut out = String::new();
+            for (i, c) in digits.chars().enumerate() {
+                if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                    out.push(',');
+                }
+                out.push(c);
+            }
+            out
+        };
+        let note = if shown == total {
+            format!(
+                "{} {}",
+                count(total),
+                if total == 1 { "row" } else { "rows" }
+            )
+        } else {
+            format!("{} of {} rows", count(shown), count(total))
+        };
+        html.push_str(&format!("<p class=\"table-rows\">{note}</p></div>"));
+        Some(html)
     }
 
     /// Markdown as HTML: raw HTML escaped, links and images checked, and,
@@ -1242,6 +1346,16 @@ pre.stderr { border-left: 3px solid var(--person); }
 pre.error { background: var(--error-soft); color: var(--error); }
 .frame { display: block; width: 100%; height: 12rem; border: 0; background: transparent; }
 .left-out { font: italic .9rem/1.5 var(--sans); color: var(--soft); }
+.table { margin: 0 0 1rem; }
+.table-scroll { max-height: 32rem; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.table table { display: table; margin: 0; width: max-content; min-width: 100%; }
+.table caption { caption-side: top; text-align: left; font: 600 .86rem/1.4 var(--sans); padding: .5rem .8rem 0; }
+.table th { position: sticky; top: 0; background: var(--surface); vertical-align: bottom; }
+.table th .type { display: block; font-weight: 400; font-size: .78rem; }
+.table .num { text-align: right; }
+.table td { white-space: pre; }
+.table td.null { color: var(--soft); font-style: italic; }
+.table-rows { font: .8rem/1.4 var(--sans); color: var(--soft); margin: .35rem 0 0; }
 .colophon { margin-top: 4rem; padding-top: 1.25rem; border-top: 1px solid var(--line); font: .8rem/1.5 var(--sans); color: var(--soft); }
 .colophon .file { font-family: var(--mono); font-size: .95em; }
 .download { margin: 1rem 0 0; display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
@@ -1598,6 +1712,65 @@ mod tests {
         let page = html(&n, &HtmlOptions::default());
         assert!(!page.contains("id=\"notebook\""));
         assert!(!page.contains("id=\"download\""));
+    }
+
+    #[test]
+    fn table_output_from_its_rows() {
+        let rows: Vec<Value> = (0..150)
+            .map(|i| json!({"moon": format!("m{i}"), "r": i}))
+            .collect();
+        let mut first = rows.clone();
+        first[0] = json!({"moon": "<b>Io</b> /home/me/x", "r": null});
+        let n = nb(
+            json!([{"cell_type": "code", "metadata": {}, "execution_count": 1, "source": "x",
+            "outputs": [{"output_type": "execute_result", "execution_count": 1, "metadata": {},
+                "data": {
+                    "application/vnd.dataresource+json": {
+                        "schema": {"fields": [{"name": "moon", "type": "string"}, {"name": "r", "type": "integer"}]},
+                        "data": first,
+                        "ganymede": {"rows": 12345, "shown": 150, "title": "Moons"}
+                    },
+                    "text/html": "<table><tr><td>fallback</td></tr></table>",
+                    "text/plain": "Table"
+                }}]}]),
+        );
+        let opts = HtmlOptions {
+            redact: vec![("/home/me".into(), "~".into())],
+            ..HtmlOptions::default()
+        };
+        let page = html(&n, &opts);
+        assert!(page.contains("<caption>Moons</caption>"));
+        assert!(page.contains("<th>moon<span class=\"type\">string</span></th>"));
+        assert!(page.contains("<th class=\"num\">r<span class=\"type\">integer</span></th>"));
+        assert!(page.contains("<td>&lt;b&gt;Io&lt;/b&gt; ~/x</td><td class=\"num null\">null</td>"));
+        assert!(page.contains("<td>m99</td>"));
+        assert!(!page.contains("<td>m100</td>"), "only the first 100 rows");
+        assert!(page.contains("<p class=\"table-rows\">100 of 12,345 rows</p>"));
+        assert!(!page.contains("fallback"));
+        assert!(!page.contains("/home/me"));
+    }
+
+    #[test]
+    fn table_output_without_fields_falls_back() {
+        let n = nb(
+            json!([{"cell_type": "code", "metadata": {}, "execution_count": 1, "source": "x",
+            "outputs": [{"output_type": "display_data", "metadata": {},
+                "data": {
+                    "application/vnd.dataresource+json": {"data": [[1]]},
+                    "text/plain": "plain fallback"
+                }}]}]),
+        );
+        let page = html(&n, &HtmlOptions::default());
+        assert!(page.contains("plain fallback"));
+        let n = nb(
+            json!([{"cell_type": "code", "metadata": {}, "execution_count": 1, "source": "x",
+            "outputs": [{"output_type": "display_data", "metadata": {},
+                "data": {"application/vnd.dataresource+json": {
+                    "schema": {"fields": [{"name": "a"}]}, "data": [[1], [2]]}}}]}]),
+        );
+        let page = html(&n, &HtmlOptions::default());
+        assert!(page.contains("<p class=\"table-rows\">2 rows</p>"));
+        assert!(page.contains("<th>a</th>"));
     }
 
     #[test]
