@@ -180,6 +180,8 @@ the [flags for every command](#flags-for-every-command) and the
 | `--no-download` | Leave the notebook copy and its Download button out. |
 | `--download` | Put the notebook copy in even with `--code hidden`. |
 
+The page replaces the notebook's directory with `.` and the home directory with `~`, and nothing else: a secret a cell printed (a token, an API key, an environment variable) goes in as it is, so read the page before sharing it. See [Publishing a notebook](mcp.md#publishing-a-notebook).
+
 ### `grant`
 
 | Flag | Effect |
