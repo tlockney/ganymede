@@ -680,6 +680,10 @@ impl<'a> Page<'a> {
     /// and execution count, and of its metadata only a raw cell's format
     /// and an agent cell's `by` and `mode`.
     fn cell_copy(&self, cell: &Cell) -> Option<Value> {
+        // The page leaves out cells it can't type; so does the copy.
+        if matches!(cell, Cell::Unknown(_)) {
+            return None;
+        }
         let Value::Object(full) = serde_json::to_value(cell).ok()? else {
             return None;
         };
@@ -719,7 +723,8 @@ impl<'a> Page<'a> {
     }
 
     /// `value` with the redactions applied to every string in it, but
-    /// not to bitmap entries, which are base64.
+    /// not to a bitmap entry that decodes as base64, as the page
+    /// re-encodes it; one that doesn't decode is redacted like text.
     fn redact_value(&self, value: Value) -> Value {
         match value {
             Value::String(s) => Value::String(self.r(&s).into_owned()),
@@ -727,11 +732,9 @@ impl<'a> Page<'a> {
             Value::Object(o) => Value::Object(
                 o.into_iter()
                     .map(|(k, v)| {
-                        let v = if is_bitmap(&k) {
-                            v
-                        } else {
-                            self.redact_value(v)
-                        };
+                        let base64 =
+                            is_bitmap(&k) && v.as_str().is_some_and(|t| decode_base64(t).is_some());
+                        let v = if base64 { v } else { self.redact_value(v) };
                         (k, v)
                     })
                     .collect(),
@@ -1475,7 +1478,10 @@ mod tests {
                  "data": {"image/png": png, "text/plain": "/home/tl/proj/fig"}},
                 {"output_type": "error", "ename": "E", "evalue": "/home/tl/proj", "traceback": ["at /home/tl/proj/a.ts:1"]}
              ]},
-            {"cell_type": "raw", "metadata": {"format": "text/html", "other": "/home/tl"}, "source": "<p>raw</p>"}
+            {"cell_type": "raw", "metadata": {"format": "text/html", "other": "/home/tl"}, "source": "<p>raw</p>"},
+            {"cell_type": "heading", "metadata": {}, "source": "old /home/tl/proj"},
+            {"cell_type": "code", "metadata": {}, "execution_count": 4, "source": "",
+             "outputs": [{"output_type": "display_data", "metadata": {}, "data": {"image/png": "not base64 /home/tl/proj"}}]}
         ]));
         n.metadata
             .insert("ganymede".into(), json!({"params": {"key": "s3cret"}}));
@@ -1516,7 +1522,8 @@ mod tests {
             })
         );
         let cells = c["cells"].as_array().unwrap();
-        assert_eq!(cells.len(), 3);
+        assert_eq!(cells.len(), 4, "the unknown cell is left out");
+        assert_eq!(cells[3]["outputs"][0]["data"]["image/png"], "not base64 .");
         assert_eq!(cells[0]["metadata"], json!({}));
         assert!(cells[0]["source"]
             .as_str()
@@ -1537,7 +1544,7 @@ mod tests {
         assert_eq!(cells[2]["metadata"], json!({"format": "text/html"}));
         // The copy reads back as a notebook.
         let back: Notebook = serde_json::from_value(c).unwrap();
-        assert_eq!(back.cells.len(), 3);
+        assert_eq!(back.cells.len(), 4);
     }
 
     #[test]
