@@ -33,7 +33,7 @@ Leave a code cell's outputs out of the notebook: clears them now and whenever th
 
 ## `cell_delete`
 
-Delete a cell.
+Delete a cell. Refused when someone else changed the cell since your last read; read their change in with notebook_read(since), then redo it.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
@@ -42,7 +42,7 @@ Delete a cell.
 
 ## `cell_edit`
 
-Replace a cell's source; with `run: true`, run it after. The replaced source is kept in the cell's metadata.ganymede.agent.history; to remove a secret, delete the cell instead.
+Replace a cell's source; with `run: true`, run it after. The replaced source is kept in the cell's metadata.ganymede.agent.history; to remove a secret, delete the cell instead. Refused when someone else changed the cell since your last read; read their change in with notebook_read(since), then redo it.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
@@ -55,7 +55,7 @@ Replace a cell's source; with `run: true`, run it after. The replaced source is 
 
 ## `cell_move`
 
-Move a cell after another one, or to the top.
+Move a cell after another one, or to the top. Refused when someone else changed the cell since your last read; read their change in with notebook_read(since), then redo it.
 
 | Parameter | Type | Description |
 | --- | --- | --- |

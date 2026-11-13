@@ -5573,6 +5573,194 @@ fn read_mark(out: &str) -> String {
         .to_string()
 }
 
+/// An agent's `cell_edit`, `cell_delete` or `cell_move` on a cell someone
+/// else changed since the agent's read is refused, with the cell as it is
+/// now, until the agent reads the change in (#764).
+#[tokio::test]
+async fn mcp_refuses_edits_to_cells_changed_since_the_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let nb = json!({"cells": [
+        {"cell_type": "markdown", "id": "a", "metadata": {}, "source": "A"},
+        {"cell_type": "markdown", "id": "b", "metadata": {}, "source": "B"}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.path().join("j.ipynb"), nb.to_string()).unwrap();
+    let app = mcp_app(dir.path());
+    let agent = mcp_connect(&app, "agent").await;
+    let person = mcp_connect(&app, "person").await;
+    let tool = |sid: String, name: &'static str, args: Value| {
+        let app = app.clone();
+        async move { mcp_tool(&app, &sid, name, args).await }
+    };
+    let out = mcp_text(&tool(agent.clone(), "notebook_read", json!({"path": "j.ipynb"})).await);
+    let mark = read_mark(&out);
+    // The agent's edit to a cell nobody else touched goes through.
+    mcp_text(
+        &tool(
+            agent.clone(),
+            "cell_edit",
+            json!({"path": "j.ipynb", "id": "a", "source": "A2"}),
+        )
+        .await,
+    );
+
+    // Someone else edits a, and adds c.
+    mcp_text(
+        &tool(
+            person.clone(),
+            "cell_edit",
+            json!({"path": "j.ipynb", "id": "a", "source": "mine"}),
+        )
+        .await,
+    );
+    let c = mcp_text(
+        &tool(
+            person.clone(),
+            "cell_add",
+            json!({"path": "j.ipynb", "source": "C"}),
+        )
+        .await,
+    );
+    let c_id = c
+        .trim()
+        .strip_prefix("Added cell ")
+        .expect("cell id")
+        .to_string();
+
+    for (name, args) in [
+        (
+            "cell_edit",
+            json!({"path": "j.ipynb", "id": "a", "source": "A3"}),
+        ),
+        ("cell_delete", json!({"path": "j.ipynb", "id": "a"})),
+        (
+            "cell_move",
+            json!({"path": "j.ipynb", "id": "a", "after": "b"}),
+        ),
+    ] {
+        let v = tool(agent.clone(), name, args).await;
+        let e = v["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            e.contains("Cell a changed since your last read"),
+            "{name}: {v}"
+        );
+        assert!(e.contains("mine"), "the cell as it is now: {e}");
+        assert!(e.contains(&format!("since: \"{mark}\"")), "{e}");
+    }
+    // Nothing changed: a still has the person's text.
+    let out = mcp_text(&tool(person.clone(), "notebook_read", json!({"path": "j.ipynb"})).await);
+    assert!(out.contains("mine"), "{out}");
+    // Cell b, which nobody else changed, still moves.
+    mcp_text(
+        &tool(
+            agent.clone(),
+            "cell_move",
+            json!({"path": "j.ipynb", "id": "b"}),
+        )
+        .await,
+    );
+    // A cell someone else added is unseen too.
+    let v = tool(
+        agent.clone(),
+        "cell_delete",
+        json!({"path": "j.ipynb", "id": c_id}),
+    )
+    .await;
+    assert!(v.get("error").is_some(), "{v}");
+
+    // After reading the changes in, the edit goes through.
+    let out = mcp_text(
+        &tool(
+            agent.clone(),
+            "notebook_read",
+            json!({"path": "j.ipynb", "since": mark}),
+        )
+        .await,
+    );
+    assert!(out.contains("mine"), "{out}");
+    mcp_text(
+        &tool(
+            agent.clone(),
+            "cell_edit",
+            json!({"path": "j.ipynb", "id": "a", "source": "mine, and A3"}),
+        )
+        .await,
+    );
+    let out = mcp_text(&tool(person, "notebook_read", json!({"path": "j.ipynb"})).await);
+    assert!(out.contains("mine, and A3"), "{out}");
+}
+
+/// A tool reply ends with an `@@changed` line once someone else changed a
+/// notebook since the agent's read, and not for the agent's own edits
+/// (#764).
+#[tokio::test]
+async fn mcp_replies_flag_changes_by_others() {
+    let dir = tempfile::tempdir().unwrap();
+    let nb = json!({"cells": [
+        {"cell_type": "markdown", "id": "a", "metadata": {}, "source": "A"}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.path().join("j.ipynb"), nb.to_string()).unwrap();
+    let app = mcp_app(dir.path());
+    let agent = mcp_connect(&app, "agent").await;
+    let person = mcp_connect(&app, "person").await;
+    let tool = |sid: String, name: &'static str, args: Value| {
+        let app = app.clone();
+        async move { mcp_text(&mcp_tool(&app, &sid, name, args).await) }
+    };
+    let mark = read_mark(&tool(agent.clone(), "notebook_read", json!({"path": "j.ipynb"})).await);
+    let out = tool(
+        agent.clone(),
+        "cell_add",
+        json!({"path": "j.ipynb", "source": "note"}),
+    )
+    .await;
+    assert!(!out.contains("@@changed"), "own edit: {out}");
+
+    tool(
+        person.clone(),
+        "cell_edit",
+        json!({"path": "j.ipynb", "id": "a", "source": "A2"}),
+    )
+    .await;
+    let out = tool(
+        agent.clone(),
+        "cell_add",
+        json!({"path": "j.ipynb", "source": "more"}),
+    )
+    .await;
+    let line = out
+        .lines()
+        .find(|l| l.starts_with("@@changed"))
+        .unwrap_or_else(|| panic!("{out}"));
+    assert!(
+        line.contains("j.ipynb") && line.contains("1 edited"),
+        "{line}"
+    );
+    assert!(line.contains(&format!("since: \"{mark}\"")), "{line}");
+    // The person's own replies say nothing: they hold no mark here.
+    let out = tool(
+        person.clone(),
+        "cell_add",
+        json!({"path": "j.ipynb", "source": "p"}),
+    )
+    .await;
+    assert!(!out.contains("@@changed"), "{out}");
+    // A read takes the changes in; the line goes away.
+    let out = tool(
+        agent.clone(),
+        "notebook_read",
+        json!({"path": "j.ipynb", "since": mark}),
+    )
+    .await;
+    assert!(!out.contains("@@changed"), "reads leave it out: {out}");
+    let out = tool(
+        agent,
+        "cell_add",
+        json!({"path": "j.ipynb", "source": "last"}),
+    )
+    .await;
+    assert!(!out.contains("@@changed"), "{out}");
+}
+
 /// `notebook_read(since)` lists what a person changed through the room
 /// between two agent reads, and not the agent's own edits (#313).
 #[tokio::test]
