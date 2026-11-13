@@ -2,8 +2,10 @@
 
 A design note for [#747](https://github.com/tlockney/ganymede/issues/747):
 one call that shows a table, one that draws a chart, and later an `sql`
-tag over DuckDB. It is a proposal for review; nothing here is built yet.
-The choices it asks Thomas to make are under [Decisions](#decisions).
+tag over DuckDB. Thomas agreed the design on 2026-11-13, with each
+decision's recommendation ([Decisions](#decisions)); nothing is built
+yet. [Compared with Python](#compared-with-python) checks it against
+what Python notebooks do.
 
 ## The problem
 
@@ -45,7 +47,7 @@ through `jupyter.display()`. Every output is a MIME bundle the notebook
 already knows how to keep: the file stays valid `.ipynb`, the server
 learns nothing new, and other frontends show the fallbacks.
 
-![Two rows. Table: rows, an Arrow table, a Polars DataFrame or a DuckDB result go to jupyter.table, which writes one output with three parts: application/vnd.dataresource+json with the schema and up to 1,000 rows, a text/html table of the first 20 rows, and a text/plain summary. The Ganymede apps render the first part as a table with sorting, paging and typed columns; JupyterLab and VS Code show the HTML; ganymede nb publish renders a static table from the JSON; agents read the text. Chart: a Vega-Lite spec or Observable Plot options go to jupyter.chart, which renders SVG with the legend inside and a text/plain summary. The apps, JupyterLab, VS Code and the published page all show the SVG; agents read the summary or get the SVG as a PNG.](images/data-output/overview.svg)
+![Two rows. Table: rows, an Arrow table, a Polars DataFrame or a DuckDB result go to jupyter.table, which writes one output with three parts: application/vnd.dataresource+json with the schema and up to 1,000 rows, a text/html table of head and tail rows, and a text/plain summary. The Ganymede apps render the first part as a table with sorting, paging and typed columns; JupyterLab and VS Code show the HTML; ganymede nb publish renders a static table from the JSON; agents read the text. Chart: a Vega-Lite spec or Observable Plot options go to jupyter.chart, which renders SVG with the legend inside and a text/plain summary. The apps, JupyterLab, VS Code and the published page all show the SVG; agents read the summary or get the SVG as a PNG.](images/data-output/overview.svg)
 
 ## Table output
 
@@ -78,13 +80,14 @@ One `display_data` with three parts:
   column's name and type, and `data` as row objects. Ganymede adds one
   key the format allows, `ganymede: { rows, shown }`, with the total row
   count (when the source knows it) and how many rows are embedded.
-- **`text/html`**, a plain `<table>` of the first 20 rows with a "… N
-  more rows" line. JupyterLab, VS Code and GitHub show this. It has no
+- **`text/html`**, a plain `<table>` with each column's type under its
+  name: up to 20 rows, and past that the first 10 and the last 5 with a
+  "… N more rows" line between. JupyterLab, VS Code and GitHub show this. It has no
   styles or scripts, so it survives the sanitizer in an untrusted
   notebook.
 - **`text/plain`**, for agents and `jupyter console`: the shape, each
   column's name, type and range (min and max, or distinct count, and
-  nulls), and the first 5 rows aligned as text. It stays under 4 KB.
+  nulls), and the first 3 and last 2 rows aligned as text. It stays under 4 KB.
   Ranges come from the embedded rows, so for a cut table the summary
   says "ranges over the first 1,000 of 52,410 rows" rather than
   describing data it hasn't read.
@@ -254,14 +257,47 @@ kernel is cdp-kernel.
   the journal skill uses `jupyter.chart`; this note becomes the record of
   what was built.
 
+## Compared with Python
+
+What a Python notebook gives for the same jobs, and what this design
+takes from it.
+
+| Job | Python | This design |
+| --- | --- | --- |
+| Show a DataFrame | pandas: HTML and text, up to 60 rows, past that the first and last 5 (`display.max_rows`, `min_rows`). The Table Schema output exists but is off by default (`display.html.table_schema`). Polars: HTML with the shape, each column's dtype under its name, and head and tail rows. | Table Schema output always, with JSON rows capped at 1,000 and the total; HTML and text fallbacks |
+| Interactive table | itables: DataTables in HTML and JavaScript, so it needs a trusted notebook; it downsamples past a size limit. ipydatagrid: a widget, so it needs a live kernel or saved widget state. marimo: a table that sorts, searches and pages through the kernel. | A renderer in the apps over plain data: no scripts in the output, works untrusted and with no kernel; paging through the kernel later, as marimo does |
+| Vega-Lite chart | Altair: renders in the frontend through its JavaScript; `vl-convert` makes SVG or PNG without a browser; refuses more than 5,000 rows of inline data by default (`MaxRowsError`). | Always SVG, rendered in the kernel, so every reader shows the same picture |
+| Other charts | matplotlib: a PNG (or SVG) with its legend inside, which every reader shows. Plotly: JavaScript in the output, static only through Kaleido. | Plot drawn to SVG with the legend moved inside, which matplotlib always has |
+| SQL | JupySQL: `%sql` and `%%sql` magics, Python values put into the query text with `{{name}}`. DuckDB's Python API: `duckdb.sql(...)` reads a DataFrame in scope by its variable name. | A tagged template with bound parameters, so values never become query text; `sql.load` names a JavaScript value as a table, since JavaScript can't look a variable up by name |
+
+What it changes:
+
+- **The HTML fallback shows head and tail.** pandas and Polars both show
+  the last rows of a long table, where sorted or time-ordered data often
+  says the most. Past 20 rows the HTML fallback shows the first 10 and
+  the last 5, and the text summary the first 3 and the last 2: the
+  source's last rows where it can read them (arrays, Arrow, Polars),
+  else the embedded rows'. The embedded JSON keeps the first rows, since
+  the viewer's footer says how many there are.
+- **Column types under the names.** As Polars does, in the HTML fallback
+  as well as the apps' viewer (above, under What it writes).
+- **A size guard on charts, like Altair's.** SVG grows with every mark,
+  so a 50,000-point scatter plot makes an output of several megabytes.
+  `jupyter.chart` warns (on stderr, not as an error) when the SVG passes
+  2 MB, and the text says to aggregate or sample first. Unlike Altair it
+  still draws: the cell asked for a chart.
+- **No change from itables or Plotly.** Their outputs run JavaScript,
+  which the apps keep in sandboxed frames and the published page leaves
+  out. Plain data and SVG avoid both limits.
+
 ## Decisions
 
-The note's recommendation is first in each.
+Agreed by Thomas on 2026-11-13: the first option in each.
 
 1. **Format**: `application/vnd.dataresource+json` with JSON rows, or a
    new Ganymede MIME type, or Arrow IPC.
 2. **Cap**: 1,000 rows or 1 MB, `limit` up to 10,000; the HTML fallback
-   20 rows; the published page 100 rows.
+   20 rows (head and tail past that); the published page 100 rows.
 3. **Published tables**: rendered by the server from the JSON, or the
    kernel's HTML passed through.
 4. **Plot's call shape**: `jupyter.chart(Plot, options)`, or the helper

@@ -17,3 +17,10 @@ output reuses the data resource type with capped JSON rows (Arrow IPC
 would be base64 in the file, unreadable to diffs and agents), and the
 chart helper always yields SVG, redrawing Plot's HTML legend inside it.
 Seven decisions are left for Thomas.
+
+Thomas agreed the design and the recommendations the same day and asked
+for a check against Python's equivalents. The note's "Compared with
+Python" section takes three things from it: head and tail rows in the
+fallbacks (pandas, Polars), column types under the names (Polars), and
+a size warning for large SVG charts (Altair's `MaxRowsError`, without
+refusing to draw).
