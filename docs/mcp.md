@@ -78,8 +78,13 @@ be on your `PATH`, and its hooks run with `node`.
 | Agent `journal-reviewer` | Reads the notebook cold, re-runs it, looks at its charts, and lists what a stranger couldn't follow or reproduce. It doesn't edit. |
 | Hook `SessionStart` | Says whether a server is running for the directory, its kernels, and the journal open in a resumed session. |
 | Hook `UserPromptSubmit` | Reads the open journal with the agent's [read mark](#changes-by-others) and adds what a person or another agent changed as context. |
-| Hook `PostToolUse` | Follows the agent's notebook tools (the open notebook, its mark, edits since the last clean run-all). Records a Bash command that ends in `# journal` as a recorded cell, with up to 2,000 characters of its output. |
+| Hook `PostToolUse` | Follows the agent's notebook tools (the open notebook, its mark, edits since the last clean run-all). Records a Bash command that ends in `# journal` as a recorded cell, with up to 2,000 characters of its output. When a tool reply ends with an [`@@changed`](#learning-of-changes-mid-work-and-edits-refused) line, reads those changes in and adds them as context. |
 | Hook `Stop` | Once per round of edits, stops the agent from ending its turn while the journal has edits since its last clean `notebook_run_all`, and asks it to run it or say it is only pausing. |
+
+> [!NOTE]
+> **Unreleased.** The `PostToolUse` hook passing on `@@changed` changes
+> is available only from a build of `main` (HEAD), not in the latest
+> release.
 
 The hooks reach the server with `ganymede mcp call` (below), so they
 find the same server the agent uses: a running `ganymede serve --mcp`,
@@ -216,14 +221,26 @@ reply to a person, without running anything:
 - each image output saved as a file and linked with `![...](path)`: PNG,
   JPEG, GIF and WebP as they are, an SVG drawn as a PNG as described in
   [What the agent sees](#what-the-agent-sees)
-- an HTML table (pandas, Polars) as a Markdown table, cut to `max_rows`
-  rows (20 by default), with extra header rows such as Polars' dtypes
-  left out; Markdown output as it is, or as text when it is cut at
-  4,000 characters
+- a table output (`jupyter.table` and `jupyter.sql` in TypeScript
+  notebooks, pandas with `display.html.table_schema` on) as a Markdown
+  table read from its rows: each column's name and type, at most
+  `max_rows` rows (20 by default), and how many more the source has
+  (cdp-kernel says; for pandas, how many more it embedded)
+- otherwise an HTML table (pandas, Polars) as a Markdown table, cut to
+  `max_rows` rows, with extra header rows such as Polars' dtypes left
+  out
+- Markdown output as it is, or as text when it is cut at 4,000
+  characters
 - a Markdown cell as it is, with images it attaches saved and its
   `attachment:` links pointed at them
 - other output as plain text, without terminal colors, and a progress
   bar as its last frame; an error as its name and message
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. The release before it reads a table output's HTML
+> fallback instead, which gets column names and the row count wrong for
+> `jupyter.table` output.
 
 The images also come back as MCP image content, whether or not the server
 sends images, so an agent can look at a chart before describing it. Files
@@ -411,7 +428,9 @@ for:
 ```
 
 So an agent in the middle of its work learns of a person's edit on its
-next call. The line doesn't move the mark: the read it names does.
+next call. The line doesn't move the mark: the read it names does. The
+[journal plugin](#the-ganymede-journal-plugin-for-claude-code)'s `PostToolUse` hook makes that read
+for the agent and adds the changes as context right after the reply.
 
 `cell_edit`, `cell_delete` and `cell_move` refuse a cell someone else
 changed (its source or type) or added since the connection's mark, so

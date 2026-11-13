@@ -78,14 +78,14 @@ Run code in the notebook's kernel and return its outputs. By default the code is
 
 ## `cell_snapshot`
 
-Snapshot cells as Markdown to show the user: the code in a fenced block, each chart or image saved as a PNG (or its own format) file and linked by path, HTML tables as Markdown tables, other output as text. The images also come back to you as images, whatever the server's image setting, so use this to look at a chart before describing it. Runs nothing.
+Snapshot cells as Markdown to show the user: the code in a fenced block, each chart or image saved as a PNG (or its own format) file and linked by path, tables (table outputs and HTML tables) as Markdown tables, other output as text. The images also come back to you as images, whatever the server's image setting, so use this to look at a chart before describing it. Runs nothing.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `ids` (required) | array of string | Cell ids, in the order to show them. |
 | `dir` | string | Save images in this directory, relative to this connection's directory, such as `journal/snapshots`, for a report next to the notebook. By default they go to a directory outside the server root that only you can read. |
 | `code` | boolean | Include each code cell's source (default true). |
-| `max_rows` | integer | Rows to keep of an HTML table (default 20). |
+| `max_rows` | integer | Rows to keep of a table (default 20). |
 | `path` | string | Notebook path; the one last opened when left out. |
 
 ## `kernel_control`
