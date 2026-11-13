@@ -390,6 +390,12 @@ agent's mark keeps following its edits. Another connection to the same server ca
 a hook outside the agent would; that read moves the mark as well, so
 the agent isn't told the same change twice.
 
+Marks are kept in the server's memory. After a restart, or once more
+than 4,096 marks are in use, a mark may be unknown: the read then says
+so and returns the whole notebook with a mark to use next. A mark names
+one notebook path, so after a rename the old mark is treated the same
+way.
+
 ### Learning of changes mid-work, and edits refused
 
 > [!NOTE]
@@ -397,7 +403,7 @@ the agent isn't told the same change twice.
 > the latest release.
 
 Every tool reply but `notebook_read` and `notebook_open` ends with a
-line like this when others changed a notebook the connection has a mark
+line like this when others changed a notebook the connection has open and a mark
 for:
 
 ```text
@@ -414,12 +420,6 @@ cell as it is now and the `notebook_read(since)` call that takes the
 change in; after that read, the agent redoes its edit on top. A refused
 edit moves no mark. A connection with no mark for the notebook, or one
 whose mark the server forgot, isn't checked.
-
-Marks are kept in the server's memory. After a restart, or once more
-than 4,096 marks are in use, a mark may be unknown: the read then says
-so and returns the whole notebook with a mark to use next. A mark names
-one notebook path, so after a rename the old mark is treated the same
-way.
 
 ## What the agent sees
 

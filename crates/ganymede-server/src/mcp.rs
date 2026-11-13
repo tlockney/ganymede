@@ -204,8 +204,9 @@ fn resolve_from(dir: Option<&str>, path: &str) -> String {
 enum Refused {
     /// Another server owns the notebook.
     ReadOnly,
-    /// Cell id changed since the read mark named by the token.
-    Unseen(String, String),
+    /// Cell id changed since the read mark named by the token; the cell,
+    /// with its index, as it is now.
+    Unseen(String, String, Option<Box<(usize, Cell)>>),
 }
 
 fn err(msg: impl Into<String>) -> McpError {
@@ -1633,6 +1634,28 @@ impl Notebooks {
             .ok_or_else(|| err(format!("cannot open {path}", path = self.show(path))))
     }
 
+    /// `f` in the notebook's room if this connection holds it open now;
+    /// `None` otherwise, without opening or holding it.
+    async fn held_room<R: Send + 'static>(
+        &self,
+        path: &str,
+        f: impl FnOnce(&mut Room) -> (R, Effects) + Send + 'static,
+    ) -> Option<R> {
+        let room_id = notebook_room_id(&self.state.collab, &self.state.contents, path)
+            .await
+            .ok()?;
+        let held = self
+            .holds
+            .lock()
+            .expect("holds")
+            .get(&room_id)
+            .is_some_and(Hold::is_live);
+        if !held {
+            return None;
+        }
+        with_notebook(&self.state.collab, &self.state.contents, &room_id, f).await
+    }
+
     async fn notebook(&self, path: &str) -> Result<Notebook, McpError> {
         self.room(path, |room| (room.notebook_with_ids(), Effects::default()))
             .await?
@@ -1668,8 +1691,6 @@ impl Notebooks {
         Ok((nb, token))
     }
 
-    /// The notebook and what changed since read mark `since`, which then
-    /// moves to it. `None` when the server has no such mark.
     /// An `@@changed` line for each notebook this connection has a read
     /// mark for that others changed since: what changed, and the read
     /// that takes it in. The marks don't move.
@@ -1683,14 +1704,29 @@ impl Notebooks {
             .collect();
         let mut out = String::new();
         for (path, token) in tokens {
-            let cells = match self.marks.lock().expect("marks").get(&token) {
-                Some(m) if m.path == path => m.cells.clone(),
-                _ => continue,
-            };
-            let Ok(nb) = self.notebook(&path).await else {
+            // Diffed in the room, as `read_since` does, so no edit of this
+            // connection's own lands between the mark and the notebook; and
+            // only in a room this connection still holds, so a notebook it
+            // finished with isn't opened again.
+            let (marks, t, p) = (self.marks.clone(), token.clone(), path.clone());
+            let diffed = self
+                .held_room(&path, move |room| {
+                    let c = match room.notebook_with_ids() {
+                        Some(Ok(nb)) => {
+                            let now = marks::snapshot(&nb);
+                            match marks.lock().expect("marks").get(&t) {
+                                Some(m) if m.path == p => Some(marks::diff(&m.cells, &now)),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    (c, Effects::default())
+                })
+                .await;
+            let Some(Some(c)) = diffed else {
                 continue;
             };
-            let c = marks::diff(&cells, &marks::snapshot(&nb));
             if c.is_empty() {
                 continue;
             }
@@ -1714,6 +1750,8 @@ impl Notebooks {
         out
     }
 
+    /// The notebook and what changed since read mark `since`, which then
+    /// moves to it. `None` when the server has no such mark.
     async fn read_since(
         &self,
         path: &str,
@@ -1784,15 +1822,24 @@ impl Notebooks {
                 if room.is_read_only() {
                     return (Err(Refused::ReadOnly), Effects::default());
                 }
-                if let (Some(own), Some(Ok(nb))) = (&own, room.notebook_with_ids()) {
+                // Nothing to refuse for no cells (clearing outputs).
+                let checking = own.as_ref().filter(|_| !checked.is_empty());
+                if let (Some(own), Some(Ok(nb))) = (checking, room.notebook_with_ids()) {
                     let now = marks::snapshot(&nb);
                     let mut marks = marks.lock().expect("marks");
                     if let Some(m) = marks.get(own).filter(|m| m.path == p) {
                         if let Some(id) =
                             checked.iter().find(|id| marks::unseen(&m.cells, &now, id))
                         {
+                            // The cell as the check saw it, for the message.
+                            let cell = nb
+                                .cells
+                                .iter()
+                                .enumerate()
+                                .find(|(_, c)| c.id() == Some(id.as_str()))
+                                .map(|(i, c)| Box::new((i, c.clone())));
                             return (
-                                Err(Refused::Unseen(id.clone(), own.clone())),
+                                Err(Refused::Unseen(id.clone(), own.clone(), cell)),
                                 Effects::default(),
                             );
                         }
@@ -1822,14 +1869,9 @@ impl Notebooks {
                 "{path} is open in another server on this machine, so it is read-only here",
                 path = self.show(path)
             ))),
-            Err(Refused::Unseen(id, token)) => {
-                let nb = self.notebook(path).await?;
-                let cell = nb
-                    .cells
-                    .iter()
-                    .enumerate()
-                    .find(|(_, c)| c.id() == Some(id.as_str()))
-                    .map(|(i, c)| self.render_cell_as(i, c, true, None))
+            Err(Refused::Unseen(id, token, cell)) => {
+                let cell = cell
+                    .map(|b| self.render_cell_as(b.0, &b.1, true, None))
                     .unwrap_or_default();
                 Err(err(format!(
                     "Cell {id} changed since your last read of {shown}, by a person or another \
