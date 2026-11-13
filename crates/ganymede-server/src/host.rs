@@ -107,6 +107,19 @@ struct Who {
 }
 
 impl Who {
+    /// A caller with no grant at all: no notebook, nothing to read or run.
+    fn nothing() -> Self {
+        Who {
+            notebook: None,
+            read: Vec::new(),
+            edit_self: false,
+            run: Vec::new(),
+            depth: MAX_DEPTH,
+            outer_read: Vec::new(),
+            outer_run: Vec::new(),
+        }
+    }
+
     fn notebook(&self) -> Option<&str> {
         self.notebook.as_deref()
     }
@@ -269,33 +282,15 @@ impl HostApi {
                 .unwrap()
                 .get(&token)
                 .cloned()
-                .unwrap_or(Who {
-                    notebook: None,
-                    read: Vec::new(),
-                    edit_self: false,
-                    run: Vec::new(),
-                    depth: MAX_DEPTH,
-                    outer_read: Vec::new(),
-                    outer_run: Vec::new(),
-                });
+                .unwrap_or_else(Who::nothing);
         }
         if let Some(id) = run_of {
             // Where the notebook is now; a notebook that is gone leaves no
             // grant, never the defaults.
-            let Some(path) = self.state.collab.path_of(&id).await else {
-                return Who {
-                    notebook: None,
-                    read: Vec::new(),
-                    edit_self: false,
-                    run: Vec::new(),
-                    depth: MAX_DEPTH,
-                    outer_read: Vec::new(),
-                    outer_run: Vec::new(),
-                };
+            let Some((path, own)) = self.state.collab.path_and_grant(&id).await else {
+                return Who::nothing();
             };
-            let mut who = self
-                .grant_for(Some(ganymede_contents::normalize_api_path(&path)))
-                .await;
+            let mut who = self.grant_from(Some(path), own);
             who.edit_self = false;
             return who;
         }
@@ -316,6 +311,12 @@ impl HostApi {
             Some(path) => self.state.collab.grant(path).await,
             None => None,
         };
+        self.grant_from(notebook, own)
+    }
+
+    /// `notebook`'s grant from `own`, its stored grant (JSON), as
+    /// [`HostApi::grant_for`].
+    fn grant_from(&self, notebook: Option<String>, own: Option<String>) -> Who {
         let own: Grant = own
             .and_then(|g| {
                 serde_json::from_str(&g)

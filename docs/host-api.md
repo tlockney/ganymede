@@ -271,9 +271,11 @@ edit_self = true     # the self.* calls; false turns them off
   Notebook, HTTP clients) has no session: it gets the grant of the
   notebook it runs, which the server names in its launch variables, with
   no `self.*` calls, since a run writes at most a copy. It follows the
-  notebook by file id, so a rename during the run keeps its grant. A
-  kernel started with no notebook gets the defaults, and `notebook` is
-  `null`.
+  notebook by file id, so a rename through the contents API during the
+  run keeps its grant; a rename outside the server (Finder, `git mv`)
+  isn't seen. If the notebook is deleted during the run, the run has no
+  grant at all, not the defaults, and `notebook` is `null`. A kernel
+  started with no notebook gets the defaults, and `notebook` is `null`.
 - **Paths** in calls and grants are normalized as the contents API
   normalizes them: relative to the root, with no `..` and no way out of
   the root through a symlink. A grant's path matches whole segments, so

@@ -1230,6 +1230,9 @@ async fn an_http_run_has_its_notebooks_grant() {
         api.hello(&run).await.notebook.as_deref(),
         Some("reports/renamed.ipynb")
     );
+    api.call(&run, "notebooks.read", json!({"path": "journal/a.ipynb"}))
+        .await
+        .unwrap();
     let err = api
         .call(&run, "notebooks.read", json!({"path": "index.ipynb"}))
         .await
@@ -1243,6 +1246,15 @@ async fn an_http_run_has_its_notebooks_grant() {
         .unwrap_err();
     assert_eq!(err.code, "denied");
     call.abort();
+
+    // A run of a path that isn't a notebook leaves no file id (#574).
+    let request =
+        ganymede_server::run::RunRequest::from_value(json!({"path": "typo.ipynb"})).unwrap();
+    let err = ganymede_server::run::run_notebook(&state, &request, Vec::new())
+        .await
+        .unwrap_err();
+    assert_eq!(err.status, 404);
+    assert!(ids.get("typo.ipynb").is_none());
 }
 
 #[tokio::test]

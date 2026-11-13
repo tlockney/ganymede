@@ -17,6 +17,9 @@ id's current path and answers with `grant_for(Some(path))` and
 copy. A file id rather than the path, so a rename during a long run
 keeps the notebook's grant and another notebook moved to the old path
 doesn't lend the run its own; a deleted notebook leaves the run with no
-grant. A launch variable rather than
+grant. The id is made only once the notebook is read, under the move
+lock (`Collab::index_existing`), so a run of a path that isn't there
+leaves no id behind, and `who` reads the path and the grant by id in one
+file-id call, so no rename lands between them. A launch variable rather than
 `HostApi::pin`, because the HTTP route has the app state but not the
 host API.
