@@ -65,9 +65,10 @@ pub enum McpCmd {
     /// itself there (the most recent). Starts none: with no server it
     /// fails. Exits 1 when the tool reports an error.
     Call(CallArgs),
-    /// Print a line for each request to the agent a person writes in a
-    /// notebook, and keep running: for a Claude Code plugin monitor.
+    /// Print each request a person writes to the agent, and keep running.
     ///
+    /// For a Claude Code plugin monitor, which passes each line to the
+    /// agent.
     /// Asks the server `call` would use for its open requests (Markdown
     /// cells starting `@agent` or `@` and the client's name, written by a
     /// person and not yet answered) every `--every` seconds, and prints a
