@@ -128,7 +128,9 @@ In order of priority.
    ([#316](https://github.com/tlockney/ganymede/issues/316)).
 4. **TypeScript notebooks for TypeScript developers.**
    [cdp-kernel](https://github.com/tlockney/cdp-kernel) is the
-   first-class kernel, on Node and Deno first.
+   first-class kernel, on Node and Deno first. Next: a table output and
+   a chart helper, then an `sql` tag over DuckDB, proposed in
+   [Tables and charts for TypeScript notebooks](data-output.md).
 
 ## Not now
 
