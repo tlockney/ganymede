@@ -408,9 +408,15 @@ Thomas settled the four open questions on 2026-11-10:
 
 - **Default reads cover the whole root.** A desktop kernel can read
   those files already, so a narrower default would add a grant without
-  protection, and in the apps the root is the app's own documents.
-  Limiting what an agent's code can do on the machine is the OS
-  sandbox's job.
+  protection. Limiting what an agent's code can do on the machine is the
+  OS sandbox's job. On the iPad and iPhone the root is the app's own
+  notebook folder. The Mac app's root is `/`, though, and its kernels
+  run in the app's sandbox, so it narrows the default to the folders
+  under Settings › General › Spotlight (ganymede-ui#585).
+
+  > [!NOTE]
+  > **Unreleased in ganymede-ui.** Available only from a build of
+  > ganymede-ui's `main`, not in its latest release.
 - **Grants are kept by file id**, so they follow a notebook that moves.
   `ganymede grant --list` and `--revoke` show and remove them, in place
   of editing a file by hand.
