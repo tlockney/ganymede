@@ -746,13 +746,16 @@ async fn room_cells(room: &mpsc::UnboundedSender<Cmd>, ids: Vec<String>) -> Vec<
 }
 
 /// Queue cells of the notebook at `path` on `kernel_id`, unchecked, and
-/// wait until they have run or `timeout` passes. False on a timeout.
+/// wait until they have run or `timeout` passes. False on a timeout; then
+/// `late` runs once they have all run (or the room stops), in a task of
+/// its own.
 pub(crate) async fn run_and_wait(
     state: &AppState,
     path: &str,
     kernel_id: &str,
     cells: Vec<String>,
     timeout: Duration,
+    late: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<bool, String> {
     let (reply, answer) = oneshot::channel();
     let (finished, done) = oneshot::channel();
@@ -774,7 +777,15 @@ pub(crate) async fn run_and_wait(
         Ok(Err(Refused::SourceMismatch(id) | Refused::Bad(id))) => return Err(id),
         Err(_) => return Err(format!("{path}: room closed")),
     }
-    Ok(tokio::time::timeout(timeout, done).await.is_ok())
+    let mut done = done;
+    if tokio::time::timeout(timeout, &mut done).await.is_ok() {
+        return Ok(true);
+    }
+    tokio::spawn(async move {
+        let _ = done.await;
+        late.await;
+    });
+    Ok(false)
 }
 
 #[cfg(test)]

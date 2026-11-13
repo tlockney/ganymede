@@ -339,6 +339,17 @@ pub struct AddArgs {
     /// if its reader had added it: for a hook adding a cell on an agent's
     /// behalf, so the agent isn't told of it as someone else's.
     pub mark: Option<String>,
+    /// The id of a request cell this cell answers: the cell goes after it
+    /// (unless `after` says otherwise), and the request is marked done, so
+    /// it is no longer reported as a request.
+    pub answers: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RequestsArgs {
+    /// Notebook path; every notebook open in the server under this
+    /// connection's folder when left out.
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -656,7 +667,7 @@ impl Notebooks {
     }
 
     #[tool(
-        description = "Add a cell without running it: Markdown narration (the default), or with `mode: recorded` a step that ran outside the kernel. Returns the new cell's id."
+        description = "Add a cell without running it: Markdown narration (the default), or with `mode: recorded` a step that ran outside the kernel. With `answers` set to a request cell's id, it goes below that request and marks it done. Returns the new cell's id."
     )]
     async fn cell_add(
         &self,
@@ -681,8 +692,99 @@ impl Notebooks {
                 json!({"cell_type": "raw", "id": id, "metadata": metadata, "source": a.source})
             }
         };
+        if let Some(request) = a.answers {
+            self.insert_answer(&path, cell, a.after, a.mark, request)
+                .await?;
+            return text(format!("Added cell {id}; the request is marked done."));
+        }
         self.insert(&path, cell, a.after, a.mark).await?;
         text(format!("Added cell {id}"))
+    }
+
+    #[tool(
+        description = "List the requests to you that are still open: Markdown cells starting `@agent` (or `@` and your client's name) that a person wrote in a notebook open in this server, through JupyterLab or the apps, and that no cell answers yet. Answer one with cell_add, `answers` set to its id."
+    )]
+    async fn notebook_requests(
+        &self,
+        Parameters(a): Parameters<RequestsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let rooms = match a.path {
+            Some(p) => {
+                let path = self.resolve(&p);
+                let id = notebook_room_id(&self.state.collab, &self.state.contents, &path)
+                    .await
+                    .map_err(|e| err(format!("cannot open {p}: {e}")))?;
+                // A notebook no room has open has no requests (who wrote
+                // a cell is known only to a room), and a poller shouldn't
+                // load it each time.
+                if self.state.collab.notebook_rooms().contains(&id) {
+                    vec![(id, path)]
+                } else {
+                    Vec::new()
+                }
+            }
+            None => {
+                // Only notebooks in this connection's folder.
+                let dir = self.dir.lock().expect("dir").clone().unwrap_or_default();
+                let mut rooms = Vec::new();
+                for id in self.state.collab.notebook_rooms() {
+                    let file = id.trim_start_matches("json:notebook:").to_string();
+                    if let Some((path, _)) = self.state.collab.path_and_grant(&file).await {
+                        if dir.is_empty() || ganymede_contents::path_under(&path, &dir).is_some() {
+                            rooms.push((id, path));
+                        }
+                    }
+                }
+                rooms.sort_by(|x, y| x.1.cmp(&y.1));
+                rooms
+            }
+        };
+        let mut out = String::new();
+        for (room_id, path) in rooms {
+            let client = self.client_name();
+            let found = with_notebook(
+                &self.state.collab,
+                &self.state.contents,
+                &room_id,
+                move |room| {
+                    let found: Vec<(String, String, String)> = match room.notebook_with_ids() {
+                        Some(Ok(nb)) => nb
+                            .cells
+                            .iter()
+                            .filter_map(|c| {
+                                let id = c.id()?;
+                                let by = room.author(id).filter(|a| a.person)?;
+                                (marks::is_request(c, &client)).then(|| {
+                                    (
+                                        id.to_string(),
+                                        by.name.clone(),
+                                        c.source()
+                                            .map(|s| s.as_str().to_string())
+                                            .unwrap_or_default(),
+                                    )
+                                })
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    (found, Effects::default())
+                },
+            )
+            .await
+            .unwrap_or_default();
+            let shown = self.show(&path);
+            for (id, by, source) in found {
+                out.push_str(&format!(
+                    "@@request {}\n{}\n\n",
+                    json!({"path": shown, "id": id, "by": by}),
+                    source.trim_end()
+                ));
+            }
+        }
+        if out.is_empty() {
+            out.push_str("No open requests.\n");
+        }
+        text(out)
     }
 
     #[tool(
@@ -945,10 +1047,16 @@ impl Notebooks {
             .filter_map(|c| c.id().map(str::to_string))
             .collect();
         let timeout = Duration::from_secs(a.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS));
-        let finished =
-            crate::execute::run_and_wait(&self.state, &path, &kernel_id, ids.clone(), timeout)
-                .await
-                .map_err(err)?;
+        let finished = crate::execute::run_and_wait(
+            &self.state,
+            &path,
+            &kernel_id,
+            ids.clone(),
+            timeout,
+            self.own_runs_late(&path, ids.clone()),
+        )
+        .await
+        .map_err(err)?;
         self.own_runs(&path, ids).await;
         // The reply shows what ran, outputs and all; the notebook keeps
         // them all but those of the cells marked to leave them out.
@@ -1493,6 +1601,32 @@ fn client_name(peer: &Peer<RoleServer>) -> String {
         .unwrap_or_else(|| "agent".into())
 }
 
+/// Move read mark `token` past the runs of cells `ids` in notebook
+/// `path` as they are now ([`Notebooks::own_runs`]).
+async fn adopt_own_runs(
+    state: &AppState,
+    marks: Arc<Mutex<marks::Marks>>,
+    token: String,
+    path: String,
+    ids: Vec<String>,
+) {
+    let Ok(room_id) = notebook_room_id(&state.collab, &state.contents, &path).await else {
+        return;
+    };
+    let _ = with_notebook(&state.collab, &state.contents, &room_id, move |room| {
+        if let Some(Ok(nb)) = room.notebook_with_ids() {
+            let now = marks::runs(&nb);
+            if let Some(m) = marks.lock().expect("marks").get(&token) {
+                if m.path == path {
+                    marks::adopt_runs(&mut m.runs, &now, &ids);
+                }
+            }
+        }
+        ((), Effects::default())
+    })
+    .await;
+}
+
 fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -1892,6 +2026,23 @@ impl Notebooks {
         also: Option<String>,
         f: impl FnOnce(&mut Room) -> (R, Effects) + Send + 'static,
     ) -> Result<R, McpError> {
+        self.own_edit_checking(path, ids, Vec::new(), aspect, also, f)
+            .await
+    }
+
+    /// [`Notebooks::own_edit`] that also refuses the edit when one of
+    /// cells `check` changed unseen, without crediting or adopting them:
+    /// for a cell the edit reads but doesn't change as the agent's
+    /// (the request `cell_add(answers)` closes).
+    async fn own_edit_checking<R: Send + 'static>(
+        &self,
+        path: &str,
+        ids: Vec<String>,
+        check: Vec<String>,
+        aspect: marks::Aspect,
+        also: Option<String>,
+        f: impl FnOnce(&mut Room) -> (R, Effects) + Send + 'static,
+    ) -> Result<R, McpError> {
         let own = self.tokens.lock().expect("tokens").get(path).cloned();
         let mut tokens: Vec<String> = own.iter().cloned().collect();
         tokens.extend(also.filter(|t| !tokens.contains(t)));
@@ -1906,13 +2057,21 @@ impl Notebooks {
                     return (Err(Refused::ReadOnly), Effects::default());
                 }
                 // Nothing to refuse for no cells (clearing outputs).
-                let checking = own.as_ref().filter(|_| !checked.is_empty());
+                let checking = own
+                    .as_ref()
+                    .filter(|_| !checked.is_empty() || !check.is_empty());
                 if let (Some(own), Some(Ok(nb))) = (checking, room.notebook_with_ids()) {
                     let now = marks::snapshot(&nb);
                     let mut marks = marks.lock().expect("marks");
                     if let Some(m) = marks.get(own).filter(|m| m.path == p) {
-                        if let Some(id) =
-                            checked.iter().find(|id| marks::unseen(&m.cells, &now, id))
+                        // A `check` cell the mark lacks is new to the
+                        // reader: no version of it could be overwritten
+                        // unseen.
+                        let known = |id: &&String| m.cells.iter().any(|(i, _)| i == *id);
+                        if let Some(id) = checked
+                            .iter()
+                            .chain(check.iter().filter(known))
+                            .find(|id| marks::unseen(&m.cells, &now, id))
                         {
                             // The cell as the check saw it, for the message.
                             let cell = nb
@@ -2152,6 +2311,83 @@ impl Notebooks {
         r.map_err(err)
     }
 
+    /// Insert `cell` as the answer to request cell `request` and mark the
+    /// request done, in one edit:
+    /// `metadata.ganymede.request = {"done": <time>, "answer": <id>, "id": <request>}`.
+    /// The request's source, author and place stay as they are. Refused,
+    /// with nothing changed, when `request` isn't an open request a person
+    /// wrote to this client, or changed since this connection's read.
+    async fn insert_answer(
+        &self,
+        path: &str,
+        cell: Value,
+        after: Option<String>,
+        mark: Option<String>,
+        request: String,
+    ) -> Result<(), McpError> {
+        let id = cell["id"].as_str().unwrap_or_default().to_string();
+        let client = self.client_name();
+        let r = self
+            .own_edit_checking(
+                path,
+                vec![id.clone()],
+                vec![request.clone()],
+                marks::Aspect::All,
+                mark,
+                move |room| {
+                    let open = match room.notebook_with_ids() {
+                        Some(Ok(nb)) => nb.cells.iter().any(|c| {
+                            c.id() == Some(request.as_str()) && marks::is_request(c, &client)
+                        }),
+                        _ => false,
+                    };
+                    if !open || !room.author(&request).is_some_and(|a| a.person) {
+                        return (
+                            Err(format!(
+                                "cell {request} is not an open request to you from a person, \
+                                 so no cell was added; see notebook_requests"
+                            )),
+                            Effects::default(),
+                        );
+                    }
+                    room.edit(|txn, roots: &Roots| {
+                        let at = match &after {
+                            None => schema::cell_index(txn, roots, &request),
+                            Some(a) => schema::cell_index(txn, roots, a),
+                        };
+                        let Some(at) = at else {
+                            return Err(format!(
+                                "no cell {}",
+                                after.as_deref().unwrap_or(&request)
+                            ));
+                        };
+                        let Some(req) = schema::find_cell(txn, roots, &request) else {
+                            return Err(format!("no cell {request}"));
+                        };
+                        let meta = match req.get(txn, "metadata") {
+                            Some(Out::YMap(m)) => m,
+                            _ => req.insert(
+                                txn,
+                                "metadata",
+                                ganymede_documents::yrs::MapPrelim::default(),
+                            ),
+                        };
+                        let mut g = meta
+                            .get(txn, "ganymede")
+                            .map(|o| schema::out_to_json(txn, &o))
+                            .filter(Value::is_object)
+                            .unwrap_or_else(|| json!({}));
+                        g["request"] = json!({"done": now(), "answer": id, "id": request});
+                        meta.insert(txn, "ganymede", schema::json_to_any(&g));
+                        schema::insert_cell(txn, &roots.cells, at + 1, cell);
+                        Ok(())
+                    })
+                },
+            )
+            .await?;
+        r.map_err(err)
+    }
+
     /// Clear the outputs of code cells `ids` and mark them to stay out of
     /// the notebook (`drop`), or take the mark off. False when no code
     /// cell has one of the ids.
@@ -2198,28 +2434,40 @@ impl Notebooks {
         Ok(found)
     }
 
+    /// A future that does [`Notebooks::own_runs`] for a run that finishes
+    /// after its tool call timed out, so the agent's own late runs aren't
+    /// reported back to it as someone else's. It holds only the token and
+    /// marks, not the connection: its held rooms close when it ends.
+    fn own_runs_late(
+        &self,
+        path: &str,
+        ids: Vec<String>,
+    ) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let token = self.tokens.lock().expect("tokens").get(path).cloned();
+        let (state, marks, path) = (self.state.clone(), self.marks.clone(), path.to_string());
+        async move {
+            if let Some(token) = token {
+                adopt_own_runs(&state, marks, token, path, ids).await;
+            }
+        }
+    }
+
     /// Move this connection's read mark past its own runs of cells `ids`
     /// (or its clearing of their outputs), so they aren't reported to it
-    /// as someone else's. Outputs a run adds after this (one that timed
-    /// out) are reported as `ran`.
+    /// as someone else's. Cells still queued when a run timed out are
+    /// taken in when they finish ([`Notebooks::own_runs_late`]).
     async fn own_runs(&self, path: &str, ids: Vec<String>) {
         let Some(token) = self.tokens.lock().expect("tokens").get(path).cloned() else {
             return;
         };
-        let (marks, p) = (self.marks.clone(), path.to_string());
-        let _ = self
-            .room(path, move |room| {
-                if let Some(Ok(nb)) = room.notebook_with_ids() {
-                    let now = marks::runs(&nb);
-                    if let Some(m) = marks.lock().expect("marks").get(&token) {
-                        if m.path == p {
-                            marks::adopt_runs(&mut m.runs, &now, &ids);
-                        }
-                    }
-                }
-                ((), Effects::default())
-            })
-            .await;
+        adopt_own_runs(
+            &self.state,
+            self.marks.clone(),
+            token,
+            path.to_string(),
+            ids,
+        )
+        .await;
     }
 
     /// The ids of code cells marked to leave their outputs out, among
@@ -2268,10 +2516,16 @@ impl Notebooks {
         ids: Vec<String>,
         timeout: Duration,
     ) -> Result<(CallToolResult, bool), McpError> {
-        let finished =
-            crate::execute::run_and_wait(&self.state, path, kernel_id, ids.clone(), timeout)
-                .await
-                .map_err(err)?;
+        let finished = crate::execute::run_and_wait(
+            &self.state,
+            path,
+            kernel_id,
+            ids.clone(),
+            timeout,
+            self.own_runs_late(path, ids.clone()),
+        )
+        .await
+        .map_err(err)?;
         self.own_runs(path, ids.clone()).await;
         let nb = self.notebook(path).await?;
         let mut shown = Vec::new();

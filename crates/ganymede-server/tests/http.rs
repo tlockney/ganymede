@@ -6048,6 +6048,23 @@ async fn mcp_reports_cells_others_ran() {
         .await
     );
     assert!(!out.contains("@@changed"), "own runs: {out}");
+    // A run of the agent's that finishes after its call timed out is
+    // still its own.
+    let out = tool(
+        agent.clone(),
+        "cell_run",
+        json!({"path": "r.ipynb", "source": "sleep 1500", "timeout": 1}),
+    )
+    .await;
+    assert!(out.starts_with("Timed out"), "{out}");
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let out = tool(
+        agent.clone(),
+        "cell_add",
+        json!({"path": "r.ipynb", "source": "l"}),
+    )
+    .await;
+    assert!(!out.contains("@@changed"), "own late run: {out}");
     let mark = read_mark(&tool(agent.clone(), "notebook_read", json!({"path": "r.ipynb"})).await);
 
     // Another client runs the agent's cell again, source unchanged.
@@ -6230,6 +6247,173 @@ async fn mcp_reports_who_changed_a_cell_and_requests() {
         o.contains(r#""by":"other-agent""#) && !o.contains("request"),
         "{o}"
     );
+
+    // Open requests: the person's, not the other agent's; and to the
+    // other agent, whose name `@claude` isn't, none.
+    let open = tool(agent.clone(), "notebook_requests", json!({})).await;
+    assert!(
+        open.contains(r#"@@request {"path":"j.ipynb","id":"p","by":"Thomas"}"#)
+            && open.contains("@claude does 2019")
+            && !open.contains("@agent do this"),
+        "{open}"
+    );
+    let theirs = tool(
+        other.clone(),
+        "notebook_requests",
+        json!({"path": "j.ipynb"}),
+    )
+    .await;
+    assert_eq!(theirs, "No open requests.\n");
+
+    // `answers` naming a cell that isn't an open request from a person is
+    // refused, and no cell is added: a plain cell, another agent's.
+    let refused = |v: Value| {
+        let e = v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(e.contains("not an open request"), "{v}");
+    };
+    refused(
+        mcp_tool(
+            &app,
+            &agent,
+            "cell_add",
+            json!({"path": "j.ipynb", "source": "Wrong.", "answers": "a"}),
+        )
+        .await,
+    );
+    let o_id = o
+        .split(r#""id":""#)
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap();
+    refused(
+        mcp_tool(
+            &app,
+            &agent,
+            "cell_add",
+            json!({"path": "j.ipynb", "source": "Wrong.", "answers": o_id}),
+        )
+        .await,
+    );
+
+    // A request the person changed since the agent's read isn't closed.
+    let mark = read_mark(&tool(agent.clone(), "notebook_read", json!({"path": "j.ipynb"})).await);
+    type PersonEdit = Box<dyn FnOnce(&mut ganymede_documents::yrs::TransactionMut, &Roots)>;
+    let person_edit = |f: PersonEdit| {
+        let before = doc.transact().state_vector();
+        {
+            let roots = Roots::get(&doc);
+            let mut txn = doc.transact_mut();
+            f(&mut txn, &roots);
+        }
+        doc.transact().encode_state_as_update_v1(&before)
+    };
+    let update = person_edit(Box::new(|txn, roots| {
+        let cell = schema::find_cell(txn, roots, "p").unwrap();
+        let Some(ganymede_documents::yrs::Out::YText(t)) =
+            ganymede_documents::yrs::Map::get(&cell, txn, "source")
+        else {
+            panic!("source")
+        };
+        schema::set_text(txn, &t, "@claude does 2019 change the trend? And 2020?");
+    }));
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::Update(update)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let out = tool(agent.clone(), "kernelspecs_list", json!({})).await;
+        if out.contains("(1 edited") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "edit never arrived: {out}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let v = mcp_tool(
+        &app,
+        &agent,
+        "cell_add",
+        json!({"path": "j.ipynb", "source": "No: see below.", "answers": "p"}),
+    )
+    .await;
+    let e = v["error"]["message"].as_str().unwrap_or_default();
+    assert!(e.contains("changed since your last read"), "{v}");
+    tool(
+        agent.clone(),
+        "notebook_read",
+        json!({"path": "j.ipynb", "since": mark}),
+    )
+    .await;
+
+    // Answering puts the answer below and closes the request; the person's
+    // cell keeps its author and isn't reported as changed.
+    let out = tool(
+        agent.clone(),
+        "cell_add",
+        json!({"path": "j.ipynb", "source": "No: see below.", "answers": "p"}),
+    )
+    .await;
+    assert!(out.contains("the request is marked done"), "{out}");
+    assert!(!out.contains("@@changed"), "{out}");
+    assert_eq!(
+        tool(agent.clone(), "notebook_requests", json!({})).await,
+        "No open requests.\n"
+    );
+    let read = tool(agent.clone(), "notebook_read", json!({"path": "j.ipynb"})).await;
+    let p_at = read.find("@claude does 2019").unwrap();
+    let answer_at = read.find("No: see below.").unwrap();
+    let other_at = read.find("@agent do this").unwrap();
+    assert!(other_at < p_at && p_at < answer_at, "{read}");
+    assert!(!read.contains("Wrong."), "{read}");
+    assert_eq!(read.matches("No: see below.").count(), 1, "{read}");
+
+    // A copy of the answered request (paste, duplicate) keeps its
+    // metadata under a new id; a question written in it is a new request.
+    let update = person_edit(Box::new(|txn, roots| {
+        let end = roots.cells.len(txn);
+        schema::insert_cell(
+            txn,
+            &roots.cells,
+            end,
+            json!({"cell_type": "markdown", "id": "q",
+                   "metadata": {"ganymede": {"request": {"done": "t", "answer": "x", "id": "p"}}},
+                   "source": "@claude and 2021?"}),
+        );
+    }));
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::Update(update)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let open = tool(agent.clone(), "notebook_requests", json!({})).await;
+        if open.contains(r#""id":"q""#) {
+            assert!(!open.contains(r#""id":"p""#), "{open}");
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "{open}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // A request written after the agent's last read is answered straight
+    // from notebook_requests: no version of it was unseen.
+    let out = tool(
+        agent.clone(),
+        "cell_add",
+        json!({"path": "j.ipynb", "source": "Same.", "answers": "q"}),
+    )
+    .await;
+    assert!(out.contains("the request is marked done"), "{out}");
 }
 
 /// `notebook_read(since)` lists what a person changed through the room
