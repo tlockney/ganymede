@@ -1362,7 +1362,7 @@ pre.error { background: var(--error-soft); color: var(--error); }
 .table th { position: sticky; top: 0; background: var(--surface); vertical-align: bottom; }
 .table th .type { display: block; font-weight: 400; font-size: .78rem; }
 .table .num { text-align: right; }
-.table td { white-space: pre; max-width: 24rem; overflow: hidden; text-overflow: ellipsis; }
+.table td { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 24rem; }
 .table td.null { color: var(--soft); font-style: italic; }
 .table-rows { font: .8rem/1.4 var(--sans); color: var(--soft); margin: .35rem 0 0; }
 .colophon { margin-top: 4rem; padding-top: 1.25rem; border-top: 1px solid var(--line); font: .8rem/1.5 var(--sans); color: var(--soft); }
