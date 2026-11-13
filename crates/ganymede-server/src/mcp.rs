@@ -200,6 +200,14 @@ fn resolve_from(dir: Option<&str>, path: &str) -> String {
     }
 }
 
+/// Why [`Notebooks::own_edit`] made no edit.
+enum Refused {
+    /// Another server owns the notebook.
+    ReadOnly,
+    /// Cell id changed since the read mark named by the token.
+    Unseen(String, String),
+}
+
 fn err(msg: impl Into<String>) -> McpError {
     McpError::invalid_params(msg.into(), None)
 }
@@ -642,7 +650,7 @@ impl Notebooks {
     }
 
     #[tool(
-        description = "Replace a cell's source; with `run: true`, run it after. The replaced source is kept in the cell's metadata.ganymede.agent.history; to remove a secret, delete the cell instead."
+        description = "Replace a cell's source; with `run: true`, run it after. The replaced source is kept in the cell's metadata.ganymede.agent.history; to remove a secret, delete the cell instead. Refused when someone else changed the cell since your last read; read their change in with notebook_read(since), then redo it."
     )]
     async fn cell_edit(
         &self,
@@ -751,7 +759,9 @@ impl Notebooks {
         })
     }
 
-    #[tool(description = "Delete a cell.")]
+    #[tool(
+        description = "Delete a cell. Refused when someone else changed the cell since your last read; read their change in with notebook_read(since), then redo it."
+    )]
     async fn cell_delete(
         &self,
         Parameters(a): Parameters<IdArgs>,
@@ -782,7 +792,9 @@ impl Notebooks {
         text(format!("Deleted cell {}", a.id))
     }
 
-    #[tool(description = "Move a cell after another one, or to the top.")]
+    #[tool(
+        description = "Move a cell after another one, or to the top. Refused when someone else changed the cell since your last read; read their change in with notebook_read(since), then redo it."
+    )]
     async fn cell_move(
         &self,
         Parameters(a): Parameters<MoveArgs>,
@@ -1312,12 +1324,35 @@ Keep a notebook as the record of this analysis while you work, not as a write-up
 - After a result, add a Markdown note with what it shows. Fix a wrong cell with `cell_edit` rather than adding another.
 - Look at a chart before writing what it shows: if `cell_run` returned no image, `cell_snapshot` with the cell's id returns it.
 - To show the user a result, paste what `cell_snapshot` returns for the cells behind it: charts as image files, tables as Markdown, code as a fenced block.
-- A person may edit the notebook while you work. Before building on it again, call `notebook_read` with `since` set to the mark from your last `@@read` line, and work from what they changed.
+- A person may edit the notebook while you work. Before building on it again, call `notebook_read` with `since` set to the mark from your last `@@read` line, and work from what they changed. A reply that ends with an `@@changed` line means they changed it since your last read; an edit to a cell they changed is refused until you read it.
 - End with a Markdown summary of what was found. `notebook_run_all` checks that the notebook runs top to bottom.";
 
 #[tool_handler(router = self.tool_router)]
 #[prompt_handler(router = self.prompt_router)]
 impl ServerHandler for Notebooks {
+    /// The tool's reply, then an `@@changed` line for each notebook
+    /// others changed since this connection's read mark, so an agent in
+    /// the middle of its work learns of a person's edits on its next call.
+    /// Reads leave it out: they report the changes themselves.
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        let reads = matches!(request.name.as_ref(), "notebook_read" | "notebook_open");
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        let mut r = self.tool_router.call(tcc).await?;
+        if !reads {
+            if let CallToolResponse::Complete(res) = &mut r {
+                let lines = self.changed_lines().await;
+                if !lines.is_empty() {
+                    res.content.push(ContentBlock::text(lines));
+                }
+            }
+        }
+        Ok(r)
+    }
+
     async fn initialize(
         &self,
         request: InitializeRequestParams,
@@ -1635,6 +1670,50 @@ impl Notebooks {
 
     /// The notebook and what changed since read mark `since`, which then
     /// moves to it. `None` when the server has no such mark.
+    /// An `@@changed` line for each notebook this connection has a read
+    /// mark for that others changed since: what changed, and the read
+    /// that takes it in. The marks don't move.
+    async fn changed_lines(&self) -> String {
+        let tokens: Vec<(String, String)> = self
+            .tokens
+            .lock()
+            .expect("tokens")
+            .iter()
+            .map(|(p, t)| (p.clone(), t.clone()))
+            .collect();
+        let mut out = String::new();
+        for (path, token) in tokens {
+            let cells = match self.marks.lock().expect("marks").get(&token) {
+                Some(m) if m.path == path => m.cells.clone(),
+                _ => continue,
+            };
+            let Ok(nb) = self.notebook(&path).await else {
+                continue;
+            };
+            let c = marks::diff(&cells, &marks::snapshot(&nb));
+            if c.is_empty() {
+                continue;
+            }
+            let what: Vec<String> = [
+                (c.added.len(), "added"),
+                (c.edited.len(), "edited"),
+                (c.moved.len(), "moved"),
+                (c.deleted.len(), "deleted"),
+            ]
+            .iter()
+            .filter(|(n, _)| *n > 0)
+            .map(|(n, w)| format!("{n} {w}"))
+            .collect();
+            let shown = self.show(&path);
+            out.push_str(&format!(
+                "@@changed {shown}: cells changed by others since your last read ({}). \
+                 Call notebook_read(path: \"{shown}\", since: \"{token}\") before building on it.\n",
+                what.join(", ")
+            ));
+        }
+        out
+    }
+
     async fn read_since(
         &self,
         path: &str,
@@ -1679,6 +1758,12 @@ impl Notebooks {
     /// nothing, so someone else's change to the cell is still reported).
     /// `also` is another read mark to move the same way (`cell_add`'s
     /// `mark`), when it is for this notebook.
+    ///
+    /// Before the edit, each of `ids` already in the notebook must be as
+    /// this connection's mark has it: an edit to a cell someone else
+    /// changed since the read would lose their change unseen, so it is
+    /// refused with the cell as it is now. Without a mark, or with one
+    /// the server forgot, nothing is checked.
     async fn own_edit<R: Send + 'static>(
         &self,
         path: &str,
@@ -1687,46 +1772,74 @@ impl Notebooks {
         also: Option<String>,
         f: impl FnOnce(&mut Room) -> (R, Effects) + Send + 'static,
     ) -> Result<R, McpError> {
-        let mut tokens: Vec<String> = self
-            .tokens
-            .lock()
-            .expect("tokens")
-            .get(path)
-            .cloned()
-            .into_iter()
-            .collect();
+        let own = self.tokens.lock().expect("tokens").get(path).cloned();
+        let mut tokens: Vec<String> = own.iter().cloned().collect();
         tokens.extend(also.filter(|t| !tokens.contains(t)));
         let (marks, p) = (self.marks.clone(), path.to_string());
-        self.room(path, move |room| {
-            // Another server owns the file (#272): its room would undo
-            // the edit and never save it, so refuse it here.
-            if room.is_read_only() {
-                return (None, Effects::default());
-            }
-            let (r, fx) = f(room);
-            if tokens.is_empty() || !fx.changed {
-                return (Some(r), fx);
-            }
-            if let Some(Ok(nb)) = room.notebook_with_ids() {
-                let now = marks::snapshot(&nb);
-                let mut marks = marks.lock().expect("marks");
-                for token in &tokens {
-                    if let Some(m) = marks.get(token).filter(|m| m.path == p) {
-                        for id in &ids {
-                            marks::adopt(&mut m.cells, &now, id, aspect);
+        let checked = ids.clone();
+        let r = self
+            .room(path, move |room| {
+                // Another server owns the file (#272): its room would undo
+                // the edit and never save it, so refuse it here.
+                if room.is_read_only() {
+                    return (Err(Refused::ReadOnly), Effects::default());
+                }
+                if let (Some(own), Some(Ok(nb))) = (&own, room.notebook_with_ids()) {
+                    let now = marks::snapshot(&nb);
+                    let mut marks = marks.lock().expect("marks");
+                    if let Some(m) = marks.get(own).filter(|m| m.path == p) {
+                        if let Some(id) =
+                            checked.iter().find(|id| marks::unseen(&m.cells, &now, id))
+                        {
+                            return (
+                                Err(Refused::Unseen(id.clone(), own.clone())),
+                                Effects::default(),
+                            );
                         }
                     }
                 }
-            }
-            (Some(r), fx)
-        })
-        .await?
-        .ok_or_else(|| {
-            err(format!(
+                let (r, fx) = f(room);
+                if tokens.is_empty() || !fx.changed {
+                    return (Ok(r), fx);
+                }
+                if let Some(Ok(nb)) = room.notebook_with_ids() {
+                    let now = marks::snapshot(&nb);
+                    let mut marks = marks.lock().expect("marks");
+                    for token in &tokens {
+                        if let Some(m) = marks.get(token).filter(|m| m.path == p) {
+                            for id in &ids {
+                                marks::adopt(&mut m.cells, &now, id, aspect);
+                            }
+                        }
+                    }
+                }
+                (Ok(r), fx)
+            })
+            .await?;
+        match r {
+            Ok(r) => Ok(r),
+            Err(Refused::ReadOnly) => Err(err(format!(
                 "{path} is open in another server on this machine, so it is read-only here",
                 path = self.show(path)
-            ))
-        })
+            ))),
+            Err(Refused::Unseen(id, token)) => {
+                let nb = self.notebook(path).await?;
+                let cell = nb
+                    .cells
+                    .iter()
+                    .enumerate()
+                    .find(|(_, c)| c.id() == Some(id.as_str()))
+                    .map(|(i, c)| self.render_cell_as(i, c, true, None))
+                    .unwrap_or_default();
+                Err(err(format!(
+                    "Cell {id} changed since your last read of {shown}, by a person or another \
+                     agent, so this edit wasn't made. It is now:\n\n{cell}\n\
+                     Take in their changes with notebook_read(path: \"{shown}\", since: \"{token}\"), \
+                     then redo your edit on top of them.",
+                    shown = self.show(path)
+                )))
+            }
+        }
     }
 
     async fn create(

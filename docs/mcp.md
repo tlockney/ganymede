@@ -390,6 +390,31 @@ agent's mark keeps following its edits. Another connection to the same server ca
 a hook outside the agent would; that read moves the mark as well, so
 the agent isn't told the same change twice.
 
+### Learning of changes mid-work, and edits refused
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+Every tool reply but `notebook_read` and `notebook_open` ends with a
+line like this when others changed a notebook the connection has a mark
+for:
+
+```text
+@@changed j.ipynb: cells changed by others since your last read (1 edited). Call notebook_read(path: "j.ipynb", since: "3f2a9c0d1b7e4a65") before building on it.
+```
+
+So an agent in the middle of its work learns of a person's edit on its
+next call. The line doesn't move the mark: the read it names does.
+
+`cell_edit`, `cell_delete` and `cell_move` refuse a cell someone else
+changed (its source or type) or added since the connection's mark, so
+an agent can't overwrite an edit it hasn't seen. The error gives the
+cell as it is now and the `notebook_read(since)` call that takes the
+change in; after that read, the agent redoes its edit on top. A refused
+edit moves no mark. A connection with no mark for the notebook, or one
+whose mark the server forgot, isn't checked.
+
 Marks are kept in the server's memory. After a restart, or once more
 than 4,096 marks are in use, a mark may be unknown: the read then says
 so and returns the whole notebook with a mark to use next. A mark names

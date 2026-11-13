@@ -139,6 +139,16 @@ pub fn adopt(mark: &mut Vec<(String, u64)>, now: &[(String, u64)], id: &str, asp
     mark.insert(index, (id.to_string(), fp));
 }
 
+/// Whether cell `id` changed since the reader's `mark`: it is in `now`,
+/// and the mark lacks it or holds another source or type for it. A cell
+/// `now` lacks is no change of someone else's to lose.
+pub fn unseen(mark: &[(String, u64)], now: &[(String, u64)], id: &str) -> bool {
+    let Some((_, fp)) = now.iter().find(|(i, _)| i == id) else {
+        return false;
+    };
+    !mark.iter().any(|(i, f)| i == id && f == fp)
+}
+
 /// What changed between a mark and the notebook now, as cell ids.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Changes {
@@ -292,6 +302,16 @@ mod tests {
         let c = diff(&mark, &now);
         assert!(c.edited.is_empty());
         assert_eq!(c.moved.len(), 1);
+    }
+
+    #[test]
+    fn unseen_is_a_cell_changed_or_added_since_the_mark() {
+        let mark = cells(&[("a", 1), ("b", 2)]);
+        let now = cells(&[("a", 1), ("b", 9), ("c", 3)]);
+        assert!(!unseen(&mark, &now, "a"), "as read");
+        assert!(unseen(&mark, &now, "b"), "edited since");
+        assert!(unseen(&mark, &now, "c"), "added since");
+        assert!(!unseen(&mark, &now, "gone"), "not there now");
     }
 
     #[test]
