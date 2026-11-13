@@ -32,32 +32,6 @@
 //! (see the `marks` module).
 
 mod marks;
-/// Move read mark `token` past the runs of cells `ids` in notebook
-/// `path` as they are now ([`Notebooks::own_runs`]).
-async fn adopt_own_runs(
-    state: &AppState,
-    marks: Arc<Mutex<marks::Marks>>,
-    token: String,
-    path: String,
-    ids: Vec<String>,
-) {
-    let Ok(room_id) = notebook_room_id(&state.collab, &state.contents, &path).await else {
-        return;
-    };
-    let _ = with_notebook(&state.collab, &state.contents, &room_id, move |room| {
-        if let Some(Ok(nb)) = room.notebook_with_ids() {
-            let now = marks::runs(&nb);
-            if let Some(m) = marks.lock().expect("marks").get(&token) {
-                if m.path == path {
-                    marks::adopt_runs(&mut m.runs, &now, &ids);
-                }
-            }
-        }
-        ((), Effects::default())
-    })
-    .await;
-}
-
 #[cfg(test)]
 mod reference;
 pub(crate) mod search;
@@ -1596,6 +1570,32 @@ fn client_name(peer: &Peer<RoleServer>) -> String {
         .unwrap_or_else(|| "agent".into())
 }
 
+/// Move read mark `token` past the runs of cells `ids` in notebook
+/// `path` as they are now ([`Notebooks::own_runs`]).
+async fn adopt_own_runs(
+    state: &AppState,
+    marks: Arc<Mutex<marks::Marks>>,
+    token: String,
+    path: String,
+    ids: Vec<String>,
+) {
+    let Ok(room_id) = notebook_room_id(&state.collab, &state.contents, &path).await else {
+        return;
+    };
+    let _ = with_notebook(&state.collab, &state.contents, &room_id, move |room| {
+        if let Some(Ok(nb)) = room.notebook_with_ids() {
+            let now = marks::runs(&nb);
+            if let Some(m) = marks.lock().expect("marks").get(&token) {
+                if m.path == path {
+                    marks::adopt_runs(&mut m.runs, &now, &ids);
+                }
+            }
+        }
+        ((), Effects::default())
+    })
+    .await;
+}
+
 fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -2016,8 +2016,7 @@ impl Notebooks {
         let mut tokens: Vec<String> = own.iter().cloned().collect();
         tokens.extend(also.filter(|t| !tokens.contains(t)));
         let (marks, p) = (self.marks.clone(), path.to_string());
-        let mut checked = ids.clone();
-        checked.extend(check);
+        let checked = ids.clone();
         let client = self.client_name();
         let r = self
             .room(path, move |room| {
@@ -2027,13 +2026,21 @@ impl Notebooks {
                     return (Err(Refused::ReadOnly), Effects::default());
                 }
                 // Nothing to refuse for no cells (clearing outputs).
-                let checking = own.as_ref().filter(|_| !checked.is_empty());
+                let checking = own
+                    .as_ref()
+                    .filter(|_| !checked.is_empty() || !check.is_empty());
                 if let (Some(own), Some(Ok(nb))) = (checking, room.notebook_with_ids()) {
                     let now = marks::snapshot(&nb);
                     let mut marks = marks.lock().expect("marks");
                     if let Some(m) = marks.get(own).filter(|m| m.path == p) {
-                        if let Some(id) =
-                            checked.iter().find(|id| marks::unseen(&m.cells, &now, id))
+                        // A `check` cell the mark lacks is new to the
+                        // reader: no version of it could be overwritten
+                        // unseen.
+                        let known = |id: &&String| m.cells.iter().any(|(i, _)| i == *id);
+                        if let Some(id) = checked
+                            .iter()
+                            .chain(check.iter().filter(known))
+                            .find(|id| marks::unseen(&m.cells, &now, id))
                         {
                             // The cell as the check saw it, for the message.
                             let cell = nb

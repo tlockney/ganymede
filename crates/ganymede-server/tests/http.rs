@@ -6158,6 +6158,16 @@ async fn mcp_reports_who_changed_a_cell_and_requests() {
         assert!(std::time::Instant::now() < deadline, "{open}");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+
+    // A request written after the agent's last read is answered straight
+    // from notebook_requests: no version of it was unseen.
+    let out = tool(
+        agent.clone(),
+        "cell_add",
+        json!({"path": "j.ipynb", "source": "Same.", "answers": "q"}),
+    )
+    .await;
+    assert!(out.contains("the request is marked done"), "{out}");
 }
 
 /// `notebook_read(since)` lists what a person changed through the room
