@@ -180,7 +180,7 @@ kernel = "python3"
 someone chose from one it should infer. A file with no `kernel` leaves
 the choice to the folder above; an unknown key, or a kernel that isn't
 installed, is an error that names the file. The server reads the file
-from disk and never above its root; it isn't served through the
+from disk and never above its root, not even through a symlinked folder; it isn't served through the
 contents API, since its name starts with a dot. The same rule picks the
 kernel for an existing notebook whose metadata names none.
 
@@ -407,7 +407,7 @@ are config keys.
 | `--no-execute` | `mcp_no_execute` | Edit notebooks but run no code. |
 | `--images` | `mcp_images` | Send images in outputs to the model. |
 | `--own-server` | | Start a server even when one is running. |
-| `--default-kernel` | | The kernelspec new notebooks start, where no `.ganymede.toml` sets one (see [Kernel for a new notebook](#kernel-for-a-new-notebook)). |
+| `--default-kernel` | | The kernelspec new notebooks start. |
 
 ## nb-cli
 
