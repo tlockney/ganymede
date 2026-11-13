@@ -95,6 +95,25 @@ pub struct Author {
     pub person: bool,
 }
 
+/// A name a client gave, made safe to show in a line of text: control
+/// characters dropped, whitespace collapsed, at most 64 characters.
+/// Empty when nothing is left.
+pub fn clean_name(name: &str) -> String {
+    let words: Vec<&str> = name.split_whitespace().collect();
+    words
+        .join(" ")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(64)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// The author of the server's own edits ([`Room::edit`]) until its
+/// caller names one ([`Room::set_author`]).
+pub const SERVER: &str = "the server";
+
 /// The stand-in name for a client that gave none.
 pub const UNNAMED: &str = "a person";
 
@@ -139,6 +158,9 @@ pub struct Room {
     /// Who last changed each cell's source or type, by cell id, while the
     /// room is open. Kept in memory only.
     authors: HashMap<String, Author>,
+    /// Deleted cells' authors, with their hash, so a cell that comes back
+    /// as it was (an undo) keeps its author.
+    gone: HashMap<String, (u64, Author)>,
 }
 
 impl Room {
@@ -203,6 +225,7 @@ impl Room {
             depths: HashMap::new(),
             shared_depth: 0,
             authors: HashMap::new(),
+            gone: HashMap::new(),
         }
     }
 
@@ -717,14 +740,35 @@ impl Room {
 
     /// Credit `author` with each cell whose type or source differs from
     /// `before`, or that `before` lacks; forget cells that went.
+    /// A cell that comes back with the hash it had when it went (an undo
+    /// of its deletion) gets its old author back, not `author`.
     fn attribute(&mut self, before: &HashMap<String, u64>, author: &Author) {
         let now = self.prints();
         for (id, fp) in &now {
-            if before.get(id) != Some(fp) {
-                self.authors.insert(id.clone(), author.clone());
+            if before.get(id) == Some(fp) {
+                continue;
+            }
+            let back = (!before.contains_key(id))
+                .then(|| self.gone.remove(id))
+                .flatten()
+                .filter(|(was, _)| was == fp)
+                .map(|(_, a)| a);
+            match back {
+                Some(a) => self.authors.insert(id.clone(), a),
+                None => self.authors.insert(id.clone(), author.clone()),
+            };
+        }
+        let went: Vec<String> = self
+            .authors
+            .keys()
+            .filter(|id| !now.contains_key(*id))
+            .cloned()
+            .collect();
+        for id in went {
+            if let (Some(a), Some(fp)) = (self.authors.remove(&id), before.get(&id)) {
+                self.gone.insert(id, (*fp, a));
             }
         }
-        self.authors.retain(|id, _| now.contains_key(id));
     }
 
     /// The name connection `conn`'s client gave in its awareness state.
@@ -733,8 +777,9 @@ impl Room {
             let user = v.get("user")?;
             ["display_name", "name", "username"]
                 .iter()
-                .find_map(|k| user.get(*k)?.as_str().filter(|s| !s.trim().is_empty()))
-                .map(str::to_string)
+                .filter_map(|k| user.get(*k)?.as_str())
+                .map(clean_name)
+                .find(|s| !s.is_empty())
         };
         self.conns
             .get(&conn)
@@ -762,6 +807,7 @@ impl Room {
         f: impl FnOnce(&mut yrs::TransactionMut, &Roots) -> R,
     ) -> (R, Effects) {
         let roots = self.roots.clone().unwrap_or_else(|| Roots::get(self.doc()));
+        let before = self.prints();
         let r = {
             let mut txn = self.awareness.doc().transact_mut();
             f(&mut txn, &roots)
@@ -770,6 +816,14 @@ impl Room {
         if self.content_changed.swap(false, Ordering::Relaxed) && !self.read_only {
             self.generation += 1;
             fx.changed = true;
+            // A cell the server changed is no longer a person's, whoever
+            // edits through it (a kernel through the host API, an agent):
+            // the caller may name itself with `set_author`.
+            let server = Author {
+                name: SERVER.to_string(),
+                person: false,
+            };
+            self.attribute(&before, &server);
         }
         (r, fx)
     }

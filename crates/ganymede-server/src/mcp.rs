@@ -1383,9 +1383,9 @@ impl ServerHandler for Notebooks {
             .filter(|d| !d.is_empty());
         *self.dir.lock().expect("dir") = dir;
         context.peer.set_peer_info(request.clone());
-        let name = request.client_info.name.trim();
+        let name = ganymede_documents::clean_name(&request.client_info.name);
         if !name.is_empty() {
-            *self.client.lock().expect("client") = name.to_string();
+            *self.client.lock().expect("client") = name;
         }
         self.negotiate_initialize(&request)
     }
@@ -1455,7 +1455,7 @@ impl ServerHandler for Notebooks {
 /// Client name for provenance.
 fn client_name(peer: &Peer<RoleServer>) -> String {
     peer.peer_info()
-        .map(|i| i.client_info.name.clone())
+        .map(|i| ganymede_documents::clean_name(&i.client_info.name))
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| "agent".into())
 }
@@ -1763,7 +1763,9 @@ impl Notebooks {
             let by = if names.is_empty() {
                 String::new()
             } else {
-                format!(" by {}", names.join(", "))
+                // Quoted, as JSON strings: the names are the clients' own.
+                let quoted: Vec<String> = names.iter().map(|n| json!(n).to_string()).collect();
+                format!(" by {}", quoted.join(", "))
             };
             let asks = match c.requests.len() {
                 0 => String::new(),

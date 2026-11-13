@@ -23,3 +23,13 @@ The author check is what keeps a planted `@agent` cell (in a shared
 notebook, or written by another agent or a kernel) from counting, as
 the design review asked. Marking a request done waits for the plugin
 step.
+
+The review found that a kernel's host-API edit to a person's cell kept
+the person's credit, so planted `@agent` text would read as their
+request. `Room::edit`, which every server-side writer goes through, now
+credits the cells it changes to "the server" (`person: false`), and the
+MCP path renames that to the client with `set_author`. Clients' names
+are cleaned (no control characters, 64 characters at most) and quoted
+in the `@@changed` line, so a name can't forge that line. A deleted
+cell that comes back with the same hash, as on an undo, keeps its
+author.
