@@ -704,12 +704,15 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         terminals: terminals.clone(),
         lsp: lsp.clone(),
         mcp: cfg.mcp_enabled.then(|| {
-            Arc::new(crate::mcp::McpState::new(crate::mcp::McpOptions {
-                read_only: cfg.mcp_read_only,
-                no_execute: cfg.mcp_no_execute,
-                images: cfg.mcp_images,
-                outputs_dir: None,
-            }))
+            Arc::new(
+                crate::mcp::McpState::new(crate::mcp::McpOptions {
+                    read_only: cfg.mcp_read_only,
+                    no_execute: cfg.mcp_no_execute,
+                    images: cfg.mcp_images,
+                    outputs_dir: None,
+                })
+                .with_token(cfg.mcp_token.clone()),
+            )
         }),
         metrics: Default::default(),
         host: Arc::new(cfg.host.clone()),

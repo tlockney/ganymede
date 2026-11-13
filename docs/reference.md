@@ -180,6 +180,8 @@ the [flags for every command](#flags-for-every-command) and the
 | `--no-download` | Leave the notebook copy and its Download button out. |
 | `--download` | Put the notebook copy in even with `--code hidden`. |
 
+The page replaces the notebook's directory with `.` and the home directory with `~`, and nothing else: a secret a cell printed (a token, an API key, an environment variable) goes in as it is, so read the page before sharing it. See [Publishing a notebook](mcp.md#publishing-a-notebook).
+
 ### `grant`
 
 | Flag | Effect |
@@ -331,6 +333,10 @@ allow_origins = ["https://notebooks.example.org"]
 
 Every key, with its default:
 
+> [!NOTE]
+> **Unreleased.** `mcp_token` is available only from a build of `main`
+> (HEAD), not in the latest release; the other keys are released.
+
 ```toml
 # ganymede.toml: every key, set to its default or commented out.
 # Flags given on the command line override these.
@@ -366,6 +372,7 @@ mcp_enabled = false              # true: notebook tools for agents at /mcp
 mcp_read_only = false            # /mcp reads notebooks only
 mcp_no_execute = false           # /mcp edits notebooks but runs no code
 mcp_images = false               # /mcp sends images in outputs to the model
+# mcp_token = "..."              # a token only /mcp accepts (see MCP)
 crash_reporting = false          # true: send crash reports (see Privacy)
 frame_ancestors = "'self'"       # who may frame the server's pages
 

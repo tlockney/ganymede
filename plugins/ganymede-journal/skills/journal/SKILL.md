@@ -150,32 +150,35 @@ the work there. Keep both sides usable:
 ## Output, charts and widgets
 
 14. Format results with the kernel's display module rather than
-    printing them: the `jupyter` global in TypeScript (`jupyter.md`,
-    `jupyter.svg`, `jupyter.display`), `IPython.display` in Python
-    (`display`, `Markdown`, `SVG`, `Image`). A Markdown table of the
-    numbers that matter, under a short heading, reads better than a
-    printed data frame, and you can read it back. To show progress or
+    printing them: the `jupyter` global in TypeScript (`jupyter.table`,
+    `jupyter.md`, `jupyter.display`), `IPython.display` in Python
+    (`display`, `Markdown`, `SVG`, `Image`). A table of the numbers
+    that matter, under a short heading, reads better than a printed
+    data frame, and you can read it back. To show progress or
     a value that changes, display once with a display id and update it
     in place instead of printing lines. See
     [typescript.md](typescript.md) and [python.md](python.md).
-15. When a result needs a chart, pull in a plotting library and pin
-    its version: Observable Plot in TypeScript (an `npm:` import),
-    matplotlib in Python. A Vega-Lite spec suits a chart only the
-    person needs to read (see 16). A Python package the kernel lacks
+15. When a result needs a chart, draw it in the kernel. In TypeScript,
+    `jupyter.chart` takes a Vega-Lite spec or Observable Plot and
+    draws one SVG with its title and legend (cdp-kernel 0.11.0 or
+    later). In Python, use matplotlib. Pin the version of any library
+    you import. A Python package the kernel lacks
     goes in with `%pip install name==version` in a cell of its own, so
     the notebook says what it needs; a TypeScript cell's import is
     enough. Prefer TypeScript for a journal that needs libraries the
-    environment may not have.
+    environment may not have, and `jupyter.sql` for aggregating data
+    before you chart or tabulate it.
 16. Look at the chart before writing the finding: a chart can show
     what the table you checked doesn't, such as a trend at the end of a
     series. When the reply to `cell_run` has no image (the server
     doesn't send them), call `cell_snapshot(ids: [<the cell id>], code:
     false)`, which always returns the image. You can see SVG and PNG
-    charts; charts drawn by JavaScript in the frontend (Vega-Lite,
-    Plotly, Altair) reach you only as text, so draw one you need to
-    read as SVG or PNG. `cell_snapshot` needs a Ganymede newer than
-    0.7.0; without it, say what the chart is meant to show and check
-    the numbers in a table instead.
+    charts; charts drawn by JavaScript in the frontend (a raw
+    Vega-Lite spec, Plotly, Altair) reach you only as text, so draw one
+    you need to read as SVG or PNG (`jupyter.chart` does).
+    `cell_snapshot` needs a Ganymede newer than 0.7.0; without it,
+    say what the chart is meant to show and check the numbers in a
+    table instead.
 17. When a person is watching and would explore a result, such as
     moving a threshold, picking a date range or a category, add a
     widget wired to the kernel: `jupyter.widget` in TypeScript,

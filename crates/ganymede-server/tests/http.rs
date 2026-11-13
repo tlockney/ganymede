@@ -3825,6 +3825,20 @@ async fn files_serves_raw_bytes() {
     .unwrap();
     std::fs::write(dir.path().join("notes.txt"), "hello").unwrap();
     std::fs::write(dir.path().join("page.html"), "<script>1</script>").unwrap();
+    let nb = json!({"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    let published = ganymede_nbformat::to_html(
+        &serde_json::from_value(nb).unwrap(),
+        "n.ipynb",
+        &ganymede_nbformat::HtmlOptions::default(),
+    );
+    std::fs::write(dir.path().join("published.html"), published.body).unwrap();
+    // The generator tag past the head doesn't count.
+    let late = format!(
+        "<!doctype html><p>{}</p>{}",
+        "x".repeat(600),
+        ganymede_nbformat::HTML_GENERATOR_MARK
+    );
+    std::fs::write(dir.path().join("late.html"), late).unwrap();
     std::fs::write(dir.path().join("a.ipynb"), "{\"cells\": []}").unwrap();
     std::fs::write(dir.path().join("blob"), [0xff, 0xfe]).unwrap();
     std::fs::write(dir.path().join(".secret"), "no").unwrap();
@@ -3851,6 +3865,19 @@ async fn files_serves_raw_bytes() {
     // HTML runs sandboxed in an opaque origin, as jupyter_server's.
     let (st, h, _) = raw(&app, get("/files/page.html")).await;
     assert_eq!(st, StatusCode::OK);
+    assert_eq!(
+        h[header::CONTENT_SECURITY_POLICY],
+        "sandbox allow-scripts; frame-ancestors 'self'"
+    );
+    // A page Ganymede published may download its notebook copy (#758);
+    // other HTML may not.
+    let (st, h, _) = raw(&app, get("/files/published.html")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(
+        h[header::CONTENT_SECURITY_POLICY],
+        "sandbox allow-scripts allow-downloads; frame-ancestors 'self'"
+    );
+    let (_, h, _) = raw(&app, get("/files/late.html")).await;
     assert_eq!(
         h[header::CONTENT_SECURITY_POLICY],
         "sandbox allow-scripts; frame-ancestors 'self'"
@@ -4517,11 +4544,20 @@ async fn mcp_call(
     session: Option<&str>,
     body: Value,
 ) -> (StatusCode, Option<String>, Value) {
+    mcp_call_as(app, TOKEN, session, body).await
+}
+
+async fn mcp_call_as(
+    app: &axum::Router,
+    token: &str,
+    session: Option<&str>,
+    body: Value,
+) -> (StatusCode, Option<String>, Value) {
     let mut req = Request::builder()
         .method("POST")
         .uri("/mcp")
         .header(header::HOST, "localhost:8888")
-        .header(header::AUTHORIZATION, format!("token {TOKEN}"))
+        .header(header::AUTHORIZATION, format!("token {token}"))
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::ACCEPT, "application/json, text/event-stream")
         .header("mcp-protocol-version", "2025-06-18");
@@ -4561,6 +4597,216 @@ fn mcp_text(v: &Value) -> String {
         .filter_map(|c| c["text"].as_str())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// `mcp_token` passes `/mcp` and nothing else, so a read-only agent can't
+/// write or run through the REST API either (#766).
+#[tokio::test]
+async fn the_mcp_token_reaches_only_mcp() {
+    const AGENT: &str = "agent-only-token";
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("a.ipynb"),
+        json!({"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}).to_string(),
+    )
+    .unwrap();
+    let mut st = state(dir.path());
+    st.mcp = Some(Arc::new(
+        ganymede_server::mcp::McpState::new(ganymede_server::mcp::McpOptions {
+            read_only: true,
+            no_execute: false,
+            images: false,
+            outputs_dir: Some(dir.path().join("spill")),
+        })
+        .with_token(Some(AGENT.into())),
+    ));
+    let app = build_router(st);
+
+    // /mcp takes it, and sets no login cookie that other routes would take.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header(header::HOST, "localhost:8888")
+                .header(header::AUTHORIZATION, format!("token {AGENT}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, "application/json, text/event-stream")
+                .header("mcp-protocol-version", "2025-06-18")
+                .body(Body::from(
+                    json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                        "protocolVersion": "2025-06-18", "capabilities": {},
+                        "clientInfo": {"name": "agent", "version": "1"}}})
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp.headers().get(header::SET_COOKIE).is_none());
+    let sid = resp.headers()["mcp-session-id"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let (s, _, _) = mcp_call_as(
+        &app,
+        AGENT,
+        Some(&sid),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED);
+    let (s, _, v) = mcp_call_as(
+        &app,
+        AGENT,
+        Some(&sid),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let names: Vec<&str> = v["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"notebook_read"), "{names:?}");
+    // Read-only: MCP refuses the edit, as REST does below.
+    let (s, _, v) = mcp_call_as(
+        &app,
+        AGENT,
+        Some(&sid),
+        json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {
+            "name": "cell_add", "arguments": {"path": "a.ipynb", "source": "1"}}}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(
+        v.get("error").is_some() || v["result"]["isError"] == json!(true),
+        "{v}"
+    );
+    assert!(v.to_string().contains("read-only"), "{v}");
+    // A wrong token is still refused.
+    let (s, _, _) = mcp_call_as(&app, "not-the-token", None, json!({})).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    // Every other route refuses it, by header or query.
+    let refused = |method: &str, uri: String, by_query: bool| {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(if by_query {
+                format!(
+                    "{uri}{}token={AGENT}",
+                    if uri.contains('?') { '&' } else { '?' }
+                )
+            } else {
+                uri.clone()
+            })
+            .header(header::HOST, "localhost:8888")
+            .header(header::CONTENT_TYPE, "application/json");
+        if !by_query {
+            req = req.header(header::AUTHORIZATION, format!("token {AGENT}"));
+        }
+        if uri.ends_with("/channels") {
+            req = req
+                .header(header::CONNECTION, "upgrade")
+                .header(header::UPGRADE, "websocket")
+                .header("sec-websocket-version", "13")
+                .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==");
+        }
+        let req = req.body(Body::from(r#"{"path": "a.ipynb"}"#)).unwrap();
+        let app = app.clone();
+        async move {
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{uri}");
+            assert!(resp.headers().get(header::SET_COOKIE).is_none(), "{uri}");
+        }
+    };
+    for by_query in [false, true] {
+        refused("GET", "/api/contents".into(), by_query).await;
+        refused("PUT", "/api/contents/b.ipynb".into(), by_query).await;
+        refused("GET", "/api/kernels".into(), by_query).await;
+        refused("POST", "/api/kernels".into(), by_query).await;
+        refused("PUT", "/api/host/grants/a.ipynb".into(), by_query).await;
+        refused("POST", "/api/notebooks/run".into(), by_query).await;
+        refused("POST", "/api/terminals".into(), by_query).await;
+        refused("GET", "/api/kernels/k1/channels".into(), by_query).await;
+    }
+}
+
+/// With `mcp_token` set, `/mcp` still takes the server's token; an empty
+/// `mcp_token` is none, so an empty `Authorization: token` gets nowhere.
+#[tokio::test]
+async fn the_server_token_still_reaches_mcp_and_an_empty_mcp_token_is_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let app_with = |token: &str| {
+        let mut st = state(dir.path());
+        st.mcp = Some(Arc::new(
+            ganymede_server::mcp::McpState::new(ganymede_server::mcp::McpOptions {
+                read_only: true,
+                no_execute: false,
+                images: false,
+                outputs_dir: Some(dir.path().join("spill")),
+            })
+            .with_token(Some(token.into())),
+        ));
+        build_router(st)
+    };
+    let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": {"name": "agent", "version": "1"}}});
+    let (status, sid, _) =
+        mcp_call_as(&app_with("agent-only-token"), TOKEN, None, init.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(sid.is_some());
+    let (status, _, _) = mcp_call_as(&app_with(""), "", None, init).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// A published page, over MCP or from `/nbconvert/html`, replaces
+/// `mcp_token` as it does the server's token (#766).
+#[tokio::test]
+async fn publishing_replaces_the_mcp_token() {
+    const AGENT: &str = "agent-only-token";
+    let dir = tempfile::tempdir().unwrap();
+    let nb = json!({"cells": [
+        {"cell_type": "code", "id": "c", "execution_count": 1, "metadata": {},
+         "source": "env()", "outputs": [
+            {"output_type": "stream", "name": "stdout", "text": format!("key {AGENT}\n")}]}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.path().join("q.ipynb"), nb.to_string()).unwrap();
+    let mut st = state(dir.path());
+    st.mcp = Some(Arc::new(
+        ganymede_server::mcp::McpState::new(ganymede_server::mcp::McpOptions {
+            read_only: false,
+            no_execute: false,
+            images: false,
+            outputs_dir: Some(dir.path().join("spill")),
+        })
+        .with_token(Some(AGENT.into())),
+    ));
+    let app = build_router(st);
+    let sid = mcp_connect(&app, "agent").await;
+    let out = mcp_text(&mcp_tool(&app, &sid, "notebook_publish", json!({"path": "q.ipynb"})).await);
+    assert!(out.contains("published/q.html"), "{out}");
+    let page = std::fs::read_to_string(dir.path().join("published/q.html")).unwrap();
+    assert!(page.contains("key [token]"), "{page}");
+    assert!(!page.contains(AGENT));
+
+    let (status, _, body) = raw(
+        &app,
+        Request::get("/nbconvert/html/q.ipynb")
+            .header(header::AUTHORIZATION, format!("token {TOKEN}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let page = String::from_utf8(body).unwrap();
+    assert!(page.contains("key [token]"), "{page}");
+    assert!(!page.contains(AGENT));
 }
 
 #[tokio::test]
