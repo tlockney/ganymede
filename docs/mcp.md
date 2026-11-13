@@ -78,8 +78,13 @@ be on your `PATH`, and its hooks run with `node`.
 | Agent `journal-reviewer` | Reads the notebook cold, re-runs it, looks at its charts, and lists what a stranger couldn't follow or reproduce. It doesn't edit. |
 | Hook `SessionStart` | Says whether a server is running for the directory, its kernels, and the journal open in a resumed session. |
 | Hook `UserPromptSubmit` | Reads the open journal with the agent's [read mark](#changes-by-others) and adds what a person or another agent changed as context. |
-| Hook `PostToolUse` | Follows the agent's notebook tools (the open notebook, its mark, edits since the last clean run-all). Records a Bash command that ends in `# journal` as a recorded cell, with up to 2,000 characters of its output. |
+| Hook `PostToolUse` | Follows the agent's notebook tools (the open notebook, its mark, edits since the last clean run-all). Records a Bash command that ends in `# journal` as a recorded cell, with up to 2,000 characters of its output. When a tool reply ends with an [`@@changed`](#learning-of-changes-mid-work-and-edits-refused) line, reads those changes in and adds them as context. |
 | Hook `Stop` | Once per round of edits, stops the agent from ending its turn while the journal has edits since its last clean `notebook_run_all`, and asks it to run it or say it is only pausing. |
+
+> [!NOTE]
+> **Unreleased.** The `PostToolUse` hook passing on `@@changed` changes
+> is available only from a build of `main` (HEAD), not in the latest
+> release.
 
 The hooks reach the server with `ganymede mcp call` (below), so they
 find the same server the agent uses: a running `ganymede serve --mcp`,
@@ -423,7 +428,9 @@ for:
 ```
 
 So an agent in the middle of its work learns of a person's edit on its
-next call. The line doesn't move the mark: the read it names does.
+next call. The line doesn't move the mark: the read it names does. The
+[journal plugin](#the-ganymede-journal-plugin-for-claude-code)'s `PostToolUse` hook makes that read
+for the agent and adds the changes as context right after the reply.
 
 `cell_edit`, `cell_delete` and `cell_move` refuse a cell someone else
 changed (its source or type) or added since the connection's mark, so
