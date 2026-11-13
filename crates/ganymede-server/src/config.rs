@@ -120,7 +120,8 @@ pub struct Config {
     /// the server's token an agent could also write contents, start
     /// kernels and change grants over REST. That holds only while the
     /// agent can't run code (`mcp_read_only` or `mcp_no_execute`): a cell
-    /// can read the server's token from the server info file or config.
+    /// can read the server's token from the server info file or config,
+    /// and an agent reads any output that shows it.
     /// `/mcp` takes the server's token too. Unset or empty: none.
     pub mcp_token: Option<String>,
     /// Send crash reports to Sentry (docs/privacy.md). Off by default.

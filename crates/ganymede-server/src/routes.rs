@@ -290,7 +290,13 @@ async fn nbconvert() -> Json<Value> {
 /// server root's absolute path, the home directory, and the token. A
 /// notebook's outputs can hold them (tracebacks, a printed path).
 pub(crate) fn server_redactions(s: &AppState) -> Vec<(String, String)> {
-    publish_redactions(s.collab.root(), s.token.as_deref())
+    let mut redact = publish_redactions(s.collab.root(), s.token.as_deref());
+    // `mcp_token` too (#766), by the same rule as the server's token.
+    let mcp_token = s.mcp.as_ref().and_then(|m| m.token());
+    if let Some(token) = mcp_token.filter(|t| t.len() >= 8) {
+        redact.push((token.to_owned(), "[token]".to_owned()));
+    }
+    redact
 }
 
 /// The server's redactions for a given root (`.`) and token (`[token]`),

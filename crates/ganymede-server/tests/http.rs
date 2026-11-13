@@ -4738,10 +4738,10 @@ async fn the_server_token_still_reaches_mcp_and_an_empty_mcp_token_is_none() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
-/// MCP `notebook_publish` replaces `mcp_token` in the page as it does
-/// the server's token (#766).
+/// A published page, over MCP or from `/nbconvert/html`, replaces
+/// `mcp_token` as it does the server's token (#766).
 #[tokio::test]
-async fn mcp_publish_replaces_the_mcp_token() {
+async fn publishing_replaces_the_mcp_token() {
     const AGENT: &str = "agent-only-token";
     let dir = tempfile::tempdir().unwrap();
     let nb = json!({"cells": [
@@ -4765,6 +4765,19 @@ async fn mcp_publish_replaces_the_mcp_token() {
     let out = mcp_text(&mcp_tool(&app, &sid, "notebook_publish", json!({"path": "q.ipynb"})).await);
     assert!(out.contains("published/q.html"), "{out}");
     let page = std::fs::read_to_string(dir.path().join("published/q.html")).unwrap();
+    assert!(page.contains("key [token]"), "{page}");
+    assert!(!page.contains(AGENT));
+
+    let (status, _, body) = raw(
+        &app,
+        Request::get("/nbconvert/html/q.ipynb")
+            .header(header::AUTHORIZATION, format!("token {TOKEN}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let page = String::from_utf8(body).unwrap();
     assert!(page.contains("key [token]"), "{page}");
     assert!(!page.contains(AGENT));
 }
