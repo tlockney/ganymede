@@ -158,6 +158,32 @@ Cells run through the server, as the
 them: outputs go into the document as they arrive, and a person watching
 the notebook sees them live.
 
+## Kernel for a new notebook
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+A notebook `notebook_open` creates starts the kernel the call names.
+Without one, it starts its folder's default: the `kernel` in the
+nearest `.ganymede.toml`, from the notebook's folder up to the server
+root. Without that, the server's default (`--default-kernel`, else the
+first kernelspec).
+
+```toml
+# journal/.ganymede.toml
+kernel = "python3"
+```
+
+`kernelspecs_list` reports the folder default and the file that sets it
+(for the connection's folder, or `dir`), so an agent can tell a default
+someone chose from one it should infer. A file with no `kernel` leaves
+the choice to the folder above; an unknown key, or a kernel that isn't
+installed, is an error that names the file. The server reads the file
+from disk and never above its root; it isn't served through the
+contents API, since its name starts with a dot. The same rule picks the
+kernel for an existing notebook whose metadata names none.
+
 ## Outputs
 
 The notebook keeps each recorded cell's outputs: a journal records what a
@@ -381,7 +407,7 @@ are config keys.
 | `--no-execute` | `mcp_no_execute` | Edit notebooks but run no code. |
 | `--images` | `mcp_images` | Send images in outputs to the model. |
 | `--own-server` | | Start a server even when one is running. |
-| `--default-kernel` | | The kernelspec new notebooks start. |
+| `--default-kernel` | | The kernelspec new notebooks start, where no `.ganymede.toml` sets one (see [Kernel for a new notebook](#kernel-for-a-new-notebook)). |
 
 ## nb-cli
 

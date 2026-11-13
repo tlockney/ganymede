@@ -38,6 +38,7 @@ pub(crate) mod search;
 mod snapshot;
 
 use crate::collab::{hold_notebook, notebook_room_id, with_notebook, Hold};
+use crate::folder;
 use crate::AppState;
 use base64::Engine as _;
 use ganymede_api::sessions::KernelRef;
@@ -214,10 +215,18 @@ pub struct OpenArgs {
     /// starts at the server root.
     pub path: String,
     /// Kernelspec name for a new notebook or a new kernel (default: the
-    /// notebook's own, else the server's default).
+    /// notebook's own, else its folder's default from `.ganymede.toml`,
+    /// else the server's default).
     pub kernel: Option<String>,
     /// For a new notebook: a title, written as a first Markdown cell.
     pub title: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct KernelspecsArgs {
+    /// The folder to report a default for, relative to this connection's
+    /// directory (default: that directory).
+    pub dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -465,6 +474,7 @@ impl Notebooks {
                 )))
             }
         };
+        let mut folder_default = None;
         if !exists {
             if self.opts.read_only {
                 return Err(err(format!(
@@ -472,8 +482,23 @@ impl Notebooks {
                     path = self.show(&path)
                 )));
             }
-            self.create(&path, a.kernel.as_deref(), a.title.as_deref())
-                .await?;
+            let kernel = match &a.kernel {
+                Some(k) => Some(k.clone()),
+                None => {
+                    folder_default = self.folder_kernel(folder::dir_of(&path))?;
+                    folder_default.as_ref().map(|f| f.kernel.clone())
+                }
+            };
+            self.create(&path, kernel.as_deref(), a.title.as_deref())
+                .await
+                .map_err(|e| match &folder_default {
+                    Some(f) => err(format!(
+                        "{} sets kernel {}, which isn't installed here (see kernelspecs_list); pass `kernel` to choose another",
+                        self.show(&f.file),
+                        f.kernel
+                    )),
+                    None => e,
+                })?;
         }
         *self.current.lock().expect("current") = Some(path.clone());
         let kernel = if self.opts.read_only || self.opts.no_execute {
@@ -501,6 +526,12 @@ impl Notebooks {
                 None => String::new(),
             }
         );
+        if let Some(f) = &folder_default {
+            out.insert_str(
+                out.len() - 2,
+                &format!(" (the folder default, from {})", self.show(&f.file)),
+            );
+        }
         out.push_str(&self.render(&nb, true));
         out.push_str(&format!("@@read {token}\n"));
         text(out)
@@ -1180,14 +1211,33 @@ impl Notebooks {
         text(format!("{summary}.\n\n{out}"))
     }
 
-    #[tool(description = "List the kernels that can run notebooks here.")]
-    async fn kernelspecs_list(&self) -> Result<CallToolResult, McpError> {
+    #[tool(
+        description = "List the kernels that can run notebooks here, the server's default, and the default for a folder when a `.ganymede.toml` there or above sets one (`kernel = \"<name>\"`). New notebooks in that folder start it unless `notebook_open` names a kernel."
+    )]
+    async fn kernelspecs_list(
+        &self,
+        Parameters(a): Parameters<KernelspecsArgs>,
+    ) -> Result<CallToolResult, McpError> {
         let specs = self
             .state
             .kernels
             .kernelspecs()
             .map_err(|e| err(e.message))?;
         let mut out = format!("default: {}\n", specs.default);
+        let dir = self.resolve(a.dir.as_deref().unwrap_or(""));
+        match self.folder_kernel(&dir) {
+            Ok(Some(f)) => out.push_str(&format!(
+                "folder default for {}: {} (from {})\n",
+                match self.show(&dir) {
+                    d if d.is_empty() => ".".to_owned(),
+                    d => d,
+                },
+                f.kernel,
+                self.show(&f.file)
+            )),
+            Ok(None) => {}
+            Err(e) => out.push_str(&format!("folder default: none ({})\n", e.message)),
+        }
         for (name, k) in &specs.kernelspecs {
             out.push_str(&format!(
                 "{name}: {} ({})\n",
@@ -1249,6 +1299,7 @@ Keep a notebook as the record of this analysis while you work, not as a write-up
 
 - Before a new notebook, `notebooks_search` for the topic's key words to find what earlier notebooks found, and build on it.
 - Start with `notebook_open` (a new notebook gets a title cell); later tools may leave out `path`.
+- For a new notebook, leave out `kernel` when `kernelspecs_list` shows a folder default (a `.ganymede.toml`); otherwise use the kernel the user asks for, else the one their notebooks nearby use.
 - Before each step, add a short Markdown note with `cell_add` saying what you are about to find out and why.
 - Run the code that produces results with `cell_run`, so the notebook keeps both the code and its output. The outputs are the record of the run: keep them.
 - When an output is too large or too private to keep, pass `keep_outputs: false` (or call `cell_clear_outputs`): the code stays, the outputs stay out of the notebook. Don't print credentials at all.
@@ -1747,6 +1798,15 @@ impl Notebooks {
 
     /// The kernel of the notebook's session, started (with a session, so
     /// JupyterLab joins the same kernel) when there is none.
+    /// The default kernel a `.ganymede.toml` sets for API directory
+    /// `dir`, when the contents are a local directory.
+    fn folder_kernel(&self, dir: &str) -> Result<Option<folder::FolderKernel>, McpError> {
+        match self.state.collab.root() {
+            Some(root) => folder::default_kernel(root, dir).map_err(err),
+            None => Ok(None),
+        }
+    }
+
     async fn kernel_for(
         &self,
         path: &str,
@@ -1768,7 +1828,14 @@ impl Notebooks {
                 .await
                 .ok()
                 .and_then(|nb| nb.metadata.get("kernelspec").cloned())
-                .and_then(|k| k["name"].as_str().map(str::to_string)),
+                .and_then(|k| k["name"].as_str().map(str::to_string))
+                // A notebook that names no kernel: its folder's default.
+                .or_else(|| {
+                    self.folder_kernel(folder::dir_of(path))
+                        .ok()
+                        .flatten()
+                        .map(|f| f.kernel)
+                }),
         };
         let s = self
             .state
