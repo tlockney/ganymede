@@ -503,7 +503,8 @@ impl<'a> Page<'a> {
                     format!(" class=\"{}\"", classes.join(" "))
                 };
                 let mut text = self.r(&text).into_owned();
-                if let Some((cut, _)) = text.char_indices().nth(TABLE_CELL - 1) {
+                if text.chars().nth(TABLE_CELL).is_some() {
+                    let (cut, _) = text.char_indices().nth(TABLE_CELL - 1).unwrap_or_default();
                     text.truncate(cut);
                     text.push('…');
                 }
@@ -1787,6 +1788,7 @@ mod tests {
         let mut first = rows.clone();
         first[0] = json!({"moon": "<b>Io</b> /home/me/x", "r": null});
         first[1] = json!({"moon": "w".repeat(5000), "r": 1});
+        first[2] = json!({"moon": "x".repeat(1000), "r": 2});
         let n = nb(
             json!([{"cell_type": "code", "metadata": {}, "execution_count": 1, "source": "x",
             "outputs": [{"output_type": "execute_result", "execution_count": 1, "metadata": {},
@@ -1813,6 +1815,10 @@ mod tests {
         assert!(page.contains(&format!(
             "<td><div class=\"wrap\">{}…</div></td>",
             "w".repeat(999)
+        )));
+        assert!(page.contains(&format!(
+            "<td><div class=\"wrap\">{}</div></td>",
+            "x".repeat(1000)
         )));
         assert!(!page.contains("<td>m100</td>"), "only the first 100 rows");
         assert!(page.contains("<p class=\"table-rows\">100 of 12,345 rows</p>"));

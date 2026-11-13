@@ -23,7 +23,7 @@ entry without `schema.fields` falls back to the bundle's other entries.
 Checked by hand on a notebook run on cdp-node with tables, SQL results
 and charts, in light and dark.
 
-Follow-up: values first wrapped with `overflow-wrap: anywhere`, which
+Follow-up (#759): values first wrapped with `overflow-wrap: anywhere`, which
 let a wide table shrink its columns to a character and split numbers
 across lines. Now a value over 48 characters wraps in a 24rem block
 (`overflow-wrap: break-word`), shorter ones stay on one line so a wide
