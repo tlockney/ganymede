@@ -7,10 +7,10 @@
 //! `notebook_read` and `notebook_open` print. Reading moves the mark to
 //! the notebook as read, and the connection's own edits move it too, so
 //! the difference between a mark and the notebook is what others
-//! changed: cells added, edited, deleted or moved. A mark also holds a
-//! fingerprint of each code cell's last run (its execution count and
-//! outputs), so a cell someone else ran is reported as `ran`; the
-//! connection's own runs move that too. Metadata is not compared.
+//! changed: cells added, edited, deleted or moved. A mark also holds
+//! each code cell's execution count, so a cell someone else ran is
+//! reported as `ran`; the connection's own runs move that too. Outputs
+//! and metadata are not compared.
 //!
 //! The token works from any connection to the same server, so a hook
 //! outside the agent (such as a Claude Code `UserPromptSubmit` hook) can
@@ -31,7 +31,7 @@ const LIMIT: usize = 4096;
 pub struct Mark {
     pub path: String,
     pub cells: Vec<(String, u64)>,
-    /// Each run code cell's [`runs`] fingerprint.
+    /// Each run code cell's execution count (see [`runs`]).
     pub runs: HashMap<String, u64>,
     used: u64,
 }
@@ -121,23 +121,16 @@ pub fn snapshot(nb: &Notebook) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// A fingerprint of each code cell's last run in `nb`: its execution
-/// count and outputs. A cell that hasn't run, or whose outputs were
-/// cleared with its count, has none, so clearing isn't reported as a run.
+/// Each code cell's last run in `nb`, by its execution count: every run
+/// takes a new one. Outputs aren't compared, so a display update from
+/// another cell isn't a run of this one. A cell that hasn't run, or whose
+/// outputs were cleared with its count, has none, so clearing isn't
+/// reported as a run.
 pub fn runs(nb: &Notebook) -> HashMap<String, u64> {
     nb.cells
         .iter()
         .filter_map(|c| match c {
-            Cell::Code(code) => {
-                let count = code.execution_count?;
-                let id = code.id.clone()?;
-                let mut h = DefaultHasher::new();
-                count.hash(&mut h);
-                serde_json::to_string(&code.outputs)
-                    .unwrap_or_default()
-                    .hash(&mut h);
-                Some((id, h.finish()))
-            }
+            Cell::Code(code) => Some((code.id.clone()?, code.execution_count?)),
             _ => None,
         })
         .collect()
@@ -163,6 +156,7 @@ pub fn ran(
     old: &HashMap<String, u64>,
     new: &HashMap<String, u64>,
 ) -> Vec<String> {
+    let added: HashSet<&String> = added.iter().collect();
     cells
         .iter()
         .map(|(id, _)| id)

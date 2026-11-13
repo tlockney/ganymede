@@ -373,8 +373,8 @@ cells others added, edited or moved since that read, each as an
 `@@cell` block whose head has `"change": ["added"]`, `["edited"]`,
 `["moved"]` or more than one, and an `@@deleted {"id": ...}` line per
 deleted cell. With no changes it says so. Cell sources and types are
-compared for edits, outputs only for runs ([below](#learning-of-changes-mid-work-and-edits-refused)),
-and metadata not at all. A cell is moved when it left the
+compared, not outputs or metadata (and, unreleased, cells others ran:
+see [below](#learning-of-changes-mid-work-and-edits-refused)). A cell is moved when it left the
 longest run of cells that kept their order.
 
 Each MCP connection has one mark per notebook, and it keeps its name.
@@ -445,14 +445,16 @@ or one that was already in the file, is not a request, so a notebook
 can't carry instructions to an agent. A deleted cell that comes back
 unchanged, as on an undo, keeps the author it had.
 
-A code cell someone else ran since the mark, whose execution count or
-outputs differ from what the mark saw, is reported with `"ran"` in its
-change and its new outputs; the `@@changed` line counts it ("1 ran"),
-and `notebook_read(since)` starts "... 0 deleted, 1 ran." The
-connection's own runs (`cell_run`, `cell_edit` with `run`,
-`notebook_run_all`) and its clearing of outputs move its mark, except
-outputs that arrive after a run timed out, which are reported as
-`"ran"`. Clearing a cell's outputs and count is not a run. Who ran a
+A code cell someone else ran since the mark, whose execution count
+differs from what the mark saw, is reported with `"ran"` in its change
+and its new outputs; the `@@changed` line counts it ("1 ran"), and
+`notebook_read(since)` starts "... 0 deleted, 1 ran." The connection's
+own runs (`cell_run`, `cell_edit` with `run`, `notebook_run_all`) and
+its clearing of outputs move its mark once they finish, so a person's
+run of the same cell that lands just as the agent's finishes is taken
+as the agent's. Clearing a cell's outputs and count is not a run, nor
+is a change to its outputs from another cell's run, and after a kernel
+restart a run that gets the count the mark saw isn't seen. Who ran a
 cell isn't recorded, so a run alone has no `"by"`.
 
 ## What the agent sees

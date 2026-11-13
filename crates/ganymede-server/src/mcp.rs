@@ -2159,7 +2159,11 @@ impl Notebooks {
                 })
             })
             .await?;
-        self.own_runs(path, cleared).await;
+        // Taking the mark off changes no output: someone else's run since
+        // the mark is still theirs to report.
+        if drop {
+            self.own_runs(path, cleared).await;
+        }
         Ok(found)
     }
 
