@@ -25,8 +25,10 @@
 //! notebook, inert JSON in a `<script type="application/json">`, and a
 //! button that saves it. The copy keeps to the page's rules: the same
 //! redactions, applied to every text in it but base64 images, and no
-//! metadata beyond the kernel, a raw cell's format and an agent cell's
-//! `by` and `mode`. Recorded parameters are left out.
+//! metadata beyond the kernel, a raw cell's format, an agent cell's
+//! `by` and `mode`, and outputs' display hints (width, height and the
+//! like). Recorded parameters are left out. Outputs keep every entry of
+//! their bundles, also ones the page doesn't show.
 
 use crate::export::decode_base64;
 use crate::highlight::highlight;
@@ -700,6 +702,13 @@ impl<'a> Page<'a> {
                 out.insert(key.to_owned(), self.redact_value(v.clone()));
             }
         }
+        if let Some(Value::Array(outputs)) = out.get_mut("outputs") {
+            for o in outputs.iter_mut().filter_map(Value::as_object_mut) {
+                if let Some(Value::Object(m)) = o.get_mut("metadata") {
+                    *m = display_hints(m);
+                }
+            }
+        }
         let mut metadata = Map::new();
         if let Cell::Raw(c) = cell {
             for key in ["format", "raw_mimetype"] {
@@ -874,6 +883,38 @@ fn language_label(name: &str) -> String {
         "python" => "Python".to_owned(),
         _ => name.to_owned(),
     }
+}
+
+/// An output's metadata cut to the display hints frontends read
+/// (`width`, `height`, `isolated`, `needs_background`, `unconfined`), at
+/// the top or under a MIME type: a kernel can put anything else there.
+fn display_hints(metadata: &Map<String, Value>) -> Map<String, Value> {
+    const HINTS: &[&str] = &[
+        "width",
+        "height",
+        "isolated",
+        "needs_background",
+        "unconfined",
+    ];
+    let hint = |k: &str, v: &Value| {
+        HINTS.contains(&k)
+            && (v.is_number() || v.is_boolean() || v.is_string() && k == "needs_background")
+    };
+    metadata
+        .iter()
+        .filter_map(|(k, v)| match v {
+            Value::Object(per_mime) if k.contains('/') => {
+                let kept: Map<String, Value> = per_mime
+                    .iter()
+                    .filter(|(k, v)| hint(k, v))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                (!kept.is_empty()).then(|| (k.clone(), Value::Object(kept)))
+            }
+            v if hint(k, v) => Some((k.clone(), v.clone())),
+            _ => None,
+        })
+        .collect()
 }
 
 /// JSON text that can sit inside a `<script>` element: `<`, `>` and `&`
@@ -1474,7 +1515,7 @@ mod tests {
              "source": "read('/home/tl/proj/d.csv') // tok12345",
              "outputs": [
                 {"output_type": "stream", "name": "stdout", "text": "tok12345 /home/tl/x\n"},
-                {"output_type": "display_data", "metadata": {"image/png": {"width": 10}},
+                {"output_type": "display_data", "metadata": {"image/png": {"width": 10, "path": "/x"}, "needs_background": "light", "secret": "s3cret", "text/plain": {"note": "s3cret"}},
                  "data": {"image/png": png, "text/plain": "/home/tl/proj/fig"}},
                 {"output_type": "error", "ename": "E", "evalue": "/home/tl/proj", "traceback": ["at /home/tl/proj/a.ts:1"]}
              ]},
@@ -1539,6 +1580,10 @@ mod tests {
         let outputs = cells[1]["outputs"].as_array().unwrap();
         assert_eq!(outputs[0]["text"], "[token] ~/x\n");
         assert_eq!(outputs[1]["data"]["image/png"], json!(png));
+        assert_eq!(
+            outputs[1]["metadata"],
+            json!({"image/png": {"width": 10}, "needs_background": "light"})
+        );
         assert_eq!(outputs[1]["data"]["text/plain"], "./fig");
         assert_eq!(outputs[2]["traceback"][0], "at ./a.ts:1");
         assert_eq!(cells[2]["metadata"], json!({"format": "text/html"}));

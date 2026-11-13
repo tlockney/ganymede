@@ -323,6 +323,9 @@ copy keeps to the page's rules, so it is not the file on disk:
   the notebook runs with its defaults, and opens untrusted
 - no cell metadata but a raw cell's format and, on a cell an agent
   wrote, who wrote it (`by`, `mode`), without times or edit history
+- outputs with every entry of their bundles, also ones the page shows
+  another entry for (such as widgets), but of their metadata only
+  display hints such as an image's width and height
 
 A path the root replaced reads `./data/x.csv`, which works when the
 notebook sits where the root was; one under the home directory reads
