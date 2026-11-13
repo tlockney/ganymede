@@ -85,7 +85,7 @@ Snapshot cells as Markdown to show the user: the code in a fenced block, each ch
 | `ids` (required) | array of string | Cell ids, in the order to show them. |
 | `dir` | string | Save images in this directory, relative to this connection's directory, such as `journal/snapshots`, for a report next to the notebook. By default they go to a directory outside the server root that only you can read. |
 | `code` | boolean | Include each code cell's source (default true). |
-| `max_rows` | integer | Rows to keep of an HTML table (default 20). |
+| `max_rows` | integer | Rows to keep of a table (default 20). |
 | `path` | string | Notebook path; the one last opened when left out. |
 
 ## `kernel_control`

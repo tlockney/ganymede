@@ -1,6 +1,7 @@
 //! `cell_snapshot` (#611): a cell as Markdown an agent can put in front of
 //! its user. The code goes in a fenced block, images come out as files,
-//! HTML tables become Markdown tables and other output is plain text.
+//! table outputs and HTML tables become Markdown tables and other output
+//! is plain text.
 //!
 //! This module only shapes the snapshot. The tool in `mcp.rs` writes the
 //! images and swaps in their paths.
@@ -302,7 +303,7 @@ pub fn resource_table(resource: &Value, max_rows: usize) -> Option<String> {
         } else {
             s
         };
-        s.replace('|', "\\|")
+        s.replace('\\', "\\\\").replace('|', "\\|")
     };
     let extra = resource.get("ganymede");
     let mut out = String::new();
@@ -315,7 +316,7 @@ pub fn resource_table(resource: &Value, max_rows: usize) -> Option<String> {
             if kind.is_empty() {
                 text(name)
             } else {
-                format!("{} ({kind})", text(name))
+                format!("{} ({})", text(name), text(kind))
             }
         })
         .collect();
@@ -340,14 +341,24 @@ pub fn resource_table(resource: &Value, max_rows: usize) -> Option<String> {
             .collect();
         out.push_str(&format!("| {} |\n", cells.join(" | ")));
     }
+    // Only cdp-kernel says how many rows the source has; pandas embeds
+    // its first `display.max_rows` and doesn't, so the count is of those.
     let total = extra
         .and_then(|g| g.get("rows"))
         .and_then(Value::as_u64)
-        .map_or(rows.len(), |n| (n as usize).max(rows.len()));
+        .map(|n| (n as usize).max(rows.len()));
     let shown = rows.len().min(max_rows);
-    if total > shown {
-        out.push_str(&format!("\n({} more rows)\n", total - shown));
+    match total {
+        Some(total) if total > shown => {
+            out.push_str(&format!("\n({} more rows)\n", total - shown));
+        }
+        None if rows.len() > shown => {
+            out.push_str(&format!("\n({} more rows embedded)\n", rows.len() - shown));
+        }
+        _ => {}
     }
+    // A blank line ends the table, so a next output isn't read as rows.
+    out.push('\n');
     Some(out)
 }
 
@@ -393,6 +404,8 @@ pub fn html_table(html: &str, max_rows: usize) -> Option<String> {
     if body.len() > max_rows {
         out.push_str(&format!("\n({} more rows)\n", body.len() - max_rows));
     }
+    // A blank line ends the table, so a next output isn't read as rows.
+    out.push('\n');
     Some(out)
 }
 
@@ -423,7 +436,7 @@ fn cells(html: &str, lower: &str) -> Vec<String> {
             .map_or(lower.len(), |e| body_start + e);
         let text = strip_html(&html[body_start..close]);
         let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        out.push(text.replace('|', "\\|"));
+        out.push(text.replace('\\', "\\\\").replace('|', "\\|"));
         pos = close;
     }
     out
@@ -620,15 +633,30 @@ mod tests {
                     "data": {"application/vnd.dataresource+json": resource, "text/html": html, "text/plain": "Table"}}]),
         );
         assert!(markdown(&cell(0, &c, "", false, 2)).ends_with(
-            "Moons\n\n| moon (string) | r (integer) |\n| --- | --- |\n| Io \\| I | 1821 |\n| Europa II | null |\n\n(12343 more rows)\n"
+            "Moons\n\n| moon (string) | r (integer) |\n| --- | --- |\n| Io \\| I | 1821 |\n| Europa II | null |\n\n(12343 more rows)\n\n"
         ));
-        // pandas' table: no total, so the rows sent count.
+        // pandas' table: no total, so the count is of the rows embedded.
         let pandas = json!({"schema": {"fields": [{"name": "index", "type": "integer"}, {"name": 0, "type": "number"}]},
             "data": [{"index": 0, "0": 1.5}, {"index": 1, "0": 2.5}]});
         assert_eq!(
             resource_table(&pandas, 1).unwrap(),
-            "| index (integer) | 0 (number) |\n| --- | --- |\n| 0 | 1.5 |\n\n(1 more rows)\n"
+            "| index (integer) | 0 (number) |\n| --- | --- |\n| 0 | 1.5 |\n\n(1 more rows embedded)\n\n"
         );
+        // A backslash before a pipe stays in its cell; types are escaped too.
+        let odd =
+            json!({"schema": {"fields": [{"name": "re", "type": "a|b"}]}, "data": [["a\\|b"]]});
+        assert_eq!(
+            resource_table(&odd, 5).unwrap(),
+            "| re (a\\|b) |\n| --- |\n| a\\\\\\|b |\n\n"
+        );
+        // Two tables in one cell stay two tables.
+        let t = |title: &str| {
+            json!({"output_type": "display_data", "metadata": {}, "data": {
+            "application/vnd.dataresource+json": {"schema": {"fields": [{"name": "x"}]}, "data": [[1]],
+                "ganymede": {"rows": 1, "title": title}}}})
+        };
+        let two = code_cell("t", json!([t("A"), t("B")]));
+        assert!(markdown(&cell(0, &two, "", false, 20)).contains("| 1 |\n\nB\n\n| x |"));
         assert_eq!(resource_table(&json!({"data": [[1]]}), 5), None);
         let long = json!({"schema": {"fields": [{"name": "s"}]}, "data": [["x".repeat(500)]]});
         assert!(resource_table(&long, 5)
@@ -644,7 +672,7 @@ mod tests {
             <tr><th>2</th><td>d</td><td>3</td></tr></tbody></TABLE></div>"#;
         assert_eq!(
             html_table(html, 2).unwrap(),
-            "|  | name | n |\n| --- | --- | --- |\n| 0 | a \\| b | 1 |\n| 1 | c | 2 |\n\n(1 more rows)\n"
+            "|  | name | n |\n| --- | --- | --- |\n| 0 | a \\| b | 1 |\n| 1 | c | 2 |\n\n(1 more rows)\n\n"
         );
         assert_eq!(html_table("<p>no table</p>", 5), None);
         // Polars: a dtype row in <thead> after the names.
@@ -653,7 +681,7 @@ mod tests {
             <tbody><tr><td>1</td><td>x</td></tr></tbody></table>";
         assert_eq!(
             html_table(polars, 5).unwrap(),
-            "| a | b |\n| --- | --- |\n| 1 | x |\n"
+            "| a | b |\n| --- | --- |\n| 1 | x |\n\n"
         );
         let c = code_cell(
             "df",

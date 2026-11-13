@@ -391,7 +391,7 @@ pub struct SnapshotArgs {
     pub dir: Option<String>,
     /// Include each code cell's source (default true).
     pub code: Option<bool>,
-    /// Rows to keep of an HTML table (default 20).
+    /// Rows to keep of a table (default 20).
     pub max_rows: Option<usize>,
     /// Notebook path; the one last opened when left out.
     pub path: Option<String>,

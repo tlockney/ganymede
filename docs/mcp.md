@@ -220,6 +220,7 @@ reply to a person, without running anything:
   notebooks, pandas with `display.html.table_schema` on) as a Markdown
   table read from its rows: each column's name and type, at most
   `max_rows` rows (20 by default), and how many more the source has
+  (cdp-kernel says; for pandas, how many more it embedded)
 - otherwise an HTML table (pandas, Polars) as a Markdown table, cut to
   `max_rows` rows, with extra header rows such as Polars' dtypes left
   out
