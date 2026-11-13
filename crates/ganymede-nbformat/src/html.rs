@@ -918,7 +918,7 @@ fn safe_link(url: CowStr<'_>) -> CowStr<'_> {
 }
 
 /// `text` escaped for HTML text and double-quoted attributes.
-fn esc(text: &str) -> String {
+pub(crate) fn esc(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         match c {

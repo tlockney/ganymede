@@ -5,6 +5,8 @@
 //! doesn't know, or can't follow (a JavaScript regex literal, say), comes
 //! out as plain text: it never drops or reorders a character.
 
+use crate::html::esc;
+
 /// What a language's code looks like to the highlighter.
 struct Lang {
     keywords: &'static [&'static str],
@@ -141,6 +143,13 @@ impl<'a> Lexer<'a> {
     }
 
     fn emit(&mut self, class: Option<&str>, end: usize) {
+        // Always move on by at least one character, so no rule can stall
+        // the loop.
+        let end = if end > self.at {
+            end
+        } else {
+            self.at + self.rest().chars().next().map_or(0, char::len_utf8)
+        };
         let text = &self.src[self.at..end];
         match class {
             Some(c) => {
@@ -174,8 +183,10 @@ impl<'a> Lexer<'a> {
                 let word = &rest[..end];
                 // A property (`row.type`, `d.default`) is a name, whatever it's called.
                 // In shell, so is a path part (`/opt/for/bin`).
-                let property = self.src[..self.at].ends_with('.')
-                    || (self.lang.shell && self.src[..self.at].ends_with('/'));
+                let before = &self.src[..self.at];
+                // `...xs` is a spread, not a property.
+                let property = (before.ends_with('.') && !before.ends_with("..."))
+                    || (self.lang.shell && before.ends_with('/'));
                 let class = if property {
                     None
                 } else if self.lang.keywords.contains(&word) {
@@ -219,10 +230,11 @@ impl<'a> Lexer<'a> {
         }
         if let Some((open, close)) = self.lang.block_comment {
             if let Some(body) = rest.strip_prefix(open) {
-                return Some(
-                    body.find(close)
-                        .map_or(rest.len(), |i| open.len() + i + close.len()),
-                );
+                // Unclosed (a regex such as `/\/*$/`): to the line's end only.
+                return Some(body.find(close).map_or_else(
+                    || rest.find('\n').unwrap_or(rest.len()),
+                    |i| open.len() + i + close.len(),
+                ));
             }
         }
         None
@@ -255,10 +267,11 @@ impl<'a> Lexer<'a> {
         }
         let body = &rest[prefix..];
         let quote = body.chars().next()?;
+        // Backtick templates span lines; so do shell strings.
         let multiline = if quote == '`' && self.lang.backtick {
             true
         } else if self.lang.quotes.contains(&quote) {
-            false
+            self.lang.shell
         } else {
             return None;
         };
@@ -266,13 +279,20 @@ impl<'a> Lexer<'a> {
         // Shell single quotes have no escapes.
         let escapes = !(self.lang.shell && quote == '\'');
         let end = match closing(&body[1..], q, escapes) {
-            Some(i) if multiline || !body[1..1 + i].contains('\n') => 1 + i + 1,
+            // A one-line string may continue past a `\` at a line's end.
+            Some(i) if multiline || !has_bare_newline(&body[1..1 + i]) => 1 + i + 1,
             // An unclosed string ends at the line's end, so a stray quote
             // (a regex such as `/`/`) can't colour the rest of the cell.
             _ => body.find('\n').unwrap_or(body.len()),
         };
         Some(prefix + end)
     }
+}
+
+/// Whether `s` has a line break not escaped by a `\` before it.
+fn has_bare_newline(s: &str) -> bool {
+    s.match_indices('\n')
+        .any(|(i, _)| !s[..i].trim_end_matches('\r').ends_with('\\'))
 }
 
 /// Where `close` first stands in `s`, skipping backslash escapes.
@@ -318,21 +338,6 @@ fn number_end(rest: &str) -> usize {
         }
     }
     i
-}
-
-fn esc(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -405,6 +410,19 @@ mod tests {
     #[test]
     fn unclosed_strings_end_at_the_line() {
         // A regex literal with a quote must not swallow the next lines.
+        let block = highlight("s.replace(/\\/*$/, \"\");\nconst n = 1;", "ts");
+        assert!(
+            block.contains("<span class=\"hl-k\">const</span> n"),
+            "{block}"
+        );
+        assert!(highlight("[...new Set(xs)]", "ts").contains("<span class=\"hl-k\">new</span>"));
+        let jq = highlight("jq '\n.a | if . then 1 else 2 end\n' f", "sh");
+        assert!(jq.contains("<span class=\"hl-s\">&#39;\n.a"), "{jq}");
+        let cont = highlight("s = 'a\\\nb' if x else 2", "python");
+        assert!(
+            cont.contains("<span class=\"hl-s\">&#39;a\\\nb&#39;</span> <span class=\"hl-k\">if"),
+            "{cont}"
+        );
         let tick = highlight("const re = /`/;\nconst n = 1;", "ts");
         assert!(
             tick.contains("<span class=\"hl-k\">const</span> n"),
