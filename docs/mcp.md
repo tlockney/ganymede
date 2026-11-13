@@ -373,8 +373,7 @@ cells others added, edited or moved since that read, each as an
 `@@cell` block whose head has `"change": ["added"]`, `["edited"]`,
 `["moved"]` or more than one, and an `@@deleted {"id": ...}` line per
 deleted cell. With no changes it says so. Cell sources and types are
-compared, not outputs or metadata (and, unreleased, cells others ran:
-see [below](#learning-of-changes-mid-work-and-edits-refused)). A cell is moved when it left the
+compared, not outputs or metadata. A cell is moved when it left the
 longest run of cells that kept their order.
 
 Each MCP connection has one mark per notebook, and it keeps its name.
