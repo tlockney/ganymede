@@ -85,6 +85,9 @@ One `display_data` with three parts:
 - **`text/plain`**, for agents and `jupyter console`: the shape, each
   column's name, type and range (min and max, or distinct count, and
   nulls), and the first 5 rows aligned as text. It stays under 4 KB.
+  Ranges come from the embedded rows, so for a cut table the summary
+  says "ranges over the first 1,000 of 52,410 rows" rather than
+  describing data it hasn't read.
 
 Why not a new Ganymede MIME type: the data resource type already says
 what a table needs, other tools write it, and a later reader of it (the
@@ -122,7 +125,10 @@ above HTML. It renders text into table cells, never HTML, so it is safe
 in an untrusted notebook and needs no frame. It gives:
 
 - a sticky header with each column's name and type;
-- sorting by a column, over the embedded rows, with nulls last;
+- sorting by a column, over the embedded rows, with nulls last; when
+  the table is cut, the footer says "sorted within the first 1,000 of
+  52,410 rows", so the top of a sorted view isn't read as the top of
+  the whole table (paging through the kernel fixes this later);
 - pages of 50 rows, and the "N of M rows" footer;
 - numbers right-aligned with tabular figures, nulls dimmed, dates in
   ISO form, long text cut with the full value on hover.
@@ -189,7 +195,9 @@ The libraries load through the kernel's own module loading, pinned by
 cdp-kernel, the first time a cell draws a chart: nothing loads for a
 notebook that draws none, and nothing is added to cdp-kernel's install.
 In the apps they come through the same CDN as other `npm:` imports, so
-the first chart needs the network, as any import does today.
+the first chart needs the network, as any import does today. Since the
+apps are meant to be a full runtime, bundling them with the in-app
+kernel is a later step (decision 7).
 
 With it, the journal skill's Plot section becomes one call, and its
 advice to end a cell with `chart.querySelector("svg")` and name the
@@ -261,6 +269,9 @@ The note's recommendation is first in each.
 5. **Home**: cdp-kernel's runtime, or a separate package.
 6. **Polars output**: replaced by the new table output (more rows
    embedded, the `ganymede` key, the longer summary).
+7. **Charts offline in the apps**: load vega, vega-lite and linkedom
+   from the CDN at first, and bundle them with the in-app kernel as a
+   later step; or bundle them from the start.
 
 ## What this leaves out
 

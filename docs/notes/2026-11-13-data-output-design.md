@@ -16,4 +16,4 @@ So the note proposes no new MIME type and no new protocol: the table
 output reuses the data resource type with capped JSON rows (Arrow IPC
 would be base64 in the file, unreadable to diffs and agents), and the
 chart helper always yields SVG, redrawing Plot's HTML legend inside it.
-Six decisions are left for Thomas.
+Seven decisions are left for Thomas.
