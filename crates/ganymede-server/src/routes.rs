@@ -335,6 +335,12 @@ struct NbconvertQuery {
     copy: Option<String>,
 }
 
+/// A page option from the query: absent when not given, empty, or the
+/// export isn't HTML (other formats ignore the options).
+fn page_option(html: bool, value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|v| html && !v.is_empty())
+}
+
 /// A query flag: `true` or `false`, any case.
 fn query_flag(name: &str, value: Option<&str>) -> HttpResult<Option<bool>> {
     match value {
@@ -364,14 +370,18 @@ async fn nbconvert_file(
     if !ganymede_nbformat::FORMATS.iter().any(|(f, _)| *f == format) {
         return Err(HttpError(404, format!("No exporter for format: {format}")));
     }
-    // The page's options; other formats ignore them.
+    // The page's options, one rule for all three: empty is absent, case
+    // doesn't matter, and other formats ignore them.
     let html = format == "html";
-    let code: ganymede_nbformat::CodeMode = match q.code.as_deref().filter(|_| html) {
+    let code: ganymede_nbformat::CodeMode = match page_option(html, q.code.as_deref()) {
         None => Default::default(),
-        Some(c) => c.parse().map_err(|e: String| HttpError(400, e))?,
+        Some(c) => c
+            .to_ascii_lowercase()
+            .parse()
+            .map_err(|e: String| HttpError(400, e))?,
     };
-    let copy = query_flag("copy", q.copy.as_deref().filter(|_| html))?.unwrap_or(false);
-    let byline = q.byline.clone().filter(|b| !b.trim().is_empty());
+    let copy = query_flag("copy", page_option(html, q.copy.as_deref()))?.unwrap_or(false);
+    let byline = page_option(html, q.byline.as_deref()).map(str::to_owned);
     let path = path.trim_matches('/').to_owned();
     let model = s
         .contents
@@ -426,10 +436,12 @@ async fn nbconvert_file(
         header::HeaderValue::from_static("no-store, no-cache, must-revalidate, max-age=0"),
     );
     // The script's type comes from the notebook; keep anything it names,
-    // such as text/html, from running as this origin.
+    // such as text/html, from running as this origin. The HTML page may
+    // also download, for its Download notebook button; its output frames
+    // keep their own sandbox, which doesn't allow it.
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
-        header::HeaderValue::from_static(FILES_CSP),
+        header::HeaderValue::from_static(if html { PAGE_CSP } else { FILES_CSP }),
     );
     let filename = format!("{title}{}", export.extension);
     if !export.resources.is_empty() {
@@ -610,6 +622,10 @@ async fn get_file(
 /// The `Content-Security-Policy` on every `/files` response, as
 /// jupyter_server's `FilesHandler` appends to its policy.
 const FILES_CSP: &str = "sandbox allow-scripts";
+
+/// The published page's policy from `/nbconvert/html`: [`FILES_CSP`], and
+/// downloads for its Download notebook button.
+const PAGE_CSP: &str = "sandbox allow-scripts allow-downloads";
 
 /// `FilesHandler`'s `Content-Type`: `.ipynb` is `application/x-ipynb+json`;
 /// otherwise the type guessed from the name, with a compression suffix

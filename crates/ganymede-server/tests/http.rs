@@ -923,14 +923,36 @@ async fn nbconvert_exports_script_markdown_and_html() {
     assert!(page.contains("id=\"download\""), "{page}");
     assert!(!page.contains(TOKEN));
     assert!(!page.contains(&root.display().to_string()));
-    let (_, _, body) = raw(
+    let (st, _, body) = raw(
         &app,
         get("/nbconvert/html/leaky.ipynb?code=hidden&copy=false"),
     )
     .await;
+    assert_eq!(st, StatusCode::OK);
     let page = String::from_utf8(body).unwrap();
+    assert!(page.starts_with("<!doctype html>"), "{page}");
     assert!(!page.contains("load()"), "{page}");
     assert!(!page.contains("id=\"notebook\""), "{page}");
+    // Hidden code with the copy, as `nb publish --code hidden --download`;
+    // case and empty values follow one rule.
+    let (st, h, body) = raw(
+        &app,
+        get("/nbconvert/html/leaky.ipynb?code=Hidden&copy=TRUE&byline="),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    // The page's button can download; its frames keep their own sandbox.
+    let csp = h[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+    assert!(
+        csp.starts_with("sandbox allow-scripts allow-downloads"),
+        "{csp}"
+    );
+    let page = String::from_utf8(body).unwrap();
+    assert!(!page.contains("<details"), "{page}");
+    assert!(page.contains("id=\"notebook\""), "{page}");
+    assert!(!page.contains(TOKEN));
+    let (st, _, _) = raw(&app, get("/nbconvert/html/leaky.ipynb?code=&copy=")).await;
+    assert_eq!(st, StatusCode::OK);
     for bad in ["code=open", "copy=yes"] {
         assert_eq!(
             raw(&app, get(&format!("/nbconvert/html/leaky.ipynb?{bad}")))
@@ -940,7 +962,10 @@ async fn nbconvert_exports_script_markdown_and_html() {
             "{bad}"
         );
     }
-    // Other formats ignore them.
+    // Other formats ignore them, and keep the files policy.
+    let (_, h, _) = raw(&app, get("/nbconvert/script/leaky.ipynb")).await;
+    let csp = h[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+    assert!(!csp.contains("allow-downloads"), "{csp}");
     assert_eq!(
         raw(&app, get("/nbconvert/script/leaky.ipynb?code=open"))
             .await

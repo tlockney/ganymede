@@ -16,3 +16,9 @@ Choices:
   Save and Export Notebook As > HTML is unchanged. The apps pass the
   CLI's defaults themselves (copy on unless code is hidden).
 - Bad values are a 400 for HTML; the other formats ignore the options.
+- The page gets its own policy, `sandbox allow-scripts allow-downloads`
+  (the reviewer found the Download notebook button did nothing under
+  `/files`' `sandbox allow-scripts`). Output frames keep their own
+  sandbox, so a notebook's HTML still can't download.
+- One parsing rule for all three: trimmed, case-insensitive, empty is
+  absent.
