@@ -183,7 +183,7 @@ Markdown in `docs/`, built by VitePress:
 ```sh
 cd docs && npm install
 npm run fetch-ui # ganymede-ui's docs, from its main branch
-npm run fetch-cell-api # the cell API reference, from cdp-kernel and ganymede-device
+npm run fetch-cell-api # the cell API reference, from cdp-kernel and ganymede-ui
 npm run dev      # live preview
 npm run build    # into docs/.vitepress/dist
 ```
@@ -200,10 +200,11 @@ deploys this site.
 The pages under `/docs/cell-api/` are the reference pages that
 [cdp-kernel](https://github.com/tlockney/cdp-kernel)
 (`docs/jupyter-reference.md`, `docs/widgets-reference.md`) and
-[ganymede-device](https://github.com/tlockney/ganymede-device)
-(`docs/reference.md`) generate from the doc comments on their types,
+ganymede-ui's device package
+([`packages/device/docs/reference.md`](https://github.com/tlockney/ganymede-ui/blob/main/packages/device/docs/reference.md))
+generate from the doc comments on their types,
 copied into `docs/cell-api/` (not committed) by `npm run fetch-cell-api`;
-set `CDP_KERNEL_DIR` or `GANYMEDE_DEVICE_DIR` to copy from a local
+set `CDP_KERNEL_DIR` or `GANYMEDE_UI_DIR` to copy from a local
 checkout. Edit the doc comments there. The script points links to
 cdp-kernel's guides at cdp-kernel.org, and other links that leave the
 pages at GitHub. The site picks up changes to them on its next build.

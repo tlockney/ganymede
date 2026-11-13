@@ -8,6 +8,7 @@ const [cdp, device] = sources;
 test("links between the pages follow the renames", () => {
   assert.equal(relink("[w](widgets-reference.md#comm)", cdp), "[w](widgets.md#comm)");
   assert.equal(relink("[j](jupyter-reference.md)", cdp), "[j](jupyter.md)");
+  assert.equal(relink("[r](reference.md)", device), "[r](device.md)");
 });
 
 test("cdp-kernel's guides go to cdp-kernel.org", () => {
@@ -16,8 +17,8 @@ test("cdp-kernel's guides go to cdp-kernel.org", () => {
 
 test("this site's pages become relative, other links go to GitHub", () => {
   assert.equal(relink("[d](https://ganymede-server.com/docs/ganymede-ui/device#in-a-browser)", device), "[d](../ganymede-ui/device.md#in-a-browser)");
-  assert.equal(relink("[p](protocol.md)", device), "[p](https://github.com/tlockney/ganymede-device/blob/main/docs/protocol.md)");
-  assert.equal(relink("[p](plan.md#phases)", device), "[p](https://github.com/tlockney/ganymede-device/blob/main/docs/plan.md#phases)");
+  assert.equal(relink("[p](protocol.md)", device), "[p](https://github.com/tlockney/ganymede-ui/blob/main/packages/device/docs/protocol.md)");
+  assert.equal(relink("[p](plan.md#phases)", device), "[p](https://github.com/tlockney/ganymede-ui/blob/main/packages/device/docs/plan.md#phases)");
 });
 
 test("anchors, absolute URLs and images stay", () => {

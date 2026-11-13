@@ -70,7 +70,7 @@ jobs:
       - run: npm test
         working-directory: docs
       # The cell API reference, generated from TSDoc in cdp-kernel and
-      # ganymede-device, from their main, under /docs/cell-api/ (#607).
+      # ganymede-ui's packages/device, from their main, under /docs/cell-api/ (#607).
       - run: npm run fetch-cell-api
         working-directory: docs
       # The apps' example notebooks, rendered from ganymede-ui's examples/
