@@ -138,6 +138,14 @@ twice. This works in every frontend, JupyterLab and VS Code included,
 because it is only a cell. The apps can add a button for it later
 ("Ask the agent about this cell").
 
+Only a cell a person added or edited through a room client while the
+agent's session is open counts as a request, as the attribution in 1
+records it. An `@agent` cell already in a file, such as a notebook
+someone sent you, or one written to disk by another program, is read as
+text, never as an instruction, so a notebook can't carry orders to your
+agent. A request still asks; the agent's tools and grants are the same
+as for your message.
+
 ### 6. Don't overwrite an edit the agent hasn't seen
 
 `cell_edit` checks the cell against the agent's mark, as the execute
