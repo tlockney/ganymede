@@ -55,6 +55,37 @@ ganymede serve --mcp
 streamable HTTP at `/mcp`, behind the token, for clients that connect to
 a URL instead of starting a command.
 
+### A token for agents only
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+The server's token passes every route, so an agent that holds it can
+also write files, start kernels, open terminals and change grants over
+the REST API, whatever `mcp_read_only` or `mcp_no_execute` say. Give an
+agent `mcp_token` instead:
+
+```toml
+mcp_enabled = true
+mcp_read_only = true
+mcp_token = "a-long-random-string"
+```
+
+`/mcp` accepts it and no other route does: every REST and websocket
+route answers 403, and it sets no login cookie. `/mcp` takes the
+server's token too, so the page and `ganymede mcp` keep working, and
+the server info file keeps the server's token. With auth off (an empty
+`token`) it adds nothing, since every route is open. A published
+page, from an agent or from the browser, replaces `mcp_token` as it
+does the server's token.
+
+`mcp_token` limits the agent only while it can't run code, with
+`mcp_read_only` or `mcp_no_execute`. A cell it runs can read the
+server's token from the server info file or the config, as any code in
+a kernel can, and an agent that only reads still sees the server's
+token if an output shows it (a printed URL with `?token=`, say).
+
 ## The ganymede-journal plugin for Claude Code
 
 `ganymede-journal` packs the journaling mode into one Claude Code
@@ -308,9 +339,15 @@ notebook's content:
   and the token `[token]` (when it has 8 characters or more; a shorter
   one is left as it is), wherever they stand as a whole name (not
   `/home/tommy` for `/home/tom`), each directory as given and resolved.
-  Those three are all it replaces: it is not a secret scanner, so an
+  With [`mcp_token`](#a-token-for-agents-only) set, that token too, as
+  `[token]`. Those are all it replaces: it is not a secret scanner, so an
   API key, password or environment variable a cell printed goes into
   the page as it is. Read the page before you share it.
+
+  > [!NOTE]
+  > **Unreleased.** `mcp_token` is available only from a build of
+  > `main` (HEAD), not in the latest release.
+
 - no network requests: images are embedded, a Markdown image from
   elsewhere becomes a link, and HTML outputs run under a policy that
   loads nothing but their own `data:` images and inline styles
@@ -532,6 +569,7 @@ are config keys.
 | `--read-only` | `mcp_read_only` | Read notebooks only: no edits, no execution. |
 | `--no-execute` | `mcp_no_execute` | Edit notebooks but run no code. |
 | `--images` | `mcp_images` | Send images in outputs to the model. |
+| | `mcp_token` | A token `/mcp` accepts and no other route does; see [A token for agents only](#a-token-for-agents-only). |
 | `--own-server` | | Start a server even when one is running. |
 | `--default-kernel` | | The kernelspec new notebooks start. |
 

@@ -88,6 +88,8 @@ pub struct McpOptions {
 pub struct McpState {
     opts: Arc<McpOptions>,
     marks: Arc<Mutex<marks::Marks>>,
+    /// `mcp_token`: accepted here and by no other route.
+    token: Option<Arc<str>>,
 }
 
 impl McpState {
@@ -95,7 +97,20 @@ impl McpState {
         McpState {
             opts: Arc::new(opts),
             marks: Arc::default(),
+            token: None,
         }
+    }
+
+    /// Accept `token` on `/mcp` beside the server's, and nowhere else
+    /// (#766). `None` or empty: no such token.
+    pub fn with_token(mut self, token: Option<String>) -> Self {
+        self.token = token.filter(|t| !t.is_empty()).map(Into::into);
+        self
+    }
+
+    /// `mcp_token`, for published pages to replace.
+    pub(crate) fn token(&self) -> Option<&str> {
+        self.token.as_deref()
     }
 }
 
@@ -103,8 +118,9 @@ impl McpState {
 /// `ganymede mcp` starts a new one when the server has ended its own.
 const SESSION_IDLE: Duration = Duration::from_secs(60 * 60);
 
-/// `/mcp`, streamable HTTP, behind the API's auth. The `Host` check is the
-/// server's own (`allow_remote_access`), so rmcp's is off.
+/// `/mcp`, streamable HTTP, behind the API's auth or `mcp_token`
+/// (`auth` below). The `Host` check is the server's own
+/// (`allow_remote_access`), so rmcp's is off.
 pub fn router(state: AppState, mcp: &McpState) -> axum::Router {
     use rmcp::transport::streamable_http_server::{
         session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
@@ -131,9 +147,24 @@ pub fn router(state: AppState, mcp: &McpState) -> axum::Router {
     axum::Router::new()
         .route_service("/mcp", service)
         .route_layer(axum::middleware::from_fn_with_state(
-            state,
-            crate::auth::api,
+            (state, mcp.token.clone()),
+            auth,
         ))
+}
+
+/// `/mcp`'s auth: `mcp_token` passes here, with no login cookie set, so
+/// it reaches no other route; anything else goes through the API's auth.
+async fn auth(
+    axum::extract::State((state, token)): axum::extract::State<(AppState, Option<Arc<str>>)>,
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if state.token.is_some()
+        && token.is_some_and(|t| crate::auth::sends_token(&t, req.headers(), req.uri().query()))
+    {
+        return next.run(req).await;
+    }
+    crate::auth::api(axum::extract::State(state), req, next).await
 }
 
 /// The MCP server: one per connection (MCP session).
@@ -1066,7 +1097,7 @@ impl Notebooks {
     }
 
     #[tool(
-        description = "Publish the notebook as one self-contained HTML page to read and share: title, contents, Markdown as prose, charts and tables inline, code folded under each result, light and dark. The page holds only the notebook's cells and outputs (no metadata), makes no network requests and runs no notebook script; the server root, home directory and token (8 characters or more) are replaced wherever they appear as a whole name. Unless `code` is `hidden` or `download` is false, the page also carries a copy of the notebook with a Download notebook button, with the same replacements and without metadata or recorded parameters. Saves it under the server root, at `out` relative to this connection's directory (default `published/<name>.html` beside the notebook), replacing an earlier published page but no other file unless `overwrite: true`, and returns its path. Runs nothing; run the notebook first so the outputs are current."
+        description = "Publish the notebook as one self-contained HTML page to read and share: title, contents, Markdown as prose, charts and tables inline, code folded under each result, light and dark. The page holds only the notebook's cells and outputs (no metadata), makes no network requests and runs no notebook script; the server root, home directory, the server token and `mcp_token` (each 8 characters or more) are replaced wherever they appear as a whole name. Unless `code` is `hidden` or `download` is false, the page also carries a copy of the notebook with a Download notebook button, with the same replacements and without metadata or recorded parameters. Saves it under the server root, at `out` relative to this connection's directory (default `published/<name>.html` beside the notebook), replacing an earlier published page but no other file unless `overwrite: true`, and returns its path. Runs nothing; run the notebook first so the outputs are current."
     )]
     async fn notebook_publish(
         &self,

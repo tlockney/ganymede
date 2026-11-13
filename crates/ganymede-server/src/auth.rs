@@ -433,11 +433,16 @@ fn sent_token(headers: &HeaderMap, query: Option<&str>) -> Option<String> {
         })
 }
 
+/// Whether the request sends `expected` as its token.
+pub(crate) fn sends_token(expected: &str, headers: &HeaderMap, query: Option<&str>) -> bool {
+    token_matches(expected, sent_token(headers, query).as_deref())
+}
+
 /// A correct token wins over the cookie, as in `jupyter_server`; `None`
 /// when neither authenticates. Only meaningful when auth is on.
 pub fn identify(state: &AppState, headers: &HeaderMap, query: Option<&str>) -> Option<Via> {
     let expected = state.token.as_deref()?;
-    if token_matches(expected, sent_token(headers, query).as_deref()) {
+    if sends_token(expected, headers, query) {
         return Some(Via::Token);
     }
     has_login_cookie(state, headers).then_some(Via::Cookie)
