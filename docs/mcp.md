@@ -306,8 +306,43 @@ published page there, but another file only with `overwrite: true`.
 under the title (default: today's date). It runs nothing, so run the
 notebook first if its outputs may be stale. Not in read-only mode.
 
+### Downloading the notebook
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+The page also carries a copy of the notebook, with a **Download
+notebook** button under the title that saves it as `<name>.ipynb`. The
+copy keeps to the page's rules, so it is not the file on disk:
+
+- the same replacements (root `.`, home `~`, token `[token]`) in every
+  source, output and attachment, except base64 images
+- no notebook metadata but the kernelspec and language, so no recorded
+  parameters (`metadata.ganymede.params`), signatures or widget state:
+  the notebook runs with its defaults, and opens untrusted
+- no cell metadata but a raw cell's format and, on a cell an agent
+  wrote, who wrote it (`by`, `mode`), without times or edit history
+- outputs with every entry of their bundles, also ones the page shows
+  another entry for (such as widgets), but of their metadata only
+  display hints such as an image's width and height
+
+A path the root replaced reads `./data/x.csv`, which works when the
+notebook sits where the root was; one under the home directory reads
+`~/...`, which a kernel may not expand.
+
+The copy is the notebook in the page a second time, so a page with
+large images is about twice the size. It is left out with
+`code: "hidden"`, since the copy holds the code, and with
+`download: false`; `download: true` puts it in with hidden code.
+
+The button saves a plain `.ipynb` in a browser. Hosted as a claude.ai
+artifact, the page saves through the artifact's `downloads` capability,
+which doesn't take `.ipynb` files, so there it saves a zip holding the
+notebook; host the page with that capability declared.
+
 The same page comes from `ganymede nb publish NOTEBOOK` (with `--code`,
-`--byline` and `-o`; it replaces the home directory and the notebook's
+`--byline`, `--no-download`, `--download` and `-o`; it replaces the home directory and the notebook's
 directory, and writes `<name>.html` beside the notebook by default,
 replacing a file there as `jupyter nbconvert` does) and from `GET /nbconvert/html/{path}`, JupyterLab's **Save and
 Export Notebook As > HTML**.

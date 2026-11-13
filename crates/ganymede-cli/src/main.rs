@@ -311,7 +311,9 @@ enum NbCmd {
     /// Prose, charts and tables, with the code folded under each result.
     /// The page makes no network requests and runs no script from the
     /// notebook. Your home directory and the notebook's directory are
-    /// replaced by `~` and `.` wherever they appear.
+    /// replaced by `~` and `.` wherever they appear. Unless the code is
+    /// hidden, the page carries a copy of the notebook to download, with
+    /// the same replacements and without metadata or recorded parameters.
     Publish {
         /// The notebook to publish.
         notebook: PathBuf,
@@ -325,6 +327,12 @@ enum NbCmd {
         /// A line under the title, such as the date.
         #[arg(long)]
         byline: Option<String>,
+        /// Leave the notebook copy and its Download button out.
+        #[arg(long, conflicts_with = "download")]
+        no_download: bool,
+        /// Put the notebook copy in even with `--code hidden`.
+        #[arg(long)]
+        download: bool,
     },
 }
 
@@ -711,9 +719,13 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
                     output,
                     code,
                     byline,
+                    no_download,
+                    download,
                 },
         } => {
-            publish(&notebook, output.as_deref(), code, byline)?;
+            let download =
+                download || (!no_download && code != ganymede_engine::nbformat::CodeMode::Hidden);
+            publish(&notebook, output.as_deref(), code, byline, download)?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Completions { shell } => {
@@ -1415,6 +1427,7 @@ fn publish(
     output: Option<&str>,
     code: ganymede_engine::nbformat::CodeMode,
     byline: Option<String>,
+    download: bool,
 ) -> Result<()> {
     use ganymede_engine::nbformat::{to_html, HtmlOptions};
     let nb = ganymede_engine::nbformat::read_file(notebook)
@@ -1434,6 +1447,7 @@ fn publish(
             code,
             byline,
             redact,
+            download,
         },
     );
     for skipped in &export.skipped {

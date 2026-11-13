@@ -198,6 +198,9 @@ the work there. Keep both sides usable:
     for readers who don't want code, or `"shown"` for ones who do.
 23. If you have a tool that hosts a page, such as an artifact tool,
     publish that file with it as it is, and give the user the link.
+    The page has a Download notebook button; on a claude.ai artifact
+    it needs the `downloads` capability, so declare
+    `capabilities: {downloads: true}` when you publish it there.
     Otherwise give the path. Don't rewrite the page by hand: a fix
     belongs in the notebook, then publish again.
 24. Before you host it anywhere, read the notebook once for what
