@@ -46,6 +46,11 @@ in another site, list that origin in `frame_ancestors`
   with no login cookie, for agents ([MCP](mcp.md#a-token-for-agents-only)).
   It keeps an agent off the REST API only while the agent can't run
   code: a cell can read the server's token as any kernel code can.
+
+  > [!NOTE]
+  > **Unreleased.** Available only from a build of `main` (HEAD), not in
+  > the latest release.
+
 - The cookie signing key is `jupyter_cookie_secret` in the Jupyter
   runtime directory, created owner-only on first start (the file
   `jupyter_server` uses). Delete it to log every browser out.

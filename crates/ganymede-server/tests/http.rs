@@ -4738,6 +4738,37 @@ async fn the_server_token_still_reaches_mcp_and_an_empty_mcp_token_is_none() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
+/// MCP `notebook_publish` replaces `mcp_token` in the page as it does
+/// the server's token (#766).
+#[tokio::test]
+async fn mcp_publish_replaces_the_mcp_token() {
+    const AGENT: &str = "agent-only-token";
+    let dir = tempfile::tempdir().unwrap();
+    let nb = json!({"cells": [
+        {"cell_type": "code", "id": "c", "execution_count": 1, "metadata": {},
+         "source": "env()", "outputs": [
+            {"output_type": "stream", "name": "stdout", "text": format!("key {AGENT}\n")}]}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.path().join("q.ipynb"), nb.to_string()).unwrap();
+    let mut st = state(dir.path());
+    st.mcp = Some(Arc::new(
+        ganymede_server::mcp::McpState::new(ganymede_server::mcp::McpOptions {
+            read_only: false,
+            no_execute: false,
+            images: false,
+            outputs_dir: Some(dir.path().join("spill")),
+        })
+        .with_token(Some(AGENT.into())),
+    ));
+    let app = build_router(st);
+    let sid = mcp_connect(&app, "agent").await;
+    let out = mcp_text(&mcp_tool(&app, &sid, "notebook_publish", json!({"path": "q.ipynb"})).await);
+    assert!(out.contains("published/q.html"), "{out}");
+    let page = std::fs::read_to_string(dir.path().join("published/q.html")).unwrap();
+    assert!(page.contains("key [token]"), "{page}");
+    assert!(!page.contains(AGENT));
+}
+
 #[tokio::test]
 async fn mcp_journals_into_a_notebook() {
     let dir = tempfile::tempdir().unwrap();
