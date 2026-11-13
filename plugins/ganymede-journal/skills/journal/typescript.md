@@ -162,9 +162,16 @@ const picker = jupyter.widget({
   };`,
   state: { min: 0, svg: await draw(0) },
 });
-picker.on("change:min", async (min) => picker.set("svg", await draw(Number(min))));
+picker.on("change:min", async (min) => {
+  const svg = await draw(Number(min));
+  if (picker.get("min") === min) picker.set("svg", svg);  // a newer value may have come in meanwhile
+});
 picker;
 ```
+
+The chart draws asynchronously, so check that the value is still the
+latest before showing it: otherwise a fast slider can let an older chart
+land last.
 
 Inside `esm`, a `${...}` is filled in by the kernel: write `\${...}` for
 one the view should see. The agent sees only `text/plain` for a widget,
