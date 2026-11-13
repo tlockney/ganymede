@@ -112,6 +112,25 @@ test("post-tool passes on the changes a @@changed line points to", () => {
   assert.match(ctx, /no need to call notebook_read/);
   assert.deepEqual(f.calls().map((c) => c.args), [{ path: "j.ipynb", since: "m1" }]);
 
+  // The open journal, named another way in the line: still marked dirty.
+  const other = fake({ notebook_read: 'Changed by others since that read: 0 added, 1 edited, 0 moved, 0 deleted, 0 ran.\n\n@@cell {"change":["edited"],"id":"a"}\nA\n\n@@read m1\n' });
+  handle("post-tool", { ...base(other.dir), tool_name: `${TOOL}notebook_open`, tool_input: { path: "./j.ipynb" },
+    tool_response: "Opened j.ipynb\n@@read m1\n" }, other.env);
+  handle("post-tool", { ...base(other.dir), tool_name: `${TOOL}notebook_run_all`, tool_input: {},
+    tool_response: "@@cell {}\n" }, other.env);
+  assert.equal(handle("stop", base(other.dir), other.env), "", "clean after run-all");
+  handle("post-tool", { ...base(other.dir), tool_name: `${TOOL}cell_snapshot`, tool_input: {},
+    tool_response: `${line}\n` }, other.env);
+  assert.equal(handle("stop", base(other.dir), other.env).decision, "block", "dirty after a mid-turn edit");
+
+  // A mark the server forgot: nothing passed on.
+  const lost = fake({ notebook_read: "Read mark m1 is unknown here …\n@@read m2\n" });
+  assert.equal(
+    handle("post-tool", { ...base(lost.dir), tool_name: `${TOOL}cell_add`, tool_input: {},
+      tool_response: `${line}\n` }, lost.env),
+    "",
+  );
+
   // Nothing new by the time the hook reads: nothing passed on.
   const quiet = fake({ notebook_read: "No changes by others since that read.\n@@read m1\n" });
   assert.equal(

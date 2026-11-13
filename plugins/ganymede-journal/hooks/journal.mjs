@@ -197,7 +197,9 @@ export function handle(event, input, env = process.env) {
         for (const { path: p, since } of changedReads(text)) {
           const out = call(env, home(), "notebook_read", { path: p, since });
           if (out === null || out.startsWith("No changes") || out.startsWith("Read mark")) continue;
-          if (p === state.path) {
+          // The open journal, by its mark: the line shows the path as
+          // the server does, which may differ from how the agent typed it.
+          if (since === state.mark || p === state.path) {
             Object.assign(state, { dirty: true, nagged: false });
             state.mark = readMark(out) || state.mark;
           }
