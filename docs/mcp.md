@@ -290,7 +290,10 @@ notebook's content:
 - the server root's absolute path becomes `.`, the home directory `~`,
   and the token `[token]` (when it has 8 characters or more; a shorter
   one is left as it is), wherever they stand as a whole name (not
-  `/home/tommy` for `/home/tom`), each directory as given and resolved
+  `/home/tommy` for `/home/tom`), each directory as given and resolved.
+  Those three are all it replaces: it is not a secret scanner, so an
+  API key, password or environment variable a cell printed goes into
+  the page as it is. Read the page before you share it.
 - no network requests: images are embedded, a Markdown image from
   elsewhere becomes a link, and HTML outputs run under a policy that
   loads nothing but their own `data:` images and inline styles
