@@ -30,8 +30,8 @@ TypeScript kernel the apps run themselves, with no server.
 | :--- | :--- |
 | [Start Here](examples/01-start-here.md) | Cells, state, and the kinds of output a cell can show |
 | [Web APIs](examples/02-web-apis.md) | `fetch` from public APIs, tables, progress that updates in place |
-| [Charts and Diagrams](examples/03-charts-and-diagrams.md) | SVG by hand, d3, Vega-Lite and Graphviz |
-| [DuckDB](examples/04-duckdb.md) | SQL in the notebook with DuckDB compiled to WebAssembly |
+| [Charts and Diagrams](examples/03-charts-and-diagrams.md) | `jupyter.chart` with Vega-Lite and Observable Plot, d3, Graphviz |
+| [DuckDB](examples/04-duckdb.md) | `jupyter.sql` over CSV and Parquet by URL, results as tables and charts |
 | [Generative Art](examples/05-generative-art.md) | Seeded randomness, canvas and SVG, animation |
 | [Widgets](examples/06-widgets.md) | Sliders and buttons that talk to the kernel |
 | [UI Frameworks](examples/07-ui-frameworks.md) | React, Preact and Lit components as output |
@@ -42,3 +42,10 @@ The pages are built from the notebooks in
 as ganymede-ui last saved them. A widget needs a running kernel, so its
 page says so instead of showing it, and the Device notebook has no
 outputs, since its calls need the app.
+
+> [!NOTE]
+> **Unreleased in ganymede-ui.** The pages show ganymede-ui's `main`,
+> where Start Here, Web APIs, Charts and Diagrams and DuckDB use
+> `jupyter.table`, `jupyter.sql` and `jupyter.chart`. The apps' latest
+> release still has the earlier notebooks, which draw tables and charts
+> by hand.
