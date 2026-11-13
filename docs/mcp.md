@@ -421,6 +421,23 @@ change in; after that read, the agent redoes its edit on top. A refused
 edit moves no mark. A connection with no mark for the notebook, or one
 whose mark the server forgot, isn't checked.
 
+A changed cell's head names who last changed it, as `"by"`, when the
+server saw the change while the notebook was open: a person in
+JupyterLab or the apps by the name their frontend gives (JupyterLab's
+user name), or "a person" when it gives none; another agent by the name
+its MCP client gave; a change taken in from the file as "another
+program (the file)". The `@@changed` line names them too. These are
+kept in memory: after a restart, cells nobody has changed since carry
+no `"by"`.
+
+A Markdown cell that starts with `@agent`, or `@` and the agent's client
+name or its first part (`@claude` for `claude-code`), is a request to
+the agent when a person added or edited it through the room since the
+agent's mark: its change includes `"request"`, and the `@@changed` line
+says "including a request to you". The same text in a cell another
+agent or a kernel wrote, or one that was already in the file, is not a
+request, so a notebook can't carry instructions to an agent.
+
 ## What the agent sees
 
 Outputs come back as text in nb-cli's `@@cell` / `@@output` format:

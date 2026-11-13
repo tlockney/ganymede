@@ -82,6 +82,32 @@ pub enum RoomError {
 
 const OBSERVER: &str = "ganymede-room";
 
+/// Who last changed a cell's source or type, as the room saw it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Author {
+    /// The name the client gave in its awareness state (JupyterLab's
+    /// `user.display_name` or `user.name`), the name the server's caller
+    /// gave ([`Room::set_author`]), or a stand-in.
+    pub name: String,
+    /// The change came from a client connected to the room, such as a
+    /// person's JupyterLab or Ganymede app, rather than from the server's
+    /// own edits or the file.
+    pub person: bool,
+}
+
+/// The stand-in name for a client that gave none.
+pub const UNNAMED: &str = "a person";
+
+/// The author of a change taken in from the file.
+pub const FROM_FILE: &str = "another program (the file)";
+
+fn from_file() -> Author {
+    Author {
+        name: FROM_FILE.to_string(),
+        person: false,
+    }
+}
+
 /// One shared document.
 pub struct Room {
     awareness: Awareness,
@@ -110,6 +136,9 @@ pub struct Room {
     /// [`crate::depth`].
     depths: HashMap<(u64, u32), usize>,
     shared_depth: usize,
+    /// Who last changed each cell's source or type, by cell id, while the
+    /// room is open. Kept in memory only.
+    authors: HashMap<String, Author>,
 }
 
 impl Room {
@@ -173,6 +202,7 @@ impl Room {
             read_only: false,
             depths: HashMap::new(),
             shared_depth: 0,
+            authors: HashMap::new(),
         }
     }
 
@@ -357,6 +387,9 @@ impl Room {
                 } else {
                     None
                 };
+                // Each cell's source and type before, to tell which the
+                // update changed.
+                let before = (refused.is_none() && !self.read_only).then(|| self.prints());
                 let applied = match refused {
                     Some(e) => Err(e),
                     None => Update::decode_v1(&bytes).map_err(|e| e.to_string()),
@@ -411,6 +444,13 @@ impl Room {
                 if self.content_changed.swap(false, Ordering::Relaxed) {
                     self.generation += 1;
                     fx.changed = true;
+                    if let Some(before) = before {
+                        let author = Author {
+                            name: self.client_name(conn),
+                            person: true,
+                        };
+                        self.attribute(&before, &author);
+                    }
                 }
                 if !updates.is_empty() {
                     for u in updates {
@@ -551,11 +591,13 @@ impl Room {
         let Some(roots) = self.roots.clone() else {
             return Effects::default();
         };
+        let before = self.prints();
         {
             let mut txn = self.awareness.doc().transact_mut();
             schema::set(&mut txn, &roots, notebook);
         }
         self.content_changed.store(false, Ordering::Relaxed);
+        self.attribute(&before, &from_file());
         self.generation += 1;
         self.saved_generation = self.generation;
         self.baseline = Some(schema::notebook_value(notebook));
@@ -597,17 +639,110 @@ impl Room {
         let Some(roots) = self.roots.clone() else {
             return (Effects::default(), Vec::new());
         };
+        let before = self.prints();
         {
             let mut txn = self.awareness.doc().transact_mut();
             schema::set(&mut txn, &roots, &notebook);
         }
         self.content_changed.store(false, Ordering::Relaxed);
+        self.attribute(&before, &from_file());
         self.generation += 1;
         self.baseline = Some(theirs);
         let mut fx = self.broadcast_own();
         fx.merge(self.set_state(hash));
         fx.changed = true;
         (fx, merged.conflicts)
+    }
+
+    /// Who last changed cell `id`'s source or type while the room was
+    /// open, if anyone.
+    pub fn author(&self, id: &str) -> Option<&Author> {
+        self.authors.get(id)
+    }
+
+    /// Record `author` for cells `ids`: for an edit made with
+    /// [`Room::edit`] on someone's behalf, such as an agent's.
+    /// Ids the room doesn't hold (a deleted cell) are left out.
+    pub fn set_author(&mut self, ids: &[String], author: &Author) {
+        let Some(roots) = self.roots.clone() else {
+            return;
+        };
+        let held: Vec<String> = {
+            let txn = self.doc().transact();
+            ids.iter()
+                .filter(|id| schema::cell_index(&txn, &roots, id).is_some())
+                .cloned()
+                .collect()
+        };
+        for id in held {
+            self.authors.insert(id, author.clone());
+        }
+        // A deleted cell's credit goes with it.
+        for id in ids {
+            if schema::cell_index(&self.doc().transact(), &roots, id).is_none() {
+                self.authors.remove(id);
+            }
+        }
+    }
+
+    /// Each cell's id and a hash of its type and source.
+    fn prints(&self) -> HashMap<String, u64> {
+        use std::hash::{Hash, Hasher};
+        use yrs::{Array, GetString, Out};
+        let Some(roots) = &self.roots else {
+            return HashMap::new();
+        };
+        let txn = self.doc().transact();
+        let mut out = HashMap::new();
+        for cell in roots.cells.iter(&txn) {
+            let Out::YMap(m) = cell else { continue };
+            let Some(Out::Any(yrs::Any::String(id))) = m.get(&txn, "id") else {
+                continue;
+            };
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            match m.get(&txn, "cell_type") {
+                Some(Out::Any(yrs::Any::String(t))) => t.hash(&mut h),
+                _ => "".hash(&mut h),
+            }
+            match m.get(&txn, "source") {
+                Some(Out::YText(t)) => t.get_string(&txn).hash(&mut h),
+                Some(Out::Any(yrs::Any::String(t))) => t.hash(&mut h),
+                Some(other) => schema::out_to_json(&txn, &other).to_string().hash(&mut h),
+                None => {}
+            }
+            out.insert(id.to_string(), h.finish());
+        }
+        out
+    }
+
+    /// Credit `author` with each cell whose type or source differs from
+    /// `before`, or that `before` lacks; forget cells that went.
+    fn attribute(&mut self, before: &HashMap<String, u64>, author: &Author) {
+        let now = self.prints();
+        for (id, fp) in &now {
+            if before.get(id) != Some(fp) {
+                self.authors.insert(id.clone(), author.clone());
+            }
+        }
+        self.authors.retain(|id, _| now.contains_key(id));
+    }
+
+    /// The name connection `conn`'s client gave in its awareness state.
+    fn client_name(&self, conn: ConnId) -> String {
+        let named = |v: &Value| {
+            let user = v.get("user")?;
+            ["display_name", "name", "username"]
+                .iter()
+                .find_map(|k| user.get(*k)?.as_str().filter(|s| !s.trim().is_empty()))
+                .map(str::to_string)
+        };
+        self.conns
+            .get(&conn)
+            .into_iter()
+            .flatten()
+            .filter_map(|id| self.awareness.state::<Value>(*id))
+            .find_map(|v| named(&v))
+            .unwrap_or_else(|| UNNAMED.to_string())
     }
 
     /// The file was renamed.

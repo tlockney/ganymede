@@ -1423,3 +1423,65 @@ fn a_held_update_is_dropped() {
     let held = txn.store().pending_update();
     assert!(held.is_none_or(|p| p.update.is_empty()), "nothing held");
 }
+
+/// The room credits a client's edit to the name in its awareness state, a
+/// client that gave none to a stand-in, and a change from the file to the
+/// file; a cell nobody changed has no author (#770).
+#[test]
+fn edits_are_credited_to_who_made_them() {
+    use ganymede_documents::room::{FROM_FILE, UNNAMED};
+    let nb = Notebook::from_str(&fixture("code_outputs.ipynb")).unwrap();
+    let ids: Vec<String> = nb
+        .cells
+        .iter()
+        .filter_map(|c| c.id().map(String::from))
+        .collect();
+    assert!(ids.len() >= 2, "the fixture has two cells with ids");
+    let mut room = Room::notebook_room(&nb, "x.ipynb");
+    let (a, b) = (Doc::new(), Doc::new());
+    sync(&mut room, 1, &a);
+    sync(&mut room, 2, &b);
+    assert!(room.author(&ids[0]).is_none(), "loaded, not edited");
+
+    // Client a names itself; b doesn't.
+    let mut peer = Awareness::new(Doc::new());
+    peer.set_local_state_raw(r#"{"user":{"name":"thomas","display_name":"Thomas"}}"#);
+    room.receive(1, &Message::Awareness(peer.update().unwrap()).encode_v1())
+        .unwrap();
+
+    let type_into = |d: &Doc, index: u32, text: &str| {
+        let before = d.transact().state_vector();
+        {
+            let roots = Roots::get(d);
+            let mut txn = d.transact_mut();
+            let Some(Out::YMap(cell)) = roots.cells.get(&txn, index) else {
+                panic!()
+            };
+            let Some(Out::YText(src)) = cell.get(&txn, "source") else {
+                panic!()
+            };
+            src.insert(&mut txn, 0, text);
+        }
+        Message::Sync(SyncMessage::Update(
+            d.transact().encode_state_as_update_v1(&before),
+        ))
+        .encode_v1()
+    };
+    room.receive(1, &type_into(&a, 0, "# a\n")).unwrap();
+    let who = room.author(&ids[0]).unwrap();
+    assert_eq!((who.name.as_str(), who.person), ("Thomas", true));
+    assert!(room.author(&ids[1]).is_none(), "only the cell a changed");
+
+    room.receive(2, &type_into(&b, 1, "# b\n")).unwrap();
+    assert_eq!(room.author(&ids[1]).unwrap().name, UNNAMED);
+
+    // The file changes cell 1 again: credited to the file, not a person.
+    let mut disk = room.notebook().unwrap().unwrap();
+    let mut v = schema::notebook_value(&disk);
+    v["cells"][1]["source"] = serde_json::json!("from disk");
+    disk = Notebook::from_value(v).unwrap();
+    room.reload(&disk, "h");
+    let who = room.author(&ids[1]).unwrap();
+    assert_eq!((who.name.as_str(), who.person), (FROM_FILE, false));
+    assert_eq!(room.author(&ids[0]).unwrap().name, "Thomas", "unchanged");
+}
