@@ -569,7 +569,8 @@ jobs:
       - name: JSON files parse
         run: |
           for f in .claude-plugin/marketplace.json plugins/ganymede-journal/.claude-plugin/plugin.json \
-                   plugins/ganymede-journal/.mcp.json plugins/ganymede-journal/hooks/hooks.json; do
+                   plugins/ganymede-journal/.mcp.json plugins/ganymede-journal/hooks/hooks.json \
+                   plugins/ganymede-journal/monitors/monitors.json; do
             node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$f"
           done
       - name: Hook tests

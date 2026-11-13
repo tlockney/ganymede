@@ -14,7 +14,9 @@
 //!
 //! `ganymede mcp call TOOL [ARGS]` calls one tool on the server
 //! `ganymede mcp` would use, for scripts and agent hooks, and prints its
-//! text.
+//! text. `ganymede mcp watch` keeps running and prints a line for each
+//! new request a person writes to the agent in a notebook, for a plugin
+//! monitor that wakes the agent.
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -63,6 +65,30 @@ pub enum McpCmd {
     /// itself there (the most recent). Starts none: with no server it
     /// fails. Exits 1 when the tool reports an error.
     Call(CallArgs),
+    /// Print a line for each request to the agent a person writes in a
+    /// notebook, and keep running: for a Claude Code plugin monitor.
+    ///
+    /// Asks the server `call` would use for its open requests (Markdown
+    /// cells starting `@agent` or `@` and the client's name, written by a
+    /// person and not yet answered) every `--every` seconds, and prints a
+    /// request once its text has stayed the same for `--settle` seconds,
+    /// so a person still typing isn't interrupted. Waits for a server
+    /// when there is none.
+    Watch(WatchArgs),
+}
+
+#[derive(clap::Args)]
+pub struct WatchArgs {
+    /// The agent's client name: requests may name it (`@claude` for
+    /// `claude-code`).
+    #[arg(long, default_value = "claude-code")]
+    pub client: String,
+    /// Seconds between checks.
+    #[arg(long, default_value_t = 2)]
+    pub every: u64,
+    /// Seconds a request must stay unchanged before it is printed.
+    #[arg(long, default_value_t = 3)]
+    pub settle: u64,
 }
 
 #[derive(clap::Args)]
@@ -112,6 +138,14 @@ pub async fn run(
     let root = root
         .canonicalize()
         .with_context(|| format!("root dir {}", root.display()))?;
+    if let Some(McpCmd::Watch(w)) = &args.cmd {
+        let (server, token) = (args.server.clone(), args.token.clone());
+        let (client, every, settle) = (w.client.clone(), w.every.max(1), w.settle);
+        return tokio::task::spawn_blocking(move || {
+            watch(&root, server, token, &client, every, settle)
+        })
+        .await?;
+    }
     if let Some(McpCmd::Call(call_args)) = &args.cmd {
         let ep = match &args.server {
             Some(server) => Some(Endpoint {
@@ -383,6 +417,151 @@ fn call(ep: &Endpoint, client: &str, tool: &str, args: Value) -> Result<(String,
         })
         .unwrap_or_default();
     Ok((text, result["isError"] == true))
+}
+
+/// `ganymede mcp watch`: poll `notebook_requests` forever, printing each
+/// request once it settles.
+fn watch(
+    root: &Path,
+    server: Option<String>,
+    token: Option<String>,
+    client: &str,
+    every: u64,
+    settle: u64,
+) -> Result<()> {
+    let mut seen = Requests::default();
+    let mut ep: Option<Endpoint> = None;
+    let out = std::io::stdout();
+    loop {
+        if ep.is_none() {
+            ep = match &server {
+                Some(s) => Some(Endpoint {
+                    url: mcp_url(s),
+                    token: token.clone(),
+                    dir: None,
+                }),
+                None => find_server(root).or_else(|| find_own(root)),
+            };
+        }
+        if let Some(e) = &ep {
+            match call(e, client, "notebook_requests", json!({})) {
+                Ok((text, false)) => {
+                    let now = std::time::Instant::now();
+                    let lines = seen.step(
+                        parse_requests(&text),
+                        now,
+                        std::time::Duration::from_secs(settle),
+                    );
+                    let mut out = out.lock();
+                    for line in lines {
+                        writeln!(out, "{line}")?;
+                    }
+                    out.flush()?;
+                }
+                // The server went, or is too old for the tool: look again
+                // next time.
+                _ => ep = None,
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(every));
+    }
+}
+
+/// One open request, from a `notebook_requests` reply.
+#[derive(Debug, Clone, PartialEq)]
+struct Request {
+    path: String,
+    id: String,
+    by: String,
+    text: String,
+}
+
+/// The requests in a `notebook_requests` reply: an `@@request {...}` line
+/// each, followed by the cell's text.
+fn parse_requests(reply: &str) -> Vec<Request> {
+    let mut found: Vec<Request> = Vec::new();
+    for line in reply.lines() {
+        if let Some(head) = line.strip_prefix("@@request ") {
+            if let Ok(h) = serde_json::from_str::<Value>(head) {
+                let field = |k: &str| h[k].as_str().unwrap_or_default().to_string();
+                found.push(Request {
+                    path: field("path"),
+                    id: field("id"),
+                    by: field("by"),
+                    text: String::new(),
+                });
+                continue;
+            }
+        }
+        if let Some(r) = found.last_mut() {
+            if !r.text.is_empty() {
+                r.text.push('\n');
+            }
+            r.text.push_str(line);
+        }
+    }
+    for r in &mut found {
+        r.text = r.text.trim().to_string();
+    }
+    found
+}
+
+/// What `watch` has seen: per request, its text, when that text was first
+/// seen, and whether it was printed.
+#[derive(Default)]
+struct Requests {
+    known: std::collections::HashMap<(String, String), (String, std::time::Instant, bool)>,
+}
+
+impl Requests {
+    /// Take in the open requests at `now`; return the lines to print for
+    /// those whose text has stayed the same for `settle` and wasn't
+    /// printed yet. A request edited after it was printed is printed
+    /// again once it settles.
+    fn step(
+        &mut self,
+        open: Vec<Request>,
+        now: std::time::Instant,
+        settle: std::time::Duration,
+    ) -> Vec<String> {
+        let keys: std::collections::HashSet<(String, String)> = open
+            .iter()
+            .map(|r| (r.path.clone(), r.id.clone()))
+            .collect();
+        self.known.retain(|k, _| keys.contains(k));
+        let mut lines = Vec::new();
+        for r in open {
+            let entry = self
+                .known
+                .entry((r.path.clone(), r.id.clone()))
+                .or_insert_with(|| (r.text.clone(), now, false));
+            if entry.0 != r.text {
+                *entry = (r.text.clone(), now, false);
+            }
+            if !entry.2 && now.duration_since(entry.1) >= settle {
+                entry.2 = true;
+                lines.push(request_line(&r));
+            }
+        }
+        lines
+    }
+}
+
+/// The line `watch` prints for a request.
+fn request_line(r: &Request) -> String {
+    let first = r.text.lines().next().unwrap_or_default();
+    let mut first: String = first.chars().take(200).collect();
+    if first.len() < r.text.len() {
+        first.push_str(" …");
+    }
+    format!(
+        "Request from {} in {}: {}. Answer it in the notebook with cell_add(path: {}, answers: {}).",
+        json!(r.by),
+        r.path,
+        json!(first),
+        json!(r.path),
+        json!(r.id),
+    )
 }
 
 fn mcp_url(base: &str) -> String {
@@ -848,6 +1027,43 @@ fn note_version(session: &Mutex<Session>, v: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watch_prints_a_request_once_it_settles() {
+        let reply = "@@request {\"path\":\"j.ipynb\",\"id\":\"p\",\"by\":\"Thomas\"}\n@claude why?\nmore\n\n\
+                     @@request {\"path\":\"k.ipynb\",\"id\":\"q\",\"by\":\"a person\"}\n@agent hi\n\n";
+        let open = parse_requests(reply);
+        assert_eq!(open.len(), 2);
+        assert_eq!(open[0].text, "@claude why?\nmore");
+        assert_eq!(open[1].by, "a person");
+        assert!(parse_requests("No open requests.\n").is_empty());
+
+        let settle = std::time::Duration::from_secs(3);
+        let t0 = std::time::Instant::now();
+        let at = |s: u64| t0 + std::time::Duration::from_secs(s);
+        let mut seen = Requests::default();
+        assert!(
+            seen.step(open.clone(), at(0), settle).is_empty(),
+            "not settled"
+        );
+        let lines = seen.step(open.clone(), at(3), settle);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            lines[0],
+            "Request from \"Thomas\" in j.ipynb: \"@claude why? …\". Answer it in the notebook with cell_add(path: \"j.ipynb\", answers: \"p\")."
+        );
+        assert!(
+            seen.step(open.clone(), at(9), settle).is_empty(),
+            "printed once"
+        );
+        // Edited: printed again once it settles; answered: forgotten.
+        let mut edited = open.clone();
+        edited[1].text = "@agent hi again".into();
+        assert!(seen.step(edited.clone(), at(10), settle).is_empty());
+        assert_eq!(seen.step(edited.clone(), at(13), settle).len(), 1);
+        assert!(seen.step(Vec::new(), at(14), settle).is_empty());
+        assert!(seen.known.is_empty());
+    }
 
     fn relay(stream: &str, want: Option<Value>) -> (Result<()>, Vec<Value>) {
         let mut got = Vec::new();

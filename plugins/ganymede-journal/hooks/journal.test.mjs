@@ -56,6 +56,18 @@ process.stdout.write(answers[tool]);
 
 const base = (dir) => ({ session_id: "s1", cwd: dir });
 
+test("the monitor runs ganymede mcp watch when the journal skill starts", () => {
+  const monitors = JSON.parse(
+    readFileSync(new URL("../monitors/monitors.json", import.meta.url), "utf8"),
+  );
+  assert.equal(monitors.length, 1);
+  const [m] = monitors;
+  // Claude Code rejects unknown keys.
+  assert.deepEqual(Object.keys(m).sort(), ["command", "description", "name", "when"]);
+  assert.match(m.command, /^ganymede mcp watch\b/);
+  assert.equal(m.when, "on-skill-invoke:journal");
+});
+
 test("helpers", () => {
   assert.equal(readMark("@@cell {}\nx\n@@read abc123\n"), "abc123");
   assert.equal(readMark("no mark"), null);

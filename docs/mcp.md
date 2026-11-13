@@ -82,9 +82,14 @@ be on your `PATH`, and its hooks run with `node`.
 | Hook `Stop` | Once per round of edits, stops the agent from ending its turn while the journal has edits since its last clean `notebook_run_all`, and asks it to run it or say it is only pausing. |
 
 > [!NOTE]
-> **Unreleased.** The `PostToolUse` hook passing on `@@changed` changes
-> is available only from a build of `main` (HEAD), not in the latest
-> release.
+> **Unreleased.** The `PostToolUse` hook passing on `@@changed` changes,
+> and the `requests` monitor, are available only from a build of `main`
+> (HEAD), not in the latest release.
+
+The plugin also has a monitor, `requests`, which starts when the
+`journal` skill first runs. It runs [`ganymede mcp watch`](#waking-the-agent-for-a-request)
+for the rest of the session, and each line it prints reaches the agent
+as a notification: a person's `@agent` request in a journal.
 
 The hooks reach the server with `ganymede mcp call` (below), so they
 find the same server the agent uses: a running `ganymede serve --mcp`,
@@ -121,6 +126,32 @@ agent's `ganymede mcp` started for itself there, which it announces in
 starts no server: with none it fails. It exits 1 when the tool reports
 an error, after printing the message. `--client NAME` sets the name
 recorded in cells' provenance.
+
+### Waking the agent for a request
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`ganymede mcp watch` keeps running and prints one line for each
+[request](#learning-of-changes-mid-work-and-edits-refused) a person
+writes to the agent, in any notebook open in the server under the
+current directory:
+
+```text
+Request from "Thomas" in j.ipynb: "@claude does 2019 change the trend?". Answer it in the notebook with cell_add(path: "j.ipynb", answers: "p").
+```
+
+It finds the server as `mcp call` does, every `--every` seconds (2)
+asks it for the open requests (`notebook_requests`), and prints a
+request once its text has stayed the same for `--settle` seconds (3),
+so a person still typing isn't interrupted. A request is printed once,
+and again only if the person edits it; an answered one is gone. With no
+server it waits for one. `--client` (default `claude-code`) is the
+name a request may use, `@claude` here. The journal plugin runs it as a
+monitor, so a Claude Code session learns of a request while it is
+idle. Whether a monitor's line starts a turn by itself, or waits for
+the person's next message, Claude Code doesn't document.
 
 `cell_add` takes a `mark`: a read mark to move past the new cell, so a
 hook that adds a cell for the agent (as the plugin's Bash hook does)

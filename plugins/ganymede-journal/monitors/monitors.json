@@ -1,0 +1,8 @@
+[
+  {
+    "name": "requests",
+    "command": "ganymede mcp watch --client claude-code",
+    "description": "Requests to you that a person writes in a journal (@agent cells)",
+    "when": "on-skill-invoke:journal"
+  }
+]

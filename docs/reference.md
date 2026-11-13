@@ -287,6 +287,16 @@ And the [server flags](#server-flags).
 
 And `mcp`'s flags.
 
+### `mcp watch`
+
+| Flag | Effect |
+| --- | --- |
+| `--client <CLIENT>` | The agent's client name: requests may name it (`@claude` for `claude-code`). Default `claude-code`. |
+| `--every <EVERY>` | Seconds between checks. Default `2`. |
+| `--settle <SETTLE>` | Seconds a request must stay unchanged before it is printed. Default `3`. |
+
+And `mcp`'s flags.
+
 ### `info`
 
 | Flag | Effect |
