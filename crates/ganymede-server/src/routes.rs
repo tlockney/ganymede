@@ -604,9 +604,16 @@ async fn get_file(
     );
     // As `FilesHandler.content_security_policy`: run HTML and SVG in an
     // opaque origin, so a file in the notebook folder can't act as the UI.
+    // A page Ganymede published may also download, for its Download
+    // notebook button (#758).
+    let csp = if published_page(&content_type, &bytes) {
+        PAGE_CSP
+    } else {
+        FILES_CSP
+    };
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
-        header::HeaderValue::from_static(FILES_CSP),
+        header::HeaderValue::from_static(csp),
     );
     // Tornado's `get_argument("download", False)`: any non-empty value.
     if q.download.is_some_and(|d| !d.is_empty()) {
@@ -622,9 +629,21 @@ async fn get_file(
 /// jupyter_server's `FilesHandler` appends to its policy.
 const FILES_CSP: &str = "sandbox allow-scripts";
 
-/// The published page's policy from `/nbconvert/html`: [`FILES_CSP`], and
-/// downloads for its Download notebook button.
+/// The published page's policy from `/nbconvert/html`, and from `/files`
+/// for a page `nb publish` wrote: [`FILES_CSP`], and downloads for its
+/// Download notebook button.
 const PAGE_CSP: &str = "sandbox allow-scripts allow-downloads";
+
+/// An HTML file that begins as a page Ganymede published does: its
+/// generator tag in the first lines of its head. Any page can copy the
+/// tag, which gains it downloads and nothing else: it still runs in an
+/// opaque origin.
+fn published_page(content_type: &str, bytes: &[u8]) -> bool {
+    const HEAD: usize = 512;
+    content_type.starts_with("text/html")
+        && String::from_utf8_lossy(&bytes[..bytes.len().min(HEAD)])
+            .contains(ganymede_nbformat::HTML_GENERATOR_MARK)
+}
 
 /// `FilesHandler`'s `Content-Type`: `.ipynb` is `application/x-ipynb+json`;
 /// otherwise the type guessed from the name, with a compression suffix
