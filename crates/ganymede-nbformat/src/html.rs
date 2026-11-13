@@ -354,14 +354,14 @@ impl<'a> Page<'a> {
             Output::ExecuteResult(r) => &r.data,
             Output::Unknown(_) => return String::new(),
         };
+        if let Some(table) = data.get(TABLE_MIME).and_then(|v| self.table(v)) {
+            return table;
+        }
         let alt = data
             .get_str("text/plain")
             .map(|t| self.r(t.trim()).into_owned())
             .filter(|t| !t.is_empty() && t.chars().count() <= 200)
             .unwrap_or_else(|| "Output image".to_owned());
-        if let Some(table) = data.get(TABLE_MIME).and_then(|v| self.table(v)) {
-            return table;
-        }
         for mime in PRIORITY {
             let Some(value) = data.get_str(mime) else {
                 continue;
@@ -426,9 +426,15 @@ impl<'a> Page<'a> {
         let fields: Vec<(String, String)> = fields
             .iter()
             .map(|f| {
-                let name = f.get("name").and_then(Value::as_str).unwrap_or_default();
+                // pandas writes labels as they are, so a column may be
+                // named 0; its rows then key it "0".
+                let name = match f.get("name") {
+                    Some(Value::String(s)) => s.clone(),
+                    None | Some(Value::Null) => String::new(),
+                    Some(v) => v.to_string(),
+                };
                 let kind = f.get("type").and_then(Value::as_str).unwrap_or_default();
-                (name.to_owned(), kind.to_owned())
+                (name, kind.to_owned())
             })
             .collect();
         if fields.is_empty() {
@@ -436,10 +442,12 @@ impl<'a> Page<'a> {
         }
         let numeric = |kind: &str| matches!(kind, "integer" | "number");
         let extra = resource.get("ganymede");
+        // Only cdp-kernel says how many rows the source has; pandas embeds
+        // up to its max_rows and doesn't.
         let total = extra
             .and_then(|g| g.get("rows"))
             .and_then(Value::as_u64)
-            .map_or(rows.len(), |n| (n as usize).max(rows.len()));
+            .map(|n| (n as usize).max(rows.len()));
         let mut html = String::from("<div class=\"table\"><div class=\"table-scroll\"><table>");
         if let Some(title) = extra.and_then(|g| g.get("title")).and_then(Value::as_str) {
             html.push_str(&format!("<caption>{}</caption>", esc(&self.r(title))));
@@ -463,7 +471,8 @@ impl<'a> Page<'a> {
                     _ => None,
                 };
                 let (text, null) = match value {
-                    None | Some(Value::Null) => ("null".to_owned(), true),
+                    None => (String::new(), false),
+                    Some(Value::Null) => ("null".to_owned(), true),
                     Some(Value::String(s)) => (s.clone(), false),
                     Some(v) => (v.to_string(), false),
                 };
@@ -496,14 +505,14 @@ impl<'a> Page<'a> {
             }
             out
         };
-        let note = if shown == total {
-            format!(
-                "{} {}",
-                count(total),
-                if total == 1 { "row" } else { "rows" }
-            )
-        } else {
-            format!("{} of {} rows", count(shown), count(total))
+        let rows_word = |n: usize| if n == 1 { "row" } else { "rows" };
+        let note = match total {
+            Some(total) if total > shown => format!("{} of {} rows", count(shown), count(total)),
+            Some(total) => format!("{} {}", count(total), rows_word(total)),
+            None if rows.len() > shown => {
+                format!("{} of {} rows embedded", count(shown), count(rows.len()))
+            }
+            None => format!("{} {} embedded", count(shown), rows_word(shown)),
         };
         html.push_str(&format!("<p class=\"table-rows\">{note}</p></div>"));
         Some(html)
@@ -1353,7 +1362,7 @@ pre.error { background: var(--error-soft); color: var(--error); }
 .table th { position: sticky; top: 0; background: var(--surface); vertical-align: bottom; }
 .table th .type { display: block; font-weight: 400; font-size: .78rem; }
 .table .num { text-align: right; }
-.table td { white-space: pre; }
+.table td { white-space: pre; max-width: 24rem; overflow: hidden; text-overflow: ellipsis; }
 .table td.null { color: var(--soft); font-style: italic; }
 .table-rows { font: .8rem/1.4 var(--sans); color: var(--soft); margin: .35rem 0 0; }
 .colophon { margin-top: 4rem; padding-top: 1.25rem; border-top: 1px solid var(--line); font: .8rem/1.5 var(--sans); color: var(--soft); }
@@ -1375,6 +1384,7 @@ pre.error { background: var(--error-soft); color: var(--error); }
   details.code { display: none; }
   .toc { display: none !important; }
   .layout.with-toc { display: block; max-width: 48rem; }
+  .table-scroll { max-height: none; overflow: visible; }
 }
 "#;
 
@@ -1769,8 +1779,28 @@ mod tests {
                     "schema": {"fields": [{"name": "a"}]}, "data": [[1], [2]]}}}]}]),
         );
         let page = html(&n, &HtmlOptions::default());
-        assert!(page.contains("<p class=\"table-rows\">2 rows</p>"));
+        assert!(page.contains("<p class=\"table-rows\">2 rows embedded</p>"));
         assert!(page.contains("<th>a</th>"));
+    }
+
+    #[test]
+    fn table_output_from_pandas_with_number_labels() {
+        // pd.DataFrame(np.arange(6).reshape(2, 3)) with table_schema on.
+        let n = nb(
+            json!([{"cell_type": "code", "metadata": {}, "execution_count": 1, "source": "x",
+            "outputs": [{"output_type": "execute_result", "execution_count": 1, "metadata": {},
+                "data": {"application/vnd.dataresource+json": {
+                    "schema": {"fields": [{"name": "index", "type": "integer"}, {"name": 0, "type": "integer"}, {"name": "b"}]},
+                    "data": [{"index": 0, "0": 1, "b": null}, {"index": 1, "0": 4}]}}}]}]),
+        );
+        let page = html(&n, &HtmlOptions::default());
+        assert!(page.contains("<th class=\"num\">0<span class=\"type\">integer</span></th>"));
+        assert!(page.contains("<td class=\"num\">1</td><td class=\"null\">null</td>"));
+        assert!(
+            page.contains("<td class=\"num\">4</td><td></td>"),
+            "a missing cell is empty, not null"
+        );
+        assert!(page.contains("<p class=\"table-rows\">2 rows embedded</p>"));
     }
 
     #[test]
