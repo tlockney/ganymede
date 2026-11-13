@@ -410,9 +410,11 @@ Thomas settled the four open questions on 2026-11-10:
   those files already, so a narrower default would add a grant without
   protection. Limiting what an agent's code can do on the machine is the
   OS sandbox's job. On the iPad and iPhone the root is the app's own
-  notebook folder. The Mac app's root is `/`, though, and its kernels
-  run in the app's sandbox, so it narrows the default to the folders
-  under Settings › General › Spotlight (ganymede-ui#585).
+  notebook folder. The Mac app's root is `/`, so it narrows the default
+  to the folders under Settings › General › Spotlight (ganymede-ui#585);
+  with none, a notebook reads only itself. That limits what the host
+  API hands a notebook, not what its code can read from disk: the Mac
+  app isn't sandboxed, and its kernels are ordinary processes.
 
   > [!NOTE]
   > **Unreleased in ganymede-ui.** Available only from a build of
