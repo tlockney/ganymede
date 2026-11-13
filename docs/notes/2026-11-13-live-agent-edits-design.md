@@ -16,3 +16,9 @@ agent's mark. For waking an idle agent it compares a plugin monitor
 running a new `ganymede mcp watch`, a Claude Code channel (research
 preview, allowlisted only) and MCP resource subscriptions (Claude Code
 documents no use of them). Four decisions are left for Thomas.
+
+Thomas agreed all four recommendations the same day, and asked for
+waking an idle agent on any settled edit to be tried later as a spike,
+to compare with request cells. The reviewer's one finding, that a
+planted `@agent` cell could instruct an agent, is answered in the note:
+only cells a person adds or edits during the session count.

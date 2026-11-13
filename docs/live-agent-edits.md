@@ -3,7 +3,9 @@
 A design note for [#761](https://github.com/tlockney/ganymede/issues/761):
 when a person edits a journal the agent is working in, how the agent
 learns of it, who it learns made the change, and when it acts on it.
-Nothing is built yet; [Decisions](#decisions) lists what Thomas picks.
+Thomas agreed the four recommendations on 2026-11-13
+([Decisions](#decisions)), and asked for waking on any edit (1b) to be
+tried as a spike once request cells work. Nothing is built yet.
 
 ## What happens today
 
@@ -191,9 +193,12 @@ for watching it work, but not needed for the rest; left for later.
    - (b) In each cell's metadata, so it survives restarts and other
      tools can show it.
 
+Thomas's choices: 1(a), with 1(b) as a follow-up spike to see how
+waking on every settled edit works in practice; 2(a); 3(a); 4(a).
+
 ## Order of work
 
-If the recommendations stand, as issues under #311:
+Tracked in [#763](https://github.com/tlockney/ganymede/issues/763):
 
 1. Server: attribution, `"ran"` changes, the `@@changed` line, and the
    edit check (1, 2, 3, 6). Every MCP client benefits.
@@ -202,3 +207,5 @@ If the recommendations stand, as issues under #311:
 3. Waking an idle agent (4), per decision 2.
 4. ganymede-ui: send the person's name in awareness; later, the "Ask
    the agent" button and the agent's presence.
+5. Spike: wake on any settled edit (1b), off by default, to compare
+   with request cells.
