@@ -46,8 +46,9 @@ module next to the notebook, not in a probe.
 ## Tables
 
 `jupyter.table` takes an array of row objects, an Arrow table, a Polars
-DataFrame or a DuckDB result. People see a table they can sort and page
-in the Ganymede apps, and an HTML table in JupyterLab and VS Code.
+DataFrame or a DuckDB result. People see an HTML table in JupyterLab,
+VS Code and the Ganymede apps (apps newer than 0.10.1 let them sort and
+page it).
 
 ```ts
 jupyter.table(weekly.toRecords(), { title: "Weekly failure rate" });

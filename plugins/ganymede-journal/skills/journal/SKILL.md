@@ -172,8 +172,9 @@ the work there. Keep both sides usable:
     charts; charts drawn by JavaScript in the frontend (a raw
     Vega-Lite spec, Plotly, Altair) reach you only as text, so draw one
     you need to read as SVG or PNG (`jupyter.chart` does).
-    `cell_snapshot` needs a Ganymede newer than 0.7.0; without it, say what the chart is meant to show and check
-    the numbers in a table instead.
+    `cell_snapshot` needs a Ganymede newer than 0.7.0; without it,
+    say what the chart is meant to show and check the numbers in a
+    table instead.
 17. When a person is watching and would explore a result, such as
     moving a threshold, picking a date range or a category, add a
     widget wired to the kernel: `jupyter.widget` in TypeScript,
