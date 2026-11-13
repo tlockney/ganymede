@@ -5,8 +5,9 @@
 //   session-start   report the Ganymede server and any open journal
 //   prompt          (UserPromptSubmit) cells others changed since the
 //                   agent's last read, as context
-//   post-tool       (PostToolUse) follow the agent's notebook tools;
-//                   record a Bash command that ends in `# journal`
+//   post-tool       (PostToolUse) follow the agent's notebook tools, and
+//                   pass on the changes a reply's `@@changed` line points
+//                   to; record a Bash command that ends in `# journal`
 //   stop            block stopping, once per round of edits, while the
 //                   journal has edits since its last clean run-all
 //
@@ -78,6 +79,22 @@ export function responseText(r) {
     return [r.stdout, r.stderr].filter(Boolean).join("\n");
   }
   return JSON.stringify(r);
+}
+
+/** The `notebook_read` calls a reply's `@@changed` lines name. */
+export function changedReads(text) {
+  const out = [];
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("@@changed ")) continue;
+    const m = /notebook_read\(path: ("(?:[^"\\]|\\.)*"), since: "(\w+)"\)/.exec(line);
+    if (!m) continue;
+    try {
+      out.push({ path: JSON.parse(m[1]), since: m[2] });
+    } catch {
+      // A path the line didn't quote as JSON: leave it to the agent.
+    }
+  }
+  return out;
 }
 
 export function readMark(text) {
@@ -174,8 +191,25 @@ export function handle(event, input, env = process.env) {
             state.nagged = false;
           }
         }
+        // Others changed a notebook while the agent worked: hand it the
+        // changes now, as the prompt hook does, rather than the pointer.
+        const changes = [];
+        for (const { path: p, since } of changedReads(text)) {
+          const out = call(env, home(), "notebook_read", { path: p, since });
+          if (out === null || out.startsWith("No changes") || out.startsWith("Read mark")) continue;
+          if (p === state.path) {
+            Object.assign(state, { dirty: true, nagged: false });
+            state.mark = readMark(out) || state.mark;
+          }
+          changes.push(`${p} changed while you worked, by a person or another agent:\n\n${out.trim()}`);
+        }
         save(env, sid, state);
-        return "";
+        if (changes.length === 0) return "";
+        return context(
+          "PostToolUse",
+          `${changes.join("\n\n")}\n\nThese are the changes the @@changed line points to, read ` +
+            "in for you: no need to call notebook_read for them. Work from what is there now.",
+        );
       }
       if (name === "Bash" && state.path) {
         const command = args.command || "";

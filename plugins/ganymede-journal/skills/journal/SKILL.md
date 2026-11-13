@@ -108,7 +108,9 @@ Edit.
     arrive as context when the user writes; work from what is there.
     A tool reply that ends with an `@@changed` line means someone
     changed the notebook since your last read: read it in with the call
-    the line gives before your next step. An edit to a cell they
+    the line gives before your next step. With this plugin's hooks,
+    those changes arrive as context right after that reply; then
+    there is nothing more to read. An edit to a cell they
     changed is refused until you have; then redo it on top of their
     text, keeping what they wrote.
 

@@ -411,7 +411,9 @@ for:
 ```
 
 So an agent in the middle of its work learns of a person's edit on its
-next call. The line doesn't move the mark: the read it names does.
+next call. The line doesn't move the mark: the read it names does. The
+[journal plugin](#the-ganymede-journal-plugin-for-claude-code)'s `PostToolUse` hook makes that read
+for the agent and adds the changes as context right after the reply.
 
 `cell_edit`, `cell_delete` and `cell_move` refuse a cell someone else
 changed (its source or type) or added since the connection's mark, so

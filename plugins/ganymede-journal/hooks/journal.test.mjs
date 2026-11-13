@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
 import {
+  changedReads,
   cleanRun,
   handle,
   OUTPUT_LIMIT,
@@ -74,6 +75,50 @@ test("helpers", () => {
   assert.ok(src.includes("$ echo hi\n"), src);
   assert.ok(!src.includes("# journal"), src);
   assert.ok(src.includes("… (5 more characters)"), src);
+});
+
+test("post-tool passes on the changes a @@changed line points to", () => {
+  const f = fake({
+    notebook_read:
+      'Changed by others since that read: 0 added, 1 edited, 0 moved, 0 deleted, 0 ran.\n\n@@cell {"change":["edited","request"],"id":"q","by":"Thomas"}\n@agent why?\n\n@@read m1\n',
+  });
+  handle(
+    "post-tool",
+    { ...base(f.dir), tool_name: `${TOOL}notebook_open`, tool_input: { path: "j.ipynb" },
+      tool_response: "Opened j.ipynb\n@@read m1\n" },
+    f.env,
+  );
+  // A reply with no line: no call.
+  assert.equal(
+    handle("post-tool", { ...base(f.dir), tool_name: `${TOOL}cell_add`, tool_input: { source: "n" },
+      tool_response: "Added cell x" }, f.env),
+    "",
+  );
+  assert.equal(f.calls().length, 0);
+  const line =
+    '@@changed j.ipynb: cells changed by "Thomas" since your last read (1 edited, including a request to you). ' +
+    'Call notebook_read(path: "j.ipynb", since: "m1") before building on it.';
+  assert.deepEqual(changedReads(`Added cell y\n${line}\n`), [{ path: "j.ipynb", since: "m1" }]);
+  const out = handle(
+    "post-tool",
+    { ...base(f.dir), tool_name: `${TOOL}cell_add`, tool_input: { source: "n" },
+      tool_response: [{ type: "text", text: `Added cell y\n${line}\n` }] },
+    f.env,
+  );
+  assert.equal(out.hookSpecificOutput.hookEventName, "PostToolUse");
+  const ctx = out.hookSpecificOutput.additionalContext;
+  assert.match(ctx, /j\.ipynb changed while you worked/);
+  assert.match(ctx, /"request"/);
+  assert.match(ctx, /no need to call notebook_read/);
+  assert.deepEqual(f.calls().map((c) => c.args), [{ path: "j.ipynb", since: "m1" }]);
+
+  // Nothing new by the time the hook reads: nothing passed on.
+  const quiet = fake({ notebook_read: "No changes by others since that read.\n@@read m1\n" });
+  assert.equal(
+    handle("post-tool", { ...base(quiet.dir), tool_name: `${TOOL}cell_add`, tool_input: {},
+      tool_response: `${line}\n` }, quiet.env),
+    "",
+  );
 });
 
 test("session-start reports the server, or its absence, and the open journal", () => {
