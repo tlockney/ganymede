@@ -93,18 +93,23 @@ pub fn token() -> String {
 /// starts with `@agent`, or `@` and the client's name (`@claude-code`) or
 /// its first part (`@claude`), ignoring case, followed by a space, a
 /// punctuation mark or nothing, and not yet answered (`cell_add(answers)`
-/// sets `metadata.ganymede.request.done`). Who wrote it is checked by the
+/// sets `metadata.ganymede.request` with `done` and this cell's `id`). Who wrote it is checked by the
 /// caller: only a person's cell counts.
 pub fn is_request(cell: &Cell, client: &str) -> bool {
     let Cell::Markdown(m) = cell else {
         return false;
     };
-    if m.metadata
+    // Done only for this cell: a copy of an answered request (paste,
+    // duplicate, split) keeps the metadata under a new id, and a question
+    // written in it is a new request.
+    let done = m
+        .metadata
         .get("ganymede")
         .and_then(|g| g.get("request"))
-        .and_then(|r| r.get("done"))
-        .is_some()
-    {
+        .filter(|r| r.get("done").is_some())
+        .and_then(|r| r.get("id"))
+        .and_then(|i| i.as_str());
+    if done.is_some() && done == m.id.as_deref() {
         return false;
     }
     let text = m.source.trim_start();
@@ -495,6 +500,16 @@ mod tests {
         let code = cell(serde_json::json!({"cell_type": "code", "id": "y",
             "metadata": {}, "source": "@agent", "outputs": [], "execution_count": null}));
         assert!(!is_request(&code, "x"), "only Markdown");
+        let answered = |id: &str| {
+            cell(serde_json::json!({"cell_type": "markdown", "id": id,
+                "metadata": {"ganymede": {"request": {"done": "t", "answer": "a", "id": "x"}}},
+                "source": "@agent why?"}))
+        };
+        assert!(!is_request(&answered("x"), "x"), "answered");
+        assert!(
+            is_request(&answered("copy"), "x"),
+            "a copy of an answered request"
+        );
     }
 
     #[test]
