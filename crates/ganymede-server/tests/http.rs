@@ -5761,6 +5761,80 @@ async fn mcp_replies_flag_changes_by_others() {
     assert!(!out.contains("@@changed"), "{out}");
 }
 
+/// A cell someone else ran since the agent's read is reported as `ran`;
+/// the agent's own runs, and its clearing of their outputs, are not.
+#[tokio::test]
+async fn mcp_reports_cells_others_ran() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = mcp_app(dir.path());
+    let agent = mcp_connect(&app, "agent").await;
+    let other = mcp_connect(&app, "other").await;
+    let tool = |sid: String, name: &'static str, args: Value| {
+        let app = app.clone();
+        async move { mcp_text(&mcp_tool(&app, &sid, name, args).await) }
+    };
+    tool(agent.clone(), "notebook_open", json!({"path": "r.ipynb"})).await;
+    let out = tool(
+        agent.clone(),
+        "cell_run",
+        json!({"path": "r.ipynb", "source": "hello"}),
+    )
+    .await;
+    let id = out
+        .split("\"id\":\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .expect("cell id")
+        .to_string();
+    let out = tool(
+        agent.clone(),
+        "cell_run",
+        json!({"path": "r.ipynb", "source": "quiet", "keep_outputs": false}),
+    )
+    .await;
+    let out = format!(
+        "{out}{}",
+        tool(
+            agent.clone(),
+            "cell_add",
+            json!({"path": "r.ipynb", "source": "n"})
+        )
+        .await
+    );
+    assert!(!out.contains("@@changed"), "own runs: {out}");
+    let mark = read_mark(&tool(agent.clone(), "notebook_read", json!({"path": "r.ipynb"})).await);
+
+    // Another client runs the agent's cell again, source unchanged.
+    tool(
+        other.clone(),
+        "cell_edit",
+        json!({"path": "r.ipynb", "id": id, "source": "hello", "run": true}),
+    )
+    .await;
+    let out = tool(
+        agent.clone(),
+        "cell_add",
+        json!({"path": "r.ipynb", "source": "m"}),
+    )
+    .await;
+    let line = out
+        .lines()
+        .find(|l| l.starts_with("@@changed"))
+        .unwrap_or_else(|| panic!("{out}"));
+    assert!(line.contains("(1 ran)"), "{line}");
+    let out = tool(
+        agent,
+        "notebook_read",
+        json!({"path": "r.ipynb", "since": mark}),
+    )
+    .await;
+    assert!(out.contains("0 deleted, 1 ran."), "{out}");
+    assert!(
+        out.contains(&format!("\"id\":\"{id}\"")) && out.contains("\"change\":[\"ran\"]}"),
+        "{out}"
+    );
+}
+
 /// A person's edit through a room client is credited to the name in its
 /// awareness state, and their `@agent` cell is reported as a request; the
 /// same text from another MCP connection is not (#770).
@@ -6053,7 +6127,7 @@ async fn mcp_read_since_lists_changes_by_others() {
     let out = read(hook, json!({"path": "j.ipynb", "since": mark})).await;
     assert!(
         out.starts_with(
-            "Changed by others since that read: 1 added, 1 edited, 0 moved, 1 deleted."
+            "Changed by others since that read: 1 added, 1 edited, 0 moved, 1 deleted, 0 ran."
         ),
         "{out}"
     );

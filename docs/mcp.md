@@ -463,6 +463,18 @@ or one that was already in the file, is not a request, so a notebook
 can't carry instructions to an agent. A deleted cell that comes back
 unchanged, as on an undo, keeps the author it had.
 
+A code cell someone else ran since the mark, whose execution count
+differs from what the mark saw, is reported with `"ran"` in its change
+and its new outputs; the `@@changed` line counts it ("1 ran"), and
+`notebook_read(since)` starts "... 0 deleted, 1 ran." The connection's
+own runs (`cell_run`, `cell_edit` with `run`, `notebook_run_all`) and
+its clearing of outputs move its mark once they finish, so a person's
+run of the same cell that lands just as the agent's finishes is taken
+as the agent's. Clearing a cell's outputs and count is not a run, nor
+is a change to its outputs from another cell's run, and after a kernel
+restart a run that gets the count the mark saw isn't seen. Who ran a
+cell isn't recorded, so a run alone has no `"by"`.
+
 ## What the agent sees
 
 Outputs come back as text in nb-cli's `@@cell` / `@@output` format:
