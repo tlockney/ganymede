@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 440" width="900" height="440" role="img" aria-label="Two rows. Table: rows, an Arrow table, a Polars DataFrame or a DuckDB result go to jupyter.table, which writes one output with three parts: application/vnd.dataresource+json with the schema and up to 1,000 rows, a text/html table of the first 20 rows, and a text/plain summary. The Ganymede apps render the first part as a table with sorting, paging and typed columns; JupyterLab and VS Code show the HTML; ganymede nb publish renders a static table from the JSON; agents read the text. Chart: a Vega-Lite spec or Observable Plot options go to jupyter.chart, which renders SVG with the legend inside and a text/plain summary. The apps, JupyterLab, VS Code and the published page all show the SVG; agents read the summary or get the SVG as a PNG.">
+  <title>Two rows. Table: rows, an Arrow table, a Polars DataFrame or a DuckDB result go to jupyter.table, which writes one output with three parts: application/vnd.dataresource+json with the schema and up to 1,000 rows, a text/html table of the first 20 rows, and a text/plain summary. The Ganymede apps render the first part as a table with sorting, paging and typed columns; JupyterLab and VS Code show the HTML; ganymede nb publish renders a static table from the JSON; agents read the text. Chart: a Vega-Lite spec or Observable Plot options go to jupyter.chart, which renders SVG with the legend inside and a text/plain summary. The apps, JupyterLab, VS Code and the published page all show the SVG; agents read the summary or get the SVG as a PNG.</title>
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f6f7f9; stroke: #9aa3ad; stroke-width: 1.2; }
+    .inner { fill: #ffffff; stroke: #b8c0c8; stroke-width: 1; }
+    .acc { fill: #e8f0fe; stroke: #3b6fd8; stroke-width: 1.4; }
+    .warn { fill: #fdf0e6; stroke: #c96a1b; stroke-width: 1.4; }
+    .ok { fill: #e7f5ec; stroke: #2f8a4c; stroke-width: 1.4; }
+    .dash { stroke-dasharray: 5 4; }
+    .warnpill { fill: #c96a1b; }
+    .tw { font: 600 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #ffffff; }
+    .t { font: 600 14px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1f2328; }
+    .s { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .m { font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f2328; }
+    .l { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #4b535d; }
+    .ln { stroke: #6e7781; stroke-width: 1.4; fill: none; }
+    .life { stroke: #9aa3ad; stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+    .hl { stroke: #3b6fd8; stroke-width: 1.6; fill: none; }
+    .ah { fill: #6e7781; }
+    .ahb { fill: #3b6fd8; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #1b1b1f; }
+      .box { fill: #25262b; stroke: #5c6370; }
+      .inner { fill: #1b1b1f; stroke: #4a505a; }
+      .acc { fill: #1e2a44; stroke: #6b9bff; }
+      .warn { fill: #3a2a1c; stroke: #e0904a; }
+      .ok { fill: #1d3326; stroke: #5cc27e; }
+      .warnpill { fill: #e0904a; }
+      .tw { fill: #1b1b1f; }
+      .t, .m { fill: #e6e8eb; }
+      .s, .l { fill: #b6bcc4; }
+      .ln { stroke: #a0a7b0; }
+      .life { stroke: #5c6370; }
+      .hl { stroke: #6b9bff; }
+      .ah { fill: #a0a7b0; }
+      .ahb { fill: #6b9bff; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ahb" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="900" height="440" rx="8"/>
+  <text class="t" x="30" y="34">Input</text>
+  <text class="t" x="212" y="34">Call</text>
+  <text class="t" x="374" y="34">Output (one MIME bundle)</text>
+  <text class="t" x="680" y="34">Who reads what</text>
+  <rect class="box" x="20" y="48" width="860" height="178" rx="4"/>
+  <text class="l" x="30" y="66">Table</text>
+  <rect class="inner" x="30" y="78" width="160" height="26" rx="3"/>
+  <text class="s" x="40" y="95">array of row objects</text>
+  <rect class="inner" x="30" y="110" width="160" height="26" rx="3"/>
+  <text class="s" x="40" y="127">Arrow table</text>
+  <rect class="inner" x="30" y="142" width="160" height="26" rx="3"/>
+  <text class="s" x="40" y="159">Polars DataFrame</text>
+  <rect class="inner" x="30" y="174" width="160" height="26" rx="3"/>
+  <text class="s" x="40" y="191">DuckDB result</text>
+  <rect class="acc" x="212" y="111" width="140" height="56" rx="3"/>
+  <text class="m" x="224" y="135">jupyter.table()</text>
+  <text class="l" x="224" y="153">typed columns, capped</text>
+  <line class="ln" x1="190" y1="91" x2="210" y2="139" marker-end="url(#a)"/>
+  <line class="ln" x1="190" y1="123" x2="210" y2="139" marker-end="url(#a)"/>
+  <line class="ln" x1="190" y1="155" x2="210" y2="139" marker-end="url(#a)"/>
+  <line class="ln" x1="190" y1="187" x2="210" y2="139" marker-end="url(#a)"/>
+  <rect class="ok" x="374" y="78" width="280" height="44" rx="3"/>
+  <text class="m" x="384" y="97">application/vnd.dataresource+json</text>
+  <text class="l" x="384" y="114">schema, up to 1,000 rows, total row count</text>
+  <rect class="ok" x="374" y="130" width="280" height="44" rx="3"/>
+  <text class="m" x="384" y="149">text/html</text>
+  <text class="l" x="384" y="166">plain table, first 20 rows</text>
+  <rect class="ok" x="374" y="182" width="280" height="44" rx="3"/>
+  <text class="m" x="384" y="201">text/plain</text>
+  <text class="l" x="384" y="218">shape, column types and ranges, 5 rows</text>
+  <line class="ln" x1="352" y1="139" x2="372" y2="100" marker-end="url(#a)"/>
+  <line class="ln" x1="352" y1="139" x2="372" y2="152" marker-end="url(#a)"/>
+  <line class="ln" x1="352" y1="139" x2="372" y2="204" marker-end="url(#a)"/>
+  <text class="s" x="688" y="96">apps: sort, page, typed columns</text>
+  <text class="s" x="688" y="112">nb publish: static table</text>
+  <line class="ln" x1="654" y1="100" x2="682" y2="100" marker-end="url(#a)"/>
+  <text class="s" x="688" y="156">JupyterLab, VS Code, GitHub</text>
+  <line class="ln" x1="654" y1="152" x2="682" y2="152" marker-end="url(#a)"/>
+  <text class="s" x="688" y="208">agents (MCP), jupyter console</text>
+  <line class="ln" x1="654" y1="204" x2="682" y2="204" marker-end="url(#a)"/>
+  <rect class="box" x="20" y="244" width="860" height="130" rx="4"/>
+  <text class="l" x="30" y="262">Chart</text>
+  <rect class="inner" x="30" y="274" width="160" height="26" rx="3"/>
+  <text class="s" x="40" y="291">Vega-Lite spec</text>
+  <rect class="inner" x="30" y="306" width="160" height="26" rx="3"/>
+  <text class="s" x="40" y="323">Plot module + options</text>
+  <rect class="acc" x="212" y="275" width="140" height="56" rx="3"/>
+  <text class="m" x="224" y="299">jupyter.chart()</text>
+  <text class="l" x="224" y="317">headless render</text>
+  <line class="ln" x1="190" y1="287" x2="210" y2="303" marker-end="url(#a)"/>
+  <line class="ln" x1="190" y1="319" x2="210" y2="303" marker-end="url(#a)"/>
+  <rect class="ok" x="374" y="274" width="280" height="44" rx="3"/>
+  <text class="m" x="384" y="293">image/svg+xml</text>
+  <text class="l" x="384" y="310">legend and title inside, currentColor text</text>
+  <rect class="ok" x="374" y="326" width="280" height="44" rx="3"/>
+  <text class="m" x="384" y="345">text/plain</text>
+  <text class="l" x="384" y="362">marks, encodings, ranges, rows</text>
+  <line class="ln" x1="352" y1="303" x2="372" y2="296" marker-end="url(#a)"/>
+  <line class="ln" x1="352" y1="303" x2="372" y2="348" marker-end="url(#a)"/>
+  <text class="s" x="688" y="292">apps, JupyterLab, VS Code,</text>
+  <text class="s" x="688" y="308">nb publish; agents get a PNG</text>
+  <line class="ln" x1="654" y1="296" x2="682" y2="296" marker-end="url(#a)"/>
+  <text class="s" x="688" y="352">agents (MCP), jupyter console</text>
+  <line class="ln" x1="654" y1="348" x2="682" y2="348" marker-end="url(#a)"/>
+  <text class="l" x="30" y="404">Libraries load on first use: vega and vega-lite for specs, linkedom as Plot&#x27;s DOM where there is none</text>
+  <text class="l" x="30" y="420">(Node, Deno, Bun, the in-app Worker). The notebook stays valid .ipynb; the server learns no new protocol.</text>
+</svg>
