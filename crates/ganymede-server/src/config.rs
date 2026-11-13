@@ -116,6 +116,11 @@ pub struct Config {
     pub mcp_no_execute: bool,
     /// `/mcp` sends images in outputs to the model as image content.
     pub mcp_images: bool,
+    /// A token `/mcp` accepts and no other route does, for agents: with
+    /// the server's token an agent could also write contents, start
+    /// kernels and change grants over REST, whatever `mcp_read_only`
+    /// says. `/mcp` takes the server's token too. Unset or empty: none.
+    pub mcp_token: Option<String>,
     /// Send crash reports to Sentry (docs/privacy.md). Off by default.
     /// Read by the `ganymede` binary, and only one built with its
     /// `crash-reporting` feature; `GANYMEDE_CRASH_REPORTING` overrides it.
@@ -164,6 +169,7 @@ impl Default for Config {
             mcp_read_only: false,
             mcp_no_execute: false,
             mcp_images: false,
+            mcp_token: None,
             crash_reporting: false,
             host: Default::default(),
         }

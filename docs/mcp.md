@@ -55,6 +55,29 @@ ganymede serve --mcp
 streamable HTTP at `/mcp`, behind the token, for clients that connect to
 a URL instead of starting a command.
 
+### A token for agents only
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+The server's token passes every route, so an agent that holds it can
+also write files, start kernels, open terminals and change grants over
+the REST API, whatever `mcp_read_only` or `mcp_no_execute` say. Give an
+agent `mcp_token` instead:
+
+```toml
+mcp_enabled = true
+mcp_read_only = true
+mcp_token = "a-long-random-string"
+```
+
+`/mcp` accepts it and no other route does: every REST and websocket
+route answers 403, and it sets no login cookie. `/mcp` takes the
+server's token too, so the page and `ganymede mcp` keep working, and
+the server info file keeps the server's token. With auth off (an empty
+`token`) it adds nothing, since every route is open.
+
 ## The ganymede-journal plugin for Claude Code
 
 `ganymede-journal` packs the journaling mode into one Claude Code
@@ -475,6 +498,7 @@ are config keys.
 | `--read-only` | `mcp_read_only` | Read notebooks only: no edits, no execution. |
 | `--no-execute` | `mcp_no_execute` | Edit notebooks but run no code. |
 | `--images` | `mcp_images` | Send images in outputs to the model. |
+| | `mcp_token` | A token `/mcp` accepts and no other route does; see [A token for agents only](#a-token-for-agents-only). |
 | `--own-server` | | Start a server even when one is running. |
 | `--default-kernel` | | The kernelspec new notebooks start. |
 

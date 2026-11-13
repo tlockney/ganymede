@@ -88,6 +88,8 @@ pub struct McpOptions {
 pub struct McpState {
     opts: Arc<McpOptions>,
     marks: Arc<Mutex<marks::Marks>>,
+    /// `mcp_token`: accepted here and by no other route.
+    token: Option<Arc<str>>,
 }
 
 impl McpState {
@@ -95,7 +97,15 @@ impl McpState {
         McpState {
             opts: Arc::new(opts),
             marks: Arc::default(),
+            token: None,
         }
+    }
+
+    /// Accept `token` on `/mcp` beside the server's, and nowhere else
+    /// (#766). `None` or empty: no such token.
+    pub fn with_token(mut self, token: Option<String>) -> Self {
+        self.token = token.filter(|t| !t.is_empty()).map(Into::into);
+        self
     }
 }
 
@@ -131,9 +141,24 @@ pub fn router(state: AppState, mcp: &McpState) -> axum::Router {
     axum::Router::new()
         .route_service("/mcp", service)
         .route_layer(axum::middleware::from_fn_with_state(
-            state,
-            crate::auth::api,
+            (state, mcp.token.clone()),
+            auth,
         ))
+}
+
+/// `/mcp`'s auth: `mcp_token` passes here, with no login cookie set, so
+/// it reaches no other route; anything else goes through the API's auth.
+async fn auth(
+    axum::extract::State((state, token)): axum::extract::State<(AppState, Option<Arc<str>>)>,
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if state.token.is_some()
+        && token.is_some_and(|t| crate::auth::sends_token(&t, req.headers(), req.uri().query()))
+    {
+        return next.run(req).await;
+    }
+    crate::auth::api(axum::extract::State(state), req, next).await
 }
 
 /// The MCP server: one per connection (MCP session).
