@@ -125,7 +125,9 @@ In order of priority.
    agent's journal as it is written
    ([ganymede-ui#184](https://github.com/tlockney/ganymede-ui/issues/184)), and journal
    sessions get evals
-   ([#316](https://github.com/tlockney/ganymede/issues/316)).
+   ([#316](https://github.com/tlockney/ganymede/issues/316)). How the
+   agent learns of and answers a person's edits is proposed in
+   [An agent that responds to your edits](live-agent-edits.md).
 4. **TypeScript notebooks for TypeScript developers.**
    [cdp-kernel](https://github.com/tlockney/cdp-kernel) is the
    first-class kernel, on Node and Deno first. Next: a table output and
