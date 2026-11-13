@@ -175,6 +175,10 @@ mod tests {
         assert_eq!(kernel(&root, "a"), None);
         assert_eq!(kernel(&root, "../"), None);
         assert_eq!(kernel(&root, "a/../.."), None);
+        // A backslash is refused whatever it means on this system: on Unix,
+        // a real folder named `a\b` holding a file.
+        write(&root, "a\\b/.ganymede.toml", "kernel = \"backslash\"\n");
+        assert_eq!(kernel(&root, "a\\b"), None);
         assert_eq!(kernel(&root, "..\\.."), None);
         assert_eq!(kernel(&root, "a\0"), None);
         #[cfg(unix)]

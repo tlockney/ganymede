@@ -1816,7 +1816,7 @@ impl Notebooks {
             .map_err(|e| err(e.message))?;
         if !specs.kernelspecs.contains_key(&f.kernel) {
             return Err(err(format!(
-                "{} sets kernel {}, which isn't installed here (see kernelspecs_list); pass `kernel` to choose another",
+                "{} sets kernel {}, which isn't installed here (see kernelspecs_list); choose another with `notebook_open` and `kernel`, or fix the file",
                 self.show(&f.file),
                 f.kernel
             )));
