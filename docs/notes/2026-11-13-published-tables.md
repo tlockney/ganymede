@@ -22,3 +22,11 @@ entry without `schema.fields` falls back to the bundle's other entries.
 
 Checked by hand on a notebook run on cdp-node with tables, SQL results
 and charts, in light and dark.
+
+Follow-up (#759): values first wrapped with `overflow-wrap: anywhere`, which
+let a wide table shrink its columns to a character and split numbers
+across lines. Now a value over 48 characters wraps in a 24rem block
+(`overflow-wrap: break-word`), shorter ones stay on one line so a wide
+table scrolls sideways, and a cell shows at most 1,000 characters.
+Checked in Chromium at 800px with 25 number columns and a 1,000-word
+column: the table scrolls, numbers stay on one line.

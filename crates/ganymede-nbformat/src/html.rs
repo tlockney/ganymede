@@ -121,6 +121,10 @@ pub fn to_html(nb: &Notebook, name: &str, opts: &HtmlOptions) -> Export {
 const TABLE_MIME: &str = "application/vnd.dataresource+json";
 /// Rows of a table output the page shows; the rest stay in the notebook.
 const TABLE_ROWS: usize = 100;
+/// Longest value a published table cell shows, in characters.
+const TABLE_CELL: usize = 1000;
+/// Values longer than this wrap in a block of bounded width.
+const TABLE_WRAP: usize = 48;
 
 /// Output MIME types in the order the page prefers them. Unlike the
 /// Markdown export, images come before HTML: an image shows the same in
@@ -498,7 +502,22 @@ impl<'a> Page<'a> {
                 } else {
                     format!(" class=\"{}\"", classes.join(" "))
                 };
-                html.push_str(&format!("<td{class}>{}</td>", esc(&self.r(&text))));
+                let mut text = self.r(&text).into_owned();
+                if text.chars().nth(TABLE_CELL).is_some() {
+                    let (cut, _) = text.char_indices().nth(TABLE_CELL - 1).unwrap_or_default();
+                    text.truncate(cut);
+                    text.push('…');
+                }
+                // A long value wraps inside a block, since a cell's own
+                // max-width isn't reliable; short ones keep the column wide.
+                if text.chars().count() > TABLE_WRAP {
+                    html.push_str(&format!(
+                        "<td{class}><div class=\"wrap\">{}</div></td>",
+                        esc(&text)
+                    ));
+                } else {
+                    html.push_str(&format!("<td{class}>{}</td>", esc(&text)));
+                }
             }
             html.push_str("</tr>");
         }
@@ -1374,7 +1393,8 @@ pre.error { background: var(--error-soft); color: var(--error); }
 .table th { position: sticky; top: 0; background: var(--surface); vertical-align: bottom; }
 .table th .type { display: block; font-weight: 400; font-size: .78rem; }
 .table .num { text-align: right; }
-.table td { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 24rem; }
+.table td { white-space: pre-wrap; }
+.table .wrap { width: 24rem; overflow-wrap: break-word; }
 .table td.null { color: var(--soft); font-style: italic; }
 .table-rows { font: .8rem/1.4 var(--sans); color: var(--soft); margin: .35rem 0 0; }
 .colophon { margin-top: 4rem; padding-top: 1.25rem; border-top: 1px solid var(--line); font: .8rem/1.5 var(--sans); color: var(--soft); }
@@ -1767,6 +1787,8 @@ mod tests {
             .collect();
         let mut first = rows.clone();
         first[0] = json!({"moon": "<b>Io</b> /home/me/x", "r": null});
+        first[1] = json!({"moon": "w".repeat(5000), "r": 1});
+        first[2] = json!({"moon": "x".repeat(1000), "r": 2});
         let n = nb(
             json!([{"cell_type": "code", "metadata": {}, "execution_count": 1, "source": "x",
             "outputs": [{"output_type": "execute_result", "execution_count": 1, "metadata": {},
@@ -1790,6 +1812,14 @@ mod tests {
         assert!(page.contains("<th class=\"num\">r<span class=\"type\">integer</span></th>"));
         assert!(page.contains("<td>&lt;b&gt;Io&lt;/b&gt; ~/x</td><td class=\"num null\">null</td>"));
         assert!(page.contains("<td>m99</td>"));
+        assert!(page.contains(&format!(
+            "<td><div class=\"wrap\">{}…</div></td>",
+            "w".repeat(999)
+        )));
+        assert!(page.contains(&format!(
+            "<td><div class=\"wrap\">{}</div></td>",
+            "x".repeat(1000)
+        )));
         assert!(!page.contains("<td>m100</td>"), "only the first 100 rows");
         assert!(page.contains("<p class=\"table-rows\">100 of 12,345 rows</p>"));
         assert!(!page.contains("fallback"));
