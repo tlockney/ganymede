@@ -10,7 +10,7 @@ listed and refuse ([Options](mcp.md#options)).
 
 ## `cell_add`
 
-Add a cell without running it: Markdown narration (the default), or with `mode: recorded` a step that ran outside the kernel. With `answers: <request cell id>`, it goes below that request and marks it done. Returns the new cell's id.
+Add a cell without running it: Markdown narration (the default), or with `mode: recorded` a step that ran outside the kernel. With `answers` set to a request cell's id, it goes below that request and marks it done. Returns the new cell's id.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
@@ -140,7 +140,7 @@ Read a notebook as text: cells with their ids, sources and outputs, then an `@@r
 
 ## `notebook_requests`
 
-List the requests to you that are still open: Markdown cells starting `@agent` (or `@` and your client's name) that a person wrote in a notebook open in this server, through JupyterLab or the apps, and that no cell answers yet. Answer one with cell_add(answers: <its id>).
+List the requests to you that are still open: Markdown cells starting `@agent` (or `@` and your client's name) that a person wrote in a notebook open in this server, through JupyterLab or the apps, and that no cell answers yet. Answer one with cell_add, `answers` set to its id.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
