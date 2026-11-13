@@ -8,7 +8,9 @@ and split keep metadata under a new id. The edit is refused unless the
 id is an open request from a person, and through
 `own_edit_checking`, which checks cells for unseen changes without
 crediting or adopting them, when the person changed the request since
-the agent's read. Room attribution hashes type and source only, so the
+the agent's read. A request the mark lacks (written after the read, as
+when `ganymede mcp watch` wakes the agent) isn't checked: the agent saw
+no older version of it. Room attribution hashes type and source only, so the
 metadata edit credits nobody. A new tool, `notebook_requests`, lists
 the open requests (a person's, unanswered) in the notebook rooms open
 under the connection's folder, via a new `Collab::notebook_rooms`;
