@@ -196,7 +196,10 @@ Markdown exports ignore the options. The redactions (server root, home
 directory, token) are the same with any options; the byline is the
 client's own text, so it is escaped but not redacted. The page is served
 with `sandbox allow-scripts allow-downloads`, so its Download notebook
-button works opened from the server. For example,
+button works opened from the server. The page names its code mode in
+`<meta name="ganymede-code" content="...">`, so a client can tell a
+server that ignored the options (0.10.0 and older) from one that took
+them. For example,
 `/nbconvert/html/report.ipynb?code=hidden&byline=13%20November%202026`.
 
 ## Terminals

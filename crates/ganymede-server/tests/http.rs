@@ -917,6 +917,7 @@ async fn nbconvert_exports_script_markdown_and_html() {
     .await;
     assert_eq!(st, StatusCode::OK);
     let page = String::from_utf8(body).unwrap();
+    assert!(page.contains("<meta name=\"ganymede-code\" content=\"shown\">"));
     assert!(!page.contains("<details"), "{page}");
     assert!(page.contains("13 November 2026"), "{page}");
     assert!(page.contains("id=\"notebook\""), "{page}");

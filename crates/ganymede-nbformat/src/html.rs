@@ -51,6 +51,17 @@ pub enum CodeMode {
     Hidden,
 }
 
+impl CodeMode {
+    /// The name `--code` and the server's `code` option take.
+    pub fn name(self) -> &'static str {
+        match self {
+            CodeMode::Shown => "shown",
+            CodeMode::Folded => "folded",
+            CodeMode::Hidden => "hidden",
+        }
+    }
+}
+
 impl std::str::FromStr for CodeMode {
     type Err = String;
 
@@ -645,12 +656,14 @@ impl<'a> Page<'a> {
             "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
              <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
              {HTML_GENERATOR_MARK}{version}\">\n\
+             <meta name=\"ganymede-code\" content=\"{code}\">\n\
              <title>{title_text}</title>\n<style>{CSS}</style>\n</head>\n<body>\n\
              <div class=\"layout{has_toc}\">\n{toc}\n<main>\n<header class=\"masthead\">\n\
              <h1>{title_html}</h1>\n{meta}\n{legend}\n{button}</header>\n<article>\n{body}</article>\n\
              <footer class=\"colophon\">Exported from <span class=\"file\">{file}</span> by Ganymede.</footer>\n{copy}\n\
              </main>\n</div>\n<script>{SCRIPT}</script>\n</body>\n</html>\n",
             version = env!("CARGO_PKG_VERSION"),
+            code = self.opts.code.name(),
             title_text = esc(&plain_title(title)),
             title_html = self.inline_markdown(title),
             has_toc = if toc.is_empty() { "" } else { " with-toc" },
@@ -1590,6 +1603,28 @@ mod tests {
         // The copy reads back as a notebook.
         let back: Notebook = serde_json::from_value(c).unwrap();
         assert_eq!(back.cells.len(), 4);
+    }
+
+    /// The page says how it shows code, so a client that asked for a mode
+    /// can tell a server that ignored it.
+    #[test]
+    fn page_names_its_code_mode() {
+        let n = nb(json!([{"cell_type": "markdown", "metadata": {}, "source": "Plain."}]));
+        for mode in [CodeMode::Shown, CodeMode::Folded, CodeMode::Hidden] {
+            let page = html(
+                &n,
+                &HtmlOptions {
+                    code: mode,
+                    ..Default::default()
+                },
+            );
+            let meta = format!("<meta name=\"ganymede-code\" content=\"{}\">", mode.name());
+            assert!(
+                page[..page.find("</head>").unwrap()].contains(&meta),
+                "{mode:?}"
+            );
+            assert_eq!(mode.name().parse::<CodeMode>().unwrap(), mode);
+        }
     }
 
     #[test]

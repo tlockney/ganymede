@@ -22,3 +22,8 @@ Choices:
   sandbox, so a notebook's HTML still can't download.
 - One parsing rule for all three: trimmed, case-insensitive, empty is
   absent.
+- Every page names its code mode in `<meta name="ganymede-code">`.
+  ui#578's review found that a server without these options (0.10.0,
+  which the apps embed) returns the folded page for `code=hidden`, so a
+  client asking to hide code would share it. The client now refuses a
+  page whose mode isn't the one it asked for.
