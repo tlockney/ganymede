@@ -87,7 +87,9 @@ One `display_data` with three parts:
   notebook.
 - **`text/plain`**, for agents and `jupyter console`: the shape, each
   column's name, type and range (min and max, or distinct count, and
-  nulls), and the first 3 and last 2 rows aligned as text. It stays under 4 KB.
+  nulls), and the first 3 and last 2 rows aligned as text, each row
+  with its row number, so tail rows outside the embedded range show as
+  such. It stays under 4 KB.
   Ranges come from the embedded rows, so for a cut table the summary
   says "ranges over the first 1,000 of 52,410 rows" rather than
   describing data it hasn't read.
