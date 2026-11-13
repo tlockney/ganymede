@@ -98,7 +98,7 @@ test("session-start reports the server, or its absence, and the open journal", (
 test("prompt passes on others' changes, and nothing else", () => {
   const f = fake({
     notebook_read:
-      'Changed by others since that read: 1 added, 0 edited, 0 moved, 0 deleted.\n\n@@cell {"change":["added"],"id":"p"}\nP\n\n@@read m1\n',
+      'Changed by others since that read: 1 added, 0 edited, 0 moved, 0 deleted, 0 ran.\n\n@@cell {"change":["added"],"id":"p"}\nP\n\n@@read m1\n',
   });
   // No journal open: no call.
   assert.equal(handle("prompt", base(f.dir), f.env), "");
