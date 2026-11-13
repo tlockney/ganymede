@@ -500,9 +500,13 @@ each as an `@@request {"path": ..., "id": ..., "by": ...}` line and the
 cell's text. The agent answers one with `cell_add(answers: "<id>")`:
 the new cell goes below the request (unless `after` says otherwise),
 and the request gets `metadata.ganymede.request = {"done": <time>,
-"answer": <id>}`, so it is no longer a request, in `notebook_requests`
-or in a change report. Editing an answered request doesn't reopen it:
-to ask again, write a new cell.
+"answer": <id>, "id": <request id>}`, so it is no longer a request, in
+`notebook_requests` or in a change report. Both happen in one edit, and
+neither happens when the id isn't an open request from a person to this
+agent, or when the person changed the request since the agent's last
+read. Editing an answered request doesn't reopen it: to ask again,
+write a new cell. A copy of an answered request (pasted, duplicated or
+split, so under a new id) is a new request.
 
 A code cell someone else ran since the mark, whose execution count
 differs from what the mark saw, is reported with `"ran"` in its change
