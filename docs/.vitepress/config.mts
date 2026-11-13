@@ -181,7 +181,7 @@ export default defineConfig({
         filePath.startsWith("ganymede-ui/")
           ? `https://github.com/tlockney/ganymede-ui/edit/main/docs/${filePath.slice("ganymede-ui/".length)}`
           : filePath === "cell-api/device.md"
-            ? "https://github.com/tlockney/ganymede-device/blob/main/src/device.ts"
+            ? "https://github.com/tlockney/ganymede-ui/blob/main/packages/device/src/device.ts"
             : filePath.startsWith("cell-api/")
               ? "https://github.com/tlockney/cdp-kernel/tree/main/runtime"
               : `https://github.com/tlockney/ganymede/edit/main/docs/${filePath}`,

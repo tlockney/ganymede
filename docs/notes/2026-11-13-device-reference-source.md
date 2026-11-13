@@ -6,3 +6,8 @@ device reference from `packages/device/docs/reference.md` on
 ganymede-ui's main. Each source now names its docs directory, which the
 link rewriting strips for renames and adds back for GitHub links. A
 local checkout is `GANYMEDE_UI_DIR`, no longer `GANYMEDE_DEVICE_DIR`.
+
+Review follow-ups: the cell API device page's "Edit this page" link
+points at ganymede-ui's `packages/device/src/device.ts`; `relink` throws
+if a `files` key is outside `source.docs`, and a test covers the rename
+for a docs directory other than `docs/`.

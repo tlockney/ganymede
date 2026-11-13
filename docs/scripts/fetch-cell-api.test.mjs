@@ -8,6 +8,7 @@ const [cdp, device] = sources;
 test("links between the pages follow the renames", () => {
   assert.equal(relink("[w](widgets-reference.md#comm)", cdp), "[w](widgets.md#comm)");
   assert.equal(relink("[j](jupyter-reference.md)", cdp), "[j](jupyter.md)");
+  assert.equal(relink("[r](reference.md)", device), "[r](device.md)");
 });
 
 test("cdp-kernel's guides go to cdp-kernel.org", () => {

@@ -57,7 +57,7 @@ function checkout(source, tmp) {
 }
 
 /**
- * `markdown` from `source`'s docs/, with its relative links pointed where
+ * `markdown` from `source.docs`, with its relative links pointed where
  * they resolve on this site. Fenced code is left as it is: `f(x)` after a
  * `]` there is code, not a link.
  */
@@ -69,7 +69,12 @@ export function relink(markdown, source) {
 }
 
 function relinkProse(markdown, source) {
-  const renames = new Map(Object.entries(source.files).map(([from, to]) => [from.slice(source.docs.length), to]));
+  const renames = new Map(
+    Object.entries(source.files).map(([from, to]) => {
+      if (!from.startsWith(source.docs)) throw new Error(`${from} is not under ${source.docs}`);
+      return [from.slice(source.docs.length), to];
+    }),
+  );
   return markdown.replace(/\]\(([^)\s]+)\)/g, (link, href) => {
     // Pages of this site, linked absolutely so they work on GitHub too.
     const own = href.match(/^https:\/\/ganymede-server\.com\/docs\/([\w/-]+?)(#.*)?$/);

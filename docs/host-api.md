@@ -355,8 +355,9 @@ channel of its own for parameters or results.
   comm transport.
 - **ganymede-ui**: nothing for the first step. Later, the sheet that shows
   a notebook's `wants` and grants them, and `has()` badges.
-- **ganymede-device**: none. `device` keeps its transports, since the app
-  answers it, not the server.
+- **ganymede-device** (now ganymede-ui's `packages/device`): none.
+  `device` keeps its transports, since the app answers it, not the
+  server.
 
 The order: the comm and the read methods in Ganymede, then
 `jupyter.host()` in cdp-kernel, which is enough for "what do I already

@@ -201,7 +201,8 @@ The pages under `/docs/cell-api/` are the reference pages that
 [cdp-kernel](https://github.com/tlockney/cdp-kernel)
 (`docs/jupyter-reference.md`, `docs/widgets-reference.md`) and
 ganymede-ui's device package
-([`packages/device/docs/reference.md`](https://github.com/tlockney/ganymede-ui/tree/main/packages/device/docs/reference.md)) generate from the doc comments on their types,
+([`packages/device/docs/reference.md`](https://github.com/tlockney/ganymede-ui/blob/main/packages/device/docs/reference.md))
+generate from the doc comments on their types,
 copied into `docs/cell-api/` (not committed) by `npm run fetch-cell-api`;
 set `CDP_KERNEL_DIR` or `GANYMEDE_UI_DIR` to copy from a local
 checkout. Edit the doc comments there. The script points links to
