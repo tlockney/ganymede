@@ -177,6 +177,8 @@ the [flags for every command](#flags-for-every-command) and the
 | `-o`, `--output <OUTPUT>` | Where to write the page; `-` is stdout. Default: the notebook's path with `.html`. |
 | `--code <CODE>` | How code shows: `folded` under a toggle, `shown`, or `hidden`. Default `folded`. |
 | `--byline <BYLINE>` | A line under the title, such as the date. |
+| `--no-download` | Leave the notebook copy and its Download button out. |
+| `--download` | Put the notebook copy in even with `--code hidden`. |
 
 ### `grant`
 

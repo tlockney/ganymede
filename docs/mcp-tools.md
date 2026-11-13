@@ -117,7 +117,7 @@ Open a notebook, creating it if it doesn't exist, and start or join its kernel. 
 
 ## `notebook_publish`
 
-Publish the notebook as one self-contained HTML page to read and share: title, contents, Markdown as prose, charts and tables inline, code folded under each result, light and dark. The page holds only the notebook's cells and outputs (no metadata), makes no network requests and runs no notebook script; the server root, home directory and token (8 characters or more) are replaced wherever they appear as a whole name. Saves it under the server root, at `out` relative to this connection's directory (default `published/<name>.html` beside the notebook), replacing an earlier published page but no other file unless `overwrite: true`, and returns its path. Runs nothing; run the notebook first so the outputs are current.
+Publish the notebook as one self-contained HTML page to read and share: title, contents, Markdown as prose, charts and tables inline, code folded under each result, light and dark. The page holds only the notebook's cells and outputs (no metadata), makes no network requests and runs no notebook script; the server root, home directory and token (8 characters or more) are replaced wherever they appear as a whole name. Unless `code` is `hidden` or `download` is false, the page also carries a copy of the notebook with a Download notebook button, with the same replacements and without metadata or recorded parameters. Saves it under the server root, at `out` relative to this connection's directory (default `published/<name>.html` beside the notebook), replacing an earlier published page but no other file unless `overwrite: true`, and returns its path. Runs nothing; run the notebook first so the outputs are current.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
@@ -125,6 +125,7 @@ Publish the notebook as one self-contained HTML page to read and share: title, c
 | `code` | string | How code shows: `folded` under each result (default), `shown`, or `hidden`. |
 | `byline` | string | A line under the title. Default: today's date. |
 | `overwrite` | boolean | Replace `out` even when it isn't an earlier published page. |
+| `download` | boolean | Put a copy of the notebook in the page, with a Download notebook button: redacted as the page is, without metadata or recorded parameters. Default: on, unless `code` is `hidden`. |
 | `path` | string | Notebook path; the one last opened when left out. |
 
 ## `notebook_read`

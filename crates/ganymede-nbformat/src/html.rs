@@ -20,13 +20,20 @@
 //!
 //! [`HtmlOptions::redact`] replaces text the caller knows to be private,
 //! such as the server's root directory, wherever it appears.
+//!
+//! With [`HtmlOptions::download`], the page also carries a copy of the
+//! notebook, inert JSON in a `<script type="application/json">`, and a
+//! button that saves it. The copy keeps to the page's rules: the same
+//! redactions, applied to every text in it but base64 images, and no
+//! metadata beyond the kernel, a raw cell's format and an agent cell's
+//! `by` and `mode`. Recorded parameters are left out.
 
 use crate::export::decode_base64;
 use crate::highlight::highlight;
 use crate::{Cell, Export, MimeBundle, Notebook, Output};
 use base64::Engine as _;
 use pulldown_cmark::{CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashSet};
 
@@ -73,6 +80,10 @@ pub struct HtmlOptions {
     /// directory is matched before the home directory. Empty texts are
     /// ignored.
     pub redact: Vec<(String, String)>,
+    /// Put a copy of the notebook in the page, with a button that saves
+    /// it as `<name>.ipynb` (see the module notes for what the copy
+    /// leaves out).
+    pub download: bool,
 }
 
 /// The notebook as one HTML page. `name` is the notebook's file name
@@ -613,14 +624,29 @@ impl<'a> Page<'a> {
             String::new()
         };
         let file = format!("{}.ipynb", self.r(name));
+        let (button, copy) = if self.opts.download {
+            (
+                format!(
+                    "<p class=\"download\"><button type=\"button\" id=\"download\" data-file=\"{}\" hidden>Download notebook</button>\
+                     <span id=\"download-status\" role=\"status\"></span></p>\n",
+                    esc(&file)
+                ),
+                format!(
+                    "<script type=\"application/json\" id=\"notebook\">{}</script>\n",
+                    self.notebook_copy(nb)
+                ),
+            )
+        } else {
+            (String::new(), String::new())
+        };
         format!(
             "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
              <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
              {HTML_GENERATOR_MARK}{version}\">\n\
              <title>{title_text}</title>\n<style>{CSS}</style>\n</head>\n<body>\n\
              <div class=\"layout{has_toc}\">\n{toc}\n<main>\n<header class=\"masthead\">\n\
-             <h1>{title_html}</h1>\n{meta}\n{legend}\n</header>\n<article>\n{body}</article>\n\
-             <footer class=\"colophon\">Exported from <span class=\"file\">{file}</span> by Ganymede.</footer>\n\
+             <h1>{title_html}</h1>\n{meta}\n{legend}\n{button}</header>\n<article>\n{body}</article>\n\
+             <footer class=\"colophon\">Exported from <span class=\"file\">{file}</span> by Ganymede.</footer>\n{copy}\n\
              </main>\n</div>\n<script>{SCRIPT}</script>\n</body>\n</html>\n",
             version = env!("CARGO_PKG_VERSION"),
             title_text = esc(&plain_title(title)),
@@ -629,6 +655,89 @@ impl<'a> Page<'a> {
             body = self.out,
             file = esc(&file),
         )
+    }
+
+    /// The notebook to download, as JSON safe inside a `<script>`
+    /// element: only what the page may show, redacted.
+    fn notebook_copy(&self, nb: &Notebook) -> String {
+        let mut metadata = Map::new();
+        for key in ["kernelspec", "language_info"] {
+            if let Some(v) = nb.metadata.get(key) {
+                metadata.insert(key.to_owned(), self.redact_value(v.clone()));
+            }
+        }
+        let cells: Vec<Value> = nb.cells.iter().filter_map(|c| self.cell_copy(c)).collect();
+        let copy = json!({
+            "nbformat": nb.nbformat,
+            "nbformat_minor": nb.nbformat_minor,
+            "metadata": metadata,
+            "cells": cells,
+        });
+        script_json(&copy.to_string())
+    }
+
+    /// A cell for the copy: its type, id, source, attachments, outputs
+    /// and execution count, and of its metadata only a raw cell's format
+    /// and an agent cell's `by` and `mode`.
+    fn cell_copy(&self, cell: &Cell) -> Option<Value> {
+        let Value::Object(full) = serde_json::to_value(cell).ok()? else {
+            return None;
+        };
+        let mut out = Map::new();
+        for key in [
+            "cell_type",
+            "id",
+            "source",
+            "attachments",
+            "execution_count",
+            "outputs",
+        ] {
+            if let Some(v) = full.get(key) {
+                out.insert(key.to_owned(), self.redact_value(v.clone()));
+            }
+        }
+        let mut metadata = Map::new();
+        if let Cell::Raw(c) = cell {
+            for key in ["format", "raw_mimetype"] {
+                if let Some(v) = c.metadata.get(key).filter(|v| v.is_string()) {
+                    metadata.insert(key.to_owned(), self.redact_value(v.clone()));
+                }
+            }
+        }
+        if let Some(a) = agent(cell) {
+            let kept: Map<String, Value> = ["by", "mode"]
+                .into_iter()
+                .filter_map(|k| {
+                    let v = a.get(k).filter(|v| v.is_string())?;
+                    Some((k.to_owned(), self.redact_value(v.clone())))
+                })
+                .collect();
+            metadata.insert("ganymede".to_owned(), json!({ "agent": kept }));
+        }
+        out.insert("metadata".to_owned(), Value::Object(metadata));
+        Some(Value::Object(out))
+    }
+
+    /// `value` with the redactions applied to every string in it, but
+    /// not to bitmap entries, which are base64.
+    fn redact_value(&self, value: Value) -> Value {
+        match value {
+            Value::String(s) => Value::String(self.r(&s).into_owned()),
+            Value::Array(a) => Value::Array(a.into_iter().map(|v| self.redact_value(v)).collect()),
+            Value::Object(o) => Value::Object(
+                o.into_iter()
+                    .map(|(k, v)| {
+                        let v = if is_bitmap(&k) {
+                            v
+                        } else {
+                            self.redact_value(v)
+                        };
+                        (k, v)
+                    })
+                    .collect(),
+            ),
+            other => other,
+        }
     }
 
     /// One line of Markdown as inline HTML, for the title.
@@ -762,6 +871,14 @@ fn language_label(name: &str) -> String {
         "python" => "Python".to_owned(),
         _ => name.to_owned(),
     }
+}
+
+/// JSON text that can sit inside a `<script>` element: `<`, `>` and `&`
+/// only occur inside JSON strings, where `\u` escapes mean the same.
+fn script_json(json: &str) -> String {
+    json.replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026")
 }
 
 fn is_bitmap(mime: &str) -> bool {
@@ -938,8 +1055,32 @@ pub(crate) fn esc(text: &str) -> String {
 /// frame's own `data:` images and inline styles, and no form submits.
 const FRAME_CSP: &str = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; form-action 'none'";
 
-/// Sizes each output frame to its content.
-const SCRIPT: &str = "for(const f of document.querySelectorAll('iframe.frame')){const fit=()=>{try{const d=f.contentDocument;if(d&&d.documentElement){f.style.height=Math.ceil(d.body.getBoundingClientRect().height+4)+'px';}}catch(e){}};f.addEventListener('load',fit);fit();}";
+/// The page's one script: sizes output frames, and with a notebook copy
+/// shows the download button. In a claude.ai artifact the save goes
+/// through its `downloads` capability, which takes no `.ipynb`, so the
+/// file goes in a zip there; elsewhere it is a plain `.ipynb` download.
+const SCRIPT: &str = r#"for(const f of document.querySelectorAll('iframe.frame')){const fit=()=>{try{const d=f.contentDocument;if(d&&d.documentElement){f.style.height=Math.ceil(d.body.getBoundingClientRect().height+4)+'px';}}catch(e){}};f.addEventListener('load',fit);fit();}
+{const nb=document.getElementById('notebook'),dl=document.getElementById('download'),st=document.getElementById('download-status');
+if(nb&&dl&&st){const file=dl.dataset.file;
+const host=window.claude&&window.claude.use?Promise.resolve(window.claude.use('downloads')).catch(()=>null):Promise.resolve(null);
+const crc=b=>{let c=-1;for(let i=0;i<b.length;i++){c^=b[i];for(let k=0;k<8;k++)c=(c>>>1)^(0xEDB88320&-(c&1));}return(c^-1)>>>0;};
+const zip=(name,data)=>{const n=new TextEncoder().encode(name),c=crc(data),z=data.length;
+const h=new Uint8Array(30+n.length),hv=new DataView(h.buffer);
+hv.setUint32(0,0x04034b50,true);hv.setUint16(4,20,true);hv.setUint16(6,0x800,true);hv.setUint16(12,0x21,true);hv.setUint32(14,c,true);hv.setUint32(18,z,true);hv.setUint32(22,z,true);hv.setUint16(26,n.length,true);h.set(n,30);
+const e=new Uint8Array(46+n.length),ev=new DataView(e.buffer);
+ev.setUint32(0,0x02014b50,true);ev.setUint16(4,20,true);ev.setUint16(6,20,true);ev.setUint16(8,0x800,true);ev.setUint16(14,0x21,true);ev.setUint32(16,c,true);ev.setUint32(20,z,true);ev.setUint32(24,z,true);ev.setUint16(28,n.length,true);e.set(n,46);
+const t=new Uint8Array(22),tv=new DataView(t.buffer);
+tv.setUint32(0,0x06054b50,true);tv.setUint16(8,1,true);tv.setUint16(10,1,true);tv.setUint32(12,e.length,true);tv.setUint32(16,h.length+z,true);
+return new Blob([h,data,e,t],{type:'application/zip'});};
+dl.hidden=false;
+dl.addEventListener('click',async()=>{st.textContent='';
+const text=JSON.stringify(JSON.parse(nb.textContent),null,1)+'\n';
+const d=await host;
+if(d){dl.disabled=true;try{await d.save({filename:file+'.zip',data:zip(file,new TextEncoder().encode(text))});st.textContent='Saved.';}
+catch(err){const code=err&&err.code;st.textContent=code==='declined'?'Not saved.':code==='rate_limited'?'A save prompt is already open.':'Downloads are not available here.';}
+finally{dl.disabled=false;}return;}
+const link=document.createElement('a');link.href=URL.createObjectURL(new Blob([text],{type:'application/x-ipynb+json'}));link.download=file;
+document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(link.href),60000);});}}"#;
 
 /// The style inside output frames: tables as the page sets them.
 const FRAME_CSS: &str = "\
@@ -1059,6 +1200,11 @@ pre.error { background: var(--error-soft); color: var(--error); }
 .left-out { font: italic .9rem/1.5 var(--sans); color: var(--soft); }
 .colophon { margin-top: 4rem; padding-top: 1.25rem; border-top: 1px solid var(--line); font: .8rem/1.5 var(--sans); color: var(--soft); }
 .colophon .file { font-family: var(--mono); font-size: .95em; }
+.download { margin: 1rem 0 0; display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
+.download button { font: 500 .85rem/1 var(--sans); color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 6px; padding: .5rem .85rem; cursor: pointer; }
+.download button:hover { background: var(--surface); }
+.download button:disabled { opacity: .6; cursor: default; }
+.download button[hidden] { display: none; }
 @media (max-width: 40rem) {
   body { font-size: 17px; }
   .layout { padding-top: 2.25rem; }
@@ -1305,6 +1451,101 @@ mod tests {
         let b64 = base64::engine::general_purpose::STANDARD
             .encode("<svg xmlns=\"http://www.w3.org/2000/svg\"><text>./data.csv</text></svg>");
         assert!(page.contains(&b64));
+    }
+
+    /// The notebook copy in a page, parsed.
+    fn copy(page: &str) -> Value {
+        let start =
+            page.find("id=\"notebook\">").expect("a notebook copy") + "id=\"notebook\">".len();
+        let end = start + page[start..].find("</script>").unwrap();
+        serde_json::from_str(&page[start..end]).unwrap()
+    }
+
+    #[test]
+    fn notebook_copy_keeps_to_the_page() {
+        let png = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG/home/tl/proj");
+        let mut n = nb(json!([
+            {"cell_type": "markdown", "id": "a", "metadata": {"tags": ["x"]}, "source": "# T\n\nIn /home/tl/proj </script><b>",
+             "attachments": {"p.png": {"image/png": png}}},
+            {"cell_type": "code", "id": "b", "metadata": agent_meta("recorded"), "execution_count": 3,
+             "source": "read('/home/tl/proj/d.csv') // tok12345",
+             "outputs": [
+                {"output_type": "stream", "name": "stdout", "text": "tok12345 /home/tl/x\n"},
+                {"output_type": "display_data", "metadata": {"image/png": {"width": 10}},
+                 "data": {"image/png": png, "text/plain": "/home/tl/proj/fig"}},
+                {"output_type": "error", "ename": "E", "evalue": "/home/tl/proj", "traceback": ["at /home/tl/proj/a.ts:1"]}
+             ]},
+            {"cell_type": "raw", "metadata": {"format": "text/html", "other": "/home/tl"}, "source": "<p>raw</p>"}
+        ]));
+        n.metadata
+            .insert("ganymede".into(), json!({"params": {"key": "s3cret"}}));
+        n.metadata.insert("signature".into(), json!("sha256:abc"));
+        let opts = HtmlOptions {
+            redact: vec![
+                ("/home/tl".into(), "~".into()),
+                ("/home/tl/proj".into(), ".".into()),
+                ("tok12345".into(), "[token]".into()),
+            ],
+            download: true,
+            ..Default::default()
+        };
+        let page = html(&n, &opts);
+        assert!(page.contains("data-file=\"2026-11-11-quakes.ipynb\""));
+        let start = page.find("id=\"notebook\">").unwrap();
+        let script = &page[start..start + page[start..].find("</script>").unwrap()];
+        assert!(!script.contains('<'), "no raw < in the copy");
+        for leak in [
+            "/home/tl",
+            "tok12345",
+            "s3cret",
+            "signature",
+            "metadata-must-not-leak",
+            "history",
+            "tags",
+            "2026-11-11T00",
+        ] {
+            assert!(!script.contains(leak), "{leak} leaked into the copy");
+        }
+        let c = copy(&page);
+        assert_eq!(c["nbformat"], 4);
+        assert_eq!(
+            c["metadata"],
+            json!({
+                "kernelspec": {"name": "cdp-node", "display_name": "TypeScript (Node)", "language": "typescript"},
+                "language_info": {"name": "typescript"}
+            })
+        );
+        let cells = c["cells"].as_array().unwrap();
+        assert_eq!(cells.len(), 3);
+        assert_eq!(cells[0]["metadata"], json!({}));
+        assert!(cells[0]["source"]
+            .as_str()
+            .unwrap()
+            .ends_with("In . </script><b>"));
+        assert_eq!(cells[0]["attachments"]["p.png"]["image/png"], json!(png));
+        assert_eq!(
+            cells[1]["metadata"],
+            json!({"ganymede": {"agent": {"by": "claude-code", "mode": "recorded"}}})
+        );
+        assert_eq!(cells[1]["execution_count"], 3);
+        assert_eq!(cells[1]["source"], "read('./d.csv') // [token]");
+        let outputs = cells[1]["outputs"].as_array().unwrap();
+        assert_eq!(outputs[0]["text"], "[token] ~/x\n");
+        assert_eq!(outputs[1]["data"]["image/png"], json!(png));
+        assert_eq!(outputs[1]["data"]["text/plain"], "./fig");
+        assert_eq!(outputs[2]["traceback"][0], "at ./a.ts:1");
+        assert_eq!(cells[2]["metadata"], json!({"format": "text/html"}));
+        // The copy reads back as a notebook.
+        let back: Notebook = serde_json::from_value(c).unwrap();
+        assert_eq!(back.cells.len(), 3);
+    }
+
+    #[test]
+    fn no_copy_unless_asked() {
+        let n = nb(json!([{"cell_type": "markdown", "metadata": {}, "source": "Plain."}]));
+        let page = html(&n, &HtmlOptions::default());
+        assert!(!page.contains("id=\"notebook\""));
+        assert!(!page.contains("id=\"download\""));
     }
 
     #[test]
