@@ -25,6 +25,7 @@
 mod ansi;
 mod atomic;
 mod export;
+mod highlight;
 mod html;
 mod multiline;
 mod params;
