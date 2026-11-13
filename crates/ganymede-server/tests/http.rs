@@ -4970,6 +4970,60 @@ async fn mcp_works_on_notebooks_without_cell_ids() {
     assert!(saved["cells"][2]["outputs"].to_string().contains("hello"));
 }
 
+/// A folder's `.ganymede.toml` sets the kernel new notebooks there start,
+/// `kernelspecs_list` reports it, and a kernel it names that isn't
+/// installed is an error naming the file.
+#[tokio::test]
+async fn mcp_folder_default_kernel() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("a/b")).unwrap();
+    std::fs::create_dir_all(dir.path().join("c")).unwrap();
+    std::fs::write(dir.path().join("a/.ganymede.toml"), "kernel = \"fake\"\n").unwrap();
+    std::fs::write(
+        dir.path().join("c/.ganymede.toml"),
+        "kernel = \"python9\"\n",
+    )
+    .unwrap();
+    let app = mcp_app(dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+
+    let list = mcp_text(&mcp_tool(&app, &sid, "kernelspecs_list", json!({"dir": "a/b"})).await);
+    assert!(
+        list.contains("folder default for a/b: fake (from a/.ganymede.toml)"),
+        "{list}"
+    );
+    let list = mcp_text(&mcp_tool(&app, &sid, "kernelspecs_list", json!({})).await);
+    assert!(!list.contains("folder default"), "{list}");
+
+    let out =
+        mcp_text(&mcp_tool(&app, &sid, "notebook_open", json!({"path": "a/b/n.ipynb"})).await);
+    assert!(
+        out.contains("on kernel fake (the folder default, from a/.ganymede.toml)"),
+        "{out}"
+    );
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("a/b/n.ipynb")).unwrap())
+            .unwrap();
+    assert_eq!(saved["metadata"]["kernelspec"]["name"], "fake");
+
+    // A kernel named in the call wins and the reply doesn't credit the file.
+    let out = mcp_text(
+        &mcp_tool(
+            &app,
+            &sid,
+            "notebook_open",
+            json!({"path": "a/m.ipynb", "kernel": "fake"}),
+        )
+        .await,
+    );
+    assert!(!out.contains("folder default"), "{out}");
+
+    let v = mcp_tool(&app, &sid, "notebook_open", json!({"path": "c/n.ipynb"})).await;
+    let e = v.to_string();
+    assert!(e.contains("c/.ganymede.toml sets kernel python9"), "{e}");
+    assert!(!dir.path().join("c/n.ipynb").exists());
+}
+
 /// `notebooks_search` finds cells across notebooks under a directory:
 /// on disk and in open rooms, every word, outputs only when asked.
 #[tokio::test]

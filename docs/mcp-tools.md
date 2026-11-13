@@ -99,9 +99,11 @@ Interrupt, restart or shut down the notebook's kernel.
 
 ## `kernelspecs_list`
 
-List the kernels that can run notebooks here.
+List the kernels that can run notebooks here, the server's default, and the default for a folder when a `.ganymede.toml` there or above sets one (`kernel = "<name>"`). New notebooks in that folder start it unless `notebook_open` names a kernel.
 
-No parameters.
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `dir` | string | The folder to report a default for, relative to this connection's directory (default: that directory). |
 
 ## `notebook_open`
 
@@ -110,7 +112,7 @@ Open a notebook, creating it if it doesn't exist, and start or join its kernel. 
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `path` (required) | string | Notebook path, such as `analysis/run.ipynb`, relative to this connection's directory (`notebook_open` names it); a leading `/` starts at the server root. |
-| `kernel` | string | Kernelspec name for a new notebook or a new kernel (default: the notebook's own, else the server's default). |
+| `kernel` | string | Kernelspec name for a new notebook or a new kernel (default: the notebook's own, else its folder's default from `.ganymede.toml`, else the server's default). |
 | `title` | string | For a new notebook: a title, written as a first Markdown cell. |
 
 ## `notebook_publish`
