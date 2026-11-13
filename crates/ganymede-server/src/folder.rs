@@ -35,11 +35,24 @@ pub struct FolderKernel {
     pub file: String,
 }
 
+/// Why a settings file couldn't be used.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderError {
+    /// The file's API path.
+    pub file: String,
+    pub why: String,
+}
+
 /// The default kernel for API directory `dir` under `root`: the `kernel`
 /// of the nearest `.ganymede.toml` from `dir` up to the root. An error
 /// names the file that can't be read or parsed, so a typo isn't silently
-/// ignored.
-pub fn default_kernel(root: &Path, dir: &str) -> Result<Option<FolderKernel>, String> {
+/// ignored. A `dir` the contents API would refuse (`..`, a backslash, a
+/// NUL, and on Windows a `:`) has no default, and a folder that resolves
+/// outside the root (through a symlink) is passed over.
+pub fn default_kernel(root: &Path, dir: &str) -> Result<Option<FolderKernel>, FolderError> {
+    if dir.contains(['\\', '\0']) || (cfg!(windows) && dir.contains(':')) {
+        return Ok(None);
+    }
     let parts: Vec<&str> = dir
         .split('/')
         .filter(|p| !p.is_empty() && *p != ".")
@@ -47,12 +60,19 @@ pub fn default_kernel(root: &Path, dir: &str) -> Result<Option<FolderKernel>, St
     if parts.contains(&"..") {
         return Ok(None);
     }
+    let Ok(base) = root.canonicalize() else {
+        return Ok(None);
+    };
     for n in (0..=parts.len()).rev() {
         let folder = parts[..n].join("/");
         let api = if folder.is_empty() {
             FILE.to_owned()
         } else {
             format!("{folder}/{FILE}")
+        };
+        let fail = |why: String| FolderError {
+            file: api.clone(),
+            why,
         };
         let disk = root.join(&api);
         // Only a regular file: a symlink could point anywhere, and the
@@ -61,18 +81,24 @@ pub fn default_kernel(root: &Path, dir: &str) -> Result<Option<FolderKernel>, St
             Ok(m) => m,
             Err(_) => continue,
         };
+        // The folders on the way may be links too: the file's folder must
+        // really be under the root, as the contents API checks.
+        match root.join(&folder).canonicalize() {
+            Ok(real) if real.starts_with(&base) => {}
+            _ => continue,
+        }
         if !meta.file_type().is_file() {
-            return Err(format!("{api} is not a regular file, so it is ignored"));
+            return Err(fail("not a regular file, so it is ignored".into()));
         }
         if meta.len() > MAX_BYTES {
-            return Err(format!("{api} is larger than {MAX_BYTES} bytes"));
+            return Err(fail(format!("larger than {MAX_BYTES} bytes")));
         }
-        let text = std::fs::read_to_string(&disk).map_err(|e| format!("cannot read {api}: {e}"))?;
-        let settings: Settings =
-            toml::from_str(&text).map_err(|e| format!("{api}: {}", e.message()))?;
+        let text =
+            std::fs::read_to_string(&disk).map_err(|e| fail(format!("cannot read it: {e}")))?;
+        let settings: Settings = toml::from_str(&text).map_err(|e| fail(e.message().to_owned()))?;
         if let Some(kernel) = settings.kernel.map(|k| k.trim().to_owned()) {
             if kernel.is_empty() {
-                return Err(format!("{api}: `kernel` is empty"));
+                return Err(fail("`kernel` is empty".into()));
             }
             return Ok(Some(FolderKernel { kernel, file: api }));
         }
@@ -95,6 +121,10 @@ mod tests {
         std::fs::write(p, text).unwrap();
     }
 
+    fn kernel(root: &Path, dir: &str) -> Option<String> {
+        default_kernel(root, dir).unwrap().map(|k| k.kernel)
+    }
+
     #[test]
     fn nearest_file_with_a_kernel_wins() {
         let t = tempfile::tempdir().unwrap();
@@ -112,10 +142,7 @@ mod tests {
             (k.kernel.as_str(), k.file.as_str()),
             ("cdp-node", ".ganymede.toml")
         );
-        assert_eq!(
-            default_kernel(root, "").unwrap().unwrap().kernel,
-            "cdp-node"
-        );
+        assert_eq!(kernel(root, "").as_deref(), Some("cdp-node"));
     }
 
     #[test]
@@ -124,15 +151,19 @@ mod tests {
         let root = t.path();
         write(root, "a/.ganymede.toml", "kernal = \"python3\"\n");
         let e = default_kernel(root, "a").unwrap_err();
-        assert!(e.starts_with("a/.ganymede.toml: "), "{e}");
+        assert_eq!(e.file, "a/.ganymede.toml");
+        assert!(e.why.contains("kernal"), "{e:?}");
         write(root, "a/.ganymede.toml", "kernel = \"  \"\n");
-        assert!(default_kernel(root, "a").unwrap_err().contains("empty"));
+        assert!(default_kernel(root, "a").unwrap_err().why.contains("empty"));
         write(
             root,
             "a/.ganymede.toml",
             &format!("# {}\n", "x".repeat(20_000)),
         );
-        assert!(default_kernel(root, "a").unwrap_err().contains("larger"));
+        assert!(default_kernel(root, "a")
+            .unwrap_err()
+            .why
+            .contains("larger"));
     }
 
     #[test]
@@ -141,19 +172,33 @@ mod tests {
         write(t.path(), ".ganymede.toml", "kernel = \"outside\"\n");
         let root = t.path().join("root");
         std::fs::create_dir_all(root.join("a")).unwrap();
-        assert_eq!(default_kernel(&root, "a").unwrap(), None);
-        assert_eq!(default_kernel(&root, "../").unwrap(), None);
-        assert_eq!(default_kernel(&root, "a/../..").unwrap(), None);
+        assert_eq!(kernel(&root, "a"), None);
+        assert_eq!(kernel(&root, "../"), None);
+        assert_eq!(kernel(&root, "a/../.."), None);
+        assert_eq!(kernel(&root, "..\\.."), None);
+        assert_eq!(kernel(&root, "a\0"), None);
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink(
+            use std::os::unix::fs::symlink;
+            symlink(
                 t.path().join(".ganymede.toml"),
                 root.join("a/.ganymede.toml"),
             )
             .unwrap();
             assert!(default_kernel(&root, "a")
                 .unwrap_err()
+                .why
                 .contains("not a regular file"));
+            // A folder under the root that links outside it.
+            let outside = t.path().join("outside");
+            write(&outside, ".ganymede.toml", "kernel = \"elsewhere\"\n");
+            symlink(&outside, root.join("linked")).unwrap();
+            assert_eq!(kernel(&root, "linked"), None);
+            assert_eq!(kernel(&root, "linked/deeper"), None);
+            // A link that stays inside the root is fine.
+            write(&root, "real/.ganymede.toml", "kernel = \"inside\"\n");
+            symlink(root.join("real"), root.join("alias")).unwrap();
+            assert_eq!(kernel(&root, "alias").as_deref(), Some("inside"));
         }
     }
 

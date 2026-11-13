@@ -485,21 +485,7 @@ impl Notebooks {
             let kernel = match &a.kernel {
                 Some(k) => Some(k.clone()),
                 None => {
-                    folder_default = self.folder_kernel(folder::dir_of(&path))?;
-                    if let Some(f) = &folder_default {
-                        let specs = self
-                            .state
-                            .kernels
-                            .kernelspecs()
-                            .map_err(|e| err(e.message))?;
-                        if !specs.kernelspecs.contains_key(&f.kernel) {
-                            return Err(err(format!(
-                                "{} sets kernel {}, which isn't installed here (see kernelspecs_list); pass `kernel` to choose another",
-                                self.show(&f.file),
-                                f.kernel
-                            )));
-                        }
-                    }
+                    folder_default = self.installed_folder_kernel(folder::dir_of(&path))?;
                     folder_default.as_ref().map(|f| f.kernel.clone())
                 }
             };
@@ -523,21 +509,21 @@ impl Notebooks {
             (Some(r), None) => format!(" (server root {})", r.display()),
             (None, _) => String::new(),
         };
+        let from = |f: &folder::FolderKernel| {
+            format!(" (the folder default, from {})", self.show(&f.file))
+        };
         let mut out = format!(
             "{} {}{root}{}\n\n",
             if exists { "Opened" } else { "Created" },
             self.show(&path),
-            match &kernel {
-                Some((_, name)) => format!(" on kernel {name}"),
-                None => String::new(),
+            match (&kernel, &folder_default) {
+                (Some((_, name)), Some(f)) => format!(" on kernel {name}{}", from(f)),
+                (Some((_, name)), None) => format!(" on kernel {name}"),
+                // No kernel started (--no-execute): the one it names.
+                (None, Some(f)) => format!(" for kernel {}{}", f.kernel, from(f)),
+                (None, None) => String::new(),
             }
         );
-        if let Some(f) = &folder_default {
-            out.insert_str(
-                out.len() - 2,
-                &format!(" (the folder default, from {})", self.show(&f.file)),
-            );
-        }
         out.push_str(&self.render(&nb, true));
         out.push_str(&format!("@@read {token}\n"));
         text(out)
@@ -1233,13 +1219,18 @@ impl Notebooks {
         let dir = self.resolve(a.dir.as_deref().unwrap_or(""));
         match self.folder_kernel(&dir) {
             Ok(Some(f)) => out.push_str(&format!(
-                "folder default for {}: {} (from {})\n",
+                "folder default for {}: {} (from {}){}\n",
                 match self.show(&dir) {
                     d if d.is_empty() => ".".to_owned(),
                     d => d,
                 },
                 f.kernel,
-                self.show(&f.file)
+                self.show(&f.file),
+                if specs.kernelspecs.contains_key(&f.kernel) {
+                    ""
+                } else {
+                    ", which isn't installed here"
+                }
             )),
             Ok(None) => {}
             Err(e) => out.push_str(&format!("folder default: none ({})\n", e.message)),
@@ -1806,9 +1797,31 @@ impl Notebooks {
     /// `dir`, when the contents are a local directory.
     fn folder_kernel(&self, dir: &str) -> Result<Option<folder::FolderKernel>, McpError> {
         match self.state.collab.root() {
-            Some(root) => folder::default_kernel(root, dir).map_err(err),
+            Some(root) => folder::default_kernel(root, dir)
+                .map_err(|e| err(format!("{}: {}", self.show(&e.file), e.why))),
             None => Ok(None),
         }
+    }
+
+    /// [`Self::folder_kernel`], with an error naming the file when the
+    /// kernel it sets isn't installed.
+    fn installed_folder_kernel(&self, dir: &str) -> Result<Option<folder::FolderKernel>, McpError> {
+        let Some(f) = self.folder_kernel(dir)? else {
+            return Ok(None);
+        };
+        let specs = self
+            .state
+            .kernels
+            .kernelspecs()
+            .map_err(|e| err(e.message))?;
+        if !specs.kernelspecs.contains_key(&f.kernel) {
+            return Err(err(format!(
+                "{} sets kernel {}, which isn't installed here (see kernelspecs_list); pass `kernel` to choose another",
+                self.show(&f.file),
+                f.kernel
+            )));
+        }
+        Ok(Some(f))
     }
 
     /// The kernel of the notebook's session, started (with a session, so
@@ -1829,19 +1842,21 @@ impl Notebooks {
         }
         let name = match kernel {
             Some(k) => Some(k.to_string()),
-            None => self
-                .notebook(path)
-                .await
-                .ok()
-                .and_then(|nb| nb.metadata.get("kernelspec").cloned())
-                .and_then(|k| k["name"].as_str().map(str::to_string))
-                // A notebook that names no kernel: its folder's default.
-                .or_else(|| {
-                    self.folder_kernel(folder::dir_of(path))
-                        .ok()
-                        .flatten()
-                        .map(|f| f.kernel)
-                }),
+            None => {
+                let own = self
+                    .notebook(path)
+                    .await
+                    .ok()
+                    .and_then(|nb| nb.metadata.get("kernelspec").cloned())
+                    .and_then(|k| k["name"].as_str().map(str::to_string));
+                match own {
+                    Some(k) => Some(k),
+                    // A notebook that names no kernel: its folder's default.
+                    None => self
+                        .installed_folder_kernel(folder::dir_of(path))?
+                        .map(|f| f.kernel),
+                }
+            }
         };
         let s = self
             .state

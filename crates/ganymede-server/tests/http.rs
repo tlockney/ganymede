@@ -5022,6 +5022,31 @@ async fn mcp_folder_default_kernel() {
     let e = v.to_string();
     assert!(e.contains("c/.ganymede.toml sets kernel python9"), "{e}");
     assert!(!dir.path().join("c/n.ipynb").exists());
+    let list = mcp_text(&mcp_tool(&app, &sid, "kernelspecs_list", json!({"dir": "c"})).await);
+    assert!(
+        list.contains("python9 (from c/.ganymede.toml), which isn't installed here"),
+        "{list}"
+    );
+
+    // An existing notebook that names no kernel takes the folder's, and
+    // the file's mistakes are reported for it too.
+    let bare = json!({"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}).to_string();
+    std::fs::write(dir.path().join("a/old.ipynb"), &bare).unwrap();
+    let out =
+        mcp_text(&mcp_tool(&app, &sid, "notebook_open", json!({"path": "a/old.ipynb"})).await);
+    assert!(out.contains("on kernel fake"), "{out}");
+    std::fs::write(dir.path().join("c/old.ipynb"), &bare).unwrap();
+    let e = mcp_tool(&app, &sid, "notebook_open", json!({"path": "c/old.ipynb"}))
+        .await
+        .to_string();
+    assert!(e.contains("c/.ganymede.toml sets kernel python9"), "{e}");
+    std::fs::create_dir_all(dir.path().join("d")).unwrap();
+    std::fs::write(dir.path().join("d/.ganymede.toml"), "kernal = \"fake\"\n").unwrap();
+    std::fs::write(dir.path().join("d/old.ipynb"), &bare).unwrap();
+    let e = mcp_tool(&app, &sid, "notebook_open", json!({"path": "d/old.ipynb"}))
+        .await
+        .to_string();
+    assert!(e.contains("d/.ganymede.toml: unknown field"), "{e}");
 }
 
 /// `notebooks_search` finds cells across notebooks under a directory:
