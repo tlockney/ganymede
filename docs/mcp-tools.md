@@ -78,7 +78,7 @@ Run code in the notebook's kernel and return its outputs. By default the code is
 
 ## `cell_snapshot`
 
-Snapshot cells as Markdown to show the user: the code in a fenced block, each chart or image saved as a PNG (or its own format) file and linked by path, HTML tables as Markdown tables, other output as text. The images also come back to you as images, whatever the server's image setting, so use this to look at a chart before describing it. Runs nothing.
+Snapshot cells as Markdown to show the user: the code in a fenced block, each chart or image saved as a PNG (or its own format) file and linked by path, tables (table outputs and HTML tables) as Markdown tables, other output as text. The images also come back to you as images, whatever the server's image setting, so use this to look at a chart before describing it. Runs nothing.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
