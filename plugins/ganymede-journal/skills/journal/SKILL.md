@@ -28,9 +28,9 @@ Edit.
    - a folder default: call `kernelspecs_list(dir: <the notebook's
      folder>)`, such as `dir: "journal"`; when it shows `folder default
      ... (from <file>)`, leave `kernel` out and the server uses it. (The
-     session-start note covers only the session's own folder.) Someone chose it; don't second-guess it.
-     (Folder defaults need a Ganymede newer than 0.10.0; an older one
-     shows none, so infer);
+     session-start note covers only the session's own folder.) Someone
+     chose it; don't second-guess it. (Folder defaults need a Ganymede
+     newer than 0.10.0; an older one shows none, so infer);
    - otherwise infer it: a preference the project states (CLAUDE.md,
      AGENTS.md); else the kernel of the user's notebooks on the topic
      or in the same folder; else the project's language
