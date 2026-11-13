@@ -298,6 +298,14 @@ notebook's content:
   frame that can't run scripts, raw HTML in Markdown as text, and an
   output that needs JavaScript to show (Vega-Lite, widgets) as another
   entry in its bundle or a note that it was left out
+- table output (`jupyter.table` and `jupyter.sql` in TypeScript
+  notebooks, pandas with `display.html.table_schema` on) as a table of
+  its first 100 rows, every value as text, with how many rows there are
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. The release before it shows a table output's HTML
+> fallback in a frame instead.
 
 The page goes to `published/<name>.html` beside the notebook, or to
 `out` (a path under the root ending in `.html`). It replaces an earlier
