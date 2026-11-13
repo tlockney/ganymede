@@ -90,6 +90,26 @@ Then ask for an analysis and say "keep a journal".
 [The plugin](mcp.md#the-ganymede-journal-plugin-for-claude-code) has
 each part, and how to watch live in JupyterLab.
 
+## Your notebooks and the journal
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+You may ask the agent for part of an analysis and do the rest by hand
+in JupyterLab, VS Code or the apps. The skill treats your notebooks as
+part of the same work: it searches them along with earlier journals,
+adds to your notebook when that is where the work lives, matches your
+kernel and libraries, and shares code through modules both notebooks
+import rather than copied cells. The journal stays runnable in plain
+Jupyter.
+
+The kernel a new journal starts is, in order: the one you ask for; the
+folder's default, `kernel = "python3"` in a
+[`.ganymede.toml`](mcp.md#kernel-for-a-new-notebook) in that folder or
+above; else one the agent infers from the project (CLAUDE.md, your
+notebooks nearby, `pyproject.toml` or `package.json`); else `cdp-node`.
+
 ## In the apps
 
 The Mac, iPad and iPhone apps open notebooks through rooms on a
