@@ -422,8 +422,13 @@ impl<'a> Page<'a> {
                 }
                 (Some(_), Event::End(TagEnd::CodeBlock)) => {
                     let (lang, text) = block.take().unwrap_or_default();
+                    // The fence's first word as pulldown-cmark gives it.
+                    let class = match lang.split_whitespace().next() {
+                        Some(l) => format!(" class=\"language-{}\"", esc(l)),
+                        None => String::new(),
+                    };
                     events.push(Event::Html(CowStr::from(format!(
-                        "<pre><code>{}</code></pre>\n",
+                        "<pre><code{class}>{}</code></pre>\n",
                         highlight(&text, &lang)
                     ))));
                     continue;
@@ -1129,7 +1134,7 @@ mod tests {
         ]));
         let page = html(&n, &HtmlOptions::default());
         assert!(page.contains(
-            "<pre><code>curl -s &lt;url&gt; <span class=\"hl-c\"># journal</span>\n</code></pre>"
+            "<pre><code class=\"language-bash\">curl -s &lt;url&gt; <span class=\"hl-c\"># journal</span>\n</code></pre>"
         ));
         assert!(page.contains("<pre><code>plain &lt;b&gt;\n</code></pre>"));
         assert!(
