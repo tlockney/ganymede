@@ -251,12 +251,16 @@ impl HostApi {
     /// The caller's notebook and its grant. A `notebooks.run` kernel has
     /// the grant its run was given; any other has its notebook's.
     async fn who(&self, caller: &Caller) -> Who {
-        let token = self
-            .state
-            .kernels
-            .get(&caller.kernel_id)
-            .ok()
+        let kernel = self.state.kernels.get(&caller.kernel_id).ok();
+        let token = kernel
+            .as_ref()
             .and_then(|k| k.launch_var(RUN_VAR).map(str::to_string));
+        // A `POST /api/notebooks/run` kernel has no session: it answers as
+        // the notebook it runs, with that notebook's grant (#745). It
+        // writes at most a copy, never its notebook, so no self.* calls.
+        let run_of = kernel
+            .as_ref()
+            .and_then(|k| k.launch_var(crate::run::NOTEBOOK_ENV).map(str::to_string));
         if let Some(token) = token {
             // A run whose call has ended has no grant left.
             return self
@@ -274,6 +278,11 @@ impl HostApi {
                     outer_read: Vec::new(),
                     outer_run: Vec::new(),
                 });
+        }
+        if let Some(path) = run_of {
+            let mut who = self.grant_for(Some(path)).await;
+            who.edit_self = false;
+            return who;
         }
         let mut who = self.grant_for(self.notebook(&caller.kernel_id)).await;
         // A pinned kernel's notebook is written by whoever pinned it (`ganymede
