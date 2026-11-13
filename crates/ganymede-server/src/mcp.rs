@@ -1760,8 +1760,19 @@ impl Notebooks {
             .collect();
             let shown = self.show(&path);
             let names = c.names();
+            // Someone the line doesn't name made some of the counted
+            // changes: say so, rather than credit them to the names.
+            let unnamed = !c.moved.is_empty()
+                || !c.deleted.is_empty()
+                || c.added
+                    .iter()
+                    .chain(&c.edited)
+                    .any(|id| !c.by.contains_key(id));
             let by = if names.is_empty() {
                 String::new()
+            } else if unnamed {
+                let quoted: Vec<String> = names.iter().map(|n| json!(n).to_string()).collect();
+                format!(" by {} and others", quoted.join(", "))
             } else {
                 // Quoted, as JSON strings: the names are the clients' own.
                 let quoted: Vec<String> = names.iter().map(|n| json!(n).to_string()).collect();

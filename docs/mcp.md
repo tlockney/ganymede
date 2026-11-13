@@ -428,7 +428,8 @@ user name), or "a person" when it gives none; another agent by the name
 its MCP client gave; a change taken in from the file as "another
 program (the file)"; a change the server made for someone else, such
 as a kernel through the host API, as "the server". The `@@changed`
-line names them too, quoted. Names are cut to 64 characters, without
+line names them too, quoted, and adds "and others" when some of the
+changes it counts, such as a deletion, have no name. Names are cut to 64 characters, without
 control characters. These are
 kept in memory: after a restart, cells nobody has changed since carry
 no `"by"`.

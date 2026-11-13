@@ -1491,7 +1491,7 @@ fn edits_are_credited_to_who_made_them() {
 /// it was keeps its author; names are cleaned (#770).
 #[test]
 fn server_edits_and_undos_keep_credit_honest() {
-    use ganymede_documents::room::SERVER;
+    use ganymede_documents::room::{FROM_FILE, SERVER};
     use ganymede_documents::{clean_name, Author};
     let nb = Notebook::from_str(&fixture("code_outputs.ipynb")).unwrap();
     let ids: Vec<String> = nb
@@ -1583,5 +1583,26 @@ fn server_edits_and_undos_keep_credit_honest() {
         "x",
         "undo keeps the author"
     );
+
+    // A cell from the file nobody touched, deleted and put back by the
+    // person: still the file's, not theirs.
+    let last = ids.len() - 1;
+    assert!(room.author(&ids[last]).is_none());
+    let saved = {
+        let roots = Roots::get(&a);
+        let txn = a.transact();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, last as u32) else {
+            panic!()
+        };
+        schema::out_to_json(&txn, &Out::YMap(cell))
+    };
+    send(&mut room, &move |txn, roots| {
+        roots.cells.remove(txn, last as u32)
+    });
+    send(&mut room, &move |txn, roots| {
+        schema::insert_cell(txn, &roots.cells, last as u32, saved.clone())
+    });
+    let who = room.author(&ids[last]).unwrap();
+    assert_eq!((who.name.as_str(), who.person), (FROM_FILE, false));
     assert_eq!(clean_name("  a\u{7}b  c \n"), "ab c");
 }

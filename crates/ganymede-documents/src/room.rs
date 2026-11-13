@@ -110,6 +110,9 @@ pub fn clean_name(name: &str) -> String {
         .to_string()
 }
 
+/// How many deleted cells' authors a room keeps for undo.
+const GONE_LIMIT: usize = 4096;
+
 /// The author of the server's own edits ([`Room::edit`]) until its
 /// caller names one ([`Room::set_author`]).
 pub const SERVER: &str = "the server";
@@ -748,27 +751,33 @@ impl Room {
             if before.get(id) == Some(fp) {
                 continue;
             }
+            // Only a client's update restores: a cell coming back from the
+            // file, or from the server, is theirs.
             let back = (!before.contains_key(id))
                 .then(|| self.gone.remove(id))
                 .flatten()
-                .filter(|(was, _)| was == fp)
+                .filter(|(was, _)| was == fp && author.person)
                 .map(|(_, a)| a);
             match back {
                 Some(a) => self.authors.insert(id.clone(), a),
                 None => self.authors.insert(id.clone(), author.clone()),
             };
         }
-        let went: Vec<String> = self
-            .authors
-            .keys()
-            .filter(|id| !now.contains_key(*id))
-            .cloned()
-            .collect();
-        for id in went {
-            if let (Some(a), Some(fp)) = (self.authors.remove(&id), before.get(&id)) {
-                self.gone.insert(id, (*fp, a));
+        // Every cell that went, authored or not: one nobody changed since
+        // the room opened came from the file, and comes back as the file's.
+        for (id, fp) in before {
+            if now.contains_key(id) {
+                continue;
             }
+            let a = self.authors.remove(id).unwrap_or_else(from_file);
+            if self.gone.len() >= GONE_LIMIT {
+                if let Some(k) = self.gone.keys().next().cloned() {
+                    self.gone.remove(&k);
+                }
+            }
+            self.gone.insert(id.clone(), (*fp, a));
         }
+        self.authors.retain(|id, _| now.contains_key(id));
     }
 
     /// The name connection `conn`'s client gave in its awareness state.

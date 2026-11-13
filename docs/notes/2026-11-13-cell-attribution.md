@@ -33,3 +33,10 @@ are cleaned (no control characters, 64 characters at most) and quoted
 in the `@@changed` line, so a name can't forge that line. A deleted
 cell that comes back with the same hash, as on an undo, keeps its
 author.
+
+The second review asked for three more: a cell from the file that a
+person deletes and undoes stays the file's (every removed cell is kept
+for undo, up to 4,096, with the file as author when nobody changed it);
+only a person's update restores a removed cell's author, so a reload
+from disk doesn't; and the `@@changed` line says "and others" when some
+counted change has no name.
