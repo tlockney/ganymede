@@ -173,7 +173,9 @@ impl<'a> Lexer<'a> {
                     .map_or(rest.len(), |(i, _)| i);
                 let word = &rest[..end];
                 // A property (`row.type`, `d.default`) is a name, whatever it's called.
-                let property = self.src[..self.at].ends_with('.');
+                // In shell, so is a path part (`/opt/for/bin`).
+                let property = self.src[..self.at].ends_with('.')
+                    || (self.lang.shell && self.src[..self.at].ends_with('/'));
                 let class = if property {
                     None
                 } else if self.lang.keywords.contains(&word) {
@@ -265,9 +267,9 @@ impl<'a> Lexer<'a> {
         let escapes = !(self.lang.shell && quote == '\'');
         let end = match closing(&body[1..], q, escapes) {
             Some(i) if multiline || !body[1..1 + i].contains('\n') => 1 + i + 1,
-            // An unclosed one-line string ends at the line's end.
-            _ if !multiline => body.find('\n').unwrap_or(body.len()),
-            _ => body.len(),
+            // An unclosed string ends at the line's end, so a stray quote
+            // (a regex such as `/`/`) can't colour the rest of the cell.
+            _ => body.find('\n').unwrap_or(body.len()),
         };
         Some(prefix + end)
     }
@@ -403,6 +405,12 @@ mod tests {
     #[test]
     fn unclosed_strings_end_at_the_line() {
         // A regex literal with a quote must not swallow the next lines.
+        let tick = highlight("const re = /`/;\nconst n = 1;", "ts");
+        assert!(
+            tick.contains("<span class=\"hl-k\">const</span> n"),
+            "{tick}"
+        );
+        assert!(!highlight("ls /opt/for/bin", "sh").contains("hl-k"));
         let code = "const r = /'/;\nconst n = 1;";
         let html = highlight(code, "js");
         assert_eq!(text(&html), code);

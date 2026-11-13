@@ -19,7 +19,7 @@ kernelspec's); Markdown fences use their info string, and keep it as
 
 - Every character of the source comes out, in order; the tests strip
   the tags and compare.
-- A `'` or `"` string ends at the line's end when unclosed, so a
+- A string (backticks too) ends at the line's end when unclosed, so a
   JavaScript regex such as `/'/` can't colour the rest of the cell.
-- A word after `.` is a name (`row.type`), not a keyword.
+- A word after `.` is a name (`row.type`), not a keyword; in shell, after `/` too.
 - In shell, `#` starts a comment only at the start of a word.
