@@ -128,7 +128,7 @@ export function groups(has: (name: string) => boolean = () => true, examples: Pa
       ],
     },
     {
-      // Generated from TSDoc in cdp-kernel and ganymede-device, copied in
+      // Generated from TSDoc in cdp-kernel and ganymede-ui's packages/device, copied in
       // by `npm run fetch-cell-api` (#596, #607).
       text: "Cell APIs",
       level: "reference",

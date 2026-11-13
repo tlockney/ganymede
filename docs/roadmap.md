@@ -116,7 +116,7 @@ In order of priority.
    with no external server. Next:
    - a native in-app engine, jitless V8, unless its size or speed on a
      device rules it out (measured in `spikes/v8-engine/`);
-   - device APIs ([ganymede-device](https://github.com/tlockney/ganymede-device));
+   - device APIs (ganymede-ui's [`packages/device`](https://github.com/tlockney/ganymede-ui/tree/main/packages/device));
    - automation: Shortcuts, links, MCP from the Mac app, Spotlight
      ([ganymede-ui#301](https://github.com/tlockney/ganymede-ui/issues/301));
    - widgets ([ganymede-ui#436](https://github.com/tlockney/ganymede-ui/issues/436)).

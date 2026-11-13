@@ -34,7 +34,7 @@ The rest of this page is the design.
 ## The problem
 
 A cell can ask the app for things through the
-[`device` API](https://github.com/tlockney/ganymede-device). It can't
+[`device` API](https://github.com/tlockney/ganymede-ui/tree/main/packages/device). It can't
 ask the server for anything. Since
 [#627](https://github.com/tlockney/ganymede/pull/627) a kernel learns its
 notebook's path from `JPY_SESSION_NAME`, and that is all it learns. It has

@@ -6,14 +6,14 @@
 //   cdp-kernel        docs/jupyter-reference.md  -> cell-api/jupyter.md
 //                     docs/widgets-reference.md  -> cell-api/widgets.md
 //                     docs/images/widgets/       -> cell-api/images/widgets/
-//   ganymede-device   docs/reference.md          -> cell-api/device.md
+//   ganymede-ui       packages/device/docs/reference.md -> cell-api/device.md
 //
 // Links between the pages follow the renames. A link to a cdp-kernel guide
 // goes to cdp-kernel.org; any other relative link goes to its repository on
 // GitHub, so a new link upstream can't break this site's build.
 //
 //   npm run fetch-cell-api
-//   CDP_KERNEL_DIR=~/src/cdp-kernel GANYMEDE_DEVICE_DIR=~/src/ganymede-device npm run fetch-cell-api
+//   CDP_KERNEL_DIR=~/src/cdp-kernel GANYMEDE_UI_DIR=~/src/ganymede-ui npm run fetch-cell-api
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,15 +27,18 @@ const sources = [
   {
     repo: "tlockney/cdp-kernel",
     env: "CDP_KERNEL_DIR",
+    docs: "docs/",
     // Its docs site: guides link there rather than to GitHub.
     site: "https://cdp-kernel.org/docs/",
     files: { "docs/jupyter-reference.md": "jupyter.md", "docs/widgets-reference.md": "widgets.md" },
     dirs: { "docs/images/widgets": "images/widgets" },
   },
   {
-    repo: "tlockney/ganymede-device",
-    env: "GANYMEDE_DEVICE_DIR",
-    files: { "docs/reference.md": "device.md" },
+    // The device package, in ganymede-ui since ganymede-ui#560.
+    repo: "tlockney/ganymede-ui",
+    env: "GANYMEDE_UI_DIR",
+    docs: "packages/device/docs/",
+    files: { "packages/device/docs/reference.md": "device.md" },
     dirs: {},
   },
 ];
@@ -66,7 +69,7 @@ export function relink(markdown, source) {
 }
 
 function relinkProse(markdown, source) {
-  const renames = new Map(Object.entries(source.files).map(([from, to]) => [from.replace(/^docs\//, ""), to]));
+  const renames = new Map(Object.entries(source.files).map(([from, to]) => [from.slice(source.docs.length), to]));
   return markdown.replace(/\]\(([^)\s]+)\)/g, (link, href) => {
     // Pages of this site, linked absolutely so they work on GitHub too.
     const own = href.match(/^https:\/\/ganymede-server\.com\/docs\/([\w/-]+?)(#.*)?$/);
@@ -76,7 +79,7 @@ function relinkProse(markdown, source) {
     const [target, hash = ""] = href.split(/(?=#)/);
     if (renames.has(target)) return `](${renames.get(target)}${hash})`;
     if (source.site && /^[\w-]+\.md$/.test(target)) return `](${source.site}${target.replace(/\.md$/, "")}${hash})`;
-    return `](https://github.com/${source.repo}/blob/main/docs/${target}${hash})`;
+    return `](https://github.com/${source.repo}/blob/main/${source.docs}${target}${hash})`;
   });
 }
 
