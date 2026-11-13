@@ -216,6 +216,14 @@ impl Collab {
         self.with_ids(move |ids| ids.grant(&ids.get(&path)?)).await
     }
 
+    /// The path the file with id `id` has now and its host API grant, read
+    /// together, so no rename lands between them; `None` once it's gone.
+    pub async fn path_and_grant(&self, id: &str) -> Option<(String, Option<String>)> {
+        let id = id.to_string();
+        self.with_ids(move |ids| Some((ids.path(&id)?, ids.grant(&id))))
+            .await
+    }
+
     /// Stores `grant` (JSON) for the notebook with file id `id`, or
     /// removes it.
     pub async fn set_grant(&self, id: String, grant: Option<String>) -> Result<(), String> {

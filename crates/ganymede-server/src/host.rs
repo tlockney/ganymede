@@ -107,6 +107,19 @@ struct Who {
 }
 
 impl Who {
+    /// A caller with no grant at all: no notebook, nothing to read or run.
+    fn nothing() -> Self {
+        Who {
+            notebook: None,
+            read: Vec::new(),
+            edit_self: false,
+            run: Vec::new(),
+            depth: MAX_DEPTH,
+            outer_read: Vec::new(),
+            outer_run: Vec::new(),
+        }
+    }
+
     fn notebook(&self) -> Option<&str> {
         self.notebook.as_deref()
     }
@@ -251,12 +264,16 @@ impl HostApi {
     /// The caller's notebook and its grant. A `notebooks.run` kernel has
     /// the grant its run was given; any other has its notebook's.
     async fn who(&self, caller: &Caller) -> Who {
-        let token = self
-            .state
-            .kernels
-            .get(&caller.kernel_id)
-            .ok()
+        let kernel = self.state.kernels.get(&caller.kernel_id).ok();
+        let token = kernel
+            .as_ref()
             .and_then(|k| k.launch_var(RUN_VAR).map(str::to_string));
+        // A `POST /api/notebooks/run` kernel has no session: it answers as
+        // the notebook it runs, with that notebook's grant (#745). It
+        // writes at most a copy, never its notebook, so no self.* calls.
+        let run_of = kernel
+            .as_ref()
+            .and_then(|k| k.launch_var(crate::run::NOTEBOOK_ENV).map(str::to_string));
         if let Some(token) = token {
             // A run whose call has ended has no grant left.
             return self
@@ -265,15 +282,17 @@ impl HostApi {
                 .unwrap()
                 .get(&token)
                 .cloned()
-                .unwrap_or(Who {
-                    notebook: None,
-                    read: Vec::new(),
-                    edit_self: false,
-                    run: Vec::new(),
-                    depth: MAX_DEPTH,
-                    outer_read: Vec::new(),
-                    outer_run: Vec::new(),
-                });
+                .unwrap_or_else(Who::nothing);
+        }
+        if let Some(id) = run_of {
+            // Where the notebook is now; a notebook that is gone leaves no
+            // grant, never the defaults.
+            let Some((path, own)) = self.state.collab.path_and_grant(&id).await else {
+                return Who::nothing();
+            };
+            let mut who = self.grant_from(Some(path), own);
+            who.edit_self = false;
+            return who;
         }
         let mut who = self.grant_for(self.notebook(&caller.kernel_id)).await;
         // A pinned kernel's notebook is written by whoever pinned it (`ganymede
@@ -292,6 +311,12 @@ impl HostApi {
             Some(path) => self.state.collab.grant(path).await,
             None => None,
         };
+        self.grant_from(notebook, own)
+    }
+
+    /// `notebook`'s grant from `own`, its stored grant (JSON), as
+    /// [`HostApi::grant_for`].
+    fn grant_from(&self, notebook: Option<String>, own: Option<String>) -> Who {
         let own: Grant = own
             .and_then(|g| {
                 serde_json::from_str(&g)

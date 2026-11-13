@@ -31,6 +31,7 @@ use crate::AppState;
 use axum::extract::State;
 use axum::Json;
 use ganymede_api::KernelManager;
+use ganymede_contents::{ContentType, GetOptions};
 use ganymede_exec::{Event, Options};
 use ganymede_nbformat::{named_results_of, params_env, Cell, PARAMS_ENV};
 use serde::Deserialize;
@@ -156,9 +157,16 @@ pub struct RunError {
     pub message: String,
 }
 
+/// The launch variable naming the notebook a run's kernel runs, by its
+/// file id, so a rename during the run keeps its grant. The host API
+/// answers that kernel as the notebook's, with its grant (#745): a run
+/// has no session to find it by.
+pub const NOTEBOOK_ENV: &str = "GANYMEDE_HOST_NOTEBOOK";
+
 /// Run `request` in a fresh kernel, with `env` added to the kernel's
-/// launch variables beside `GANYMEDE_PARAMS`, and answer with what one
-/// line of `--results` holds. An error is a run that never started.
+/// launch variables beside `GANYMEDE_PARAMS` and `GANYMEDE_HOST_NOTEBOOK`,
+/// and answer with what one line of `--results` holds. An error is a run
+/// that never started.
 pub async fn run_notebook(
     state: &AppState,
     request: &RunRequest,
@@ -169,15 +177,35 @@ pub async fn run_notebook(
         status: 400,
         message: e,
     })?;
-    env.insert(0, (PARAMS_ENV.to_string(), params));
     let limit = request.limit;
     let started = chrono::Utc::now();
+    let not_found = || RunError {
+        status: 404,
+        message: format!("cannot read {path} as a notebook"),
+    };
     let mut nb = crate::mcp::notebook_for_search(state, path)
         .await
-        .ok_or_else(|| RunError {
-            status: 404,
-            message: format!("cannot read {path} as a notebook"),
+        .ok_or_else(not_found)?;
+    // Only a notebook that exists gets a file id (#574), so a bad path
+    // leaves no id behind.
+    let options = GetOptions {
+        content: false,
+        type_hint: Some(ContentType::Notebook),
+        ..Default::default()
+    };
+    let (id, _) = state
+        .collab
+        .index_existing(&state.contents, path, options)
+        .await
+        .map_err(|e| match e {
+            ganymede_contents::Error::NotFound(_) => not_found(),
+            e => RunError {
+                status: 500,
+                message: e.to_string(),
+            },
         })?;
+    env.insert(0, (PARAMS_ENV.to_string(), params));
+    env.insert(1, (NOTEBOOK_ENV.to_string(), id));
     let kernel_name = nb
         .metadata
         .get("kernelspec")

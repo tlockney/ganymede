@@ -266,8 +266,16 @@ edit_self = true     # the self.* calls; false turns them off
   whose OS path goes into `JPY_SESSION_NAME`, but the server reads its
   own session record, the first it sees for the kernel, not the
   variable. Another session that joins the same kernel (a
-  console attached to it) adds nothing. A kernel started with no
-  notebook gets the defaults, and `notebook` is `null`.
+  console attached to it) adds nothing. A kernel started by
+  `POST /api/notebooks/run` (links with parameters, the apps' Run
+  Notebook, HTTP clients) has no session: it gets the grant of the
+  notebook it runs, which the server names in its launch variables, with
+  no `self.*` calls, since a run writes at most a copy. It follows the
+  notebook by file id, so a rename through the contents API during the
+  run keeps its grant; a rename outside the server (Finder, `git mv`)
+  isn't seen. If the notebook is deleted during the run, the run has no
+  grant at all, not the defaults, and `notebook` is `null`. A kernel
+  started with no notebook gets the defaults, and `notebook` is `null`.
 - **Paths** in calls and grants are normalized as the contents API
   normalizes them: relative to the root, with no `..` and no way out of
   the root through a symlink. A grant's path matches whole segments, so
@@ -291,6 +299,12 @@ edit_self = true     # the self.* calls; false turns them off
   defaults, and a notebook's own grant over them, as a server does. It
   gives its kernels no `self.*` calls, since it writes the notebook
   itself when the run ends.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. Before it, a kernel started by
+> `POST /api/notebooks/run` got the `[host]` defaults and `notebook` was
+> `null` (#745).
 
 This is the server's half of "scoped kernels" from the direction review:
 it limits what a kernel can ask the server for. It doesn't limit what a

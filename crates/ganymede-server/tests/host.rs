@@ -1141,6 +1141,122 @@ async fn a_run_reads_through_no_symlink_its_caller_may_not() {
     call.abort();
 }
 
+/// A run through `POST /api/notebooks/run` answers as the notebook it
+/// runs, with that notebook's own grant, not the `[host]` defaults, and
+/// without self.* calls (#745).
+#[tokio::test]
+async fn an_http_run_has_its_notebooks_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    // The defaults read everything and edit their own notebook.
+    let (api, state, _) = run_setup(
+        dir.path(),
+        HostConfig {
+            read: vec!["".into()],
+            ..Default::default()
+        },
+    )
+    .await;
+    let ids = file_ids(dir.path());
+    let (id, _) = ids.index("reports/slow.ipynb");
+    ids.set_grant(&id, Some(r#"{"read":["journal"]}"#)).unwrap();
+
+    let http_kernels = |state: &AppState| -> Vec<String> {
+        state
+            .kernels
+            .list()
+            .into_iter()
+            .filter(|k| {
+                state.kernels.get(&k.id).is_ok_and(|k| {
+                    k.launch_var(ganymede_server::run::NOTEBOOK_ENV).is_some()
+                        && k.launch_var("GANYMEDE_HOST_RUN").is_none()
+                })
+            })
+            .map(|k| k.id)
+            .collect()
+    };
+    let call = tokio::spawn({
+        let state = state.clone();
+        async move {
+            let request =
+                ganymede_server::run::RunRequest::from_value(json!({"path": "reports/slow.ipynb"}))
+                    .unwrap();
+            ganymede_server::run::run_notebook(&state, &request, Vec::new())
+                .await
+                .map_err(|e| e.message)
+        }
+    });
+    let run = loop {
+        if let Some(k) = http_kernels(&state).pop() {
+            break Caller { kernel_id: k };
+        }
+        assert!(
+            !call.is_finished(),
+            "the run ended before its kernel was seen"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+
+    let hello = api.hello(&run).await;
+    assert_eq!(hello.notebook.as_deref(), Some("reports/slow.ipynb"));
+    assert!(!hello.methods.iter().any(|m| m.starts_with("self.")));
+    api.call(&run, "notebooks.read", json!({"path": "journal/a.ipynb"}))
+        .await
+        .unwrap();
+    for path in ["index.ipynb", "journal-private/p.ipynb"] {
+        let err = api
+            .call(&run, "notebooks.read", json!({ "path": path }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "denied", "{path}");
+        assert!(err.message.contains("read grant"), "{}", err.message);
+    }
+    let err = api
+        .call(
+            &run,
+            "self.add",
+            json!({"cell_type": "markdown", "source": "x"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "denied");
+
+    // Renamed during the run, as the contents API records a rename: the
+    // run keeps its notebook's grant, and another notebook moved to the
+    // old path doesn't lend it its own.
+    ids.moved("reports/slow.ipynb", "reports/renamed.ipynb");
+    let (other, _) = ids.index("reports/slow.ipynb");
+    ids.set_grant(&other, Some(r#"{"read":[""]}"#)).unwrap();
+    assert_eq!(
+        api.hello(&run).await.notebook.as_deref(),
+        Some("reports/renamed.ipynb")
+    );
+    api.call(&run, "notebooks.read", json!({"path": "journal/a.ipynb"}))
+        .await
+        .unwrap();
+    let err = api
+        .call(&run, "notebooks.read", json!({"path": "index.ipynb"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "denied");
+    // Gone: no grant at all, not the defaults.
+    ids.removed("reports/renamed.ipynb");
+    let err = api
+        .call(&run, "notebooks.read", json!({"path": "journal/a.ipynb"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "denied");
+    call.abort();
+
+    // A run of a path that isn't a notebook leaves no file id (#574).
+    let request =
+        ganymede_server::run::RunRequest::from_value(json!({"path": "typo.ipynb"})).unwrap();
+    let err = ganymede_server::run::run_notebook(&state, &request, Vec::new())
+        .await
+        .unwrap_err();
+    assert_eq!(err.status, 404);
+    assert!(ids.get("typo.ipynb").is_none());
+}
+
 #[tokio::test]
 async fn a_run_waiting_for_a_slot_sees_a_revoked_grant() {
     let dir = tempfile::tempdir().unwrap();
