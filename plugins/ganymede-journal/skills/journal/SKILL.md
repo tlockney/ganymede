@@ -13,20 +13,36 @@ Edit.
 
 ## Start
 
-1. Before a new journal, check what earlier ones found:
-   `notebooks_search(query, dir: "journal")` with the topic's key words
-   (the data set, the question). Read the hits that bear on the question
-   and say in the goal cell what you build on. Skip this if the tool
-   isn't there (Ganymede 0.7.0 and older).
-2. If the user named a notebook, open it. Otherwise make one under
-   `journal/`, named `YYYY-MM-DD-<topic>.ipynb`, with
-   `notebook_open(path, title, kernel)`. The title is the question.
-   Default kernel: `cdp-node` (TypeScript). Its `npm:` imports are
-   fetched when the cell runs, so the notebook names its own libraries
-   and re-runs where cdp-kernel is installed with no install step in
-   the notebook; a Python kernel only has what its environment has.
-   Use what the user asks for, and call `kernelspecs_list` if
-   `cdp-node` isn't there.
+1. Before a new journal, check what earlier work found:
+   `notebooks_search(query)` with the topic's key words (the data set,
+   the question), across the whole project, not only `journal/`: the
+   user's own notebooks count as much as earlier journals. Read the hits
+   that bear on the question and say in the goal cell what you build on.
+   Skip this if the tool isn't there (Ganymede 0.7.0 and older).
+2. If the user named a notebook, or the work already lives in one of
+   their notebooks (see "Journal and notebook" below), work in that.
+   Otherwise make one under `journal/`, named
+   `YYYY-MM-DD-<topic>.ipynb`, with `notebook_open(path, title)`. The
+   title is the question. Choose the kernel in this order:
+   - the one the user asks for;
+   - a folder default: when `kernelspecs_list` (or the session-start
+     note) shows `folder default ... (from <file>)`, leave `kernel` out
+     and the server uses it. Someone chose it; don't second-guess it.
+     (Folder defaults need a Ganymede newer than 0.10.0; an older one
+     shows none, so infer);
+   - otherwise infer it: a preference the project states (CLAUDE.md,
+     AGENTS.md); else the kernel of the user's notebooks on the topic
+     or in the same folder; else the project's language
+     (`pyproject.toml` or `requirements.txt` for Python, `package.json`
+     or `deno.json` for TypeScript);
+   - else `cdp-node` (TypeScript). Its `npm:` imports are fetched when
+     the cell runs, so the notebook names its own libraries and re-runs
+     where cdp-kernel is installed; a Python kernel only has what its
+     environment has.
+   Say in the goal cell which kernel and why when you inferred it. Call
+   `kernelspecs_list` to see what is installed. If the user names a
+   kernel for a folder as a standing preference, offer to save it as
+   `kernel = "<name>"` in that folder's `.ganymede.toml`.
 3. Under the title, add a Markdown cell: the goal in a sentence or two,
    the date, who is working, and the kernel.
 4. Later tools may leave out `path`: they use the notebook last opened.
@@ -85,6 +101,33 @@ Edit.
     on the notebook after a pause, call `notebook_read(since: <mark>)`
     to see what others changed. With this plugin's hooks, those changes
     arrive as context when the user writes; work from what is there.
+
+## Journal and notebook
+
+A user may move between asking you (the journal) and working by hand in
+their own notebooks, in JupyterLab, VS Code or the Ganymede apps, for
+the same analysis. Someone deep in the Jupyter ecosystem may do most of
+the work there. Keep both sides usable:
+
+- Work where the work is. If the user's notebook on the topic is the
+  one they keep, add to it rather than starting a parallel journal; ask
+  when it isn't clear. Cells you add carry provenance, theirs don't, so
+  both stay readable in one file.
+- Match their setup: their kernel, their libraries, their data paths.
+  Don't move a Python user to TypeScript, or the reverse.
+- Share code through a module both import (a `.py` or `.ts` file next
+  to the notebooks), not by copying cells between notebooks. Changes to
+  a module need a kernel restart (or `importlib.reload` in Python) in
+  every notebook that imported it.
+- Keep the journal runnable in plain Jupyter: no step should depend on
+  this plugin or on Ganymede to re-run. `notebook_run_all` checks the
+  order; a user re-running it in JupyterLab gets the same results.
+- When the user worked by hand since your last turn, read what changed
+  in their notebook (`notebook_read`, with `since` if you have a mark)
+  before you build on it, and say how you used it.
+- When a result belongs in the user's notebook, offer to add it there
+  (the code and a short note) rather than leaving it only in the
+  journal. Tell the user which notebook you wrote to, by path.
 
 ## Output, charts and widgets
 
