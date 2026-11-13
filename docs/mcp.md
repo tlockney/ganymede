@@ -463,6 +463,16 @@ or one that was already in the file, is not a request, so a notebook
 can't carry instructions to an agent. A deleted cell that comes back
 unchanged, as on an undo, keeps the author it had.
 
+`notebook_requests` lists the requests still open in the notebooks open
+in the server under the connection's folder (or in one, with `path`),
+each as an `@@request {"path": ..., "id": ..., "by": ...}` line and the
+cell's text. The agent answers one with `cell_add(answers: "<id>")`:
+the new cell goes below the request (unless `after` says otherwise),
+and the request gets `metadata.ganymede.request = {"done": <time>,
+"answer": <id>}`, so it is no longer a request, in `notebook_requests`
+or in a change report. Editing an answered request doesn't reopen it:
+to ask again, write a new cell.
+
 A code cell someone else ran since the mark, whose execution count
 differs from what the mark saw, is reported with `"ran"` in its change
 and its new outputs; the `@@changed` line counts it ("1 ran"), and

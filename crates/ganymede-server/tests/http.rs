@@ -5802,6 +5802,23 @@ async fn mcp_reports_cells_others_ran() {
         .await
     );
     assert!(!out.contains("@@changed"), "own runs: {out}");
+    // A run of the agent's that finishes after its call timed out is
+    // still its own.
+    let out = tool(
+        agent.clone(),
+        "cell_run",
+        json!({"path": "r.ipynb", "source": "sleep 1500", "timeout": 1}),
+    )
+    .await;
+    assert!(out.starts_with("Timed out"), "{out}");
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let out = tool(
+        agent.clone(),
+        "cell_add",
+        json!({"path": "r.ipynb", "source": "l"}),
+    )
+    .await;
+    assert!(!out.contains("@@changed"), "own late run: {out}");
     let mark = read_mark(&tool(agent.clone(), "notebook_read", json!({"path": "r.ipynb"})).await);
 
     // Another client runs the agent's cell again, source unchanged.
@@ -5984,6 +6001,43 @@ async fn mcp_reports_who_changed_a_cell_and_requests() {
         o.contains(r#""by":"other-agent""#) && !o.contains("request"),
         "{o}"
     );
+
+    // Open requests: the person's, not the other agent's; and to the
+    // other agent, whose name `@claude` isn't, none.
+    let open = tool(agent.clone(), "notebook_requests", json!({})).await;
+    assert!(
+        open.contains(r#"@@request {"path":"j.ipynb","id":"p","by":"Thomas"}"#)
+            && open.contains("@claude does 2019")
+            && !open.contains("@agent do this"),
+        "{open}"
+    );
+    let theirs = tool(
+        other.clone(),
+        "notebook_requests",
+        json!({"path": "j.ipynb"}),
+    )
+    .await;
+    assert_eq!(theirs, "No open requests.\n");
+
+    // Answering puts the answer below and closes the request; the person's
+    // cell keeps its author and isn't reported as changed.
+    let out = tool(
+        agent.clone(),
+        "cell_add",
+        json!({"path": "j.ipynb", "source": "No: see below.", "answers": "p"}),
+    )
+    .await;
+    assert!(out.contains("the request is marked done"), "{out}");
+    assert!(!out.contains("@@changed"), "{out}");
+    assert_eq!(
+        tool(agent.clone(), "notebook_requests", json!({})).await,
+        "No open requests.\n"
+    );
+    let read = tool(agent, "notebook_read", json!({"path": "j.ipynb"})).await;
+    let p_at = read.find("@claude does 2019").unwrap();
+    let answer_at = read.find("No: see below.").unwrap();
+    let other_at = read.find("@agent do this").unwrap();
+    assert!(other_at < p_at && p_at < answer_at, "{read}");
 }
 
 /// `notebook_read(since)` lists what a person changed through the room

@@ -10,7 +10,7 @@ listed and refuse ([Options](mcp.md#options)).
 
 ## `cell_add`
 
-Add a cell without running it: Markdown narration (the default), or with `mode: recorded` a step that ran outside the kernel. Returns the new cell's id.
+Add a cell without running it: Markdown narration (the default), or with `mode: recorded` a step that ran outside the kernel. With `answers: <request cell id>`, it goes below that request and marks it done. Returns the new cell's id.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
@@ -20,6 +20,7 @@ Add a cell without running it: Markdown narration (the default), or with `mode: 
 | `after` | string | Insert after this cell id (default: at the end). |
 | `path` | string | Notebook path; the one last opened when left out. |
 | `mark` | string | A read mark (from an `@@read` line) to move past the new cell, as if its reader had added it: for a hook adding a cell on an agent's behalf, so the agent isn't told of it as someone else's. |
+| `answers` | string | The id of a request cell this cell answers: the cell goes after it (unless `after` says otherwise), and the request is marked done, so it is no longer reported as a request. |
 
 ## `cell_clear_outputs`
 
@@ -136,6 +137,14 @@ Read a notebook as text: cells with their ids, sources and outputs, then an `@@r
 | --- | --- | --- |
 | `path` | string | Notebook path; the one last opened when left out. |
 | `since` | string | A read mark from an earlier read's `@@read` line: return only the cells others added, edited, deleted, moved or ran since that read. Without `path`, the mark's notebook. The mark becomes this connection's for that notebook, so its own edits move it. |
+
+## `notebook_requests`
+
+List the requests to you that are still open: Markdown cells starting `@agent` (or `@` and your client's name) that a person wrote in a notebook open in this server, through JupyterLab or the apps, and that no cell answers yet. Answer one with cell_add(answers: <its id>).
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `path` | string | Notebook path; every notebook open in the server when left out. |
 
 ## `notebook_run_all`
 

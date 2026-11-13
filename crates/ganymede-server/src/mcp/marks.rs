@@ -92,12 +92,21 @@ pub fn token() -> String {
 /// Whether `cell` asks the agent something: a Markdown cell whose text
 /// starts with `@agent`, or `@` and the client's name (`@claude-code`) or
 /// its first part (`@claude`), ignoring case, followed by a space, a
-/// punctuation mark or nothing. Who wrote it is checked by the caller: only
-/// a person's cell counts.
+/// punctuation mark or nothing, and not yet answered (`cell_add(answers)`
+/// sets `metadata.ganymede.request.done`). Who wrote it is checked by the
+/// caller: only a person's cell counts.
 pub fn is_request(cell: &Cell, client: &str) -> bool {
     let Cell::Markdown(m) = cell else {
         return false;
     };
+    if m.metadata
+        .get("ganymede")
+        .and_then(|g| g.get("request"))
+        .and_then(|r| r.get("done"))
+        .is_some()
+    {
+        return false;
+    }
     let text = m.source.trim_start();
     let Some(rest) = text.strip_prefix('@') else {
         return false;

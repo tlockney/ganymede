@@ -175,6 +175,17 @@ impl Collab {
             .is_some_and(|root| self.locks.owned_elsewhere(&root.join(path)))
     }
 
+    /// The ids of the notebook rooms open now.
+    pub(crate) fn notebook_rooms(&self) -> Vec<String> {
+        self.rooms
+            .lock()
+            .expect("rooms")
+            .iter()
+            .filter(|(id, tx)| id.starts_with("json:notebook:") && !tx.is_closed())
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
     /// How many rooms are open.
     pub fn open_rooms(&self) -> usize {
         self.rooms.lock().expect("rooms").len()
