@@ -22,9 +22,10 @@
 //! such as the server's root directory, wherever it appears.
 
 use crate::export::decode_base64;
+use crate::highlight::highlight;
 use crate::{Cell, Export, MimeBundle, Notebook, Output};
 use base64::Engine as _;
-use pulldown_cmark::{CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde_json::{Map, Value};
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashSet};
@@ -260,7 +261,10 @@ impl<'a> Page<'a> {
     }
 
     fn code(&self, code: &str) -> String {
-        format!("<pre class=\"source\"><code>{}</code></pre>", esc(code))
+        format!(
+            "<pre class=\"source\"><code>{}</code></pre>",
+            highlight(code, &self.language)
+        )
     }
 
     /// `cell <kind>`, plus `by-person` for a journal cell a person wrote
@@ -400,7 +404,32 @@ impl<'a> Page<'a> {
         // For each open image: whether it was turned into a link.
         let mut images: Vec<bool> = Vec::new();
         let mut heading: Option<(usize, String)> = None;
+        // An open code block: its fence's language and its text so far.
+        let mut block: Option<(String, String)> = None;
         for event in Parser::new_ext(source, options) {
+            match (&mut block, &event) {
+                (None, Event::Start(Tag::CodeBlock(kind))) => {
+                    let lang = match kind {
+                        CodeBlockKind::Fenced(info) => info.to_string(),
+                        CodeBlockKind::Indented => String::new(),
+                    };
+                    block = Some((lang, String::new()));
+                    continue;
+                }
+                (Some((_, text)), Event::Text(t)) => {
+                    text.push_str(t);
+                    continue;
+                }
+                (Some(_), Event::End(TagEnd::CodeBlock)) => {
+                    let (lang, text) = block.take().unwrap_or_default();
+                    events.push(Event::Html(CowStr::from(format!(
+                        "<pre><code>{}</code></pre>\n",
+                        highlight(&text, &lang)
+                    ))));
+                    continue;
+                }
+                _ => {}
+            }
             let event = match event {
                 // The page can't typeset TeX (no network), so it keeps
                 // the source intact as code.
@@ -986,6 +1015,13 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
 code { font: .84em/1.5 var(--mono); background: var(--alt); padding: .1em .35em; border-radius: 4px; }
 pre { font: 13.5px/1.55 var(--mono); margin: 0 0 1rem; padding: .9rem 1.05rem; background: var(--alt); border-radius: 8px; overflow-x: auto; white-space: pre; tab-size: 4; }
 pre code { background: none; padding: 0; font: inherit; }
+pre { --hl-k: #8f3f71; --hl-s: #2f6f3e; --hl-n: #a14d12; --hl-c: #6b737c; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) pre { --hl-k: #d696c4; --hl-s: #8fca9c; --hl-n: #e6a56f; --hl-c: #8d97a1; } }
+:root[data-theme="dark"] pre { --hl-k: #d696c4; --hl-s: #8fca9c; --hl-n: #e6a56f; --hl-c: #8d97a1; }
+.hl-k { color: var(--hl-k); }
+.hl-s { color: var(--hl-s); }
+.hl-n { color: var(--hl-n); }
+.hl-c { color: var(--hl-c); font-style: italic; }
 table { border-collapse: collapse; margin: 0 0 1rem; font: .86rem/1.45 var(--sans); font-variant-numeric: tabular-nums; display: block; overflow-x: auto; max-width: 100%; }
 th, td { padding: .42rem .8rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
 th { font-weight: 600; color: var(--soft); border-bottom-color: var(--soft); white-space: nowrap; }
@@ -1086,6 +1122,23 @@ mod tests {
     }
 
     #[test]
+    fn markdown_fences_are_highlighted() {
+        let n = nb(json!([
+            {"cell_type": "markdown", "id": "m", "metadata": {},
+             "source": "Ran:\n\n```bash\ncurl -s <url> # journal\n```\n\n```\nplain <b>\n```\n\n    indented"},
+        ]));
+        let page = html(&n, &HtmlOptions::default());
+        assert!(page.contains(
+            "<pre><code>curl -s &lt;url&gt; <span class=\"hl-c\"># journal</span>\n</code></pre>"
+        ));
+        assert!(page.contains("<pre><code>plain &lt;b&gt;\n</code></pre>"));
+        assert!(
+            page.contains("<pre><code>indented</code></pre>")
+                || page.contains("<pre><code>indented\n</code></pre>")
+        );
+    }
+
+    #[test]
     fn code_modes() {
         let cells = json!([
             {"cell_type": "code", "id": "x", "metadata": {}, "execution_count": 1, "source": "const a = 1 < 2;",
@@ -1096,7 +1149,9 @@ mod tests {
         let n = nb(cells);
         let folded = html(&n, &HtmlOptions::default());
         assert!(folded.contains("<details class=\"code\"><summary>Code · TypeScript</summary>"));
-        assert!(folded.contains("const a = 1 &lt; 2;"));
+        assert!(folded.contains(
+            "<span class=\"hl-k\">const</span> a = <span class=\"hl-n\">1</span> &lt; <span class=\"hl-n\">2</span>;"
+        ));
         assert!(folded.contains("<pre class=\"text\">true</pre>"));
         let shown = html(
             &n,
