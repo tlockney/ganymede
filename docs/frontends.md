@@ -181,6 +181,27 @@ The exports are `GET /nbconvert/{format}/{path}`, with `?download=true`
 for a download, and `/api/nbconvert` lists the formats. PDF, LaTeX, and
 slides need nbconvert's Python templates and aren't offered.
 
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+The HTML page takes `ganymede nb publish`'s options as query
+parameters, so a client such as the apps can publish without the CLI:
+`code=folded|shown|hidden`, `byline=<text>` for the line under the
+title, and `copy=true` for the redacted notebook copy and its Download
+notebook button. Without them the page is the default one (code folded,
+no byline, no copy). Values are case-insensitive and an empty one counts
+as absent; any other `code` or `copy` value is a 400. Script and
+Markdown exports ignore the options. The redactions (server root, home
+directory, token) are the same with any options; the byline is the
+client's own text, so it is escaped but not redacted. The page is served
+with `sandbox allow-scripts allow-downloads`, so its Download notebook
+button works opened from the server. The page names its code mode in
+`<meta name="ganymede-code" content="...">`, so a client can tell a
+server that ignored the options (0.10.0 and older) from one that took
+them. For example,
+`/nbconvert/html/report.ipynb?code=hidden&byline=13%20November%202026`.
+
 ## Terminals
 
 JupyterLab's Terminal launcher works: Ganymede serves `/api/terminals` and

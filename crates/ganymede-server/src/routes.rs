@@ -326,6 +326,32 @@ pub fn publish_redactions(
 #[derive(Deserialize)]
 struct NbconvertQuery {
     download: Option<String>,
+    /// HTML only, as `nb publish --code`: `folded`, `shown` or `hidden`.
+    code: Option<String>,
+    /// HTML only: a line under the title, as `nb publish --byline`.
+    byline: Option<String>,
+    /// HTML only: `true` puts the redacted notebook copy and its Download
+    /// notebook button in the page, as `nb publish` does by default.
+    copy: Option<String>,
+}
+
+/// A page option from the query: absent when not given, empty, or the
+/// export isn't HTML (other formats ignore the options).
+fn page_option(html: bool, value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|v| html && !v.is_empty())
+}
+
+/// A query flag: `true` or `false`, any case.
+fn query_flag(name: &str, value: Option<&str>) -> HttpResult<Option<bool>> {
+    match value {
+        None => Ok(None),
+        Some(v) if v.eq_ignore_ascii_case("true") => Ok(Some(true)),
+        Some(v) if v.eq_ignore_ascii_case("false") => Ok(Some(false)),
+        Some(v) => Err(HttpError(
+            400,
+            format!("{name} must be true or false, not {v:?}"),
+        )),
+    }
 }
 
 /// `GET /nbconvert/{format}/{path}`: the notebook exported, as
@@ -333,7 +359,9 @@ struct NbconvertQuery {
 /// Save and Export Notebook As menu. A path that isn't a notebook
 /// redirects to `/files`. An export with files (Markdown with images) is
 /// a zip of the text and the files, always as a download; otherwise the
-/// text, as a download with `?download=true`.
+/// text, as a download with `?download=true`. The HTML page takes `nb
+/// publish`'s options as `code`, `byline` and `copy`; without them it
+/// is the default page, code folded and no notebook copy.
 async fn nbconvert_file(
     State(s): State<AppState>,
     Path((format, path)): Path<(String, String)>,
@@ -342,6 +370,17 @@ async fn nbconvert_file(
     if !ganymede_nbformat::FORMATS.iter().any(|(f, _)| *f == format) {
         return Err(HttpError(404, format!("No exporter for format: {format}")));
     }
+    // The page's options, one rule for all three: empty is absent, case
+    // doesn't matter, and other formats ignore them.
+    let html = format == "html";
+    let code: ganymede_nbformat::CodeMode = match page_option(html, q.code.as_deref()) {
+        None => Default::default(),
+        Some(c) => c.parse().map_err(|e: String| HttpError(400, e))?,
+    };
+    let copy = query_flag("copy", page_option(html, q.copy.as_deref()))?.unwrap_or(false);
+    // The byline as given, as `nb publish` and MCP take it; trimmed only
+    // to tell an empty one.
+    let byline = q.byline.clone().filter(|b| html && !b.trim().is_empty());
     let path = path.trim_matches('/').to_owned();
     let model = s
         .contents
@@ -375,8 +414,10 @@ async fn nbconvert_file(
                     &nb,
                     &title,
                     &ganymede_nbformat::HtmlOptions {
+                        code,
+                        byline,
                         redact,
-                        ..Default::default()
+                        download: copy,
                     },
                 ),
                 "markdown" => ganymede_nbformat::to_markdown(&nb, &title),
@@ -394,10 +435,12 @@ async fn nbconvert_file(
         header::HeaderValue::from_static("no-store, no-cache, must-revalidate, max-age=0"),
     );
     // The script's type comes from the notebook; keep anything it names,
-    // such as text/html, from running as this origin.
+    // such as text/html, from running as this origin. The HTML page may
+    // also download, for its Download notebook button; its output frames
+    // keep their own sandbox, which doesn't allow it.
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
-        header::HeaderValue::from_static(FILES_CSP),
+        header::HeaderValue::from_static(if html { PAGE_CSP } else { FILES_CSP }),
     );
     let filename = format!("{title}{}", export.extension);
     if !export.resources.is_empty() {
@@ -578,6 +621,10 @@ async fn get_file(
 /// The `Content-Security-Policy` on every `/files` response, as
 /// jupyter_server's `FilesHandler` appends to its policy.
 const FILES_CSP: &str = "sandbox allow-scripts";
+
+/// The published page's policy from `/nbconvert/html`: [`FILES_CSP`], and
+/// downloads for its Download notebook button.
+const PAGE_CSP: &str = "sandbox allow-scripts allow-downloads";
 
 /// `FilesHandler`'s `Content-Type`: `.ipynb` is `application/x-ipynb+json`;
 /// otherwise the type guessed from the name, with a compression suffix

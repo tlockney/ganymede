@@ -904,6 +904,76 @@ async fn nbconvert_exports_script_markdown_and_html() {
     assert!(page.contains("./data.csv [token]"), "{page}");
     assert!(!page.contains(TOKEN));
     assert!(!page.contains(&root.display().to_string()));
+    // The default page: code folded, no byline, no notebook copy.
+    assert!(page.contains("<details"), "{page}");
+    assert!(!page.contains("id=\"notebook\""), "{page}");
+
+    // `nb publish`'s options: code, byline, and the notebook copy, which
+    // keeps to the same redactions.
+    let (st, _, body) = raw(
+        &app,
+        get("/nbconvert/html/leaky.ipynb?code=shown&byline=13%20November%202026&copy=true"),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let page = String::from_utf8(body).unwrap();
+    assert!(page.contains("<meta name=\"ganymede-code\" content=\"shown\">"));
+    assert!(!page.contains("<details"), "{page}");
+    assert!(page.contains("13 November 2026"), "{page}");
+    assert!(page.contains("id=\"notebook\""), "{page}");
+    assert!(page.contains("id=\"download\""), "{page}");
+    assert!(!page.contains(TOKEN));
+    assert!(!page.contains(&root.display().to_string()));
+    let (st, _, body) = raw(
+        &app,
+        get("/nbconvert/html/leaky.ipynb?code=hidden&copy=false"),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let page = String::from_utf8(body).unwrap();
+    assert!(page.starts_with("<!doctype html>"), "{page}");
+    assert!(!page.contains("load()"), "{page}");
+    assert!(!page.contains("id=\"notebook\""), "{page}");
+    // Hidden code with the copy, as `nb publish --code hidden --download`;
+    // case and empty values follow one rule.
+    let (st, h, body) = raw(
+        &app,
+        get("/nbconvert/html/leaky.ipynb?code=Hidden&copy=TRUE&byline="),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    // The page's button can download; its frames keep their own sandbox.
+    let csp = h[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+    assert!(
+        csp.starts_with("sandbox allow-scripts allow-downloads"),
+        "{csp}"
+    );
+    let page = String::from_utf8(body).unwrap();
+    assert!(page.contains("<meta name=\"ganymede-code\" content=\"hidden\">"));
+    assert!(!page.contains("<details"), "{page}");
+    assert!(page.contains("id=\"notebook\""), "{page}");
+    assert!(!page.contains(TOKEN));
+    let (st, _, _) = raw(&app, get("/nbconvert/html/leaky.ipynb?code=&copy=")).await;
+    assert_eq!(st, StatusCode::OK);
+    for bad in ["code=open", "copy=yes"] {
+        assert_eq!(
+            raw(&app, get(&format!("/nbconvert/html/leaky.ipynb?{bad}")))
+                .await
+                .0,
+            StatusCode::BAD_REQUEST,
+            "{bad}"
+        );
+    }
+    // Other formats ignore them, and keep the files policy.
+    let (_, h, _) = raw(&app, get("/nbconvert/script/leaky.ipynb")).await;
+    let csp = h[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+    assert!(!csp.contains("allow-downloads"), "{csp}");
+    assert_eq!(
+        raw(&app, get("/nbconvert/script/leaky.ipynb?code=open"))
+            .await
+            .0,
+        StatusCode::OK
+    );
 
     let (_, h, _) = raw(&app, get("/nbconvert/script/my%20nb.ipynb?download=TRUE")).await;
     assert_eq!(

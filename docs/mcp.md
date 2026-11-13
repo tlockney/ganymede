@@ -345,7 +345,8 @@ The same page comes from `ganymede nb publish NOTEBOOK` (with `--code`,
 `--byline`, `--no-download`, `--download` and `-o`; it replaces the home directory and the notebook's
 directory, and writes `<name>.html` beside the notebook by default,
 replacing a file there as `jupyter nbconvert` does) and from `GET /nbconvert/html/{path}`, JupyterLab's **Save and
-Export Notebook As > HTML**.
+Export Notebook As > HTML**, which takes the same options as query
+parameters ([Export](frontends.md#export)).
 
 ## Changes by others
 
