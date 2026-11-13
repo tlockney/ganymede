@@ -109,8 +109,13 @@ be on your `PATH`, and its hooks run with `node`.
 | Agent `journal-reviewer` | Reads the notebook cold, re-runs it, looks at its charts, and lists what a stranger couldn't follow or reproduce. It doesn't edit. |
 | Hook `SessionStart` | Says whether a server is running for the directory, its kernels, and the journal open in a resumed session. |
 | Hook `UserPromptSubmit` | Reads the open journal with the agent's [read mark](#changes-by-others) and adds what a person or another agent changed as context. |
-| Hook `PostToolUse` | Follows the agent's notebook tools (the open notebook, its mark, edits since the last clean run-all). Records a Bash command that ends in `# journal` as a recorded cell, with up to 2,000 characters of its output. |
+| Hook `PostToolUse` | Follows the agent's notebook tools (the open notebook, its mark, edits since the last clean run-all). Records a Bash command that ends in `# journal` as a recorded cell, with up to 2,000 characters of its output. When a tool reply ends with an [`@@changed`](#learning-of-changes-mid-work-and-edits-refused) line, reads those changes in and adds them as context. |
 | Hook `Stop` | Once per round of edits, stops the agent from ending its turn while the journal has edits since its last clean `notebook_run_all`, and asks it to run it or say it is only pausing. |
+
+> [!NOTE]
+> **Unreleased.** The `PostToolUse` hook passing on `@@changed` changes
+> is available only from a build of `main` (HEAD), not in the latest
+> release.
 
 The hooks reach the server with `ganymede mcp call` (below), so they
 find the same server the agent uses: a running `ganymede serve --mcp`,
@@ -247,14 +252,26 @@ reply to a person, without running anything:
 - each image output saved as a file and linked with `![...](path)`: PNG,
   JPEG, GIF and WebP as they are, an SVG drawn as a PNG as described in
   [What the agent sees](#what-the-agent-sees)
-- an HTML table (pandas, Polars) as a Markdown table, cut to `max_rows`
-  rows (20 by default), with extra header rows such as Polars' dtypes
-  left out; Markdown output as it is, or as text when it is cut at
-  4,000 characters
+- a table output (`jupyter.table` and `jupyter.sql` in TypeScript
+  notebooks, pandas with `display.html.table_schema` on) as a Markdown
+  table read from its rows: each column's name and type, at most
+  `max_rows` rows (20 by default), and how many more the source has
+  (cdp-kernel says; for pandas, how many more it embedded)
+- otherwise an HTML table (pandas, Polars) as a Markdown table, cut to
+  `max_rows` rows, with extra header rows such as Polars' dtypes left
+  out
+- Markdown output as it is, or as text when it is cut at 4,000
+  characters
 - a Markdown cell as it is, with images it attaches saved and its
   `attachment:` links pointed at them
 - other output as plain text, without terminal colors, and a progress
   bar as its last frame; an error as its name and message
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. The release before it reads a table output's HTML
+> fallback instead, which gets column names and the row count wrong for
+> `jupyter.table` output.
 
 The images also come back as MCP image content, whether or not the server
 sends images, so an agent can look at a chart before describing it. Files
@@ -321,7 +338,10 @@ notebook's content:
 - the server root's absolute path becomes `.`, the home directory `~`,
   and the token `[token]` (when it has 8 characters or more; a shorter
   one is left as it is), wherever they stand as a whole name (not
-  `/home/tommy` for `/home/tom`), each directory as given and resolved
+  `/home/tommy` for `/home/tom`), each directory as given and resolved.
+  Those three are all it replaces: it is not a secret scanner, so an
+  API key, password or environment variable a cell printed goes into
+  the page as it is. Read the page before you share it.
 - no network requests: images are embedded, a Markdown image from
   elsewhere becomes a link, and HTML outputs run under a policy that
   loads nothing but their own `data:` images and inline styles
@@ -438,11 +458,13 @@ line like this when others changed a notebook the connection has open and a mark
 for:
 
 ```text
-@@changed j.ipynb: cells changed by others since your last read (1 edited). Call notebook_read(path: "j.ipynb", since: "3f2a9c0d1b7e4a65") before building on it.
+@@changed j.ipynb: cells changed by "Thomas" since your last read (1 edited). Call notebook_read(path: "j.ipynb", since: "3f2a9c0d1b7e4a65") before building on it.
 ```
 
 So an agent in the middle of its work learns of a person's edit on its
-next call. The line doesn't move the mark: the read it names does.
+next call. The line doesn't move the mark: the read it names does. The
+[journal plugin](#the-ganymede-journal-plugin-for-claude-code)'s `PostToolUse` hook makes that read
+for the agent and adds the changes as context right after the reply.
 
 `cell_edit`, `cell_delete` and `cell_move` refuse a cell someone else
 changed (its source or type) or added since the connection's mark, so
@@ -451,6 +473,41 @@ cell as it is now and the `notebook_read(since)` call that takes the
 change in; after that read, the agent redoes its edit on top. A refused
 edit moves no mark. A connection with no mark for the notebook, or one
 whose mark the server forgot, isn't checked.
+
+A changed cell's head names who last changed it, as `"by"`, when the
+server saw the change while the notebook was open: a person in
+JupyterLab or the apps by the name their frontend gives (JupyterLab's
+user name), or "a person" when it gives none; another agent by the name
+its MCP client gave; a change taken in from the file as "another
+program (the file)"; a change the server made for someone else, such
+as a kernel through the host API, as "the server". The `@@changed`
+line names them too, quoted, and adds "and others" when some of the
+changes it counts, such as a deletion, have no name. Names are cut to 64 characters, without
+control characters. These are
+kept in memory: after a restart, cells nobody has changed since carry
+no `"by"`.
+
+A Markdown cell that starts with `@agent`, or `@` and the agent's client
+name or its first part (`@claude` for `claude-code`), is a request to
+the agent when a person added or edited it through the room since the
+agent's mark: its change includes `"request"`, and the `@@changed` line
+says "including a request to you". The same text in a cell another
+agent or a kernel wrote, or that one of them changed after the person,
+or one that was already in the file, is not a request, so a notebook
+can't carry instructions to an agent. A deleted cell that comes back
+unchanged, as on an undo, keeps the author it had.
+
+A code cell someone else ran since the mark, whose execution count
+differs from what the mark saw, is reported with `"ran"` in its change
+and its new outputs; the `@@changed` line counts it ("1 ran"), and
+`notebook_read(since)` starts "... 0 deleted, 1 ran." The connection's
+own runs (`cell_run`, `cell_edit` with `run`, `notebook_run_all`) and
+its clearing of outputs move its mark once they finish, so a person's
+run of the same cell that lands just as the agent's finishes is taken
+as the agent's. Clearing a cell's outputs and count is not a run, nor
+is a change to its outputs from another cell's run, and after a kernel
+restart a run that gets the count the mark saw isn't seen. Who ran a
+cell isn't recorded, so a run alone has no `"by"`.
 
 ## What the agent sees
 

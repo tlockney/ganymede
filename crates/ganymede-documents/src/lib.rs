@@ -16,7 +16,7 @@ pub mod merge;
 pub mod room;
 pub mod schema;
 
-pub use room::{ConnId, Effects, Room, RoomError, SaveStatus, Target};
+pub use room::{clean_name, Author, ConnId, Effects, Room, RoomError, SaveStatus, Target};
 pub use schema::SchemaError;
 pub use yrs;
 

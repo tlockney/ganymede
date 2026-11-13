@@ -87,6 +87,20 @@ fn effect(arg: &clap::Arg) -> String {
     cell(text.trim())
 }
 
+/// What a command's table can't say, under it (#769).
+fn note(path: &str) -> Option<&'static str> {
+    match path {
+        "nb publish" => Some(
+            "The page replaces the notebook's directory with `.` and the home \
+             directory with `~`, and nothing else: a secret a cell printed (a \
+             token, an API key, an environment variable) goes in as it is, so \
+             read the page before sharing it. See \
+             [Publishing a notebook](mcp.md#publishing-a-notebook).",
+        ),
+        _ => None,
+    }
+}
+
 /// Commands that take every `serve` flag.
 fn flattens_server(path: &str) -> bool {
     path == "lab" || path == "ui"
@@ -137,6 +151,9 @@ fn walk_under(
         }
         if let Some(parent) = inherits {
             out.push_str(&format!("\nAnd `{parent}`'s flags.\n"));
+        }
+        if let Some(note) = note(path) {
+            out.push_str(&format!("\n{note}\n"));
         }
     }
     let globals = !path.is_empty() && shown(cmd).any(|a| a.is_global_set());

@@ -184,6 +184,9 @@ pub struct Notebooks {
     marks: Arc<Mutex<marks::Marks>>,
     /// This connection's read mark token for each notebook it read.
     tokens: Arc<Mutex<HashMap<String, String>>>,
+    /// The name the MCP client gave when it connected, for crediting its
+    /// edits in the room and recognising requests to it.
+    client: Arc<Mutex<String>>,
     /// The directory, under the root, that this connection's relative
     /// paths start from: the agent's own folder, which `ganymede mcp`
     /// sends as [`DIR_META`] when it forwards to a server rooted above
@@ -274,7 +277,7 @@ pub struct ReadArgs {
     /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
     /// A read mark from an earlier read's `@@read` line: return only the
-    /// cells others added, edited, deleted or moved since that read.
+    /// cells others added, edited, deleted, moved or ran since that read.
     /// Without `path`, the mark's notebook. The mark becomes this
     /// connection's for that notebook, so its own edits move it.
     pub since: Option<String>,
@@ -422,7 +425,7 @@ pub struct SnapshotArgs {
     pub dir: Option<String>,
     /// Include each code cell's source (default true).
     pub code: Option<bool>,
-    /// Rows to keep of an HTML table (default 20).
+    /// Rows to keep of a table (default 20).
     pub max_rows: Option<usize>,
     /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
@@ -489,6 +492,7 @@ impl Notebooks {
             holds: Arc::default(),
             marks,
             tokens: Arc::default(),
+            client: Arc::new(Mutex::new("agent".into())),
             dir: Arc::default(),
             tool_router: Self::tool_router(),
             prompt_router: Self::prompt_router(),
@@ -574,7 +578,7 @@ impl Notebooks {
     }
 
     #[tool(
-        description = "Read a notebook as text: cells with their ids, sources and outputs, then an `@@read <mark>` line. With `since: <mark>`, return only the cells others (a person, another agent) added, edited, deleted or moved since the read that gave the mark; your own edits through these tools are left out. Outputs are not compared."
+        description = "Read a notebook as text: cells with their ids, sources and outputs, then an `@@read <mark>` line. With `since: <mark>`, return only the cells others (a person, another agent) added, edited, deleted, moved or ran since the read that gave the mark; your own edits and runs through these tools are left out."
     )]
     async fn notebook_read(
         &self,
@@ -941,9 +945,11 @@ impl Notebooks {
             .filter_map(|c| c.id().map(str::to_string))
             .collect();
         let timeout = Duration::from_secs(a.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS));
-        let finished = crate::execute::run_and_wait(&self.state, &path, &kernel_id, ids, timeout)
-            .await
-            .map_err(err)?;
+        let finished =
+            crate::execute::run_and_wait(&self.state, &path, &kernel_id, ids.clone(), timeout)
+                .await
+                .map_err(err)?;
+        self.own_runs(&path, ids).await;
         // The reply shows what ran, outputs and all; the notebook keeps
         // them all but those of the cells marked to leave them out.
         let nb = self.notebook(&path).await?;
@@ -968,7 +974,7 @@ impl Notebooks {
     }
 
     #[tool(
-        description = "Snapshot cells as Markdown to show the user: the code in a fenced block, each chart or image saved as a PNG (or its own format) file and linked by path, HTML tables as Markdown tables, other output as text. The images also come back to you as images, whatever the server's image setting, so use this to look at a chart before describing it. Runs nothing."
+        description = "Snapshot cells as Markdown to show the user: the code in a fenced block, each chart or image saved as a PNG (or its own format) file and linked by path, tables (table outputs and HTML tables) as Markdown tables, other output as text. The images also come back to you as images, whatever the server's image setting, so use this to look at a chart before describing it. Runs nothing."
     )]
     async fn cell_snapshot(
         &self,
@@ -1410,6 +1416,10 @@ impl ServerHandler for Notebooks {
             .filter(|d| !d.is_empty());
         *self.dir.lock().expect("dir") = dir;
         context.peer.set_peer_info(request.clone());
+        let name = ganymede_documents::clean_name(&request.client_info.name);
+        if !name.is_empty() {
+            *self.client.lock().expect("client") = name;
+        }
         self.negotiate_initialize(&request)
     }
 
@@ -1478,7 +1488,7 @@ impl ServerHandler for Notebooks {
 /// Client name for provenance.
 fn client_name(peer: &Peer<RoleServer>) -> String {
     peer.peer_info()
-        .map(|i| i.client_info.name.clone())
+        .map(|i| ganymede_documents::clean_name(&i.client_info.name))
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| "agent".into())
 }
@@ -1665,6 +1675,11 @@ impl Notebooks {
             .ok_or_else(|| err(format!("cannot open {path}", path = self.show(path))))
     }
 
+    /// The name this connection's client gave.
+    fn client_name(&self) -> String {
+        self.client.lock().expect("client").clone()
+    }
+
     /// `f` in the notebook's room if this connection holds it open now;
     /// `None` otherwise, without opening or holding it.
     async fn held_room<R: Send + 'static>(
@@ -1712,7 +1727,7 @@ impl Notebooks {
                     marks
                         .lock()
                         .expect("marks")
-                        .set(&t, &p, marks::snapshot(nb));
+                        .set(&t, &p, marks::snapshot(nb), marks::runs(nb));
                 }
                 (nb, Effects::default())
             })
@@ -1740,15 +1755,21 @@ impl Notebooks {
             // only in a room this connection still holds, so a notebook it
             // finished with isn't opened again.
             let (marks, t, p) = (self.marks.clone(), token.clone(), path.clone());
+            let client = self.client_name();
             let diffed = self
                 .held_room(&path, move |room| {
                     let c = match room.notebook_with_ids() {
                         Some(Ok(nb)) => {
                             let now = marks::snapshot(&nb);
-                            match marks.lock().expect("marks").get(&t) {
-                                Some(m) if m.path == p => Some(marks::diff(&m.cells, &now)),
+                            let runs = marks::runs(&nb);
+                            let found = match marks.lock().expect("marks").get(&t) {
+                                Some(m) if m.path == p => Some(marks::since(m, &now, &runs)),
                                 _ => None,
-                            }
+                            };
+                            found.map(|mut c| {
+                                c.credit(room, &nb, &client);
+                                c
+                            })
                         }
                         _ => None,
                     };
@@ -1766,14 +1787,40 @@ impl Notebooks {
                 (c.edited.len(), "edited"),
                 (c.moved.len(), "moved"),
                 (c.deleted.len(), "deleted"),
+                (c.ran.len(), "ran"),
             ]
             .iter()
             .filter(|(n, _)| *n > 0)
             .map(|(n, w)| format!("{n} {w}"))
             .collect();
             let shown = self.show(&path);
+            let names = c.names();
+            // Someone the line doesn't name made some of the counted
+            // changes: say so, rather than credit them to the names.
+            let unnamed = !c.moved.is_empty()
+                || !c.deleted.is_empty()
+                || !c.ran.is_empty()
+                || c.added
+                    .iter()
+                    .chain(&c.edited)
+                    .any(|id| !c.by.contains_key(id));
+            let by = if names.is_empty() {
+                String::new()
+            } else if unnamed {
+                let quoted: Vec<String> = names.iter().map(|n| json!(n).to_string()).collect();
+                format!(" by {} and others", quoted.join(", "))
+            } else {
+                // Quoted, as JSON strings: the names are the clients' own.
+                let quoted: Vec<String> = names.iter().map(|n| json!(n).to_string()).collect();
+                format!(" by {}", quoted.join(", "))
+            };
+            let asks = match c.requests.len() {
+                0 => String::new(),
+                1 => ", including a request to you".to_string(),
+                n => format!(", including {n} requests to you"),
+            };
             out.push_str(&format!(
-                "@@changed {shown}: cells changed by others since your last read ({}). \
+                "@@changed {shown}: cells changed{by} since your last read ({}{asks}). \
                  Call notebook_read(path: \"{shown}\", since: \"{token}\") before building on it.\n",
                 what.join(", ")
             ));
@@ -1796,16 +1843,20 @@ impl Notebooks {
             _ => return Ok(None),
         }
         let (marks, t, p) = (self.marks.clone(), since.to_string(), path.to_string());
+        let client = self.client_name();
         let r = self
             .room(path, move |room| {
                 let r = match room.notebook_with_ids() {
                     Some(Ok(nb)) => {
                         let now = marks::snapshot(&nb);
+                        let runs = marks::runs(&nb);
                         let mut marks = marks.lock().expect("marks");
                         match marks.get(&t).filter(|m| m.path == p) {
                             Some(m) => {
-                                let changes = marks::diff(&m.cells, &now);
+                                let mut changes = marks::since(m, &now, &runs);
                                 m.cells = now;
+                                m.runs = runs;
+                                changes.credit(room, &nb, &client);
                                 Ok(Some((nb, changes)))
                             }
                             None => Ok(None),
@@ -1846,6 +1897,7 @@ impl Notebooks {
         tokens.extend(also.filter(|t| !tokens.contains(t)));
         let (marks, p) = (self.marks.clone(), path.to_string());
         let checked = ids.clone();
+        let client = self.client_name();
         let r = self
             .room(path, move |room| {
                 // Another server owns the file (#272): its room would undo
@@ -1877,6 +1929,15 @@ impl Notebooks {
                     }
                 }
                 let (r, fx) = f(room);
+                // The agent's own source changes are credited to it, not
+                // to a person; a move changes no source.
+                if fx.changed && aspect != marks::Aspect::Place {
+                    let author = ganymede_documents::Author {
+                        name: client,
+                        person: false,
+                    };
+                    room.set_author(&ids, &author);
+                }
                 if tokens.is_empty() || !fx.changed {
                     return (Ok(r), fx);
                 }
@@ -2102,30 +2163,63 @@ impl Notebooks {
     ) -> Result<bool, McpError> {
         // No ids for the read marks: clearing outputs changes no source or
         // place, and taking a source in would hide someone else's edit.
-        self.own_edit(path, Vec::new(), marks::Aspect::Source, None, move |room| {
-            room.edit(|txn, roots| {
-                let mut found = false;
-                for id in &ids {
-                    let Some(cell) = schema::find_cell(txn, roots, id) else {
-                        continue;
-                    };
-                    if cell
-                        .get(txn, "cell_type")
-                        .map(|o| schema::out_to_json(txn, &o))
-                        != Some(json!("code"))
-                    {
-                        continue;
+        // The cleared runs are this connection's own, though.
+        let cleared = ids.clone();
+        let found = self
+            .own_edit(path, Vec::new(), marks::Aspect::Source, None, move |room| {
+                room.edit(|txn, roots| {
+                    let mut found = false;
+                    for id in &ids {
+                        let Some(cell) = schema::find_cell(txn, roots, id) else {
+                            continue;
+                        };
+                        if cell
+                            .get(txn, "cell_type")
+                            .map(|o| schema::out_to_json(txn, &o))
+                            != Some(json!("code"))
+                        {
+                            continue;
+                        }
+                        found = true;
+                        if drop {
+                            schema::set_outputs(txn, &cell, Vec::new());
+                        }
+                        mark_dropped(txn, &cell, drop);
                     }
-                    found = true;
-                    if drop {
-                        schema::set_outputs(txn, &cell, Vec::new());
-                    }
-                    mark_dropped(txn, &cell, drop);
-                }
-                found
+                    found
+                })
             })
-        })
-        .await
+            .await?;
+        // Taking the mark off changes no output: someone else's run since
+        // the mark is still theirs to report.
+        if drop {
+            self.own_runs(path, cleared).await;
+        }
+        Ok(found)
+    }
+
+    /// Move this connection's read mark past its own runs of cells `ids`
+    /// (or its clearing of their outputs), so they aren't reported to it
+    /// as someone else's. Outputs a run adds after this (one that timed
+    /// out) are reported as `ran`.
+    async fn own_runs(&self, path: &str, ids: Vec<String>) {
+        let Some(token) = self.tokens.lock().expect("tokens").get(path).cloned() else {
+            return;
+        };
+        let (marks, p) = (self.marks.clone(), path.to_string());
+        let _ = self
+            .room(path, move |room| {
+                if let Some(Ok(nb)) = room.notebook_with_ids() {
+                    let now = marks::runs(&nb);
+                    if let Some(m) = marks.lock().expect("marks").get(&token) {
+                        if m.path == p {
+                            marks::adopt_runs(&mut m.runs, &now, &ids);
+                        }
+                    }
+                }
+                ((), Effects::default())
+            })
+            .await;
     }
 
     /// The ids of code cells marked to leave their outputs out, among
@@ -2178,6 +2272,7 @@ impl Notebooks {
             crate::execute::run_and_wait(&self.state, path, kernel_id, ids.clone(), timeout)
                 .await
                 .map_err(err)?;
+        self.own_runs(path, ids.clone()).await;
         let nb = self.notebook(path).await?;
         let mut shown = Vec::new();
         let mut out = String::new();
@@ -2299,11 +2394,12 @@ impl Notebooks {
             return format!("No changes by others since that read.\n@@read {token}\n");
         }
         let mut out = format!(
-            "Changed by others since that read: {} added, {} edited, {} moved, {} deleted.\n\n",
+            "Changed by others since that read: {} added, {} edited, {} moved, {} deleted, {} ran.\n\n",
             c.added.len(),
             c.edited.len(),
             c.moved.len(),
-            c.deleted.len()
+            c.deleted.len(),
+            c.ran.len()
         );
         for (index, cell) in nb.cells.iter().enumerate() {
             let Some(id) = cell.id() else { continue };
@@ -2318,8 +2414,15 @@ impl Notebooks {
             if has(&c.moved) {
                 how.push("moved");
             }
+            if has(&c.ran) {
+                how.push("ran");
+            }
+            if has(&c.requests) {
+                how.push("request");
+            }
             if !how.is_empty() {
-                out.push_str(&self.render_cell_as(index, cell, true, Some(&how)));
+                let by = c.by.get(id).map(|a| a.name.as_str());
+                out.push_str(&self.render_cell_as(index, cell, true, Some((&how, by))));
                 out.push('\n');
             }
         }
@@ -2339,7 +2442,7 @@ impl Notebooks {
         index: usize,
         cell: &Cell,
         outputs: bool,
-        change: Option<&[&str]>,
+        change: Option<(&[&str], Option<&str>)>,
     ) -> String {
         let (kind, count, source, outs) = match cell {
             Cell::Code(c) => (
@@ -2356,8 +2459,11 @@ impl Notebooks {
         if let Some(n) = count {
             head["execution_count"] = json!(n);
         }
-        if let Some(how) = change {
+        if let Some((how, by)) = change {
             head["change"] = json!(how);
+            if let Some(by) = by {
+                head["by"] = json!(by);
+            }
         }
         let mut s = format!("@@cell {head}\n");
         if kind == "code" {

@@ -1,6 +1,7 @@
 //! `cell_snapshot` (#611): a cell as Markdown an agent can put in front of
 //! its user. The code goes in a fenced block, images come out as files,
-//! HTML tables become Markdown tables and other output is plain text.
+//! table outputs and HTML tables become Markdown tables and other output
+//! is plain text.
 //!
 //! This module only shapes the snapshot. The tool in `mcp.rs` writes the
 //! images and swaps in their paths.
@@ -13,6 +14,8 @@ use serde_json::Value;
 
 /// Text output longer than this is cut.
 const TEXT_LIMIT: usize = 4000;
+/// Characters a table cell shows before it is cut.
+const CELL_LIMIT: usize = 200;
 
 /// A piece of a snapshot: Markdown, or an image for the tool to save.
 #[derive(Debug, PartialEq)]
@@ -98,6 +101,12 @@ fn output(o: &Output, max_rows: usize) -> Vec<Part> {
             let data = &v["data"];
             if let Some(image) = image(data) {
                 return vec![Part::Image(image)];
+            }
+            if let Some(table) = data
+                .get("application/vnd.dataresource+json")
+                .and_then(|r| resource_table(r, max_rows))
+            {
+                return vec![Part::Markdown(table)];
             }
             if let Some(html) = data.get("text/html").and_then(Value::as_str) {
                 if let Some(table) = html_table(html, max_rows) {
@@ -264,6 +273,95 @@ fn fence(lang: &str, body: &str) -> String {
     format!("{}\n", ganymede_nbformat::fenced(lang, body))
 }
 
+/// A table output (`application/vnd.dataresource+json`, from cdp-kernel's
+/// `jupyter.table` or pandas) as a Markdown table: a header of each
+/// column's name and type, at most `max_rows` rows, and how many more the
+/// source has (cdp-kernel's `ganymede.rows`, else the rows sent). `None`
+/// when it has no fields, so the HTML or text shows instead.
+pub fn resource_table(resource: &Value, max_rows: usize) -> Option<String> {
+    let fields = resource.get("schema")?.get("fields")?.as_array()?;
+    let rows = resource.get("data")?.as_array()?;
+    let fields: Vec<(String, String)> = fields
+        .iter()
+        .map(|f| {
+            let name = match f.get("name") {
+                Some(Value::String(s)) => s.clone(),
+                None | Some(Value::Null) => String::new(),
+                Some(v) => v.to_string(),
+            };
+            let kind = f.get("type").and_then(Value::as_str).unwrap_or_default();
+            (name, kind.to_owned())
+        })
+        .collect();
+    if fields.is_empty() {
+        return None;
+    }
+    let text = |s: &str| {
+        let s = clean(s).split_whitespace().collect::<Vec<_>>().join(" ");
+        let s = if s.chars().count() > CELL_LIMIT {
+            format!("{}…", s.chars().take(CELL_LIMIT - 1).collect::<String>())
+        } else {
+            s
+        };
+        s.replace('\\', "\\\\").replace('|', "\\|")
+    };
+    let extra = resource.get("ganymede");
+    let mut out = String::new();
+    if let Some(title) = extra.and_then(|g| g.get("title")).and_then(Value::as_str) {
+        out.push_str(&format!("{}\n\n", text(title)));
+    }
+    let header: Vec<String> = fields
+        .iter()
+        .map(|(name, kind)| {
+            if kind.is_empty() {
+                text(name)
+            } else {
+                format!("{} ({})", text(name), text(kind))
+            }
+        })
+        .collect();
+    out.push_str(&format!("| {} |\n", header.join(" | ")));
+    out.push_str(&format!("|{}\n", " --- |".repeat(fields.len())));
+    for row in rows.iter().take(max_rows) {
+        let cells: Vec<String> = fields
+            .iter()
+            .enumerate()
+            .map(|(i, (name, _))| {
+                let value = match row {
+                    Value::Array(cells) => cells.get(i),
+                    Value::Object(cells) => cells.get(name),
+                    _ => None,
+                };
+                match value {
+                    None => String::new(),
+                    Some(Value::String(s)) => text(s),
+                    Some(v) => text(&v.to_string()),
+                }
+            })
+            .collect();
+        out.push_str(&format!("| {} |\n", cells.join(" | ")));
+    }
+    // Only cdp-kernel says how many rows the source has; pandas embeds
+    // its first `display.max_rows` and doesn't, so the count is of those.
+    let total = extra
+        .and_then(|g| g.get("rows"))
+        .and_then(Value::as_u64)
+        .map(|n| (n as usize).max(rows.len()));
+    let shown = rows.len().min(max_rows);
+    match total {
+        Some(total) if total > shown => {
+            out.push_str(&format!("\n({} more rows)\n", total - shown));
+        }
+        None if rows.len() > shown => {
+            out.push_str(&format!("\n({} more rows embedded)\n", rows.len() - shown));
+        }
+        _ => {}
+    }
+    // A blank line ends the table, so a next output isn't read as rows.
+    out.push('\n');
+    Some(out)
+}
+
 /// The first `<table>` in `html` as a Markdown table: the first row is the
 /// header, and at most `max_rows` rows follow it. `None` without a table.
 pub fn html_table(html: &str, max_rows: usize) -> Option<String> {
@@ -306,6 +404,8 @@ pub fn html_table(html: &str, max_rows: usize) -> Option<String> {
     if body.len() > max_rows {
         out.push_str(&format!("\n({} more rows)\n", body.len() - max_rows));
     }
+    // A blank line ends the table, so a next output isn't read as rows.
+    out.push('\n');
     Some(out)
 }
 
@@ -336,7 +436,7 @@ fn cells(html: &str, lower: &str) -> Vec<String> {
             .map_or(lower.len(), |e| body_start + e);
         let text = strip_html(&html[body_start..close]);
         let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        out.push(text.replace('|', "\\|"));
+        out.push(text.replace('\\', "\\\\").replace('|', "\\|"));
         pos = close;
     }
     out
@@ -517,6 +617,54 @@ mod tests {
     }
 
     #[test]
+    fn table_outputs_become_markdown_from_their_rows() {
+        // Shaped like cdp-kernel 0.11.0's jupyter.table output: the HTML
+        // has types in <small> and a gap row, which must not be read.
+        let resource = json!({
+            "schema": {"fields": [{"name": "moon", "type": "string"}, {"name": "r", "type": "integer"}]},
+            "data": [{"moon": "Io | I", "r": 1821}, {"moon": "Europa\nII", "r": null}, {"moon": "Ganymede", "r": 2634}],
+            "ganymede": {"rows": 12345, "shown": 3, "title": "Moons"}
+        });
+        let html = "<table><thead><tr><th>moon<br><small>string</small></th><th>r<br><small>integer</small></th></tr></thead>\
+            <tbody><tr><td>Io</td><td>1821</td></tr><tr><td colspan=2>… 12,344 more rows</td></tr></tbody></table>";
+        let c = code_cell(
+            "t",
+            json!([{"output_type": "execute_result", "execution_count": 1, "metadata": {},
+                    "data": {"application/vnd.dataresource+json": resource, "text/html": html, "text/plain": "Table"}}]),
+        );
+        assert!(markdown(&cell(0, &c, "", false, 2)).ends_with(
+            "Moons\n\n| moon (string) | r (integer) |\n| --- | --- |\n| Io \\| I | 1821 |\n| Europa II | null |\n\n(12343 more rows)\n\n"
+        ));
+        // pandas' table: no total, so the count is of the rows embedded.
+        let pandas = json!({"schema": {"fields": [{"name": "index", "type": "integer"}, {"name": 0, "type": "number"}]},
+            "data": [{"index": 0, "0": 1.5}, {"index": 1, "0": 2.5}]});
+        assert_eq!(
+            resource_table(&pandas, 1).unwrap(),
+            "| index (integer) | 0 (number) |\n| --- | --- |\n| 0 | 1.5 |\n\n(1 more rows embedded)\n\n"
+        );
+        // A backslash before a pipe stays in its cell; types are escaped too.
+        let odd =
+            json!({"schema": {"fields": [{"name": "re", "type": "a|b"}]}, "data": [["a\\|b"]]});
+        assert_eq!(
+            resource_table(&odd, 5).unwrap(),
+            "| re (a\\|b) |\n| --- |\n| a\\\\\\|b |\n\n"
+        );
+        // Two tables in one cell stay two tables.
+        let t = |title: &str| {
+            json!({"output_type": "display_data", "metadata": {}, "data": {
+            "application/vnd.dataresource+json": {"schema": {"fields": [{"name": "x"}]}, "data": [[1]],
+                "ganymede": {"rows": 1, "title": title}}}})
+        };
+        let two = code_cell("t", json!([t("A"), t("B")]));
+        assert!(markdown(&cell(0, &two, "", false, 20)).contains("| 1 |\n\nB\n\n| x |"));
+        assert_eq!(resource_table(&json!({"data": [[1]]}), 5), None);
+        let long = json!({"schema": {"fields": [{"name": "s"}]}, "data": [["x".repeat(500)]]});
+        assert!(resource_table(&long, 5)
+            .unwrap()
+            .contains(&format!("| {}… |", "x".repeat(CELL_LIMIT - 1))));
+    }
+
+    #[test]
     fn html_tables_become_markdown() {
         let html = r#"<div><style>.x{}</style><TABLE border="1"><thead><tr><th></th><th>name</th><th>n</th></tr></thead>
             <tbody><tr><th>0</th><td>a | b</td><td>1</td></tr>
@@ -524,7 +672,7 @@ mod tests {
             <tr><th>2</th><td>d</td><td>3</td></tr></tbody></TABLE></div>"#;
         assert_eq!(
             html_table(html, 2).unwrap(),
-            "|  | name | n |\n| --- | --- | --- |\n| 0 | a \\| b | 1 |\n| 1 | c | 2 |\n\n(1 more rows)\n"
+            "|  | name | n |\n| --- | --- | --- |\n| 0 | a \\| b | 1 |\n| 1 | c | 2 |\n\n(1 more rows)\n\n"
         );
         assert_eq!(html_table("<p>no table</p>", 5), None);
         // Polars: a dtype row in <thead> after the names.
@@ -533,7 +681,7 @@ mod tests {
             <tbody><tr><td>1</td><td>x</td></tr></tbody></table>";
         assert_eq!(
             html_table(polars, 5).unwrap(),
-            "| a | b |\n| --- | --- |\n| 1 | x |\n"
+            "| a | b |\n| --- | --- |\n| 1 | x |\n\n"
         );
         let c = code_cell(
             "df",

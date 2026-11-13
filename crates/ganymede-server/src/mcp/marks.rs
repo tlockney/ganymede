@@ -7,14 +7,17 @@
 //! `notebook_read` and `notebook_open` print. Reading moves the mark to
 //! the notebook as read, and the connection's own edits move it too, so
 //! the difference between a mark and the notebook is what others
-//! changed: cells added, edited, deleted or moved. Outputs and metadata
-//! are not compared.
+//! changed: cells added, edited, deleted or moved. A mark also holds
+//! each code cell's execution count, so a cell someone else ran is
+//! reported as `ran`; the connection's own runs move that too. Outputs
+//! and metadata are not compared.
 //!
 //! The token works from any connection to the same server, so a hook
 //! outside the agent (such as a Claude Code `UserPromptSubmit` hook) can
 //! ask on the agent's behalf; that read moves the agent's mark. Marks
 //! live in memory: a restarted server knows none.
 
+use ganymede_documents::{Author, Room};
 use ganymede_nbformat::{Cell, Notebook};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -28,6 +31,8 @@ const LIMIT: usize = 4096;
 pub struct Mark {
     pub path: String,
     pub cells: Vec<(String, u64)>,
+    /// Each run code cell's execution count (see [`runs`]).
+    pub runs: HashMap<String, u64>,
     used: u64,
 }
 
@@ -49,7 +54,13 @@ impl Marks {
     }
 
     /// Set `token`'s mark to `cells` of `path`.
-    pub fn set(&mut self, token: &str, path: &str, cells: Vec<(String, u64)>) {
+    pub fn set(
+        &mut self,
+        token: &str,
+        path: &str,
+        cells: Vec<(String, u64)>,
+        runs: HashMap<String, u64>,
+    ) {
         self.clock += 1;
         if !self.marks.contains_key(token) && self.marks.len() >= LIMIT {
             if let Some(oldest) = self
@@ -66,6 +77,7 @@ impl Marks {
             Mark {
                 path: path.to_string(),
                 cells,
+                runs,
                 used: self.clock,
             },
         );
@@ -77,12 +89,80 @@ pub fn token() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..16].to_string()
 }
 
+/// Whether `cell` asks the agent something: a Markdown cell whose text
+/// starts with `@agent`, or `@` and the client's name (`@claude-code`) or
+/// its first part (`@claude`), ignoring case, followed by a space, a
+/// punctuation mark or nothing. Who wrote it is checked by the caller: only
+/// a person's cell counts.
+pub fn is_request(cell: &Cell, client: &str) -> bool {
+    let Cell::Markdown(m) = cell else {
+        return false;
+    };
+    let text = m.source.trim_start();
+    let Some(rest) = text.strip_prefix('@') else {
+        return false;
+    };
+    let word: String = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    let word = word.to_lowercase();
+    let client = client.to_lowercase();
+    let short = client.split(['-', '_', ' ']).next().unwrap_or_default();
+    !word.is_empty() && (word == "agent" || word == client || word == short)
+}
+
 /// The cells of `nb` as a mark holds them. Cells without an id are left
 /// out; a room gives every cell one.
 pub fn snapshot(nb: &Notebook) -> Vec<(String, u64)> {
     nb.cells
         .iter()
         .filter_map(|c| c.id().map(|id| (id.to_string(), fingerprint(c))))
+        .collect()
+}
+
+/// Each code cell's last run in `nb`, by its execution count: every run
+/// takes a new one. Outputs aren't compared, so a display update from
+/// another cell isn't a run of this one. A cell that hasn't run, or whose
+/// outputs were cleared with its count, has none, so clearing isn't
+/// reported as a run.
+pub fn runs(nb: &Notebook) -> HashMap<String, u64> {
+    nb.cells
+        .iter()
+        .filter_map(|c| match c {
+            Cell::Code(code) => Some((code.id.clone()?, code.execution_count?)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Take the reader's own runs of cells `ids` into `mark`, as `now` has
+/// them.
+pub fn adopt_runs(mark: &mut HashMap<String, u64>, now: &HashMap<String, u64>, ids: &[String]) {
+    for id in ids {
+        match now.get(id) {
+            Some(fp) => mark.insert(id.clone(), *fp),
+            None => mark.remove(id),
+        };
+    }
+}
+
+/// The cells of `cells` (in order) that ran since `old`, by `new`:
+/// those the mark already had, whose run differs. A cell added since the
+/// mark is reported as added, not ran.
+pub fn ran(
+    added: &[String],
+    cells: &[(String, u64)],
+    old: &HashMap<String, u64>,
+    new: &HashMap<String, u64>,
+) -> Vec<String> {
+    let added: HashSet<&String> = added.iter().collect();
+    cells
+        .iter()
+        .map(|(id, _)| id)
+        .filter(|id| !added.contains(id))
+        .filter(|id| new.get(*id).is_some_and(|fp| old.get(*id) != Some(fp)))
+        .cloned()
         .collect()
 }
 
@@ -156,15 +236,64 @@ pub struct Changes {
     pub edited: Vec<String>,
     pub moved: Vec<String>,
     pub deleted: Vec<String>,
+    /// Code cells someone else ran (see [`ran`]).
+    pub ran: Vec<String>,
+    /// Who last changed each added or edited cell, where the room knows
+    /// (see [`Changes::credit`]).
+    pub by: HashMap<String, Author>,
+    /// The added or edited cells that are requests to the agent (see
+    /// [`is_request`]).
+    pub requests: Vec<String>,
 }
 
 impl Changes {
+    /// Fill in [`Changes::by`] and [`Changes::requests`] from the room
+    /// that holds `nb`, for a reader whose client is named `client`.
+    pub fn credit(&mut self, room: &Room, nb: &Notebook, client: &str) {
+        for id in self.added.iter().chain(&self.edited) {
+            if let Some(a) = room.author(id) {
+                self.by.insert(id.clone(), a.clone());
+            }
+        }
+        self.requests = nb
+            .cells
+            .iter()
+            .filter_map(|c| {
+                let id = c.id()?;
+                let by = self.by.get(id)?;
+                (by.person && is_request(c, client)).then(|| id.to_string())
+            })
+            .collect();
+    }
+
+    /// The distinct names behind the added and edited cells, in order.
+    pub fn names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = Vec::new();
+        for id in self.added.iter().chain(&self.edited) {
+            if let Some(a) = self.by.get(id) {
+                if !names.contains(&a.name.as_str()) {
+                    names.push(&a.name);
+                }
+            }
+        }
+        names
+    }
+
     pub fn is_empty(&self) -> bool {
         self.added.is_empty()
             && self.edited.is_empty()
             && self.moved.is_empty()
             && self.deleted.is_empty()
+            && self.ran.is_empty()
     }
+}
+
+/// What changed since mark `m`, given the notebook's cells `now` and
+/// their `runs`.
+pub fn since(m: &Mark, now: &[(String, u64)], runs: &HashMap<String, u64>) -> Changes {
+    let mut c = diff(&m.cells, now);
+    c.ran = ran(&c.added, now, &m.runs, runs);
+    c
 }
 
 /// The changes from `old` to `new`. A cell is moved when it isn't part of
@@ -260,6 +389,28 @@ mod tests {
     }
 
     #[test]
+    fn ran_finds_cells_others_ran() {
+        let cells = cells(&[("a", 1), ("b", 2), ("c", 3), ("d", 4)]);
+        let old: HashMap<String, u64> = [("a".into(), 10), ("b".into(), 20)].into();
+        // a ran again, b is as it was, c ran for the first time, d was
+        // added since the mark (reported as added), and a cleared cell
+        // (not in `new`) isn't a run.
+        let new: HashMap<String, u64> = [
+            ("a".into(), 11),
+            ("b".into(), 20),
+            ("c".into(), 30),
+            ("d".into(), 40),
+        ]
+        .into();
+        assert_eq!(ran(&ids(&["d"]), &cells, &old, &new), ids(&["a", "c"]));
+        let mut mine = old.clone();
+        adopt_runs(&mut mine, &new, &ids(&["a", "c"]));
+        assert!(ran(&ids(&["d"]), &cells, &mine, &new).is_empty());
+        adopt_runs(&mut mine, &HashMap::new(), &ids(&["a"]));
+        assert!(!mine.contains_key("a"));
+    }
+
+    #[test]
     fn diff_reports_the_fewest_moves() {
         let old = cells(&[("a", 0), ("b", 0), ("c", 0), ("d", 0), ("e", 0)]);
         // e moved from the end to second place.
@@ -315,13 +466,36 @@ mod tests {
     }
 
     #[test]
+    fn requests_name_the_agent_first() {
+        let cell = |c: serde_json::Value| {
+            let nb = serde_json::json!({"cells": [c], "metadata": {},
+                "nbformat": 4, "nbformat_minor": 5});
+            Notebook::from_value(nb).unwrap().cells.remove(0)
+        };
+        let md = |s: &str| {
+            cell(serde_json::json!({"cell_type": "markdown", "id": "x",
+                "metadata": {}, "source": s}))
+        };
+        assert!(is_request(&md("@agent check the 2019 rows"), "claude-code"));
+        assert!(is_request(&md("  @Claude, why?"), "claude-code"));
+        assert!(is_request(&md("@claude-code why"), "claude-code"));
+        assert!(is_request(&md("@agent"), "x"));
+        assert!(!is_request(&md("@agents are"), "x"), "another word");
+        assert!(!is_request(&md("see @agent"), "x"), "not first");
+        assert!(!is_request(&md("@someone"), "claude-code"));
+        let code = cell(serde_json::json!({"cell_type": "code", "id": "y",
+            "metadata": {}, "source": "@agent", "outputs": [], "execution_count": null}));
+        assert!(!is_request(&code, "x"), "only Markdown");
+    }
+
+    #[test]
     fn marks_forget_the_least_recently_used() {
         let mut m = Marks::default();
         for n in 0..LIMIT {
-            m.set(&n.to_string(), "p", Vec::new());
+            m.set(&n.to_string(), "p", Vec::new(), HashMap::new());
         }
         assert!(m.get("0").is_some());
-        m.set("new", "p", Vec::new());
+        m.set("new", "p", Vec::new(), HashMap::new());
         assert!(m.get("0").is_some(), "used last, kept");
         assert!(m.get("1").is_none(), "least recently used, dropped");
         assert_eq!(m.marks.len(), LIMIT);

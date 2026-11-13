@@ -5980,6 +5980,231 @@ async fn mcp_replies_flag_changes_by_others() {
     assert!(!out.contains("@@changed"), "{out}");
 }
 
+/// A cell someone else ran since the agent's read is reported as `ran`;
+/// the agent's own runs, and its clearing of their outputs, are not.
+#[tokio::test]
+async fn mcp_reports_cells_others_ran() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = mcp_app(dir.path());
+    let agent = mcp_connect(&app, "agent").await;
+    let other = mcp_connect(&app, "other").await;
+    let tool = |sid: String, name: &'static str, args: Value| {
+        let app = app.clone();
+        async move { mcp_text(&mcp_tool(&app, &sid, name, args).await) }
+    };
+    tool(agent.clone(), "notebook_open", json!({"path": "r.ipynb"})).await;
+    let out = tool(
+        agent.clone(),
+        "cell_run",
+        json!({"path": "r.ipynb", "source": "hello"}),
+    )
+    .await;
+    let id = out
+        .split("\"id\":\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .expect("cell id")
+        .to_string();
+    let out = tool(
+        agent.clone(),
+        "cell_run",
+        json!({"path": "r.ipynb", "source": "quiet", "keep_outputs": false}),
+    )
+    .await;
+    let out = format!(
+        "{out}{}",
+        tool(
+            agent.clone(),
+            "cell_add",
+            json!({"path": "r.ipynb", "source": "n"})
+        )
+        .await
+    );
+    assert!(!out.contains("@@changed"), "own runs: {out}");
+    let mark = read_mark(&tool(agent.clone(), "notebook_read", json!({"path": "r.ipynb"})).await);
+
+    // Another client runs the agent's cell again, source unchanged.
+    tool(
+        other.clone(),
+        "cell_edit",
+        json!({"path": "r.ipynb", "id": id, "source": "hello", "run": true}),
+    )
+    .await;
+    let out = tool(
+        agent.clone(),
+        "cell_add",
+        json!({"path": "r.ipynb", "source": "m"}),
+    )
+    .await;
+    let line = out
+        .lines()
+        .find(|l| l.starts_with("@@changed"))
+        .unwrap_or_else(|| panic!("{out}"));
+    assert!(line.contains("(1 ran)"), "{line}");
+    let out = tool(
+        agent,
+        "notebook_read",
+        json!({"path": "r.ipynb", "since": mark}),
+    )
+    .await;
+    assert!(out.contains("0 deleted, 1 ran."), "{out}");
+    assert!(
+        out.contains(&format!("\"id\":\"{id}\"")) && out.contains("\"change\":[\"ran\"]}"),
+        "{out}"
+    );
+}
+
+/// A person's edit through a room client is credited to the name in its
+/// awareness state, and their `@agent` cell is reported as a request; the
+/// same text from another MCP connection is not (#770).
+#[tokio::test]
+async fn mcp_reports_who_changed_a_cell_and_requests() {
+    use ganymede_documents::schema::{self, Roots};
+    use ganymede_documents::yrs::sync::{Awareness, Message as YMsg, SyncMessage};
+    use ganymede_documents::yrs::updates::decoder::Decode;
+    use ganymede_documents::yrs::updates::encoder::Encode;
+    use ganymede_documents::yrs::{Array, Doc, ReadTxn, Transact, Update};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+
+    let dir = tempfile::tempdir().unwrap();
+    let nb = json!({"cells": [
+        {"cell_type": "markdown", "id": "a", "metadata": {}, "source": "A"}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.path().join("j.ipynb"), nb.to_string()).unwrap();
+    let app = mcp_app(dir.path());
+    let agent = mcp_connect(&app, "claude-code").await;
+    let other = mcp_connect(&app, "other-agent").await;
+    let tool = |sid: String, name: &'static str, args: Value| {
+        let app = app.clone();
+        async move { mcp_text(&mcp_tool(&app, &sid, name, args).await) }
+    };
+    let mark = read_mark(&tool(agent.clone(), "notebook_read", json!({"path": "j.ipynb"})).await);
+
+    // Another agent writes an @agent cell: not a request.
+    tool(
+        other.clone(),
+        "cell_add",
+        json!({"path": "j.ipynb", "source": "@agent do this"}),
+    )
+    .await;
+
+    // A person, through the room, named Thomas in awareness, adds one.
+    let (_, session) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/j.ipynb",
+        Some(json!({"format": "json", "type": "notebook"})),
+        Some(TOKEN),
+    )
+    .await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app2 = app.clone();
+    tokio::spawn(async move { axum::serve(listener, app2).await.unwrap() });
+    let mut req = format!(
+        "ws://{addr}/api/collaboration/room/json:notebook:{}?sessionId={}",
+        session["fileId"].as_str().unwrap(),
+        session["sessionId"].as_str().unwrap()
+    )
+    .into_client_request()
+    .unwrap();
+    req.headers_mut()
+        .insert("Authorization", format!("token {TOKEN}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let doc = Doc::new();
+    let mut aw = Awareness::new(Doc::new());
+    aw.set_local_state_raw(r#"{"user":{"name":"tl","display_name":"Thomas"}}"#);
+    ws.send(TMsg::Binary(
+        YMsg::Awareness(aw.update().unwrap()).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::SyncStep1(doc.transact().state_vector()))
+            .encode_v1()
+            .into(),
+    ))
+    .await
+    .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while Roots::get(&doc).cells.len(&doc.transact()) < 2 {
+        let msg = tokio::time::timeout_at(deadline, ws.next())
+            .await
+            .expect("room synced")
+            .unwrap()
+            .unwrap();
+        let TMsg::Binary(b) = msg else { continue };
+        if let Ok(YMsg::Sync(SyncMessage::SyncStep2(u) | SyncMessage::Update(u))) =
+            YMsg::decode_v1(&b)
+        {
+            doc.transact_mut()
+                .apply_update(Update::decode_v1(&u).unwrap())
+                .unwrap();
+        }
+    }
+    let before = doc.transact().state_vector();
+    {
+        let roots = Roots::get(&doc);
+        let mut txn = doc.transact_mut();
+        let end = roots.cells.len(&txn);
+        schema::insert_cell(
+            &mut txn,
+            &roots.cells,
+            end,
+            json!({"cell_type": "markdown", "id": "p", "metadata": {},
+                   "source": "@claude does 2019 change the trend?"}),
+        );
+    }
+    let update = doc.transact().encode_state_as_update_v1(&before);
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::Update(update)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+
+    // The agent's next tool reply names who, and the request.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let line = loop {
+        let out = tool(agent.clone(), "kernelspecs_list", json!({})).await;
+        if let Some(l) = out.lines().find(|l| l.contains("request to you")) {
+            break l.to_string();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "edit never arrived: {out}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(line.starts_with("@@changed j.ipynb"), "{line}");
+    assert!(
+        line.contains("Thomas") && line.contains("other-agent"),
+        "{line}"
+    );
+
+    let out = tool(
+        agent.clone(),
+        "notebook_read",
+        json!({"path": "j.ipynb", "since": mark}),
+    )
+    .await;
+    let head = |needle: &str| {
+        let i = out
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle}: {out}"));
+        out[..i].lines().last().unwrap_or_default().to_string()
+    };
+    let p = head("@claude does 2019");
+    assert!(
+        p.contains(r#""by":"Thomas""#) && p.contains(r#""request""#),
+        "{p}"
+    );
+    let o = head("@agent do this");
+    assert!(
+        o.contains(r#""by":"other-agent""#) && !o.contains("request"),
+        "{o}"
+    );
+}
+
 /// `notebook_read(since)` lists what a person changed through the room
 /// between two agent reads, and not the agent's own edits (#313).
 #[tokio::test]
@@ -6121,7 +6346,7 @@ async fn mcp_read_since_lists_changes_by_others() {
     let out = read(hook, json!({"path": "j.ipynb", "since": mark})).await;
     assert!(
         out.starts_with(
-            "Changed by others since that read: 1 added, 1 edited, 0 moved, 1 deleted."
+            "Changed by others since that read: 1 added, 1 edited, 0 moved, 1 deleted, 0 ran."
         ),
         "{out}"
     );

@@ -78,14 +78,14 @@ Run code in the notebook's kernel and return its outputs. By default the code is
 
 ## `cell_snapshot`
 
-Snapshot cells as Markdown to show the user: the code in a fenced block, each chart or image saved as a PNG (or its own format) file and linked by path, HTML tables as Markdown tables, other output as text. The images also come back to you as images, whatever the server's image setting, so use this to look at a chart before describing it. Runs nothing.
+Snapshot cells as Markdown to show the user: the code in a fenced block, each chart or image saved as a PNG (or its own format) file and linked by path, tables (table outputs and HTML tables) as Markdown tables, other output as text. The images also come back to you as images, whatever the server's image setting, so use this to look at a chart before describing it. Runs nothing.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `ids` (required) | array of string | Cell ids, in the order to show them. |
 | `dir` | string | Save images in this directory, relative to this connection's directory, such as `journal/snapshots`, for a report next to the notebook. By default they go to a directory outside the server root that only you can read. |
 | `code` | boolean | Include each code cell's source (default true). |
-| `max_rows` | integer | Rows to keep of an HTML table (default 20). |
+| `max_rows` | integer | Rows to keep of a table (default 20). |
 | `path` | string | Notebook path; the one last opened when left out. |
 
 ## `kernel_control`
@@ -130,12 +130,12 @@ Publish the notebook as one self-contained HTML page to read and share: title, c
 
 ## `notebook_read`
 
-Read a notebook as text: cells with their ids, sources and outputs, then an `@@read <mark>` line. With `since: <mark>`, return only the cells others (a person, another agent) added, edited, deleted or moved since the read that gave the mark; your own edits through these tools are left out. Outputs are not compared.
+Read a notebook as text: cells with their ids, sources and outputs, then an `@@read <mark>` line. With `since: <mark>`, return only the cells others (a person, another agent) added, edited, deleted, moved or ran since the read that gave the mark; your own edits and runs through these tools are left out.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `path` | string | Notebook path; the one last opened when left out. |
-| `since` | string | A read mark from an earlier read's `@@read` line: return only the cells others added, edited, deleted or moved since that read. Without `path`, the mark's notebook. The mark becomes this connection's for that notebook, so its own edits move it. |
+| `since` | string | A read mark from an earlier read's `@@read` line: return only the cells others added, edited, deleted, moved or ran since that read. Without `path`, the mark's notebook. The mark becomes this connection's for that notebook, so its own edits move it. |
 
 ## `notebook_run_all`
 

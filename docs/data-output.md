@@ -3,9 +3,21 @@
 A design note for [#747](https://github.com/tlockney/ganymede/issues/747):
 one call that shows a table, one that draws a chart, and later an `sql`
 tag over DuckDB. Thomas agreed the design on 2026-11-13, with each
-decision's recommendation ([Decisions](#decisions)); nothing is built
-yet. [Compared with Python](#compared-with-python) checks it against
-what Python notebooks do.
+decision's recommendation ([Decisions](#decisions)). cdp-kernel 0.11.0
+has `jupyter.table`, `jupyter.sql` and `jupyter.chart`;
+[#747](https://github.com/tlockney/ganymede/issues/747) tracks the rest.
+The rest of this note describes the state before that work.
+[Compared with Python](#compared-with-python) checks it against what
+Python notebooks do.
+
+> [!NOTE]
+> **Unreleased.** `ganymede nb publish` and the MCP `cell_snapshot` tool
+> read the table output only in a build of `main` (HEAD), not in the
+> latest release.
+
+> [!NOTE]
+> **Unreleased in ganymede-ui.** The apps render the table output only
+> in a build of ganymede-ui's `main`, not in its latest release.
 
 ## The problem
 
