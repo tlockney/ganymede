@@ -485,8 +485,19 @@ pub(crate) fn tailnet_login(
     headers: &HeaderMap,
     ext: &Extensions,
 ) -> bool {
+    tailnet_user(state, method, headers, ext).is_some()
+}
+
+/// The name [`tailnet_login`] lets in: the login, or for a tagged device
+/// its allowed tags.
+pub(crate) fn tailnet_user(
+    state: &AppState,
+    method: &Method,
+    headers: &HeaderMap,
+    ext: &Extensions,
+) -> Option<String> {
     if state.allow_remote_access {
-        return false;
+        return None;
     }
     let fetch = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
     let site_ok = match fetch("sec-fetch-site") {
@@ -517,11 +528,43 @@ pub(crate) fn tailnet_login(
                 && fetch("sec-fetch-dest") == Some("document")
         }
     };
-    site_ok
-        && (crate::tailscale::allowed_login(&state.tailnet_allow, headers, ext)
-            || ext
-                .get::<crate::tailscale::Peer>()
-                .is_some_and(|p| p.allowed(&state.tailnet_allow)))
+    if !site_ok {
+        return None;
+    }
+    if crate::tailscale::allowed_login(&state.tailnet_allow, headers, ext) {
+        let login = headers.get(crate::tailscale::USER_LOGIN)?.to_str().ok()?;
+        return Some(login.trim().to_string());
+    }
+    ext.get::<crate::tailscale::Peer>()
+        .filter(|p| p.allowed(&state.tailnet_allow))
+        .map(|p| p.name(&state.tailnet_allow))
+}
+
+/// Who a request let in by tailnet identity is, as a request extension:
+/// `/api/me` answers with it, and document rooms credit edits to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TailnetUser(pub String);
+
+/// Adds the [`TailnetUser`] extension to a request from an allowed tailnet
+/// identity ([`tailnet_user`]), however it authenticated, so a browser
+/// that also holds the login cookie is still named by its identity.
+/// Records the name on the request's log span (debug level) and logs it at
+/// info level the first time it is seen.
+fn add_tailnet_user(state: &AppState, req: &mut Request<Body>) {
+    let Some(name) = tailnet_user(state, req.method(), req.headers(), req.extensions()) else {
+        return;
+    };
+    tracing::Span::current().record("who", name.as_str());
+    let mut seen = state.tailnet_seen.lock().unwrap_or_else(|e| e.into_inner());
+    if !seen.contains(&name) {
+        if seen.len() >= 1024 {
+            seen.clear();
+        }
+        tracing::info!("named by tailnet identity: {name}");
+        seen.insert(name.clone());
+    }
+    drop(seen);
+    req.extensions_mut().insert(TailnetUser(name));
 }
 
 /// The header an app or other program sends to use a tailnet identity
@@ -546,17 +589,15 @@ fn has_client_header(headers: &HeaderMap) -> bool {
 }
 
 /// With `[tailscale] whois` on, looks up who owns the peer address of a
-/// request from the tailnet that sends no token or login cookie, and adds
-/// the answer as a [`crate::tailscale::Peer`] extension for
-/// [`tailnet_login`].
+/// request from the tailnet, and adds the answer as a
+/// [`crate::tailscale::Peer`] extension for [`tailnet_login`]. Also for a
+/// request with the token or login cookie, so it is named
+/// ([`TailnetUser`]) like one let in by identity.
 pub(crate) async fn add_whois_peer(state: &AppState, req: &mut Request<Body>) {
     let Some(whois) = &state.tailnet_whois else {
         return;
     };
-    let Some(expected) = state.token.as_deref() else {
-        return;
-    };
-    if state.allow_remote_access {
+    if state.token.is_none() || state.allow_remote_access {
         return;
     }
     let Some(axum::extract::ConnectInfo(peer)) = req
@@ -572,12 +613,18 @@ pub(crate) async fn add_whois_peer(state: &AppState, req: &mut Request<Body>) {
     let could_use = headers.contains_key("sec-fetch-site")
         || has_client_header(headers)
         || is_websocket_upgrade(headers);
-    if !could_use
-        || !crate::tailscale::is_tailnet_addr(ip)
-        || sends_token(expected, req.headers(), req.uri().query())
-        || has_login_cookie(state, req.headers())
-    {
+    if !could_use || !crate::tailscale::is_tailnet_addr(ip) {
         return;
+    }
+    // A request the token or cookie already lets in waits on a lookup only
+    // when its answer is used: from the server's own origin.
+    if !same_origin(headers) {
+        if let Some(expected) = state.token.as_deref() {
+            if sends_token(expected, headers, req.uri().query()) || has_login_cookie(state, headers)
+            {
+                return;
+            }
+        }
     }
     if let Some(p) = whois.lookup(ip).await {
         req.extensions_mut().insert(p);
@@ -693,16 +740,23 @@ pub(crate) async fn api_with(
             if !same_origin(headers) {
                 return HttpError(404, "Not Found".into()).into_response();
             }
+            add_tailnet_user(&state, &mut req);
             next.run(req).await
         }
         Some(Via::Cookie) => {
             if !origin_allowed(&state, headers) {
                 return HttpError(404, "Not Found".into()).into_response();
             }
+            if tailnet && same_origin(headers) {
+                add_tailnet_user(&state, &mut req);
+            }
             next.run(req).await
         }
         Some(Via::Token) => {
             let set = (!has_login_cookie(&state, headers)).then(|| login_cookie(&state, headers));
+            if tailnet && same_origin(req.headers()) {
+                add_tailnet_user(&state, &mut req);
+            }
             let mut resp = next.run(req).await;
             if let Some(c) = set {
                 resp.headers_mut().append(header::SET_COOKIE, c);
@@ -793,6 +847,7 @@ pub(crate) async fn page(
         Some((req.method(), req.extensions())),
     ) {
         req.extensions_mut().insert(via);
+        add_tailnet_user(&state, &mut req);
         return next.run(req).await;
     }
     if !matches!(*req.method(), Method::GET | Method::HEAD) {

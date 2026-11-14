@@ -85,7 +85,8 @@ const OBSERVER: &str = "ganymede-room";
 /// Who last changed a cell's source or type, as the room saw it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Author {
-    /// The name the client gave in its awareness state (JupyterLab's
+    /// The name the server knows the client by ([`Room::connect_as`]), the
+    /// name the client gave in its awareness state (JupyterLab's
     /// `user.display_name` or `user.name`), the name the server's caller
     /// gave ([`Room::set_author`]), or a stand-in.
     pub name: String,
@@ -141,6 +142,9 @@ pub struct Room {
     /// Awareness client ids each connection introduced, removed when it
     /// goes.
     conns: HashMap<ConnId, HashSet<ClientID>>,
+    /// Names the server vouches for, by connection ([`Room::connect_as`]),
+    /// used for authorship before any awareness name.
+    vouched: HashMap<ConnId, String>,
     /// Bumped on every content change; see [`Room::generation`].
     generation: u64,
     saved_generation: u64,
@@ -220,6 +224,7 @@ impl Room {
             roots,
             updates,
             conns: HashMap::new(),
+            vouched: HashMap::new(),
             generation: 0,
             saved_generation: 0,
             baseline: None,
@@ -329,8 +334,20 @@ impl Room {
         fx
     }
 
+    /// [`Room::connect`], for a client whose name the server knows from
+    /// how it signed in (a tailnet login, say). Its edits are credited to
+    /// `name`, whatever its awareness state says.
+    pub fn connect_as(&mut self, conn: ConnId, name: &str) -> Effects {
+        let name = clean_name(name);
+        if !name.is_empty() {
+            self.vouched.insert(conn, name);
+        }
+        self.connect(conn)
+    }
+
     /// A client went away: drop its awareness states and tell the others.
     pub fn disconnect(&mut self, conn: ConnId) -> Effects {
+        self.vouched.remove(&conn);
         let mut fx = Effects::default();
         let Some(clients) = self.conns.remove(&conn) else {
             return fx;
@@ -780,8 +797,12 @@ impl Room {
         self.authors.retain(|id, _| now.contains_key(id));
     }
 
-    /// The name connection `conn`'s client gave in its awareness state.
+    /// The name the server vouches for on connection `conn`, else the one
+    /// its client gave in its awareness state.
     fn client_name(&self, conn: ConnId) -> String {
+        if let Some(name) = self.vouched.get(&conn) {
+            return name.clone();
+        }
         let named = |v: &Value| {
             let user = v.get("user")?;
             ["display_name", "name", "username"]

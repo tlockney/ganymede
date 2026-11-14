@@ -158,10 +158,15 @@ struct MeQuery {
 }
 
 /// One identity for whoever holds the token. `jupyter_server` invents an
-/// anonymous name per browser; this server has no users to tell apart.
+/// anonymous name per browser; this server has no users to tell apart,
+/// except that a request let in by tailnet identity gets that name, so
+/// JupyterLab shows it to collaborators.
 /// `?permissions={"resource": ["action", ...]}` is answered with the
 /// actions allowed, which is all of them: the token grants everything.
-async fn me(Query(q): Query<MeQuery>) -> HttpResult<Json<Value>> {
+async fn me(
+    Query(q): Query<MeQuery>,
+    user: Option<axum::Extension<crate::auth::TailnetUser>>,
+) -> HttpResult<Json<Value>> {
     let permissions = match q.permissions.as_deref() {
         None | Some("") => json!({}),
         Some(p) => {
@@ -184,15 +189,34 @@ async fn me(Query(q): Query<MeQuery>) -> HttpResult<Json<Value>> {
             v
         }
     };
-    Ok(Json(json!({
-        "identity": {
+    let identity = match user {
+        Some(axum::Extension(crate::auth::TailnetUser(name))) => {
+            let initial: String = name
+                .trim_start_matches("tag:")
+                .chars()
+                .find(|c| c.is_alphanumeric())
+                .map(|c| c.to_uppercase().collect())
+                .unwrap_or_else(|| "T".into());
+            json!({
+                "username": name,
+                "name": name,
+                "display_name": name,
+                "initials": initial,
+                "avatar_url": null,
+                "color": null,
+            })
+        }
+        None => json!({
             "username": "anonymous",
             "name": "Anonymous",
             "display_name": "Anonymous",
             "initials": "A",
             "avatar_url": null,
             "color": null,
-        },
+        }),
+    };
+    Ok(Json(json!({
+        "identity": identity,
         "permissions": permissions,
     })))
 }

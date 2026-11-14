@@ -554,6 +554,7 @@ impl LocalHost {
             trust_xheaders: false,
             tailnet_allow: Arc::from([]),
             tailnet_whois: None,
+            tailnet_seen: Default::default(),
             max_body_size: 0,
             base_url: "/".into(),
             config_dir: cfg
@@ -649,8 +650,10 @@ fn normalize_base_url(base_url: &str) -> String {
     }
 }
 
-/// [`run`], adjusted by `startup`.
-pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
+/// Whether `[tailscale]` makes sense with the rest of `cfg`: `run_with`
+/// refuses to start otherwise. With `whois` on, the tailnet address the
+/// server listens on.
+pub fn check_tailscale(cfg: &Config) -> Result<Option<std::net::IpAddr>> {
     cfg.tailscale.validate().map_err(anyhow::Error::msg)?;
     if !cfg.tailscale.allow.is_empty() && cfg.token.as_deref() == Some("") {
         anyhow::bail!(
@@ -667,26 +670,33 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
     // `whois` needs the server on exactly its tailnet address: on any
     // other, or on all of them, addresses in the tailnet ranges could come
     // from elsewhere, and the server couldn't tell its own address (which
-    // local processes connect from) from a peer's. Clients may name the
-    // server by that address, so the Host check accepts it.
-    let whois_own = if cfg.tailscale.whois && !cfg.tailscale.allow.is_empty() {
-        let ip = cfg
-            .ip
-            .parse::<std::net::IpAddr>()
-            .ok()
-            .filter(|ip| crate::tailscale::is_tailnet_addr(*ip));
-        let Some(ip) = ip else {
-            anyhow::bail!(
-                "[tailscale] whois needs ip set to this machine's tailnet address \
-                 (`tailscale ip -4`), not {:?}",
-                cfg.ip
-            );
-        };
+    // local processes connect from) from a peer's.
+    if !(cfg.tailscale.whois && !cfg.tailscale.allow.is_empty()) {
+        return Ok(None);
+    }
+    let ip = cfg
+        .ip
+        .parse::<std::net::IpAddr>()
+        .ok()
+        .filter(|ip| crate::tailscale::is_tailnet_addr(*ip));
+    match ip {
+        Some(ip) => Ok(Some(ip)),
+        None => anyhow::bail!(
+            "[tailscale] whois needs ip set to this machine's tailnet address \
+             (`tailscale ip -4`), not {:?}",
+            cfg.ip
+        ),
+    }
+}
+
+/// [`run`], adjusted by `startup`.
+pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
+    let whois_own = check_tailscale(&cfg)?;
+    // Clients may name the server by its tailnet address, so the Host
+    // check accepts it.
+    if let Some(ip) = whois_own {
         cfg.local_hostnames.push(ip.to_string());
-        Some(ip)
-    } else {
-        None
-    };
+    }
     let token = match cfg.token.clone() {
         Some(t) if t.is_empty() => None,
         Some(t) => Some(t),
@@ -844,6 +854,7 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
         tailnet_allow: cfg.tailscale.allow.clone().into(),
         tailnet_whois: whois_own
             .map(|own| Arc::new(crate::tailscale::WhoIs::new(cfg.tailscale.cli.clone(), own))),
+        tailnet_seen: Default::default(),
         max_body_size: usize::try_from(cfg.max_body_size).unwrap_or(usize::MAX),
         base_url: base_url.clone(),
         config_dir,
@@ -892,6 +903,7 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
                     method = %req.method(),
                     uri = %crate::auth::scrub_uri(req.uri()),
                     version = ?req.version(),
+                    who = tracing::field::Empty,
                 )
             },
         ),

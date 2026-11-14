@@ -139,6 +139,19 @@ pub enum Peer {
 }
 
 impl Peer {
+    /// The name to know the peer by: its login, or its tags in `allow`.
+    pub fn name(&self, allow: &[String]) -> String {
+        match self {
+            Peer::Login(l) => l.clone(),
+            Peer::Tags(tags) => tags
+                .iter()
+                .filter(|t| allow.contains(t))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", "),
+        }
+    }
+
     /// Whether an entry of `allow` names this peer, exactly.
     pub fn allowed(&self, allow: &[String]) -> bool {
         match self {

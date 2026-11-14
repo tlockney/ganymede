@@ -91,6 +91,7 @@ fn state_with(
         trust_xheaders: false,
         tailnet_allow: Arc::from([]),
         tailnet_whois: None,
+        tailnet_seen: Default::default(),
         max_body_size: 512 * 1024 * 1024,
         base_url: "/".into(),
         config_dir: root.join(".jupyter-config"),
@@ -8340,6 +8341,23 @@ async fn whois_lets_in_allowed_logins_and_tags() {
     assert_eq!(s, StatusCode::CREATED);
 }
 
+/// A program that also sends the token is still named by its identity.
+#[cfg(unix)]
+#[tokio::test]
+async fn whois_names_a_program_that_sends_the_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = whois_app(dir.path(), &["me@example.com"]);
+    let mut req = whois_req("GET", "/api/me", "100.64.0.2");
+    req.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("token {TOKEN}").parse().unwrap(),
+    );
+    let (s, _, body) = send(&app, req).await;
+    assert_eq!(s, StatusCode::OK);
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["identity"]["username"], "me@example.com");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn whois_needs_a_request_no_other_site_could_send() {
@@ -8453,4 +8471,175 @@ async fn whois_websocket_handshakes_may_carry_an_origin() {
     assert!(s.is_client_error(), "{s}");
     let (s, _, _) = send(&app, handshake("http://evil.example", true)).await;
     assert!(s.is_client_error(), "{s}");
+}
+
+/// `/api/me` names a request let in by tailnet identity, so JupyterLab
+/// shows collaborators that name; others stay anonymous.
+#[tokio::test]
+async fn api_me_names_a_tailnet_login() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = tailnet_app(dir.path(), &["me@example.com"]);
+    let (s, _, body) = send(
+        &app,
+        tailnet_req("GET", "/api/me", Some("me@example.com"), "127.0.0.1:1"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["identity"]["username"], "me@example.com");
+    assert_eq!(v["identity"]["display_name"], "me@example.com");
+    assert_eq!(v["identity"]["initials"], "M");
+    let (_, v) = call(&app, "GET", "/api/me", None, Some(TOKEN)).await;
+    assert_eq!(v["identity"]["username"], "anonymous");
+
+    // A browser that also holds the login cookie is still named.
+    let mut r = tailnet_req(
+        "GET",
+        "/api/me?token=t",
+        Some("me@example.com"),
+        "127.0.0.1:1",
+    );
+    *r.uri_mut() = format!("/api/me?token={TOKEN}").parse().unwrap();
+    let (_, h, _) = send(&app, r).await;
+    let (name, value, _) = set_cookies(&h).into_iter().next().expect("login cookie");
+    let mut r = tailnet_req("GET", "/api/me", Some("me@example.com"), "127.0.0.1:1");
+    r.headers_mut()
+        .insert(header::COOKIE, format!("{name}={value}").parse().unwrap());
+    let (s, _, body) = send(&app, r).await;
+    assert_eq!(s, StatusCode::OK);
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["identity"]["username"], "me@example.com");
+}
+
+/// A room client let in by tailnet identity is credited by that name, not
+/// the one in its awareness state, which it chooses itself (#816).
+#[tokio::test]
+async fn room_edits_are_credited_to_the_tailnet_login() {
+    use ganymede_documents::schema::{self, Roots};
+    use ganymede_documents::yrs::sync::{Awareness, Message as YMsg, SyncMessage};
+    use ganymede_documents::yrs::updates::decoder::Decode;
+    use ganymede_documents::yrs::updates::encoder::Encode;
+    use ganymede_documents::yrs::{Array, Doc, ReadTxn, Transact, Update};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+
+    let dir = tempfile::tempdir().unwrap();
+    let nb = json!({"cells": [
+        {"cell_type": "markdown", "id": "a", "metadata": {}, "source": "A"}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.path().join("j.ipynb"), nb.to_string()).unwrap();
+    let mut st = state(dir.path());
+    st.tailnet_allow = Arc::from(["me@example.com".to_string()]);
+    st.mcp = Some(Arc::new(ganymede_server::mcp::McpState::new(
+        ganymede_server::mcp::McpOptions {
+            read_only: false,
+            no_execute: false,
+            images: false,
+            outputs_dir: Some(dir.path().join("spill")),
+        },
+    )));
+    let app = build_router(st);
+    let agent = mcp_connect(&app, "claude-code").await;
+    let tool = |name: &'static str, args: Value| {
+        let (app, sid) = (app.clone(), agent.clone());
+        async move { mcp_text(&mcp_tool(&app, &sid, name, args).await) }
+    };
+    let mark = read_mark(&tool("notebook_read", json!({"path": "j.ipynb"})).await);
+
+    let (_, session) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/j.ipynb",
+        Some(json!({"format": "json", "type": "notebook"})),
+        Some(TOKEN),
+    )
+    .await;
+    // Served with the peer address, as `ganymede serve` does, so the
+    // `tailscale serve` header is believed from this loopback client.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app2 = app.clone();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app2.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
+    let mut req = format!(
+        "ws://{addr}/api/collaboration/room/json:notebook:{}?sessionId={}",
+        session["fileId"].as_str().unwrap(),
+        session["sessionId"].as_str().unwrap()
+    )
+    .into_client_request()
+    .unwrap();
+    req.headers_mut()
+        .insert("tailscale-user-login", "me@example.com".parse().unwrap());
+    req.headers_mut()
+        .insert("sec-fetch-site", "same-origin".parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let doc = Doc::new();
+    let mut aw = Awareness::new(Doc::new());
+    aw.set_local_state_raw(r#"{"user":{"name":"impostor","display_name":"Impostor"}}"#);
+    ws.send(TMsg::Binary(
+        YMsg::Awareness(aw.update().unwrap()).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::SyncStep1(doc.transact().state_vector()))
+            .encode_v1()
+            .into(),
+    ))
+    .await
+    .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while Roots::get(&doc).cells.len(&doc.transact()) < 1 {
+        let msg = tokio::time::timeout_at(deadline, ws.next())
+            .await
+            .expect("room synced")
+            .unwrap()
+            .unwrap();
+        let TMsg::Binary(b) = msg else { continue };
+        if let Ok(YMsg::Sync(SyncMessage::SyncStep2(u) | SyncMessage::Update(u))) =
+            YMsg::decode_v1(&b)
+        {
+            doc.transact_mut()
+                .apply_update(Update::decode_v1(&u).unwrap())
+                .unwrap();
+        }
+    }
+    let before = doc.transact().state_vector();
+    {
+        let roots = Roots::get(&doc);
+        let mut txn = doc.transact_mut();
+        let end = roots.cells.len(&txn);
+        schema::insert_cell(
+            &mut txn,
+            &roots.cells,
+            end,
+            json!({"cell_type": "markdown", "id": "p", "metadata": {}, "source": "from the tailnet"}),
+        );
+    }
+    let update = doc.transact().encode_state_as_update_v1(&before);
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::Update(update)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let out = loop {
+        let out = tool("notebook_read", json!({"path": "j.ipynb", "since": mark})).await;
+        if out.contains("from the tailnet") {
+            break out;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "edit never arrived: {out}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(out.contains(r#""by":"me@example.com""#), "{out}");
+    assert!(!out.contains("Impostor"), "{out}");
 }

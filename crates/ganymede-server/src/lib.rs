@@ -69,6 +69,9 @@ pub struct AppState {
     /// `[tailscale] whois`: looks up requests from tailnet addresses.
     /// `None` when off.
     pub tailnet_whois: Option<Arc<tailscale::WhoIs>>,
+    /// Names already logged as named by tailnet identity, so each is
+    /// logged at info level once per server.
+    pub tailnet_seen: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     /// Largest request body accepted, in bytes; larger ones get 413.
     pub max_body_size: usize,
     /// URL prefix the routes are nested under, with a trailing `/`.

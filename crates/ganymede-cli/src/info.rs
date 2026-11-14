@@ -38,6 +38,7 @@ pub fn collect(engine: &Engine, extra_roots: &[PathBuf]) -> Result<Value> {
             .map(|d| d.join(ganymede_server::serve::DEFAULT_CONFIG_FILE))
     });
     let config_file_found = config_file.as_deref().is_some_and(Path::is_file);
+    let tailnet = tailnet_identity(config_file.as_deref().filter(|_| config_file_found));
     let commit = env!("GANYMEDE_BUILD_COMMIT");
     Ok(json!({
         "version": env!("GANYMEDE_VERSION"),
@@ -61,8 +62,28 @@ pub fn collect(engine: &Engine, extra_roots: &[PathBuf]) -> Result<Value> {
         "kernelspec_roots": kernelspec_roots,
         "notary_dir": ks::jupyter_user_data_dir(),
         "console_history": crate::console::history_path(),
+        "tailnet_identity": tailnet,
         "kernelspecs": specs,
     }))
+}
+
+/// `[tailscale]` from the config file: who `ganymede serve` lets in by
+/// tailnet identity, whether it asks `tailscale whois`, and `error` when
+/// `serve` would refuse to start with the file alone (its `--ip` or
+/// `--token` flags may change that). `null` when it lets no one in
+/// that way, or the file doesn't read.
+fn tailnet_identity(config_file: Option<&Path>) -> Value {
+    let cfg = config_file
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| ganymede_server::config::Config::from_toml(&t).ok());
+    match cfg {
+        Some(c) if !c.tailscale.allow.is_empty() => json!({
+            "allow": c.tailscale.allow,
+            "whois": c.tailscale.whois,
+            "error": ganymede_server::serve::check_tailscale(&c).err().map(|e| e.to_string()),
+        }),
+        _ => Value::Null,
+    }
 }
 
 pub fn run(engine: &Engine, extra_roots: &[PathBuf], json: bool) -> Result<ExitCode> {
@@ -133,6 +154,26 @@ fn text(v: &Value) -> String {
     }
     let _ = writeln!(out, "notary dir        {}", s("notary_dir"));
     let _ = writeln!(out, "console history   {}", s("console_history"));
+    let t = &v["tailnet_identity"];
+    let _ = match t["allow"].as_array() {
+        Some(allow) => {
+            let names: Vec<&str> = allow.iter().filter_map(Value::as_str).collect();
+            let how = if t["whois"].as_bool().unwrap_or(false) {
+                "tailscale serve or whois"
+            } else {
+                "tailscale serve"
+            };
+            match t["error"].as_str() {
+                Some(e) => writeln!(
+                    out,
+                    "tailnet identity  {} (serve refuses this config unless flags change it: {e})",
+                    names.join(", ")
+                ),
+                None => writeln!(out, "tailnet identity  {} (by {how})", names.join(", ")),
+            }
+        }
+        None => writeln!(out, "tailnet identity  off"),
+    };
     let _ = writeln!(out, "kernelspec roots:");
     for d in list("kernelspec_roots") {
         let _ = writeln!(out, "  {}", Path::new(&d).display());
@@ -168,6 +209,7 @@ mod tests {
             "kernelspec_roots": ["/extra", "/d1"],
             "notary_dir": "/d1",
             "console_history": null,
+            "tailnet_identity": { "allow": ["me@example.com", "tag:agent"], "whois": true },
             "kernelspecs": ["fake"],
         });
         let t = text(&v);
@@ -181,9 +223,35 @@ mod tests {
             "  anywidget 0.9.0",
             "notary dir        /d1",
             "console history   (none)",
+            "tailnet identity  me@example.com, tag:agent (by tailscale serve or whois)",
             "kernelspec roots:\n  /extra\n  /d1",
         ] {
             assert!(t.contains(want), "{want:?} not in\n{t}");
         }
+    }
+
+    #[test]
+    fn tailnet_identity_comes_from_the_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ganymede.toml");
+        assert_eq!(tailnet_identity(None), Value::Null);
+        std::fs::write(&file, "port = 8888\n").unwrap();
+        assert_eq!(tailnet_identity(Some(&file)), Value::Null);
+        std::fs::write(&file, "[tailscale]\nallow = [\"me@example.com\"]\n").unwrap();
+        assert_eq!(
+            tailnet_identity(Some(&file)),
+            json!({ "allow": ["me@example.com"], "whois": false, "error": null })
+        );
+        std::fs::write(&file, "[tailscale]\nallow = [\"tag:agent\"]\n").unwrap();
+        let t = tailnet_identity(Some(&file));
+        assert!(t["error"].as_str().unwrap().contains("whois"), "{t}");
+        let mut v = json!({});
+        v["tailnet_identity"] = t;
+        assert!(text(&v).contains(
+            "tailnet identity  tag:agent (serve refuses this config unless flags change it:"
+        ));
+        let mut v = json!({});
+        v["tailnet_identity"] = Value::Null;
+        assert!(text(&v).contains("tailnet identity  off"));
     }
 }

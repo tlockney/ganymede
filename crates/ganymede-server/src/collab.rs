@@ -405,7 +405,8 @@ impl Collab {
 }
 
 pub(crate) enum Cmd {
-    Join(ConnId, ClientTx),
+    /// A client joins, with the name the server knows it by, if any.
+    Join(ConnId, ClientTx, Option<String>),
     Frame(ConnId, Vec<u8>),
     Leave(ConnId),
     /// A rename through the contents API: old and new path.
@@ -635,8 +636,10 @@ pub async fn room(
     State(state): State<AppState>,
     Path(room_id): Path<String>,
     Query(query): Query<RoomQuery>,
+    user: Option<axum::Extension<crate::auth::TailnetUser>>,
     headers: HeaderMap,
 ) -> Response {
+    let user = user.map(|axum::Extension(u)| u.0);
     if !origin_allowed(&state, &headers) {
         return HttpError(403, "origin not allowed".into()).into_response();
     }
@@ -645,7 +648,7 @@ pub async fn room(
     // by default) has to match.
     ws.max_message_size(state.max_body_size)
         .max_frame_size(state.max_body_size)
-        .on_upgrade(move |socket| serve_socket(socket, state, room_id, query.session_id))
+        .on_upgrade(move |socket| serve_socket(socket, state, room_id, query.session_id, user))
 }
 
 async fn serve_socket(
@@ -653,6 +656,7 @@ async fn serve_socket(
     state: AppState,
     room_id: String,
     session_id: Option<String>,
+    user: Option<String>,
 ) {
     let collab = state.collab.clone();
     let parts: Vec<&str> = room_id.splitn(3, ':').collect();
@@ -688,7 +692,7 @@ async fn serve_socket(
     let (out_tx, mut out_rx, full) = ClientTx::new(state.max_body_size);
     // An open room takes the join with no path lookup, so a client
     // joining one whose file was just deleted hears "File deleted".
-    let join = Cmd::Join(conn, out_tx);
+    let join = Cmd::Join(conn, out_tx, user);
     let Some(room) = send_to_room(&collab, &state.contents, &room_id, file_id, join).await else {
         let id = file_id.unwrap_or_default();
         close(&mut socket, 4404, format!("Unknown file id {id}")).await;
@@ -921,7 +925,7 @@ pub(crate) async fn hold_notebook(
     let conn = collab.next_conn.fetch_add(1, Ordering::Relaxed);
     // The receiver is dropped: frames sent to this client go nowhere.
     let (out, _, _) = ClientTx::new(usize::MAX);
-    let room = send_to_notebook_room(collab, contents, room_id, Cmd::Join(conn, out)).await?;
+    let room = send_to_notebook_room(collab, contents, room_id, Cmd::Join(conn, out, None)).await?;
     Some(Hold { room, conn })
 }
 
@@ -1257,10 +1261,13 @@ async fn run_room(
             cmd = async { match next.take() { Some(c) => Some(c), None => rx.recv().await } } => {
                 let Some(cmd) = cmd else { break };
                 match cmd {
-                    Cmd::Join(conn, out) => {
+                    Cmd::Join(conn, out, user) => {
                         clients.insert(conn, out);
                         empty_since = None;
-                        let fx = room.connect(conn);
+                        let fx = match &user {
+                            Some(name) => room.connect_as(conn, name),
+                            None => room.connect(conn),
+                        };
                         dispatch(&clients, fx.send);
                     }
                     Cmd::Frame(conn, data) => match room.receive(conn, &data) {
@@ -1579,7 +1586,7 @@ fn close_room(
     rx.close();
     while let Ok(cmd) = rx.try_recv() {
         match cmd {
-            Cmd::Join(_, out) => {
+            Cmd::Join(_, out, _) => {
                 out.send(Out::Close(code, reason.to_string()));
             }
             Cmd::Exec(cmd) => cmd.unavailable(exec_reason),
