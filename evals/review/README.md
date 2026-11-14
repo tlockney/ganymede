@@ -41,7 +41,9 @@ findings and the review's text and scores each `caught`, `partly` or
 | `findings` | `{summary, severity (Medium or High), class (A to I), source}`; empty for `clean` |
 | `notes` | Anything that explains the choice of head or base |
 
-The set today: 10 `known`, 6 `missed`, 5 `clean`. For a `missed` case the
+The set today: 10 `known`, 8 `missed`, 5 `clean`. `ganymede-827` and
+`ganymede-827-copy-test` (Gaps entries 17 and 18) were added after the
+baseline ran and are not in its numbers. For a `missed` case the
 head is the one the passing review was posted on, except where the code
 carrying the finding came in a later commit (the notes say so).
 
@@ -87,7 +89,7 @@ Options: `--cases IDS` (comma-separated ids, `*` wildcards), `--runs N`
 `--judge-model` (`sonnet`), `--concurrency` (2), `--cache DIR` (bare
 clones and scratch checkouts, default `~/.cache/ganymede-review-eval`, or
 `REVIEW_EVAL_CACHE`), `--redo` (run again what `results.json` already
-holds). Runs finished in `--out` are kept, so an interrupted run resumes
+holds; it also drops the old-prompt runs outside the selection). Runs finished in `--out` are kept, so an interrupted run resumes
 (a review that was saved but not judged is judged again, not rerun) and lens
 runs add to the same report. Each run records the prompt's sha and the model;
 an `--out` holding runs from another prompt or model is refused, so use a new
@@ -120,11 +122,16 @@ What a run does:
   (`gh issue view` needs GraphQL, which Claude Code sessions can't reach; with
   only the `gh` rule the reviews did not think to use it, and 55 of 62 in the
   first baseline said they couldn't read the issue).
-  No edits, builds or tests, no other shell, and denies for the mounted
-  project files (`/mnt`), other clones (`/home`), the eval's output and the
-  bare clones, so a review can't read an answer key, a later commit or its own
-  results. `git` flags that write or read outside the repo (`--output`, `-O`,
-  `--no-index`, `-C`, `--git-dir`, `-c`) are denied. A probe run that tried
+  No edits, builds or tests, no other shell, and denies built from the real
+  paths in use (never a blanket `/home`, which would cover the clone): the
+  mounted project files, the parent of the checkout this eval runs from (the
+  person's other worktrees), the bare clones and logs in the cache, and
+  `--out`, so a review can't read an answer key, a later commit or its own
+  results. The run refuses to start if the scratch clones fall inside a denied
+  path. Review and judge sessions pass `--setting-sources ""`, so the user's
+  and project's own permission rules don't merge in. `git` flags that write or read outside the repo (`--output`, `-O`,
+  `--no-index`, `--contents`, `--exclude-from`, `--ignore-revs-file`, `-X`,
+  `-C`, `--git-dir`, `-c`) are denied, and `git blame` is not allowed. A probe run that tried
   these (a read of the project files, a `gh api` for another issue, `git -C`,
   `git show` of a later sha) was refused each time.
 
@@ -136,7 +143,7 @@ that don't prove the claim) lose the most. The reviewer reads the issue
 through a stand-in `issue_read` tool, scoped to the case's issue. The judge
 is a model: read a few reviews and verdicts by hand after each prompt
 change (`reviews/<case>-<run>.md`, `results.json`) before trusting a
-small difference. With about 30 findings and two runs, a swing of a few
+small difference. With 20 findings and two runs, a swing of a few
 points is noise.
 
 ## Measures

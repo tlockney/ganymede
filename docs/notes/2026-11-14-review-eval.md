@@ -59,12 +59,15 @@ the issue in 57 of 62 runs:
   81%, two plain runs 85%, a security-lens run plus a concurrency-lens run
   88%. The lens pair costs $17.32 against $9.07 for one run. Not justified
   by this sample: the pair beats one run by 7 points, under the 15 the rule
-  asks for, and beats two plain runs by 3 points, which is one finding.
+  asks for, and beats two plain runs by 3 points, which is half a finding (one "partly"
+  became "caught").
 - The prompt's Gaps entries name most of these PRs, so the baseline is
   optimistic for them. Its use is to catch a regression and to test a new
   entry against its own case, which should be missed before the edit and
   caught after.
 - The reviews can't build or run tests here, which understates class E.
+- Cases `ganymede-827` and `ganymede-827-copy-test` (Gaps entries 17 and 18)
+  were added after the baseline ran and are not in its numbers.
 - Gaps entry 17 was added to the prompt while the runs went, so the
   concurrency-lens runs used a prompt one entry longer (sha 0f3b111e against
   f4471519); each run records its sha.

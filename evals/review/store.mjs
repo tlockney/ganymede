@@ -67,9 +67,19 @@ export function lock(out) {
 }
 
 /**
- * Entries that were made with another prompt or review model than this run's.
- * Resuming on top of them would mix two measurements.
+ * Entries that were made with another prompt, review model or judge model
+ * than this run's. Resuming on top of them would mix two measurements.
  */
-export function mismatched(entries, { promptSha, model }) {
-  return entries.filter((e) => (e.promptSha && e.promptSha !== promptSha) || (e.model && e.model !== model));
+export function mismatched(entries, { promptSha, model, judgeModel }) {
+  return entries.filter((e) => (e.promptSha && e.promptSha !== promptSha) || (e.model && e.model !== model) || (e.judgeModel && e.judgeModel !== judgeModel));
+}
+
+/**
+ * For `--redo`: the entries to keep. The selected runs are replaced by the
+ * redo, and a mismatched entry outside the selection is dropped, so the
+ * report never mixes two prompts. `selected` is a set of entry keys.
+ */
+export function afterRedo(entries, current, selected) {
+  const bad = new Set(mismatched(entries, current));
+  return entries.filter((e) => !selected.has(entryKey(e)) && !bad.has(e));
 }

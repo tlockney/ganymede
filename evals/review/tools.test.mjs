@@ -1,11 +1,12 @@
 // node --test evals/review/*.test.mjs
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GIT_READ, allowedTools, disallowedTools, issuePaths } from "./tools.mjs";
+import { GIT_READ, allowedTools, assertWorkAllowed, denyPaths, disallowedTools, issuePaths } from "./tools.mjs";
 
 const c = { repo: "tlockney/ganymede", issue: 816 };
 const allowed = allowedTools(c);
-const denied = disallowedTools({ cache: "/root/.cache/ganymede-review-eval", out: "/root/out-1" });
+const deny = denyPaths({ cache: "/root/.cache/ganymede-review-eval", out: "/root/out-1", repoRoot: "/home/user/wt/ganymede-822", exists: () => true });
+const denied = disallowedTools(deny);
 
 test("the only shell a review may run is read-only git and this case's issue over REST", () => {
   const bash = allowed.filter((t) => t.startsWith("Bash("));
@@ -30,11 +31,37 @@ test("file reads are scoped to the clone", () => {
   }
 });
 
-test("denies cover writes, answer keys, other clones, results and the bare cache", () => {
+test("denies cover writes, answer keys, other worktrees, results and the bare cache", () => {
   for (const w of ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"]) assert.ok(denied.includes(w));
   for (const t of ["Read", "Grep", "Glob"]) {
-    for (const p of ["//mnt/**", "//home/**", "//root/.cache/ganymede-review-eval/*.git/**", "//root/out-1/**"]) assert.ok(denied.includes(`${t}(${p})`), `${t} ${p}`);
+    for (const p of ["//mnt/project-files/**", "//home/user/wt/**", "//root/.cache/ganymede-review-eval/*.git/**", "//root/.cache/ganymede-review-eval/*.log", "//root/out-1/**"]) assert.ok(denied.includes(`${t}(${p})`), `${t} ${p}`);
   }
-  for (const f of ["--output", "-O", "--no-index"]) assert.ok(denied.some((d) => d.startsWith("Bash(git * ") && d.includes(f)), f);
+  for (const f of ["--output", "-O", "--no-index", "--exclude-from", "--contents", "--ignore-revs-file", "-X"]) assert.ok(denied.includes(`Bash(git * ${f}*)`), f);
   for (const f of ["Bash(git -C*)", "Bash(git --git-dir*)", "Bash(git -c*)"]) assert.ok(denied.includes(f));
+  assert.ok(!allowed.includes("Bash(git blame:*)"), "blame reads files named by --contents");
+});
+
+test("no blanket /home or /Users deny: the clone under $HOME stays readable (Linux user and macOS)", () => {
+  const cases = [
+    { home: "/home/alice", repo: "/home/alice/wt/ganymede-822" },
+    { home: "/Users/bob", repo: "/Users/bob/code/ganymede" },
+  ];
+  for (const { home, repo } of cases) {
+    const cache = `${home}/.cache/ganymede-review-eval`;
+    const d = denyPaths({ cache, out: `${home}/out`, repoRoot: repo, exists: (p) => p === "/mnt/project-files" });
+    const rules = disallowedTools(d);
+    for (const bad of ["//home/**", "//Users/**", `/${home}/**`, `//${home.slice(1)}/**`]) assert.ok(!rules.some((r) => r.endsWith(`(${bad})`)), bad);
+    assert.doesNotThrow(() => assertWorkAllowed(`${cache}/work/x-1-1`, d), home);
+    // the person's other worktrees are denied, wherever they are
+    assert.ok(rules.includes(`Read(//${repo.slice(1, repo.lastIndexOf("/"))}/**)`), repo);
+  }
+  const d = denyPaths({ cache: "/home/alice/.cache/e", out: "/o", repoRoot: "/x/y", exists: () => false });
+  assert.ok(!disallowedTools(d).some((r) => r.includes("project-files")), "only when the mount exists");
+});
+
+test("fail fast when the scratch clones would sit inside a denied path", () => {
+  // The checkout is /home/alice/ganymede, so its parent is $HOME, and the cache is under it.
+  const d = denyPaths({ cache: "/home/alice/.cache/e", out: "/home/alice/out", repoRoot: "/home/alice/ganymede", exists: () => false });
+  assert.throws(() => assertWorkAllowed("/home/alice/.cache/e/work", d), /may not read/);
+  assert.doesNotThrow(() => assertWorkAllowed("/var/cache/e/work", d));
 });

@@ -265,15 +265,16 @@ export function renderReport(summary, entries, cases, meta) {
   for (const [id, r] of Object.entries(f.perCase)) L.push(`| ${id} | ${r.runs} | ${r.otherMediumPlus} | ${r.changesNeeded} |`);
   if (a.otherOnFindingCases.runs) L.push("", `On the other cases the review also lists ${a.otherOnFindingCases.perRun.toFixed(2)} further Medium+ findings per run (not scored; they may be real).`);
   L.push("", "## Per case", "");
-  L.push("| Case | Kind | Finding (class) | Verdicts by run | Other Medium+ by run | Review verdicts |", "| --- | --- | --- | --- | --- | --- |");
+  L.push("| Case | Kind | Finding (class) | Verdicts by run | Other Medium+ by run | Review verdicts | Denied tool calls by run |", "| --- | --- | --- | --- | --- | --- | --- |");
   for (const c of cases) {
     const mine = entries.filter((e) => e.case === c.id && !e.lens).sort((x, y) => x.run - y.run);
     const others = mine.map((e) => (usable(e) ? e.judge.otherMediumPlus : "x")).join(", ");
     const verdicts = mine.map((e) => e.verdict ?? "x").join(", ");
-    if (c.kind === "clean") L.push(`| ${c.id} | clean | none | | ${others} | ${verdicts} |`);
+    const denied = mine.map((e) => e.denials ?? "n/a").join(", ");
+    if (c.kind === "clean") L.push(`| ${c.id} | clean | none | | ${others} | ${verdicts} | ${denied} |`);
     else c.findings.forEach((fd, i) => {
       const v = mine.map((e) => (usable(e) ? e.judge.perFinding[i].verdict : "failed")).join(", ");
-      L.push(`| ${i === 0 ? c.id : ""} | ${i === 0 ? c.kind : ""} | ${fd.severity} (${fd.class}) | ${v} | ${i === 0 ? others : ""} | ${i === 0 ? verdicts : ""} |`);
+      L.push(`| ${i === 0 ? c.id : ""} | ${i === 0 ? c.kind : ""} | ${fd.severity} (${fd.class}) | ${v} | ${i === 0 ? others : ""} | ${i === 0 ? verdicts : ""} | ${i === 0 ? denied : ""} |`);
     });
   }
   L.push("", "## Two lenses vs one run", "");

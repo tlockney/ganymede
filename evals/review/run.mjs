@@ -19,8 +19,8 @@ import { assemblePrompt, branchOf, loadCases, selectCases, LENSES } from "./case
 import { evalTimeoutMs, runClaude } from "./claude.mjs";
 import { mcpConfig } from "./issue-mcp.mjs";
 import { judgeReview } from "./judge.mjs";
-import { entryKey, lock, mismatched, readResults, writeResults } from "./store.mjs";
-import { allowedTools, disallowedTools } from "./tools.mjs";
+import { afterRedo, entryKey, lock, mismatched, readResults, writeResults } from "./store.mjs";
+import { allowedTools, assertWorkAllowed, denyPaths, disallowedTools } from "./tools.mjs";
 import { aggregate, lensComparison, renderReport, reviewVerdict } from "./score.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -123,9 +123,15 @@ async function pool(tasks, n) {
   }));
 }
 
-async function main() {
-  const o = parseArgs(process.argv.slice(2));
-  const allCases = loadCases(path.join(here, "cases"));
+/** What a review run needs from outside: the model call and the judge. Tests pass stubs. */
+const REAL = { run: runClaude, judge: judgeReview };
+
+/**
+ * Runs the eval for options `o` (see parseArgs) and writes the report.
+ * `deps` replace the model calls and `casesDir` the case files, for tests.
+ */
+export async function runEval(o, { run: runModel, judge, casesDir = path.join(here, "cases") } = REAL) {
+  const allCases = loadCases(casesDir);
   const out = path.resolve(o.report ?? o.out ?? fs.mkdtempSync(path.join(os.tmpdir(), "review-eval-")));
   fs.mkdirSync(path.join(out, "reviews"), { recursive: true });
   const meta = (promptPath, text) => ({
@@ -138,86 +144,101 @@ async function main() {
     writeReport(out, allCases, m);
     release();
     console.error(`report: ${path.join(out, "report.md")}`);
-    return;
+    return null;
   }
   const release = lock(out);
-  const promptText = fs.readFileSync(path.resolve(o.prompt), "utf8");
-  const m = meta(o.prompt, promptText);
-  let cases = selectCases(allCases, o.cases);
-  if (o.lens && !o.cases) cases = cases.filter((c) => c.kind !== "clean" && c.findings.some((f) => f.class === "A" || f.class === "B"));
-  const existing = readResults(out);
-  const bad = o.redo ? [] : mismatched(existing, m);
-  if (bad.length) throw new Error(`${out} holds ${bad.length} runs made with another prompt or model (e.g. ${bad[0].case} ${bad[0].promptSha?.slice(0, 8)} ${bad[0].model}); use a new --out, or --redo to run them again`);
-  const prior = new Map(existing.map((e) => [entryKey(e), e]));
-  const timeoutMs = evalTimeoutMs(60 * 60 * 1000);
-  const work = path.join(o.cache, "work");
-  clearStaleWork(work);
-  const tasks = [];
-  for (const c of cases) {
-    for (let run = 1; run <= o.runs; run++) {
-      const e = { case: c.id, lens: o.lens, run };
-      const old = o.redo ? null : prior.get(entryKey(e));
-      if (old && !old.error && old.judge) continue;
-      tasks.push(async () => {
-        const tag = `${c.id}${o.lens ? `-${o.lens}` : ""}-${run}`;
-        const entry = { ...e, promptSha: m.promptSha, model: o.model };
-        const dest = path.join(work, `${tag}-${process.pid}`);
-        try {
-          let text;
-          // A review that was saved and only failed to judge is judged again, not run again.
-          if (old?.review && fs.existsSync(path.join(out, old.review))) {
-            console.error(`${tag}: re-judging the saved review`);
-            text = fs.readFileSync(path.join(out, old.review), "utf8");
-            Object.assign(entry, { review: old.review, verdict: old.verdict, cost: old.cost, usage: old.usage, durationMs: old.durationMs });
-          } else {
-            const bare = ensureRepo(o.cache, c);
-            const diff = git(bare, "diff", `${c.base}...${c.head}`);
-            if (!diff.trim()) throw new Error("empty diff");
-            const input = assemblePrompt(promptText, { lens: o.lens, repo: c.repo, clone: dest, branch: branchOf(c), issue: c.issue, diff });
-            const args = ["--model", o.model, "--permission-mode", "dontAsk", "--strict-mcp-config", "--mcp-config", mcpConfig(c), "--allowedTools", allowedTools(c).join(","), "--disallowedTools", disallowedTools({ cache: o.cache, out }).join(",")];
-            let r;
-            for (let attempt = 0; attempt < 2; attempt++) {
-              fs.rmSync(dest, { recursive: true, force: true });
-              checkout(bare, c, dest);
-              console.error(`${tag}: review${attempt ? " (retry)" : ""}`);
-              r = await runClaude({ args, input, cwd: dest, timeoutMs });
-              entry.cost = (entry.cost ?? 0) + r.cost;
-              if (r.code === 0 && !r.isError && r.text.trim()) break;
-            }
-            entry.usage = r.usage;
-            entry.denials = r.denials.length;
-            entry.durationMs = r.durationMs;
-            if (r.code !== 0 || r.isError || !r.text.trim()) throw new Error(`claude exited ${r.code}${r.timedOut ? " (timed out)" : ""}: ${(r.stderr || r.raw || "").slice(-300)}`);
-            const file = path.join("reviews", `${tag}.md`);
-            fs.writeFileSync(path.join(out, file), r.text);
-            entry.review = file;
-            entry.verdict = reviewVerdict(r.text);
-            text = r.text;
-          }
-          console.error(`${tag}: judge`);
-          const j = await judgeReview({ findings: c.findings, reviewText: text, model: o.judgeModel });
-          entry.judgeCost = (old?.judgeCost ?? 0) + j.cost;
-          if (!j.ok) throw new Error(`judge: ${j.error}`);
-          entry.judge = { perFinding: j.perFinding, otherMediumPlus: j.otherMediumPlus };
-        } catch (err) {
-          entry.error = String(err.message ?? err);
-          console.error(`${tag}: FAILED ${entry.error}`);
-        } finally {
-          fs.rmSync(dest, { recursive: true, force: true });
-        }
-        const all = readResults(out).filter((x) => entryKey(x) !== entryKey(entry));
-        all.push(entry);
-        writeResults(out, all);
-        writeReport(out, allCases, m);
-      });
+  try {
+    const promptText = fs.readFileSync(path.resolve(o.prompt), "utf8");
+    const m = meta(o.prompt, promptText);
+    let cases = selectCases(allCases, o.cases);
+    if (o.lens && !o.cases) cases = cases.filter((c) => c.kind !== "clean" && c.findings.some((f) => f.class === "A" || f.class === "B"));
+    const work = path.join(o.cache, "work");
+    const deny = denyPaths({ cache: o.cache, out, repoRoot: path.resolve(here, "../..") });
+    assertWorkAllowed(work, deny);
+    const selected = new Set(cases.flatMap((c) => Array.from({ length: o.runs }, (_, i) => entryKey({ case: c.id, lens: o.lens, run: i + 1 }))));
+    let existing = readResults(out);
+    const bad = mismatched(existing, m);
+    if (bad.length && !o.redo) throw new Error(`${out} holds ${bad.length} runs made with another prompt or model (e.g. ${bad[0].case} ${bad[0].promptSha?.slice(0, 8)} ${bad[0].model}); use a new --out, or --redo to run the selected cases again and drop the rest of them`);
+    if (o.redo) {
+      existing = afterRedo(existing, m, selected);
+      writeResults(out, existing);
     }
+    const prior = new Map(existing.map((e) => [entryKey(e), e]));
+    const timeoutMs = evalTimeoutMs(60 * 60 * 1000);
+    clearStaleWork(work);
+    const tasks = [];
+    for (const c of cases) {
+      for (let n = 1; n <= o.runs; n++) {
+        const e = { case: c.id, lens: o.lens, run: n };
+        const old = prior.get(entryKey(e));
+        if (old && !old.error && old.judge) continue;
+        tasks.push(async () => {
+          const tag = `${c.id}${o.lens ? `-${o.lens}` : ""}-${n}`;
+          const entry = { ...e, promptSha: m.promptSha, model: o.model, judgeModel: o.judgeModel };
+          const dest = path.join(work, `${tag}-${process.pid}`);
+          try {
+            let text;
+            // A review that was saved and only failed to judge is judged again, not run again.
+            if (old?.review && fs.existsSync(path.join(out, old.review))) {
+              console.error(`${tag}: re-judging the saved review`);
+              text = fs.readFileSync(path.join(out, old.review), "utf8");
+              Object.assign(entry, { review: old.review, verdict: old.verdict, cost: old.cost, usage: old.usage, durationMs: old.durationMs, denials: old.denials });
+            } else {
+              const bare = ensureRepo(o.cache, c);
+              const diff = git(bare, "diff", `${c.base}...${c.head}`);
+              if (!diff.trim()) throw new Error("empty diff");
+              const input = assemblePrompt(promptText, { lens: o.lens, repo: c.repo, clone: dest, branch: branchOf(c), issue: c.issue, diff });
+              const args = ["--model", o.model, "--permission-mode", "dontAsk", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", mcpConfig(c), "--allowedTools", allowedTools(c).join(","), "--disallowedTools", disallowedTools(deny).join(",")];
+              let r;
+              for (let attempt = 0; attempt < 2; attempt++) {
+                fs.rmSync(dest, { recursive: true, force: true });
+                checkout(bare, c, dest);
+                console.error(`${tag}: review${attempt ? " (retry)" : ""}`);
+                r = await runModel({ args, input, cwd: dest, timeoutMs });
+                entry.cost = (entry.cost ?? 0) + r.cost;
+                if (r.code === 0 && !r.isError && r.text.trim()) break;
+              }
+              entry.usage = r.usage;
+              entry.denials = (r.denials ?? []).length;
+              entry.durationMs = r.durationMs;
+              if (r.code !== 0 || r.isError || !r.text.trim()) throw new Error(`claude exited ${r.code}${r.timedOut ? " (timed out)" : ""}: ${(r.stderr || r.raw || "").slice(-300)}`);
+              const file = path.join("reviews", `${tag}.md`);
+              fs.writeFileSync(path.join(out, file), r.text);
+              entry.review = file;
+              entry.verdict = reviewVerdict(r.text);
+              text = r.text;
+            }
+            console.error(`${tag}: judge`);
+            const j = await judge({ findings: c.findings, reviewText: text, model: o.judgeModel });
+            entry.judgeCost = (old?.judgeCost ?? 0) + (j.cost ?? 0);
+            if (!j.ok) throw new Error(`judge: ${j.error}`);
+            entry.judge = { perFinding: j.perFinding, otherMediumPlus: j.otherMediumPlus };
+          } catch (err) {
+            entry.error = String(err.message ?? err);
+            console.error(`${tag}: FAILED ${entry.error}`);
+          } finally {
+            fs.rmSync(dest, { recursive: true, force: true });
+          }
+          const all = readResults(out).filter((x) => entryKey(x) !== entryKey(entry));
+          all.push(entry);
+          writeResults(out, all);
+          writeReport(out, allCases, m);
+        });
+      }
+    }
+    console.error(`${tasks.length} runs, concurrency ${o.concurrency}, out ${out}`);
+    await pool(tasks, o.concurrency);
+    const s = writeReport(out, allCases, m);
+    console.error(`report: ${path.join(out, "report.md")}`);
+    return s;
+  } finally {
+    release();
   }
-  console.error(`${tasks.length} runs, concurrency ${o.concurrency}, out ${out}`);
-  await pool(tasks, o.concurrency);
-  const s = writeReport(out, allCases, m);
-  release();
-  console.error(`report: ${path.join(out, "report.md")}`);
-  console.log(JSON.stringify({ recall: s.agg.recall, falseAlarms: s.agg.falseAlarms.perRun, cost: s.agg.cost.total }));
+}
+
+async function main() {
+  const s = await runEval(parseArgs(process.argv.slice(2)));
+  if (s) console.log(JSON.stringify({ recall: s.agg.recall, falseAlarms: s.agg.falseAlarms.perRun, cost: s.agg.cost.total }));
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

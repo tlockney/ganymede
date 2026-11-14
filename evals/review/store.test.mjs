@@ -36,3 +36,13 @@ test("entries from another prompt or model are mismatched", () => {
   assert.equal(mismatched(es, { promptSha: "a", model: "opus" }).length, 2);
   assert.equal(mismatched([], { promptSha: "a", model: "opus" }).length, 0);
 });
+
+test("--redo drops mismatched entries outside the selection, and the judge model counts", async () => {
+  const { afterRedo, entryKey } = await import("./store.mjs");
+  const cur = { promptSha: "new", model: "opus", judgeModel: "sonnet" };
+  const e = (c, extra) => ({ case: c, lens: null, run: 1, promptSha: "new", model: "opus", judgeModel: "sonnet", ...extra });
+  const entries = [e("a", { promptSha: "old" }), e("b", { promptSha: "old" }), e("c"), e("d", { judgeModel: "haiku" })];
+  assert.equal(mismatched(entries, cur).length, 3, "judge model mismatch counts");
+  const kept = afterRedo(entries, cur, new Set([entryKey(e("a"))]));
+  assert.deepEqual(kept.map((x) => x.case), ["c"], "a is replaced, b and d are stale, c matches");
+});

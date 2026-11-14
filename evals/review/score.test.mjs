@@ -139,12 +139,14 @@ test("lens comparison: one run, two plain runs, security plus concurrency", () =
 });
 
 test("the report shows the measures", () => {
-  const entries = [run("k1", 1, ["caught", "missed"], 1), run("k1", 2, ["partly", "caught"]), run("c1", 1, [], 1), run("c1", 2, [])];
+  const entries = [run("k1", 1, ["caught", "missed"], 1, { denials: 3 }), run("k1", 2, ["partly", "caught"]), run("c1", 1, [], 1), run("c1", 2, [])];
   const summary = { agg: aggregate(entries, cases), lens: lensComparison(entries, cases) };
   const md = renderReport(summary, entries, cases, { date: "2026-11-14", prompt: "p.md", promptSha: "a".repeat(64), model: "opus", judgeModel: "sonnet", runs: 2 });
   assert.match(md, /## Recall/);
   assert.match(md, /class A, Concurrency/);
   assert.match(md, /0\.50 other Medium\+ findings per run/);
+  assert.match(md, /Denied tool calls by run/);
+  assert.match(md, /\| 3, n\/a \|/);
   assert.match(md, /## Two lenses vs one run/);
   assert.match(md, /Not measured/);
 });

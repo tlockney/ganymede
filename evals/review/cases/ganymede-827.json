@@ -1,0 +1,19 @@
+{
+  "id": "ganymede-827",
+  "repo": "tlockney/ganymede",
+  "pr": 827,
+  "issue": 767,
+  "base": "a721fa9f3e329f683353f72b2b8e0f300717ca86",
+  "head": "319be0bafbbc5cb380b2a64200a3e43e184ca720",
+  "branch": "claude/project-thread-6yjitj-ganymede-767",
+  "kind": "missed",
+  "findings": [
+    {
+      "summary": "Server saves restamp a notebook's host grant only under the server's own root (stamping.rs). Grants are per (root, path), so the same file's grant under another root is dropped by the person's or an agent's own edits. The common setup is the Mac app's server at / alongside `ganymede mcp`, `ganymede serve` or `ganymede grant` in a project directory. The CLI side already handles multiple roots (roots_with_id); the server side should too.",
+      "severity": "Medium",
+      "class": "C",
+      "source": "https://github.com/tlockney/ganymede/pull/827 (GitHub review of 319be0b, Review: changes needed; Gaps entry 17)"
+    }
+  ],
+  "notes": "Added after the first baseline ran, so not in its numbers. Head is the first GitHub review of the PR, after four pre-push rounds had passed it. Base is main at a721fa9, which the branch merged at 88b6fea."
+}
