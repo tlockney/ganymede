@@ -68,13 +68,13 @@ same name in snake case, except where the last column says otherwise.
 | `--static-dir` | Serve a frontend's files. JupyterLab's bundle is served at `/lab`, anything else at `/`. Default: the newest JupyterLab from `ganymede lab install`. | |
 | `--lab-version` | Which installed JupyterLab to serve. | |
 | `--labextensions-path` | Another directory of prebuilt JupyterLab extensions, searched first. Repeatable. | `labextensions_paths` |
-| `--config-dir` | Where frontend settings and workspaces are kept. Default: the Jupyter config dir. | |
+| `--config-dir` | Where frontend settings and workspaces are kept. Default: the Jupyter config dir (`$JUPYTER_CONFIG_DIR`, else `~/.jupyter`). | |
 | `--gateway-url`, `--gateway-token` | Run kernels on another server; see [Gateway](#gateway). | |
 | `--kernelspec-root` | As above. | `kernelspec_roots` |
 | `--startup-timeout` | As above. | `startup_timeout_secs` |
 | `-q`, `--quiet` | As above. | `quiet` |
 | `--mcp` | Serve notebook tools for coding agents at `/mcp`, behind the token; see [Agents over MCP](mcp.md). | `mcp_enabled` |
-| `--config <file>` | The config file to read. | |
+| `--config <file>` | The config file to read. Default: `ganymede.toml` in Ganymede's config dir, if it exists; see [Config file](#config-file). | |
 | `--log-level`, `--log-file` | See [Logging](#logging). | |
 
 `serve` prints the URL, with its token, as the only line on stdout.
@@ -320,9 +320,23 @@ And `mcp`'s flags.
 ## Config file
 
 A TOML file of the keys above, passed with `--config`. Without it,
-`ganymede.toml` in the Jupyter config dir is read if it exists. Flags
-override the file, and an unknown key is an error, so a misspelt `token`
-can't start a server with a random one.
+`ganymede.toml` in Ganymede's config dir is read if it exists:
+
+| OS | File |
+| --- | --- |
+| Linux, macOS | `$XDG_CONFIG_HOME/ganymede/ganymede.toml`, else `~/.config/ganymede/ganymede.toml` |
+| Windows | `%APPDATA%\ganymede\ganymede.toml` |
+
+`ganymede info` prints the path. Flags override the file, and an unknown
+key is an error, so a misspelt `token` can't start a server with a
+random one.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. The latest release reads `ganymede.toml` from the
+> Jupyter config dir (`$JUPYTER_CONFIG_DIR`, else `~/.jupyter`). A build
+> of `main` still reads it there when Ganymede's config dir has none,
+> and warns that it should move.
 
 ```toml
 root_dir = "/srv/notebooks"
@@ -619,7 +633,8 @@ access-denied page; `--no-redirect-file` opens the URL itself instead, as
 
 | Variable | Effect |
 | --- | --- |
-| `JUPYTER_CONFIG_DIR` | The Jupyter config dir. Default `~/.jupyter`. |
+| `XDG_CONFIG_HOME` | Holds Ganymede's config dir, `ganymede/`, on Linux and macOS. Default `~/.config`. |
+| `JUPYTER_CONFIG_DIR` | The Jupyter config dir, for JupyterLab's settings and workspaces. Default `~/.jupyter`. |
 | `JUPYTER_DATA_DIR` | The user Jupyter data dir, where kernelspecs and signatures are. |
 | `JUPYTER_PATH` | More data dirs to search for kernelspecs, first. |
 | `JUPYTER_RUNTIME_DIR` | Where connection files, the cookie secret and the [server info file](#server-info-file) go. Default: `runtime/` in the data dir. |

@@ -501,6 +501,9 @@ fn execute_host(
 ) -> Result<Option<ganymede_server::serve::LocalHost>> {
     // A config file that doesn't parse leaves the run without a host comm,
     // as a host that can't start does: `execute` worked without one before.
+    if let Some(w) = ganymede_server::serve::default_config().warning {
+        tracing::warn!("{w}");
+    }
     let mut cfg = match crash::config_text(None)
         .map(|text| ganymede_server::config::Config::from_toml(&text))
     {

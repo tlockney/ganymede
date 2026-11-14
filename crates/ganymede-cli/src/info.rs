@@ -30,6 +30,12 @@ pub fn collect(engine: &Engine, extra_roots: &[PathBuf]) -> Result<Value> {
         .cloned()
         .chain(ks::jupyter_data_dirs())
         .collect();
+    // The file read without --config, else where Ganymede looks first.
+    let config_file = ganymede_server::serve::default_config().path.or_else(|| {
+        ganymede_server::serve::ganymede_config_dir()
+            .map(|d| d.join(ganymede_server::serve::DEFAULT_CONFIG_FILE))
+    });
+    let config_file_found = config_file.as_deref().is_some_and(Path::is_file);
     let commit = env!("GANYMEDE_BUILD_COMMIT");
     Ok(json!({
         "version": env!("GANYMEDE_VERSION"),
@@ -42,6 +48,8 @@ pub fn collect(engine: &Engine, extra_roots: &[PathBuf]) -> Result<Value> {
         "data_dirs": ks::jupyter_data_dirs(),
         "runtime_dir": ks::jupyter_runtime_dir(),
         "config_dir": ks::jupyter_config_dir(),
+        "config_file": config_file,
+        "config_file_found": config_file_found,
         "data_dir": data_dir(),
         "lab_dir": lab_dir,
         "lab_versions": lab_versions,
@@ -88,6 +96,13 @@ fn text(v: &Value) -> String {
     );
     let _ = writeln!(out, "protocol          {}", s("protocol_version"));
     let _ = writeln!(out, "runtime dir       {}", s("runtime_dir"));
+    let found = v["config_file_found"].as_bool().unwrap_or(false);
+    let _ = writeln!(
+        out,
+        "config file       {}{}",
+        s("config_file"),
+        if found { "" } else { " (not there)" }
+    );
     let _ = writeln!(out, "config dir        {}", s("config_dir"));
     let _ = writeln!(out, "data dir          {}", s("data_dir"));
     let versions = list("lab_versions");
@@ -137,6 +152,8 @@ mod tests {
             "data_dirs": ["/d1"],
             "runtime_dir": "/run",
             "config_dir": "/cfg",
+            "config_file": "/x/ganymede/ganymede.toml",
+            "config_file_found": false,
             "data_dir": "/g",
             "lab_dir": "/g/lab",
             "lab_versions": ["4.6.4"],
@@ -152,6 +169,7 @@ mod tests {
             "ganymede 1.2.3",
             "(no commit) t debug",
             "data dir          /g",
+            "config file       /x/ganymede/ganymede.toml (not there)",
             "lab dir           /g/lab (4.6.4)",
             "labextensions dir /g/labextensions",
             "  anywidget 0.9.0",

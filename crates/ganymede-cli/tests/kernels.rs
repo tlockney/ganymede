@@ -1106,6 +1106,16 @@ fn execute_answers_host_calls_under_its_grants() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let config = root.join(".config");
+    // ganymede.toml goes in Ganymede's config dir; Windows has no
+    // XDG_CONFIG_HOME to point it here, so there it is read from the
+    // Jupyter config dir, where earlier releases looked.
+    let xdg = root.join(".xdg");
+    let toml_dir = if cfg!(windows) {
+        config.clone()
+    } else {
+        xdg.join("ganymede")
+    };
+    std::fs::create_dir_all(&toml_dir).unwrap();
     std::fs::create_dir_all(&config).unwrap();
     std::fs::create_dir_all(root.join("docs")).unwrap();
     let notebook = |source: &str| {
@@ -1150,6 +1160,7 @@ console.log("HOST " + JSON.stringify(out));"#,
         let mut cmd = ganymede(&args);
         cmd.current_dir(root)
             .env("JUPYTER_CONFIG_DIR", &config)
+            .env("XDG_CONFIG_HOME", &xdg)
             .env("JUPYTER_DATA_DIR", &data);
         let out = run_ok(cmd);
         let nb: Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -1179,9 +1190,13 @@ console.log("HOST " + JSON.stringify(out));"#,
                "self": "ok", "docs": "ok", "secret": "denied", "ran": "ok"})
     );
     // So does the config file's [host].
-    std::fs::write(config.join("ganymede.toml"), "[host]\nread = [\"docs\"]\n").unwrap();
+    std::fs::write(
+        toml_dir.join("ganymede.toml"),
+        "[host]\nread = [\"docs\"]\n",
+    )
+    .unwrap();
     assert_eq!(report(&[])["secret"], "denied");
-    std::fs::remove_file(config.join("ganymede.toml")).unwrap();
+    std::fs::remove_file(toml_dir.join("ganymede.toml")).unwrap();
     // A notebook's own grant, from `ganymede grant`, applies as on a
     // server, and still gives no self.* calls.
     let mut grant = ganymede(&["grant", "main.ipynb", "read=docs", "edit_self=true"]);
@@ -1196,10 +1211,11 @@ console.log("HOST " + JSON.stringify(out));"#,
         (&json!("denied"), &json!(false))
     );
     // A config file that doesn't parse leaves the run without the host API.
-    std::fs::write(config.join("ganymede.toml"), "[host\n").unwrap();
+    std::fs::write(toml_dir.join("ganymede.toml"), "[host\n").unwrap();
     let mut cmd = ganymede(&["execute", "main.ipynb", "--output", "-"]);
     cmd.current_dir(root)
         .env("JUPYTER_CONFIG_DIR", &config)
+        .env("XDG_CONFIG_HOME", &xdg)
         .env("JUPYTER_DATA_DIR", &data);
     let out = cmd.output().unwrap();
     assert!(

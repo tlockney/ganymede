@@ -39,12 +39,13 @@ pub fn opted_in(env: Option<&OsStr>, config: Option<&str>) -> bool {
 }
 
 /// The config file `ganymede` reads: `--config` for the commands that
-/// serve, else `ganymede.toml` in the Jupyter config dir when it exists.
+/// serve, else the default file ([`ganymede_server::serve::default_config`])
+/// when there is one. Says nothing about where the default was found: the
+/// commands that read the config say that once logging is up.
 pub fn config_text(explicit: Option<&Path>) -> Option<String> {
     let path = match explicit {
         Some(p) => p.to_path_buf(),
-        None => ganymede_engine::host::kernelspec::jupyter_config_dir()
-            .join(ganymede_server::serve::DEFAULT_CONFIG_FILE),
+        None => ganymede_server::serve::default_config().path?,
     };
     std::fs::read_to_string(path).ok()
 }
