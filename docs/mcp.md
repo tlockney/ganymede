@@ -551,17 +551,23 @@ whose mark the server forgot, isn't checked.
 A changed cell's head names who last changed it, as `"by"`, when the
 server saw the change while the notebook was open: a person in
 JupyterLab or the apps by the name their frontend gives (JupyterLab's
-user name), or "a person" when it gives none, except that one let in by
-[tailnet identity](security.md#tailnet-identity) is named by their
-tailnet login; another agent by the name
+user name), or "a person" when it gives none, except that one who comes
+with a [tailnet identity](security.md#tailnet-identity) is named by
+their tailnet login (a tagged device by its tags); another agent by the name
 its MCP client gave; a change taken in from the file as "another
 program (the file)"; a change the server made for someone else, such
 as a kernel through the host API, as "the server". The `@@changed`
 line names them too, quoted, and adds "and others" when some of the
-changes it counts, such as a deletion, have no name. Names are cut to 64 characters, without
+changes it counts, such as a deletion, have no name. Only a tailnet
+identity is vouched for: other frontends may give any name, a tailnet
+login included. Names are cut to 64 characters, without
 control characters. These are
 kept in memory: after a restart, cells nobody has changed since carry
 no `"by"`.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release: naming a person by their tailnet identity.
 
 A Markdown cell that starts with `@agent`, or `@` and the agent's client
 name or its first part (`@claude` for `claude-code`), is a request to

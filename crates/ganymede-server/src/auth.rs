@@ -545,22 +545,23 @@ pub(crate) fn tailnet_user(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TailnetUser(pub String);
 
-/// Adds the [`TailnetUser`] extension to a request [`identify`] let in as
-/// [`Via::Tailnet`], records it on the request's log span, and logs each
-/// name the first time it signs in.
+/// Adds the [`TailnetUser`] extension to a request from an allowed tailnet
+/// identity ([`tailnet_user`]), however it authenticated, so a browser
+/// that also holds the login cookie is still named by its identity.
+/// Records the name on the request's log span (debug level) and logs it at
+/// info level the first time it signs in.
 fn add_tailnet_user(state: &AppState, req: &mut Request<Body>) {
     let Some(name) = tailnet_user(state, req.method(), req.headers(), req.extensions()) else {
         return;
     };
     tracing::Span::current().record("who", name.as_str());
-    static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let mut seen = state.tailnet_seen.lock().unwrap_or_else(|e| e.into_inner());
     if !seen.contains(&name) {
         if seen.len() >= 1024 {
             seen.clear();
         }
         tracing::info!("signed in by tailnet identity: {name}");
-        seen.push(name.clone());
+        seen.insert(name.clone());
     }
     drop(seen);
     req.extensions_mut().insert(TailnetUser(name));
@@ -742,10 +743,16 @@ pub(crate) async fn api_with(
             if !origin_allowed(&state, headers) {
                 return HttpError(404, "Not Found".into()).into_response();
             }
+            if tailnet && same_origin(headers) {
+                add_tailnet_user(&state, &mut req);
+            }
             next.run(req).await
         }
         Some(Via::Token) => {
             let set = (!has_login_cookie(&state, headers)).then(|| login_cookie(&state, headers));
+            if tailnet && same_origin(req.headers()) {
+                add_tailnet_user(&state, &mut req);
+            }
             let mut resp = next.run(req).await;
             if let Some(c) = set {
                 resp.headers_mut().append(header::SET_COOKIE, c);
@@ -836,9 +843,7 @@ pub(crate) async fn page(
         Some((req.method(), req.extensions())),
     ) {
         req.extensions_mut().insert(via);
-        if via == Via::Tailnet {
-            add_tailnet_user(&state, &mut req);
-        }
+        add_tailnet_user(&state, &mut req);
         return next.run(req).await;
     }
     if !matches!(*req.method(), Method::GET | Method::HEAD) {

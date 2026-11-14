@@ -68,8 +68,9 @@ pub fn collect(engine: &Engine, extra_roots: &[PathBuf]) -> Result<Value> {
 }
 
 /// `[tailscale]` from the config file: who `ganymede serve` lets in by
-/// tailnet identity, and whether it asks `tailscale whois`. `null` when
-/// it lets no one in that way, or the file doesn't read.
+/// tailnet identity, whether it asks `tailscale whois`, and `error` when
+/// `serve` would refuse to start with it. `null` when it lets no one in
+/// that way, or the file doesn't read.
 fn tailnet_identity(config_file: Option<&Path>) -> Value {
     let cfg = config_file
         .and_then(|p| std::fs::read_to_string(p).ok())
@@ -78,6 +79,7 @@ fn tailnet_identity(config_file: Option<&Path>) -> Value {
         Some(c) if !c.tailscale.allow.is_empty() => json!({
             "allow": c.tailscale.allow,
             "whois": c.tailscale.whois,
+            "error": ganymede_server::serve::check_tailscale(&c).err().map(|e| e.to_string()),
         }),
         _ => Value::Null,
     }
@@ -160,7 +162,14 @@ fn text(v: &Value) -> String {
             } else {
                 "tailscale serve"
             };
-            writeln!(out, "tailnet identity  {} (by {how})", names.join(", "))
+            match t["error"].as_str() {
+                Some(e) => writeln!(
+                    out,
+                    "tailnet identity  {} (serve refuses to start: {e})",
+                    names.join(", ")
+                ),
+                None => writeln!(out, "tailnet identity  {} (by {how})", names.join(", ")),
+            }
         }
         None => writeln!(out, "tailnet identity  off"),
     };
@@ -230,8 +239,14 @@ mod tests {
         std::fs::write(&file, "[tailscale]\nallow = [\"me@example.com\"]\n").unwrap();
         assert_eq!(
             tailnet_identity(Some(&file)),
-            json!({ "allow": ["me@example.com"], "whois": false })
+            json!({ "allow": ["me@example.com"], "whois": false, "error": null })
         );
+        std::fs::write(&file, "[tailscale]\nallow = [\"tag:agent\"]\n").unwrap();
+        let t = tailnet_identity(Some(&file));
+        assert!(t["error"].as_str().unwrap().contains("whois"), "{t}");
+        let mut v = json!({});
+        v["tailnet_identity"] = t;
+        assert!(text(&v).contains("tailnet identity  tag:agent (serve refuses to start:"));
         let mut v = json!({});
         v["tailnet_identity"] = Value::Null;
         assert!(text(&v).contains("tailnet identity  off"));

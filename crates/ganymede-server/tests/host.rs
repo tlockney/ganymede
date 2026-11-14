@@ -96,6 +96,7 @@ fn state_with(
         trust_xheaders: false,
         tailnet_allow: Arc::from([]),
         tailnet_whois: None,
+        tailnet_seen: Default::default(),
         max_body_size: 512 * 1024 * 1024,
         base_url: "/".into(),
         config_dir: root.join(".jupyter-config"),

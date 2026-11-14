@@ -91,6 +91,7 @@ fn state_with(
         trust_xheaders: false,
         tailnet_allow: Arc::from([]),
         tailnet_whois: None,
+        tailnet_seen: Default::default(),
         max_body_size: 512 * 1024 * 1024,
         base_url: "/".into(),
         config_dir: root.join(".jupyter-config"),
@@ -8473,6 +8474,24 @@ async fn api_me_names_a_tailnet_login() {
     assert_eq!(v["identity"]["initials"], "M");
     let (_, v) = call(&app, "GET", "/api/me", None, Some(TOKEN)).await;
     assert_eq!(v["identity"]["username"], "anonymous");
+
+    // A browser that also holds the login cookie is still named.
+    let mut r = tailnet_req(
+        "GET",
+        "/api/me?token=t",
+        Some("me@example.com"),
+        "127.0.0.1:1",
+    );
+    *r.uri_mut() = format!("/api/me?token={TOKEN}").parse().unwrap();
+    let (_, h, _) = send(&app, r).await;
+    let (name, value, _) = set_cookies(&h).into_iter().next().expect("login cookie");
+    let mut r = tailnet_req("GET", "/api/me", Some("me@example.com"), "127.0.0.1:1");
+    r.headers_mut()
+        .insert(header::COOKIE, format!("{name}={value}").parse().unwrap());
+    let (s, _, body) = send(&app, r).await;
+    assert_eq!(s, StatusCode::OK);
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["identity"]["username"], "me@example.com");
 }
 
 /// A room client let in by tailnet identity is credited by that name, not

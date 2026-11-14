@@ -223,11 +223,13 @@ before:
   and so read the token from the server's files; to cut one off for
   sure, restart with a new token and delete `jupyter_cookie_secret`. Logging out doesn't sign a listed
   login out.
-- **Named by identity.** A person let in this way is named by their
-  login (a tagged device by its tags): `/api/me` returns it, so
-  JupyterLab shows it, edits in a shared notebook are credited to it
-  whatever name the frontend gives, and the server log records it on
-  each request and once at info level the first time it signs in.
+- **Named by identity.** A person who comes with an allowed identity is
+  named by their login (a tagged device by its tags), even when they
+  also hold the login cookie: `/api/me` returns it, so JupyterLab shows
+  it, and edits in a shared notebook are credited to it whatever name
+  the frontend gives. The server log records it once, at info level, the
+  first time it signs in, and on each request's span at debug level
+  (`-v`).
 - Entries must match the login exactly, case included, and must be
   ASCII: `tailscale serve` encodes other characters, so such a login
   would never match.
