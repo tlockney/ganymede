@@ -75,10 +75,13 @@ mcp_token = "a-long-random-string"
 `/mcp` accepts it and no other route does: every REST and websocket
 route answers 403, and it sets no login cookie. `/mcp` takes the
 server's token too, so the page and `ganymede mcp` keep working, and
-the server info file `ganymede serve` writes keeps the server's token (the Mac
-app's differs; see [Server info file](reference.md#server-info-file)).
-With auth off (an empty
-`token`) it adds nothing, since every route is open. A published
+the CLI's server info file keeps the server's token (the Mac app's
+differs; see [Server info file](reference.md#server-info-file)).
+<!-- **Unreleased in ganymede-ui.** The Mac app's server info file, with
+its `mcp_token`, ships in ganymede-ui's next release; keep this
+parenthetical, and drop this comment, once it is out. -->
+With auth off (an empty `token`) it adds nothing, since every route is
+open. A published
 page, from an agent or from the browser, replaces `mcp_token` as it
 does the server's token.
 
