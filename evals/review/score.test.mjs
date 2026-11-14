@@ -30,17 +30,19 @@ test("judge output is found in fences, prose and nested braces", () => {
 test("judge output is parsed defensively", () => {
   const ok = (o, n) => parseJudge(JSON.stringify(o), n);
   assert.equal(parseJudge("I cannot do that", 1).ok, false);
-  assert.match(ok({ per_finding: [] }, 1).error, /no verdict for finding 0/);
-  assert.match(ok({ per_finding: [{ index: 0, verdict: "great" }] }, 1).error, /unknown verdict/);
+  assert.match(ok({ per_finding: [], other_medium_plus: 0 }, 1).error, /no verdict for finding 0/);
+  assert.match(ok({ per_finding: [{ index: 0, verdict: "great" }], other_medium_plus: 0 }, 1).error, /unknown verdict/);
   assert.match(ok({ other_medium_plus: 1 }, 0).error, /per_finding/);
+  assert.match(ok({ per_finding: [{ index: 0, verdict: "caught" }] }, 1).error, /other_medium_plus is missing/, "a missing count is not 0");
+  assert.match(ok({ per_finding: [], other_medium_plus: null }, 0).error, /missing/);
   assert.match(ok({ per_finding: [], other_medium_plus: -1 }, 0).error, /count/);
   // partial and capitals are normalized; an empty list is fine for a clean case.
-  assert.equal(ok({ per_finding: [{ index: 0, verdict: "Partial" }] }, 1).perFinding[0].verdict, "partly");
-  assert.deepEqual(ok({ per_finding: [] }, 0), { ok: true, perFinding: [], otherMediumPlus: 0 });
+  assert.equal(ok({ per_finding: [{ index: 0, verdict: "Partial" }], other_medium_plus: 0 }, 1).perFinding[0].verdict, "partly");
+  assert.deepEqual(ok({ per_finding: [], other_medium_plus: 0 }, 0), { ok: true, perFinding: [], otherMediumPlus: 0 });
   // entries out of order are placed by index; missing index falls back to order
   const p = ok({ per_finding: [{ index: 1, verdict: "missed" }, { index: 0, verdict: "caught" }], other_medium_plus: 0 }, 2);
   assert.deepEqual(p.perFinding.map((x) => x.verdict), ["caught", "missed"]);
-  assert.deepEqual(ok({ per_finding: [{ verdict: "caught" }, { verdict: "missed" }] }, 2).perFinding.map((x) => x.verdict), ["caught", "missed"]);
+  assert.deepEqual(ok({ per_finding: [{ verdict: "caught" }, { verdict: "missed" }], other_medium_plus: 0 }, 2).perFinding.map((x) => x.verdict), ["caught", "missed"]);
 });
 
 test("the judge prompt lists the findings by index and asks for JSON", () => {

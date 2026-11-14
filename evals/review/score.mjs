@@ -89,7 +89,8 @@ export function parseJudge(text, n) {
     if (!out[i]) return { ok: false, error: `no verdict for finding ${i}` };
     if (!out[i].verdict) return { ok: false, error: `unknown verdict for finding ${i}` };
   }
-  const other = Number(obj.other_medium_plus ?? 0);
+  if (obj.other_medium_plus === undefined || obj.other_medium_plus === null) return { ok: false, error: "other_medium_plus is missing" };
+  const other = Number(obj.other_medium_plus);
   if (!Number.isFinite(other) || other < 0) return { ok: false, error: "other_medium_plus is not a count" };
   return { ok: true, perFinding: out, otherMediumPlus: Math.round(other) };
 }

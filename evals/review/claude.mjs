@@ -47,6 +47,7 @@ export function runClaude({ args, input, cwd, timeoutMs }) {
         text: typeof j?.result === "string" ? j.result : "",
         cost: j?.total_cost_usd ?? 0,
         usage: j?.usage ?? null,
+        denials: j?.permission_denials ?? [],
         durationMs: j?.duration_ms ?? 0,
         isError: Boolean(j?.is_error) || !j,
         raw: j ? undefined : out.slice(0, 2000),

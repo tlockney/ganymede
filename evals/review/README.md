@@ -88,7 +88,12 @@ Options: `--cases IDS` (comma-separated ids, `*` wildcards), `--runs N`
 clones and scratch checkouts, default `~/.cache/ganymede-review-eval`, or
 `REVIEW_EVAL_CACHE`), `--redo` (run again what `results.json` already
 holds). Runs finished in `--out` are kept, so an interrupted run resumes
-and lens runs add to the same report. `EVAL_TIMEOUT_MS` limits a session
+(a review that was saved but not judged is judged again, not rerun) and lens
+runs add to the same report. Each run records the prompt's sha and the model;
+an `--out` holding runs from another prompt or model is refused, so use a new
+`--out` per prompt. One invocation at a time per `--out` (a `.lock` file),
+and `results.json` is written through a temp file; a damaged one is an error,
+not a fresh start. `EVAL_TIMEOUT_MS` limits a session
 (default one hour); `CLAUDE_BIN` replaces the command. A run that exits
 non-zero is retried once, and a run that still fails is listed in the
 report, not scored.
@@ -101,22 +106,34 @@ What a run does:
 - `--lens NAME` adds one line after the prompt text, before the trailer:
   `Lens for this run: look hardest at security boundaries.` (or
   `concurrency and lifecycle`). Nothing else changes.
-- The review sees a scratch clone at the case's head, with the branch at
-  `head` and `origin/main` at `base`, so `git diff origin/main...HEAD` is
-  the case's diff and nothing after it is reachable from a ref. The trailer
-  is `REPO` (and clone path), `BRANCH`, `ISSUE` and `DIFF`, and nothing
-  more, no steering.
-- Tools: `Read`, `Grep`, `Glob`, `Skill`, subagents, read-only `git`
-  commands, `gh issue view` (the issue text) and a few shell readers. No
-  edits, builds or tests, and no `gh api` or `gh pr`, which would show the
-  posted review.
+- The review sees a scratch clone at the case's head. Its own objects hold
+  only the history of `base` and `head` (fetched by sha, no shared
+  objects), the branch is at `head` and `origin/main` at `base`, so
+  `git diff origin/main...HEAD` is the case's diff and a later commit cannot
+  be read by sha. The trailer is `REPO` (and clone path), `BRANCH`, `ISSUE`
+  and `DIFF`, and nothing more, no steering.
+- Tools ([`tools.mjs`](tools.mjs)): `Read`, `Grep` and `Glob` scoped to the
+  clone (`./**`), `Skill`, subagents, read-only `git` subcommands, and
+  the `issue_read` tool the prompt names, from a small local MCP server named
+  `github` ([`issue-mcp.mjs`](issue-mcp.mjs)) that serves only this case's
+  issue and its comments, and `gh api` for exactly those two REST paths
+  (`gh issue view` needs GraphQL, which Claude Code sessions can't reach; with
+  only the `gh` rule the reviews did not think to use it, and 55 of 62 in the
+  first baseline said they couldn't read the issue).
+  No edits, builds or tests, no other shell, and denies for the mounted
+  project files (`/mnt`), other clones (`/home`), the eval's output and the
+  bare clones, so a review can't read an answer key, a later commit or its own
+  results. `git` flags that write or read outside the repo (`--output`, `-O`,
+  `--no-index`, `-C`, `--git-dir`, `-c`) are denied. A probe run that tried
+  these (a read of the project files, a `gh api` for another issue, `git -C`,
+  `git show` of a later sha) was refused each time.
 
 ### Limits
 
 The reviews cannot build or run tests, which the prompt allows in life, so
 the measure is the review's reading of the diff. Class E findings (tests
 that don't prove the claim) lose the most. The reviewer reads the issue
-with `gh issue view`, not the GitHub MCP tool the prompt names. The judge
+through a stand-in `issue_read` tool, scoped to the case's issue. The judge
 is a model: read a few reviews and verdicts by hand after each prompt
 change (`reviews/<case>-<run>.md`, `results.json`) before trusting a
 small difference. With about 30 findings and two runs, a swing of a few
@@ -146,8 +163,7 @@ each review's text, `out/results.json` each run's judge output, cost and tokens.
 
 ## Cost
 
-About $1 to $2 of Opus per review, 4 to 10 minutes each (about $1.15 and
-2.5 minutes for the smallest), plus a few cents for each judge call. The
-whole set at 2 runs (42 reviews) is roughly $60 to $80; the lens runs add
-about 12 reviews. The baseline is in
+About $0.6 to $1.6 of Opus per review, 2 to 8 minutes each, plus a few cents for each judge call. The
+whole set at 2 runs (42 reviews) cost about $38 and the 20 lens runs about
+$17 more. The baseline is in
 [`baseline-2026-11-14.md`](baseline-2026-11-14.md), with its actual cost.

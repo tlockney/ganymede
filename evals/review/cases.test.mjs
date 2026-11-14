@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { assemblePrompt, lensLine, loadCases, selectCases, validateCase } from "./cases.mjs";
-import { ALLOWED, DISALLOWED, parseArgs } from "./run.mjs";
+import { parseArgs } from "./run.mjs";
 
 const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), "cases");
 const sha = (c) => c.repeat(40);
@@ -58,14 +58,6 @@ test("the prompt is the file word for word, then only the trailer", () => {
   assert.throws(() => lensLine("style"), /unknown lens/);
 });
 
-test("the real review prompt is passed whole", () => {
-  const p = "/mnt/project-files/reviews/pr-reviewer/review-prompt.md";
-  if (!fs.existsSync(p)) return;
-  const file = fs.readFileSync(p, "utf8");
-  const got = assemblePrompt(file, { repo: "r", clone: "/c", branch: "b", issue: 1, diff: "d" });
-  assert.ok(got.startsWith(file));
-});
-
 test("arguments", () => {
   assert.throws(() => parseArgs([]), /--prompt/);
   const o = parseArgs(["--prompt", "p.md"]);
@@ -76,10 +68,4 @@ test("arguments", () => {
   assert.equal(parseArgs(["--prompt", "p", "--lens", "security"]).runs, 1);
   assert.throws(() => parseArgs(["--prompt", "p", "--lens", "x"]), /unknown lens/);
   assert.throws(() => parseArgs(["--prompt", "p", "--wat"]), /unknown argument/);
-});
-
-test("reviews are read-only", () => {
-  for (const w of ["Edit", "Write", "NotebookEdit"]) assert.ok(DISALLOWED.split(",").includes(w));
-  assert.ok(!/Bash\((?:rm|mv|cp|git push|git commit|git checkout|cargo|npm)/.test(ALLOWED));
-  assert.ok(!ALLOWED.split(",").some((t) => ["Edit", "Write", "Bash"].includes(t)));
 });

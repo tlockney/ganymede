@@ -17,7 +17,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assemblePrompt, branchOf, loadCases, selectCases, LENSES } from "./cases.mjs";
 import { evalTimeoutMs, runClaude } from "./claude.mjs";
+import { mcpConfig } from "./issue-mcp.mjs";
 import { judgeReview } from "./judge.mjs";
+import { entryKey, lock, mismatched, readResults, writeResults } from "./store.mjs";
+import { allowedTools, disallowedTools } from "./tools.mjs";
 import { aggregate, lensComparison, renderReport, reviewVerdict } from "./score.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -55,25 +58,16 @@ export function parseArgs(argv) {
   return o;
 }
 
-// Read-only tools: file reads, search, git reads, the issue text, and the
-// skill the prompt asks for. No edits, no builds, no GitHub PR or API reads
-// (they would show the posted review).
-const GIT_READ = ["log", "show", "diff", "status", "blame", "ls-files", "grep", "cat-file", "rev-parse", "merge-base", "ls-tree", "show-ref", "describe"];
-export const ALLOWED = ["Read", "Grep", "Glob", "Skill", "Agent", "Task", ...GIT_READ.map((g) => `Bash(git ${g}:*)`),
-  "Bash(gh issue view:*)", "Bash(ls:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)", "Bash(find:*)"].join(",");
-export const DISALLOWED = ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Bash(gh api:*)", "Bash(gh pr:*)", "Bash(curl:*)", "Bash(git push:*)", "Bash(git commit:*)", "Bash(git checkout:*)", "Bash(git diff --output:*)"].join(",");
-
 const git = (dir, ...a) => execFileSync("git", ["-C", dir, ...a], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
 
 /** The bare clone for a repo, with the case's commits present. */
-function ensureRepo(cache, c) {
+export function ensureRepo(cache, c) {
   const name = c.repo.split("/")[1];
   const dir = path.join(cache, `${name}.git`);
   fs.mkdirSync(cache, { recursive: true });
-  if (!fs.existsSync(dir)) {
-    execFileSync("git", ["clone", "--bare", "-q", `https://github.com/${c.repo}.git`, dir], { stdio: "inherit" });
-    git(dir, "config", "--add", "remote.origin.fetch", "+refs/pull/*/head:refs/pull/*/head");
-  }
+  if (!fs.existsSync(dir)) execFileSync("git", ["clone", "--bare", "-q", `https://github.com/${c.repo}.git`, dir], { stdio: "inherit" });
+  // Scratch clones fetch the case's two commits from here by sha.
+  git(dir, "config", "uploadpack.allowAnySHA1InWant", "true");
   const has = (sha) => { try { git(dir, "cat-file", "-e", `${sha}^{commit}`); return true; } catch { return false; } };
   for (const sha of [c.base, c.head]) {
     if (!has(sha)) git(dir, "fetch", "-q", "origin", sha);
@@ -83,34 +77,32 @@ function ensureRepo(cache, c) {
 }
 
 /**
- * A checkout of the case's head for one run, sharing objects with the cache.
- * It looks like the author's clone at review time: the branch at head and
- * `origin/main` at the base, so `git diff origin/main...HEAD` is the case's
- * diff and the history after the change is not reachable from any ref.
+ * A checkout of the case's head for one run. It holds only the history of
+ * `base` and `head` (fetched into its own objects, no alternates), so a later
+ * commit cannot be read by sha. The branch is at `head` and `origin/main` at
+ * `base`, so `git diff origin/main...HEAD` is the case's diff.
  */
-function checkout(bare, c, dest) {
+export function checkout(bare, c, dest) {
   fs.mkdirSync(dest, { recursive: true });
   git(dest, "init", "-q");
-  fs.writeFileSync(path.join(dest, ".git", "objects", "info", "alternates"), path.join(bare, "objects") + "\n");
   git(dest, "remote", "add", "origin", `https://github.com/${c.repo}.git`);
+  git(dest, "fetch", "-q", "--no-tags", bare, c.base, c.head);
   git(dest, "update-ref", "refs/remotes/origin/main", c.base);
   git(dest, "update-ref", `refs/heads/${branchOf(c)}`, c.head);
   git(dest, "symbolic-ref", "HEAD", `refs/heads/${branchOf(c)}`);
   git(dest, "reset", "-q", "--hard");
+  fs.rmSync(path.join(dest, ".git", "FETCH_HEAD"), { force: true });
 }
 
-const key = (e) => `${e.case}|${e.lens ?? ""}|${e.run}`;
-
-function readResults(out) {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(out, "results.json"), "utf8"));
-  } catch {
-    return [];
+/** Removes scratch checkouts left by runs that died: `<tag>-<pid>` with no live pid. */
+function clearStaleWork(work) {
+  if (!fs.existsSync(work)) return;
+  for (const d of fs.readdirSync(work)) {
+    const pid = Number(d.match(/-(\d+)$/)?.[1]);
+    let alive = false;
+    try { alive = pid > 0 && process.kill(pid, 0); } catch (e) { alive = e.code === "EPERM"; }
+    if (!alive) fs.rmSync(path.join(work, d), { recursive: true, force: true });
   }
-}
-
-function writeResults(out, entries) {
-  fs.writeFileSync(path.join(out, "results.json"), JSON.stringify(entries, null, 2) + "\n");
 }
 
 /** Summary, report.md and summary.json for everything in results.json. */
@@ -141,52 +133,70 @@ async function main() {
     model: o.model, judgeModel: o.judgeModel, runs: o.runs,
   });
   if (o.report) {
-    const old = readResults(out);
+    const release = lock(out);
     const m = fs.existsSync(path.join(out, "summary.json")) ? JSON.parse(fs.readFileSync(path.join(out, "summary.json"), "utf8")).meta : meta("unknown", "");
     writeReport(out, allCases, m);
-    console.error(`report: ${path.join(out, "report.md")} (${old.length} entries)`);
+    release();
+    console.error(`report: ${path.join(out, "report.md")}`);
     return;
   }
+  const release = lock(out);
   const promptText = fs.readFileSync(path.resolve(o.prompt), "utf8");
+  const m = meta(o.prompt, promptText);
   let cases = selectCases(allCases, o.cases);
   if (o.lens && !o.cases) cases = cases.filter((c) => c.kind !== "clean" && c.findings.some((f) => f.class === "A" || f.class === "B"));
-  const entries = readResults(out);
-  const done = new Set(entries.filter((e) => !e.error && e.judge).map(key));
+  const existing = readResults(out);
+  const bad = o.redo ? [] : mismatched(existing, m);
+  if (bad.length) throw new Error(`${out} holds ${bad.length} runs made with another prompt or model (e.g. ${bad[0].case} ${bad[0].promptSha?.slice(0, 8)} ${bad[0].model}); use a new --out, or --redo to run them again`);
+  const prior = new Map(existing.map((e) => [entryKey(e), e]));
   const timeoutMs = evalTimeoutMs(60 * 60 * 1000);
   const work = path.join(o.cache, "work");
+  clearStaleWork(work);
   const tasks = [];
   for (const c of cases) {
     for (let run = 1; run <= o.runs; run++) {
       const e = { case: c.id, lens: o.lens, run };
-      if (!o.redo && done.has(key(e))) continue;
+      const old = o.redo ? null : prior.get(entryKey(e));
+      if (old && !old.error && old.judge) continue;
       tasks.push(async () => {
         const tag = `${c.id}${o.lens ? `-${o.lens}` : ""}-${run}`;
-        const entry = { ...e };
+        const entry = { ...e, promptSha: m.promptSha, model: o.model };
         const dest = path.join(work, `${tag}-${process.pid}`);
         try {
-          const bare = ensureRepo(o.cache, c);
-          const diff = git(bare, "diff", `${c.base}...${c.head}`);
-          if (!diff.trim()) throw new Error("empty diff");
-          const input = assemblePrompt(promptText, { lens: o.lens, repo: c.repo, clone: dest, branch: branchOf(c), issue: c.issue, diff });
-          let r;
-          for (let attempt = 0; attempt < 2; attempt++) {
-            fs.rmSync(dest, { recursive: true, force: true });
-            checkout(bare, c, dest);
-            console.error(`${tag}: review${attempt ? " (retry)" : ""}`);
-            r = await runClaude({ args: ["--model", o.model, "--permission-mode", "dontAsk", "--allowedTools", ALLOWED, "--disallowedTools", DISALLOWED], input, cwd: dest, timeoutMs });
-            entry.cost = (entry.cost ?? 0) + r.cost;
-            if (r.code === 0 && !r.isError && r.text.trim()) break;
+          let text;
+          // A review that was saved and only failed to judge is judged again, not run again.
+          if (old?.review && fs.existsSync(path.join(out, old.review))) {
+            console.error(`${tag}: re-judging the saved review`);
+            text = fs.readFileSync(path.join(out, old.review), "utf8");
+            Object.assign(entry, { review: old.review, verdict: old.verdict, cost: old.cost, usage: old.usage, durationMs: old.durationMs });
+          } else {
+            const bare = ensureRepo(o.cache, c);
+            const diff = git(bare, "diff", `${c.base}...${c.head}`);
+            if (!diff.trim()) throw new Error("empty diff");
+            const input = assemblePrompt(promptText, { lens: o.lens, repo: c.repo, clone: dest, branch: branchOf(c), issue: c.issue, diff });
+            const args = ["--model", o.model, "--permission-mode", "dontAsk", "--strict-mcp-config", "--mcp-config", mcpConfig(c), "--allowedTools", allowedTools(c).join(","), "--disallowedTools", disallowedTools({ cache: o.cache, out }).join(",")];
+            let r;
+            for (let attempt = 0; attempt < 2; attempt++) {
+              fs.rmSync(dest, { recursive: true, force: true });
+              checkout(bare, c, dest);
+              console.error(`${tag}: review${attempt ? " (retry)" : ""}`);
+              r = await runClaude({ args, input, cwd: dest, timeoutMs });
+              entry.cost = (entry.cost ?? 0) + r.cost;
+              if (r.code === 0 && !r.isError && r.text.trim()) break;
+            }
+            entry.usage = r.usage;
+            entry.denials = r.denials.length;
+            entry.durationMs = r.durationMs;
+            if (r.code !== 0 || r.isError || !r.text.trim()) throw new Error(`claude exited ${r.code}${r.timedOut ? " (timed out)" : ""}: ${(r.stderr || r.raw || "").slice(-300)}`);
+            const file = path.join("reviews", `${tag}.md`);
+            fs.writeFileSync(path.join(out, file), r.text);
+            entry.review = file;
+            entry.verdict = reviewVerdict(r.text);
+            text = r.text;
           }
-          entry.usage = r.usage;
-          entry.durationMs = r.durationMs;
-          if (r.code !== 0 || r.isError || !r.text.trim()) throw new Error(`claude exited ${r.code}${r.timedOut ? " (timed out)" : ""}: ${(r.stderr || r.raw || "").slice(-300)}`);
-          const file = path.join("reviews", `${tag}.md`);
-          fs.writeFileSync(path.join(out, file), r.text);
-          entry.review = file;
-          entry.verdict = reviewVerdict(r.text);
           console.error(`${tag}: judge`);
-          const j = await judgeReview({ findings: c.findings, reviewText: r.text, model: o.judgeModel });
-          entry.judgeCost = j.cost;
+          const j = await judgeReview({ findings: c.findings, reviewText: text, model: o.judgeModel });
+          entry.judgeCost = (old?.judgeCost ?? 0) + j.cost;
           if (!j.ok) throw new Error(`judge: ${j.error}`);
           entry.judge = { perFinding: j.perFinding, otherMediumPlus: j.otherMediumPlus };
         } catch (err) {
@@ -195,16 +205,17 @@ async function main() {
         } finally {
           fs.rmSync(dest, { recursive: true, force: true });
         }
-        const all = readResults(out).filter((x) => key(x) !== key(entry));
+        const all = readResults(out).filter((x) => entryKey(x) !== entryKey(entry));
         all.push(entry);
         writeResults(out, all);
-        writeReport(out, allCases, meta(o.prompt, promptText));
+        writeReport(out, allCases, m);
       });
     }
   }
   console.error(`${tasks.length} runs, concurrency ${o.concurrency}, out ${out}`);
   await pool(tasks, o.concurrency);
-  const s = writeReport(out, allCases, meta(o.prompt, promptText));
+  const s = writeReport(out, allCases, m);
+  release();
   console.error(`report: ${path.join(out, "report.md")}`);
   console.log(JSON.stringify({ recall: s.agg.recall, falseAlarms: s.agg.falseAlarms.perRun, cost: s.agg.cost.total }));
 }
