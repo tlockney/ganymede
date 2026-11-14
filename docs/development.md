@@ -71,7 +71,7 @@ These variables make the end-to-end tests strict or add to them:
   lockfile stale, refresh it:
   `cargo update --manifest-path e2e/wasm-smoke/Cargo.toml --workspace`.
 
-CI runs the e2e job on Linux and macOS with Node 24, cdp-kernel 0.12.1,
+CI runs the e2e job on Linux and macOS with Node 24, cdp-kernel 0.12.2,
 and ipykernel, plus a portability job for iOS, Android, and wasm, where
 a compiler warning fails the build. Its
 `workstation` job follows [Install](install.md) on Linux and macOS
