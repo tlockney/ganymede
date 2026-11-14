@@ -56,6 +56,17 @@ test("an anywidget saved with its state runs on the page, as of its own cell", a
   const model = JSON.parse(html.match(/data-model="([^"]*)"/)[1].replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"));
   assert.deepEqual(model.state, { _esm: "export default {}", count: 1 });
   assert.deepEqual(model.buffers, []);
-  // Without saved state there's nothing to run.
+  // Without saved state, or without a snapshot (the example pages'
+  // notebooks), there's nothing to start from, so the note stays.
   assert.match(output(o, "p", new Map(), {}), /needs a running kernel/);
+  assert.match(output({ ...o, metadata: {} }, "p", new Map(), saved), /needs a running kernel/);
+});
+
+test("a longer closing fence ends the block, and identical blocks get their own cells", async () => {
+  const { withOutputs } = await import("./fetch-cell-api.mjs");
+  const page = "```ts cell\nx\n````\n\n```ts cell\nx\n```\n";
+  const result = (t) => ({ output_type: "execute_result", data: { "text/plain": t } });
+  const nb = { metadata: {}, cells: ["first", "second"].map((t) => ({ cell_type: "code", source: "x", outputs: [result(t)] })) };
+  const md = withOutputs(page, nb, "p", new Map());
+  assert.ok(md.indexOf("first") < md.indexOf("second") && md.includes("second"), md);
 });

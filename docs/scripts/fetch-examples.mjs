@@ -13,8 +13,8 @@
 // A page shows each cell and what it showed when the notebook last ran.
 // Markdown, text, JSON, errors, SVG and bitmaps render as they
 // are. HTML renders in place, or, when it has a script, in a sandboxed
-// iframe. An anywidget saved with its state runs on the page; any other
-// widget needs a kernel, so the page says so instead.
+// iframe. A widget needs a kernel, so the page says so instead (only
+// cdp-kernel's reference pages, via fetch-cell-api.mjs, run theirs).
 //
 //   npm run fetch-examples
 //   GANYMEDE_UI_DIR=~/src/ganymede-ui npm run fetch-examples
@@ -37,7 +37,7 @@ export function slugOf(file) {
     .replace(/^-|-$/g, "");
 }
 
-const text = (v) => (Array.isArray(v) ? v.join("") : (v ?? ""));
+export const text = (v) => (Array.isArray(v) ? v.join("") : (v ?? ""));
 // Terminal colours in tracebacks.
 const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -67,23 +67,20 @@ const fixedKeys = new Set(["_esm", "_css", "_anywidget_id", "_model_name", "_mod
   "_model_module_version", "_view_name", "_view_module", "_view_module_version"]);
 
 /**
- * The model behind widget output `o`, as its view should start: the saved
- * model, or, when the output carries a snapshot (`metadata.docs`, written
- * by cdp-kernel's docs runner), the state the model had once the output's
- * own cell ran, so a later cell's change doesn't show in it.
+ * The model behind widget output `o`, as its view should start: the state
+ * the model had once the output's own cell ran, from the snapshot
+ * cdp-kernel's docs runner saves with the output (`metadata.docs`).
+ * Without one there's nothing to start from (the notebook's saved state is
+ * as of its last cell), so undefined.
  */
 export function widgetModel(o, widgets) {
   const saved = widgets[o.data[viewMime].model_id];
   const snapshot = o.metadata?.docs;
-  if (!saved || !snapshot) return saved;
+  if (!saved || !snapshot) return undefined;
   const fixed = Object.fromEntries(Object.entries(saved.state ?? {}).filter(([k]) => fixedKeys.has(k)));
-  return {
-    ...saved,
-    ...snapshot,
-    state: { ...fixed, ...snapshot.state },
-    // Left out of a snapshot only when they equal the saved ones.
-    buffers: "buffers" in snapshot ? snapshot.buffers : saved.buffers,
-  };
+  // A snapshot leaves its buffers out only when they equal the saved ones,
+  // so the spread keeps those.
+  return { ...saved, ...snapshot, state: { ...fixed, ...snapshot.state } };
 }
 
 /**
@@ -100,8 +97,9 @@ export function output(o, slug, files, widgets = {}) {
   const data = o.data ?? {};
   if (data[viewMime]) {
     const model = widgetModel(o, widgets);
-    // An anywidget saved with its state and view module runs on the page
-    // (theme/widgets.ts), against that state, with no kernel behind it.
+    // An anywidget with a snapshot runs on the page (theme/widgets.ts),
+    // against that state, with no kernel behind it. Only cdp-kernel's docs
+    // runner writes snapshots, so only its pages' widgets run here.
     if (model?.model_module === "anywidget" && typeof model.state?._esm === "string") {
       const sent = model.view_sent ? `As the kernel left it after the docs build sent ${attr(model.view_sent)} from the view. ` : "";
       return `<div class="nb-widget" v-pre data-model="${attr(JSON.stringify(model))}"></div>\n\n<p class="nb-note">${sent}Running from the saved notebook, with no kernel behind this page.</p>`;

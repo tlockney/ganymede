@@ -24,7 +24,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { output, widgetsOf } from "./fetch-examples.mjs";
+import { output, text, widgetsOf } from "./fetch-examples.mjs";
 
 const docs = new URL("../", import.meta.url).pathname;
 const out = join(docs, "cell-api");
@@ -100,7 +100,6 @@ function relinkProse(markdown, source) {
 export { sources };
 
 const markerRE = /^<!--\s*notebook:\s*(\S+\.ipynb)\s*-->[ \t]*\n?/m;
-const text = (v) => (Array.isArray(v) ? v.join("") : (v ?? ""));
 // As cdp-kernel's docs build compares them: trailing whitespace doesn't count.
 const normalize = (s) => s.replace(/\s+$/, "");
 
@@ -119,6 +118,7 @@ export function withOutputs(markdown, nb, slug, files) {
   const cells = nb.cells.filter((c) => c.cell_type === "code");
   const lines = markdown.replace(markerRE, "").split("\n");
   const out = [];
+  let next = 0;
   for (let i = 0; i < lines.length; i++) {
     const open = lines[i].match(/^( *)(`{3,}|~{3,})(\S*)(.*)$/);
     if (!open) {
@@ -126,8 +126,11 @@ export function withOutputs(markdown, nb, slug, files) {
       continue;
     }
     const [, indent, fence, lang, rest] = open;
+    // Closed by a fence of the same character at least as long, with
+    // nothing after it (CommonMark).
+    const close = new RegExp(`^ *${fence[0] === "`" ? "`" : "~"}{${fence.length},}\\s*$`);
     let j = i + 1;
-    while (j < lines.length && !(lines[j].trimStart().startsWith(fence) && !lines[j].trim().slice(fence.length).trim())) j++;
+    while (j < lines.length && !close.test(lines[j])) j++;
     const body = lines.slice(i + 1, j);
     if (!/^\s+cell\b/.test(rest)) {
       out.push(...lines.slice(i, j + 1));
@@ -135,7 +138,10 @@ export function withOutputs(markdown, nb, slug, files) {
       continue;
     }
     const source = normalize(body.map((l) => l.slice(indent.length)).join("\n"));
-    const cell = cells.find((c) => normalize(text(c.source)) === source);
+    // In page order, so two identical blocks get their own cells' outputs.
+    const at = cells.findIndex((c, k) => k >= next && normalize(text(c.source)) === source);
+    const cell = cells[at];
+    if (at >= 0) next = at + 1;
     if (!cell) throw new Error(`${slug}: a \`cell\` block isn't in its notebook as written:\n${source}`);
     out.push(`${indent}${fence}${lang}${rest.replace(/^\s+cell\b/, "")}`, ...body, lines[j] ?? fence);
     for (const o of cell.outputs ?? []) {
@@ -159,7 +165,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       for (const [from, to] of Object.entries(source.files)) {
         const file = join(dir, from);
         if (!existsSync(file)) throw new Error(`${source.repo} has no ${from}`);
-        let markdown = readFileSync(file, "utf8");
+        // Relinked before the outputs go in, so widget code in them is left alone.
+        let markdown = relink(readFileSync(file, "utf8"), source);
         const notebook = notebookOf(markdown);
         const files = new Map();
         if (notebook) {
@@ -167,7 +174,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
           if (!existsSync(nbFile)) throw new Error(`${source.repo} has no ${notebook} beside ${from}`);
           markdown = withOutputs(markdown, JSON.parse(readFileSync(nbFile, "utf8")), to.replace(/\.md$/, ""), files);
         }
-        writeFileSync(join(out, to), relink(markdown, source));
+        writeFileSync(join(out, to), markdown);
         for (const [name, body] of files) {
           mkdirSync(dirname(join(out, name)), { recursive: true });
           writeFileSync(join(out, name), body);
