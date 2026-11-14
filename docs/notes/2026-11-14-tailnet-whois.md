@@ -10,13 +10,12 @@ are still refused.
 - Only tailnet addresses (100.64.0.0/10, fd7a:115c:a1e0::/48) are looked
   up, one lookup at a time, with a five-second timeout; cached answers
   don't wait for a lookup. Answers are cached for a minute, failures for
-  ten seconds.
+  ten seconds. Calling the CLI rather than tailscaled's LocalAPI covers
+  the Linux daemon and both Mac apps, whose LocalAPI sockets differ.
 - The server's own address is never looked up: a local process that
   connects to it comes from it, and whois would name the machine's owner
   (found in review). So `whois` requires `ip` to be the tailnet address
-  itself; `0.0.0.0` or another address is refused at startup. Calling the CLI rather
-  than tailscaled's LocalAPI covers the Linux daemon and both Mac apps,
-  whose LocalAPI sockets differ.
+  itself; `0.0.0.0` or another address is refused at startup.
 - Browsers send no Fetch Metadata over plain HTTP, so they get no
   identity this way; JupyterLab stays on `tailscale serve`. Programs
   (the apps, the gateway, scripts) send a `Ganymede-Client` header and
