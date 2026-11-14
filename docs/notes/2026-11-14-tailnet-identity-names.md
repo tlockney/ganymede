@@ -16,8 +16,12 @@ uses it where it named a person before:
   clients still name themselves, and may pick a tailnet login; `"by"`
   doesn't say which names were vouched for. Marking them is a possible
   follow-up.
-- The request's log span gets a `who` field (debug level), and the first
-  sign-in by each name is logged at info level, once per server.
+- The request's log span gets a `who` field (debug level), and each name
+  is logged at info level the first time it's seen, once per server.
+- With `whois` on, a token or cookie request from a tailnet address is
+  looked up too, so it is named; it can then wait on `tailscale whois`
+  (cached a minute, at most five seconds). Cross-origin ones, whose
+  answer would go unused, aren't looked up.
 - `ganymede info` shows which logins the config file lets in
   (`tailnet_identity`, null when off), and the error when `serve` would
   refuse the config (`serve::check_tailscale`, shared with startup).

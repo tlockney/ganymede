@@ -549,7 +549,7 @@ pub struct TailnetUser(pub String);
 /// identity ([`tailnet_user`]), however it authenticated, so a browser
 /// that also holds the login cookie is still named by its identity.
 /// Records the name on the request's log span (debug level) and logs it at
-/// info level the first time it signs in.
+/// info level the first time it is seen.
 fn add_tailnet_user(state: &AppState, req: &mut Request<Body>) {
     let Some(name) = tailnet_user(state, req.method(), req.headers(), req.extensions()) else {
         return;
@@ -560,7 +560,7 @@ fn add_tailnet_user(state: &AppState, req: &mut Request<Body>) {
         if seen.len() >= 1024 {
             seen.clear();
         }
-        tracing::info!("signed in by tailnet identity: {name}");
+        tracing::info!("named by tailnet identity: {name}");
         seen.insert(name.clone());
     }
     drop(seen);
@@ -615,6 +615,16 @@ pub(crate) async fn add_whois_peer(state: &AppState, req: &mut Request<Body>) {
         || is_websocket_upgrade(headers);
     if !could_use || !crate::tailscale::is_tailnet_addr(ip) {
         return;
+    }
+    // A request the token or cookie already lets in waits on a lookup only
+    // when its answer is used: from the server's own origin.
+    if !same_origin(headers) {
+        if let Some(expected) = state.token.as_deref() {
+            if sends_token(expected, headers, req.uri().query()) || has_login_cookie(state, headers)
+            {
+                return;
+            }
+        }
     }
     if let Some(p) = whois.lookup(ip).await {
         req.extensions_mut().insert(p);

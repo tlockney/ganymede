@@ -228,7 +228,7 @@ before:
   also send the token or hold the login cookie: `/api/me` returns it, so JupyterLab shows
   it, and edits in a shared notebook are credited to it whatever name
   the frontend gives. The server log records it once, at info level, the
-  first time it signs in, and on each request's span at debug level
+  first time it is seen, and on each request's span at debug level
   (`-v`).
 - Entries must match the login exactly, case included, and must be
   ASCII: `tailscale serve` encodes other characters, so such a login
