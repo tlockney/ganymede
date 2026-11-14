@@ -551,7 +551,9 @@ whose mark the server forgot, isn't checked.
 A changed cell's head names who last changed it, as `"by"`, when the
 server saw the change while the notebook was open: a person in
 JupyterLab or the apps by the name their frontend gives (JupyterLab's
-user name), or "a person" when it gives none; another agent by the name
+user name), or "a person" when it gives none, except that one let in by
+[tailnet identity](security.md#tailnet-identity) is named by their
+tailnet login; another agent by the name
 its MCP client gave; a change taken in from the file as "another
 program (the file)"; a change the server made for someone else, such
 as a kernel through the host API, as "the server". The `@@changed`

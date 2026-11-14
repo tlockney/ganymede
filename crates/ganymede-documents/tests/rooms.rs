@@ -1486,6 +1486,41 @@ fn edits_are_credited_to_who_made_them() {
     assert_eq!(room.author(&ids[0]).unwrap().name, "Thomas", "unchanged");
 }
 
+/// A client the server knows by name (a tailnet login, #816) is credited
+/// by that name, whatever its awareness state says.
+#[test]
+fn edits_are_credited_to_the_name_the_server_vouches_for() {
+    let nb = Notebook::from_str(&fixture("code_outputs.ipynb")).unwrap();
+    let id = nb.cells[0].id().unwrap().to_string();
+    let mut room = Room::notebook_room(&nb, "x.ipynb");
+    let a = Doc::new();
+    room.connect_as(1, "me@example.com");
+    sync(&mut room, 1, &a);
+    let mut peer = Awareness::new(Doc::new());
+    peer.set_local_state_raw(r#"{"user":{"name":"someone-else"}}"#);
+    room.receive(1, &Message::Awareness(peer.update().unwrap()).encode_v1())
+        .unwrap();
+    let before = a.transact().state_vector();
+    {
+        let roots = Roots::get(&a);
+        let mut txn = a.transact_mut();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+            panic!()
+        };
+        let Some(Out::YText(src)) = cell.get(&txn, "source") else {
+            panic!()
+        };
+        src.insert(&mut txn, 0, "# a\n");
+    }
+    let update = Message::Sync(SyncMessage::Update(
+        a.transact().encode_state_as_update_v1(&before),
+    ))
+    .encode_v1();
+    room.receive(1, &update).unwrap();
+    let who = room.author(&id).unwrap();
+    assert_eq!((who.name.as_str(), who.person), ("me@example.com", true));
+}
+
 /// The server's own edit to a person's cell (a kernel through the host
 /// API) takes the person's credit away; a deleted cell that comes back as
 /// it was keeps its author; names are cleaned (#770).

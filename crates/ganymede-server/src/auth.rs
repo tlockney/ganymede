@@ -485,8 +485,19 @@ pub(crate) fn tailnet_login(
     headers: &HeaderMap,
     ext: &Extensions,
 ) -> bool {
+    tailnet_user(state, method, headers, ext).is_some()
+}
+
+/// The name [`tailnet_login`] lets in: the login, or for a tagged device
+/// its allowed tags.
+pub(crate) fn tailnet_user(
+    state: &AppState,
+    method: &Method,
+    headers: &HeaderMap,
+    ext: &Extensions,
+) -> Option<String> {
     if state.allow_remote_access {
-        return false;
+        return None;
     }
     let fetch = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
     let site_ok = match fetch("sec-fetch-site") {
@@ -517,11 +528,42 @@ pub(crate) fn tailnet_login(
                 && fetch("sec-fetch-dest") == Some("document")
         }
     };
-    site_ok
-        && (crate::tailscale::allowed_login(&state.tailnet_allow, headers, ext)
-            || ext
-                .get::<crate::tailscale::Peer>()
-                .is_some_and(|p| p.allowed(&state.tailnet_allow)))
+    if !site_ok {
+        return None;
+    }
+    if crate::tailscale::allowed_login(&state.tailnet_allow, headers, ext) {
+        let login = headers.get(crate::tailscale::USER_LOGIN)?.to_str().ok()?;
+        return Some(login.trim().to_string());
+    }
+    ext.get::<crate::tailscale::Peer>()
+        .filter(|p| p.allowed(&state.tailnet_allow))
+        .map(|p| p.name(&state.tailnet_allow))
+}
+
+/// Who a request let in by tailnet identity is, as a request extension:
+/// `/api/me` answers with it, and document rooms credit edits to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TailnetUser(pub String);
+
+/// Adds the [`TailnetUser`] extension to a request [`identify`] let in as
+/// [`Via::Tailnet`], records it on the request's log span, and logs each
+/// name the first time it signs in.
+fn add_tailnet_user(state: &AppState, req: &mut Request<Body>) {
+    let Some(name) = tailnet_user(state, req.method(), req.headers(), req.extensions()) else {
+        return;
+    };
+    tracing::Span::current().record("who", name.as_str());
+    static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if !seen.contains(&name) {
+        if seen.len() >= 1024 {
+            seen.clear();
+        }
+        tracing::info!("signed in by tailnet identity: {name}");
+        seen.push(name.clone());
+    }
+    drop(seen);
+    req.extensions_mut().insert(TailnetUser(name));
 }
 
 /// The header an app or other program sends to use a tailnet identity
@@ -693,6 +735,7 @@ pub(crate) async fn api_with(
             if !same_origin(headers) {
                 return HttpError(404, "Not Found".into()).into_response();
             }
+            add_tailnet_user(&state, &mut req);
             next.run(req).await
         }
         Some(Via::Cookie) => {
@@ -793,6 +836,9 @@ pub(crate) async fn page(
         Some((req.method(), req.extensions())),
     ) {
         req.extensions_mut().insert(via);
+        if via == Via::Tailnet {
+            add_tailnet_user(&state, &mut req);
+        }
         return next.run(req).await;
     }
     if !matches!(*req.method(), Method::GET | Method::HEAD) {

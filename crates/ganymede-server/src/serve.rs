@@ -892,6 +892,7 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
                     method = %req.method(),
                     uri = %crate::auth::scrub_uri(req.uri()),
                     version = ?req.version(),
+                    who = tracing::field::Empty,
                 )
             },
         ),
