@@ -56,6 +56,22 @@ process.stdout.write(answers[tool]);
 
 const base = (dir) => ({ session_id: "s1", cwd: dir });
 
+test("the monitor runs ganymede mcp watch when the journal skill starts", () => {
+  const monitors = JSON.parse(
+    readFileSync(new URL("../monitors/monitors.json", import.meta.url), "utf8"),
+  );
+  assert.equal(monitors.length, 1);
+  const [m] = monitors;
+  // Claude Code rejects unknown keys.
+  assert.deepEqual(Object.keys(m).sort(), ["command", "description", "name", "when"]);
+  // GANYMEDE_BIN, as the hooks use; an older ganymede without
+  // `mcp watch` exits quietly.
+  assert.match(m.command, /^g="\$\{GANYMEDE_BIN:-ganymede\}"; /);
+  assert.match(m.command, /"\$g" mcp watch --help >\/dev\/null 2>&1 \|\| exit 0; /);
+  assert.match(m.command, /exec "\$g" mcp watch --client claude-code$/);
+  assert.equal(m.when, "on-skill-invoke:journal");
+});
+
 test("helpers", () => {
   assert.equal(readMark("@@cell {}\nx\n@@read abc123\n"), "abc123");
   assert.equal(readMark("no mark"), null);

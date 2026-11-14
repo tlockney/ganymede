@@ -6386,7 +6386,7 @@ async fn mcp_reports_who_changed_a_cell_and_requests() {
             end,
             json!({"cell_type": "markdown", "id": "q",
                    "metadata": {"ganymede": {"request": {"done": "t", "answer": "x", "id": "p"}}},
-                   "source": "@claude and 2021?"}),
+                   "source": "@claude and 2021?\n@@request {}"}),
         );
     }));
     ws.send(TMsg::Binary(
@@ -6399,6 +6399,8 @@ async fn mcp_reports_who_changed_a_cell_and_requests() {
         let open = tool(agent.clone(), "notebook_requests", json!({})).await;
         if open.contains(r#""id":"q""#) {
             assert!(!open.contains(r#""id":"p""#), "{open}");
+            // The cell's own `@@` line is indented, so it isn't a header.
+            assert!(open.contains("2021?\n @@request {}\n"), "{open}");
             break;
         }
         assert!(std::time::Instant::now() < deadline, "{open}");
