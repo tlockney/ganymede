@@ -35,7 +35,7 @@ with agent provenance holding text.
 
 The client stays connected until it is told to stop (SIGTERM or SIGINT),
 then writes `--out`: {"ok", "error", "steps": [{"step", "status",
-"waited", ...}]}. A step's status is "done", "timeout" (its condition
+"waited", "at": ISO UTC time of its action, ...}]}. A step's status is "done", "timeout" (its condition
 never held, so nothing after it ran) or "error" ("running" while it waits). Exits 0 once the file is
 written, 1 when it could not connect.
 """
@@ -46,23 +46,16 @@ import json
 import signal
 import sys
 import time
-import urllib.parse
-import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent / "e2e" / "collab"))
 
 from jupyter_ydoc import YNotebook  # noqa: E402
-from pycrdt import (  # noqa: E402
-    Doc,
-    YMessageType,
-    create_sync_message,
-    create_update_message,
-    handle_sync_message,
-)
+from pycrdt import Doc, create_sync_message  # noqa: E402
 from websockets.asyncio.client import connect  # noqa: E402
-from ydoc_client import OPENER, source  # noqa: E402
+from ydoc_client import RoomSync, room_ws_url, source  # noqa: E402
 
 CONNECT_TIMEOUT = 30.0
 DEFAULT_STEP_TIMEOUT = 120.0
@@ -155,36 +148,13 @@ class Person:
         raise ValueError(f"unknown action {kind!r}")
 
 
-def room_url(server, token, nb_path):
-    req = urllib.request.Request(
-        f"{server}/api/collaboration/session/{urllib.parse.quote(nb_path)}",
-        data=json.dumps({"format": "json", "type": "notebook"}).encode(),
-        method="PUT",
-        headers={"Authorization": f"token {token}", "Content-Type": "application/json"},
-    )
-    with OPENER.open(req, timeout=CONNECT_TIMEOUT) as r:
-        session = json.load(r)
-    return (
-        server.replace("http", "ws", 1)
-        + f"/api/collaboration/room/json:notebook:{session['fileId']}"
-        + f"?sessionId={session['sessionId']}&token={token}"
-    )
-
-
 async def run(args, report):
     flush(report, args.out)
     steps = json.loads(Path(args.script).read_text())
-    ws_url = room_url(args.server, args.token, args.path)
+    ws_url = room_ws_url(args.server, args.token, args.path)
     doc = Doc()
     ynb = YNotebook(doc)
-    applying = False
-    outgoing = asyncio.Queue()
-
-    def on_update(event):
-        if not applying:
-            outgoing.put_nowait(create_update_message(event.update))
-
-    doc.observe(on_update)
+    sync = RoomSync(doc)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -193,24 +163,7 @@ async def run(args, report):
     async with connect(ws_url, max_size=None, proxy=None, open_timeout=CONNECT_TIMEOUT) as ws:
         await ws.send(create_sync_message(doc))
 
-        async def pump():
-            nonlocal applying
-            async for msg in ws:
-                if not isinstance(msg, bytes) or msg[0] != YMessageType.SYNC:
-                    continue
-                applying = True
-                try:
-                    reply = handle_sync_message(msg[1:], doc)
-                finally:
-                    applying = False
-                if reply is not None:
-                    await ws.send(reply)
-
-        async def send():
-            while True:
-                await ws.send(await outgoing.get())
-
-        tasks = [asyncio.create_task(pump()), asyncio.create_task(send())]
+        tasks = [asyncio.create_task(sync.pump(ws)), asyncio.create_task(sync.send(ws))]
         person = Person(ynb)
         report["connected"] = True
         flush(report, args.out)
@@ -251,7 +204,7 @@ async def run(args, report):
                 if step.get("do") is not None:
                     entry["do"] = step["do"]
                     entry.update(person.act(step["do"]))
-                    entry["at"] = time.strftime("%H:%M:%S")
+                    entry["at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
             except Exception as e:  # a bad target or script: the run can't mean anything
                 entry["status"] = "error"
                 entry["error"] = repr(e)
@@ -265,7 +218,7 @@ async def run(args, report):
         # Stay in the room, so the server keeps it open and saves, until told.
         await stop.wait()
         # Let the last edits reach the server.
-        while not outgoing.empty():
+        while not sync.outgoing.empty():
             await asyncio.sleep(POLL)
         await asyncio.sleep(0.5)
         for t in tasks:

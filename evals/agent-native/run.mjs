@@ -16,7 +16,8 @@
 // `ganymede` comes from GANYMEDE_BIN or PATH; CLAUDE_BIN and CLAUDE_ARGS
 // replace the claude command; EVAL_PYTHON is the Python with jupyter_ydoc,
 // pycrdt and websockets (default python3); EVAL_TIMEOUT_MS bounds each
-// agent session (default 15 minutes). A session that exits non-zero or
+// agent session (default 15 minutes); EVAL_PERSON_GRACE_MS (default 30
+// seconds) is how long the person may keep going after the agent exits. A session that exits non-zero or
 // times out, or a person who couldn't connect, is reported and left out
 // of the pass rate.
 
@@ -184,7 +185,10 @@ async function runOne(scenario, run, out) {
 
     // Give the person a moment to finish steps the agent didn't wait for.
     const grace = Number(process.env.EVAL_PERSON_GRACE_MS ?? 30000);
-    await Promise.race([sleep(grace), waitSteps(personOut, scenario.person.length)]);
+    const waiting = new AbortController();
+    const timer2 = setTimeout(() => waiting.abort(), grace);
+    await waitSteps(personOut, scenario.person.length, waiting.signal, person);
+    clearTimeout(timer2);
     await sleep(1000);
     await stop(person);
     await personDone;
@@ -210,15 +214,17 @@ async function runOne(scenario, run, out) {
 
 /**
  * Resolves once person.py's log (which it rewrites after each step) shows
- * every step done, or one that didn't finish.
+ * every step done or one that didn't finish, or when `signal` aborts (the
+ * grace is over) or `person` has exited with nothing more to write.
  */
-async function waitSteps(file, n) {
-  for (;;) {
+async function waitSteps(file, n, signal, person) {
+  while (!signal.aborted) {
     try {
       const { steps } = readJson(file);
       if (steps.length >= n && steps.every((s) => s.status === "done")) return;
       if (steps.some((s) => s.status === "timeout" || s.status === "error")) return;
     } catch {}
+    if (person.exitCode !== null || person.signalCode !== null) return;
     await sleep(500);
   }
 }

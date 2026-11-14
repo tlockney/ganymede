@@ -27,7 +27,7 @@ export function requestOf(cell) {
 /** Whether a request cell is marked done with an answer. */
 export function isAnswered(cell) {
   const r = requestOf(cell);
-  return Boolean(r && r.done && r.answer);
+  return Boolean(r && r.done && r.answer && r.id === cell.id);
 }
 
 export function byId(nb, id) {
@@ -41,7 +41,7 @@ export function byId(nb, id) {
  * `person` is person.py's log, or null.
  */
 export function score(scenario, nb, person) {
-  const { pass, reasons } = scenario.check(nb);
+  const { pass, reasons } = scenario.check(nb, person);
   const out = [...reasons];
   const steps = person?.steps ?? [];
   if (!person) out.push("no log from the simulated person");

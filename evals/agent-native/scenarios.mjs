@@ -37,6 +37,18 @@ function checker() {
   };
 }
 
+/** The latest time (ms) the agent wrote any cell: its `at`, or a replaced source's. */
+function lastAgentEdit(nb) {
+  const times = [];
+  for (const c of nb.cells) {
+    const a = agentOf(c);
+    if (!a) continue;
+    times.push(a.at, ...(a.history ?? []).map((h) => h.at));
+  }
+  const ms = times.map((t) => Date.parse(t)).filter((t) => !Number.isNaN(t));
+  return ms.length ? Math.max(...ms) : null;
+}
+
 /** Index of the cell `id`, or -1. */
 const at = (nb, id) => nb.cells.findIndex((c) => c.id === id);
 
@@ -133,8 +145,19 @@ export const SCENARIOS = [
       { wait: { sleep: 3 }, do: { insert: { id: "p", source: "Person's cell PERSON-P", after: "a" } } },
       { wait: { agent_cells: 2 }, timeout: 120, do: { append: { cell: "a", text: " PERSON-A2" } } },
     ],
-    check(nb) {
+    check(nb, person) {
       const c = checker();
+      // Interleaving: a person edit has to land before the agent's last
+      // edit, or the two didn't work at the same time.
+      const last = lastAgentEdit(nb);
+      const edits = (person?.steps ?? []).filter((s) => s.at).map((s) => Date.parse(s.at));
+      if (!person) c.ok(false, "interleaving didn't happen: no log of when the person edited");
+      else if (last !== null) {
+        c.ok(
+          edits.some((t) => t < last),
+          "interleaving didn't happen: every person edit came after the agent's last edit",
+        );
+      }
       const a = byId(nb, "a");
       if (c.ok(a, "the person's cell a is gone")) {
         const t = cellText(a);
@@ -184,6 +207,16 @@ export const SCENARIOS = [
         if (old) c.ok(false, `the agent overwrote the person's note in cell ${old.id}: it survives only in history`);
       }
       c.ok(holders.length <= 1, `the person's note appears in ${holders.length} cells`);
+      // Interleaving: the server keeps the source each cell_edit replaces,
+      // so a history entry holding the note means the agent edited the cell
+      // after the person's note was in it.
+      if (holders.length === 1) {
+        const h = agentOf(holders[0])?.history ?? [];
+        c.ok(
+          h.some((e) => String(e.source).includes(MARK)),
+          "interleaving didn't happen: the agent never edited the cell after the person's note (no history entry holds it)",
+        );
+      }
       c.ok(nb.cells.some((x) => agentOf(x) && /Finding/.test(cellText(x))), "no cell of the agent's holds the finding");
       c.ok(nb.cells.some((x) => agentOf(x) && /^Done\./.test(cellText(x))), "the agent didn't finish with 'Done.'");
       untouched(c, nb, "data", DATA);
