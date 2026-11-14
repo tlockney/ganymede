@@ -459,7 +459,7 @@ pub fn identify(
         return Some(Via::Cookie);
     }
     let ext = tailnet?;
-    crate::tailscale::allowed_login(&state.tailnet_allow, headers, ext).map(|_| Via::Tailnet)
+    crate::tailscale::allowed_login(&state.tailnet_allow, headers, ext).then_some(Via::Tailnet)
 }
 
 fn safe_method(m: &Method) -> bool {
@@ -840,9 +840,14 @@ input{{font:inherit;padding:.4rem;margin:.3rem 0;width:100%;box-sizing:border-bo
     resp
 }
 
-async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
+async fn logout(State(state): State<AppState>, ext: Extensions, headers: HeaderMap) -> Response {
     let name = login_cookie_name(&headers);
-    let message = if state.token.is_some() {
+    let message = if state.token.is_some()
+        && crate::tailscale::allowed_login(&state.tailnet_allow, &headers, &ext)
+    {
+        "Logged out, but your tailnet login is allowed in, so you are still signed in. \
+         Remove it from [tailscale] allow to keep it out."
+    } else if state.token.is_some() {
         "Successfully logged out."
     } else {
         "Cannot log out. Authentication is disabled."

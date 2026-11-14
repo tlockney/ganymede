@@ -780,6 +780,18 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
             "also letting in, without the token, requests from `tailscale serve` for: {}",
             cfg.tailscale.allow.join(", ")
         );
+        let loopback = cfg
+            .ip
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|a| a.is_loopback())
+            || cfg.ip == "localhost";
+        if !loopback {
+            tracing::warn!(
+                "[tailscale] allow is set but the server listens on {}: tailnet logins are \
+                 believed only from loopback peers, that is through `tailscale serve`",
+                cfg.ip
+            );
+        }
     }
     // Written before the URL is printed, so whoever reads the URL finds
     // them. An embedding app has no use for them, and on iOS no runtime dir.

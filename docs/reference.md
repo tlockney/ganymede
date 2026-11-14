@@ -398,7 +398,7 @@ frame_ancestors = "'self'"       # who may frame the server's pages
 # mime_types = ["text/x-python"]
 ```
 
-These five keys have no flag. The terminal keys, the MCP keys other
+These six keys have no flag. The terminal keys, the MCP keys other
 than `mcp_enabled`, `static_headers` and `language_servers` have none
 either; the sections below and [Agents over MCP](mcp.md#options) cover
 them.
@@ -411,6 +411,10 @@ them.
 | `crash_reporting` | Send crash reports from `ganymede` to Sentry; see [Privacy and crash reporting](privacy.md). Default `false`. |
 | `[tailscale] allow` | Tailnet login names let in without the token when `tailscale serve` forwards their requests to a loopback port. Default `[]`, off. See [Security](security.md#tailnet-identity). |
 | `frame_ancestors` | The CSP sources allowed to frame the server's pages, added to every response as `frame-ancestors <sources>`. Default `'self'`, as `jupyter_server`; add an origin, such as `'self' https://portal.example.com`, to embed `/lab` in that site. See [Security](security.md#defaults). |
+
+> [!NOTE]
+> **Unreleased.** `[tailscale] allow` is available only from a build of
+> `main` (HEAD), not in the latest release.
 
 ### The host API
 

@@ -41,7 +41,10 @@ impl TailscaleConfig {
                      `tailscale serve` sends no identity for tagged devices"
                 ));
             }
+            // `tailscale serve` MIME-encodes non-ASCII values, so such an
+            // entry would never match.
             let ok = !entry.is_empty()
+                && entry.is_ascii()
                 && entry.contains('@')
                 && !entry.starts_with('@')
                 && !entry.ends_with('@')
@@ -50,8 +53,8 @@ impl TailscaleConfig {
                     .any(|c| c.is_whitespace() || c.is_control() || c == '*');
             if !ok {
                 return Err(format!(
-                    "[tailscale] allow: {entry:?} is not a tailnet login name such as \
-                     name@example.com"
+                    "[tailscale] allow: {entry:?} is not an ASCII tailnet login name such \
+                     as name@example.com"
                 ));
             }
         }
@@ -59,11 +62,15 @@ impl TailscaleConfig {
     }
 }
 
-/// The allowed login a request comes from, when `allow` is not empty, the
-/// connection's peer is a loopback address, and the request has exactly
-/// one `Tailscale-User-Login` header naming a login in `allow`. Logins are
-/// compared without regard to ASCII case.
-pub fn allowed_login(allow: &[String], headers: &HeaderMap, ext: &Extensions) -> Option<String> {
+/// Whether the request comes from an allowed login: `allow` is not empty,
+/// the connection's peer is a loopback address, and the request has
+/// exactly one `Tailscale-User-Login` header naming a login in `allow`.
+/// Logins are compared without regard to ASCII case.
+pub fn allowed_login(allow: &[String], headers: &HeaderMap, ext: &Extensions) -> bool {
+    sender(allow, headers, ext).is_some()
+}
+
+fn sender<'a>(allow: &[String], headers: &'a HeaderMap, ext: &Extensions) -> Option<&'a str> {
     if allow.is_empty() {
         return None;
     }
@@ -80,8 +87,8 @@ pub fn allowed_login(allow: &[String], headers: &HeaderMap, ext: &Extensions) ->
     }
     allow
         .iter()
-        .find(|a| a.eq_ignore_ascii_case(login))
-        .map(|_| login.to_string())
+        .any(|a| a.eq_ignore_ascii_case(login))
+        .then_some(login)
 }
 
 #[cfg(test)]
@@ -129,12 +136,9 @@ mod tests {
     fn allows_a_listed_login_from_loopback() {
         let allow = cfg(&["Me@Example.com"]).allow;
         let h = headers(&["me@example.com"]);
-        assert_eq!(
-            allowed_login(&allow, &h, &ext("127.0.0.1:5000")).as_deref(),
-            Some("me@example.com")
-        );
-        assert!(allowed_login(&allow, &h, &ext("[::1]:5000")).is_some());
-        assert!(allowed_login(&allow, &h, &ext("[::ffff:127.0.0.1]:5000")).is_some());
+        assert!(allowed_login(&allow, &h, &ext("127.0.0.1:5000")));
+        assert!(allowed_login(&allow, &h, &ext("[::1]:5000")));
+        assert!(allowed_login(&allow, &h, &ext("[::ffff:127.0.0.1]:5000")));
     }
 
     #[test]
@@ -142,18 +146,24 @@ mod tests {
         let allow = cfg(&["me@example.com"]).allow;
         let me = headers(&["me@example.com"]);
         // Off.
-        assert!(allowed_login(&[], &me, &ext("127.0.0.1:1")).is_none());
+        assert!(!allowed_login(&[], &me, &ext("127.0.0.1:1")));
         // Not listed.
-        assert!(
-            allowed_login(&allow, &headers(&["you@example.com"]), &ext("127.0.0.1:1")).is_none()
-        );
+        assert!(!allowed_login(
+            &allow,
+            &headers(&["you@example.com"]),
+            &ext("127.0.0.1:1")
+        ));
         // Not from loopback, or peer unknown.
-        assert!(allowed_login(&allow, &me, &ext("100.64.0.2:1")).is_none());
-        assert!(allowed_login(&allow, &me, &Extensions::new()).is_none());
+        assert!(!allowed_login(&allow, &me, &ext("100.64.0.2:1")));
+        assert!(!allowed_login(&allow, &me, &Extensions::new()));
         // No header, an empty one, or two.
-        assert!(allowed_login(&allow, &headers(&[]), &ext("127.0.0.1:1")).is_none());
-        assert!(allowed_login(&allow, &headers(&[" "]), &ext("127.0.0.1:1")).is_none());
+        assert!(!allowed_login(&allow, &headers(&[]), &ext("127.0.0.1:1")));
+        assert!(!allowed_login(
+            &allow,
+            &headers(&[" "]),
+            &ext("127.0.0.1:1")
+        ));
         let two = headers(&["me@example.com", "you@example.com"]);
-        assert!(allowed_login(&allow, &two, &ext("127.0.0.1:1")).is_none());
+        assert!(!allowed_login(&allow, &two, &ext("127.0.0.1:1")));
     }
 }

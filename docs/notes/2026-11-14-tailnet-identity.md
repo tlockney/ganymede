@@ -17,8 +17,17 @@ them. Empty by default, so nothing changes unless it is set.
 - Tags are refused in the list: `tailscale serve` sends no identity for
   tagged devices. They come with the next step, which asks tailscaled
   (WhoIs) for the sender of a server listening on its tailnet address.
-- The header is forgeable by any local process, which
-  `docs/security.md` states: the option is for a machine one person
-  uses.
+- The lab page renders an empty token for a tailnet-identified
+  request. With the token in the page, JupyterLab would switch to it:
+  past the cookie's checks, onto `/mcp`, and kept after the login is
+  removed from `allow` (found in review).
+- The header is forgeable by anything that reaches the loopback port
+  other than `tailscale serve`'s HTTP proxy: a local process, another
+  reverse proxy, TCP-mode serve or funnel, an SSH tunnel.
+  `docs/security.md` says so; the option is for a machine one person
+  uses, behind `tailscale serve` only. A non-loopback `ip` with `allow`
+  set logs a warning.
+- Entries must be ASCII, since `tailscale serve` MIME-encodes other
+  characters.
 
 Design note and the remaining steps are on #816.

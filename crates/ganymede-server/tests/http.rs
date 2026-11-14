@@ -8017,3 +8017,48 @@ async fn a_tailnet_login_does_not_reach_mcp() {
     let (s, _, _) = send(&app, req).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
+
+/// The lab page carries the token for the browser; a tailnet login must
+/// not get it, or it would leave the identity's checks, reach `/mcp`, and
+/// outlive removal from `allow`.
+#[tokio::test]
+async fn a_tailnet_login_gets_the_lab_page_without_the_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = lab_state(dir.path());
+    st.local_hostnames.push("box.example.ts.net".into());
+    st.tailnet_allow = Arc::from(["me@example.com".to_string()]);
+    let app = build_router(st);
+
+    let (s, _, page) = send(
+        &app,
+        tailnet_req("GET", "/lab", Some("me@example.com"), "127.0.0.1:1"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(page.contains("appVersion"), "{page}");
+    assert!(!page.contains(TOKEN), "{page}");
+
+    // A browser with the token still gets it.
+    let (s, page) = get_text_with(
+        &app,
+        "/lab",
+        &[(header::AUTHORIZATION, &format!("token {TOKEN}"))],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(page.contains(TOKEN));
+}
+
+/// Logging out can't end a tailnet login, and the page says so.
+#[tokio::test]
+async fn logout_tells_a_tailnet_login_it_is_still_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = tailnet_app(dir.path(), &["me@example.com"]);
+    let (s, _, page) = send(
+        &app,
+        tailnet_req("GET", "/logout", Some("me@example.com"), "127.0.0.1:1"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(page.contains("still signed in"), "{page}");
+}

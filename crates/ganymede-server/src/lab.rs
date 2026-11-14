@@ -402,9 +402,17 @@ fn page(
     workspace: &str,
 ) -> HttpResult<Response> {
     let lab = lab_of(s)?;
+    // The page hands its token to the browser, so only to one that already
+    // has it (or its login cookie): a tailnet login (`[tailscale] allow`)
+    // gets an empty one and keeps authenticating by identity, so it stays
+    // under the cookie's checks, off `/mcp`, and revocable.
+    let token = s
+        .token
+        .as_deref()
+        .filter(|_| crate::auth::identify(s, headers, None, None).is_some());
     let html = Html(lab.render_page(
         &s.base_url,
-        s.token.as_deref(),
+        token,
         tree_path,
         workspace,
         s.terminals.is_some(),
