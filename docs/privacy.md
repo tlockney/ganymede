@@ -14,11 +14,7 @@ gateway (`--gateway-url`) gets the code you run and returns its output,
 `ganymede lab install` and `ganymede ui install` download from PyPI and
 GitHub, and an agent you connect over MCP sees what its tools return.
 
-> [!NOTE]
-> **Unreleased in ganymede-ui.** Available only from a build of
-> ganymede-ui's `main`, not in its latest release.
-
-The Mac app gives its own server, on your Mac, your account's full name
+From ganymede-ui 0.11.0 on, the Mac app gives its own server, on your Mac, your account's full name
 when it opens a notebook, so an agent working in the notebook is told
 who changed a cell. Other clients with that notebook open there (an
 agent, JupyterLab) see it too. It never goes to a remote server, and

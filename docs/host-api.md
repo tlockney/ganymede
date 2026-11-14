@@ -419,10 +419,6 @@ Thomas settled the four open questions on 2026-11-10:
   with none, a notebook reads only itself. That limits what the host
   API hands a notebook, not what its code can read from disk: the Mac
   app isn't sandboxed, and its kernels are ordinary processes.
-
-  > [!NOTE]
-  > **Unreleased in ganymede-ui.** Available only from a build of
-  > ganymede-ui's `main`, not in its latest release.
 - **Grants are kept by file id**, so they follow a notebook that moves.
   `ganymede grant --list` and `--revoke` show and remove them, in place
   of editing a file by hand.
