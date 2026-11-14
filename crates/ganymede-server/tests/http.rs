@@ -6417,23 +6417,49 @@ async fn mcp_reports_who_changed_a_cell_and_requests() {
     .await;
     assert!(out.contains("the request is marked done"), "{out}");
 
-    // With `edits` (a spike for `mcp watch --edits`): the person's other
-    // cells, each an `@@edit` line with a hash of its source, and not
-    // another agent's.
+    // With `edits` (a spike for `mcp watch --edits`): each notebook
+    // read, and the person's other cells as `@@edit` lines with a hash;
+    // not the requests the agent answered, nor another agent's cells.
     let edits = tool(agent.clone(), "notebook_requests", json!({"edits": true})).await;
+    assert!(
+        edits.starts_with("No open requests.\n@@notebook {\"path\":\"j.ipynb\"}\n")
+            && !edits.contains("@@edit"),
+        "answered requests aren't edits: {edits}"
+    );
+    let update = person_edit(Box::new(|txn, roots| {
+        let end = roots.cells.len(txn);
+        schema::insert_cell(
+            txn,
+            &roots.cells,
+            end,
+            json!({"cell_type": "markdown", "id": "n", "metadata": {}, "source": "a note"}),
+        );
+    }));
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::Update(update)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let edits = loop {
+        let edits = tool(agent.clone(), "notebook_requests", json!({"edits": true})).await;
+        if edits.contains("@@edit") {
+            break edits;
+        }
+        assert!(std::time::Instant::now() < deadline, "{edits}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
     let line = edits
         .lines()
-        .find(|l| l.starts_with(r#"@@edit {"path":"j.ipynb","id":"p","by":"Thomas","hash":""#))
+        .find(|l| l.starts_with(r#"@@edit {"path":"j.ipynb","id":"n","by":"Thomas","hash":""#))
         .unwrap_or_else(|| panic!("{edits}"));
     assert_eq!(
         line.len(),
-        r#"@@edit {"path":"j.ipynb","id":"p","by":"Thomas","hash":""}"#.len() + 16,
+        r#"@@edit {"path":"j.ipynb","id":"n","by":"Thomas","hash":""}"#.len() + 16,
         "{line}"
     );
-    assert!(
-        !edits.contains("other-agent") && !edits.contains("@@request"),
-        "{edits}"
-    );
+    assert_eq!(edits.matches("@@edit").count(), 1, "{edits}");
+    assert!(!edits.contains("other-agent"), "{edits}");
     // Without it, none.
     let plain = tool(agent.clone(), "notebook_requests", json!({})).await;
     assert!(

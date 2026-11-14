@@ -208,13 +208,17 @@ or distracts (#794); the journal plugin's monitor passes it when
 Edits from "Thomas" in "j.ipynb": 2 cells changed. See what changed with notebook_read(path: "j.ipynb", since: your last read mark).
 ```
 
-It asks `notebook_requests` with `edits: true`, which adds an `@@edit`
-line for each other cell a person last changed, with a hash of its
-source but not the text. The cells of a notebook the watch sees for the
-first time are taken as they are. A changed or new cell is counted
-until no cell in that notebook has changed for `--settle` seconds, then
-one line names who changed how many cells. Deleted cells, and cells an
-agent changed last, aren't counted.
+It asks `notebook_requests` with `edits: true`, which adds an
+`@@notebook` line for each notebook it read and an `@@edit` line for
+each other cell a person last changed, with a hash of the cell's kind
+and source but not the text. A request the agent answered isn't an
+edit. A notebook the watch sees listed for the first time is taken as
+it is; after that, a changed or new cell is counted until no cell in
+that notebook has changed for `--settle` seconds, then one line names
+who changed how many cells. A cell that becomes a request is left to
+the request's line. Deleted cells, and cells an agent changed last,
+aren't counted. With `GANYMEDE_WATCH_EDITS` set and a `ganymede`
+without `--edits`, the monitor still watches for requests.
 
 `cell_add` takes a `mark`: a read mark to move past the new cell, so a
 hook that adds a cell for the agent (as the plugin's Bash hook does)

@@ -4,9 +4,16 @@ Thomas asked to try waking the agent on any edit a person makes, not
 only on a request cell, as a spike after the request work (#763).
 
 `notebook_requests` takes `edits: true`: besides the open requests, an
+`@@notebook {path}` line for each notebook read and an
 `@@edit {path, id, by, hash}` line for each other cell a person last
-changed. The hash is of the source, so a poller can tell a change
-without the reply carrying every cell's text. `ganymede mcp watch
+changed. The hash is the read marks' fingerprint (kind and source), so
+a poller can tell a change without the reply carrying every cell's
+text. Answered requests are left out: they keep the person as author,
+and listing them made every answer wake the agent again (review). The
+`@@notebook` lines let the watch take a notebook as it is when first
+listed, rather than when it first has a person's cell: in a journal the
+agent wrote, that was the person's first edit, which was then never
+reported. `ganymede mcp watch
 --edits` keeps those hashes per notebook, takes a notebook seen for the
 first time as it is, and prints one line per notebook once no cell in
 it has changed for `--settle` seconds: who, how many cells, and a
