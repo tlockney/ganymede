@@ -20,10 +20,6 @@ directory: the server's root, unless the section below applies.
 
 ### Paths when the server's root is above the agent's folder
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 When `ganymede mcp` forwards to a running server rooted above the
 directory it started in (or `--root-dir`), that directory becomes the
 connection's own: the agent's `a.ipynb` is the file in its folder, and a
@@ -56,10 +52,6 @@ streamable HTTP at `/mcp`, behind the token, for clients that connect to
 a URL instead of starting a command.
 
 ### A token for agents only
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 The server's token passes every route, so an agent that holds it can
 also write files, start kernels, open terminals and change grants over
@@ -118,11 +110,6 @@ be on your `PATH`, and its hooks run with `node`.
 | Hook `PostToolUse` | Follows the agent's notebook tools (the open notebook, its mark, edits since the last clean run-all). Records a Bash command that ends in `# journal` as a recorded cell, with up to 2,000 characters of its output. When a tool reply ends with an [`@@changed`](#learning-of-changes-mid-work-and-edits-refused) line, reads those changes in and adds them as context. |
 | Hook `Stop` | Once per round of edits, stops the agent from ending its turn while the journal has edits since its last clean `notebook_run_all`, and asks it to run it or say it is only pausing. |
 
-> [!NOTE]
-> **Unreleased.** The `PostToolUse` hook passing on `@@changed` changes,
-> and the `requests` monitor, are available only from a build of `main`
-> (HEAD), not in the latest release.
-
 The plugin also has a monitor, `requests`, which starts when the
 `journal` skill first runs. It runs [`ganymede mcp watch`](#waking-the-agent-for-a-request)
 for the rest of the session, and each line it prints reaches the agent
@@ -166,10 +153,6 @@ recorded in cells' provenance.
 
 ### Waking the agent for a request
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 `ganymede mcp watch` keeps running and prints one line for each
 [request](#learning-of-changes-mid-work-and-edits-refused) a person
 writes to the agent, in any notebook open in the server under the
@@ -199,10 +182,6 @@ nothing. Whether a monitor's line starts a turn by itself, or waits for
 the person's next message, Claude Code doesn't document.
 
 #### Waking the agent on any edit (spike)
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 `ganymede mcp watch --edits` also prints a line when a person's edits
 to a notebook settle, so an agent can respond to an edit that isn't a
@@ -270,10 +249,6 @@ the notebook sees them live.
 
 ## Kernel for a new notebook
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 A notebook `notebook_open` creates starts the kernel the call names.
 Without one, it starts its folder's default: the `kernel` in the
 nearest `.ganymede.toml`, from the notebook's folder up to the server
@@ -340,12 +315,6 @@ reply to a person, without running anything:
   `attachment:` links pointed at them
 - other output as plain text, without terminal colors, and a progress
   bar as its last frame; an error as its name and message
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. The release before it reads a table output's HTML
-> fallback instead, which gets column names and the row count wrong for
-> `jupyter.table` output.
 
 The images also come back as MCP image content, whether or not the server
 sends images, so an agent can look at a chart before describing it. Files
@@ -418,10 +387,6 @@ notebook's content:
   API key, password or environment variable a cell printed goes into
   the page as it is. Read the page before you share it.
 
-  > [!NOTE]
-  > **Unreleased.** `mcp_token` is available only from a build of
-  > `main` (HEAD), not in the latest release.
-
 - no network requests: images are embedded, a Markdown image from
   elsewhere becomes a link, and HTML outputs run under a policy that
   loads nothing but their own `data:` images and inline styles
@@ -433,11 +398,6 @@ notebook's content:
   notebooks, pandas with `display.html.table_schema` on) as a table of
   its first 100 rows, every value as text, with how many rows there are
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. The release before it shows a table output's HTML
-> fallback in a frame instead.
-
 The page goes to `published/<name>.html` beside the notebook, or to
 `out` (a path under the root ending in `.html`). It replaces an earlier
 published page there, but another file only with `overwrite: true`.
@@ -446,10 +406,6 @@ under the title (default: today's date). It runs nothing, so run the
 notebook first if its outputs may be stale. Not in read-only mode.
 
 ### Downloading the notebook
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 The page also carries a copy of the notebook, with a **Download
 notebook** button under the title that saves it as `<name>.ipynb`. The
@@ -528,10 +484,6 @@ one notebook path, so after a rename the old mark is treated the same
 way.
 
 ### Learning of changes mid-work, and edits refused
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 Every tool reply but `notebook_read` and `notebook_open` ends with a
 line like this when others changed a notebook the connection has open and a mark
@@ -645,10 +597,6 @@ revised in place still shows what it said before, and a UI can show the
 revisions. The replaced text is saved in the `.ipynb`: editing a secret
 out of a cell with `cell_edit` leaves it in `history` until the metadata
 is cleared.
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 A kernel's [`self.edit`](host-api.md) keeps history the same way, with
 `"by": "kernel"`.

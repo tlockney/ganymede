@@ -195,10 +195,6 @@ the most common edit a notebook makes, regenerating a table or summary
 in one of its own cells, such as a journal index. A kernel with no
 notebook has no `self.*` calls.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 Cells the `self.*` calls write carry [provenance](mcp.md#provenance)
 with `by` set to `kernel`: a cell `self.add` makes gets
 `metadata.ganymede.agent = {"by": "kernel", "mode": "note", "at": "<time>"}`,
@@ -313,12 +309,6 @@ edit_self = true     # the self.* calls; false turns them off
   defaults, and a notebook's own grant over them, as a server does. It
   gives its kernels no `self.*` calls, since it writes the notebook
   itself when the run ends.
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. Before it, a kernel started by
-> `POST /api/notebooks/run` got the `[host]` defaults and `notebook` was
-> `null` (#745).
 
 This is the server's half of "scoped kernels" from the direction review:
 it limits what a kernel can ask the server for. It doesn't limit what a

@@ -48,10 +48,6 @@ in another site, list that origin in `frame_ancestors`
   code and no output shows the server's token: a cell can read it as any
   kernel code can.
 
-  > [!NOTE]
-  > **Unreleased.** Available only from a build of `main` (HEAD), not in
-  > the latest release.
-
 - The cookie signing key is `jupyter_cookie_secret` in the Jupyter
   runtime directory, created owner-only on first start (the file
   `jupyter_server` uses). Delete it to log every browser out.

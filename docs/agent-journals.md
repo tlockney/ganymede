@@ -92,10 +92,6 @@ each part, and how to watch live in JupyterLab.
 
 ## Your notebooks and the journal
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 You may ask the agent for part of an analysis and do the rest by hand
 in JupyterLab, VS Code or the apps. The skill treats your notebooks as
 part of the same work: it searches them along with earlier journals,
