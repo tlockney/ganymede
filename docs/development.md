@@ -207,7 +207,11 @@ copied into `docs/cell-api/` (not committed) by `npm run fetch-cell-api`;
 set `CDP_KERNEL_DIR` or `GANYMEDE_UI_DIR` to copy from a local
 checkout. Edit the doc comments there. The script points links to
 cdp-kernel's guides at cdp-kernel.org, and other links that leave the
-pages at GitHub. The site picks up changes to them on its next build.
+pages at GitHub. A cdp-kernel page that names a notebook gets, after
+each ```` ```ts cell ```` block, the outputs that cell saved in it, as on
+cdp-kernel.org: widgets saved with their state run on the page
+(`docs/.vitepress/theme/widgets.ts`, a copy of cdp-kernel's). The site
+picks up changes to them on its next build.
 
 The `Pages` workflow builds both on every pull request that touches them,
 so a broken page or dead link fails the PR. It deploys them to GitHub

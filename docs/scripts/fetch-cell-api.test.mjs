@@ -32,3 +32,30 @@ test("fenced code is left alone", () => {
     "[g](https://cdp-kernel.org/docs/widgets)\n\n```ts\nhandlers[name](msg);\n```\n\n  ````md\n  [x](widgets.md)\n  ````\n",
   );
 });
+
+test("a page's cell blocks get the outputs its notebook saved", async () => {
+  const { withOutputs, notebookOf } = await import("./fetch-cell-api.mjs");
+  const page = "Intro.\n\n<!-- notebook: public/notebooks/p.ipynb -->\n\n```ts cell\n1 + 1\n```\n\n```ts\nnot a cell\n```\n";
+  assert.equal(notebookOf(page), "public/notebooks/p.ipynb");
+  const nb = {
+    metadata: {},
+    cells: [{ cell_type: "code", source: ["1 + 1  \n"], outputs: [{ output_type: "execute_result", data: { "text/plain": "\x1b[33m2\x1b[39m" } }] }],
+  };
+  const md = withOutputs(page, nb, "p", new Map());
+  assert.ok(!md.includes("notebook:"));
+  assert.ok(md.includes("```ts\n1 + 1\n```\n\n```text\n2\n```"), md);
+  assert.ok(md.includes("```ts\nnot a cell\n```"));
+  assert.throws(() => withOutputs(page, { metadata: {}, cells: [] }, "p", new Map()), /isn't in its notebook/);
+});
+
+test("an anywidget saved with its state runs on the page, as of its own cell", async () => {
+  const { output } = await import("./fetch-examples.mjs");
+  const saved = { "w-1": { model_module: "anywidget", state: { _esm: "export default {}", count: 3, later: true }, buffers: [{ path: ["b"], data: "AA==", encoding: "base64" }] } };
+  const o = { output_type: "display_data", data: { "application/vnd.jupyter.widget-view+json": { model_id: "w-1" } }, metadata: { docs: { state: { count: 1 }, buffers: [] } } };
+  const html = output(o, "p", new Map(), saved);
+  const model = JSON.parse(html.match(/data-model="([^"]*)"/)[1].replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"));
+  assert.deepEqual(model.state, { _esm: "export default {}", count: 1 });
+  assert.deepEqual(model.buffers, []);
+  // Without saved state there's nothing to run.
+  assert.match(output(o, "p", new Map(), {}), /needs a running kernel/);
+});

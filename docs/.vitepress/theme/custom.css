@@ -111,3 +111,25 @@ html,
   height: 280px;
   padding: 0;
 }
+
+/* Widgets saved with their state run on the page (theme/widgets.ts). They
+   were drawn for a light notebook, so they keep a light panel in dark mode. */
+.vp-doc .nb-widget {
+  margin: 0 0 8px;
+  padding: 12px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 8px;
+  background: #fff;
+  color: #1b1f24;
+  color-scheme: light;
+}
+.vp-doc .nb-widget-failed {
+  font-size: 0.875rem;
+  color: var(--vp-c-danger-1);
+}
+.vp-doc .nb-note {
+  margin: 0 0 16px;
+  font-size: 0.875rem;
+  font-style: italic;
+  color: var(--vp-c-text-2);
+}
