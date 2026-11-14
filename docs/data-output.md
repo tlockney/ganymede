@@ -8,7 +8,7 @@ has `jupyter.table`, `jupyter.sql` and `jupyter.chart`; cdp-kernel 0.12.0
 adds paging through the kernel and the `modules` option the apps use to
 draw charts offline.
 [#747](https://github.com/tlockney/ganymede/issues/747) tracks the rest.
-The rest of this note describes the state before that work.
+The rest of this note is the design, updated where 0.12.0 changed it.
 [Compared with Python](#compared-with-python) checks it against what
 Python notebooks do.
 
