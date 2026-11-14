@@ -64,7 +64,9 @@ test("the monitor runs ganymede mcp watch when the journal skill starts", () => 
   const [m] = monitors;
   // Claude Code rejects unknown keys.
   assert.deepEqual(Object.keys(m).sort(), ["command", "description", "name", "when"]);
-  assert.match(m.command, /^ganymede mcp watch\b/);
+  // An older ganymede without `mcp watch` exits quietly.
+  assert.match(m.command, /^ganymede mcp watch --help >\/dev\/null 2>&1 \|\| exit 0; /);
+  assert.match(m.command, /exec ganymede mcp watch --client claude-code$/);
   assert.equal(m.when, "on-skill-invoke:journal");
 });
 

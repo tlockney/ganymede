@@ -167,7 +167,8 @@ recorded in cells' provenance.
 `ganymede mcp watch` keeps running and prints one line for each
 [request](#learning-of-changes-mid-work-and-edits-refused) a person
 writes to the agent, in any notebook open in the server under the
-current directory:
+current directory (with `--server URL`, in any notebook open in that
+server, as for `mcp call`):
 
 ```text
 Request from "Thomas" in j.ipynb: "@claude does 2019 change the trend?". Answer it in the notebook with cell_add(path: "j.ipynb", answers: "p").
@@ -178,10 +179,12 @@ asks it for the open requests (`notebook_requests`), and prints a
 request once its text has stayed the same for `--settle` seconds (3),
 so a person still typing isn't interrupted. A request is printed once,
 and again only if the person edits it; an answered one is gone. With no
-server it waits for one. `--client` (default `claude-code`) is the
-name a request may use, `@claude` here. The journal plugin runs it as a
-monitor, so a Claude Code session learns of a request while it is
-idle. Whether a monitor's line starts a turn by itself, or waits for
+server, or one that stops answering, it waits for one; a server without
+`notebook_requests` gets one line on stderr. `--client` (default
+`claude-code`) is the name a request may use, `@claude` here. The
+journal plugin runs it as a monitor, so a Claude Code session learns of
+a request while it is idle; with a `ganymede` that has no `mcp watch`
+(the latest release), the monitor exits at once and does nothing. Whether a monitor's line starts a turn by itself, or waits for
 the person's next message, Claude Code doesn't document.
 
 `cell_add` takes a `mark`: a read mark to move past the new cell, so a
@@ -537,7 +540,7 @@ unchanged, as on an undo, keeps the author it had.
 `notebook_requests` lists the requests still open in the notebooks open
 in the server under the connection's folder (or in one, with `path`),
 each as an `@@request {"path": ..., "id": ..., "by": ...}` line and the
-cell's text. The agent answers one with `cell_add(answers: "<id>")`:
+cell's text, whose own lines starting `@@` are indented by a space. The agent answers one with `cell_add(answers: "<id>")`:
 the new cell goes below the request (unless `after` says otherwise),
 and the request gets `metadata.ganymede.request = {"done": <time>,
 "answer": <id>, "id": <request id>}`, so it is no longer a request, in

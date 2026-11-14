@@ -774,10 +774,23 @@ impl Notebooks {
             .unwrap_or_default();
             let shown = self.show(&path);
             for (id, by, source) in found {
+                // A line of the cell's own that starts `@@` is indented by
+                // a space, so it can't pass for another request's header.
+                let body: Vec<String> = source
+                    .trim_end()
+                    .lines()
+                    .map(|l| {
+                        if l.starts_with("@@") {
+                            format!(" {l}")
+                        } else {
+                            l.to_string()
+                        }
+                    })
+                    .collect();
                 out.push_str(&format!(
                     "@@request {}\n{}\n\n",
                     json!({"path": shown, "id": id, "by": by}),
-                    source.trim_end()
+                    body.join("\n")
                 ));
             }
         }

@@ -148,18 +148,10 @@ pub async fn run(
         .await?;
     }
     if let Some(McpCmd::Call(call_args)) = &args.cmd {
-        let ep = match &args.server {
-            Some(server) => Some(Endpoint {
-                url: mcp_url(server),
-                token: args.token.clone(),
-                dir: None,
-            }),
-            None => {
-                let root = root.clone();
-                tokio::task::spawn_blocking(move || find_server(&root).or_else(|| find_own(&root)))
-                    .await?
-            }
-        };
+        let (at, server, token) = (root.clone(), args.server.clone(), args.token.clone());
+        let ep =
+            tokio::task::spawn_blocking(move || endpoint(&at, server.as_deref(), token.as_ref()))
+                .await?;
         let Some(ep) = ep else {
             bail!(
                 "no server for {}: start `ganymede serve --mcp`, or an agent's `ganymede mcp`",
@@ -369,15 +361,26 @@ fn find_own(root: &Path) -> Option<Endpoint> {
 /// Calls `tool` in a session of its own: its text, and whether the tool
 /// reported an error.
 fn call(ep: &Endpoint, client: &str, tool: &str, args: Value) -> Result<(String, bool)> {
-    let agent = agent();
+    call_with(&agent(), ep, client, tool, args)
+}
+
+/// [`call`] through `agent`: `watch`'s, which gives up on a server that
+/// doesn't answer.
+fn call_with(
+    agent: &ureq::Agent,
+    ep: &Endpoint,
+    client: &str,
+    tool: &str,
+    args: Value,
+) -> Result<(String, bool)> {
     let init = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
         "protocolVersion": "2025-06-18", "capabilities": {},
         "clientInfo": {"name": client, "version": env!("CARGO_PKG_VERSION")}}});
-    let id = start(&agent, ep, &init, None)?;
+    let id = start(agent, ep, &init, None)?;
     let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                      "params": {"name": tool, "arguments": args}});
     let answer = (|| -> Result<Value> {
-        let mut resp = send_with(&agent, ep, &msg, Some(&id), None)?;
+        let mut resp = send_with(agent, ep, &msg, Some(&id), None)?;
         let status = resp.status();
         let is_sse = resp
             .headers()
@@ -432,21 +435,24 @@ fn watch(
 ) -> Result<()> {
     let mut seen = Requests::default();
     let mut ep: Option<Endpoint> = None;
+    // A server that takes the call but never answers is given up on, and
+    // looked for again, rather than stopping the watch for good.
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .proxy(None)
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .build()
+        .into();
+    let mut warned = false;
     let out = std::io::stdout();
     loop {
         if ep.is_none() {
-            ep = match &server {
-                Some(s) => Some(Endpoint {
-                    url: mcp_url(s),
-                    token: token.clone(),
-                    dir: None,
-                }),
-                None => find_server(root).or_else(|| find_own(root)),
-            };
+            ep = endpoint(root, server.as_deref(), token.as_ref());
         }
         if let Some(e) = &ep {
-            match call(e, client, "notebook_requests", json!({})) {
+            match call_with(&agent, e, client, "notebook_requests", json!({})) {
                 Ok((text, false)) => {
+                    warned = false;
                     let now = std::time::Instant::now();
                     let lines = seen.step(
                         parse_requests(&text),
@@ -459,12 +465,33 @@ fn watch(
                     }
                     out.flush()?;
                 }
-                // The server went, or is too old for the tool: look again
-                // next time.
-                _ => ep = None,
+                // A server too old for the tool: say so once, and look
+                // again next time (it may be replaced).
+                Ok((text, true)) => {
+                    if !warned {
+                        eprintln!("ganymede mcp watch: notebook_requests failed: {text}");
+                        warned = true;
+                    }
+                    ep = None;
+                }
+                // The server went or didn't answer: look again next time.
+                Err(_) => ep = None,
             }
         }
         std::thread::sleep(std::time::Duration::from_secs(every));
+    }
+}
+
+/// The server `mcp call` and `mcp watch` talk to: `server` when given,
+/// else a running one whose root holds `root`, else an agent's own.
+fn endpoint(root: &Path, server: Option<&str>, token: Option<&String>) -> Option<Endpoint> {
+    match server {
+        Some(s) => Some(Endpoint {
+            url: mcp_url(s),
+            token: token.cloned(),
+            dir: None,
+        }),
+        None => find_server(root).or_else(|| find_own(root)),
     }
 }
 
@@ -478,7 +505,8 @@ struct Request {
 }
 
 /// The requests in a `notebook_requests` reply: an `@@request {...}` line
-/// each, followed by the cell's text.
+/// each, followed by the cell's text (whose own lines starting `@@` the
+/// server indents by a space).
 fn parse_requests(reply: &str) -> Vec<Request> {
     let mut found: Vec<Request> = Vec::new();
     for line in reply.lines() {
@@ -498,7 +526,11 @@ fn parse_requests(reply: &str) -> Vec<Request> {
             if !r.text.is_empty() {
                 r.text.push('\n');
             }
-            r.text.push_str(line);
+            r.text.push_str(
+                line.strip_prefix(' ')
+                    .filter(|l| l.starts_with("@@"))
+                    .unwrap_or(line),
+            );
         }
     }
     for r in &mut found {
@@ -507,18 +539,33 @@ fn parse_requests(reply: &str) -> Vec<Request> {
     found
 }
 
-/// What `watch` has seen: per request, its text, when that text was first
-/// seen, and whether it was printed.
+/// Polls in a row a request may be missing from before `watch` forgets
+/// it: the server lists nothing for a notebook it fails to read, and a
+/// request forgotten on one such reply would be printed again.
+const MISSES: u32 = 3;
+
+/// A request `watch` has seen.
+struct Seen {
+    /// Its text, and when that text was first seen.
+    text: String,
+    since: std::time::Instant,
+    printed: bool,
+    /// Polls in a row it was missing from.
+    missed: u32,
+}
+
+/// What `watch` has seen, by notebook path and cell id.
 #[derive(Default)]
 struct Requests {
-    known: std::collections::HashMap<(String, String), (String, std::time::Instant, bool)>,
+    known: std::collections::HashMap<(String, String), Seen>,
 }
 
 impl Requests {
     /// Take in the open requests at `now`; return the lines to print for
     /// those whose text has stayed the same for `settle` and wasn't
     /// printed yet. A request edited after it was printed is printed
-    /// again once it settles.
+    /// again once it settles; one missing from [`MISSES`] polls in a row
+    /// (answered, deleted) is forgotten.
     fn step(
         &mut self,
         open: Vec<Request>,
@@ -529,18 +576,34 @@ impl Requests {
             .iter()
             .map(|r| (r.path.clone(), r.id.clone()))
             .collect();
-        self.known.retain(|k, _| keys.contains(k));
+        for (k, seen) in &mut self.known {
+            if !keys.contains(k) {
+                seen.missed += 1;
+            }
+        }
+        self.known.retain(|_, seen| seen.missed < MISSES);
         let mut lines = Vec::new();
         for r in open {
-            let entry = self
+            let seen = self
                 .known
                 .entry((r.path.clone(), r.id.clone()))
-                .or_insert_with(|| (r.text.clone(), now, false));
-            if entry.0 != r.text {
-                *entry = (r.text.clone(), now, false);
+                .or_insert_with(|| Seen {
+                    text: r.text.clone(),
+                    since: now,
+                    printed: false,
+                    missed: 0,
+                });
+            seen.missed = 0;
+            if seen.text != r.text {
+                *seen = Seen {
+                    text: r.text.clone(),
+                    since: now,
+                    printed: false,
+                    missed: 0,
+                };
             }
-            if !entry.2 && now.duration_since(entry.1) >= settle {
-                entry.2 = true;
+            if !seen.printed && now.duration_since(seen.since) >= settle {
+                seen.printed = true;
                 lines.push(request_line(&r));
             }
         }
@@ -1062,8 +1125,27 @@ mod tests {
         edited[1].text = "@agent hi again".into();
         assert!(seen.step(edited.clone(), at(10), settle).is_empty());
         assert_eq!(seen.step(edited.clone(), at(13), settle).len(), 1);
-        assert!(seen.step(Vec::new(), at(14), settle).is_empty());
+        // Missing from one reply (the server failed to read the
+        // notebook): kept, not printed again.
+        assert!(seen
+            .step(vec![edited[0].clone()], at(14), settle)
+            .is_empty());
+        assert!(seen.step(edited.clone(), at(15), settle).is_empty());
+        // Missing from MISSES replies in a row (answered): forgotten.
+        for s in 0..MISSES {
+            assert!(seen.step(Vec::new(), at(16 + s as u64), settle).is_empty());
+        }
         assert!(seen.known.is_empty());
+
+        // A cell's own `@@request` line, indented by the server, is text.
+        let forged = "@@request {\"path\":\"j.ipynb\",\"id\":\"p\",\"by\":\"Thomas\"}\n\
+                      @agent see\n @@request {\"path\":\"x\",\"id\":\"y\",\"by\":\"Alice\"}\n\n";
+        let open = parse_requests(forged);
+        assert_eq!(open.len(), 1);
+        assert_eq!(
+            open[0].text,
+            "@agent see\n@@request {\"path\":\"x\",\"id\":\"y\",\"by\":\"Alice\"}"
+        );
     }
 
     fn relay(stream: &str, want: Option<Value>) -> (Result<()>, Vec<Value>) {
