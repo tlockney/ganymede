@@ -124,6 +124,7 @@ stay silent when anything fails. Settings, as environment variables:
 | `GANYMEDE_JOURNAL_RECORD` | `marked` (default): record Bash commands ending in `# journal`. `all`: every Bash command. `off`: none. |
 | `GANYMEDE_JOURNAL_STOP` | `off` turns the `Stop` check off. |
 | `GANYMEDE_BIN` | The `ganymede` binary, when it isn't on `PATH`. |
+| `GANYMEDE_WATCH_EDITS` | Set to anything to also wake the agent on any edit you make, not only on a request ([a spike](#waking-the-agent-on-any-edit-spike)). |
 
 The agent can look at any chart with [`cell_snapshot`](#snapshots),
 which the skill tells it to do. For images in every `cell_run` reply as
@@ -131,6 +132,31 @@ well, start the server with images on:
 `ganymede serve --mcp` with `mcp_images = true` in its config, or change
 the plugin's server to `ganymede mcp --images` (which always starts a
 server of its own, so a person can't watch live).
+
+### Asking the agent from the journal
+
+While the agent keeps a journal, you can open the same notebook in the
+Ganymede app or in the browser and work in it alongside the agent. To
+ask the agent something there:
+
+1. Add a Markdown cell that starts with `@claude` (or `@agent`), then
+   your question or instruction, for example
+   `@claude does 2019 change the trend?`.
+2. Stop typing. After a few seconds the agent is told of the request.
+3. The agent answers in a new cell right below yours and marks your
+   cell as answered. To ask a follow-up, write a new `@claude` cell;
+   editing an answered one doesn't ask again.
+
+Only a cell you wrote or edited while the notebook is open counts. The
+same text already in the file, or written by an agent or a kernel, is
+not a request. Any other edit you make reaches the agent as context
+with its next step, or when you next write to it in Claude Code.
+
+When the agent is busy, it sees the request after its current step.
+Whether a request also wakes an agent that has finished its turn and
+is waiting depends on Claude Code's monitors, which don't document
+that; if nothing happens, send any message in Claude Code and the
+agent will pick the request up.
 
 ### Updating the plugin
 
