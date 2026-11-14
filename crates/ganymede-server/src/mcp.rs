@@ -39,13 +39,14 @@ mod snapshot;
 
 use crate::collab::{hold_notebook, notebook_room_id, with_notebook, Hold};
 use crate::folder;
+use crate::room_ops;
 use crate::AppState;
 use base64::Engine as _;
 use ganymede_api::sessions::KernelRef;
 use ganymede_api::SessionCreate;
 use ganymede_contents::{ContentType, GetOptions, SaveRequest};
 use ganymede_documents::schema::{self, Roots};
-use ganymede_documents::yrs::{Array, GetString, Map, Out, TransactionMut};
+use ganymede_documents::yrs::{Array, Map, Out, TransactionMut};
 use ganymede_documents::{Effects, Room};
 use ganymede_nbformat::{Cell, Notebook, Output};
 use rmcp::handler::server::router::prompt::PromptRouter;
@@ -661,10 +662,7 @@ impl Notebooks {
             // Marked before it runs, so a failed run leaves it marked.
             metadata["ganymede"]["outputs"] = json!("dropped");
         }
-        let cell = json!({
-            "cell_type": "code", "execution_count": null, "id": id,
-            "metadata": metadata, "outputs": [], "source": a.source,
-        });
+        let cell = room_ops::new_cell("code", &id, &a.source, metadata).expect("a known cell type");
         self.insert(&path, cell, a.after, None).await?;
         self.run_dropping(&path, &kernel_id, id, timeout, drop)
             .await
@@ -686,16 +684,13 @@ impl Notebooks {
             _ => "note",
         };
         let metadata = provenance(&context.peer, mode);
-        let cell = match a.cell_type.unwrap_or(CellKind::Markdown) {
-            CellKind::Code => json!({"cell_type": "code", "execution_count": null, "id": id,
-                "metadata": metadata, "outputs": [], "source": a.source}),
-            CellKind::Markdown => {
-                json!({"cell_type": "markdown", "id": id, "metadata": metadata, "source": a.source})
-            }
-            CellKind::Raw => {
-                json!({"cell_type": "raw", "id": id, "metadata": metadata, "source": a.source})
-            }
+        let cell_type = match a.cell_type.unwrap_or(CellKind::Markdown) {
+            CellKind::Code => "code",
+            CellKind::Markdown => "markdown",
+            CellKind::Raw => "raw",
         };
+        let cell =
+            room_ops::new_cell(cell_type, &id, &a.source, metadata).expect("a known cell type");
         if let Some(request) = a.answers {
             self.insert_answer(&path, cell, a.after, a.mark, request)
                 .await?;
@@ -857,43 +852,7 @@ impl Notebooks {
                 marks::Aspect::Source,
                 None,
                 move |room| {
-                    room.edit(|txn, roots| {
-                        let Some(cell) = schema::find_cell(txn, roots, &id) else {
-                            return false;
-                        };
-                        let previous = match cell.get(txn, "source") {
-                            Some(Out::YText(t)) => {
-                                let previous = t.get_string(txn);
-                                schema::set_text(txn, &t, &source);
-                                Some(previous)
-                            }
-                            other => {
-                                // Not a shared string: keep its text if it has any.
-                                let previous = other
-                                    .map(|o| schema::out_to_json(txn, &o))
-                                    .and_then(|v| match v {
-                                        Value::String(s) => Some(s),
-                                        Value::Array(a) => Some(
-                                            a.iter().filter_map(Value::as_str).collect::<String>(),
-                                        ),
-                                        _ => None,
-                                    });
-                                cell.insert(
-                                    txn,
-                                    "source",
-                                    ganymede_documents::yrs::TextPrelim::new(source.clone()),
-                                );
-                                previous
-                            }
-                        };
-                        // An unchanged source is no edit: the cell keeps its
-                        // provenance. An empty one replaced is no revision.
-                        if previous.as_deref() != Some(source.as_str()) {
-                            let superseded = previous.filter(|p| !p.is_empty());
-                            stamp(txn, &cell, &by, superseded);
-                        }
-                        true
-                    })
+                    room.edit(|txn, roots| room_ops::set_source(txn, roots, &id, &source, &by))
                 },
             )
             .await?;
@@ -959,15 +918,7 @@ impl Notebooks {
                 vec![a.id.clone()],
                 marks::Aspect::All,
                 None,
-                move |room| {
-                    room.edit(|txn, roots| match schema::cell_index(txn, roots, &id) {
-                        Some(i) => {
-                            roots.cells.remove(txn, i);
-                            true
-                        }
-                        None => false,
-                    })
-                },
+                move |room| room.edit(|txn, roots| room_ops::delete(txn, roots, &id)),
             )
             .await?;
         if !found {
@@ -1682,9 +1633,7 @@ enum PersonCell {
     Edit(u64),
 }
 
-fn now() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-}
+use crate::room_ops::now;
 
 pub(crate) fn new_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..12].to_string()
@@ -1745,56 +1694,7 @@ fn with_note(mut result: CallToolResult, note: &str) -> CallToolResult {
     result
 }
 
-/// How many superseded sources a cell's `metadata.ganymede.agent.history`
-/// keeps; older ones are dropped.
-pub const HISTORY_LIMIT: usize = 10;
-
-/// Update an existing cell's provenance after an edit: `at`, and `by` when
-/// the cell had none. A `superseded` source is appended to `history` as
-/// `{"source", "by", "at"}`: the text the edit replaced, who replaced it
-/// and when.
-fn stamp(
-    txn: &mut TransactionMut,
-    cell: &ganymede_documents::yrs::MapRef,
-    by: &str,
-    superseded: Option<String>,
-) {
-    let meta = match cell.get(txn, "metadata") {
-        Some(Out::YMap(m)) => m,
-        _ => cell.insert(
-            txn,
-            "metadata",
-            ganymede_documents::yrs::MapPrelim::default(),
-        ),
-    };
-    let mut g = meta
-        .get(txn, "ganymede")
-        .map(|o| schema::out_to_json(txn, &o))
-        .filter(Value::is_object)
-        .unwrap_or_else(|| json!({}));
-    // Indexing a non-object panics; another tool may have written one.
-    if !g["agent"].is_object() {
-        g["agent"] = json!({});
-    }
-    let agent = &mut g["agent"];
-    if agent.get("by").is_none() {
-        agent["by"] = json!(by);
-        agent["mode"] = json!("note");
-    }
-    let at = now();
-    if let Some(source) = superseded {
-        let mut history = match agent["history"].take() {
-            Value::Array(h) => h,
-            _ => Vec::new(),
-        };
-        history.push(json!({"source": source, "by": by, "at": at}));
-        let excess = history.len().saturating_sub(HISTORY_LIMIT);
-        history.drain(..excess);
-        agent["history"] = Value::Array(history);
-    }
-    agent["at"] = json!(at);
-    meta.insert(txn, "ganymede", schema::json_to_any(&g));
-}
+pub use crate::room_ops::HISTORY_LIMIT;
 
 impl Notebooks {
     fn can_edit(&self) -> Result<(), McpError> {
@@ -2108,7 +2008,7 @@ impl Notebooks {
             .room(path, move |room| {
                 // Another server owns the file (#272): its room would undo
                 // the edit and never save it, so refuse it here.
-                if room.is_read_only() {
+                if !room_ops::writable(room) {
                     return (Err(Refused::ReadOnly), Effects::default());
                 }
                 // Nothing to refuse for no cells (clearing outputs).
@@ -2351,15 +2251,8 @@ impl Notebooks {
         let r = self
             .own_edit(path, vec![id], marks::Aspect::All, mark, move |room| {
                 room.edit(|txn, roots: &Roots| {
-                    let at = match &after {
-                        None => roots.cells.len(txn),
-                        Some(a) => match schema::cell_index(txn, roots, a) {
-                            Some(i) => i + 1,
-                            None => return Err(format!("no cell {a}")),
-                        },
-                    };
-                    schema::insert_cell(txn, &roots.cells, at, cell);
-                    Ok(())
+                    room_ops::insert(txn, roots, cell, after.as_deref())
+                        .map_err(|a| format!("no cell {a}"))
                 })
             })
             .await?;

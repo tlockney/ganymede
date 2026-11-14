@@ -29,8 +29,9 @@
 //! once symlinks are resolved; a notebook may always read itself. A
 //! kernel's notebook is the one of the session the server started it for.
 
-use crate::collab::{notebook_room_id, with_notebook};
+use crate::collab::{hold_notebook, notebook_room_id, with_notebook, Hold};
 use crate::mcp::{notebook_for_search, search, search_notebooks};
+use crate::room_ops;
 use crate::routes::{HttpError, LenientJson};
 use crate::AppState;
 use async_trait::async_trait;
@@ -38,7 +39,6 @@ use axum::extract::{Path, State};
 use axum::Json;
 use ganymede_contents::{ContentType, GetOptions};
 use ganymede_documents::schema;
-use ganymede_documents::yrs::{Any, Array, GetString, Map, Out};
 use ganymede_host::{Caller, Hello, HostError, Responder};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -193,6 +193,10 @@ pub struct HostApi {
     /// Kernels the server didn't start, with their notebooks:
     /// `ganymede execute`'s ([`HostApi::pin`]).
     pinned: std::sync::Mutex<std::collections::HashMap<String, Option<String>>>,
+    /// The notebook room each kernel's `self.*` calls hold open, by kernel
+    /// id, with the room's id ([`HostApi::hold`]). Shared with the task
+    /// that lets a server kernel's go when it ends.
+    holds: Holds,
 }
 
 impl HostApi {
@@ -214,6 +218,7 @@ impl HostApi {
             slots: Default::default(),
             sessions: Default::default(),
             pinned: Default::default(),
+            holds: Default::default(),
         }
     }
 
@@ -230,6 +235,7 @@ impl HostApi {
     pub fn unpin(&self, kernel_id: &str) {
         self.pinned.lock().unwrap().remove(kernel_id);
         self.slots.lock().unwrap().remove(kernel_id);
+        self.holds.lock().unwrap().remove(kernel_id);
     }
 
     /// Whether `kernel_id` is running: one of the server's, or pinned.
@@ -683,7 +689,7 @@ impl Responder for HostApi {
                 let Some(path) = who.notebook() else {
                     return Err(HostError::unavailable("this kernel has no notebook"));
                 };
-                self.edit_own(path, m, &params).await
+                self.edit_own(&caller.kernel_id, path, m, &params).await
             }
             _ => Err(HostError::unavailable(format!("no host method {method}"))),
         }
@@ -697,17 +703,9 @@ enum Refused {
     Bad(String),
 }
 
-/// A cell's source as a string, however the room stores it.
-fn source_of<T: ganymede_documents::yrs::ReadTxn>(
-    txn: &T,
-    cell: &ganymede_documents::yrs::MapRef,
-) -> String {
-    match cell.get(txn, "source") {
-        Some(Out::YText(t)) => t.get_string(txn),
-        Some(Out::Any(Any::String(s))) => s.to_string(),
-        _ => String::new(),
-    }
-}
+/// `metadata.ganymede.agent.by` on cells a notebook's own code adds or
+/// edits through `self.*` (#768), so they can't pass for a person's.
+const KERNEL: &str = "kernel";
 
 /// `params[key]` as a string, or `failed`.
 fn string_param<'a>(params: &'a Value, key: &str) -> Result<&'a str, HostError> {
@@ -716,10 +714,78 @@ fn string_param<'a>(params: &'a Value, key: &str) -> Result<&'a str, HostError> 
         .ok_or_else(|| HostError::failed(format!("`{key}` must be a string")))
 }
 
+/// Room holds by kernel id: `(room id, hold)`.
+type Holds = Arc<std::sync::Mutex<std::collections::HashMap<String, (String, Hold)>>>;
+
 impl HostApi {
-    /// `self.add`, `self.edit` or `self.delete` on `path`, the kernel's
-    /// own notebook, through its room.
-    async fn edit_own(&self, path: &str, method: &str, params: &Value) -> Result<Value, HostError> {
+    /// Keep room `room_id` open for `kernel_id` while the kernel runs, as
+    /// an MCP connection keeps the rooms it edits (#768). A kernel with no
+    /// client on its notebook would otherwise let the room retire between
+    /// calls, and a notebook without cell ids (nbformat 4.4 and older)
+    /// would get new ones, so an id `self.add` returned would stop
+    /// naming its cell. The hold is let go when the kernel ends: a server
+    /// kernel's when the kernel manager shuts it down, a pinned one's at
+    /// [`HostApi::unpin`].
+    async fn hold(&self, kernel_id: &str, room_id: &str) {
+        {
+            let mut holds = self.holds.lock().unwrap();
+            holds.retain(|k, _| self.is_live(k));
+            if holds
+                .get(kernel_id)
+                .is_some_and(|(r, h)| r == room_id && h.is_live())
+            {
+                return;
+            }
+        }
+        // Watched from before the room loads, so a kernel shut down
+        // meanwhile still lets its hold go: the receiver sees it at once.
+        let alive = self
+            .state
+            .kernels
+            .get(kernel_id)
+            .ok()
+            .map(|k| k.watch_alive());
+        if let Some(h) = hold_notebook(&self.state.collab, &self.state.contents, room_id).await {
+            // One made meanwhile by another call is replaced; it leaves the
+            // room as this one joins it.
+            let first = self
+                .holds
+                .lock()
+                .unwrap()
+                .insert(kernel_id.to_string(), (room_id.to_string(), h))
+                .is_none();
+            // One watcher per kernel: a later hold on another room
+            // replaces the entry the watcher removes.
+            if !self.is_live(kernel_id) {
+                // Unpinned, or shut down, while the room loaded.
+                self.holds.lock().unwrap().remove(kernel_id);
+                return;
+            }
+            if first {
+                if let Some(mut alive) = alive {
+                    let holds = Arc::downgrade(&self.holds);
+                    let kernel_id = kernel_id.to_string();
+                    tokio::spawn(async move {
+                        // Err: the kernel was dropped, so it ended too.
+                        let _ = alive.wait_for(|a| !*a).await;
+                        if let Some(holds) = holds.upgrade() {
+                            holds.lock().unwrap().remove(&kernel_id);
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    /// `self.add`, `self.edit` or `self.delete` by kernel `kernel_id` on
+    /// `path`, its own notebook, through its room.
+    async fn edit_own(
+        &self,
+        kernel_id: &str,
+        path: &str,
+        method: &str,
+        params: &Value,
+    ) -> Result<Value, HostError> {
         enum Op {
             Add {
                 cell: Value,
@@ -744,14 +810,12 @@ impl HostApi {
                     Value::String(t) => t.as_str(),
                     _ => "",
                 };
-                let cell = match cell_type {
-                    "code" => json!({"cell_type": "code", "execution_count": null, "id": id,
-                                     "metadata": {}, "outputs": [], "source": source}),
-                    t @ ("markdown" | "raw") => {
-                        json!({"cell_type": t, "id": id, "metadata": {}, "source": source})
-                    }
-                    _ => return Err(HostError::failed("cell_type must be code, markdown or raw")),
-                };
+                // Marked as the notebook's own code's, so it can't pass for
+                // a person's cell.
+                let metadata = json!({"ganymede": {"agent": {
+                    "by": KERNEL, "mode": "note", "at": room_ops::now()}}});
+                let cell = room_ops::new_cell(cell_type, &id, &source, metadata)
+                    .ok_or_else(|| HostError::failed("cell_type must be code, markdown or raw"))?;
                 let after = match &params["after"] {
                     Value::Null => None,
                     Value::String(a) => Some(a.clone()),
@@ -773,14 +837,11 @@ impl HostApi {
         let room_id = notebook_room_id(&state.collab, &state.contents, path)
             .await
             .map_err(|e| HostError::failed(format!("cannot open {path}: {e}")))?;
+        self.hold(kernel_id, &room_id).await;
         let outcome = with_notebook(&state.collab, &state.contents, &room_id, move |room| {
-            // Another server owns the file (#272): an edit here would be
-            // undone and never saved.
-            if room.is_read_only() {
+            if !room_ops::writable(room) {
                 return (
-                    Err(Refused::Bad(
-                        "the notebook is open in another server on this machine".into(),
-                    )),
+                    Err(Refused::Bad(room_ops::READ_ONLY.into())),
                     Default::default(),
                 );
             }
@@ -789,7 +850,8 @@ impl HostApi {
                     |txn: &mut ganymede_documents::yrs::TransactionMut, id: &str, hash: &str| {
                         let cell = schema::find_cell(txn, roots, id)
                             .ok_or_else(|| Refused::NoCell(id.into()))?;
-                        let now = ganymede_documents::murmur2(source_of(txn, &cell).as_bytes(), 0);
+                        let source = room_ops::source_of(txn, &cell).unwrap_or_default();
+                        let now = ganymede_documents::murmur2(source.as_bytes(), 0);
                         if now.to_string() != hash {
                             return Err(Refused::Mismatch(id.into()));
                         }
@@ -797,36 +859,21 @@ impl HostApi {
                     };
                 match op {
                     Op::Add { cell, after } => {
-                        let at = match &after {
-                            None => roots.cells.len(txn),
-                            Some(a) => match schema::cell_index(txn, roots, a) {
-                                Some(i) => i + 1,
-                                None => return Err(Refused::NoCell(a.clone())),
-                            },
-                        };
                         let id = cell["id"].clone();
-                        schema::insert_cell(txn, &roots.cells, at, cell);
+                        room_ops::insert(txn, roots, cell, after.as_deref())
+                            .map_err(Refused::NoCell)?;
                         Ok(json!({ "id": id }))
                     }
                     Op::Edit { id, source, hash } => {
-                        let cell = check(txn, &id, &hash)?;
-                        match cell.get(txn, "source") {
-                            Some(Out::YText(t)) => schema::set_text(txn, &t, &source),
-                            _ => {
-                                cell.insert(
-                                    txn,
-                                    "source",
-                                    ganymede_documents::yrs::TextPrelim::new(source),
-                                );
-                            }
-                        }
+                        check(txn, &id, &hash)?;
+                        // Stamped as the kernel's, with the replaced source
+                        // in its history, as an agent's edit is.
+                        room_ops::set_source(txn, roots, &id, &source, KERNEL);
                         Ok(json!({}))
                     }
                     Op::Delete { id, hash } => {
                         check(txn, &id, &hash)?;
-                        let i = schema::cell_index(txn, roots, &id)
-                            .ok_or_else(|| Refused::NoCell(id.clone()))?;
-                        roots.cells.remove(txn, i);
+                        room_ops::delete(txn, roots, &id);
                         Ok(json!({}))
                     }
                 }
