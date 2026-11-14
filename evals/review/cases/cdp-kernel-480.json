@@ -1,0 +1,19 @@
+{
+  "id": "cdp-kernel-480",
+  "repo": "tlockney/cdp-kernel",
+  "pr": 480,
+  "issue": 479,
+  "base": "70ca92a08d9d9c3082047919ebe8b367cff71ee9",
+  "head": "16247e4f39b7394f05cc310f051abe691ef36463",
+  "branch": "claude/project-thread-kj8azj-chart",
+  "kind": "known",
+  "findings": [
+    {
+      "summary": "Legends Plot accepts are silently dropped: `color: { legend: \"swatches\" | \"ramp\" }` and legends on symbol/opacity/r draw nothing, because the code sets every color legend off and passes `figure: false`, which makes real Plot (0.6.19) skip appending legends. The tests use a stand-in for Plot so they cannot see how real Plot handles `figure: false`.",
+      "severity": "Medium",
+      "class": "E",
+      "source": "https://github.com/tlockney/cdp-kernel/pull/480"
+    }
+  ],
+  "notes": "Stacked on the SQL branch claude/project-thread-kj8azj-sql (70ca92a)."
+}

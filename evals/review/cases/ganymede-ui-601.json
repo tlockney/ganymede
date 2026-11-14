@@ -1,0 +1,12 @@
+{
+  "id": "ganymede-ui-601",
+  "repo": "tlockney/ganymede-ui",
+  "pr": 601,
+  "issue": 573,
+  "base": "55c745bb606d636acc6eedfe0eabef6c74c3a2ee",
+  "head": "1e1ca35fa36b87b70e81ba6cf76424bf9c208473",
+  "branch": "claude/project-thread-g5mbgs-ganymede-ui-573",
+  "kind": "clean",
+  "findings": [],
+  "notes": "First-round review said Review: pass; merged at this head."
+}

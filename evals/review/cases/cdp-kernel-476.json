@@ -1,0 +1,19 @@
+{
+  "id": "cdp-kernel-476",
+  "repo": "tlockney/cdp-kernel",
+  "pr": 476,
+  "issue": 475,
+  "base": "ec0e8f99489996c83b0a8e8175e1aa52551aa35a",
+  "head": "6b48c703bd95db9259c2b424db775b9af0710914",
+  "branch": "claude/project-thread-kj8azj",
+  "kind": "known",
+  "findings": [
+    {
+      "summary": "The most common DuckDB result, `await conn.run(...)` (a DuckDBMaterializedResult), is detected as a table but its `getRowObjectsJS()` returns a Promise in @duckdb/node-api, so formatting a cell whose value is one, or `jupyter.table` of one, throws (`.slice is not a function`). The test's DuckDB stand-in has only a synchronous method, so the tests could not catch it.",
+      "severity": "Medium",
+      "class": "E",
+      "source": "https://github.com/tlockney/cdp-kernel/pull/476"
+    }
+  ],
+  "notes": ""
+}

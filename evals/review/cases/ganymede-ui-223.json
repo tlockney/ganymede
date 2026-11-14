@@ -1,0 +1,19 @@
+{
+  "id": "ganymede-ui-223",
+  "repo": "tlockney/ganymede-ui",
+  "pr": 223,
+  "issue": 203,
+  "base": "048eccc19022130a3a1a0859f98d26d63631e199",
+  "head": "9c230a45726c9a4af29b7e1133cdab20160bcc37",
+  "branch": "claude/project-thread-fnidvc-203",
+  "kind": "known",
+  "findings": [
+    {
+      "summary": "Moving a folder that holds the open notebook orphans its kernel: the session is not moved to the new path (renaming the notebook itself calls session.setPath/setName, the folder move does not), so the reopened notebook starts a fresh kernel and loses state while the old kernel lingers under Running. Edits typed while the move runs are dropped, and if the controller has not reported the open notebook the old pane's unmount save can write it back to the old path.",
+      "severity": "Medium",
+      "class": "A",
+      "source": "https://github.com/tlockney/ganymede-ui/pull/223"
+    }
+  ],
+  "notes": "Stacked on #221 (branch claude/project-thread-fnidvc-202); base is the tip of that branch merged into the PR at a725f2c, as the review diffed against it."
+}

@@ -1,0 +1,19 @@
+{
+  "id": "ganymede-741",
+  "repo": "tlockney/ganymede",
+  "pr": 741,
+  "issue": 739,
+  "base": "a477ba38a96e97b510f3363555b8c40e80688389",
+  "head": "2aadddf261a97192e1c1e367606067d4638e79aa",
+  "branch": "claude/project-thread-ru3abw-folder-kernel",
+  "kind": "missed",
+  "findings": [
+    {
+      "summary": "`folder::default_kernel` reads `.ganymede.toml` from outside the server root: it checks only for `..` components and symlink_metadata on the final file, so a symlinked directory component (root/a -> /elsewhere) is followed and `dir` values with `\\` or a drive prefix (`..\\..`, `C:/x`) escape the root on Windows. The contents API refuses the same paths (resolves_under, ApiPath::parse); the docs say it never reads above the root.",
+      "severity": "Medium",
+      "class": "B",
+      "source": "reviews/pr-reviewer/2026-11-13-ganymede-741-after-merge.md"
+    }
+  ],
+  "notes": "The posted pass was on 2aadddf; the finding was verified on a3999a7 (a review-fix commit on top)."
+}

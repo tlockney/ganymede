@@ -1,0 +1,25 @@
+{
+  "id": "ganymede-ui-510",
+  "repo": "tlockney/ganymede-ui",
+  "pr": 510,
+  "issue": 183,
+  "base": "885aa2988b1a4bff023070f72fb42be3108f2cb6",
+  "head": "f6b9f2e7603ea93ea418f827243d22ded663cd5f",
+  "branch": "claude/notebook-rooms",
+  "kind": "known",
+  "findings": [
+    {
+      "summary": "After a server restart (websocket close 1003 unknown_session) the pane reconnects its old Y.Doc to the new room. Ganymede rebuilds a room deterministically as client 0, which merges cleanly only if the file is unchanged since; after any saved edit the client-0 items collide and later cells are duplicated, then autosaved. The server says the close is reloadable; the pane should drop the room and rejoin with a fresh session instead of reconnecting.",
+      "severity": "High",
+      "class": "A",
+      "source": "https://github.com/tlockney/ganymede-ui/pull/510"
+    },
+    {
+      "summary": "`synced()` does not settle on the provider's `closed` event: a terminal close during the join (4404, 4400, 4401) waits the full 15 s before falling back. A 4404 during the join also runs onClosed, so `gone` is true and the 'was deleted' notice shows, and the pane then opens through the contents API with `gone` still true so autosave, Cmd+S and the teardown save all skip silently.",
+      "severity": "Medium",
+      "class": "A",
+      "source": "https://github.com/tlockney/ganymede-ui/pull/510"
+    }
+  ],
+  "notes": ""
+}
