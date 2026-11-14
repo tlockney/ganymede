@@ -826,6 +826,60 @@ async fn cells(api: &HostApi, caller: &Caller, path: &str) -> Vec<(String, Strin
         .collect()
 }
 
+/// Cell `id`'s `metadata.ganymede.agent` in `path`, as `notebooks.read`
+/// returns it.
+async fn provenance(api: &HostApi, caller: &Caller, path: &str, id: &str) -> Value {
+    let read = api
+        .call(caller, "notebooks.read", json!({ "path": path }))
+        .await
+        .unwrap();
+    read["notebook"]["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == id)
+        .map(|c| c["metadata"]["ganymede"]["agent"].clone())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn self_edits_carry_provenance_and_history() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let (api, caller) = setup(dir.path(), "index.ipynb", &[]).await;
+
+    let added = api
+        .call(&caller, "self.add", json!({"source": "x = 1"}))
+        .await
+        .unwrap();
+    let id = added["id"].as_str().unwrap().to_string();
+    let agent = provenance(&api, &caller, "index.ipynb", &id).await;
+    assert_eq!(agent["by"], "kernel");
+    assert_eq!(agent["mode"], "note");
+    assert!(agent["at"].is_string(), "{agent}");
+    assert!(agent.get("history").is_none(), "{agent}");
+
+    let hash = cells(&api, &caller, "index.ipynb")
+        .await
+        .into_iter()
+        .find(|c| c.0 == id)
+        .unwrap()
+        .2;
+    api.call(
+        &caller,
+        "self.edit",
+        json!({"id": id, "source": "x = 2", "source_hash": hash}),
+    )
+    .await
+    .unwrap();
+    let agent = provenance(&api, &caller, "index.ipynb", &id).await;
+    assert_eq!(agent["by"], "kernel");
+    let history = agent["history"].as_array().unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0]["source"], "x = 1");
+    assert_eq!(history[0]["by"], "kernel");
+}
+
 #[tokio::test]
 async fn a_notebook_adds_edits_and_deletes_its_own_cells() {
     let dir = tempfile::tempdir().unwrap();

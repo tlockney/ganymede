@@ -24,6 +24,7 @@
 //! JupyterLab's Run All. Input requests are refused (`allow_stdin` off).
 
 use crate::collab::{send_to_notebook_room, Cmd};
+use crate::room_ops;
 use crate::routes::{HttpError, LenientJson};
 use crate::AppState;
 use axum::extract::{Path, State};
@@ -31,7 +32,7 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use ganymede_api::KernelManager;
 use ganymede_documents::schema::{self, Roots};
-use ganymede_documents::yrs::{Any, GetString, Map, Out};
+use ganymede_documents::yrs::{Any, Map, Out};
 use ganymede_documents::{Effects, Room};
 use ganymede_exec::{CellStatus, Event, NotebookRun, Options};
 use ganymede_nbformat::Cell;
@@ -272,13 +273,12 @@ fn enqueue(room: &mut Room, cells: &[(String, Option<String>)]) -> (Result<(), R
     }
     // Another server owns the file (#272): this room never saves, so the
     // cells' outputs would be lost.
-    if room.is_read_only() {
+    if !room_ops::writable(room) {
         return (
-            Err(Refused::Bad(
-                "the notebook is open in another server on this machine, so it is \
-                 read-only here; run it there"
-                    .into(),
-            )),
+            Err(Refused::Bad(format!(
+                "{}, so it is read-only here; run it there",
+                room_ops::READ_ONLY
+            ))),
             Effects::default(),
         );
     }
@@ -292,11 +292,7 @@ fn enqueue(room: &mut Room, cells: &[(String, Option<String>)]) -> (Result<(), R
             if !code {
                 return Err(Refused::Bad(format!("Cell {id:?} is not a code cell")));
             }
-            let source = match cell.get(txn, "source") {
-                Some(Out::YText(t)) => t.get_string(txn),
-                Some(Out::Any(Any::String(s))) => s.to_string(),
-                _ => String::new(),
-            };
+            let source = room_ops::source_of(txn, &cell).unwrap_or_default();
             let stale = hash
                 .as_ref()
                 .is_some_and(|h| ganymede_documents::murmur2(source.as_bytes(), 0).to_string() != *h);
