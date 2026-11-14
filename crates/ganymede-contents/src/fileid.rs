@@ -105,15 +105,16 @@ fn untag<'a>(json: &str, stored: Option<&'a str>) -> Option<&'a str> {
 }
 
 /// A stamp of the file at `path`, from its metadata, without reading
-/// it: its size, modification time and, on Unix, device and inode
-/// number. `None` when it can't be read. A file replaced the way `git
+/// it: its size, modification time and, on Unix, inode number
+/// (not the device, which isn't stable across remounts). `None` when it can't be read. A file replaced the way `git
 /// checkout`, most editors, downloads and sync tools do (a new file
 /// renamed over it) has a new inode, and one rewritten in place has a new
 /// modification time, so either changes the stamp. The change time is
 /// left out on purpose: it moves with `chmod`, extended attributes
 /// (Finder, quarantine, iCloud) and links, which are not edits. A
 /// same-size rewrite in place that puts the old modification time back
-/// is not seen.
+/// is not seen, nor one within a tick of a filesystem with coarse
+/// timestamps (exFAT's 2 s, HFS+'s 1 s).
 pub fn file_stamp(path: &Path) -> Option<String> {
     use std::time::UNIX_EPOCH;
     let meta = std::fs::metadata(path).ok()?;
@@ -125,12 +126,7 @@ pub fn file_stamp(path: &Path) -> Option<String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        Some(format!(
-            "{}:{mtime}:{}:{}",
-            meta.len(),
-            meta.dev(),
-            meta.ino()
-        ))
+        Some(format!("{}:{mtime}:{}", meta.len(), meta.ino()))
     }
     #[cfg(not(unix))]
     Some(format!("{}:{mtime}", meta.len()))
@@ -324,6 +320,19 @@ impl FileIds {
     /// differs is deleted, with a warning, and `None` comes back: the
     /// file was changed outside Ganymede.
     pub fn grant_checked(&self, id: &str, current: Option<&str>) -> Option<String> {
+        self.grant_checked_with(id, || current.map(str::to_string))
+    }
+
+    /// [`FileIds::grant_checked`], with the file's stamp taken by
+    /// `current` while the store is held, and only when there is a grant
+    /// to check. A save that wrote the file and then restamped it can't
+    /// land between the stamp and the comparison: the check sees either
+    /// the restamp or no stamp. `current` must not call back into `self`.
+    pub fn grant_checked_with(
+        &self,
+        id: &str,
+        current: impl FnOnce() -> Option<String>,
+    ) -> Option<String> {
         check_locked(&mut self.lock(), id, None, current)
     }
 
@@ -350,7 +359,24 @@ impl FileIds {
         grant: Option<&str>,
         stamp: Option<&str>,
     ) -> Result<(), String> {
+        self.set_grant_with(id, grant, |_| stamp.map(str::to_string))
+    }
+
+    /// [`FileIds::set_grant`], with the stamp taken by `stamp` from the
+    /// file's current path while the store is held, so it can't
+    /// overwrite a fresher restamp. `stamp` must not call back into
+    /// `self`.
+    pub fn set_grant_with(
+        &self,
+        id: &str,
+        grant: Option<&str>,
+        stamp: impl FnOnce(&str) -> Option<String>,
+    ) -> Result<(), String> {
         let store = &mut *self.lock();
+        let stamp: Option<String> = grant
+            .and_then(|_| store.path_of(id))
+            .and_then(|p| stamp(&p));
+        let stamp = stamp.as_deref();
         let stored = |g: &str| Stored {
             json: g.to_string(),
             stamp: stamp.map(str::to_string),
@@ -404,7 +430,7 @@ impl FileIds {
         let mut all: Vec<(String, String)> = Vec::new();
         for (id, path) in grant_rows(store) {
             let now = current(&path);
-            if let Some(json) = check_locked(store, &id, Some(&path), now.as_deref()) {
+            if let Some(json) = check_locked(store, &id, Some(&path), || now) {
                 all.push((path, json));
             }
         }
@@ -416,14 +442,32 @@ impl FileIds {
     /// grant: a save through the server keeps the grant. Does nothing for
     /// an id with none.
     pub fn restamp(&self, id: &str, stamp: &str) -> Result<(), String> {
+        self.restamp_with(id, |_| Some(stamp.to_string()))
+    }
+
+    /// [`FileIds::restamp`], with the stamp taken by `stamp` from the
+    /// file's current path while the store is held, and only when there
+    /// is a grant, so two saves can't leave the older one's stamp. `stamp`
+    /// must not call back into `self`.
+    pub fn restamp_with(
+        &self,
+        id: &str,
+        stamp: impl FnOnce(&str) -> Option<String>,
+    ) -> Result<(), String> {
         let store = &mut *self.lock();
+        if store.grant_json(id).is_none() {
+            return Ok(());
+        }
+        let Some(stamp) = store.path_of(id).and_then(|p| stamp(&p)) else {
+            return Ok(());
+        };
         if let Some(g) = store.memory.grants.get_mut(id) {
-            g.stamp = Some(stamp.to_string());
+            g.stamp = Some(stamp);
             return Ok(());
         }
         #[cfg(feature = "sqlite")]
         if let Some((db, _)) = &store.db {
-            return sqlite::restamp(db, id, stamp).map_err(|e| e.to_string());
+            return sqlite::restamp(db, id, &stamp).map_err(|e| e.to_string());
         }
         Ok(())
     }
@@ -455,6 +499,28 @@ impl FileIds {
     }
 }
 
+/// The contents roots the file ids database at `db` knows `file` under,
+/// each with the file's API path there: every directory above `file` is a
+/// candidate root, and a root has the file when it has an id for its path
+/// in it. `file` is an absolute path whose directory is resolved. A
+/// program that writes a file doesn't know which server's root, or
+/// `ganymede grant`'s, a grant was made under, so it keeps the grant under
+/// every root that has one. Empty when there is no database, or this
+/// build has no SQLite.
+pub fn roots_with_id(db: &Path, file: &Path) -> Vec<(std::path::PathBuf, String)> {
+    #[cfg(feature = "sqlite")]
+    {
+        if db.is_file() {
+            match sqlite::connect(db).and_then(|c| sqlite::roots_with_id(&c, file)) {
+                Ok(found) => return found,
+                Err(e) => tracing::warn!("looking up file ids for {}: {e}", file.display()),
+            }
+        }
+    }
+    let _ = (db, file);
+    Vec::new()
+}
+
 impl Store {
     /// The grant for `id`, as stored.
     fn grant_json(&self, id: &str) -> Option<String> {
@@ -464,6 +530,18 @@ impl Store {
         #[cfg(feature = "sqlite")]
         if let Some((db, _)) = &self.db {
             return sqlite::grant(db, id).ok().flatten();
+        }
+        None
+    }
+
+    /// The path file id `id` names now.
+    fn path_of(&self, id: &str) -> Option<String> {
+        if let Some(p) = self.memory.by_id.get(id) {
+            return Some(p.clone());
+        }
+        #[cfg(feature = "sqlite")]
+        if let Some((db, root)) = &self.db {
+            return sqlite::path(db, root, id).ok().flatten();
         }
         None
     }
@@ -508,7 +586,7 @@ fn check_locked(
     store: &mut Store,
     id: &str,
     path: Option<&str>,
-    current: Option<&str>,
+    current: impl FnOnce() -> Option<String>,
 ) -> Option<String> {
     let dropped = |store: &Store| {
         let path = path.map_or_else(|| store.path_for_log(id), str::to_string);
@@ -516,10 +594,11 @@ fn check_locked(
     };
     if let Some(g) = store.memory.grants.get_mut(id) {
         let json = g.json.clone();
-        match verdict(g.stamp.as_deref(), current) {
+        let current = current();
+        match verdict(g.stamp.as_deref(), current.as_deref()) {
             Verdict::Keep => return Some(json),
             Verdict::Stamp => {
-                g.stamp = current.map(str::to_string);
+                g.stamp = current;
                 return Some(json);
             }
             Verdict::Drop => {
@@ -729,7 +808,11 @@ mod sqlite {
     /// server may restamp or replace the grant meanwhile, so the stamp
     /// and the delete go by the row that was read, and a changed row is
     /// read again. An `Err` is a failed read or stamp: the grant stands.
-    pub fn check(db: &Connection, id: &str, current: Option<&str>) -> rusqlite::Result<Checked> {
+    pub fn check(
+        db: &Connection,
+        id: &str,
+        current: impl FnOnce() -> Option<String>,
+    ) -> rusqlite::Result<Checked> {
         let row: Option<(String, Option<String>)> = db
             .query_row(
                 "SELECT grant_json, stamp FROM host_grants WHERE id = ?1",
@@ -740,6 +823,8 @@ mod sqlite {
         let Some((json, raw)) = row else {
             return Ok(Checked::Missing);
         };
+        let current = current();
+        let current = current.as_deref();
         match super::verdict(super::untag(&json, raw.as_deref()), current) {
             super::Verdict::Keep => Ok(Checked::Grant(json)),
             super::Verdict::Stamp => {
@@ -768,6 +853,33 @@ mod sqlite {
                 })
             }
         }
+    }
+
+    pub fn roots_with_id(
+        db: &Connection,
+        file: &Path,
+    ) -> rusqlite::Result<Vec<(std::path::PathBuf, String)>> {
+        let mut candidates: Vec<(String, String)> = Vec::new();
+        for root in file.ancestors().skip(1) {
+            let (Some(r), Ok(rel)) = (root.to_str(), file.strip_prefix(root)) else {
+                continue;
+            };
+            let parts: Option<Vec<&str>> =
+                rel.components().map(|c| c.as_os_str().to_str()).collect();
+            if let Some(parts) = parts {
+                candidates.push((r.to_string(), parts.join("/")));
+            }
+        }
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let clause = vec!["(root = ? AND path = ?)"; candidates.len()].join(" OR ");
+        let mut q = db.prepare(&format!("SELECT root, path FROM file_ids WHERE {clause}"))?;
+        let args = candidates.iter().flat_map(|(r, p)| [r, p]);
+        let rows = q.query_map(rusqlite::params_from_iter(args), |r| {
+            Ok((std::path::PathBuf::from(r.get::<_, String>(0)?), r.get(1)?))
+        })?;
+        rows.collect()
     }
 
     /// `(id, path)` of every grant under `root`.
@@ -1126,5 +1238,61 @@ mod tests {
         assert!(ids.grants_checked(|_| Some("other".into())).is_empty());
         // Not deleted, so a file that matches again has its grant.
         assert_eq!(ids.grant_checked(&id, Some("s1")).as_deref(), Some(G));
+    }
+
+    /// The stamp is taken with the store held, so a check and a restamp
+    /// can't interleave with another thread's.
+    #[test]
+    fn stamps_are_taken_with_the_store_held() {
+        let ids = FileIds::in_memory();
+        let (a, _) = ids.index("a.ipynb");
+        let held = || ids.store.try_lock().is_err();
+        ids.set_grant_with(&a, Some(G), |p| {
+            assert_eq!(p, "a.ipynb");
+            assert!(held());
+            Some("s1".into())
+        })
+        .unwrap();
+        assert_eq!(
+            ids.grant_checked_with(&a, || {
+                assert!(held());
+                Some("s1".into())
+            })
+            .as_deref(),
+            Some(G)
+        );
+        ids.restamp_with(&a, |_| {
+            assert!(held());
+            Some("s2".into())
+        })
+        .unwrap();
+        assert_eq!(ids.grant_checked(&a, Some("s2")).as_deref(), Some(G));
+        // Nothing is stat'ed for a file with no grant.
+        let (b, _) = ids.index("b.ipynb");
+        assert_eq!(ids.grant_checked_with(&b, || panic!("no grant")), None);
+        ids.restamp_with(&b, |_| panic!("no grant")).unwrap();
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn roots_with_id_finds_the_roots_above_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ids.db");
+        assert!(roots_with_id(&db, Path::new("/p/s/nb.ipynb")).is_empty());
+        let outer = FileIds::open(&db, Path::new("/p"));
+        let inner = FileIds::open(&db, Path::new("/p/s"));
+        let unrelated = FileIds::open(&db, Path::new("/q"));
+        outer.index("s/nb.ipynb");
+        inner.index("nb.ipynb");
+        unrelated.index("s/nb.ipynb");
+        let mut found = roots_with_id(&db, Path::new("/p/s/nb.ipynb"));
+        found.sort();
+        assert_eq!(
+            found,
+            [
+                (std::path::PathBuf::from("/p"), "s/nb.ipynb".to_string()),
+                (std::path::PathBuf::from("/p/s"), "nb.ipynb".to_string()),
+            ]
+        );
     }
 }

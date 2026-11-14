@@ -269,12 +269,9 @@ impl Collab {
             let Some(id) = ids.get(&path) else {
                 return Ok(());
             };
-            match stamps.own(&path) {
-                Some(stamp) => ids
-                    .restamp(&id, &stamp)
-                    .map_err(|e| format!("restamping the host grant for {path}: {e}")),
-                None => Ok(()),
-            }
+            // The stamp is taken with the store held, so it is the latest.
+            ids.restamp_with(&id, |_| stamps.own(&path))
+                .map_err(|e| format!("restamping the host grant for {path}: {e}"))
         })
         .await
     }
@@ -283,11 +280,8 @@ impl Collab {
     /// removes it, stamped with its file as it is now.
     pub async fn set_grant(&self, id: String, grant: Option<String>) -> Result<(), String> {
         let stamps = self.stamps.clone();
-        self.with_ids(move |ids| {
-            let stamp = ids.path(&id).and_then(|p| stamps.own(&p));
-            ids.set_grant(&id, grant.as_deref(), stamp.as_deref())
-        })
-        .await
+        self.with_ids(move |ids| ids.set_grant_with(&id, grant.as_deref(), |p| stamps.own(p)))
+            .await
     }
 
     /// Whether the file ids, and so grants, outlive the server.
@@ -914,7 +908,8 @@ fn checked_grant(
     path: &str,
 ) -> Option<String> {
     ids.grant(id)?;
-    ids.grant_checked(id, stamps.current(path).as_deref())
+    // The stamp is taken with the store held: see `grant_checked_with`.
+    ids.grant_checked_with(id, || stamps.current(path))
 }
 
 /// Runs `f` on its own task and waits for it: dropping the wait leaves

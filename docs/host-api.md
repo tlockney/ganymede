@@ -296,18 +296,21 @@ edit_self = true     # the self.* calls; false turns them off
   notebook's [file id](rooms.md#file-ids), so they follow a rename or
   move. They live beside the file id database, not in the notebook.
   A grant is for the file as Ganymede last wrote or saw it: it is stored
-  with the file's size, modification time and, on Unix, inode, and when
+  with the file's size, modification time and, on Unix, inode number, and when
   the file no longer matches (replaced by `git`, an editor, Finder, a
   download or a sync tool, which keep the path and so its file id) the
   grant is dropped, back to the `[host]` defaults, and the server logs
   it. `ganymede grant --list` shows only grants that still hold. A write
   through the server counts as Ganymede's own and keeps the grant: the
   contents API (an upload over the file, a copy onto it), document rooms,
-  MCP, and `ganymede execute`, including `-o` to the notebook. A grant
+  MCP, `ganymede execute`, including `-o` to the notebook, and `ganymede nb
+  clear`, from whichever directory they run in. A grant
   from before this check has no record of its file, so the first time it
   is used it takes the file as it is, and holds from then on. The check
   costs a `stat`, not a read, and doesn't see a rewrite in place that
-  keeps the size and puts the old modification time back. A `chmod`,
+  keeps the size and puts the old modification time back, or one that
+  keeps the size within a tick of a filesystem with coarse timestamps
+  (exFAT's 2 seconds, HFS+'s 1 second). A `chmod`,
   extended attributes or a link don't count as a change.
 
   > [!NOTE]

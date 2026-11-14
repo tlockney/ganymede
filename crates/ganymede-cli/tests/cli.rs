@@ -1040,6 +1040,88 @@ fn execute_without_a_host_api_keeps_the_grant_too() {
     assert_eq!(go(&["grant", "--list"]).0, "");
 }
 
+/// A grant is made under one root, and a run may start elsewhere: from a
+/// subdirectory of it, or from outside it with `-o` to the notebook. Its
+/// own write keeps the grant either way, with a host API or without one.
+#[test]
+fn execute_keeps_a_grant_made_under_another_root() {
+    for (label, toml) in [("host", None), ("no host", Some("[host\n"))] {
+        let data = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        if let Some(t) = toml {
+            std::fs::write(config.path().join("ganymede.toml"), t).unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().canonicalize().unwrap().join("proj");
+        let sub = proj.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let nb = fake_notebook(&sub);
+        let elsewhere = tempfile::tempdir().unwrap();
+        let go = |cwd: &std::path::Path, args: &[&str]| {
+            let mut c = ganymede(args);
+            c.current_dir(cwd)
+                .env("JUPYTER_DATA_DIR", data.path())
+                .env("GANYMEDE_CONFIG_DIR", config.path());
+            stdout(&run_ok(c))
+        };
+        let want = "sub/nb.ipynb read=\"docs\"\n";
+        go(&proj, &["grant", "sub/nb.ipynb", "read=docs"]);
+        assert_eq!(go(&proj, &["grant", "--list"]), want);
+
+        // From the subdirectory, the grant's root is above the cwd.
+        let before = std::fs::read_to_string(&nb).unwrap();
+        go(&sub, &["execute", "--inplace", "nb.ipynb"]);
+        assert_ne!(std::fs::read_to_string(&nb).unwrap(), before, "{label}");
+        assert_eq!(go(&proj, &["grant", "--list"]), want, "{label}: from sub");
+
+        // From outside, the notebook is not under the cwd at all.
+        let target = nb.to_str().unwrap();
+        go(
+            elsewhere.path(),
+            &["execute", "--inplace", "-k", "fake", target],
+        );
+        assert_eq!(
+            go(&proj, &["grant", "--list"]),
+            want,
+            "{label}: from elsewhere"
+        );
+        go(elsewhere.path(), &["execute", "-o", target, target]);
+        assert_eq!(go(&proj, &["grant", "--list"]), want, "{label}: -o");
+
+        // Replaced outside, then run from a subdirectory: dropped.
+        let now = std::fs::read_to_string(&nb).unwrap();
+        std::fs::write(&nb, now.replace("# hi", "# changed by git")).unwrap();
+        go(&sub, &["execute", "--inplace", "nb.ipynb"]);
+        assert_eq!(go(&proj, &["grant", "--list"]), "", "{label}: replaced");
+    }
+}
+
+/// `ganymede nb clear` rewrites the notebook in place, which keeps its
+/// grant; a notebook replaced outside loses it first.
+#[test]
+fn nb_clear_keeps_the_grant_through_its_own_write() {
+    let data = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let nb = fake_notebook(&root);
+    let go = |args: &[&str]| {
+        let mut c = ganymede(args);
+        c.current_dir(&root).env("JUPYTER_DATA_DIR", data.path());
+        stdout(&run_ok(c))
+    };
+    let want = "nb.ipynb read=\"docs\"\n";
+    go(&["grant", "nb.ipynb", "read=docs"]);
+    go(&["execute", "--inplace", "nb.ipynb"]);
+    let executed = std::fs::read_to_string(&nb).unwrap();
+    go(&["nb", "clear", "nb.ipynb"]);
+    assert_ne!(std::fs::read_to_string(&nb).unwrap(), executed, "it wrote");
+    assert_eq!(go(&["grant", "--list"]), want);
+
+    std::fs::write(&nb, executed.replace("# hi", "# changed by git")).unwrap();
+    go(&["nb", "clear", "nb.ipynb"]);
+    assert_eq!(go(&["grant", "--list"]), "");
+}
+
 #[test]
 fn completions_for_each_shell() {
     for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {

@@ -1,19 +1,21 @@
 ## 2026-11-14, Drop a host grant when its file changes outside Ganymede (#767)
 
-A notebook's host grant is keyed by file id, and a file replaced outside
-the server (`git checkout`, Finder, a download, a sync tool) keeps its
-path's id, so the new content inherited the old grant. Hashing the file at
-every grant read wasn't wanted, so each grant now carries a stamp of its
-file: size, modification time in nanoseconds and, on Unix, device and
-inode, from one `stat` (`ganymede_contents::file_stamp`). The change time
-was tried first and dropped: on macOS it moves with `chmod`, extended
-attributes (Finder, quarantine, iCloud) and links, so grants would go
-with no edit. An atomic replace (`git checkout`, most editors, downloads)
-makes a new inode and an in-place rewrite changes the modification time;
-a same-size in-place rewrite that restores the old modification time is
-not seen. Windows has size and modification time only. `host_grants` gets a
-nullable `stamp` column, added when a database lacks it (several servers
-share one, so a "duplicate column" from a concurrent add is fine).
+A notebook's host grant is keyed by file id, and a file replaced outside the
+server (`git checkout`, Finder, a download, a sync tool) keeps its path's
+id, so the new content inherited the old grant. Hashing the file at every
+grant read wasn't wanted, so each grant now carries a stamp of its file:
+size, modification time in nanoseconds and, on Unix, inode number (not the
+device, which isn't stable across remounts), from one `stat`
+(`ganymede_contents::file_stamp`). The change time was tried first and
+dropped: on macOS it moves with `chmod`, extended attributes (Finder,
+quarantine, iCloud) and links, so grants would go with no edit. An atomic
+replace (`git checkout`, most editors, downloads) makes a new inode and an
+in-place rewrite changes the modification time; a same-size in-place rewrite
+that restores the old modification time is not seen, and neither is one
+within a tick of a filesystem with coarse timestamps (exFAT, HFS+). Windows
+has size and modification time only. `host_grants` gets a nullable `stamp`
+column, added when a database lacks it (several servers share one, so a
+"duplicate column" from a concurrent add is fine).
 
 `FileIds` stays pure: callers pass the stamp. `grant_checked(id, current)`
 keeps a grant whose stamp matches or whose file can't be stat'ed, stamps
@@ -58,3 +60,18 @@ drops it, which is the safe direction. Also not marked: a `copy` over an
 existing file by name (it restamps afterward). `Collab::rename` checks
 the old path's grant before renaming, so a file replaced outside and then
 renamed through the server doesn't carry its grant to the new name.
+
+The stamp is taken with the store held (`grant_checked_with`,
+`set_grant_with`, `restamp_with` take a closure), not before it: taken
+first, a whole save and restamp could land between the `stat` and the
+comparison and the check would drop a valid grant, or a grant set could
+overwrite a fresher restamp. A check now sees either the restamp or the
+save in flight, and two concurrent saves leave the later stamp.
+
+A program that writes a notebook doesn't know which root its grant was made
+under: `ganymede execute` from a subdirectory, or on a notebook outside the
+cwd, has the grant under another root. `write_notebook`, used by `execute`
+and `nb clear`, checks before writing and restamps after under every root
+that has a file id for the file: one query of the shared database by each
+candidate (root, relative path) from the file's ancestor directories
+(`roots_with_id`). This replaces the host's own check and restamp.

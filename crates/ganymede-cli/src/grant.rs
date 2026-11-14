@@ -95,33 +95,50 @@ pub(crate) fn grant_path(key: &str, path: &str) -> Result<String> {
     Ok(p)
 }
 
-/// The grant store for the current directory's root, and `api`'s file
-/// id there, if it has one. For a run with no host API (`ganymede
-/// execute` when the config doesn't load), which still must keep a
-/// notebook's grant through its own write (#767).
-fn direct(api: &str) -> Option<(ganymede_contents::FileIds, String, PathBuf)> {
-    let root = std::env::current_dir().ok()?.canonicalize().ok()?;
-    let ids = ganymede_server::serve::file_ids(&root);
-    let id = ids.get(api)?;
-    Some((ids, id, root))
+/// The grants held on the file at `path` under every root that has one:
+/// a program that writes a notebook (`ganymede execute`, `nb clear`)
+/// doesn't know which root, a server's or `ganymede grant`'s, its grant
+/// was made under, and it may be run from a subdirectory, or from
+/// elsewhere. `(ids, id, root, API path)` for each (#767).
+fn held(path: &Path) -> Vec<(ganymede_contents::FileIds, String, PathBuf, String)> {
+    let Some(db) = ganymede_server::serve::file_ids_db() else {
+        return Vec::new();
+    };
+    // The directory resolved, the name as it is, as `api_path` does, so a
+    // symlinked notebook keeps its own name.
+    let Ok(abs) = std::path::absolute(path) else {
+        return Vec::new();
+    };
+    let (Some(dir), Some(name)) = (abs.parent(), abs.file_name()) else {
+        return Vec::new();
+    };
+    let Ok(dir) = dir.canonicalize() else {
+        return Vec::new();
+    };
+    ganymede_contents::roots_with_id(&db, &dir.join(name))
+        .into_iter()
+        .filter_map(|(root, api)| {
+            let ids = ganymede_contents::FileIds::open(&db, &root);
+            let id = ids.get(&api)?;
+            ids.grant(&id)?;
+            Some((ids, id, root, api))
+        })
+        .collect()
 }
 
-/// Drops the grant of the notebook at API path `api` if its file changed
-/// outside Ganymede.
-pub(crate) fn check_direct(api: &str) {
-    if let Some((ids, id, root)) = direct(api) {
-        let stamp = ganymede_contents::api_file_stamp(&root, api);
-        ids.grant_checked(&id, stamp.as_deref());
+/// Drops the grants of the notebook at `path`, under every root, whose
+/// file changed outside Ganymede, before a program writes it (#767).
+pub(crate) fn check_held(path: &Path) {
+    for (ids, id, root, api) in held(path) {
+        ids.grant_checked_with(&id, || ganymede_contents::api_file_stamp(&root, &api));
     }
 }
 
-/// The run wrote the notebook at API path `api`: its grant keeps matching.
-pub(crate) fn restamp_direct(api: &str) -> Result<()> {
-    if let Some((ids, id, root)) = direct(api) {
-        if let Some(stamp) = ganymede_contents::api_file_stamp(&root, api) {
-            ids.restamp(&id, &stamp)
-                .map_err(|e| anyhow::anyhow!("keeping the grant for {api}: {e}"))?;
-        }
+/// The program wrote the notebook at `path`: its grants keep matching.
+pub(crate) fn restamp_held(path: &Path) -> Result<()> {
+    for (ids, id, root, api) in held(path) {
+        ids.restamp_with(&id, |p| ganymede_contents::api_file_stamp(&root, p))
+            .map_err(|e| anyhow::anyhow!("keeping the grant for {api}: {e}"))?;
     }
     Ok(())
 }

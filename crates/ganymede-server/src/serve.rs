@@ -506,10 +506,15 @@ pub fn notary(dir: Option<PathBuf>) -> Notary {
 /// Document rooms' file ids for `root`, kept in the Jupyter data dir's
 /// `ganymede_file_ids.db` when there is one.
 pub fn file_ids(root: &std::path::Path) -> ganymede_contents::FileIds {
-    match ganymede_kernel_host::kernelspec::jupyter_user_data_dir() {
-        Some(dir) => ganymede_contents::FileIds::open(&dir.join("ganymede_file_ids.db"), root),
+    match file_ids_db() {
+        Some(db) => ganymede_contents::FileIds::open(&db, root),
         None => ganymede_contents::FileIds::in_memory(),
     }
+}
+
+/// The file id database [`file_ids`] keeps, shared by every root.
+pub fn file_ids_db() -> Option<std::path::PathBuf> {
+    Some(ganymede_kernel_host::kernelspec::jupyter_user_data_dir()?.join("ganymede_file_ids.db"))
 }
 
 /// The host API without a listener (`docs/host-api.md`): how
@@ -611,20 +616,6 @@ impl LocalHost {
             kernel_id,
             _link: link,
         }
-    }
-
-    /// Drops the grant of the notebook at API path `path` if its file
-    /// changed outside Ganymede since the grant was stamped, so a run's
-    /// own write of the notebook doesn't bless what came from outside
-    /// (#767).
-    pub async fn check_grant(&self, path: &str) {
-        self.state.collab.check_grant_at(path).await;
-    }
-
-    /// The run wrote the notebook at API path `path`: its grant, if any,
-    /// keeps matching it (#767).
-    pub async fn restamp(&self, path: &str) -> Result<(), String> {
-        self.state.collab.restamp(path).await
     }
 
     /// Stop any run kernels still going.

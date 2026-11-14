@@ -33,7 +33,7 @@ pub mod trust;
 
 use async_trait::async_trait;
 
-pub use fileid::{api_file_stamp, file_stamp, FileIds};
+pub use fileid::{api_file_stamp, file_stamp, roots_with_id, FileIds};
 pub use fs::{FsContents, FsOptions, CHECKPOINT_ID, DEFAULT_CHECKPOINT_DIR};
 pub use model::{Checkpoint, ContentType, ContentsModel, Format, GetOptions, IfMatch, SaveRequest};
 pub use paths::{kernel_cwd, normalize_api_path, path_under};

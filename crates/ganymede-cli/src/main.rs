@@ -1181,15 +1181,6 @@ async fn execute(
             env: env.clone(),
         };
         eprintln!("executing {}", path.display());
-        // A grant its file outgrew is gone before this run writes the
-        // file, which then keeps whatever grant is left (#767).
-        let notebook_api = api_path_of(path);
-        if let Some(api) = &notebook_api {
-            match host {
-                Some(h) => h.check_grant(api).await,
-                None => grant::check_direct(api),
-            }
-        }
         let kernel = match open(engine, &target, verbose).await {
             Ok(k) => Arc::new(k),
             Err(e) => {
@@ -1200,7 +1191,7 @@ async fn execute(
             }
         };
         let _guard = interrupt_on_ctrl_c(&kernel, &stop);
-        let _host = host.map(|h| h.attach(&kernel.session(), notebook_api.clone()));
+        let _host = host.map(|h| h.attach(&kernel.session(), api_path_of(path)));
         // Cells this run started: only their outputs are this run's
         // results. A cell after a failure, or one skipped by tag, still
         // holds what an earlier run saved.
@@ -1244,16 +1235,6 @@ async fn execute(
                     if let Err(e) = write_notebook(&nb, dest.as_deref()) {
                         print_results(args.results, path, Some((&nb, &ran)), Some(&e));
                         return Err(e);
-                    }
-                    // Its own write keeps the notebook's grant (#767).
-                    if let Some(api) = dest.as_deref().and_then(api_path_of) {
-                        let kept = match host {
-                            Some(h) => h.restamp(&api).await.map_err(anyhow::Error::msg),
-                            None => grant::restamp_direct(&api),
-                        };
-                        if let Err(e) = kept {
-                            eprintln!("ganymede: {}", error_chain(&e));
-                        }
                     }
                 }
                 print_results(args.results, path, Some((&nb, &ran)), None);
@@ -1389,11 +1370,19 @@ fn print_results(
     println!("{line}");
 }
 
+/// Writes `nb` to `dest`, or stdout. A file written is the program's own
+/// write, so a notebook's host grant, under whichever root holds it, keeps
+/// matching it; one whose file was replaced outside is dropped first, so
+/// this write doesn't bless it (#767).
 fn write_notebook(nb: &Notebook, dest: Option<&Path>) -> Result<()> {
     match dest {
         Some(p) => {
+            grant::check_held(p);
             ganymede_engine::nbformat::write_file(nb, p)
                 .with_context(|| format!("writing {}", p.display()))?;
+            if let Err(e) = grant::restamp_held(p) {
+                eprintln!("ganymede: {}", error_chain(&e));
+            }
             eprintln!("  wrote {}", p.display());
         }
         None => print!("{}", nb.to_file_string()),
