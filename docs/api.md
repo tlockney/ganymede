@@ -250,10 +250,6 @@ storage. A page `ganymede nb publish` or MCP `notebook_publish` wrote
 (its generator tag in the first 512 bytes) also gets `allow-downloads`,
 so its Download notebook button works.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 ## Check memory and CPU
 
 Ganymede answers [jupyter-resource-usage](https://github.com/jupyter-server/jupyter-resource-usage)'s

@@ -14,11 +14,6 @@ The rest of this note is the design, updated where 0.12.0 changed it.
 Python notebooks do.
 
 > [!NOTE]
-> **Unreleased.** `ganymede nb publish` and the MCP `cell_snapshot` tool
-> read the table output only in a build of `main` (HEAD), not in the
-> latest release.
-
-> [!NOTE]
 > **Unreleased in ganymede-ui.** The apps render the table output only
 > in a build of ganymede-ui's `main`, not in its latest release.
 

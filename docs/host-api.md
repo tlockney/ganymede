@@ -300,12 +300,6 @@ edit_self = true     # the self.* calls; false turns them off
   gives its kernels no `self.*` calls, since it writes the notebook
   itself when the run ends.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. Before it, a kernel started by
-> `POST /api/notebooks/run` got the `[host]` defaults and `notebook` was
-> `null` (#745).
-
 This is the server's half of "scoped kernels" from the direction review:
 it limits what a kernel can ask the server for. It doesn't limit what a
 kernel's own code can do on the machine. That is the OS sandbox around

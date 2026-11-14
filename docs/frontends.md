@@ -181,10 +181,6 @@ The exports are `GET /nbconvert/{format}/{path}`, with `?download=true`
 for a download, and `/api/nbconvert` lists the formats. PDF, LaTeX, and
 slides need nbconvert's Python templates and aren't offered.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 The HTML page takes `ganymede nb publish`'s options as query
 parameters, so a client such as the apps can publish without the CLI:
 `code=folded|shown|hidden`, `byline=<text>` for the line under the
