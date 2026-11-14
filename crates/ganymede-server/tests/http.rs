@@ -6418,13 +6418,16 @@ async fn mcp_reports_who_changed_a_cell_and_requests() {
     assert!(out.contains("the request is marked done"), "{out}");
 
     // With `edits` (a spike for `mcp watch --edits`): each notebook
-    // read, and the person's other cells as `@@edit` lines with a hash;
-    // not the requests the agent answered, nor another agent's cells.
+    // read, and the person's other cells as `@@edit` lines with a hash,
+    // answered requests among them (the watch takes those as they are);
+    // not another agent's cells.
     let edits = tool(agent.clone(), "notebook_requests", json!({"edits": true})).await;
     assert!(
         edits.starts_with("No open requests.\n@@notebook {\"path\":\"j.ipynb\"}\n")
-            && !edits.contains("@@edit"),
-        "answered requests aren't edits: {edits}"
+            && edits.contains(r#"@@edit {"path":"j.ipynb","id":"p","#)
+            && edits.contains(r#"@@edit {"path":"j.ipynb","id":"q","#)
+            && !edits.contains("other-agent"),
+        "{edits}"
     );
     let update = person_edit(Box::new(|txn, roots| {
         let end = roots.cells.len(txn);
@@ -6443,7 +6446,7 @@ async fn mcp_reports_who_changed_a_cell_and_requests() {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let edits = loop {
         let edits = tool(agent.clone(), "notebook_requests", json!({"edits": true})).await;
-        if edits.contains("@@edit") {
+        if edits.contains(r#""id":"n""#) {
             break edits;
         }
         assert!(std::time::Instant::now() < deadline, "{edits}");
@@ -6458,7 +6461,7 @@ async fn mcp_reports_who_changed_a_cell_and_requests() {
         r#"@@edit {"path":"j.ipynb","id":"n","by":"Thomas","hash":""}"#.len() + 16,
         "{line}"
     );
-    assert_eq!(edits.matches("@@edit").count(), 1, "{edits}");
+    assert_eq!(edits.matches("@@edit").count(), 3, "{edits}");
     assert!(!edits.contains("other-agent"), "{edits}");
     // Without it, none.
     let plain = tool(agent.clone(), "notebook_requests", json!({})).await;

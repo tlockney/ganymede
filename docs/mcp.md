@@ -211,12 +211,13 @@ Edits from "Thomas" in "j.ipynb": 2 cells changed. See what changed with noteboo
 It asks `notebook_requests` with `edits: true`, which adds an
 `@@notebook` line for each notebook it read and an `@@edit` line for
 each other cell a person last changed, with a hash of the cell's kind
-and source but not the text. A request the agent answered isn't an
-edit. A notebook the watch sees listed for the first time is taken as
-it is; after that, a changed or new cell is counted until no cell in
-that notebook has changed for `--settle` seconds, then one line names
-who changed how many cells. A cell that becomes a request is left to
-the request's line. Deleted cells, and cells an agent changed last,
+and source but not the text. A notebook the watch sees listed for the
+first time is taken as it is; after that, a changed or new cell is
+counted until no cell in that notebook has changed for `--settle`
+seconds, then one line names who changed how many cells. A request the
+agent answers is taken as it is, so the answer isn't an edit, but the
+person's later edits to it are. A cell that becomes a request is left
+to the request's line. Deleted cells, and cells an agent changed last,
 aren't counted. With `GANYMEDE_WATCH_EDITS` set and a `ganymede`
 without `--edits`, the monitor still watches for requests.
 

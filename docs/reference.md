@@ -299,7 +299,7 @@ And `mcp`'s flags.
 | --- | --- |
 | `--client <CLIENT>` | The agent's client name: requests may name it (`@claude` for `claude-code`). Default `claude-code`. |
 | `--every <EVERY>` | Seconds between checks. Default `2`. |
-| `--settle <SETTLE>` | Seconds a request must stay unchanged before it is printed. Default `3`. |
+| `--settle <SETTLE>` | Seconds a request (or, with `--edits`, a notebook's edits) must stay unchanged before it is printed. Default `3`. |
 | `--edits` | Also print a line when a person's edits to a notebook settle (a spike, off by default). |
 
 And `mcp`'s flags.

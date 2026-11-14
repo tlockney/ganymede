@@ -151,7 +151,7 @@ List the requests to you that are still open: Markdown cells starting `@agent` (
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `path` | string | Notebook path; every notebook open in the server under this connection's folder when left out. |
-| `edits` | boolean | Also list each notebook read, as an `@@notebook` line, and every other cell a person last changed (not an answered request), as an `@@edit` line with a hash of its kind and source (a spike, for `ganymede mcp watch --edits`). |
+| `edits` | boolean | Also list each notebook read, as an `@@notebook` line, and every other cell a person last changed, as an `@@edit` line with a hash of its kind and source (a spike, for `ganymede mcp watch --edits`). |
 
 ## `notebook_run_all`
 

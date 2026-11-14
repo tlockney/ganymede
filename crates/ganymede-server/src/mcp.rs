@@ -351,8 +351,7 @@ pub struct RequestsArgs {
     /// connection's folder when left out.
     pub path: Option<String>,
     /// Also list each notebook read, as an `@@notebook` line, and every
-    /// other cell a person last changed (not an answered request), as an
-    /// `@@edit` line with a hash of its kind and source (a spike, for
+    /// other cell a person last changed, as an `@@edit` line with a hash of its kind and source (a spike, for
     /// `ganymede mcp watch --edits`).
     pub edits: Option<bool>,
 }
@@ -770,7 +769,7 @@ impl Notebooks {
                                                     .map(|s| s.as_str().to_string())
                                                     .unwrap_or_default(),
                                             )
-                                        } else if edits && !marks::is_answered(c) {
+                                        } else if edits {
                                             PersonCell::Edit(marks::fingerprint(c))
                                         } else {
                                             return None;

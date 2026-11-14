@@ -8,8 +8,10 @@ only on a request cell, as a spike after the request work (#763).
 `@@edit {path, id, by, hash}` line for each other cell a person last
 changed. The hash is the read marks' fingerprint (kind and source), so
 a poller can tell a change without the reply carrying every cell's
-text. Answered requests are left out: they keep the person as author,
-and listing them made every answer wake the agent again (review). The
+text. An answered request keeps the person as author, so it is listed
+too; the watch takes it as it is when it leaves the request list, or
+every answer would wake the agent again (review), while the person's
+later edits to it still count. The
 `@@notebook` lines let the watch take a notebook as it is when first
 listed, rather than when it first has a person's cell: in a journal the
 agent wrote, that was the person's first edit, which was then never

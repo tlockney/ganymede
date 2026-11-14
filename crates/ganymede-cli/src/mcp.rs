@@ -88,7 +88,8 @@ pub struct WatchArgs {
     /// Seconds between checks.
     #[arg(long, default_value_t = 2)]
     pub every: u64,
-    /// Seconds a request must stay unchanged before it is printed.
+    /// Seconds a request (or, with `--edits`, a notebook's edits) must stay
+    /// unchanged before it is printed.
     #[arg(long, default_value_t = 3)]
     pub settle: u64,
     /// Also print a line when a person's edits to a notebook settle (a
@@ -709,6 +710,9 @@ struct Followed {
     /// change was seen.
     pending: BTreeMap<String, BTreeSet<String>>,
     since: Option<std::time::Instant>,
+    /// Its open requests in the last reply: one that leaves the list
+    /// (answered) is taken as it is, so the answer isn't an edit.
+    requests: BTreeSet<String>,
     /// Polls in a row it was missing from.
     missed: u32,
 }
@@ -724,8 +728,10 @@ impl Edits {
     /// changes have stopped for `settle`. A notebook listed for the first
     /// time is taken as it is (its cells aren't new edits); one missing
     /// from [`MISSES`] polls in a row, with nothing left to print, is
-    /// forgotten. A cell that became an open request is left to the
-    /// request's line.
+    /// forgotten. A request the agent answered is taken as it is; a
+    /// cell that became an open request is left to the request's line;
+    /// one deleted or changed last by an agent before its line isn't
+    /// counted.
     fn step(
         &mut self,
         reply: &Reply,
@@ -751,7 +757,8 @@ impl Edits {
             nb.missed = 0;
             let mut hashes = BTreeMap::new();
             for c in reply.edits.iter().filter(|c| &c.path == path) {
-                if !first && nb.hashes.get(&c.id) != Some(&c.hash) {
+                let answered = !nb.hashes.contains_key(&c.id) && nb.requests.contains(&c.id);
+                if !first && !answered && nb.hashes.get(&c.id) != Some(&c.hash) {
                     nb.pending
                         .entry(c.by.clone())
                         .or_default()
@@ -761,8 +768,16 @@ impl Edits {
                 hashes.insert(c.id.clone(), c.hash.clone());
             }
             nb.hashes = hashes;
+            nb.requests = requests
+                .iter()
+                .filter(|(p, _)| *p == path.as_str())
+                .map(|(_, id)| id.to_string())
+                .collect();
+            // Only cells still a person's, not a request: not one deleted,
+            // changed last by an agent, or become a request.
+            let hashes = &nb.hashes;
             for ids in nb.pending.values_mut() {
-                ids.retain(|id| !requests.contains(&(path.as_str(), id.as_str())));
+                ids.retain(|id| hashes.contains_key(id));
             }
             nb.pending.retain(|_, ids| !ids.is_empty());
             if nb.pending.is_empty() {
@@ -1415,20 +1430,56 @@ mod tests {
         assert!(seen
             .step(&at_reply(first.clone(), vec!["p"]), at(30), settle)
             .is_empty());
+        // A request answered (it leaves the request list and is listed
+        // as the person's cell): taken as it is; a later edit to it
+        // counts.
+        let mut answered = first.clone();
+        answered.push(edit("j.ipynb", "p", "Thomas", "10"));
+        assert!(seen
+            .step(&at_reply(answered.clone(), vec![]), at(30), settle)
+            .is_empty());
+        assert!(seen
+            .step(&at_reply(answered.clone(), vec![]), at(30), settle)
+            .is_empty());
+        assert!(
+            seen.notebooks["j.ipynb"].pending.is_empty(),
+            "the answer isn't an edit"
+        );
+        answered.last_mut().unwrap().hash = "11".into();
+        assert!(seen
+            .step(&at_reply(answered.clone(), vec![]), at(30), settle)
+            .is_empty());
+        assert_eq!(
+            seen.step(&at_reply(answered.clone(), vec![]), at(33), settle)
+                .len(),
+            1
+        );
+        // A cell changed, then deleted before its line: not counted.
+        let mut deleted = first.clone();
+        deleted.push(edit("j.ipynb", "z", "Thomas", "12"));
+        assert!(seen
+            .step(&at_reply(deleted, vec![]), at(33), settle)
+            .is_empty());
+        assert!(seen
+            .step(&at_reply(first.clone(), vec![]), at(34), settle)
+            .is_empty());
+        assert!(seen
+            .step(&at_reply(first.clone(), vec![]), at(40), settle)
+            .is_empty());
         // Missing from replies, with an edit not printed yet: kept until
         // it is printed, then forgotten.
         let mut gone = first.clone();
         gone[0].hash = "9".into();
         assert!(seen
-            .step(&at_reply(gone, vec![]), at(31), settle)
+            .step(&at_reply(gone, vec![]), at(41), settle)
             .is_empty());
         let empty = Reply::default();
         for s in 0..MISSES {
-            assert!(seen.step(&empty, at(32), settle).is_empty(), "{s}");
+            assert!(seen.step(&empty, at(42), settle).is_empty(), "{s}");
         }
         assert!(seen.notebooks.contains_key("j.ipynb"), "kept: unprinted");
-        assert_eq!(seen.step(&empty, at(40), settle).len(), 1);
-        assert!(seen.step(&empty, at(41), settle).is_empty());
+        assert_eq!(seen.step(&empty, at(50), settle).len(), 1);
+        assert!(seen.step(&empty, at(51), settle).is_empty());
         assert!(seen.notebooks.is_empty());
     }
 
