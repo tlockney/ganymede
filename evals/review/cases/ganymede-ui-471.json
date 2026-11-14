@@ -1,0 +1,19 @@
+{
+  "id": "ganymede-ui-471",
+  "repo": "tlockney/ganymede-ui",
+  "pr": 471,
+  "issue": 303,
+  "base": "16e84b0b69bec12b19cefa6d263afcb7b1257656",
+  "head": "8b13ea1cfd20cb0ce1fd262de030c0d484ac2531",
+  "branch": "claude/project-thread-pg6cy9",
+  "kind": "known",
+  "findings": [
+    {
+      "summary": "With 'Always allow', any web page can run an already-allowed notebook through a ganymede://x-callback-url/run link and receive its text output at an https x-success URL, with no prompt (the output is opened in the browser at the attacker's URL). The permission question covers running, not sending output somewhere, and the first prompt does not say where the output goes. The prompt should show the callback destination and Always allow should not cover runs that answer a callback.",
+      "severity": "Medium",
+      "class": "B",
+      "source": "https://github.com/tlockney/ganymede-ui/pull/471"
+    }
+  ],
+  "notes": ""
+}

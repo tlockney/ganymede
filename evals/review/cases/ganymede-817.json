@@ -1,0 +1,25 @@
+{
+  "id": "ganymede-817",
+  "repo": "tlockney/ganymede",
+  "pr": 817,
+  "issue": 816,
+  "base": "9517f992cd66343783f5aec95dda9cb97157776d",
+  "head": "85c352257500cf97fd69025d4f36ac6d84585ec3",
+  "branch": "claude/project-thread-ht2748",
+  "kind": "known",
+  "findings": [
+    {
+      "summary": "A tailnet login (identified only by the Tailscale-User-Login header) can load /lab, whose page config embeds the server's master token (lab.rs page() passes s.token). The browser then authenticates with the token: XSRF and Origin checks are skipped, a login cookie is set, /mcp is reachable, and removing the login from `allow` does not revoke it. The page must render an empty token for tailnet-identified page loads.",
+      "severity": "High",
+      "class": "B",
+      "source": "https://github.com/tlockney/ganymede/pull/817"
+    },
+    {
+      "summary": "The trust rests on 'the peer is loopback', but any loopback forwarder that passes client headers through (Caddy/nginx, `tailscale serve --tcp` or `funnel --tcp`, `ssh -L`) lets remote clients forge Tailscale-User-Login. security.md frames the risk as only other local processes and does not say the port must be reached only through `tailscale serve`'s HTTP(S) proxy.",
+      "severity": "Medium",
+      "class": "B",
+      "source": "https://github.com/tlockney/ganymede/pull/817"
+    }
+  ],
+  "notes": "First round of six on the tailnet login PR; the class write-up cites it as the clearest 'each fix opened its neighbour' case."
+}

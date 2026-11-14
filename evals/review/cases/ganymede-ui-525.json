@@ -1,0 +1,25 @@
+{
+  "id": "ganymede-ui-525",
+  "repo": "tlockney/ganymede-ui",
+  "pr": 525,
+  "issue": 304,
+  "base": "6f6ee55305f9c19b4968f57bbb5d1ec5c567de65",
+  "head": "61f89a7e7bcc8bb65e389e6cab08ef64719d9bde",
+  "branch": "claude/app-mcp",
+  "kind": "missed",
+  "findings": [
+    {
+      "summary": "Turning MCP off may not revoke the token, silently: `AppModel.setMCP` runs `try? Keychain.set(AppMCP.tokenKey, \"\")`. If the delete fails (keychain locked, access denied) the old token stays and turning MCP on again reads it back, so every config given out earlier works again. Other removals report failure through keychainError.",
+      "severity": "Medium",
+      "class": "F",
+      "source": "reviews/pr-reviewer/2026-11-12-ui-525-followups.md"
+    },
+    {
+      "summary": "Reset Token can be undone on relaunch: in `storeMCPToken`, when `Keychain.set` throws at its delete step the leaked token stays saved and comes back at the next launch, while the message says agents will need a new config, which implies the opposite.",
+      "severity": "Medium",
+      "class": "F",
+      "source": "reviews/pr-reviewer/2026-11-12-ui-525-followups.md"
+    }
+  ],
+  "notes": "The posted pass was on 41907e5; the revoke code that carries both findings is the last commit 61f89a7 ('turning MCP off revokes its token'), reviewed while the PR merged."
+}

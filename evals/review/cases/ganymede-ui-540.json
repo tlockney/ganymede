@@ -1,0 +1,19 @@
+{
+  "id": "ganymede-ui-540",
+  "repo": "tlockney/ganymede-ui",
+  "pr": 540,
+  "issue": 539,
+  "base": "88d64c782c01cb8b1a3a1cea4b1a218eefa1aca9",
+  "head": "a38ee0f6e06063912674de49c269fbfac4eac42d",
+  "branch": "claude/project-thread-kkwzs2",
+  "kind": "missed",
+  "findings": [
+    {
+      "summary": "main-build.yml passes SPARKLE_ED_PRIVATE_KEY to every app-changing push to main, although with MAIN_BUILD=1 release-app.sh uses it only to derive the public key and signs nothing. That key can sign an appcast and update every installed Mac app. The workflow should pass only the public key (least privilege) and the PR's secrets justification does not cover why the update key is needed.",
+      "severity": "Medium",
+      "class": "B",
+      "source": "reviews/pr-reviewer/2026-11-12-ui-540-extra-findings.md"
+    }
+  ],
+  "notes": ""
+}

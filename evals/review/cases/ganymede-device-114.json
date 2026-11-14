@@ -1,0 +1,19 @@
+{
+  "id": "ganymede-device-114",
+  "repo": "tlockney/ganymede-device",
+  "pr": 114,
+  "issue": 113,
+  "base": "e8044c0540e44cf4e6741ff8a8b9dfd56764dcb6",
+  "head": "7572de70646573368f19023de80937206da62d2a",
+  "branch": "claude/project-thread-i4kv57-secrets",
+  "kind": "known",
+  "findings": [
+    {
+      "summary": "`notebookMoved` drops every error from re-keying secrets with `try?` and returns Void, so the app never learns a move failed (locked keychain or missing entitlement) and the documented remedy 'move again once unlocked' can't be carried out. Tokens stay under the old path, where a different notebook later saved at that path with a `secrets` grant can read them; a loop failing partway splits names between two paths.",
+      "severity": "Medium",
+      "class": "F",
+      "source": "https://github.com/tlockney/ganymede-device/pull/114"
+    }
+  ],
+  "notes": ""
+}
