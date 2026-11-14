@@ -13,7 +13,8 @@
 // A page shows each cell and what it showed when the notebook last ran.
 // Markdown, text, JSON, errors, SVG and bitmaps render as they
 // are. HTML renders in place, or, when it has a script, in a sandboxed
-// iframe. A widget needs a kernel, so the page says so instead.
+// iframe. A widget needs a kernel, so the page says so instead (only
+// cdp-kernel's reference pages, via fetch-cell-api.mjs, run theirs).
 //
 //   npm run fetch-examples
 //   GANYMEDE_UI_DIR=~/src/ganymede-ui npm run fetch-examples
@@ -36,7 +37,7 @@ export function slugOf(file) {
     .replace(/^-|-$/g, "");
 }
 
-const text = (v) => (Array.isArray(v) ? v.join("") : (v ?? ""));
+export const text = (v) => (Array.isArray(v) ? v.join("") : (v ?? ""));
 // Terminal colours in tracebacks.
 const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -55,18 +56,54 @@ const raw = (md) => `<div v-pre>\n\n${md.trim()}\n\n</div>`;
 const attr = (s) =>
   s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "&#10;");
 
+const viewMime = "application/vnd.jupyter.widget-view+json";
+
+/** The widget models a notebook saved with its state, by model id. */
+export const widgetsOf = (nb) => nb.metadata?.widgets?.["application/vnd.jupyter.widget-state+json"]?.state ?? {};
+
+// State keys a model never changes. cdp-kernel's docs runner leaves them
+// out of the per-output snapshot, so they come from the saved model.
+const fixedKeys = new Set(["_esm", "_css", "_anywidget_id", "_model_name", "_model_module",
+  "_model_module_version", "_view_name", "_view_module", "_view_module_version"]);
+
+/**
+ * The model behind widget output `o`, as its view should start: the state
+ * the model had once the output's own cell ran, from the snapshot
+ * cdp-kernel's docs runner saves with the output (`metadata.docs`).
+ * Without one there's nothing to start from (the notebook's saved state is
+ * as of its last cell), so undefined.
+ */
+export function widgetModel(o, widgets) {
+  const saved = widgets[o.data[viewMime].model_id];
+  const snapshot = o.metadata?.docs;
+  if (!saved || !snapshot) return undefined;
+  const fixed = Object.fromEntries(Object.entries(saved.state ?? {}).filter(([k]) => fixedKeys.has(k)));
+  // A snapshot leaves its buffers out only when they equal the saved ones,
+  // so the spread keeps those.
+  return { ...saved, ...snapshot, state: { ...fixed, ...snapshot.state } };
+}
+
 /**
  * One output as Markdown. Images go in `files`, keyed by their path under
- * examples/, and the Markdown links them.
+ * examples/, and the Markdown links them. `widgets` is the notebook's
+ * saved widget state (widgetsOf).
  */
-function output(o, slug, files) {
+export function output(o, slug, files, widgets = {}) {
   if (o.output_type === "stream") return fence(plain(text(o.text)), "text");
   if (o.output_type === "error") {
     const trace = (o.traceback ?? []).map(plain).join("\n");
     return fence(trace || `${o.ename}: ${o.evalue}`, "text");
   }
   const data = o.data ?? {};
-  if (data["application/vnd.jupyter.widget-view+json"]) {
+  if (data[viewMime]) {
+    const model = widgetModel(o, widgets);
+    // An anywidget with a snapshot runs on the page (theme/widgets.ts),
+    // against that state, with no kernel behind it. Only cdp-kernel's docs
+    // runner writes snapshots, so only its pages' widgets run here.
+    if (model?.model_module === "anywidget" && typeof model.state?._esm === "string") {
+      const sent = model.view_sent ? `As the kernel left it after the docs build sent ${attr(model.view_sent)} from the view. ` : "";
+      return `<div class="nb-widget" v-pre data-model="${attr(JSON.stringify(model))}"></div>\n\n<p class="nb-note">${sent}Running from the saved notebook, with no kernel behind this page.</p>`;
+    }
     return '::: info Widget\nAn interactive widget, which needs a running kernel. Open the notebook in the app to use it.\n:::';
   }
   for (const [mime, ext] of [["image/svg+xml", "svg"], ["image/png", "png"], ["image/jpeg", "jpg"]]) {
@@ -88,7 +125,7 @@ function output(o, slug, files) {
   }
   if (data["text/markdown"]) return raw(text(data["text/markdown"]));
   if (data["application/json"]) return fence(JSON.stringify(data["application/json"], null, 2), "json");
-  if (data["text/plain"]) return fence(text(data["text/plain"]), "text");
+  if (data["text/plain"]) return fence(plain(text(data["text/plain"])), "text");
   return "";
 }
 
@@ -101,6 +138,7 @@ export function render(nb, file, intro = appIntro(file)) {
   const files = new Map();
   const lang = nb.metadata?.language_info?.name === "typescript" ? "ts" : (nb.metadata?.language_info?.name ?? "");
   const parts = [];
+  const widgets = widgetsOf(nb);
   for (const [i, cell] of nb.cells.entries()) {
     const src = text(cell.source);
     if (cell.cell_type === "markdown") {
@@ -117,7 +155,7 @@ export function render(nb, file, intro = appIntro(file)) {
     } else if (cell.cell_type === "code") {
       if (src.trim()) parts.push(fence(src, lang));
       for (const o of cell.outputs ?? []) {
-        const md = output(o, slug, files);
+        const md = output(o, slug, files, widgets);
         if (md) parts.push(md);
       }
     }
