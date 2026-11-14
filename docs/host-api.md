@@ -203,8 +203,9 @@ Cells the `self.*` calls write carry [provenance](mcp.md#provenance)
 with `by` set to `kernel`: a cell `self.add` makes gets
 `metadata.ganymede.agent = {"by": "kernel", "mode": "note", "at": "<time>"}`,
 and `self.edit` keeps the source it replaced in the cell's `history`,
-as `cell_edit` does. While a kernel uses `self.*`, the server keeps its
-notebook's room open, as it does for an MCP connection, so the ids
+as `cell_edit` does. Once a kernel uses `self.*`, the server keeps its
+notebook's room open until the kernel ends, as it does for an MCP
+connection, so the ids
 `self.add` returns stay valid in a notebook saved without cell ids
 (nbformat 4.4 and older) even when no client has it open.
 

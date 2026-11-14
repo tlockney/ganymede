@@ -194,8 +194,9 @@ pub struct HostApi {
     /// `ganymede execute`'s ([`HostApi::pin`]).
     pinned: std::sync::Mutex<std::collections::HashMap<String, Option<String>>>,
     /// The notebook room each kernel's `self.*` calls hold open, by kernel
-    /// id, with the room's id ([`HostApi::hold`]).
-    holds: std::sync::Mutex<std::collections::HashMap<String, (String, Hold)>>,
+    /// id, with the room's id ([`HostApi::hold`]). Shared with the task
+    /// that lets a server kernel's go when it ends.
+    holds: Holds,
 }
 
 impl HostApi {
@@ -234,6 +235,7 @@ impl HostApi {
     pub fn unpin(&self, kernel_id: &str) {
         self.pinned.lock().unwrap().remove(kernel_id);
         self.slots.lock().unwrap().remove(kernel_id);
+        self.holds.lock().unwrap().remove(kernel_id);
     }
 
     /// Whether `kernel_id` is running: one of the server's, or pinned.
@@ -712,13 +714,18 @@ fn string_param<'a>(params: &'a Value, key: &str) -> Result<&'a str, HostError> 
         .ok_or_else(|| HostError::failed(format!("`{key}` must be a string")))
 }
 
+/// Room holds by kernel id: `(room id, hold)`.
+type Holds = Arc<std::sync::Mutex<std::collections::HashMap<String, (String, Hold)>>>;
+
 impl HostApi {
     /// Keep room `room_id` open for `kernel_id` while the kernel runs, as
     /// an MCP connection keeps the rooms it edits (#768). A kernel with no
     /// client on its notebook would otherwise let the room retire between
     /// calls, and a notebook without cell ids (nbformat 4.4 and older)
     /// would get new ones, so an id `self.add` returned would stop
-    /// naming its cell. Holds of kernels that ended are let go.
+    /// naming its cell. The hold is let go when the kernel ends: a server
+    /// kernel's when the kernel manager shuts it down, a pinned one's at
+    /// [`HostApi::unpin`].
     async fn hold(&self, kernel_id: &str, room_id: &str) {
         {
             let mut holds = self.holds.lock().unwrap();
@@ -733,10 +740,28 @@ impl HostApi {
         if let Some(h) = hold_notebook(&self.state.collab, &self.state.contents, room_id).await {
             // One made meanwhile by another call is replaced; it leaves the
             // room as this one joins it.
-            self.holds
+            let first = self
+                .holds
                 .lock()
                 .unwrap()
-                .insert(kernel_id.to_string(), (room_id.to_string(), h));
+                .insert(kernel_id.to_string(), (room_id.to_string(), h))
+                .is_none();
+            // One watcher per kernel: a later hold on another room
+            // replaces the entry the watcher removes.
+            if first {
+                if let Ok(kernel) = self.state.kernels.get(kernel_id) {
+                    let mut alive = kernel.watch_alive();
+                    let holds = Arc::downgrade(&self.holds);
+                    let kernel_id = kernel_id.to_string();
+                    tokio::spawn(async move {
+                        // Err: the kernel was dropped, so it ended too.
+                        let _ = alive.wait_for(|a| !*a).await;
+                        if let Some(holds) = holds.upgrade() {
+                            holds.lock().unwrap().remove(&kernel_id);
+                        }
+                    });
+                }
+            }
         }
     }
 

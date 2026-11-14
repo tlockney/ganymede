@@ -18,7 +18,7 @@ use ganymede_server::host::{HostApi, HostConfig};
 use ganymede_server::AppState;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const TOKEN: &str = "test-token";
 
@@ -878,6 +878,46 @@ async fn self_edits_carry_provenance_and_history() {
     assert_eq!(history.len(), 1);
     assert_eq!(history[0]["source"], "x = 1");
     assert_eq!(history[0]["by"], "kernel");
+}
+
+#[tokio::test]
+async fn self_calls_hold_the_room_until_the_kernel_ends() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let mut state = state(dir.path());
+    state.collab = Arc::new(
+        ganymede_server::collab::Collab::new(file_ids(dir.path()), dir.path().canonicalize().ok())
+            .with_cleanup_delay(Duration::from_millis(50)),
+    );
+    let (collab, kernels) = (state.collab.clone(), state.kernels.clone());
+    let session = state
+        .sessions
+        .create(SessionCreate {
+            path: "index.ipynb".into(),
+            name: Some("index.ipynb".into()),
+            type_: Some("notebook".into()),
+            kernel: Default::default(),
+        })
+        .await
+        .unwrap();
+    let caller = Caller {
+        kernel_id: session.kernel.id.clone(),
+    };
+    let api = HostApi::new(state, &HostConfig::default());
+
+    api.call(&caller, "self.add", json!({"source": "x = 1"}))
+        .await
+        .unwrap();
+    // No client has the notebook open, yet its room stays.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(collab.open_rooms(), 1);
+
+    kernels.shutdown(&caller.kernel_id).await.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while collab.open_rooms() > 0 {
+        assert!(Instant::now() < deadline, "the room outlived its kernel");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 #[tokio::test]
