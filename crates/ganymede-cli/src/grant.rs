@@ -95,6 +95,37 @@ pub(crate) fn grant_path(key: &str, path: &str) -> Result<String> {
     Ok(p)
 }
 
+/// The grant store for the current directory's root, and `api`'s file
+/// id there, if it has one. For a run with no host API (`ganymede
+/// execute` when the config doesn't load), which still must keep a
+/// notebook's grant through its own write (#767).
+fn direct(api: &str) -> Option<(ganymede_contents::FileIds, String, PathBuf)> {
+    let root = std::env::current_dir().ok()?.canonicalize().ok()?;
+    let ids = ganymede_server::serve::file_ids(&root);
+    let id = ids.get(api)?;
+    Some((ids, id, root))
+}
+
+/// Drops the grant of the notebook at API path `api` if its file changed
+/// outside Ganymede.
+pub(crate) fn check_direct(api: &str) {
+    if let Some((ids, id, root)) = direct(api) {
+        let stamp = ganymede_contents::api_file_stamp(&root, api);
+        ids.grant_checked(&id, stamp.as_deref());
+    }
+}
+
+/// The run wrote the notebook at API path `api`: its grant keeps matching.
+pub(crate) fn restamp_direct(api: &str) -> Result<()> {
+    if let Some((ids, id, root)) = direct(api) {
+        if let Some(stamp) = ganymede_contents::api_file_stamp(&root, api) {
+            ids.restamp(&id, &stamp)
+                .map_err(|e| anyhow::anyhow!("keeping the grant for {api}: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
 pub fn run(args: GrantArgs) -> Result<ExitCode> {
     let root = args
         .root_dir

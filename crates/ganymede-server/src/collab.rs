@@ -355,8 +355,11 @@ impl Collab {
         let (old, new) = (old.to_string(), new.to_string());
         detached(async move {
             let _moving = collab.begin_move().await;
-            // A rename can change the file's change time, so a grant
-            // check mustn't look between the rename and the new stamp.
+            // A file replaced outside loses its grant before the rename,
+            // which would otherwise stamp the new file as the old one.
+            collab.check_grant_at(&old).await;
+            // A grant check mustn't look between the rename and the new
+            // stamp, on a filesystem where a rename changes the stamp.
             let _saving = collab.stamps.begin(&new);
             let model = contents.rename(&old, &new).await?;
             collab.moved(&old, &model.path).await;

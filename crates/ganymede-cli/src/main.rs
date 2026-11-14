@@ -1184,8 +1184,11 @@ async fn execute(
         // A grant its file outgrew is gone before this run writes the
         // file, which then keeps whatever grant is left (#767).
         let notebook_api = api_path_of(path);
-        if let (Some(h), Some(api)) = (host, &notebook_api) {
-            h.check_grant(api).await;
+        if let Some(api) = &notebook_api {
+            match host {
+                Some(h) => h.check_grant(api).await,
+                None => grant::check_direct(api),
+            }
         }
         let kernel = match open(engine, &target, verbose).await {
             Ok(k) => Arc::new(k),
@@ -1243,11 +1246,13 @@ async fn execute(
                         return Err(e);
                     }
                     // Its own write keeps the notebook's grant (#767).
-                    if let (Some(h), Some(out)) = (host, &dest) {
-                        if let Some(api) = api_path_of(out) {
-                            if let Err(e) = h.restamp(&api).await {
-                                eprintln!("ganymede: {e}");
-                            }
+                    if let Some(api) = dest.as_deref().and_then(api_path_of) {
+                        let kept = match host {
+                            Some(h) => h.restamp(&api).await.map_err(anyhow::Error::msg),
+                            None => grant::restamp_direct(&api),
+                        };
+                        if let Err(e) = kept {
+                            eprintln!("ganymede: {}", error_chain(&e));
                         }
                     }
                 }

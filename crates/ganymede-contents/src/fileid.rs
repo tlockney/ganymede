@@ -78,11 +78,42 @@ fn verdict(stored: Option<&str>, current: Option<&str>) -> Verdict {
     }
 }
 
-/// A stamp of the file at `path`: its size and times, from its metadata,
-/// without reading it. `None` when it can't be read. Two stamps of one
-/// file differ after any write: the change time (Unix) moves with every
-/// write and can't be set back, as the modification time can, by `cp -p`
-/// or `touch -r`; elsewhere the size and modification time stand in.
+#[cfg(feature = "sqlite")]
+/// FNV-1a over `bytes`: a short hash that is the same on every build,
+/// unlike `DefaultHasher`.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// `stamp` for the database, tagged with the grant it was taken for. A
+/// build from before stamps, sharing the database, can change a grant
+/// without touching its stamp; the tag shows the stamp belongs to another
+/// grant ([`untag`]).
+#[cfg(feature = "sqlite")]
+fn tag(json: &str, stamp: &str) -> String {
+    format!("{:016x}|{stamp}", fnv1a(json.as_bytes()))
+}
+
+/// The file stamp in a stored one, if it was taken for grant `json`;
+/// otherwise the grant counts as unstamped.
+#[cfg(feature = "sqlite")]
+fn untag<'a>(json: &str, stored: Option<&'a str>) -> Option<&'a str> {
+    let (hash, stamp) = stored?.split_once('|')?;
+    (hash == format!("{:016x}", fnv1a(json.as_bytes()))).then_some(stamp)
+}
+
+/// A stamp of the file at `path`, from its metadata, without reading
+/// it: its size, modification time and, on Unix, device and inode
+/// number. `None` when it can't be read. A file replaced the way `git
+/// checkout`, most editors, downloads and sync tools do (a new file
+/// renamed over it) has a new inode, and one rewritten in place has a new
+/// modification time, so either changes the stamp. The change time is
+/// left out on purpose: it moves with `chmod`, extended attributes
+/// (Finder, quarantine, iCloud) and links, which are not edits. A
+/// same-size rewrite in place that puts the old modification time back
+/// is not seen.
 pub fn file_stamp(path: &Path) -> Option<String> {
     use std::time::UNIX_EPOCH;
     let meta = std::fs::metadata(path).ok()?;
@@ -94,8 +125,12 @@ pub fn file_stamp(path: &Path) -> Option<String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let ctime = i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec());
-        Some(format!("{}:{mtime}:{ctime}", meta.len()))
+        Some(format!(
+            "{}:{mtime}:{}:{}",
+            meta.len(),
+            meta.dev(),
+            meta.ino()
+        ))
     }
     #[cfg(not(unix))]
     Some(format!("{}:{mtime}", meta.len()))
@@ -504,8 +539,14 @@ fn check_locked(
                 dropped(store);
                 None
             }
-            // The database failing keeps the grant, as an unreadable
-            // file does.
+            // The file changed and the grant can't be deleted: it isn't
+            // handed out.
+            Ok(sqlite::Checked::Stuck(e)) => {
+                tracing::warn!("dropping the grant for file id {id}: {e}");
+                None
+            }
+            // A read that failed keeps the grant, as an unreadable file
+            // does.
             Err(e) => {
                 tracing::warn!("checking the grant for file id {id}: {e}");
                 store.grant_json(id)
@@ -657,7 +698,7 @@ mod sqlite {
                 "INSERT INTO host_grants (id, grant_json, stamp) VALUES (?1, ?2, ?3)
                 ON CONFLICT (id) DO UPDATE SET
                     grant_json = excluded.grant_json, stamp = excluded.stamp",
-                params![id, g, stamp],
+                params![id, g, stamp.map(|s| super::tag(g, s))],
             )?,
             None => db.execute("DELETE FROM host_grants WHERE id = ?1", params![id])?,
         };
@@ -665,9 +706,13 @@ mod sqlite {
     }
 
     pub fn restamp(db: &Connection, id: &str, stamp: &str) -> rusqlite::Result<()> {
+        let Some(json) = grant(db, id)? else {
+            return Ok(());
+        };
+        // Only for the grant just read: another server may have changed it.
         db.execute(
-            "UPDATE host_grants SET stamp = ?2 WHERE id = ?1",
-            params![id, stamp],
+            "UPDATE host_grants SET stamp = ?2 WHERE id = ?1 AND grant_json = ?3",
+            params![id, super::tag(&json, stamp), json],
         )?;
         Ok(())
     }
@@ -676,12 +721,14 @@ mod sqlite {
         Missing,
         Grant(String),
         Dropped,
+        /// The grant should go, and the database wouldn't delete it.
+        Stuck(rusqlite::Error),
     }
 
     /// As [`super::FileIds::grant_checked`], in the database. Another
     /// server may restamp or replace the grant meanwhile, so the stamp
-    /// and the delete go by the stamp that was read, and a changed row
-    /// is read again.
+    /// and the delete go by the row that was read, and a changed row is
+    /// read again. An `Err` is a failed read or stamp: the grant stands.
     pub fn check(db: &Connection, id: &str, current: Option<&str>) -> rusqlite::Result<Checked> {
         let row: Option<(String, Option<String>)> = db
             .query_row(
@@ -690,23 +737,28 @@ mod sqlite {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
-        let Some((json, stamp)) = row else {
+        let Some((json, raw)) = row else {
             return Ok(Checked::Missing);
         };
-        match super::verdict(stamp.as_deref(), current) {
+        match super::verdict(super::untag(&json, raw.as_deref()), current) {
             super::Verdict::Keep => Ok(Checked::Grant(json)),
             super::Verdict::Stamp => {
+                let tagged = current.map(|c| super::tag(&json, c));
                 db.execute(
-                    "UPDATE host_grants SET stamp = ?2 WHERE id = ?1 AND stamp IS NULL",
-                    params![id, current],
+                    "UPDATE host_grants SET stamp = ?2 WHERE id = ?1 AND grant_json = ?3
+                        AND stamp IS ?4",
+                    params![id, tagged, json, raw],
                 )?;
                 Ok(Checked::Grant(json))
             }
             super::Verdict::Drop => {
-                let gone = db.execute(
-                    "DELETE FROM host_grants WHERE id = ?1 AND stamp = ?2",
-                    params![id, stamp],
-                )?;
+                let gone = match db.execute(
+                    "DELETE FROM host_grants WHERE id = ?1 AND grant_json = ?2 AND stamp = ?3",
+                    params![id, json, raw],
+                ) {
+                    Ok(n) => n,
+                    Err(e) => return Ok(Checked::Stuck(e)),
+                };
                 if gone == 1 {
                     return Ok(Checked::Dropped);
                 }
@@ -987,23 +1039,92 @@ mod tests {
         assert_ne!(file_stamp(&f).unwrap(), first);
     }
 
-    /// Same size, and the old modification time put back: the change time
-    /// still differs.
+    /// Replaced by a rename, as `git checkout` and editors do, with the
+    /// same size and the old modification time put back: the new inode
+    /// shows. A rewrite in place that does the same is not seen; and
+    /// `chmod` is no change.
     #[cfg(unix)]
     #[test]
-    fn a_stamp_sees_a_rewrite_that_keeps_size_and_mtime() {
+    fn a_stamp_sees_a_replaced_file_not_a_chmod() {
+        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("a.ipynb");
         std::fs::write(&f, "aaaa").unwrap();
         let first = file_stamp(&f).unwrap();
         let mtime = std::fs::metadata(&f).unwrap().modified().unwrap();
-        std::fs::write(&f, "bbbb").unwrap();
+
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(file_stamp(&f).unwrap(), first, "chmod isn't an edit");
+
+        let new = dir.path().join("new");
+        std::fs::write(&new, "bbbb").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&new)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        std::fs::rename(&new, &f).unwrap();
+        assert_ne!(file_stamp(&f).unwrap(), first);
+
+        // In place, same size, mtime restored: the known blind spot.
+        let second = file_stamp(&f).unwrap();
+        std::fs::write(&f, "cccc").unwrap();
         std::fs::File::options()
             .write(true)
             .open(&f)
             .unwrap()
             .set_modified(mtime)
             .unwrap();
-        assert_ne!(file_stamp(&f).unwrap(), first);
+        assert_eq!(file_stamp(&f).unwrap(), second);
+    }
+
+    /// A build from before stamps changes a grant and leaves its stamp:
+    /// the stamp isn't the new grant's, so the grant is stamped afresh,
+    /// not dropped.
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn a_stamp_taken_for_another_grant_counts_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ids.db");
+        let ids = FileIds::open(&db, Path::new("/r"));
+        let (id, _) = ids.index("a.ipynb");
+        ids.set_grant(&id, Some(G), Some("s1")).unwrap();
+        assert_eq!(ids.grant_checked(&id, Some("s1")).as_deref(), Some(G));
+        sqlite::connect(&db)
+            .unwrap()
+            .execute("UPDATE host_grants SET grant_json = '{}'", [])
+            .unwrap();
+        assert_eq!(ids.grant_checked(&id, Some("s2")).as_deref(), Some("{}"));
+        // Now it is stamped, for this grant.
+        assert_eq!(ids.grant_checked(&id, Some("s3")), None);
+        // A restamp is for the grant stored when it is made.
+        ids.set_grant(&id, Some(G), Some("s1")).unwrap();
+        ids.restamp(&id, "s4").unwrap();
+        assert_eq!(ids.grant_checked(&id, Some("s4")).as_deref(), Some(G));
+    }
+
+    /// When the file changed and the database won't delete the grant, the
+    /// grant isn't handed out; when it only can't be read, it stands.
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn a_grant_that_cannot_be_deleted_is_not_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ids.db");
+        let ids = FileIds::open(&db, Path::new("/r"));
+        let (id, _) = ids.index("a.ipynb");
+        ids.set_grant(&id, Some(G), Some("s1")).unwrap();
+        sqlite::connect(&db)
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER no_delete BEFORE DELETE ON host_grants
+                BEGIN SELECT RAISE(FAIL, 'busy'); END;",
+            )
+            .unwrap();
+        assert_eq!(ids.grant_checked(&id, Some("s1")).as_deref(), Some(G));
+        assert_eq!(ids.grant_checked(&id, Some("other")), None);
+        assert!(ids.grants_checked(|_| Some("other".into())).is_empty());
+        // Not deleted, so a file that matches again has its grant.
+        assert_eq!(ids.grant_checked(&id, Some("s1")).as_deref(), Some(G));
     }
 }

@@ -250,16 +250,18 @@ mod tests {
         assert_eq!(stamps.current("x"), None, "no root, no stamp");
     }
 
-    /// A save that begins and ends while a check looks at the file
-    /// leaves the check without a stamp: the grant is kept.
+    /// A check compares the epoch from before it looked at the file with
+    /// the one after, so a save beginning or ending in between must move
+    /// it.
     #[test]
-    fn a_save_during_a_check_voids_it() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.ipynb"), "{}").unwrap();
-        let stamps = Arc::new(Stamps::new(Some(dir.path().to_path_buf())));
-        let before = stamps.lock().epoch;
-        drop(stamps.begin("a.ipynb"));
-        assert_ne!(stamps.lock().epoch, before);
+    fn beginning_and_ending_a_save_each_move_the_epoch() {
+        let stamps = Arc::new(Stamps::new(None));
+        let start = stamps.lock().epoch;
+        let guard = stamps.begin("a.ipynb");
+        let begun = stamps.lock().epoch;
+        assert_ne!(begun, start);
+        drop(guard);
+        assert_ne!(stamps.lock().epoch, begun);
     }
 
     /// The file is written, its restamp not yet done: a grant read keeps
@@ -325,5 +327,34 @@ mod tests {
         assert!(contents.save("a.ipynb", bad).await.is_err());
         assert!(collab.stamps.lock().paths.is_empty());
         assert!(collab.grant("a.ipynb").await.is_some());
+    }
+
+    /// A copy named by its full path overwrites a file with a grant, which
+    /// keeps it.
+    #[tokio::test]
+    async fn a_copy_over_a_file_restamps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.ipynb"), "{\"from\": \"a longer source file\"}").unwrap();
+        std::fs::write(root.join("b.ipynb"), "{}").unwrap();
+        let collab = Arc::new(Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            Some(root.clone()),
+        ));
+        let contents = collab.stamping(Arc::new(
+            ganymede_contents::FsContents::new(&root, Default::default()).unwrap(),
+        ));
+        let (id, _) = collab.index("b.ipynb").await;
+        collab
+            .set_grant(id, Some(r#"{"run":[""]}"#.into()))
+            .await
+            .unwrap();
+        assert!(collab.grant("b.ipynb").await.is_some());
+        let model = contents.copy("a.ipynb", Some("b.ipynb")).await.unwrap();
+        assert_eq!(model.path, "b.ipynb");
+        assert!(std::fs::read_to_string(root.join("b.ipynb"))
+            .unwrap()
+            .contains("longer"));
+        assert!(collab.grant("b.ipynb").await.is_some());
     }
 }

@@ -962,26 +962,25 @@ fn a_grant_is_gone_after_its_file_is_rewritten_on_disk() {
         "a.ipynb: the [host] defaults\n"
     );
 
-    // The same size, and the old modification time put back: the change
-    // time still tells.
+    // Replaced by a rename with the same size and the old modification
+    // time (an editor, `git checkout`): a new inode.
     #[cfg(unix)]
     {
         let file = root.path().join("b.ipynb");
         let mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(30));
-        std::fs::write(&file, "{ }").unwrap();
+        let new = root.path().join("b.new");
+        std::fs::write(&new, "[]").unwrap();
         std::fs::File::options()
             .write(true)
-            .open(&file)
+            .open(&new)
             .unwrap()
             .set_modified(mtime)
             .unwrap();
+        std::fs::rename(&new, &file).unwrap();
         assert_eq!(grant(&["--list"]), "");
     }
 }
 
-/// `ganymede execute` writes the notebook itself, and that keeps its
-/// grant; a notebook replaced before the run doesn't (#767).
 #[test]
 fn execute_keeps_the_grant_through_its_own_write() {
     let data = tempfile::tempdir().unwrap();
@@ -1009,6 +1008,36 @@ fn execute_keeps_the_grant_through_its_own_write() {
     std::fs::write(&nb, before.replace("# hi", "# changed by git")).unwrap();
     go(&["execute", "--inplace", &name]);
     assert_eq!(go(&["grant", "--list"]), "");
+}
+
+/// The same when the config file doesn't load and the run has no host API.
+#[test]
+fn execute_without_a_host_api_keeps_the_grant_too() {
+    let data = tempfile::tempdir().unwrap();
+    let config = tempfile::tempdir().unwrap();
+    std::fs::write(config.path().join("ganymede.toml"), "[host\n").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let nb = fake_notebook(&root);
+    let name = nb.file_name().unwrap().to_str().unwrap().to_string();
+    let go = |args: &[&str]| {
+        let mut c = ganymede(args);
+        c.current_dir(&root)
+            .env("JUPYTER_DATA_DIR", data.path())
+            .env("GANYMEDE_CONFIG_DIR", config.path());
+        let out = run_ok(c);
+        (stdout(&out), stderr(&out))
+    };
+    let want = format!("{name} read=\"docs\"\n");
+    go(&["grant", &name, "read=docs"]);
+    let (_, err) = go(&["execute", "--inplace", &name]);
+    assert!(err.contains("no host API for this run"), "{err}");
+    assert_eq!(go(&["grant", "--list"]).0, want, "kept through the run");
+
+    let before = std::fs::read_to_string(&nb).unwrap();
+    std::fs::write(&nb, before.replace("# hi", "# changed by git")).unwrap();
+    go(&["execute", "--inplace", &name]);
+    assert_eq!(go(&["grant", "--list"]).0, "");
 }
 
 #[test]

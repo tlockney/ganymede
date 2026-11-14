@@ -429,8 +429,7 @@ async fn a_notebooks_own_grant_replaces_the_defaults() {
     assert_eq!(err.code, "denied");
     assert!(err.message.contains("edit_self"), "{}", err.message);
 
-    // The grant follows a rename made through the server, which changes
-    // the file's change time but not its grant.
+    // The grant follows a rename made through the server.
     let app = ganymede_server::build_router(state(dir.path()));
     let (s, v) = http(
         &app,
@@ -1791,32 +1790,67 @@ async fn a_grant_without_a_stamp_is_stamped_on_first_use() {
     assert_eq!(own_grant(&app).await, json!({}));
 }
 
-/// A rewrite that keeps the size and puts the old modification time back
-/// still changes the change time.
+/// A file replaced by a rename (`git checkout`, an editor, a download)
+/// with the same size and the old modification time is a new file.
 #[cfg(unix)]
 #[tokio::test]
-async fn a_same_size_rewrite_with_the_old_mtime_drops_the_grant() {
+async fn a_same_size_replacement_with_the_old_mtime_drops_the_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let app = ganymede_server::build_router(state(dir.path()));
+    http(&app, "PUT", GRANT_URL, Some(json!({"read": ["journal"]}))).await;
+    let file = dir.path().join("index.ipynb");
+    let mut bytes = std::fs::read(&file).unwrap();
+    let mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
+    let at = bytes.iter().position(|b| *b == b'#').unwrap();
+    bytes[at] = b'$';
+    let new = dir.path().join("index.ipynb.new");
+    std::fs::write(&new, &bytes).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&new)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    std::fs::rename(&new, &file).unwrap();
+    assert_eq!(own_grant(&app).await, json!({}));
+}
+
+/// `chmod` and the like are not edits: the grant stays.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_chmod_does_not_drop_the_grant() {
+    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     notebooks(dir.path());
     let app = ganymede_server::build_router(state(dir.path()));
     let want = json!({"read": ["journal"]});
     http(&app, "PUT", GRANT_URL, Some(want.clone())).await;
     let file = dir.path().join("index.ipynb");
-    let before = std::fs::read(&file).unwrap();
-    let mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
-    // Past the filesystem's timestamp tick.
-    tokio::time::sleep(Duration::from_millis(30)).await;
-    let mut after = before.clone();
-    // One byte changed in place.
-    let at = after.iter().position(|b| *b == b'#').unwrap();
-    after[at] = b'$';
-    assert_eq!(after.len(), before.len());
-    std::fs::write(&file, &after).unwrap();
-    std::fs::File::options()
-        .write(true)
-        .open(&file)
-        .unwrap()
-        .set_modified(mtime)
-        .unwrap();
-    assert_eq!(own_grant(&app).await, json!({}));
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(own_grant(&app).await, want);
+    std::fs::hard_link(&file, dir.path().join("alias.ipynb")).unwrap();
+    assert_eq!(own_grant(&app).await, want);
+}
+
+/// A file replaced outside and then renamed through the server doesn't
+/// take its grant to the new name.
+#[tokio::test]
+async fn a_replaced_file_renamed_through_the_server_loses_its_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let app = ganymede_server::build_router(state(dir.path()));
+    http(&app, "PUT", GRANT_URL, Some(json!({"read": ["journal"]}))).await;
+    std::fs::write(dir.path().join("index.ipynb"), "{\"replaced\": true}").unwrap();
+    let (s, v) = http(
+        &app,
+        "PATCH",
+        "/api/contents/index.ipynb",
+        Some(json!({"path": "home.ipynb"})),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = http(&app, "GET", "/api/host/grants/home.ipynb", None).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["grant"], json!({}));
 }
