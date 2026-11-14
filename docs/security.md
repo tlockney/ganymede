@@ -178,8 +178,8 @@ before:
 
 - **Off by default.** An empty list lets no one in this way, and there
   is no value that lets in every tailnet user. Entries are whole login
-  names; tags (`tag:server`) are refused, because `tailscale serve` sends
-  no identity for tagged devices.
+  names. Tags (`tag:server`) need [`whois`](#on-the-tailnet-address),
+  because `tailscale serve` sends no identity for tagged devices.
 - **The token still works**, for scripts, the apps' remotes and agents,
   and `/login` still takes it. The server refuses `allow` with auth off
   (`token = ""`), where it would keep no one out.
@@ -190,11 +190,11 @@ before:
   subresource request (by its `Sec-Fetch-Site` header). A link from
   another site still opens the page. So another site's page can't use
   your identity.
-- **The `Host` check stays on.** The server refuses to start with
-  `allow` set and `allow_remote_access` on (or a non-loopback `--ip`,
-  which turns it on): a DNS-rebinding page could otherwise reach it
-  through `tailscale serve` as you. Put the tailnet name in
-  `local_hostnames`, as above.
+- **The `Host` check stays on.** With `allow` set, `allow_remote_access`
+  is off unless you turn it on, even with a non-loopback `--ip`, and the
+  server refuses to start if you do: a DNS-rebinding page could
+  otherwise reach it through `tailscale serve` as you. Put the tailnet
+  name in `local_hostnames`, as above.
 - **`/mcp` still needs a token** (`mcp_token` or the server's).
 - **Only `tailscale serve` may reach the port.** The header is believed
   because the request arrives on loopback, where `tailscale serve`
@@ -208,8 +208,8 @@ before:
 - **HTTPS only.** The server also needs the browser's `Sec-Fetch-Site`
   header to tell its own pages' requests from another site's `<script>`
   or image, and browsers send it only over HTTPS. Over
-  `tailscale serve --http`, or from a client that isn't a browser, the
-  identity is ignored; use the token there.
+  `tailscale serve --http` the identity is ignored; use the token there.
+  A program that isn't a browser sends a header instead, as below.
 - **Sandboxed HTML files lose their images.** Ganymede serves HTML from
   `/files/` and exported notebooks in a sandbox, so their images and
   styles count as another site's requests and get no identity. Open them
@@ -226,6 +226,64 @@ before:
 - Entries must match the login exactly, case included, and must be
   ASCII: `tailscale serve` encodes other characters, so such a login
   would never match.
+
+### Programs
+
+An app, a script or another server reaching Ganymede by tailnet
+identity, rather than a browser, sends a `Ganymede-Client` header with
+any value (its name, say) and no `Origin`. A page on another site can't
+send that header without the browser asking the server first, which it
+refuses, so the header also stands in for the `_xsrf` token. Without it,
+a request with no `Sec-Fetch-Site` gets no identity. A websocket
+handshake may also carry an `Origin` for the server's own address, as
+some libraries add, alongside the header.
+
+```sh
+curl -H 'Ganymede-Client: curl' https://workstation.example-tailnet.ts.net/api/kernels
+```
+
+### On the tailnet address
+
+With `whois = true`, the server can listen on its tailnet address
+instead of behind `tailscale serve`, and asks `tailscaled` who owns the
+address each request comes from (`tailscale whois`). WireGuard
+authenticates the address, so another device can't claim one that isn't
+its own, and this covers tagged devices, such as a machine running
+agents:
+
+```toml
+ip = "100.101.102.103"          # this machine's tailnet address (tailscale ip -4)
+port = 8888
+local_hostnames = ["localhost", "workstation", "workstation.example-tailnet.ts.net"]
+
+[tailscale]
+allow = ["you@example.com", "tag:agent"]
+whois = true
+# cli = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"   # Mac App Store app
+```
+
+- **`ip` must be this machine's tailnet address**; the server refuses to
+  start otherwise. Only other tailnet addresses (100.64.0.0/10 and
+  fd7a:115c:a1e0::/48) are looked up. The server's own address never
+  is: a process on this machine that connects to it comes from it, and
+  `tailscale whois` would name the machine's owner.
+- **Identity is per device.** A tagged device is known by its tags only,
+  any other by its owner's login. Anything that reaches the server
+  through a device gets that device's identity: everyone using a shared
+  tagged machine, or the network behind a subnet router.
+- If `tailscale whois` fails or takes over five seconds, the request
+  gets no identity.
+- **Answers are kept for a minute**, so a device removed from the
+  tailnet, or given other tags, may keep its access that long. Failed
+  lookups are retried after ten seconds.
+- **Plain HTTP, so programs only.** Browsers send no `Sec-Fetch-Site`
+  over plain HTTP, so they get no identity this way: use
+  `tailscale serve` for JupyterLab. Programs send `Ganymede-Client`, as
+  above. The traffic is still encrypted by WireGuard.
+- **The `Host` check stays on.** The server accepts its own `ip` in
+  `Host`; add its tailnet names to `local_hostnames`.
+- Requests from loopback still go through the `tailscale serve` rules,
+  so both can be used at once.
 
 ## Cross-origin clients
 

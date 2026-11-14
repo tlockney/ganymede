@@ -84,8 +84,8 @@ pub struct Config {
     /// Accept any `Host` header. Unset, it is on unless `ip` is a loopback
     /// address, as in `jupyter_server`.
     pub allow_remote_access: Option<bool>,
-    /// Host names accepted besides loopback addresses while
-    /// `allow_remote_access` is off.
+    /// Host names, or IP addresses, accepted besides loopback addresses
+    /// while `allow_remote_access` is off.
     pub local_hostnames: Vec<String>,
     /// Trust `X-Forwarded-Proto` and `X-Scheme` from a reverse proxy, as
     /// `jupyter_server`'s `trust_xheaders`: login cookies sent over a
@@ -189,10 +189,14 @@ impl Config {
     }
 
     /// `allow_remote_access`, or whether `ip` listens beyond loopback:
-    /// `jupyter_server`'s default.
+    /// `jupyter_server`'s default. Off when unset and `[tailscale] allow`
+    /// is set, which needs the `Host` check.
     pub fn allow_remote_access(&self) -> bool {
         if let Some(v) = self.allow_remote_access {
             return v;
+        }
+        if !self.tailscale.allow.is_empty() {
+            return false;
         }
         if self.ip.is_empty() {
             return true;
@@ -298,5 +302,11 @@ Cross-Origin-Embedder-Policy = "require-corp"
         let mut cfg = with_ip("0.0.0.0");
         cfg.allow_remote_access = Some(false);
         assert!(!cfg.allow_remote_access());
+        // Tailnet identity needs the Host check, so it stays on.
+        let mut cfg = with_ip("100.64.0.1");
+        cfg.tailscale.allow = vec!["me@example.com".into()];
+        assert!(!cfg.allow_remote_access());
+        cfg.allow_remote_access = Some(true);
+        assert!(cfg.allow_remote_access());
     }
 }

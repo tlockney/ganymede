@@ -159,3 +159,24 @@ async fn tailnet_logins_are_refused_with_auth_off() {
     let e = run_with(cfg, Startup::default()).await.unwrap_err();
     assert!(e.to_string().contains("auth off"), "{e}");
 }
+
+/// `whois` needs the server on exactly its tailnet address, so it can
+/// tell its own address (where local processes connect from) from peers'.
+#[tokio::test]
+async fn whois_needs_the_tailnet_address() {
+    for ip in ["127.0.0.1", "0.0.0.0", "192.168.1.2"] {
+        let root = tempfile::tempdir().unwrap();
+        let mut cfg = Config {
+            ip: ip.into(),
+            port: 0,
+            root_dir: root.path().into(),
+            cookie_secret_file: Some(root.path().join("secret")),
+            notary_dir: Some(root.path().join("notary")),
+            ..Default::default()
+        };
+        cfg.tailscale.allow = vec!["me@example.com".into()];
+        cfg.tailscale.whois = true;
+        let e = run_with(cfg, Startup::default()).await.unwrap_err();
+        assert!(e.to_string().contains("tailnet address"), "{ip}: {e}");
+    }
+}

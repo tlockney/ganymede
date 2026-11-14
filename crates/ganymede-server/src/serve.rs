@@ -553,6 +553,7 @@ impl LocalHost {
             local_hostnames: Vec::new(),
             trust_xheaders: false,
             tailnet_allow: Arc::from([]),
+            tailnet_whois: None,
             max_body_size: 0,
             base_url: "/".into(),
             config_dir: cfg
@@ -649,7 +650,7 @@ fn normalize_base_url(base_url: &str) -> String {
 }
 
 /// [`run`], adjusted by `startup`.
-pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
+pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
     cfg.tailscale.validate().map_err(anyhow::Error::msg)?;
     if !cfg.tailscale.allow.is_empty() && cfg.token.as_deref() == Some("") {
         anyhow::bail!(
@@ -659,10 +660,33 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     }
     if !cfg.tailscale.allow.is_empty() && cfg.allow_remote_access() {
         anyhow::bail!(
-            "[tailscale] allow needs the Host check: listen on a loopback ip and leave \
-             allow_remote_access off (add the tailnet name to local_hostnames instead)"
+            "[tailscale] allow needs the Host check: leave allow_remote_access off \
+             (add the tailnet name to local_hostnames instead)"
         );
     }
+    // `whois` needs the server on exactly its tailnet address: on any
+    // other, or on all of them, addresses in the tailnet ranges could come
+    // from elsewhere, and the server couldn't tell its own address (which
+    // local processes connect from) from a peer's. Clients may name the
+    // server by that address, so the Host check accepts it.
+    let whois_own = if cfg.tailscale.whois && !cfg.tailscale.allow.is_empty() {
+        let ip = cfg
+            .ip
+            .parse::<std::net::IpAddr>()
+            .ok()
+            .filter(|ip| crate::tailscale::is_tailnet_addr(*ip));
+        let Some(ip) = ip else {
+            anyhow::bail!(
+                "[tailscale] whois needs ip set to this machine's tailnet address \
+                 (`tailscale ip -4`), not {:?}",
+                cfg.ip
+            );
+        };
+        cfg.local_hostnames.push(ip.to_string());
+        Some(ip)
+    } else {
+        None
+    };
     let token = match cfg.token.clone() {
         Some(t) if t.is_empty() => None,
         Some(t) => Some(t),
@@ -818,6 +842,8 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         local_hostnames: cfg.local_hostnames.clone(),
         trust_xheaders: cfg.trust_xheaders,
         tailnet_allow: cfg.tailscale.allow.clone().into(),
+        tailnet_whois: whois_own
+            .map(|own| Arc::new(crate::tailscale::WhoIs::new(cfg.tailscale.cli.clone(), own))),
         max_body_size: usize::try_from(cfg.max_body_size).unwrap_or(usize::MAX),
         base_url: base_url.clone(),
         config_dir,
@@ -898,11 +924,16 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     if token.is_none() {
         tracing::warn!("auth disabled: anyone who can reach this port can run code");
     } else if !cfg.tailscale.allow.is_empty() {
+        let how = if cfg.tailscale.whois {
+            "`tailscale serve` or `tailscale whois`"
+        } else {
+            "`tailscale serve`"
+        };
         tracing::info!(
-            "also letting in, without the token, requests from `tailscale serve` for: {}",
+            "also letting in, without the token, requests that {how} names as: {}",
             cfg.tailscale.allow.join(", ")
         );
-        if !addr.ip().is_loopback() {
+        if !cfg.tailscale.whois && !addr.ip().is_loopback() {
             tracing::warn!(
                 "[tailscale] allow is set but the server listens on {addr}: tailnet logins are \
                  believed only from loopback peers, that is through `tailscale serve`"

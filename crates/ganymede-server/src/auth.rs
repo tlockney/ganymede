@@ -396,8 +396,10 @@ fn token_matches(expected: &str, sent: Option<&str>) -> bool {
 pub enum Via {
     Token,
     Cookie,
-    /// An allowed tailnet login named by `tailscale serve`
-    /// ([`crate::tailscale`]). Checked like the cookie: XSRF and `Origin`.
+    /// An allowed tailnet login or tag, from `tailscale serve` or `tailscale
+    /// whois` ([`crate::tailscale`]). Checked like the cookie: XSRF and
+    /// `Origin`, except that a program's request ([`CLIENT_HEADER`], no
+    /// `Origin`) needs no XSRF token.
     Tailnet,
 }
 
@@ -462,8 +464,10 @@ pub fn identify(
     tailnet_login(state, method, headers, ext).then_some(Via::Tailnet)
 }
 
-/// Whether `tailscale serve` names an allowed login on a request that may
-/// use it. The identity rides on every request from the device, so:
+/// Whether the request comes from an allowed tailnet identity, and may
+/// use it: a login named by `tailscale serve`, or a login or tag that
+/// `tailscale whois` gave for the peer address ([`add_whois_peer`]). The
+/// identity rides on every request from the device, so:
 ///
 /// - Not with the `Host` check off, where a DNS-rebinding page could reach
 ///   the server through `tailscale serve` as its visitor. `run_with`
@@ -471,9 +475,10 @@ pub fn identify(
 /// - Not on another site's subresource requests (`<script>`, `<img>`,
 ///   no-cors `fetch`), which send no `Origin`: `Sec-Fetch-Site` must be
 ///   `same-origin` or `none`, except for a top-level navigation, which
-///   the SameSite=Lax login cookie also goes with (GET and HEAD only). A request without `Sec-Fetch-Site` (plain
-///   HTTP, where browsers don't send it, or a non-browser client) gets no
-///   identity.
+///   the SameSite=Lax login cookie also goes with (GET and HEAD only).
+/// - A request without `Sec-Fetch-Site` (plain HTTP, where browsers don't
+///   send it, or a non-browser client) gets it only as a same-origin
+///   HTTPS websocket handshake, or as a [`tailnet_client`] request.
 pub(crate) fn tailnet_login(
     state: &AppState,
     method: &Method,
@@ -491,13 +496,20 @@ pub(crate) fn tailnet_login(
         // `tailscale serve` over HTTPS, then; other clients use the token.
         // A websocket handshake always carries `Origin`, which some
         // browsers send there instead, so a same-origin HTTPS one will do.
+        // A program's handshake may carry a same-origin `Origin` of either
+        // scheme (some libraries add one) with the client header, which a
+        // browser's `WebSocket` can't set.
         None => {
-            is_websocket_upgrade(headers)
-                && headers
-                    .get(header::ORIGIN)
-                    .and_then(|v| v.to_str().ok())
-                    .is_some_and(|o| o.starts_with("https://"))
-                && same_origin(headers)
+            tailnet_client(headers)
+                || (is_websocket_upgrade(headers)
+                    && same_origin(headers)
+                    && headers
+                        .get(header::ORIGIN)
+                        .and_then(|v| v.to_str().ok())
+                        .is_some_and(|o| {
+                            o.starts_with("https://")
+                                || (o.starts_with("http://") && has_client_header(headers))
+                        }))
         }
         Some(_) => {
             safe_method(method)
@@ -505,7 +517,71 @@ pub(crate) fn tailnet_login(
                 && fetch("sec-fetch-dest") == Some("document")
         }
     };
-    site_ok && crate::tailscale::allowed_login(&state.tailnet_allow, headers, ext)
+    site_ok
+        && (crate::tailscale::allowed_login(&state.tailnet_allow, headers, ext)
+            || ext
+                .get::<crate::tailscale::Peer>()
+                .is_some_and(|p| p.allowed(&state.tailnet_allow)))
+}
+
+/// The header an app or other program sends to use a tailnet identity
+/// without Fetch Metadata. Any non-empty value, such as its name.
+pub const CLIENT_HEADER: &str = "ganymede-client";
+
+/// A request from a program rather than a web page: it sends
+/// [`CLIENT_HEADER`] and no `Origin` or `Sec-Fetch-Site`. A page on
+/// another site can't send it: a custom header makes the browser send
+/// `Origin` and ask first (CORS), and `<script>`, `<img>` and forms can't
+/// set headers. So it also stands in for the XSRF token.
+fn tailnet_client(headers: &HeaderMap) -> bool {
+    !headers.contains_key(header::ORIGIN)
+        && !headers.contains_key("sec-fetch-site")
+        && has_client_header(headers)
+}
+
+fn has_client_header(headers: &HeaderMap) -> bool {
+    headers
+        .get(CLIENT_HEADER)
+        .is_some_and(|v| !v.as_bytes().iter().all(u8::is_ascii_whitespace))
+}
+
+/// With `[tailscale] whois` on, looks up who owns the peer address of a
+/// request from the tailnet that sends no token or login cookie, and adds
+/// the answer as a [`crate::tailscale::Peer`] extension for
+/// [`tailnet_login`].
+pub(crate) async fn add_whois_peer(state: &AppState, req: &mut Request<Body>) {
+    let Some(whois) = &state.tailnet_whois else {
+        return;
+    };
+    let Some(expected) = state.token.as_deref() else {
+        return;
+    };
+    if state.allow_remote_access {
+        return;
+    }
+    let Some(axum::extract::ConnectInfo(peer)) = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+    else {
+        return;
+    };
+    let ip = peer.ip();
+    // Skip the lookup for requests that couldn't use an identity anyway,
+    // such as a browser's over plain HTTP ([`tailnet_login`] decides).
+    let headers = req.headers();
+    let could_use = headers.contains_key("sec-fetch-site")
+        || has_client_header(headers)
+        || is_websocket_upgrade(headers);
+    if !could_use
+        || !crate::tailscale::is_tailnet_addr(ip)
+        || sends_token(expected, req.headers(), req.uri().query())
+        || has_login_cookie(state, req.headers())
+    {
+        return;
+    }
+    if let Some(p) = whois.lookup(ip).await {
+        req.extensions_mut().insert(p);
+    }
 }
 
 fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
@@ -567,7 +643,7 @@ pub(crate) async fn api(State(state): State<AppState>, req: Request<Body>, next:
 /// true: `/mcp` passes false, so agents need a token there.
 pub(crate) async fn api_with(
     state: AppState,
-    req: Request<Body>,
+    mut req: Request<Body>,
     next: Next,
     tailnet: bool,
 ) -> Response {
@@ -582,6 +658,9 @@ pub(crate) async fn api_with(
         }
         return next.run(req).await;
     }
+    if tailnet {
+        add_whois_peer(&state, &mut req).await;
+    }
     let headers = req.headers();
     let via = identify(
         &state,
@@ -589,7 +668,9 @@ pub(crate) async fn api_with(
         req.uri().query(),
         tailnet.then(|| (req.method(), req.extensions())),
     );
-    if via != Some(Via::Token) && !safe_method(req.method()) {
+    let xsrf_exempt =
+        via == Some(Via::Token) || (via == Some(Via::Tailnet) && tailnet_client(headers));
+    if !xsrf_exempt && !safe_method(req.method()) {
         if let Err(e) = check_xsrf(&state, headers, req.uri().query(), None) {
             return e.into_response();
         }
@@ -669,12 +750,23 @@ fn host_allowed(state: &AppState, headers: &HeaderMap) -> bool {
             _ => host,
         },
     };
-    match name.parse::<std::net::IpAddr>() {
-        Ok(addr) => addr.is_loopback(),
-        Err(_) => state
+    // An address can't be rebound the way a name can, so a listed one
+    // (the server's own tailnet address, say) is safe to accept.
+    let listed = || {
+        state
             .local_hostnames
             .iter()
-            .any(|h| h.eq_ignore_ascii_case(name)),
+            .any(|h| h.eq_ignore_ascii_case(name))
+    };
+    match name.parse::<std::net::IpAddr>() {
+        Ok(addr) => {
+            addr.is_loopback()
+                || state
+                    .local_hostnames
+                    .iter()
+                    .any(|h| h.parse::<std::net::IpAddr>() == Ok(addr))
+        }
+        Err(_) => listed(),
     }
 }
 
@@ -693,6 +785,7 @@ pub(crate) async fn page(
     if state.token.is_none() {
         return next.run(req).await;
     }
+    add_whois_peer(&state, &mut req).await;
     if let Some(via) = identify(
         &state,
         req.headers(),

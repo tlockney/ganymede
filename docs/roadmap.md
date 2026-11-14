@@ -149,10 +149,11 @@ Wanted eventually, but not being worked on:
 ## Open
 
 - Tailscale-aware Ganymede
-  ([#816](https://github.com/tlockney/ganymede/issues/816)): trusting
-  `tailscale serve`'s identity for listed logins is done; next, the
-  sender's identity from tailscaled for a server on its tailnet address,
-  tags included, then the apps and Tailscale SSH on iPad and iPhone.
+  ([#816](https://github.com/tlockney/ganymede/issues/816)): listed
+  logins behind `tailscale serve`, and logins and tags from `tailscale
+  whois` for a server on its tailnet address, are done; next, the
+  identity in rooms and the log, then the apps and Tailscale SSH on iPad
+  and iPhone.
 - A Linux build for musl (Alpine).
 - Distributing the iPad and iPhone app beyond internal TestFlight
   testers, which needs App Review (rule 2.5.2, apps that run code). The
