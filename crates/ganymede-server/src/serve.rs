@@ -541,6 +541,12 @@ fn normalize_base_url(base_url: &str) -> String {
 /// [`run`], adjusted by `startup`.
 pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     cfg.tailscale.validate().map_err(anyhow::Error::msg)?;
+    if !cfg.tailscale.allow.is_empty() && cfg.token.as_deref() == Some("") {
+        anyhow::bail!(
+            "[tailscale] allow has no effect with auth off (token = \"\"): set a token, or \
+             leave allow empty"
+        );
+    }
     if !cfg.tailscale.allow.is_empty() && cfg.allow_remote_access() {
         anyhow::bail!(
             "[tailscale] allow needs the Host check: listen on a loopback ip and leave \

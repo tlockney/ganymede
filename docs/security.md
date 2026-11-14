@@ -180,11 +180,16 @@ before:
   is no value that lets in every tailnet user. Entries are whole login
   names; tags (`tag:server`) are refused, because `tailscale serve` sends
   no identity for tagged devices.
-- **The token still works**, for scripts, the apps' remotes and agents.
+- **The token still works**, for scripts, the apps' remotes and agents,
+  and `/login` still takes it. The server refuses `allow` with auth off
+  (`token = ""`), where it would keep no one out.
 - **Only from the server's own pages.** Requests that change state need
-  the `_xsrf` token, and a request whose `Origin` isn't the server's own
-  is refused, even for origins in `allow_origins` (those still work with
-  the token), so another site's page can't use your identity.
+  the `_xsrf` token. A request whose `Origin` isn't the server's own is
+  refused, even for origins in `allow_origins` (those still work with
+  the token), and so is another site's `<script>`, image or other
+  subresource request (by its `Sec-Fetch-Site` header). A link from
+  another site still opens the page. So another site's page can't use
+  your identity.
 - **The `Host` check stays on.** The server refuses to start with
   `allow` set and `allow_remote_access` on (or a non-loopback `--ip`,
   which turns it on): a DNS-rebinding page could otherwise reach it

@@ -458,13 +458,34 @@ pub fn identify(
     if has_login_cookie(state, headers) {
         return Some(Via::Cookie);
     }
-    let ext = tailnet?;
-    // With the `Host` check off, a DNS-rebinding page could reach the
-    // server through `tailscale serve` and get its visitor's identity;
-    // `run_with` refuses that combination, and this keeps it refused.
-    (!state.allow_remote_access
-        && crate::tailscale::allowed_login(&state.tailnet_allow, headers, ext))
-    .then_some(Via::Tailnet)
+    tailnet_login(state, headers, tailnet?).then_some(Via::Tailnet)
+}
+
+/// Whether `tailscale serve` names an allowed login on a request that may
+/// use it. The identity rides on every request from the device, so:
+///
+/// - Not with the `Host` check off, where a DNS-rebinding page could reach
+///   the server through `tailscale serve` as its visitor. `run_with`
+///   refuses that combination; this keeps it refused for embedders.
+/// - Not on another site's subresource requests (`<script>`, `<img>`,
+///   no-cors `fetch`), which send no `Origin`: `Sec-Fetch-Site` must be
+///   `same-origin` or `none`, except for a top-level navigation, which
+///   the SameSite=Lax login cookie also goes with. Browsers without
+///   `Sec-Fetch-*` send `Origin` on the requests that matter, which
+///   [`api_with`] checks.
+pub(crate) fn tailnet_login(state: &AppState, headers: &HeaderMap, ext: &Extensions) -> bool {
+    if state.allow_remote_access {
+        return false;
+    }
+    let fetch = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    let site_ok = match fetch("sec-fetch-site") {
+        None | Some("same-origin" | "none") => true,
+        Some(_) => {
+            fetch("sec-fetch-mode") == Some("navigate")
+                && fetch("sec-fetch-dest") == Some("document")
+        }
+    };
+    site_ok && crate::tailscale::allowed_login(&state.tailnet_allow, headers, ext)
 }
 
 /// No `Origin`, or one whose host and port are the request's `Host`.
@@ -636,20 +657,22 @@ fn is_port(s: &str) -> bool {
 
 /// For HTML pages: unauthenticated GETs go to the login page with a
 /// `next` back here, and anything else gets 403.
+/// The page sees how the request authenticated as a [`Via`] extension.
 pub(crate) async fn page(
     State(state): State<AppState>,
-    req: Request<Body>,
+    mut req: Request<Body>,
     next: Next,
 ) -> Response {
-    if state.token.is_none()
-        || identify(
-            &state,
-            req.headers(),
-            req.uri().query(),
-            Some(req.extensions()),
-        )
-        .is_some()
-    {
+    if state.token.is_none() {
+        return next.run(req).await;
+    }
+    if let Some(via) = identify(
+        &state,
+        req.headers(),
+        req.uri().query(),
+        Some(req.extensions()),
+    ) {
+        req.extensions_mut().insert(via);
         return next.run(req).await;
     }
     if !matches!(*req.method(), Method::GET | Method::HEAD) {
@@ -791,10 +814,11 @@ fn safe_next(state: &AppState, next: Option<&str>) -> String {
 async fn login_form(
     State(state): State<AppState>,
     Query(q): Query<NextQuery>,
-    ext: Extensions,
     headers: HeaderMap,
 ) -> Response {
-    if state.token.is_none() || identify(&state, &headers, None, Some(&ext)).is_some() {
+    // A tailnet login still gets the form, so it can sign in with the
+    // token when it wants the token's reach (`allow_origins`, `/mcp`).
+    if state.token.is_none() || identify(&state, &headers, None, None).is_some() {
         return redirect(&safe_next(&state, q.next.as_deref()));
     }
     render_login(&state, &headers, q.next.as_deref(), StatusCode::OK, None)
@@ -869,9 +893,7 @@ input{{font:inherit;padding:.4rem;margin:.3rem 0;width:100%;box-sizing:border-bo
 
 async fn logout(State(state): State<AppState>, ext: Extensions, headers: HeaderMap) -> Response {
     let name = login_cookie_name(&headers);
-    let message = if state.token.is_some()
-        && crate::tailscale::allowed_login(&state.tailnet_allow, &headers, &ext)
-    {
+    let message = if state.token.is_some() && tailnet_login(&state, &headers, &ext) {
         "Logged out, but your tailnet login is allowed in, so you are still signed in. \
          Remove it from [tailscale] allow to keep it out."
     } else if state.token.is_some() {

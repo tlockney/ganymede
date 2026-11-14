@@ -141,3 +141,21 @@ async fn tailnet_logins_are_refused_with_remote_access_on() {
     let e = run_with(cfg, Startup::default()).await.unwrap_err();
     assert!(e.to_string().contains("Host check"), "{e}");
 }
+
+/// With auth off, `[tailscale] allow` would do nothing; it is refused so
+/// nobody expects it to keep others out.
+#[tokio::test]
+async fn tailnet_logins_are_refused_with_auth_off() {
+    let root = tempfile::tempdir().unwrap();
+    let mut cfg = Config {
+        port: 0,
+        token: Some(String::new()),
+        root_dir: root.path().into(),
+        cookie_secret_file: Some(root.path().join("secret")),
+        notary_dir: Some(root.path().join("notary")),
+        ..Default::default()
+    };
+    cfg.tailscale.allow = vec!["me@example.com".into()];
+    let e = run_with(cfg, Startup::default()).await.unwrap_err();
+    assert!(e.to_string().contains("auth off"), "{e}");
+}

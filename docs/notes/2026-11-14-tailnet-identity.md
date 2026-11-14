@@ -16,7 +16,10 @@ them. Empty by default, so nothing changes unless it is set.
   the `Host` check: with `allow_remote_access` on, a DNS-rebinding page
   could come in through serve as the visitor, so the server refuses to
   start with both set. No login cookie is set; each request carries the
-  header. (Both found in review.)
+  header. Another site's subresource requests (`<script>`, `<img>`)
+  carry no `Origin` but do get the identity, so a cross-site
+  `Sec-Fetch-Site` is refused too, except for a top-level navigation,
+  which the SameSite=Lax cookie also allows. (All found in review.)
 - `/mcp` doesn't take it: agents keep to `mcp_token` or the server's
   token.
 - Tags are refused in the list: `tailscale serve` sends no identity for

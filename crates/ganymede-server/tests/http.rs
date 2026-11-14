@@ -7987,10 +7987,11 @@ async fn a_tailnet_login_is_checked_like_the_cookie() {
     let (s, _, _) = send(&app, req).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
 
-    // The login page sends an identified browser on.
-    let (s, h, _) = send(&app, tailnet_req("GET", "/login", me, "127.0.0.1:1")).await;
-    assert_eq!(s, StatusCode::FOUND);
-    assert_eq!(h[header::LOCATION], "/");
+    // The login form still shows, so a tailnet login can sign in with the
+    // token for the token's reach.
+    let (s, _, page) = send(&app, tailnet_req("GET", "/login", me, "127.0.0.1:1")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(page.contains("password"), "{page}");
 }
 
 /// `/mcp` keeps to tokens: a tailnet login doesn't reach it.
@@ -8111,4 +8112,59 @@ async fn a_tailnet_login_needs_the_host_check() {
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+/// Another site's `<script>` or `<img>` sends no `Origin`, but `tailscale
+/// serve` still adds the identity: `Sec-Fetch-Site` keeps those out, while
+/// a link followed from another site still opens the page.
+#[tokio::test]
+async fn a_tailnet_login_is_refused_on_cross_site_subresources() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = lab_state(dir.path());
+    st.local_hostnames.push("box.example.ts.net".into());
+    st.tailnet_allow = Arc::from(["me@example.com".to_string()]);
+    std::fs::write(dir.path().join("x.js"), "secret()").unwrap();
+    let app = build_router(st);
+    let req = |path: &str, fetch: &[(&'static str, &str)]| {
+        let mut r = tailnet_req("GET", path, Some("me@example.com"), "127.0.0.1:1");
+        for (k, v) in fetch {
+            r.headers_mut().insert(*k, v.parse().unwrap());
+        }
+        r
+    };
+    let cross = [
+        ("sec-fetch-site", "cross-site"),
+        ("sec-fetch-mode", "no-cors"),
+        ("sec-fetch-dest", "script"),
+    ];
+    let (s, _, _) = send(&app, req("/files/x.js", &cross)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = send(
+        &app,
+        req("/api/contents/x.js", &[("sec-fetch-site", "same-site")]),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, body) = send(
+        &app,
+        req("/files/x.js", &[("sec-fetch-site", "same-origin")]),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+
+    let link = [
+        ("sec-fetch-site", "cross-site"),
+        ("sec-fetch-mode", "navigate"),
+        ("sec-fetch-dest", "document"),
+    ];
+    let (s, _, _) = send(&app, req("/lab", &link)).await;
+    assert_eq!(s, StatusCode::OK);
+    let framed = [
+        ("sec-fetch-site", "cross-site"),
+        ("sec-fetch-mode", "navigate"),
+        ("sec-fetch-dest", "iframe"),
+    ];
+    let (s, h, _) = send(&app, req("/lab", &framed)).await;
+    assert_eq!(s, StatusCode::FOUND, "sent to log in");
+    assert!(h[header::LOCATION].to_str().unwrap().starts_with("/login"));
 }
