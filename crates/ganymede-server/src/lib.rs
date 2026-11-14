@@ -22,6 +22,7 @@ pub mod routes;
 pub mod run;
 pub mod serve;
 pub mod server_info;
+mod stamping;
 pub mod static_headers;
 mod svg;
 pub mod tailscale;

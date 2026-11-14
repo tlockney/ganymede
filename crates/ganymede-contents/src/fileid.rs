@@ -16,6 +16,13 @@
 //! The host API's per-notebook grants live here too, keyed by file id
 //! ([`FileIds::grant`], [`FileIds::set_grant`]), so they follow a rename
 //! and go with a delete. The store keeps them as opaque JSON text.
+//!
+//! A grant is kept with a stamp of the file as the server last wrote or
+//! saw it (see [`file_stamp`]). A file replaced outside the server keeps
+//! its path's id, so [`FileIds::grant_checked`] drops the grant when the
+//! file no longer matches its stamp; saves through the server restamp it
+//! ([`FileIds::restamp`]). A grant stored without a stamp is stamped the
+//! first time it is read (trust on first use).
 
 use crate::path_under as under;
 use std::collections::HashMap;
@@ -40,7 +47,65 @@ struct Memory {
     by_path: HashMap<String, String>,
     by_id: HashMap<String, String>,
     /// Grants by id, for ids kept in memory.
-    grants: HashMap<String, String>,
+    grants: HashMap<String, Stored>,
+}
+
+/// A grant and the stamp of its file.
+struct Stored {
+    json: String,
+    stamp: Option<String>,
+}
+
+/// What a grant's stamp says about its file now.
+enum Verdict {
+    /// The grant stands as it is.
+    Keep,
+    /// The grant has no stamp yet: stamp it with the file as it is now.
+    Stamp,
+    /// The file changed outside the server: the grant goes.
+    Drop,
+}
+
+/// `stored` is the grant's stamp; `current` the file's now, `None` when
+/// it can't be known (the file is missing or can't be read, or there is
+/// no local root), which never drops a grant.
+fn verdict(stored: Option<&str>, current: Option<&str>) -> Verdict {
+    match (stored, current) {
+        (_, None) => Verdict::Keep,
+        (None, Some(_)) => Verdict::Stamp,
+        (Some(a), Some(b)) if a == b => Verdict::Keep,
+        (Some(_), Some(_)) => Verdict::Drop,
+    }
+}
+
+/// A stamp of the file at `path`: its size and times, from its metadata,
+/// without reading it. `None` when it can't be read. Two stamps of one
+/// file differ after any write: the change time (Unix) moves with every
+/// write and can't be set back, as the modification time can, by `cp -p`
+/// or `touch -r`; elsewhere the size and modification time stand in.
+pub fn file_stamp(path: &Path) -> Option<String> {
+    use std::time::UNIX_EPOCH;
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let ctime = i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec());
+        Some(format!("{}:{mtime}:{ctime}", meta.len()))
+    }
+    #[cfg(not(unix))]
+    Some(format!("{}:{mtime}", meta.len()))
+}
+
+/// [`file_stamp`] of the file at API path `api` under the contents root
+/// `root`; `None` for a path that is not a valid API path.
+pub fn api_file_stamp(root: &Path, api: &str) -> Option<String> {
+    let api = crate::paths::ApiPath::parse(&crate::normalize_api_path(api)).ok()?;
+    file_stamp(&api.os_path(root))
 }
 
 impl Memory {
@@ -199,11 +264,13 @@ impl FileIds {
     }
 
     /// The grant stored for file id `id`: JSON text, as
-    /// [`FileIds::set_grant`] stored it.
+    /// [`FileIds::set_grant`] stored it, whether or not its file still
+    /// matches the stamp. Reads that decide anything use
+    /// [`FileIds::grant_checked`].
     pub fn grant(&self, id: &str) -> Option<String> {
         let store = &*self.lock();
         if let Some(g) = store.memory.grants.get(id) {
-            return Some(g.clone());
+            return Some(g.json.clone());
         }
         #[cfg(feature = "sqlite")]
         if let Some((db, _)) = &store.db {
@@ -213,6 +280,16 @@ impl FileIds {
             });
         }
         None
+    }
+
+    /// The grant for file id `id`, if its file still matches. `current`
+    /// is the file's stamp now ([`file_stamp`]), or `None` when it can't
+    /// be known, which keeps the grant as it is. A grant with no stamp
+    /// takes `current` as its own (trust on first use); one whose stamp
+    /// differs is deleted, with a warning, and `None` comes back: the
+    /// file was changed outside Ganymede.
+    pub fn grant_checked(&self, id: &str, current: Option<&str>) -> Option<String> {
+        check_locked(&mut self.lock(), id, None, current)
     }
 
     /// Whether ids and grants outlive this process: kept in a database
@@ -228,8 +305,21 @@ impl FileIds {
     /// when the database does, and for an id the database failed to keep
     /// (kept in memory instead), so a grant never silently lasts only
     /// this process when a database is in use.
-    pub fn set_grant(&self, id: &str, grant: Option<&str>) -> Result<(), String> {
+    ///
+    /// `stamp` is the file's [`file_stamp`] as it is now, kept with the
+    /// grant; `None` when it can't be had, and the grant is stamped when
+    /// it is first read.
+    pub fn set_grant(
+        &self,
+        id: &str,
+        grant: Option<&str>,
+        stamp: Option<&str>,
+    ) -> Result<(), String> {
         let store = &mut *self.lock();
+        let stored = |g: &str| Stored {
+            json: g.to_string(),
+            stamp: stamp.map(str::to_string),
+        };
         if store.memory.by_id.contains_key(id) {
             #[cfg(feature = "sqlite")]
             if store.db.is_some() {
@@ -238,40 +328,69 @@ impl FileIds {
                 ));
             }
             match grant {
-                Some(g) => store.memory.grants.insert(id.to_string(), g.to_string()),
+                Some(g) => store.memory.grants.insert(id.to_string(), stored(g)),
                 None => store.memory.grants.remove(id),
             };
             return Ok(());
         }
         #[cfg(feature = "sqlite")]
         if let Some((db, _)) = &store.db {
-            return sqlite::set_grant(db, id, grant).map_err(|e| e.to_string());
+            return sqlite::set_grant(db, id, grant, stamp).map_err(|e| e.to_string());
         }
         match grant {
-            Some(g) => store.memory.grants.insert(id.to_string(), g.to_string()),
+            Some(g) => store.memory.grants.insert(id.to_string(), stored(g)),
             None => store.memory.grants.remove(id),
         };
         Ok(())
     }
 
-    /// Every stored grant under this root: `(path, grant)`, by path.
+    /// Every stored grant under this root: `(path, grant)`, by path,
+    /// whether or not its file still matches the stamp. Listings that
+    /// show what applies use [`FileIds::grants_checked`].
     pub fn grants(&self) -> Vec<(String, String)> {
         let store = &*self.lock();
-        let mut all: Vec<(String, String)> = store
-            .memory
-            .grants
-            .iter()
-            .filter_map(|(id, g)| Some((store.memory.by_id.get(id)?.clone(), g.clone())))
+        let mut all: Vec<(String, String)> = grant_rows(store)
+            .into_iter()
+            .filter_map(|(id, path)| Some((path, store.grant_json(&id)?)))
             .collect();
-        #[cfg(feature = "sqlite")]
-        if let Some((db, root)) = &store.db {
-            match sqlite::grants(db, root) {
-                Ok(rows) => all.extend(rows),
-                Err(e) => tracing::warn!("listing grants: {e}"),
+        all.sort();
+        all
+    }
+
+    /// [`FileIds::grants`], each checked as [`FileIds::grant_checked`]
+    /// does, with `current` giving the stamp of the file at an API path
+    /// (`None` when it can't be known): a grant whose file changed is
+    /// deleted and left out.
+    pub fn grants_checked(
+        &self,
+        current: impl Fn(&str) -> Option<String>,
+    ) -> Vec<(String, String)> {
+        let store = &mut *self.lock();
+        let mut all: Vec<(String, String)> = Vec::new();
+        for (id, path) in grant_rows(store) {
+            let now = current(&path);
+            if let Some(json) = check_locked(store, &id, Some(&path), now.as_deref()) {
+                all.push((path, json));
             }
         }
         all.sort();
         all
+    }
+
+    /// Record `stamp` as the file's own for file id `id`, if it has a
+    /// grant: a save through the server keeps the grant. Does nothing for
+    /// an id with none.
+    pub fn restamp(&self, id: &str, stamp: &str) -> Result<(), String> {
+        let store = &mut *self.lock();
+        if let Some(g) = store.memory.grants.get_mut(id) {
+            g.stamp = Some(stamp.to_string());
+            return Ok(());
+        }
+        #[cfg(feature = "sqlite")]
+        if let Some((db, _)) = &store.db {
+            return sqlite::restamp(db, id, stamp).map_err(|e| e.to_string());
+        }
+        Ok(())
     }
 
     /// `old` (a file, or a directory and everything under it) is now
@@ -301,6 +420,101 @@ impl FileIds {
     }
 }
 
+impl Store {
+    /// The grant for `id`, as stored.
+    fn grant_json(&self, id: &str) -> Option<String> {
+        if let Some(g) = self.memory.grants.get(id) {
+            return Some(g.json.clone());
+        }
+        #[cfg(feature = "sqlite")]
+        if let Some((db, _)) = &self.db {
+            return sqlite::grant(db, id).ok().flatten();
+        }
+        None
+    }
+
+    /// The path file id `id` names now, for a log line.
+    fn path_for_log(&self, id: &str) -> String {
+        if let Some(p) = self.memory.by_id.get(id) {
+            return p.clone();
+        }
+        #[cfg(feature = "sqlite")]
+        if let Some((db, root)) = &self.db {
+            if let Ok(Some(p)) = sqlite::path(db, root, id) {
+                return p;
+            }
+        }
+        format!("file id {id}")
+    }
+}
+
+/// `(id, path)` of every file under this root with a grant.
+fn grant_rows(store: &Store) -> Vec<(String, String)> {
+    #[cfg_attr(not(feature = "sqlite"), allow(unused_mut))]
+    let mut rows: Vec<(String, String)> = store
+        .memory
+        .grants
+        .keys()
+        .filter_map(|id| Some((id.clone(), store.memory.by_id.get(id)?.clone())))
+        .collect();
+    #[cfg(feature = "sqlite")]
+    if let Some((db, root)) = &store.db {
+        match sqlite::grant_rows(db, root) {
+            Ok(r) => rows.extend(r),
+            Err(e) => tracing::warn!("listing grants: {e}"),
+        }
+    }
+    rows
+}
+
+/// The grant for `id` if its file matches: see [`FileIds::grant_checked`].
+/// `path` is the file's path when the caller has it, for the log.
+fn check_locked(
+    store: &mut Store,
+    id: &str,
+    path: Option<&str>,
+    current: Option<&str>,
+) -> Option<String> {
+    let dropped = |store: &Store| {
+        let path = path.map_or_else(|| store.path_for_log(id), str::to_string);
+        tracing::warn!("dropped the host grant for {path}: the file changed outside Ganymede");
+    };
+    if let Some(g) = store.memory.grants.get_mut(id) {
+        let json = g.json.clone();
+        match verdict(g.stamp.as_deref(), current) {
+            Verdict::Keep => return Some(json),
+            Verdict::Stamp => {
+                g.stamp = current.map(str::to_string);
+                return Some(json);
+            }
+            Verdict::Drop => {
+                store.memory.grants.remove(id);
+                dropped(store);
+                return None;
+            }
+        }
+    }
+    #[cfg(feature = "sqlite")]
+    if let Some((db, _)) = &store.db {
+        let outcome = sqlite::check(db, id, current);
+        return match outcome {
+            Ok(sqlite::Checked::Missing) => None,
+            Ok(sqlite::Checked::Grant(json)) => Some(json),
+            Ok(sqlite::Checked::Dropped) => {
+                dropped(store);
+                None
+            }
+            // The database failing keeps the grant, as an unreadable
+            // file does.
+            Err(e) => {
+                tracing::warn!("checking the grant for file id {id}: {e}");
+                store.grant_json(id)
+            }
+        };
+    }
+    None
+}
+
 #[cfg(feature = "sqlite")]
 mod sqlite {
     use rusqlite::{params, Connection, OptionalExtension};
@@ -325,10 +539,32 @@ mod sqlite {
             CREATE TABLE IF NOT EXISTS host_grants
             (
                 id text PRIMARY KEY,
-                grant_json text NOT NULL
+                grant_json text NOT NULL,
+                stamp text
             );",
         )?;
+        add_stamp_column(&db)?;
         Ok(db)
+    }
+
+    /// A database from before grants had stamps lacks the column. Other
+    /// servers share the file, so one may add it between the check and
+    /// the `ALTER`: that is not an error.
+    fn add_stamp_column(db: &Connection) -> rusqlite::Result<()> {
+        let has = db
+            .prepare("SELECT name FROM pragma_table_info('host_grants')")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|n| n == "stamp");
+        if has {
+            return Ok(());
+        }
+        match db.execute("ALTER TABLE host_grants ADD COLUMN stamp text", []) {
+            Ok(_) => Ok(()),
+            Err(e) if e.to_string().contains("duplicate column") => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Another server on the same root may insert the path first: the
@@ -410,21 +646,82 @@ mod sqlite {
         .optional()
     }
 
-    pub fn set_grant(db: &Connection, id: &str, grant: Option<&str>) -> rusqlite::Result<()> {
+    pub fn set_grant(
+        db: &Connection,
+        id: &str,
+        grant: Option<&str>,
+        stamp: Option<&str>,
+    ) -> rusqlite::Result<()> {
         match grant {
             Some(g) => db.execute(
-                "INSERT INTO host_grants (id, grant_json) VALUES (?1, ?2)
-                ON CONFLICT (id) DO UPDATE SET grant_json = excluded.grant_json",
-                params![id, g],
+                "INSERT INTO host_grants (id, grant_json, stamp) VALUES (?1, ?2, ?3)
+                ON CONFLICT (id) DO UPDATE SET
+                    grant_json = excluded.grant_json, stamp = excluded.stamp",
+                params![id, g, stamp],
             )?,
             None => db.execute("DELETE FROM host_grants WHERE id = ?1", params![id])?,
         };
         Ok(())
     }
 
-    pub fn grants(db: &Connection, root: &str) -> rusqlite::Result<Vec<(String, String)>> {
+    pub fn restamp(db: &Connection, id: &str, stamp: &str) -> rusqlite::Result<()> {
+        db.execute(
+            "UPDATE host_grants SET stamp = ?2 WHERE id = ?1",
+            params![id, stamp],
+        )?;
+        Ok(())
+    }
+
+    pub enum Checked {
+        Missing,
+        Grant(String),
+        Dropped,
+    }
+
+    /// As [`super::FileIds::grant_checked`], in the database. Another
+    /// server may restamp or replace the grant meanwhile, so the stamp
+    /// and the delete go by the stamp that was read, and a changed row
+    /// is read again.
+    pub fn check(db: &Connection, id: &str, current: Option<&str>) -> rusqlite::Result<Checked> {
+        let row: Option<(String, Option<String>)> = db
+            .query_row(
+                "SELECT grant_json, stamp FROM host_grants WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((json, stamp)) = row else {
+            return Ok(Checked::Missing);
+        };
+        match super::verdict(stamp.as_deref(), current) {
+            super::Verdict::Keep => Ok(Checked::Grant(json)),
+            super::Verdict::Stamp => {
+                db.execute(
+                    "UPDATE host_grants SET stamp = ?2 WHERE id = ?1 AND stamp IS NULL",
+                    params![id, current],
+                )?;
+                Ok(Checked::Grant(json))
+            }
+            super::Verdict::Drop => {
+                let gone = db.execute(
+                    "DELETE FROM host_grants WHERE id = ?1 AND stamp = ?2",
+                    params![id, stamp],
+                )?;
+                if gone == 1 {
+                    return Ok(Checked::Dropped);
+                }
+                Ok(match grant(db, id)? {
+                    Some(json) => Checked::Grant(json),
+                    None => Checked::Missing,
+                })
+            }
+        }
+    }
+
+    /// `(id, path)` of every grant under `root`.
+    pub fn grant_rows(db: &Connection, root: &str) -> rusqlite::Result<Vec<(String, String)>> {
         let mut q = db.prepare(
-            "SELECT f.path, g.grant_json FROM host_grants g JOIN file_ids f ON f.id = g.id
+            "SELECT g.id, f.path FROM host_grants g JOIN file_ids f ON f.id = g.id
             WHERE f.root = ?1",
         )?;
         let rows = q.query_map(params![root], |r| Ok((r.get(0)?, r.get(1)?)))?;
@@ -476,9 +773,10 @@ mod tests {
     fn grants_follow_moves(ids: &FileIds) {
         let (a, _) = ids.index("dir/a.ipynb");
         let (b, _) = ids.index("b.ipynb");
-        ids.set_grant(&a, Some(r#"{"run":[""]}"#)).unwrap();
-        ids.set_grant(&b, Some("{}")).unwrap();
-        ids.set_grant(&b, Some(r#"{"edit_self":false}"#)).unwrap();
+        ids.set_grant(&a, Some(r#"{"run":[""]}"#), None).unwrap();
+        ids.set_grant(&b, Some("{}"), None).unwrap();
+        ids.set_grant(&b, Some(r#"{"edit_self":false}"#), None)
+            .unwrap();
         assert_eq!(ids.grant(&a).as_deref(), Some(r#"{"run":[""]}"#));
         ids.moved("dir", "moved");
         assert_eq!(
@@ -490,7 +788,7 @@ mod tests {
         );
         ids.removed("moved");
         assert_eq!(ids.grant(&a), None);
-        ids.set_grant(&b, None).unwrap();
+        ids.set_grant(&b, None, None).unwrap();
         assert_eq!(ids.grant(&b), None);
         assert!(ids.grants().is_empty());
     }
@@ -515,7 +813,7 @@ mod tests {
         grants_follow_moves(&FileIds::open(&db, Path::new("/root3")));
         // Grants persist, and list only under their own root.
         let ids = FileIds::open(&db, Path::new("/root1"));
-        ids.set_grant(&id, Some("{}")).unwrap();
+        ids.set_grant(&id, Some("{}"), None).unwrap();
         drop(ids);
         assert_eq!(
             FileIds::open(&db, Path::new("/root1"))
@@ -560,7 +858,7 @@ mod tests {
         assert_eq!(ids.get("a.ipynb"), Some(id.clone()));
         // A grant on an id the database didn't keep would last only this
         // process: refused.
-        assert!(ids.set_grant(&id, Some("{}")).is_err());
+        assert!(ids.set_grant(&id, Some("{}"), None).is_err());
         assert!(ids.is_persistent());
         ids.moved("a.ipynb", "b.ipynb");
         assert_eq!(ids.path(&id).as_deref(), Some("b.ipynb"));
@@ -593,5 +891,119 @@ mod tests {
         assert_ne!(id, stored);
         assert_eq!(fresh.index("a.ipynb"), (id, false));
         assert_eq!(fresh.index("stored.ipynb"), (stored, false));
+    }
+
+    const G: &str = r#"{"run":[""]}"#;
+
+    /// The stamp rules, on either store.
+    fn stamps(ids: &FileIds) {
+        let (a, _) = ids.index("a.ipynb");
+        let (b, _) = ids.index("b.ipynb");
+        ids.set_grant(&a, Some(G), Some("s1")).unwrap();
+        // The same stamp, or none to compare (a missing file), keeps it.
+        assert_eq!(ids.grant_checked(&a, Some("s1")).as_deref(), Some(G));
+        assert_eq!(ids.grant_checked(&a, None).as_deref(), Some(G));
+        // Restamped: the new stamp is the file's own.
+        ids.restamp(&a, "s2").unwrap();
+        assert_eq!(ids.grant_checked(&a, Some("s2")).as_deref(), Some(G));
+        // A restamp for an id with no grant stores nothing.
+        ids.restamp(&b, "x").unwrap();
+        assert_eq!(ids.grant(&b), None);
+        ids.set_grant(&b, Some("{}"), None).unwrap();
+        assert_eq!(ids.grant_checked(&b, Some("x")).as_deref(), Some("{}"));
+        assert_eq!(ids.grant_checked(&b, Some("x")).as_deref(), Some("{}"));
+        // A different stamp drops it: for good, and from the listing.
+        assert_eq!(ids.grant_checked(&a, Some("other")), None);
+        assert_eq!(ids.grant(&a), None);
+        assert_eq!(ids.grants(), [("b.ipynb".to_string(), "{}".to_string())]);
+        // A grant stamped on first read drops when its file then changes.
+        assert_eq!(ids.grant_checked(&b, Some("y")), None);
+        assert!(ids.grants().is_empty());
+        // The listing checks each grant by its path.
+        ids.set_grant(&a, Some(G), Some("s1")).unwrap();
+        ids.set_grant(&b, Some("{}"), Some("s1")).unwrap();
+        let live = ids.grants_checked(|p| Some(if p == "a.ipynb" { "s1" } else { "s9" }.into()));
+        assert_eq!(live, [("a.ipynb".to_string(), G.to_string())]);
+        assert_eq!(ids.grant(&b), None);
+        // An unstamped grant is stamped by the listing too.
+        ids.set_grant(&b, Some("{}"), None).unwrap();
+        let stamped = |p: &str| Some(if p == "a.ipynb" { "s1" } else { "t" }.to_string());
+        assert_eq!(ids.grants_checked(stamped).len(), 2);
+        assert_eq!(ids.grant_checked(&b, Some("u")), None);
+    }
+
+    #[test]
+    fn in_memory_grants_follow_their_stamps() {
+        stamps(&FileIds::in_memory());
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_grants_follow_their_stamps() {
+        let dir = tempfile::tempdir().unwrap();
+        stamps(&FileIds::open(&dir.path().join("ids.db"), Path::new("/r")));
+    }
+
+    /// A database from before stamps: the column is added, and the old
+    /// grant is stamped by its first read, not dropped. Opening twice
+    /// (two servers) is fine.
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_without_the_stamp_column_is_migrated() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ids.db");
+        {
+            let old = rusqlite::Connection::open(&db).unwrap();
+            old.execute_batch(
+                "CREATE TABLE file_ids (id text PRIMARY KEY, root text NOT NULL,
+                    path text NOT NULL, UNIQUE (root, path));
+                CREATE TABLE host_grants (id text PRIMARY KEY, grant_json text NOT NULL);
+                INSERT INTO file_ids VALUES ('i1', '/r', 'a.ipynb');
+                INSERT INTO host_grants VALUES ('i1', '{\"run\":[\"\"]}');",
+            )
+            .unwrap();
+        }
+        let ids = FileIds::open(&db, Path::new("/r"));
+        let again = FileIds::open(&db, Path::new("/r"));
+        assert!(ids.is_persistent() && again.is_persistent());
+        assert_eq!(ids.grant_checked("i1", Some("s1")).as_deref(), Some(G));
+        assert_eq!(again.grant_checked("i1", Some("s1")).as_deref(), Some(G));
+        assert_eq!(again.grant_checked("i1", Some("s2")), None);
+        assert!(ids.grants().is_empty());
+    }
+
+    #[test]
+    fn a_stamp_changes_with_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("a.ipynb");
+        assert_eq!(file_stamp(&f), None);
+        assert_eq!(api_file_stamp(dir.path(), "a.ipynb"), None);
+        std::fs::write(&f, "1234").unwrap();
+        let first = file_stamp(&f).unwrap();
+        assert_eq!(api_file_stamp(dir.path(), "/a.ipynb"), Some(first.clone()));
+        assert_eq!(api_file_stamp(dir.path(), "../a.ipynb"), None);
+        assert_eq!(file_stamp(&f).unwrap(), first);
+        std::fs::write(&f, "12345").unwrap();
+        assert_ne!(file_stamp(&f).unwrap(), first);
+    }
+
+    /// Same size, and the old modification time put back: the change time
+    /// still differs.
+    #[cfg(unix)]
+    #[test]
+    fn a_stamp_sees_a_rewrite_that_keeps_size_and_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("a.ipynb");
+        std::fs::write(&f, "aaaa").unwrap();
+        let first = file_stamp(&f).unwrap();
+        let mtime = std::fs::metadata(&f).unwrap().modified().unwrap();
+        std::fs::write(&f, "bbbb").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&f)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        assert_ne!(file_stamp(&f).unwrap(), first);
     }
 }

@@ -83,10 +83,19 @@ fn state_with(
             ..Default::default()
         },
     ));
+    // File ids in a database, as the server keeps them, so a test can
+    // store a grant from outside, as `ganymede grant` does.
+    let collab = Arc::new(ganymede_server::collab::Collab::new(
+        file_ids(root),
+        root.canonicalize().ok(),
+    ));
     AppState {
         sessions: Arc::new(SessionManager::new(kernels.clone())),
         kernels,
-        contents: Arc::new(FsContents::new(root, FsOptions::default()).unwrap()),
+        // Saves keep their file's grant, as in the server.
+        contents: collab.stamping(Arc::new(
+            FsContents::new(root, FsOptions::default()).unwrap(),
+        )),
         token: Some(TOKEN.into()),
         cookie_secret: Arc::from(&b"test-secret"[..]),
         allow_origins: vec![],
@@ -104,12 +113,7 @@ fn state_with(
         static_dir: None,
         static_headers: Arc::new([]),
         frame_ancestors: ganymede_server::frame_ancestors_directive("'self'").unwrap(),
-        // File ids in a database, as the server keeps them, so a test can
-        // store a grant from outside, as `ganymede grant` does.
-        collab: Arc::new(ganymede_server::collab::Collab::new(
-            file_ids(root),
-            root.canonicalize().ok(),
-        )),
+        collab,
         terminals: None,
         lsp: None,
         mcp: None,
@@ -407,7 +411,7 @@ async fn a_notebooks_own_grant_replaces_the_defaults() {
     // As `ganymede grant index.ipynb read=journal edit_self=false` stores it.
     let ids = file_ids(dir.path());
     let (id, _) = ids.index("index.ipynb");
-    ids.set_grant(&id, Some(r#"{"read":["journal"],"edit_self":false}"#))
+    ids.set_grant(&id, Some(r#"{"read":["journal"],"edit_self":false}"#), None)
         .unwrap();
     assert_eq!(read("journal-private/p.ipynb").await, Err("denied"));
     assert_eq!(read("journal/a.ipynb").await, Ok(()));
@@ -425,13 +429,17 @@ async fn a_notebooks_own_grant_replaces_the_defaults() {
     assert_eq!(err.code, "denied");
     assert!(err.message.contains("edit_self"), "{}", err.message);
 
-    // The grant follows a rename made through the server.
-    ids.moved("index.ipynb", "home.ipynb");
-    std::fs::rename(
-        dir.path().join("index.ipynb"),
-        dir.path().join("home.ipynb"),
+    // The grant follows a rename made through the server, which changes
+    // the file's change time but not its grant.
+    let app = ganymede_server::build_router(state(dir.path()));
+    let (s, v) = http(
+        &app,
+        "PATCH",
+        "/api/contents/index.ipynb",
+        Some(json!({"path": "home.ipynb"})),
     )
-    .unwrap();
+    .await;
+    assert_eq!(s, 200, "{v}");
     let (api, caller) = setup(dir.path(), "home.ipynb", &[""]).await;
     let err = api
         .call(
@@ -444,7 +452,7 @@ async fn a_notebooks_own_grant_replaces_the_defaults() {
     assert_eq!(err.code, "denied");
 
     // Removed, the defaults apply again.
-    ids.set_grant(&id, None).unwrap();
+    ids.set_grant(&id, None, None).unwrap();
     assert!(api
         .call(
             &caller,
@@ -557,7 +565,8 @@ async fn a_notebook_runs_another_under_its_run_grant() {
     // called notebook may read only journal/, so its run may too.
     let ids = file_ids(dir.path());
     let (id, _) = ids.index("reports/slow.ipynb");
-    ids.set_grant(&id, Some(r#"{"read":["journal"]}"#)).unwrap();
+    ids.set_grant(&id, Some(r#"{"read":["journal"]}"#), None)
+        .unwrap();
     // The first run's kernel shuts down after its call returns; wait for
     // it so the loop below finds the slow run's kernel.
     while !run_kernels(&state).is_empty() {
@@ -1225,7 +1234,7 @@ async fn a_run_reads_through_no_symlink_its_caller_may_not() {
     .unwrap();
     let ids = file_ids(dir.path());
     let (id, _) = ids.index("reports/slow.ipynb");
-    ids.set_grant(&id, Some(r#"{"read":["journal/link"]}"#))
+    ids.set_grant(&id, Some(r#"{"read":["journal/link"]}"#), None)
         .unwrap();
     let (call, run) = start_run(&api, &state, &caller, "reports/slow.ipynb").await;
     for path in ["journal/link/p.ipynb", "journal-private/p.ipynb"] {
@@ -1255,7 +1264,8 @@ async fn an_http_run_has_its_notebooks_grant() {
     .await;
     let ids = file_ids(dir.path());
     let (id, _) = ids.index("reports/slow.ipynb");
-    ids.set_grant(&id, Some(r#"{"read":["journal"]}"#)).unwrap();
+    ids.set_grant(&id, Some(r#"{"read":["journal"]}"#), None)
+        .unwrap();
 
     let http_kernels = |state: &AppState| -> Vec<String> {
         state
@@ -1322,7 +1332,8 @@ async fn an_http_run_has_its_notebooks_grant() {
     // old path doesn't lend it its own.
     ids.moved("reports/slow.ipynb", "reports/renamed.ipynb");
     let (other, _) = ids.index("reports/slow.ipynb");
-    ids.set_grant(&other, Some(r#"{"read":[""]}"#)).unwrap();
+    ids.set_grant(&other, Some(r#"{"read":[""]}"#), None)
+        .unwrap();
     assert_eq!(
         api.hello(&run).await.notebook.as_deref(),
         Some("reports/renamed.ipynb")
@@ -1383,7 +1394,7 @@ async fn a_run_waiting_for_a_slot_sees_a_revoked_grant() {
     assert!(!waiting.is_finished());
     let ids = file_ids(dir.path());
     let (id, _) = ids.index("index.ipynb");
-    ids.set_grant(&id, Some(r#"{"run":[]}"#)).unwrap();
+    ids.set_grant(&id, Some(r#"{"run":[]}"#), None).unwrap();
     a.abort();
     let err = waiting.await.unwrap().unwrap_err();
     assert_eq!(err.code, "denied");
@@ -1565,7 +1576,7 @@ async fn a_pinned_kernel_is_its_notebooks_kernel_until_unpinned() {
     // the kernel writes the notebook.
     let ids = file_ids(dir.path());
     let (id, _) = ids.index("index.ipynb");
-    ids.set_grant(&id, Some(r#"{"read":["journal"],"edit_self":true}"#))
+    ids.set_grant(&id, Some(r#"{"read":["journal"],"edit_self":true}"#), None)
         .unwrap();
     assert_eq!(
         api.call(
@@ -1599,4 +1610,213 @@ async fn a_pinned_kernel_is_its_notebooks_kernel_until_unpinned() {
             .code,
         "denied"
     );
+}
+
+/// What `GET /api/host/grants/index.ipynb` says the notebook's own grant is.
+async fn own_grant(app: &axum::Router) -> Value {
+    let (s, v) = http(app, "GET", "/api/host/grants/index.ipynb", None).await;
+    assert_eq!(s, 200, "{v}");
+    v["grant"].clone()
+}
+
+const GRANT_URL: &str = "/api/host/grants/index.ipynb";
+
+/// A grant stays through every save the server makes: the contents API,
+/// a notebook's room, a rename (#767).
+#[tokio::test]
+async fn a_grant_survives_saves_through_the_server() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let state = state(dir.path());
+    let app = ganymede_server::build_router(state.clone());
+    let want = json!({"read": ["journal"], "edit_self": true});
+    let (s, v) = http(&app, "PUT", GRANT_URL, Some(want.clone())).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(own_grant(&app).await, want);
+
+    // The contents API.
+    let text = std::fs::read_to_string(dir.path().join("index.ipynb")).unwrap();
+    let mut nb: Value = serde_json::from_str(&text).unwrap();
+    nb["cells"].as_array_mut().unwrap().push(
+        json!({"cell_type": "markdown", "id": "n", "metadata": {}, "source": "added by a client"}),
+    );
+    let (s, v) = http(
+        &app,
+        "PUT",
+        "/api/contents/index.ipynb",
+        Some(json!({"type": "notebook", "format": "json", "content": nb})),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let on_disk = std::fs::read_to_string(dir.path().join("index.ipynb")).unwrap();
+    assert!(on_disk.contains("added by a client"));
+    assert_eq!(own_grant(&app).await, want, "kept through a REST save");
+
+    // The notebook's room, saved by its own edit.
+    let session = state
+        .sessions
+        .create(SessionCreate {
+            path: "index.ipynb".into(),
+            name: None,
+            type_: Some("notebook".into()),
+            kernel: Default::default(),
+        })
+        .await
+        .unwrap();
+    let caller = Caller {
+        kernel_id: session.kernel.id.clone(),
+    };
+    let api = HostApi::new(state.clone(), &state.host);
+    api.call(&caller, "self.add", json!({"source": "from the room"}))
+        .await
+        .unwrap();
+    state.collab.flush_all().await;
+    let on_disk = std::fs::read_to_string(dir.path().join("index.ipynb")).unwrap();
+    assert!(on_disk.contains("from the room"), "the room saved");
+    assert_eq!(own_grant(&app).await, want, "kept through a room save");
+
+    // A checkpoint restored, a rename.
+    let (s, v) = http(&app, "POST", "/api/contents/index.ipynb/checkpoints", None).await;
+    assert_eq!(s, 201, "{v}");
+    let (s, _) = http(
+        &app,
+        "POST",
+        &format!(
+            "/api/contents/index.ipynb/checkpoints/{}",
+            v["id"].as_str().unwrap()
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(s, 204);
+    assert_eq!(own_grant(&app).await, want, "kept through a restore");
+    let (s, v) = http(
+        &app,
+        "PATCH",
+        "/api/contents/index.ipynb",
+        Some(json!({"path": "home.ipynb"})),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = http(&app, "GET", "/api/host/grants/home.ipynb", None).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["grant"], want, "kept through a rename");
+}
+
+/// A file replaced outside the server keeps its path's file id, and must
+/// not keep its grant; `ganymede grant --list` reads the same store.
+#[tokio::test]
+async fn a_grant_is_dropped_when_its_file_is_rewritten_on_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let state = state(dir.path());
+    let app = ganymede_server::build_router(state.clone());
+    let want = json!({"read": ["journal"]});
+    http(&app, "PUT", GRANT_URL, Some(want.clone())).await;
+    assert_eq!(own_grant(&app).await, want);
+
+    std::fs::write(
+        dir.path().join("index.ipynb"),
+        "{\"replaced\": true, \"by\": \"git\"}",
+    )
+    .unwrap();
+    assert_eq!(own_grant(&app).await, json!({}), "back to the defaults");
+    // Gone from the store, not only hidden.
+    assert!(file_ids(dir.path()).grants().is_empty());
+    // And it stays gone.
+    assert_eq!(own_grant(&app).await, json!({}));
+}
+
+/// A kernel's own calls see the drop too, not only the grants route.
+#[tokio::test]
+async fn a_kernel_loses_a_dropped_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let (api, caller) = setup(dir.path(), "index.ipynb", &[""]).await;
+    let ids = file_ids(dir.path());
+    let (id, _) = ids.index("index.ipynb");
+    let stamp =
+        ganymede_contents::api_file_stamp(&dir.path().canonicalize().unwrap(), "index.ipynb");
+    ids.set_grant(&id, Some(r#"{"read":["journal"]}"#), stamp.as_deref())
+        .unwrap();
+    let read = || async {
+        api.call(
+            &caller,
+            "notebooks.read",
+            json!({"path": "journal-private/p.ipynb"}),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| e.code)
+    };
+    assert_eq!(read().await, Err("denied"));
+    let nb = std::fs::read_to_string(dir.path().join("index.ipynb")).unwrap();
+    std::fs::write(dir.path().join("index.ipynb"), format!("{nb} ")).unwrap();
+    assert_eq!(read().await, Ok(()), "the [host] defaults apply again");
+}
+
+/// A save by the server of a file that changed outside it doesn't bless
+/// the new content: the grant goes first.
+#[tokio::test]
+async fn a_server_save_does_not_bless_a_file_changed_outside() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let app = ganymede_server::build_router(state(dir.path()));
+    http(&app, "PUT", GRANT_URL, Some(json!({"read": ["journal"]}))).await;
+    std::fs::write(dir.path().join("index.ipynb"), "{\"replaced\": true}").unwrap();
+    let (s, v) = http(
+        &app,
+        "PUT",
+        "/api/contents/index.ipynb",
+        Some(json!({"type": "file", "format": "text", "content": "{\"replaced\": 2}"})),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(own_grant(&app).await, json!({}));
+}
+
+/// A grant from before stamps has none; the first read stamps it, and a
+/// rewrite after that drops it.
+#[tokio::test]
+async fn a_grant_without_a_stamp_is_stamped_on_first_use() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let app = ganymede_server::build_router(state(dir.path()));
+    let ids = file_ids(dir.path());
+    let (id, _) = ids.index("index.ipynb");
+    ids.set_grant(&id, Some(r#"{"read":["journal"]}"#), None)
+        .unwrap();
+    assert_eq!(own_grant(&app).await, json!({"read": ["journal"]}));
+    std::fs::write(dir.path().join("index.ipynb"), "{\"replaced\": true}").unwrap();
+    assert_eq!(own_grant(&app).await, json!({}));
+}
+
+/// A rewrite that keeps the size and puts the old modification time back
+/// still changes the change time.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_same_size_rewrite_with_the_old_mtime_drops_the_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    notebooks(dir.path());
+    let app = ganymede_server::build_router(state(dir.path()));
+    let want = json!({"read": ["journal"]});
+    http(&app, "PUT", GRANT_URL, Some(want.clone())).await;
+    let file = dir.path().join("index.ipynb");
+    let before = std::fs::read(&file).unwrap();
+    let mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
+    // Past the filesystem's timestamp tick.
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let mut after = before.clone();
+    // One byte changed in place.
+    let at = after.iter().position(|b| *b == b'#').unwrap();
+    after[at] = b'$';
+    assert_eq!(after.len(), before.len());
+    std::fs::write(&file, &after).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    assert_eq!(own_grant(&app).await, json!({}));
 }

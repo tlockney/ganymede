@@ -51,7 +51,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use ganymede_api::bridge::CLIENT_QUEUE_LIMIT;
-use ganymede_contents::{ContentType, Contents, FileIds, GetOptions, IfMatch, SaveRequest};
+use ganymede_contents::{
+    normalize_api_path, ContentType, Contents, FileIds, GetOptions, IfMatch, SaveRequest,
+};
 use ganymede_documents::{ConnId, Room, SaveStatus, Target};
 use ganymede_nbformat::Notebook;
 use serde::Deserialize;
@@ -123,6 +125,9 @@ pub struct Collab {
     locks: crate::room_lock::Locks,
     /// Request ids the execute endpoint has queued.
     pub(crate) requests: crate::execute::Requests,
+    /// Stamps of files for host grants, and the saves in flight
+    /// ([`crate::stamping`]).
+    pub(crate) stamps: Arc<crate::stamping::Stamps>,
 }
 
 impl Default for Collab {
@@ -138,6 +143,7 @@ impl Collab {
         Collab {
             session_id: uuid::Uuid::new_v4().to_string(),
             ids: Arc::new(ids),
+            stamps: Arc::new(crate::stamping::Stamps::new(root.clone())),
             root,
             watcher: Watcher::new(),
             rooms: Mutex::default(),
@@ -221,25 +227,67 @@ impl Collab {
             .expect("file ids task")
     }
 
-    /// The host API grant stored for the notebook at `path`, if any.
+    /// The host API grant stored for the notebook at `path`, if any and
+    /// its file is still the one it was granted to: one whose file was
+    /// changed outside the server is dropped (#767).
     pub async fn grant(&self, path: &str) -> Option<String> {
-        let path = path.to_string();
-        self.with_ids(move |ids| ids.grant(&ids.get(&path)?)).await
+        let path = normalize_api_path(path);
+        let stamps = self.stamps.clone();
+        self.with_ids(move |ids| {
+            let id = ids.get(&path)?;
+            checked_grant(ids, &stamps, &id, &path)
+        })
+        .await
     }
 
-    /// The path the file with id `id` has now and its host API grant, read
-    /// together, so no rename lands between them; `None` once it's gone.
+    /// The path the file with id `id` has now and its host API grant,
+    /// checked as [`Collab::grant`] does, read together, so no rename
+    /// lands between them; `None` once it's gone.
     pub async fn path_and_grant(&self, id: &str) -> Option<(String, Option<String>)> {
         let id = id.to_string();
-        self.with_ids(move |ids| Some((ids.path(&id)?, ids.grant(&id))))
-            .await
+        let stamps = self.stamps.clone();
+        self.with_ids(move |ids| {
+            let path = ids.path(&id)?;
+            let grant = checked_grant(ids, &stamps, &id, &path);
+            Some((path, grant))
+        })
+        .await
+    }
+
+    /// Drops the grant of the file at `path` if the file changed outside
+    /// the server, before the server writes it.
+    pub(crate) async fn check_grant_at(&self, path: &str) {
+        let _ = self.grant(path).await;
+    }
+
+    /// The server wrote the file at `path`: its grant, if any, keeps
+    /// matching it. Fails when the grant store does.
+    pub(crate) async fn restamp(&self, path: &str) -> Result<(), String> {
+        let path = normalize_api_path(path);
+        let stamps = self.stamps.clone();
+        self.with_ids(move |ids| {
+            let Some(id) = ids.get(&path) else {
+                return Ok(());
+            };
+            match stamps.own(&path) {
+                Some(stamp) => ids
+                    .restamp(&id, &stamp)
+                    .map_err(|e| format!("restamping the host grant for {path}: {e}")),
+                None => Ok(()),
+            }
+        })
+        .await
     }
 
     /// Stores `grant` (JSON) for the notebook with file id `id`, or
-    /// removes it.
+    /// removes it, stamped with its file as it is now.
     pub async fn set_grant(&self, id: String, grant: Option<String>) -> Result<(), String> {
-        self.with_ids(move |ids| ids.set_grant(&id, grant.as_deref()))
-            .await
+        let stamps = self.stamps.clone();
+        self.with_ids(move |ids| {
+            let stamp = ids.path(&id).and_then(|p| stamps.own(&p));
+            ids.set_grant(&id, grant.as_deref(), stamp.as_deref())
+        })
+        .await
     }
 
     /// Whether the file ids, and so grants, outlive the server.
@@ -248,7 +296,7 @@ impl Collab {
     }
 
     /// The id for `path`, made the first time; and whether it was new.
-    async fn index(&self, path: &str) -> (String, bool) {
+    pub(crate) async fn index(&self, path: &str) -> (String, bool) {
         let path = path.to_string();
         self.with_ids(move |ids| ids.index(&path)).await
     }
@@ -307,8 +355,14 @@ impl Collab {
         let (old, new) = (old.to_string(), new.to_string());
         detached(async move {
             let _moving = collab.begin_move().await;
+            // A rename can change the file's change time, so a grant
+            // check mustn't look between the rename and the new stamp.
+            let _saving = collab.stamps.begin(&new);
             let model = contents.rename(&old, &new).await?;
             collab.moved(&old, &model.path).await;
+            if let Err(e) = collab.restamp(&model.path).await {
+                tracing::warn!("{e}");
+            }
             Ok(model)
         })
         .await
@@ -847,9 +901,22 @@ pub(crate) async fn send_to_notebook_room(
     send_to_room(collab, contents, room_id, Some(file_id), cmd).await
 }
 
+/// The grant of file id `id`, at `path`, if its file still matches its
+/// stamp; one that doesn't is dropped. Looks at the file only when there
+/// is a grant to check.
+fn checked_grant(
+    ids: &FileIds,
+    stamps: &crate::stamping::Stamps,
+    id: &str,
+    path: &str,
+) -> Option<String> {
+    ids.grant(id)?;
+    ids.grant_checked(id, stamps.current(path).as_deref())
+}
+
 /// Runs `f` on its own task and waits for it: dropping the wait leaves
 /// `f` running to the end. A panic in `f` comes back as an I/O error.
-async fn detached<T: Send + 'static>(
+pub(crate) async fn detached<T: Send + 'static>(
     f: impl std::future::Future<Output = ganymede_contents::Result<T>> + Send + 'static,
 ) -> ganymede_contents::Result<T> {
     tokio::spawn(f)

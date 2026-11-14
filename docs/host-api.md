@@ -295,6 +295,22 @@ edit_self = true     # the self.* calls; false turns them off
 - **Per notebook** grants add to or narrow the defaults, keyed by the
   notebook's [file id](rooms.md#file-ids), so they follow a rename or
   move. They live beside the file id database, not in the notebook.
+  A grant is for the file as Ganymede last wrote or saw it: it is stored
+  with the file's size and times, and when the file no longer matches
+  (replaced by `git`, Finder, a download or a sync tool, which keep the
+  path and so its file id) the grant is dropped, back to the `[host]`
+  defaults, and the server logs it. `ganymede grant --list` shows only
+  grants that still hold. Saves through the server (the contents API,
+  document rooms, MCP and `ganymede execute`'s own write) keep it. A
+  grant from before this check has no record of its file, so the first
+  time it is used it takes the file as it is, and holds from then on.
+  The check compares size and times, not contents, so it costs a `stat`
+  and not a read.
+
+  > [!NOTE]
+  > **Unreleased.** Dropping a grant when its file changes outside
+  > Ganymede is available only from a build of `main` (HEAD), not in the
+  > latest release, where a replaced file keeps its grant.
 - **Asking.** A notebook may list what it wants in
   `metadata.ganymede.host.wants`, for example `["notebooks.run"]`. That
   grants nothing. A client shows it and lets the person grant it, the way

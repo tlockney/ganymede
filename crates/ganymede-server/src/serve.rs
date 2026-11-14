@@ -541,10 +541,17 @@ impl LocalHost {
                 ..Default::default()
             },
         ));
+        // The same file ids as a server on this root and `ganymede
+        // grant`, so a notebook's own grant applies here too.
+        let collab = Arc::new(crate::collab::Collab::new(
+            file_ids(&root_dir),
+            Some(root_dir.clone()),
+        ));
         let state = AppState {
             sessions: Arc::new(SessionManager::new(kernels.clone())),
             kernels: kernels.clone(),
-            contents: Arc::new(FsContents::new(&root_dir, FsOptions::default())?),
+            // A notebook the run writes keeps its grant (#767).
+            contents: collab.stamping(Arc::new(FsContents::new(&root_dir, FsOptions::default())?)),
             token: None,
             cookie_secret: Arc::from(&[][..]),
             allow_origins: Vec::new(),
@@ -565,12 +572,7 @@ impl LocalHost {
             static_dir: None,
             static_headers: Arc::new([]),
             frame_ancestors: crate::frame_ancestors_directive("'self'")?,
-            // The same file ids as a server on this root and `ganymede
-            // grant`, so a notebook's own grant applies here too.
-            collab: Arc::new(crate::collab::Collab::new(
-                file_ids(&root_dir),
-                Some(root_dir),
-            )),
+            collab,
             terminals: None,
             lsp: None,
             mcp: None,
@@ -609,6 +611,20 @@ impl LocalHost {
             kernel_id,
             _link: link,
         }
+    }
+
+    /// Drops the grant of the notebook at API path `path` if its file
+    /// changed outside Ganymede since the grant was stamped, so a run's
+    /// own write of the notebook doesn't bless what came from outside
+    /// (#767).
+    pub async fn check_grant(&self, path: &str) {
+        self.state.collab.check_grant_at(path).await;
+    }
+
+    /// The run wrote the notebook at API path `path`: its grant, if any,
+    /// keeps matching it (#767).
+    pub async fn restamp(&self, path: &str) -> Result<(), String> {
+        self.state.collab.restamp(path).await
     }
 
     /// Stop any run kernels still going.
@@ -843,7 +859,8 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
     let state = AppState {
         kernels: kernels.clone(),
         sessions,
-        contents,
+        // Saves keep their file's host grant (#767).
+        contents: state_collab.stamping(contents),
         token: token.clone(),
         cookie_secret: crate::auth::load_cookie_secret(&cookie_secret_file).into(),
         allow_origins: cfg.allow_origins.clone(),

@@ -181,7 +181,8 @@ enum Cmd {
     /// `jupyter.host()`: `read=PATH` (other notebooks it may read),
     /// `run=PATH` (notebooks it may run) and `edit_self` (its own cells). Kept by file id beside the server's
     /// file id database in the Jupyter data dir; a running server sees a
-    /// change on the next call.
+    /// change on the next call. A grant is dropped when its file is
+    /// replaced outside Ganymede.
     Grant(grant::GrantArgs),
     /// Trust notebooks' HTML and JavaScript, as jupyter trust does.
     ///
@@ -1180,6 +1181,12 @@ async fn execute(
             env: env.clone(),
         };
         eprintln!("executing {}", path.display());
+        // A grant its file outgrew is gone before this run writes the
+        // file, which then keeps whatever grant is left (#767).
+        let notebook_api = api_path_of(path);
+        if let (Some(h), Some(api)) = (host, &notebook_api) {
+            h.check_grant(api).await;
+        }
         let kernel = match open(engine, &target, verbose).await {
             Ok(k) => Arc::new(k),
             Err(e) => {
@@ -1190,7 +1197,7 @@ async fn execute(
             }
         };
         let _guard = interrupt_on_ctrl_c(&kernel, &stop);
-        let _host = host.map(|h| h.attach(&kernel.session(), api_path_of(path)));
+        let _host = host.map(|h| h.attach(&kernel.session(), notebook_api.clone()));
         // Cells this run started: only their outputs are this run's
         // results. A cell after a failure, or one skipped by tag, still
         // holds what an earlier run saved.
@@ -1234,6 +1241,14 @@ async fn execute(
                     if let Err(e) = write_notebook(&nb, dest.as_deref()) {
                         print_results(args.results, path, Some((&nb, &ran)), Some(&e));
                         return Err(e);
+                    }
+                    // Its own write keeps the notebook's grant (#767).
+                    if let (Some(h), Some(out)) = (host, &dest) {
+                        if let Some(api) = api_path_of(out) {
+                            if let Err(e) = h.restamp(&api).await {
+                                eprintln!("ganymede: {e}");
+                            }
+                        }
                     }
                 }
                 print_results(args.results, path, Some((&nb, &ran)), None);

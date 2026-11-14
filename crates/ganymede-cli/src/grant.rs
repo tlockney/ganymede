@@ -116,16 +116,19 @@ pub fn run(args: GrantArgs) -> Result<ExitCode> {
         if !args.list {
             bail!("name a notebook, or pass --list");
         }
-        for (path, text) in ids.grants() {
+        // Only grants whose files are as Ganymede left them: one whose
+        // file changed outside it is dropped here (#767).
+        for (path, text) in ids.grants_checked(|p| ganymede_contents::api_file_stamp(&root, p)) {
             println!("{}", show(&path, &parse(&text)));
         }
         return Ok(ExitCode::SUCCESS);
     };
     let path = api_path(&root, notebook)?;
+    let stamp = ganymede_contents::api_file_stamp(&root, &path);
     if args.list {
         let grant = ids
             .get(&path)
-            .and_then(|id| ids.grant(&id))
+            .and_then(|id| ids.grant_checked(&id, stamp.as_deref()))
             .map(|t| parse(&t))
             .unwrap_or_default();
         if grant.is_empty() {
@@ -139,7 +142,11 @@ pub fn run(args: GrantArgs) -> Result<ExitCode> {
         bail!("say what to grant, such as read=journal, run=reports or edit_self=false");
     }
     let (id, _) = ids.index(&path);
-    let mut grant = ids.grant(&id).map(|t| parse(&t)).unwrap_or_default();
+    // One its file outgrew is gone, so this starts from the defaults.
+    let mut grant = ids
+        .grant_checked(&id, stamp.as_deref())
+        .map(|t| parse(&t))
+        .unwrap_or_default();
     if args.revoke && args.grants.is_empty() {
         grant = Grant::default();
     }
@@ -189,7 +196,7 @@ pub fn run(args: GrantArgs) -> Result<ExitCode> {
         }
     }
     let text = (!grant.is_empty()).then(|| serde_json::to_string(&grant).expect("a grant is JSON"));
-    ids.set_grant(&id, text.as_deref())
+    ids.set_grant(&id, text.as_deref(), stamp.as_deref())
         .map_err(|e| anyhow::anyhow!("saving the grant: {e}"))?;
     if grant.is_empty() {
         println!("{path}: the [host] defaults");
