@@ -17,6 +17,7 @@ pub mod lab;
 pub mod mcp;
 pub mod metrics;
 pub(crate) mod room_lock;
+mod room_ops;
 pub mod routes;
 pub mod run;
 pub mod serve;

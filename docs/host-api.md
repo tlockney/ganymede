@@ -195,6 +195,20 @@ the most common edit a notebook makes, regenerating a table or summary
 in one of its own cells, such as a journal index. A kernel with no
 notebook has no `self.*` calls.
 
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+Cells the `self.*` calls write carry [provenance](mcp.md#provenance)
+with `by` set to `kernel`: a cell `self.add` makes gets
+`metadata.ganymede.agent = {"by": "kernel", "mode": "note", "at": "<time>"}`,
+and `self.edit` keeps the source it replaced in the cell's `history`,
+as `cell_edit` does. Once a kernel uses `self.*`, the server keeps its
+notebook's room open until the kernel ends, as it does for an MCP
+connection, so the ids
+`self.add` returns stay valid in a notebook saved without cell ids
+(nbformat 4.4 and older) even when no client has it open.
+
 Later, on the same channel and the same grants:
 
 - `notebooks.edit`: the `self.*` calls for other notebooks, behind a
