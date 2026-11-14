@@ -598,10 +598,6 @@ revisions. The replaced text is saved in the `.ipynb`: editing a secret
 out of a cell with `cell_edit` leaves it in `history` until the metadata
 is cleared.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 A kernel's [`self.edit`](host-api.md) keeps history the same way, with
 `"by": "kernel"`.
 

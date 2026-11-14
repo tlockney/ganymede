@@ -195,10 +195,6 @@ the most common edit a notebook makes, regenerating a table or summary
 in one of its own cells, such as a journal index. A kernel with no
 notebook has no `self.*` calls.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 Cells the `self.*` calls write carry [provenance](mcp.md#provenance)
 with `by` set to `kernel`: a cell `self.add` makes gets
 `metadata.ganymede.agent = {"by": "kernel", "mode": "note", "at": "<time>"}`,
