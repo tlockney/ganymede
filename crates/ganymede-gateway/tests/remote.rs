@@ -164,3 +164,37 @@ async fn a_wrong_token_is_reported() {
     assert!(e.contains("403") || e.contains("401"), "{e}");
     stop.send(()).await.unwrap();
 }
+
+/// Every request says it comes from a program (`Ganymede-Client`), so a
+/// server that lets this machine in by tailnet identity needs no token.
+#[tokio::test(flavor = "multi_thread")]
+async fn requests_name_the_gateway_as_a_program() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut head = Vec::new();
+        let mut buf = [0u8; 1024];
+        while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = sock.read(&mut buf).await.unwrap();
+            assert!(n > 0, "closed before the request head ended");
+            head.extend_from_slice(&buf[..n]);
+        }
+        let body = r#"{"default":"","kernelspecs":{}}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        sock.write_all(resp.as_bytes()).await.unwrap();
+        String::from_utf8_lossy(&head).to_ascii_lowercase()
+    });
+    let gateway = Gateway::new(&format!("http://{addr}/"), None).unwrap();
+    gateway.refresh().await.unwrap();
+    let head = server.await.unwrap();
+    assert!(
+        head.contains("\r\nganymede-client: ganymede-gateway\r\n"),
+        "{head}"
+    );
+    assert!(!head.contains("authorization:"), "{head}");
+}

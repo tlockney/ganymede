@@ -249,6 +249,10 @@ some libraries add, alongside the header.
 curl -H 'Ganymede-Client: curl' https://workstation.example-tailnet.ts.net/api/kernels
 ```
 
+Ganymede's own [gateway](reference.md#gateway) sends it, so a
+server whose kernels run on a tailnet server that lets this machine in
+needs no `gateway_token`.
+
 ### On the tailnet address
 
 With `whois = true`, the server can listen on its tailnet address
