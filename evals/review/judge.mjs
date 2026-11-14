@@ -6,12 +6,12 @@ import { runClaude } from "./claude.mjs";
 import { buildJudgePrompt, parseJudge } from "./score.mjs";
 
 /** Resolves `{ ok, perFinding, otherMediumPlus, cost, raw? }` or `{ ok: false, error, cost }`. */
-export async function judgeReview({ findings, reviewText, model = "sonnet", timeoutMs = 10 * 60 * 1000 }) {
+export async function judgeReview({ findings, reviewText, model = "sonnet", timeoutMs = 10 * 60 * 1000, run = runClaude }) {
   const cwd = fs.mkdtempSync(`${os.tmpdir()}/review-judge-`);
   let cost = 0;
   try {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const r = await runClaude({ args: ["--model", model, "--tools", "", "--setting-sources", "", "--strict-mcp-config"], input: buildJudgePrompt(findings, reviewText), cwd, timeoutMs });
+      const r = await run({ args: ["--model", model, "--tools", "", "--setting-sources", "", "--strict-mcp-config"], input: buildJudgePrompt(findings, reviewText), cwd, timeoutMs });
       cost += r.cost;
       if (r.code !== 0 || r.isError) {
         if (attempt === 1) return { ok: false, error: `judge exited ${r.code}: ${r.stderr || r.raw || ""}`.trim(), cost };

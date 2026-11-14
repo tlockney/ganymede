@@ -1,7 +1,7 @@
 // node --test evals/review/*.test.mjs
 import assert from "node:assert/strict";
 import test from "node:test";
-import { handle, mcpConfig } from "./issue-mcp.mjs";
+import { beforeDate, handle, mcpConfig } from "./issue-mcp.mjs";
 
 const ctx = { repo: "tlockney/ganymede", issue: 816, fetch: (p) => `GOT ${p}` };
 const call = (args, name = "issue_read") => handle({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }, ctx);
@@ -22,4 +22,15 @@ test("it reads the case's issue and comments and nothing else", () => {
   }
   assert.equal(call(a, "pull_request_read").result.isError, true);
   assert.match(mcpConfig({ repo: "tlockney/ganymede", issue: 816 }), /"CASE_ISSUE":"816"/);
+});
+
+test("comments written after the head commit are dropped; the issue itself is not filtered", () => {
+  const comments = JSON.stringify([{ id: 1, created_at: "2026-11-10T00:00:00Z" }, { id: 2, created_at: "2026-11-12T00:00:00Z" }, { id: 3, created_at: "2026-11-11T12:00:00Z" }]);
+  assert.deepEqual(JSON.parse(beforeDate(comments, "2026-11-11T12:00:00+00:00")).map((c) => c.id), [1, 3]);
+  const dated = { ...ctx, before: "2026-11-11T00:00:00Z", fetch: (p) => (p.endsWith("/comments") ? comments : '{"body":"live"}') };
+  const a = { owner: "tlockney", repo: "ganymede", issue_number: 816 };
+  const r = (method) => handle({ id: 1, method: "tools/call", params: { name: "issue_read", arguments: { ...a, method } } }, dated).result.content[0].text;
+  assert.deepEqual(JSON.parse(r("get_comments")).map((c) => c.id), [1]);
+  assert.equal(r("get"), '{"body":"live"}');
+  assert.match(mcpConfig({ repo: "tlockney/ganymede", issue: 816 }, "2026-11-11T00:00:00Z"), /CASE_BEFORE":"2026-11-11T00:00:00Z"/);
 });

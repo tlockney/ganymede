@@ -13,14 +13,13 @@ test("the only shell a review may run is read-only git and this case's issue ove
   assert.deepEqual(bash.filter((t) => t.startsWith("Bash(git ")), GIT_READ.map((g) => `Bash(git ${g}:*)`));
   assert.deepEqual(bash.filter((t) => !t.startsWith("Bash(git ")), [
     "Bash(gh api repos/tlockney/ganymede/issues/816)",
-    "Bash(gh api repos/tlockney/ganymede/issues/816/comments)",
   ]);
   for (const t of bash) assert.ok(!t.includes("*") || t.endsWith(":*)"), `wildcard only as a git subcommand prefix: ${t}`);
   // No generic shell readers, find, git grep or issue view: they write, run commands or need GraphQL.
   for (const bad of ["find", "cat", "ls", "head", "tail", "wc", "grep", "gh issue", "gh pr", "git grep", "git push", "git commit", "git checkout", "cargo", "npm"]) {
     assert.ok(!bash.some((t) => t.startsWith(`Bash(${bad}`)), bad);
   }
-  assert.deepEqual(issuePaths(c), ["repos/tlockney/ganymede/issues/816", "repos/tlockney/ganymede/issues/816/comments"]);
+  assert.deepEqual(issuePaths(c), ["repos/tlockney/ganymede/issues/816"], "comments come only through issue_read, dated");
   assert.ok(!allowed.includes("Edit") && !allowed.includes("Write") && !allowed.includes("Bash"));
 });
 
@@ -59,9 +58,27 @@ test("no blanket /home or /Users deny: the clone under $HOME stays readable (Lin
   assert.ok(!disallowedTools(d).some((r) => r.includes("project-files")), "only when the mount exists");
 });
 
+test("a checkout directly in $HOME: the siblings are denied one by one and the cache stays readable", () => {
+  const tree = {
+    "/home/alice": [".cache", ".ssh", "ganymede", "notes.txt"],
+    "/home/alice/.cache": ["ganymede-review-eval", "pip"],
+    "/home/alice/.cache/ganymede-review-eval": ["work", "ganymede.git"],
+  };
+  const list = (d) => tree[d] ?? [];
+  const cache = "/home/alice/.cache/ganymede-review-eval";
+  const d = denyPaths({ cache, out: "/tmp/o", repoRoot: "/home/alice/ganymede", list, exists: () => false });
+  assert.doesNotThrow(() => assertWorkAllowed(`${cache}/work/x-1-1`, d));
+  const rules = disallowedTools(d);
+  for (const p of ["//home/alice/.ssh", "//home/alice/.ssh/**", "//home/alice/ganymede/**", "//home/alice/notes.txt", "//home/alice/.cache/pip/**", "//home/alice/.cache/ganymede-review-eval/ganymede.git/**"]) {
+    assert.ok(rules.includes(`Read(${p})`), p);
+  }
+  for (const bad of ["//home/alice/**", "//home/alice/.cache/**", "//home/alice/.cache/ganymede-review-eval/**", "//home/alice/.cache/ganymede-review-eval/work/**"]) assert.ok(!rules.includes(`Read(${bad})`), bad);
+});
+
 test("fail fast when the scratch clones would sit inside a denied path", () => {
-  // The checkout is /home/alice/ganymede, so its parent is $HOME, and the cache is under it.
-  const d = denyPaths({ cache: "/home/alice/.cache/e", out: "/home/alice/out", repoRoot: "/home/alice/ganymede", exists: () => false });
-  assert.throws(() => assertWorkAllowed("/home/alice/.cache/e/work", d), /may not read/);
+  const d = denyPaths({ cache: "/home/alice/out/cache", out: "/home/alice/out", repoRoot: "/x/y/z", exists: () => false });
+  assert.throws(() => assertWorkAllowed("/home/alice/out/cache/work", d), /may not read/);
   assert.doesNotThrow(() => assertWorkAllowed("/var/cache/e/work", d));
+  // the checkout's parent is denied whole when the clones are elsewhere
+  assert.throws(() => assertWorkAllowed("/x/y/cache/work", denyPaths({ cache: "/x/y/cache", out: "/o", repoRoot: "/x/y/z", work: "/elsewhere/work", exists: () => false })), /may not read/);
 });

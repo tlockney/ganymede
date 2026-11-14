@@ -6,7 +6,9 @@ import path from "node:path";
 import test from "node:test";
 import { lock, mismatched, readResults, writeResults } from "./store.mjs";
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "review-store-"));
+const made = [];
+process.on("exit", () => made.forEach((d) => fs.rmSync(d, { recursive: true, force: true })));
+const tmp = () => (made.push(fs.mkdtempSync(path.join(os.tmpdir(), "review-store-"))), made.at(-1));
 
 test("a missing results file is empty; a damaged one is an error, not a fresh start", () => {
   const d = tmp();
@@ -45,4 +47,17 @@ test("--redo drops mismatched entries outside the selection, and the judge model
   assert.equal(mismatched(entries, cur).length, 3, "judge model mismatch counts");
   const kept = afterRedo(entries, cur, new Set([entryKey(e("a"))]));
   assert.deepEqual(kept.map((x) => x.case), ["c"], "a is replaced, b and d are stale, c matches");
+});
+
+test("a stale lock is taken over once even when two processes race for it", () => {
+  const d = tmp();
+  fs.writeFileSync(path.join(d, ".lock"), "999999999");
+  const release = lock(d);
+  assert.equal(fs.readFileSync(path.join(d, ".lock"), "utf8"), String(process.pid));
+  assert.deepEqual(fs.readdirSync(d).sort(), [".lock"], "no stale file left");
+  // A fresh lock another process took after our read is linked back, not removed.
+  release();
+  fs.writeFileSync(path.join(d, ".lock"), String(process.pid));
+  assert.throws(() => lock(d), /in use by process/);
+  assert.equal(fs.readFileSync(path.join(d, ".lock"), "utf8"), String(process.pid));
 });

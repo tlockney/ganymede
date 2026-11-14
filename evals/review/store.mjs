@@ -34,7 +34,7 @@ export function writeResults(out, entries) {
 
 export const entryKey = (e) => `${e.case}|${e.lens ?? ""}|${e.run}`;
 
-const alive = (pid) => {
+export const alive = (pid) => {
   try {
     process.kill(pid, 0);
     return true;
@@ -43,10 +43,16 @@ const alive = (pid) => {
   }
 };
 
-/** Takes `out/.lock` (holding this pid); throws if a live process holds it. Returns a release function. */
+/**
+ * Takes `out/.lock` (holding this pid); throws if a live process holds it.
+ * Returns a release function. A dead holder's lock is taken over by renaming
+ * it to a name of our own (only one process can rename it), then checking it
+ * still holds the dead pid: if it was a fresh lock another process just took,
+ * it is linked back and we give up.
+ */
 export function lock(out) {
   const file = path.join(out, ".lock");
-  for (let i = 0; i < 2; i++) {
+  for (let i = 0; i < 4; i++) {
     try {
       fs.writeFileSync(file, String(process.pid), { flag: "wx" });
       const release = () => {
@@ -58,9 +64,27 @@ export function lock(out) {
       return release;
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
-      const pid = Number(fs.readFileSync(file, "utf8"));
-      if (pid && alive(pid)) throw new Error(`${out} is in use by process ${pid} (${file})`);
-      fs.unlinkSync(file);
+    }
+    let text;
+    try {
+      text = fs.readFileSync(file, "utf8");
+    } catch {
+      continue; // released between our attempt and the read
+    }
+    const pid = Number(text);
+    if (pid && alive(pid)) throw new Error(`${out} is in use by process ${pid} (${file})`);
+    const mine = `${file}.stale.${process.pid}`;
+    try {
+      fs.renameSync(file, mine);
+    } catch {
+      continue; // another process took it over first
+    }
+    const moved = fs.readFileSync(mine, "utf8");
+    if (moved === text) fs.unlinkSync(mine);
+    else {
+      try { fs.linkSync(mine, file); } catch {}
+      fs.unlinkSync(mine);
+      throw new Error(`${out} is in use by process ${moved} (${file})`);
     }
   }
   throw new Error(`could not lock ${out}`);

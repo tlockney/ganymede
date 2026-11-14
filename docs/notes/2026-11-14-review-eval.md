@@ -41,6 +41,14 @@ model, takes a lock, writes `results.json` atomically, treats a judge reply
 without `other_medium_plus` as unusable, and re-judges a saved review instead
 of rerunning it.
 
+This baseline ran on the runner of commit 7dfbe2e, which was hardened
+afterwards: settings isolation (`--setting-sources ""`), `git blame` and its
+file-reading flags removed, denies built from the real paths instead of a
+blanket `/home` and `/mnt`, the issue's comments limited to those written
+before the head commit, one prompt per `--out` (the concurrency-lens runs
+broke this), and a check that `gh` works before any review. A rerun with the
+current runner is the next baseline.
+
 Baseline (2 runs per case, plus one security-lens and one concurrency-lens
 run on the ten cases with a class A or B finding; the full report is
 `evals/review/baseline-2026-11-14.md`, total cost $55.27). The reviews read

@@ -19,7 +19,7 @@ import { assemblePrompt, branchOf, loadCases, selectCases, LENSES } from "./case
 import { evalTimeoutMs, runClaude } from "./claude.mjs";
 import { mcpConfig } from "./issue-mcp.mjs";
 import { judgeReview } from "./judge.mjs";
-import { afterRedo, entryKey, lock, mismatched, readResults, writeResults } from "./store.mjs";
+import { afterRedo, alive, entryKey, lock, mismatched, readResults, writeResults } from "./store.mjs";
 import { allowedTools, assertWorkAllowed, denyPaths, disallowedTools } from "./tools.mjs";
 import { aggregate, lensComparison, renderReport, reviewVerdict } from "./score.mjs";
 
@@ -95,14 +95,25 @@ export function checkout(bare, c, dest) {
 }
 
 /** Removes scratch checkouts left by runs that died: `<tag>-<pid>` with no live pid. */
-function clearStaleWork(work) {
+export function clearStaleWork(work) {
   if (!fs.existsSync(work)) return;
   for (const d of fs.readdirSync(work)) {
     const pid = Number(d.match(/-(\d+)$/)?.[1]);
-    let alive = false;
-    try { alive = pid > 0 && process.kill(pid, 0); } catch (e) { alive = e.code === "EPERM"; }
-    if (!alive) fs.rmSync(path.join(work, d), { recursive: true, force: true });
+    if (!(pid > 0 && alive(pid))) fs.rmSync(path.join(work, d), { recursive: true, force: true });
   }
+}
+
+/** Throws unless `gh` can read each case's issue over REST (the reviews read it through it). */
+export function checkIssues(cases, read = (c) => execFileSync("gh", ["api", `repos/${c.repo}/issues/${c.issue}`], { stdio: "pipe" })) {
+  const bad = [];
+  for (const c of cases) {
+    try {
+      read(c);
+    } catch (e) {
+      bad.push(`${c.id}: gh api repos/${c.repo}/issues/${c.issue} failed (${String(e.stderr ?? e.message).trim().split("\n")[0]})`);
+    }
+  }
+  if (bad.length) throw new Error(`reviews read the case's issue with gh, which is not working:\n${bad.join("\n")}\nRun gh auth login (or set GH_TOKEN).`);
 }
 
 /** Summary, report.md and summary.json for everything in results.json. */
@@ -130,7 +141,7 @@ const REAL = { run: runClaude, judge: judgeReview };
  * Runs the eval for options `o` (see parseArgs) and writes the report.
  * `deps` replace the model calls and `casesDir` the case files, for tests.
  */
-export async function runEval(o, { run: runModel, judge, casesDir = path.join(here, "cases") } = REAL) {
+export async function runEval(o, { run: runModel, judge, casesDir = path.join(here, "cases"), check = checkIssues } = REAL) {
   const allCases = loadCases(casesDir);
   const out = path.resolve(o.report ?? o.out ?? fs.mkdtempSync(path.join(os.tmpdir(), "review-eval-")));
   fs.mkdirSync(path.join(out, "reviews"), { recursive: true });
@@ -140,9 +151,12 @@ export async function runEval(o, { run: runModel, judge, casesDir = path.join(he
   });
   if (o.report) {
     const release = lock(out);
-    const m = fs.existsSync(path.join(out, "summary.json")) ? JSON.parse(fs.readFileSync(path.join(out, "summary.json"), "utf8")).meta : meta("unknown", "");
-    writeReport(out, allCases, m);
-    release();
+    try {
+      const m = fs.existsSync(path.join(out, "summary.json")) ? JSON.parse(fs.readFileSync(path.join(out, "summary.json"), "utf8")).meta : meta("unknown", "");
+      writeReport(out, allCases, m);
+    } finally {
+      release();
+    }
     console.error(`report: ${path.join(out, "report.md")}`);
     return null;
   }
@@ -153,7 +167,7 @@ export async function runEval(o, { run: runModel, judge, casesDir = path.join(he
     let cases = selectCases(allCases, o.cases);
     if (o.lens && !o.cases) cases = cases.filter((c) => c.kind !== "clean" && c.findings.some((f) => f.class === "A" || f.class === "B"));
     const work = path.join(o.cache, "work");
-    const deny = denyPaths({ cache: o.cache, out, repoRoot: path.resolve(here, "../..") });
+    const deny = denyPaths({ cache: o.cache, out, repoRoot: path.resolve(here, "../.."), work });
     assertWorkAllowed(work, deny);
     const selected = new Set(cases.flatMap((c) => Array.from({ length: o.runs }, (_, i) => entryKey({ case: c.id, lens: o.lens, run: i + 1 }))));
     let existing = readResults(out);
@@ -167,11 +181,13 @@ export async function runEval(o, { run: runModel, judge, casesDir = path.join(he
     const timeoutMs = evalTimeoutMs(60 * 60 * 1000);
     clearStaleWork(work);
     const tasks = [];
+    const taskCases = [];
     for (const c of cases) {
       for (let n = 1; n <= o.runs; n++) {
         const e = { case: c.id, lens: o.lens, run: n };
         const old = prior.get(entryKey(e));
         if (old && !old.error && old.judge) continue;
+        taskCases.push(c);
         tasks.push(async () => {
           const tag = `${c.id}${o.lens ? `-${o.lens}` : ""}-${n}`;
           const entry = { ...e, promptSha: m.promptSha, model: o.model, judgeModel: o.judgeModel };
@@ -186,9 +202,10 @@ export async function runEval(o, { run: runModel, judge, casesDir = path.join(he
             } else {
               const bare = ensureRepo(o.cache, c);
               const diff = git(bare, "diff", `${c.base}...${c.head}`);
+              const headDate = git(bare, "log", "-1", "--format=%cI", c.head).trim();
               if (!diff.trim()) throw new Error("empty diff");
               const input = assemblePrompt(promptText, { lens: o.lens, repo: c.repo, clone: dest, branch: branchOf(c), issue: c.issue, diff });
-              const args = ["--model", o.model, "--permission-mode", "dontAsk", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", mcpConfig(c), "--allowedTools", allowedTools(c).join(","), "--disallowedTools", disallowedTools(deny).join(",")];
+              const args = ["--model", o.model, "--permission-mode", "dontAsk", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", mcpConfig(c, headDate), "--allowedTools", allowedTools(c).join(","), "--disallowedTools", disallowedTools(deny).join(",")];
               let r;
               for (let attempt = 0; attempt < 2; attempt++) {
                 fs.rmSync(dest, { recursive: true, force: true });
@@ -226,6 +243,7 @@ export async function runEval(o, { run: runModel, judge, casesDir = path.join(he
         });
       }
     }
+    await check([...new Set(taskCases)]);
     console.error(`${tasks.length} runs, concurrency ${o.concurrency}, out ${out}`);
     await pool(tasks, o.concurrency);
     const s = writeReport(out, allCases, m);

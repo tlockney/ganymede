@@ -29,7 +29,7 @@ findings and the review's text and scores each `caught`, `partly` or
 
 ## Cases
 
-[`cases/`](cases) holds one JSON file per case, `<repo>-<pr>.json`:
+[`cases/`](cases) holds one JSON file per case, `<repo>-<pr>[-<tag>].json` (the tag tells two cases of one PR apart):
 
 | Field | Meaning |
 | --- | --- |
@@ -74,13 +74,16 @@ findings file in `reviews/pr-reviewer/`. Keep them small to medium.
 ## Run
 
 Needs `claude` and `git` on PATH, network access to GitHub for the first
-clone, and a Claude Code login.
+clone, a Claude Code login, and `gh` authenticated (`gh auth login` or
+`GH_TOKEN`): the reviews read each case's issue through it. Before any review
+the runner calls `gh api repos/<repo>/issues/<n>` once per case with work to
+do and stops if one fails.
 
 ```sh
-node evals/review/run.mjs --prompt PATH/review-prompt.md --runs 2 --out out
-node evals/review/run.mjs --prompt PATH --lens security --out out        # lens runs, A/B cases
-node evals/review/run.mjs --prompt PATH --lens concurrency --out out
-node evals/review/run.mjs --report out                                   # rebuild the report
+node evals/review/run.mjs --prompt PATH/review-prompt.md --runs 2 --out /tmp/review-eval-out
+node evals/review/run.mjs --prompt PATH --lens security --out /tmp/review-eval-out        # lens runs, A/B cases
+node evals/review/run.mjs --prompt PATH --lens concurrency --out /tmp/review-eval-out
+node evals/review/run.mjs --report /tmp/review-eval-out                                   # rebuild the report
 node --test evals/review/*.test.mjs
 ```
 
@@ -118,7 +121,8 @@ What a run does:
   clone (`./**`), `Skill`, subagents, read-only `git` subcommands, and
   the `issue_read` tool the prompt names, from a small local MCP server named
   `github` ([`issue-mcp.mjs`](issue-mcp.mjs)) that serves only this case's
-  issue and its comments, and `gh api` for exactly those two REST paths
+  issue and its comments written before the case's head commit (the issue
+  body is read live, as GitHub keeps no earlier version), and `gh api` for exactly the issue's REST path
   (`gh issue view` needs GraphQL, which Claude Code sessions can't reach; with
   only the `gh` rule the reviews did not think to use it, and 55 of 62 in the
   first baseline said they couldn't read the issue).
@@ -128,7 +132,10 @@ What a run does:
   person's other worktrees), the bare clones and logs in the cache, and
   `--out`, so a review can't read an answer key, a later commit or its own
   results. The run refuses to start if the scratch clones fall inside a denied
-  path. Review and judge sessions pass `--setting-sources ""`, so the user's
+  path. When the checkout is directly in `$HOME`, the siblings under `$HOME`
+  are denied one by one, around the path to the cache (deny rules beat allow
+  rules, so the cache can't be carved out of one broad deny); a cache
+  elsewhere (`--cache`) avoids this. Review and judge sessions pass `--setting-sources ""`, so the user's
   and project's own permission rules don't merge in. `git` flags that write or read outside the repo (`--output`, `-O`,
   `--no-index`, `--contents`, `--exclude-from`, `--ignore-revs-file`, `-X`,
   `-C`, `--git-dir`, `-c`) are denied, and `git blame` is not allowed. A probe run that tried
