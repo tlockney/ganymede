@@ -23,7 +23,9 @@ them. Empty by default, so nothing changes unless it is set.
   send `Sec-Fetch-Site` only over HTTPS, so a request without it gets no
   identity: the feature is for `tailscale serve`'s HTTPS proxy, and
   sandboxed HTML under `/files/` loses its images for a tailnet login.
-  (All found in review.)
+  A websocket handshake without `Sec-Fetch-Site` keeps the identity
+  when its `Origin` is the server's own. Logins match exactly, case
+  included. (All found in review.)
 - `/mcp` doesn't take it: agents keep to `mcp_token` or the server's
   token.
 - Tags are refused in the list: `tailscale serve` sends no identity for

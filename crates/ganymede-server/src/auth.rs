@@ -443,13 +443,13 @@ pub(crate) fn sends_token(expected: &str, headers: &HeaderMap, query: Option<&st
 
 /// A correct token wins over the cookie, as in `jupyter_server`, and the
 /// cookie over a tailnet login, which is considered only when `tailnet`
-/// gives the request's extensions (for the peer address); `None` when
-/// none authenticates. Only meaningful when auth is on.
+/// gives the request's method and extensions (for the peer address);
+/// `None` when none authenticates. Only meaningful when auth is on.
 pub fn identify(
     state: &AppState,
     headers: &HeaderMap,
     query: Option<&str>,
-    tailnet: Option<&Extensions>,
+    tailnet: Option<(&Method, &Extensions)>,
 ) -> Option<Via> {
     let expected = state.token.as_deref()?;
     if sends_token(expected, headers, query) {
@@ -458,7 +458,8 @@ pub fn identify(
     if has_login_cookie(state, headers) {
         return Some(Via::Cookie);
     }
-    tailnet_login(state, headers, tailnet?).then_some(Via::Tailnet)
+    let (method, ext) = tailnet?;
+    tailnet_login(state, method, headers, ext).then_some(Via::Tailnet)
 }
 
 /// Whether `tailscale serve` names an allowed login on a request that may
@@ -470,11 +471,15 @@ pub fn identify(
 /// - Not on another site's subresource requests (`<script>`, `<img>`,
 ///   no-cors `fetch`), which send no `Origin`: `Sec-Fetch-Site` must be
 ///   `same-origin` or `none`, except for a top-level navigation, which
-///   the SameSite=Lax login cookie also goes with ([`api_with`] limits
-///   that to GET and HEAD). A request without `Sec-Fetch-Site` (plain
+///   the SameSite=Lax login cookie also goes with (GET and HEAD only). A request without `Sec-Fetch-Site` (plain
 ///   HTTP, where browsers don't send it, or a non-browser client) gets no
 ///   identity.
-pub(crate) fn tailnet_login(state: &AppState, headers: &HeaderMap, ext: &Extensions) -> bool {
+pub(crate) fn tailnet_login(
+    state: &AppState,
+    method: &Method,
+    headers: &HeaderMap,
+    ext: &Extensions,
+) -> bool {
     if state.allow_remote_access {
         return false;
     }
@@ -484,13 +489,27 @@ pub(crate) fn tailnet_login(state: &AppState, headers: &HeaderMap, ext: &Extensi
         // Browsers send Fetch Metadata only to HTTPS origins, and without
         // it another site's `<script>` or `<img>` looks like ours. Only
         // `tailscale serve` over HTTPS, then; other clients use the token.
-        None => false,
+        // A websocket handshake always carries `Origin`, which some
+        // browsers send there instead, so a same-origin one will do.
+        None => {
+            is_websocket_upgrade(headers)
+                && headers.contains_key(header::ORIGIN)
+                && same_origin(headers)
+        }
         Some(_) => {
-            fetch("sec-fetch-mode") == Some("navigate")
+            safe_method(method)
+                && fetch("sec-fetch-mode") == Some("navigate")
                 && fetch("sec-fetch-dest") == Some("document")
         }
     };
     site_ok && crate::tailscale::allowed_login(&state.tailnet_allow, headers, ext)
+}
+
+fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
 }
 
 /// No `Origin`, or one whose host and port are the request's `Host`.
@@ -565,7 +584,7 @@ pub(crate) async fn api_with(
         &state,
         headers,
         req.uri().query(),
-        tailnet.then(|| req.extensions()),
+        tailnet.then(|| (req.method(), req.extensions())),
     );
     if via != Some(Via::Token) && !safe_method(req.method()) {
         if let Err(e) = check_xsrf(&state, headers, req.uri().query(), None) {
@@ -587,11 +606,7 @@ pub(crate) async fn api_with(
         // cookie, which needs `allow_credentials`) doesn't apply: only the
         // server's own pages may use it.
         Some(Via::Tailnet) => {
-            let cross_site = !matches!(
-                headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()),
-                Some("same-origin" | "none")
-            );
-            if !same_origin(headers) || (cross_site && !safe_method(req.method())) {
+            if !same_origin(headers) {
                 return HttpError(404, "Not Found".into()).into_response();
             }
             next.run(req).await
@@ -679,7 +694,7 @@ pub(crate) async fn page(
         &state,
         req.headers(),
         req.uri().query(),
-        Some(req.extensions()),
+        Some((req.method(), req.extensions())),
     ) {
         req.extensions_mut().insert(via);
         return next.run(req).await;
@@ -902,7 +917,7 @@ input{{font:inherit;padding:.4rem;margin:.3rem 0;width:100%;box-sizing:border-bo
 
 async fn logout(State(state): State<AppState>, ext: Extensions, headers: HeaderMap) -> Response {
     let name = login_cookie_name(&headers);
-    let message = if state.token.is_some() && tailnet_login(&state, &headers, &ext) {
+    let message = if state.token.is_some() && tailnet_login(&state, &Method::GET, &headers, &ext) {
         "Logged out, but your tailnet login is allowed in, so you are still signed in. \
          Remove it from [tailscale] allow to keep it out."
     } else if state.token.is_some() {

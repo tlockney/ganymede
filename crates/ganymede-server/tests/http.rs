@@ -8212,3 +8212,33 @@ async fn a_cross_site_post_gets_no_tailnet_login() {
     assert_ne!(s, StatusCode::CREATED);
     assert!(s.is_client_error(), "{s}");
 }
+
+/// Some browsers leave Fetch Metadata off a websocket handshake, which
+/// always carries `Origin`: a same-origin one keeps the identity, so
+/// kernels connect; another site's, or none, doesn't.
+#[tokio::test]
+async fn a_tailnet_websocket_handshake_may_rely_on_origin() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = tailnet_app(dir.path(), &["me@example.com"]);
+    let handshake = |origin: Option<&str>| {
+        let mut req = tailnet_req(
+            "GET",
+            "/api/contents",
+            Some("me@example.com"),
+            "127.0.0.1:1",
+        );
+        req.headers_mut().remove("sec-fetch-site");
+        req.headers_mut()
+            .insert(header::UPGRADE, "websocket".parse().unwrap());
+        if let Some(o) = origin {
+            req.headers_mut().insert(header::ORIGIN, o.parse().unwrap());
+        }
+        req
+    };
+    let (s, _, _) = send(&app, handshake(Some("https://box.example.ts.net"))).await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, _) = send(&app, handshake(Some("https://evil.example"))).await;
+    assert!(s.is_client_error(), "{s}");
+    let (s, _, _) = send(&app, handshake(None)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}

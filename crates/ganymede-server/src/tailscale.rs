@@ -65,7 +65,7 @@ impl TailscaleConfig {
 /// Whether the request comes from an allowed login: `allow` is not empty,
 /// the connection's peer is a loopback address, and the request has
 /// exactly one `Tailscale-User-Login` header naming a login in `allow`.
-/// Logins are compared without regard to ASCII case.
+/// Logins must match exactly, case included.
 pub fn allowed_login(allow: &[String], headers: &HeaderMap, ext: &Extensions) -> bool {
     if allow.is_empty() {
         return false;
@@ -85,7 +85,7 @@ pub fn allowed_login(allow: &[String], headers: &HeaderMap, ext: &Extensions) ->
     if values.next().is_some() || login.is_empty() {
         return false;
     }
-    allow.iter().any(|a| a.eq_ignore_ascii_case(login))
+    allow.iter().any(|a| a == login)
 }
 
 #[cfg(test)]
@@ -131,11 +131,17 @@ mod tests {
 
     #[test]
     fn allows_a_listed_login_from_loopback() {
-        let allow = cfg(&["Me@Example.com"]).allow;
+        let allow = cfg(&["me@example.com"]).allow;
         let h = headers(&["me@example.com"]);
         assert!(allowed_login(&allow, &h, &ext("127.0.0.1:5000")));
         assert!(allowed_login(&allow, &h, &ext("[::1]:5000")));
         assert!(allowed_login(&allow, &h, &ext("[::ffff:127.0.0.1]:5000")));
+        // Exactly: an identity provider may tell `Me@` from `me@`.
+        assert!(!allowed_login(
+            &allow,
+            &headers(&["Me@example.com"]),
+            &ext("127.0.0.1:5000")
+        ));
     }
 
     #[test]

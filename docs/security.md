@@ -219,10 +219,13 @@ before:
   log in to, keep the token.
 - **The page gets no token.** JupyterLab loaded this way authenticates
   each request by identity, so removing a login from `allow` takes
-  effect once the server restarts. Logging out doesn't sign a listed
+  effect once the server restarts. A listed login can run code, though,
+  and so read the token from the server's files; to cut one off for
+  sure, restart with a new token and delete `jupyter_cookie_secret`. Logging out doesn't sign a listed
   login out.
-- Entries must be ASCII: `tailscale serve` encodes other characters, so
-  such a login would never match.
+- Entries must match the login exactly, case included, and must be
+  ASCII: `tailscale serve` encodes other characters, so such a login
+  would never match.
 
 ## Cross-origin clients
 
