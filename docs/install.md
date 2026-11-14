@@ -232,6 +232,11 @@ command line.
 
 The steps above put files in these places:
 
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. The latest release reads `ganymede.toml` from
+> `~/.jupyter`, not `~/.config/ganymede`.
+
 ![What the install puts where. The ganymede binary goes in ~/.local/bin. It finds kernels in the Jupyter data dir (~/.local/share/jupyter, or ~/Library/Jupyter on macOS), where cdp-kernel install writes kernels/cdp-node/kernel.json and where notebook signatures are kept; that kernel.json's argv starts cdp-kernel, installed with npm on Node 22.18 or later. ganymede lab install puts JupyterLab and its extensions in Ganymede's data dir. Ganymede's config dir, ~/.config/ganymede, holds an optional ganymede.toml; the Jupyter config dir, ~/.jupyter, holds JupyterLab's settings and workspaces; and the runtime dir holds each running kernel's connection file and the cookie secret.](images/architecture/install.svg)
 
 To update Ganymede, run the install command from step 1 again; it replaces

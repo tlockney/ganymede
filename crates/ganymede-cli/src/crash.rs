@@ -40,8 +40,9 @@ pub fn opted_in(env: Option<&OsStr>, config: Option<&str>) -> bool {
 
 /// The config file `ganymede` reads: `--config` for the commands that
 /// serve, else the default file ([`ganymede_server::serve::default_config`])
-/// when there is one. Says nothing about where the default was found: the
-/// commands that read the config say that once logging is up.
+/// when there is one. Logs nothing: this runs before logging is set up,
+/// and the warning about a file in the old place comes from the commands
+/// that read the whole config (`serve`, `lab`, `ui`, `mcp`, `execute`).
 pub fn config_text(explicit: Option<&Path>) -> Option<String> {
     let path = match explicit {
         Some(p) => p.to_path_buf(),

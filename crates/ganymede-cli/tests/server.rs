@@ -169,6 +169,7 @@ fn start_jupyter(jupyter: &std::path::Path) -> Server {
             state.path().join("notary").display()
         ))
         .env("JUPYTER_CONFIG_DIR", state.path().join("config"))
+        .env("GANYMEDE_CONFIG_DIR", state.path().join("config"))
         .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
         .stdout(Stdio::null())
         .stderr(Stdio::null())

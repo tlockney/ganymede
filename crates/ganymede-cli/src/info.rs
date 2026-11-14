@@ -31,7 +31,9 @@ pub fn collect(engine: &Engine, extra_roots: &[PathBuf]) -> Result<Value> {
         .chain(ks::jupyter_data_dirs())
         .collect();
     // The file read without --config, else where Ganymede looks first.
-    let config_file = ganymede_server::serve::default_config().path.or_else(|| {
+    let default = ganymede_server::serve::default_config();
+    let config_file_warning = default.warning;
+    let config_file = default.path.or_else(|| {
         ganymede_server::serve::ganymede_config_dir()
             .map(|d| d.join(ganymede_server::serve::DEFAULT_CONFIG_FILE))
     });
@@ -50,6 +52,7 @@ pub fn collect(engine: &Engine, extra_roots: &[PathBuf]) -> Result<Value> {
         "config_dir": ks::jupyter_config_dir(),
         "config_file": config_file,
         "config_file_found": config_file_found,
+        "config_file_warning": config_file_warning,
         "data_dir": data_dir(),
         "lab_dir": lab_dir,
         "lab_versions": lab_versions,
@@ -103,6 +106,9 @@ fn text(v: &Value) -> String {
         s("config_file"),
         if found { "" } else { " (not there)" }
     );
+    if let Some(w) = v["config_file_warning"].as_str() {
+        let _ = writeln!(out, "                  ({w})");
+    }
     let _ = writeln!(out, "config dir        {}", s("config_dir"));
     let _ = writeln!(out, "data dir          {}", s("data_dir"));
     let versions = list("lab_versions");

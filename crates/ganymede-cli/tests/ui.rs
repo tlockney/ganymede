@@ -40,6 +40,7 @@ fn ui_serves_the_newest_install_and_logs_in() {
             .current_dir(root.path())
             .env("GANYMEDE_DATA_DIR", data.path())
             .env("JUPYTER_CONFIG_DIR", state.path().join("config"))
+            .env("GANYMEDE_CONFIG_DIR", state.path().join("config"))
             .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

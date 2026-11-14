@@ -956,7 +956,8 @@ fn lab_list_clean_uninstall_and_extension_toggles() {
     let lab = |args: &[&str]| {
         let mut c = ganymede(args);
         c.env("GANYMEDE_DATA_DIR", data.path())
-            .env("JUPYTER_CONFIG_DIR", config.path());
+            .env("JUPYTER_CONFIG_DIR", config.path())
+            .env("GANYMEDE_CONFIG_DIR", config.path());
         c
     };
     let json = |args: &[&str]| -> serde_json::Value {
@@ -1099,6 +1100,7 @@ fn mcp_on_stdio_with_its_own_server() {
     cmd.arg(root.path())
         .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
         .env("JUPYTER_CONFIG_DIR", state.path().join("config"))
+        .env("GANYMEDE_CONFIG_DIR", state.path().join("config"))
         .env("JUPYTER_DATA_DIR", state.path().join("data"));
     let mut mcp = McpClient::start(cmd);
     let out = mcp.tool(
@@ -1143,6 +1145,7 @@ fn mcp_on_stdio_uses_a_running_server() {
     let env = |c: &mut std::process::Command| {
         c.env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
             .env("JUPYTER_CONFIG_DIR", state.path().join("config"))
+            .env("GANYMEDE_CONFIG_DIR", state.path().join("config"))
             .env("JUPYTER_DATA_DIR", state.path().join("data"));
     };
     let mut serve = ganymede(&[
@@ -1224,6 +1227,7 @@ fn mcp_on_stdio_starts_a_new_session_when_the_server_ends_one() {
             .arg(root.path())
             .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
             .env("JUPYTER_CONFIG_DIR", state.path().join("config"))
+            .env("GANYMEDE_CONFIG_DIR", state.path().join("config"))
             .env("JUPYTER_DATA_DIR", state.path().join("data"))
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -1479,6 +1483,7 @@ fn mcp_on_stdio_finishes_requests_and_saves_on_sigterm() {
         cmd.arg(root.path())
             .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
             .env("JUPYTER_CONFIG_DIR", state.path().join("config"))
+            .env("GANYMEDE_CONFIG_DIR", state.path().join("config"))
             .env("JUPYTER_DATA_DIR", state.path().join("data"));
         cmd
     };
@@ -1539,6 +1544,7 @@ fn mcp_call_reaches_an_agents_own_server() {
     let env = |c: &mut std::process::Command| {
         c.env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
             .env("JUPYTER_CONFIG_DIR", state.path().join("config"))
+            .env("GANYMEDE_CONFIG_DIR", state.path().join("config"))
             .env("JUPYTER_DATA_DIR", state.path().join("data"))
             .env_remove("JUPYTER_TOKEN");
     };

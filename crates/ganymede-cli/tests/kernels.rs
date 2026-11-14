@@ -1106,15 +1106,8 @@ fn execute_answers_host_calls_under_its_grants() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let config = root.join(".config");
-    // ganymede.toml goes in Ganymede's config dir; Windows has no
-    // XDG_CONFIG_HOME to point it here, so there it is read from the
-    // Jupyter config dir, where earlier releases looked.
-    let xdg = root.join(".xdg");
-    let toml_dir = if cfg!(windows) {
-        config.clone()
-    } else {
-        xdg.join("ganymede")
-    };
+    // ganymede.toml goes in Ganymede's config dir.
+    let toml_dir = root.join(".ganymede");
     std::fs::create_dir_all(&toml_dir).unwrap();
     std::fs::create_dir_all(&config).unwrap();
     std::fs::create_dir_all(root.join("docs")).unwrap();
@@ -1160,7 +1153,7 @@ console.log("HOST " + JSON.stringify(out));"#,
         let mut cmd = ganymede(&args);
         cmd.current_dir(root)
             .env("JUPYTER_CONFIG_DIR", &config)
-            .env("XDG_CONFIG_HOME", &xdg)
+            .env("GANYMEDE_CONFIG_DIR", &toml_dir)
             .env("JUPYTER_DATA_DIR", &data);
         let out = run_ok(cmd);
         let nb: Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -1215,7 +1208,7 @@ console.log("HOST " + JSON.stringify(out));"#,
     let mut cmd = ganymede(&["execute", "main.ipynb", "--output", "-"]);
     cmd.current_dir(root)
         .env("JUPYTER_CONFIG_DIR", &config)
-        .env("XDG_CONFIG_HOME", &xdg)
+        .env("GANYMEDE_CONFIG_DIR", &toml_dir)
         .env("JUPYTER_DATA_DIR", &data);
     let out = cmd.output().unwrap();
     assert!(

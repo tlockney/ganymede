@@ -122,16 +122,41 @@ pub struct ServeArgs {
 pub const DEFAULT_CONFIG_FILE: &str = "ganymede.toml";
 
 /// Ganymede's config dir, which holds [`DEFAULT_CONFIG_FILE`]:
-/// `$XDG_CONFIG_HOME/ganymede`, else `~/.config/ganymede`, on Linux and
-/// macOS; `%APPDATA%\ganymede` on Windows.
+/// `$GANYMEDE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/ganymede`, else
+/// `~/.config/ganymede`, on Linux and macOS; `$GANYMEDE_CONFIG_DIR`, else
+/// `%APPDATA%\ganymede`, on Windows.
 pub fn ganymede_config_dir() -> Option<PathBuf> {
-    if cfg!(windows) {
-        return dirs::config_dir().map(|d| d.join("ganymede"));
+    let platform = if cfg!(windows) {
+        dirs::config_dir()
+    } else {
+        None
+    };
+    config_dir_from(
+        std::env::var_os("GANYMEDE_CONFIG_DIR"),
+        std::env::var_os("XDG_CONFIG_HOME"),
+        dirs::home_dir(),
+        platform,
+    )
+}
+
+/// [`ganymede_config_dir`] from its inputs. `platform` is the OS's config
+/// dir where it isn't XDG's (Windows), else `None`.
+fn config_dir_from(
+    ganymede: Option<std::ffi::OsString>,
+    xdg: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+    platform: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(d) = ganymede.filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(d));
+    }
+    if let Some(p) = platform {
+        return Some(p.join("ganymede"));
     }
     // The XDG spec ignores a relative value.
-    match std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from) {
+    match xdg.map(PathBuf::from) {
         Some(x) if x.is_absolute() => Some(x.join("ganymede")),
-        _ => dirs::home_dir().map(|h| h.join(".config").join("ganymede")),
+        _ => home.map(|h| h.join(".config").join("ganymede")),
     }
 }
 
@@ -152,7 +177,7 @@ pub fn find_default_config(dir: Option<&Path>, legacy_dir: Option<&Path>) -> Def
     let new = dir.map(|d| d.join(DEFAULT_CONFIG_FILE));
     let old = legacy_dir
         .map(|d| d.join(DEFAULT_CONFIG_FILE))
-        .filter(|p| p.is_file() && Some(p) != new.as_ref());
+        .filter(|p| p.is_file() && !same_file(Some(p), new.as_deref()));
     let shown = |p: &Option<PathBuf>| {
         p.as_deref()
             .map_or("Ganymede's config dir".to_string(), |p| {
@@ -181,6 +206,15 @@ pub fn find_default_config(dir: Option<&Path>, legacy_dir: Option<&Path>) -> Def
             path: Some(old),
         },
         (None, None) => DefaultConfig::default(),
+    }
+}
+
+/// Whether `a` and `b` name one file, through symlinks too.
+fn same_file(a: Option<&Path>, b: Option<&Path>) -> bool {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    match (a, b) {
+        (Some(a), Some(b)) => canon(a) == canon(b),
+        _ => false,
     }
 }
 
@@ -1135,6 +1169,43 @@ mod tests {
             find_default_config(Some(new.path()), Some(new.path())).warning,
             None
         );
+    }
+
+    #[test]
+    fn the_config_dir_follows_ganymede_then_xdg_then_home() {
+        use super::config_dir_from;
+        let home = Some(PathBuf::from("/home/u"));
+        let at = |g: Option<&str>, x: Option<&str>, p: Option<&str>| {
+            config_dir_from(
+                g.map(Into::into),
+                x.map(Into::into),
+                home.clone(),
+                p.map(Into::into),
+            )
+        };
+        let p = |s: &str| Some(PathBuf::from(s));
+        assert_eq!(at(None, None, None), p("/home/u/.config/ganymede"));
+        assert_eq!(at(None, Some("/x"), None), p("/x/ganymede"));
+        // A relative or empty XDG_CONFIG_HOME is ignored, as the spec says.
+        assert_eq!(at(None, Some("rel"), None), p("/home/u/.config/ganymede"));
+        assert_eq!(at(None, Some(""), None), p("/home/u/.config/ganymede"));
+        // GANYMEDE_CONFIG_DIR wins, unless empty.
+        assert_eq!(at(Some("/g"), Some("/x"), Some("/w")), p("/g"));
+        assert_eq!(at(Some(""), Some("/x"), None), p("/x/ganymede"));
+        // Windows: %APPDATA%, not XDG.
+        assert_eq!(at(None, Some("/x"), Some("/w")), p("/w/ganymede"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_jupyter_dir_is_one_file() {
+        let new = tempfile::tempdir().unwrap();
+        std::fs::write(new.path().join(DEFAULT_CONFIG_FILE), "").unwrap();
+        let link = tempfile::tempdir().unwrap();
+        let old = link.path().join("jupyter");
+        std::os::unix::fs::symlink(new.path(), &old).unwrap();
+        let d = find_default_config(Some(new.path()), Some(&old));
+        assert_eq!(d.warning, None);
     }
 
     #[test]

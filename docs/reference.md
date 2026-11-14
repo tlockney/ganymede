@@ -74,7 +74,7 @@ same name in snake case, except where the last column says otherwise.
 | `--startup-timeout` | As above. | `startup_timeout_secs` |
 | `-q`, `--quiet` | As above. | `quiet` |
 | `--mcp` | Serve notebook tools for coding agents at `/mcp`, behind the token; see [Agents over MCP](mcp.md). | `mcp_enabled` |
-| `--config <file>` | The config file to read. Default: `ganymede.toml` in Ganymede's config dir, if it exists; see [Config file](#config-file). | |
+| `--config <file>` | The config file to read. Default: `ganymede.toml` in Ganymede's config dir, if it exists (unreleased; the latest release reads the Jupyter config dir); see [Config file](#config-file). | |
 | `--log-level`, `--log-file` | See [Logging](#logging). | |
 
 `serve` prints the URL, with its token, as the only line on stdout.
@@ -327,6 +327,9 @@ A TOML file of the keys above, passed with `--config`. Without it,
 | Linux, macOS | `$XDG_CONFIG_HOME/ganymede/ganymede.toml`, else `~/.config/ganymede/ganymede.toml` |
 | Windows | `%APPDATA%\ganymede\ganymede.toml` |
 
+`GANYMEDE_CONFIG_DIR` names the directory instead, on any OS: a service
+can set it to choose its file.
+
 `ganymede info` prints the path. Flags override the file, and an unknown
 key is an error, so a misspelt `token` can't start a server with a
 random one.
@@ -336,7 +339,10 @@ random one.
 > the latest release. The latest release reads `ganymede.toml` from the
 > Jupyter config dir (`$JUPYTER_CONFIG_DIR`, else `~/.jupyter`). A build
 > of `main` still reads it there when Ganymede's config dir has none,
-> and warns that it should move.
+> and warns that it should move. A setup that chose its file with
+> `JUPYTER_CONFIG_DIR` should set `GANYMEDE_CONFIG_DIR` to the same
+> directory, or a `ganymede.toml` in the user's `~/.config/ganymede`
+> wins over it.
 
 ```toml
 root_dir = "/srv/notebooks"
@@ -633,7 +639,8 @@ access-denied page; `--no-redirect-file` opens the URL itself instead, as
 
 | Variable | Effect |
 | --- | --- |
-| `XDG_CONFIG_HOME` | Holds Ganymede's config dir, `ganymede/`, on Linux and macOS. Default `~/.config`. |
+| `GANYMEDE_CONFIG_DIR` | Ganymede's config dir, which holds `ganymede.toml`; see [Config file](#config-file). Unreleased. |
+| `XDG_CONFIG_HOME` | Holds Ganymede's config dir, `ganymede/`, on Linux and macOS, when `GANYMEDE_CONFIG_DIR` isn't set. Default `~/.config`. Unreleased. |
 | `JUPYTER_CONFIG_DIR` | The Jupyter config dir, for JupyterLab's settings and workspaces. Default `~/.jupyter`. |
 | `JUPYTER_DATA_DIR` | The user Jupyter data dir, where kernelspecs and signatures are. |
 | `JUPYTER_PATH` | More data dirs to search for kernelspecs, first. |
