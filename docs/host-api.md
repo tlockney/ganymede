@@ -308,8 +308,9 @@ edit_self = true     # the self.* calls; false turns them off
   clear`. A grant belongs to the root it was made under (a server's, or
   `ganymede grant`'s in a project directory), and all of these keep a
   file's grants under every root that has one, whichever root or
-  directory they run from. A rename moves only its own root's ids, so
-  another root's grant stays with the old path. A grant from before this
+  directory they run from. A rename through a server also moves
+  the ids, and so the grants, that another root above both paths holds on
+  the file or on files under a directory renamed. A grant from before this
   check has no record of its file, so the first time it is used it takes
   the file as it is, and holds from then on.
 

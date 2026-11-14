@@ -543,6 +543,39 @@ impl FileIds {
         }
     }
 
+    /// [`roots_with_id`] through this connection. Empty without a database.
+    pub fn roots_with_id(&self, file: &Path) -> Vec<(std::path::PathBuf, String)> {
+        #[cfg(feature = "sqlite")]
+        if let Some((db, _)) = &self.lock().db {
+            return sqlite::roots_with_id(db, file).unwrap_or_else(|e| {
+                tracing::warn!("looking up file ids for {}: {e}", file.display());
+                Vec::new()
+            });
+        }
+        let _ = file;
+        Vec::new()
+    }
+
+    /// `old` (a file, or a directory and everything under it) was renamed
+    /// to `new`, absolute paths whose directories are resolved, through
+    /// this root: the ids other roots above both have under `old` follow
+    /// too, and with them their grants. Without this a grant made in a
+    /// project directory stays on a path that is gone when a server on
+    /// its parent renames the file.
+    pub fn moved_in_other_roots(&self, old: &Path, new: &Path) {
+        #[cfg(feature = "sqlite")]
+        if let Some((db, own)) = &mut self.lock().db {
+            if let Err(e) = sqlite::moved_in_other_roots(db, own, old, new) {
+                tracing::warn!(
+                    "moving file ids from {} to {}: {e}",
+                    old.display(),
+                    new.display()
+                );
+            }
+        }
+        let _ = (old, new);
+    }
+
     /// `path` (a file, or a directory and everything under it) was
     /// deleted.
     pub fn removed(&self, path: &str) {
@@ -597,22 +630,33 @@ pub struct Held {
 
 /// The grants held on `file`, an absolute path, under every contents root
 /// above it that has one, except `except` (a root already looked after):
-/// one query of the database at `db` by each candidate (root, relative
-/// path), then a look at each hit's grant. The file's directory is
-/// resolved and its name kept, so a symlinked notebook keeps its own
-/// name. Empty when there is no such database.
+/// one query of the database at `db`, then a look at each hit's grant.
+/// Empty when there is no such database. One that has a connection
+/// already uses [`held_with`].
 pub fn held(db: &Path, file: &Path, except: Option<&Path>) -> Vec<Held> {
-    let (Some(dir), Some(name)) = (file.parent(), file.file_name()) else {
+    if !db.is_file() {
+        return Vec::new();
+    }
+    // The root is not used: only the lookup across roots is.
+    held_with(&FileIds::open(db, Path::new("")), file, except)
+}
+
+/// [`held`] through the connection `ids` has to the database, so a save
+/// opens one only for a root that holds a grant.
+pub fn held_with(ids: &FileIds, file: &Path, except: Option<&Path>) -> Vec<Held> {
+    let (Some(db), Some(dir), Some(name)) = (ids.db_path(), file.parent(), file.file_name()) else {
         return Vec::new();
     };
+    // The file's directory is resolved and its name kept, so a symlinked
+    // notebook keeps its own name.
     let Ok(dir) = dir.canonicalize() else {
         return Vec::new();
     };
-    roots_with_id(db, &dir.join(name))
+    ids.roots_with_id(&dir.join(name))
         .into_iter()
         .filter(|(root, _)| except != Some(root.as_path()))
         .filter_map(|(root, api)| {
-            let ids = FileIds::open(db, &root);
+            let ids = FileIds::open(&db, &root);
             let id = ids.get(&api)?;
             ids.grant(&id)?;
             Some(Held {
@@ -1063,6 +1107,41 @@ mod sqlite {
             "UPDATE host_grants SET stamp = ?2 WHERE id = ?1 AND grant_json = ?3 AND stamp IS ?4",
             params![id, super::tag(&json, &stamp), json, raw],
         )?;
+        Ok(())
+    }
+
+    /// `file` as a relative path of the root `root` above it, with `/`.
+    fn relative(root: &Path, file: &Path) -> Option<(String, String)> {
+        let rel = file.strip_prefix(root).ok()?;
+        let parts: Option<Vec<&str>> = rel.components().map(|c| c.as_os_str().to_str()).collect();
+        Some((root.to_str()?.to_string(), parts?.join("/")))
+    }
+
+    /// Moves the ids of every root but `own` above both `old` and `new`.
+    pub fn moved_in_other_roots(
+        db: &mut Connection,
+        own: &str,
+        old: &Path,
+        new: &Path,
+    ) -> rusqlite::Result<()> {
+        for root in old.ancestors().skip(1) {
+            let (Some((r, rel_old)), Some((_, rel_new))) =
+                (relative(root, old), relative(root, new))
+            else {
+                continue;
+            };
+            if r == own {
+                continue;
+            }
+            let has: bool = db.query_row(
+                &format!("SELECT EXISTS (SELECT 1 FROM file_ids WHERE {UNDER})"),
+                params![r, rel_old],
+                |row| row.get(0),
+            )?;
+            if has {
+                moved(db, &r, &rel_old, &rel_new)?;
+            }
+        }
         Ok(())
     }
 

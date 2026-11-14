@@ -91,7 +91,16 @@ file's grants under every other root (`Collab::check_others`), check them
 before the write and restamp them after, with the same tokens; with ids in
 memory there is only the own root. The in-flight marks and turns are this
 process's, so another process reading one of those other grants between the
-write and its restamp drops it, which fails safe. A rename moves only its
-own root's ids, so another root's grant stays with the old path. It takes
-the turns of both paths, in one order so two renames can't wait on each
-other, so a save in flight when it lands finishes and restamps first.
+write and its restamp drops it, which fails safe. A rename moves its own
+root's ids and those of every other root above both paths that has an id
+under the old one (`FileIds::moved_in_other_roots`, a file or a
+directory), so their grants follow; a rename out of such a root leaves that
+root's ids as they were. The stamp doesn't depend on the path, so they need
+no restamp. A rename takes the write side of a lock that every save, restore
+and copy holds for reading, after the move lock, so it waits for the saves in
+flight under either path, files or a directory's, and none begins meanwhile;
+a save in flight when it lands finishes and restamps first.
+
+The server's saves reuse the connection their `FileIds` already has for the
+`roots_with_id` query (`held_with`) and open another root's `FileIds` only
+for a root that has a grant.

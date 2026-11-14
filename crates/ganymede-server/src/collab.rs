@@ -335,10 +335,7 @@ impl Collab {
         };
         let file = root.join(normalize_api_path(path));
         self.with_ids(move |ids| {
-            let Some(db) = ids.db_path() else {
-                return Vec::new();
-            };
-            let mut found = ganymede_contents::held(&db, &file, Some(&root));
+            let mut found = ganymede_contents::held_with(ids, &file, Some(&root));
             found.iter_mut().for_each(|h| h.check());
             found
         })
@@ -369,10 +366,7 @@ impl Collab {
         let file = root.join(normalize_api_path(path));
         let failures = self
             .with_ids(move |ids| {
-                let Some(db) = ids.db_path() else {
-                    return Vec::new();
-                };
-                ganymede_contents::held(&db, &file, Some(&root))
+                ganymede_contents::held_with(ids, &file, Some(&root))
                     .iter()
                     .filter_map(|h| h.restamp_unchecked().err())
                     .collect::<Vec<_>>()
@@ -456,23 +450,10 @@ impl Collab {
         let (old, new) = (old.to_string(), new.to_string());
         detached(async move {
             let _moving = collab.begin_move().await;
-            // Saves of either path finish first and wait, in one order so
-            // two renames can't wait on each other. Another root's grant
-            // on the old path stays with that path: ids only follow here.
-            let (first, second) = {
-                let (a, b) = (normalize_api_path(&old), normalize_api_path(&new));
-                if a <= b {
-                    (a, b)
-                } else {
-                    (b, a)
-                }
-            };
-            let _first = collab.stamps.turn(&first).await;
-            let _second = if second != first {
-                Some(collab.stamps.turn(&second).await)
-            } else {
-                None
-            };
+            // Saves of any path, so of every file under a directory
+            // renamed, finish first and wait. Taken after the move lock,
+            // which nothing holds while it waits for a save.
+            let _no_saves = collab.stamps.begin_rename().await;
             // A file replaced outside loses its grant before the rename,
             // which would otherwise stamp the new file as the old one.
             let seen = collab.check_for_write(&old).await;
@@ -481,6 +462,7 @@ impl Collab {
             let _saving = collab.stamps.begin(&new);
             let model = contents.rename(&old, &new).await?;
             collab.moved(&old, &model.path).await;
+            collab.moved_in_other_roots(&old, &model.path).await;
             if let Err(e) = collab.restamp(&model.path, &seen).await {
                 tracing::warn!("{e}");
             }
@@ -515,6 +497,25 @@ impl Collab {
         for room in rooms.values() {
             let _ = room.send(Cmd::Moved(old.to_string(), new.to_string()));
         }
+    }
+
+    /// As [`Collab::moved`] for the ids other roots hold on the same
+    /// files in the shared database (a project directory's), which follow
+    /// with their grants. The stamp of a file doesn't change with its
+    /// path, so they need no restamp.
+    async fn moved_in_other_roots(&self, old: &str, new: &str) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let abs = |api: &str| -> Option<std::path::PathBuf> {
+            let file = root.join(normalize_api_path(api));
+            Some(file.parent()?.canonicalize().ok()?.join(file.file_name()?))
+        };
+        let (Some(old), Some(new)) = (abs(old), abs(new)) else {
+            return;
+        };
+        self.with_ids(move |ids| ids.moved_in_other_roots(&old, &new))
+            .await;
     }
 
     /// The notebook at `path` as its room has it, with cell ids, when a
