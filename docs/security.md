@@ -225,7 +225,7 @@ before:
   login out.
 - **Named by identity.** A person who comes with an allowed identity is
   named by their login (a tagged device by its tags), even when they
-  also hold the login cookie: `/api/me` returns it, so JupyterLab shows
+  also send the token or hold the login cookie: `/api/me` returns it, so JupyterLab shows
   it, and edits in a shared notebook are credited to it whatever name
   the frontend gives. The server log records it once, at info level, the
   first time it signs in, and on each request's span at debug level

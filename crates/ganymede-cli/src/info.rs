@@ -69,7 +69,8 @@ pub fn collect(engine: &Engine, extra_roots: &[PathBuf]) -> Result<Value> {
 
 /// `[tailscale]` from the config file: who `ganymede serve` lets in by
 /// tailnet identity, whether it asks `tailscale whois`, and `error` when
-/// `serve` would refuse to start with it. `null` when it lets no one in
+/// `serve` would refuse to start with the file alone (its `--ip` or
+/// `--token` flags may change that). `null` when it lets no one in
 /// that way, or the file doesn't read.
 fn tailnet_identity(config_file: Option<&Path>) -> Value {
     let cfg = config_file
@@ -165,7 +166,7 @@ fn text(v: &Value) -> String {
             match t["error"].as_str() {
                 Some(e) => writeln!(
                     out,
-                    "tailnet identity  {} (serve refuses to start: {e})",
+                    "tailnet identity  {} (serve refuses this config unless flags change it: {e})",
                     names.join(", ")
                 ),
                 None => writeln!(out, "tailnet identity  {} (by {how})", names.join(", ")),
@@ -246,7 +247,9 @@ mod tests {
         assert!(t["error"].as_str().unwrap().contains("whois"), "{t}");
         let mut v = json!({});
         v["tailnet_identity"] = t;
-        assert!(text(&v).contains("tailnet identity  tag:agent (serve refuses to start:"));
+        assert!(text(&v).contains(
+            "tailnet identity  tag:agent (serve refuses this config unless flags change it:"
+        ));
         let mut v = json!({});
         v["tailnet_identity"] = Value::Null;
         assert!(text(&v).contains("tailnet identity  off"));

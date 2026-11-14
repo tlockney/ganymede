@@ -8341,6 +8341,23 @@ async fn whois_lets_in_allowed_logins_and_tags() {
     assert_eq!(s, StatusCode::CREATED);
 }
 
+/// A program that also sends the token is still named by its identity.
+#[cfg(unix)]
+#[tokio::test]
+async fn whois_names_a_program_that_sends_the_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = whois_app(dir.path(), &["me@example.com"]);
+    let mut req = whois_req("GET", "/api/me", "100.64.0.2");
+    req.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("token {TOKEN}").parse().unwrap(),
+    );
+    let (s, _, body) = send(&app, req).await;
+    assert_eq!(s, StatusCode::OK);
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["identity"]["username"], "me@example.com");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn whois_needs_a_request_no_other_site_could_send() {

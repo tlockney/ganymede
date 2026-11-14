@@ -589,17 +589,15 @@ fn has_client_header(headers: &HeaderMap) -> bool {
 }
 
 /// With `[tailscale] whois` on, looks up who owns the peer address of a
-/// request from the tailnet that sends no token or login cookie, and adds
-/// the answer as a [`crate::tailscale::Peer`] extension for
-/// [`tailnet_login`].
+/// request from the tailnet, and adds the answer as a
+/// [`crate::tailscale::Peer`] extension for [`tailnet_login`]. Also for a
+/// request with the token or login cookie, so it is named
+/// ([`TailnetUser`]) like one let in by identity.
 pub(crate) async fn add_whois_peer(state: &AppState, req: &mut Request<Body>) {
     let Some(whois) = &state.tailnet_whois else {
         return;
     };
-    let Some(expected) = state.token.as_deref() else {
-        return;
-    };
-    if state.allow_remote_access {
+    if state.token.is_none() || state.allow_remote_access {
         return;
     }
     let Some(axum::extract::ConnectInfo(peer)) = req
@@ -615,11 +613,7 @@ pub(crate) async fn add_whois_peer(state: &AppState, req: &mut Request<Body>) {
     let could_use = headers.contains_key("sec-fetch-site")
         || has_client_header(headers)
         || is_websocket_upgrade(headers);
-    if !could_use
-        || !crate::tailscale::is_tailnet_addr(ip)
-        || sends_token(expected, req.headers(), req.uri().query())
-        || has_login_cookie(state, req.headers())
-    {
+    if !could_use || !crate::tailscale::is_tailnet_addr(ip) {
         return;
     }
     if let Some(p) = whois.lookup(ip).await {
