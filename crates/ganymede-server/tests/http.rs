@@ -8283,12 +8283,20 @@ fn whois_app(dir: &std::path::Path, allow: &[&str]) -> axum::Router {
                 "100.64.0.4",
                 r#"{"Node":{"Tags":null},"UserProfile":{"LoginName":"you@example.com"}}"#,
             ),
+            // The server's own address: tailscaled would name its owner.
+            (
+                "100.64.0.1",
+                r#"{"Node":{"Tags":null},"UserProfile":{"LoginName":"me@example.com"}}"#,
+            ),
         ],
     );
     let mut st = state(dir);
     st.local_hostnames.push("100.64.0.1".into());
     st.tailnet_allow = allow.iter().map(|s| s.to_string()).collect();
-    st.tailnet_whois = Some(Arc::new(ganymede_server::tailscale::WhoIs::new(Some(cli))));
+    st.tailnet_whois = Some(Arc::new(ganymede_server::tailscale::WhoIs::new(
+        Some(cli),
+        "100.64.0.1".parse().unwrap(),
+    )));
     build_router(st)
 }
 
@@ -8319,9 +8327,10 @@ async fn whois_lets_in_allowed_logins_and_tags() {
         let (s, _, _) = send(&app, whois_req("GET", "/api/contents", peer)).await;
         assert_eq!(s, StatusCode::OK, "{peer}");
     }
-    // Another login, an address tailscaled doesn't know, or an address
-    // outside the tailnet ranges (never looked up): refused.
-    for peer in ["100.64.0.4", "100.64.0.9", "192.168.1.2"] {
+    // Another login, an address tailscaled doesn't know, an address
+    // outside the tailnet ranges, or the server's own address (where a
+    // process on this machine connects from; never looked up): refused.
+    for peer in ["100.64.0.4", "100.64.0.9", "192.168.1.2", "100.64.0.1"] {
         let (s, _, _) = send(&app, whois_req("GET", "/api/contents", peer)).await;
         assert_eq!(s, StatusCode::FORBIDDEN, "{peer}");
     }
@@ -8374,7 +8383,10 @@ async fn whois_does_not_reach_mcp() {
     let mut st = state(dir.path());
     st.local_hostnames.push("100.64.0.1".into());
     st.tailnet_allow = Arc::from(["me@example.com".to_string()]);
-    st.tailnet_whois = Some(Arc::new(ganymede_server::tailscale::WhoIs::new(Some(cli))));
+    st.tailnet_whois = Some(Arc::new(ganymede_server::tailscale::WhoIs::new(
+        Some(cli),
+        "100.64.0.1".parse().unwrap(),
+    )));
     st.mcp = Some(Arc::new(ganymede_server::mcp::McpState::new(
         ganymede_server::mcp::McpOptions {
             read_only: true,
@@ -8412,4 +8424,33 @@ async fn a_program_may_use_a_tailnet_login_from_tailscale_serve() {
     assert_eq!(s, StatusCode::CREATED);
     let (s, _, _) = send(&app, req(false)).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+/// A program's websocket library may add a same-origin `Origin` to the
+/// handshake; with the client header (which a browser's `WebSocket` can't
+/// send) that still gets the identity, over plain HTTP too.
+#[cfg(unix)]
+#[tokio::test]
+async fn whois_websocket_handshakes_may_carry_an_origin() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = whois_app(dir.path(), &["me@example.com"]);
+    let handshake = |origin: &str, client: bool| {
+        let mut req = whois_req("GET", "/api/contents", "100.64.0.2");
+        req.headers_mut()
+            .insert(header::UPGRADE, "websocket".parse().unwrap());
+        req.headers_mut()
+            .insert(header::ORIGIN, origin.parse().unwrap());
+        if !client {
+            req.headers_mut().remove("ganymede-client");
+        }
+        req
+    };
+    let (s, _, _) = send(&app, handshake("http://100.64.0.1:8888", true)).await;
+    assert_eq!(s, StatusCode::OK);
+    // A browser's handshake (no client header) over plain HTTP, or another
+    // origin: no identity.
+    let (s, _, _) = send(&app, handshake("http://100.64.0.1:8888", false)).await;
+    assert!(s.is_client_error(), "{s}");
+    let (s, _, _) = send(&app, handshake("http://evil.example", true)).await;
+    assert!(s.is_client_error(), "{s}");
 }

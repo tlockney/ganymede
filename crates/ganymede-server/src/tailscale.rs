@@ -194,39 +194,56 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 const CACHE_MAX: usize = 4096;
 
 /// Looks up peer addresses with `tailscale whois --json`, caching the
-/// answers. One lookup at a time.
+/// answers. One lookup runs at a time; cached answers don't wait for it.
 pub struct WhoIs {
     cli: PathBuf,
-    cache: tokio::sync::Mutex<HashMap<IpAddr, (Instant, Option<Peer>)>>,
+    /// The server's own tailnet address, which is never looked up: a
+    /// process on this machine connecting to it comes from it, and
+    /// tailscaled would name this machine's owner.
+    own: IpAddr,
+    cache: std::sync::Mutex<HashMap<IpAddr, (Instant, Option<Peer>)>>,
+    asking: tokio::sync::Mutex<()>,
 }
 
 impl WhoIs {
-    pub fn new(cli: Option<PathBuf>) -> Self {
+    /// `own` is the tailnet address the server listens on.
+    pub fn new(cli: Option<PathBuf>, own: IpAddr) -> Self {
         WhoIs {
             cli: cli.unwrap_or_else(|| "tailscale".into()),
+            own: own.to_canonical(),
             cache: Default::default(),
+            asking: Default::default(),
         }
     }
 
-    /// The owner of `ip`, a tailnet address; `None` when tailscaled can't
-    /// say. Not called for other addresses.
+    fn cached(&self, ip: IpAddr) -> Option<Option<Peer>> {
+        let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let (at, peer) = cache.get(&ip)?;
+        let ttl = if peer.is_some() {
+            ANSWER_TTL
+        } else {
+            FAILURE_TTL
+        };
+        (at.elapsed() < ttl).then(|| peer.clone())
+    }
+
+    /// The owner of `ip`, a tailnet address other than the server's own;
+    /// `None` when tailscaled can't say, or for any other address.
     pub async fn lookup(&self, ip: IpAddr) -> Option<Peer> {
         let ip = ip.to_canonical();
-        if !is_tailnet_addr(ip) {
+        if !is_tailnet_addr(ip) || ip == self.own {
             return None;
         }
-        let mut cache = self.cache.lock().await;
-        if let Some((at, peer)) = cache.get(&ip) {
-            let ttl = if peer.is_some() {
-                ANSWER_TTL
-            } else {
-                FAILURE_TTL
-            };
-            if at.elapsed() < ttl {
-                return peer.clone();
-            }
+        if let Some(peer) = self.cached(ip) {
+            return peer;
+        }
+        let _asking = self.asking.lock().await;
+        // Another request may have asked while this one waited.
+        if let Some(peer) = self.cached(ip) {
+            return peer;
         }
         let peer = self.ask(ip).await;
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         if cache.len() >= CACHE_MAX {
             cache.clear();
         }

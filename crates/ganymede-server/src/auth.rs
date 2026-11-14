@@ -496,14 +496,20 @@ pub(crate) fn tailnet_login(
         // `tailscale serve` over HTTPS, then; other clients use the token.
         // A websocket handshake always carries `Origin`, which some
         // browsers send there instead, so a same-origin HTTPS one will do.
+        // A program's handshake may carry a same-origin `Origin` of either
+        // scheme (some libraries add one) with the client header, which a
+        // browser's `WebSocket` can't set.
         None => {
             tailnet_client(headers)
                 || (is_websocket_upgrade(headers)
+                    && same_origin(headers)
                     && headers
                         .get(header::ORIGIN)
                         .and_then(|v| v.to_str().ok())
-                        .is_some_and(|o| o.starts_with("https://"))
-                    && same_origin(headers))
+                        .is_some_and(|o| {
+                            o.starts_with("https://")
+                                || (o.starts_with("http://") && has_client_header(headers))
+                        }))
         }
         Some(_) => {
             safe_method(method)
@@ -530,9 +536,13 @@ pub const CLIENT_HEADER: &str = "ganymede-client";
 fn tailnet_client(headers: &HeaderMap) -> bool {
     !headers.contains_key(header::ORIGIN)
         && !headers.contains_key("sec-fetch-site")
-        && headers
-            .get(CLIENT_HEADER)
-            .is_some_and(|v| !v.as_bytes().iter().all(u8::is_ascii_whitespace))
+        && has_client_header(headers)
+}
+
+fn has_client_header(headers: &HeaderMap) -> bool {
+    headers
+        .get(CLIENT_HEADER)
+        .is_some_and(|v| !v.as_bytes().iter().all(u8::is_ascii_whitespace))
 }
 
 /// With `[tailscale] whois` on, looks up who owns the peer address of a
@@ -556,7 +566,14 @@ pub(crate) async fn add_whois_peer(state: &AppState, req: &mut Request<Body>) {
         return;
     };
     let ip = peer.ip();
-    if !crate::tailscale::is_tailnet_addr(ip)
+    // Skip the lookup for requests that couldn't use an identity anyway,
+    // such as a browser's over plain HTTP ([`tailnet_login`] decides).
+    let headers = req.headers();
+    let could_use = headers.contains_key("sec-fetch-site")
+        || has_client_header(headers)
+        || is_websocket_upgrade(headers);
+    if !could_use
+        || !crate::tailscale::is_tailnet_addr(ip)
         || sends_token(expected, req.headers(), req.uri().query())
         || has_login_cookie(state, req.headers())
     {
@@ -742,7 +759,13 @@ fn host_allowed(state: &AppState, headers: &HeaderMap) -> bool {
             .any(|h| h.eq_ignore_ascii_case(name))
     };
     match name.parse::<std::net::IpAddr>() {
-        Ok(addr) => addr.is_loopback() || listed(),
+        Ok(addr) => {
+            addr.is_loopback()
+                || state
+                    .local_hostnames
+                    .iter()
+                    .any(|h| h.parse::<std::net::IpAddr>() == Ok(addr))
+        }
         Err(_) => listed(),
     }
 }

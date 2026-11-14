@@ -234,7 +234,9 @@ identity, rather than a browser, sends a `Ganymede-Client` header with
 any value (its name, say) and no `Origin`. A page on another site can't
 send that header without the browser asking the server first, which it
 refuses, so the header also stands in for the `_xsrf` token. Without it,
-a request with no `Sec-Fetch-Site` gets no identity.
+a request with no `Sec-Fetch-Site` gets no identity. A websocket
+handshake may also carry an `Origin` for the server's own address, as
+some libraries add, alongside the header.
 
 ```sh
 curl -H 'Ganymede-Client: curl' https://workstation.example-tailnet.ts.net/api/kernels
@@ -245,8 +247,8 @@ curl -H 'Ganymede-Client: curl' https://workstation.example-tailnet.ts.net/api/k
 With `whois = true`, the server can listen on its tailnet address
 instead of behind `tailscale serve`, and asks `tailscaled` who owns the
 address each request comes from (`tailscale whois`). WireGuard
-authenticates the address, so this can't be forged by another process
-on the machine, and it covers tagged devices, such as a machine running
+authenticates the address, so another device can't claim one that isn't
+its own, and this covers tagged devices, such as a machine running
 agents:
 
 ```toml
@@ -260,10 +262,17 @@ whois = true
 # cli = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"   # Mac App Store app
 ```
 
-- **Only tailnet addresses are looked up** (100.64.0.0/10 and
-  fd7a:115c:a1e0::/48). A tagged device is known by its tags only, any
-  other device by its owner's login. If `tailscale whois` fails or takes
-  over five seconds, the request gets no identity.
+- **`ip` must be this machine's tailnet address**; the server refuses to
+  start otherwise. Only other tailnet addresses (100.64.0.0/10 and
+  fd7a:115c:a1e0::/48) are looked up. The server's own address never
+  is: a process on this machine that connects to it comes from it, and
+  `tailscale whois` would name the machine's owner.
+- **Identity is per device.** A tagged device is known by its tags only,
+  any other by its owner's login. Anything that reaches the server
+  through a device gets that device's identity: everyone using a shared
+  tagged machine, or the network behind a subnet router.
+- If `tailscale whois` fails or takes over five seconds, the request
+  gets no identity.
 - **Answers are kept for a minute**, so a device removed from the
   tailnet, or given other tags, may keep its access that long. Failed
   lookups are retried after ten seconds.
@@ -271,7 +280,7 @@ whois = true
   over plain HTTP, so they get no identity this way: use
   `tailscale serve` for JupyterLab. Programs send `Ganymede-Client`, as
   above. The traffic is still encrypted by WireGuard.
-- **The `Host` check stays on.** The server accepts its own `--ip` in
+- **The `Host` check stays on.** The server accepts its own `ip` in
   `Host`; add its tailnet names to `local_hostnames`.
 - Requests from loopback still go through the `tailscale serve` rules,
   so both can be used at once.

@@ -664,15 +664,29 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
              (add the tailnet name to local_hostnames instead)"
         );
     }
-    // Listening on the tailnet address for `whois`: clients may name the
+    // `whois` needs the server on exactly its tailnet address: on any
+    // other, or on all of them, addresses in the tailnet ranges could come
+    // from elsewhere, and the server couldn't tell its own address (which
+    // local processes connect from) from a peer's. Clients may name the
     // server by that address, so the Host check accepts it.
-    if cfg.tailscale.whois && !cfg.tailscale.allow.is_empty() {
-        if let Ok(ip) = cfg.ip.parse::<std::net::IpAddr>() {
-            if !ip.is_unspecified() && !ip.is_loopback() {
-                cfg.local_hostnames.push(ip.to_string());
-            }
-        }
-    }
+    let whois_own = if cfg.tailscale.whois && !cfg.tailscale.allow.is_empty() {
+        let ip = cfg
+            .ip
+            .parse::<std::net::IpAddr>()
+            .ok()
+            .filter(|ip| crate::tailscale::is_tailnet_addr(*ip));
+        let Some(ip) = ip else {
+            anyhow::bail!(
+                "[tailscale] whois needs ip set to this machine's tailnet address \
+                 (`tailscale ip -4`), not {:?}",
+                cfg.ip
+            );
+        };
+        cfg.local_hostnames.push(ip.to_string());
+        Some(ip)
+    } else {
+        None
+    };
     let token = match cfg.token.clone() {
         Some(t) if t.is_empty() => None,
         Some(t) => Some(t),
@@ -828,8 +842,8 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
         local_hostnames: cfg.local_hostnames.clone(),
         trust_xheaders: cfg.trust_xheaders,
         tailnet_allow: cfg.tailscale.allow.clone().into(),
-        tailnet_whois: (cfg.tailscale.whois && !cfg.tailscale.allow.is_empty())
-            .then(|| Arc::new(crate::tailscale::WhoIs::new(cfg.tailscale.cli.clone()))),
+        tailnet_whois: whois_own
+            .map(|own| Arc::new(crate::tailscale::WhoIs::new(cfg.tailscale.cli.clone(), own))),
         max_body_size: usize::try_from(cfg.max_body_size).unwrap_or(usize::MAX),
         base_url: base_url.clone(),
         config_dir,
