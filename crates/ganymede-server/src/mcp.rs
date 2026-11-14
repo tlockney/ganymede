@@ -662,10 +662,7 @@ impl Notebooks {
             // Marked before it runs, so a failed run leaves it marked.
             metadata["ganymede"]["outputs"] = json!("dropped");
         }
-        let cell = json!({
-            "cell_type": "code", "execution_count": null, "id": id,
-            "metadata": metadata, "outputs": [], "source": a.source,
-        });
+        let cell = room_ops::new_cell("code", &id, &a.source, metadata).expect("a known cell type");
         self.insert(&path, cell, a.after, None).await?;
         self.run_dropping(&path, &kernel_id, id, timeout, drop)
             .await

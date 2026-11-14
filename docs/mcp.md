@@ -636,7 +636,7 @@ next recorded cell's number N, which keeps the scratch value if that
 cell has no result. A function a scratch run defines shows as
 `Cell In[N]` in tracebacks.
 
-When `cell_edit` (or a kernel's [`self.edit`](host-api.md)) changes a cell's source, the source it replaced is kept
+When `cell_edit` changes a cell's source, the source it replaced is kept
 in `metadata.ganymede.agent.history`, oldest first, as
 `{"source": "<old text>", "by": "<client name>", "at": "<time>"}`: the
 replaced text, who replaced it and when. A cell keeps the last 10; an
@@ -645,6 +645,13 @@ revised in place still shows what it said before, and a UI can show the
 revisions. The replaced text is saved in the `.ipynb`: editing a secret
 out of a cell with `cell_edit` leaves it in `history` until the metadata
 is cleared.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+A kernel's [`self.edit`](host-api.md) keeps history the same way, with
+`"by": "kernel"`.
 
 ## Options
 

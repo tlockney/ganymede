@@ -80,7 +80,8 @@ pub(crate) fn insert(
 /// Replace cell `id`'s source with `source`, as `by`. A changed source is
 /// stamped with provenance, and the source it replaced, unless empty, is
 /// kept in its history ([`stamp`]); an unchanged one is no edit and keeps
-/// the cell's provenance. False when there is no cell `id`.
+/// the cell's provenance. Either way a source stored as a plain value
+/// becomes shared text. False when there is no cell `id`.
 pub(crate) fn set_source(
     txn: &mut TransactionMut,
     roots: &Roots,
@@ -92,11 +93,15 @@ pub(crate) fn set_source(
         return false;
     };
     let previous = source_of(txn, &cell);
-    if previous.as_deref() == Some(source) {
-        return true;
-    }
+    let changed = previous.as_deref() != Some(source);
     match cell.get(txn, "source") {
-        Some(Out::YText(t)) => schema::set_text(txn, &t, source),
+        Some(Out::YText(t)) => {
+            if changed {
+                schema::set_text(txn, &t, source);
+            }
+        }
+        // A plain value becomes shared text even when unchanged, so
+        // clients can co-edit it.
         _ => {
             cell.insert(
                 txn,
@@ -105,7 +110,9 @@ pub(crate) fn set_source(
             );
         }
     }
-    stamp(txn, &cell, by, previous.filter(|p| !p.is_empty()));
+    if changed {
+        stamp(txn, &cell, by, previous.filter(|p| !p.is_empty()));
+    }
     true
 }
 

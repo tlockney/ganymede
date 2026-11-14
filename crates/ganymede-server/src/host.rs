@@ -737,6 +737,14 @@ impl HostApi {
                 return;
             }
         }
+        // Watched from before the room loads, so a kernel shut down
+        // meanwhile still lets its hold go: the receiver sees it at once.
+        let alive = self
+            .state
+            .kernels
+            .get(kernel_id)
+            .ok()
+            .map(|k| k.watch_alive());
         if let Some(h) = hold_notebook(&self.state.collab, &self.state.contents, room_id).await {
             // One made meanwhile by another call is replaced; it leaves the
             // room as this one joins it.
@@ -748,9 +756,13 @@ impl HostApi {
                 .is_none();
             // One watcher per kernel: a later hold on another room
             // replaces the entry the watcher removes.
+            if !self.is_live(kernel_id) {
+                // Unpinned, or shut down, while the room loaded.
+                self.holds.lock().unwrap().remove(kernel_id);
+                return;
+            }
             if first {
-                if let Ok(kernel) = self.state.kernels.get(kernel_id) {
-                    let mut alive = kernel.watch_alive();
+                if let Some(mut alive) = alive {
                     let holds = Arc::downgrade(&self.holds);
                     let kernel_id = kernel_id.to_string();
                     tokio::spawn(async move {
