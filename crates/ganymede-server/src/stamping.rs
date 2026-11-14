@@ -242,11 +242,15 @@ impl Stamping {
             // the one this save's restamp compares with.
             let _turn = collab.stamps.turn(&path).await;
             let seen = collab.check_for_write(&path).await;
+            // The same file's grants under other roots in the shared
+            // database get the same check and restamp.
+            let others = collab.check_others(&path).await;
             let _saving = collab.stamps.begin(&path);
             let out = write.await?;
             if let Err(e) = collab.restamp(&path, &seen).await {
                 tracing::warn!("{e}");
             }
+            collab.restamp_others(others).await;
             Ok(out)
         })
         .await
@@ -296,6 +300,7 @@ impl Contents for Stamping {
         if let Err(e) = self.collab.restamp_any(&model.path).await {
             tracing::warn!("{e}");
         }
+        self.collab.restamp_others_unchecked(&model.path).await;
         Ok(model)
     }
 
@@ -535,5 +540,79 @@ mod tests {
         second.await.unwrap();
         waiting.abort();
         assert!(stamps.turns.lock().unwrap().len() <= 1);
+    }
+
+    /// Grants are per (root, path): a server on a parent folder and one in
+    /// a project directory share the database, and a save through either
+    /// keeps both roots' grants on the file, but never blesses a file
+    /// that changed outside.
+    #[tokio::test]
+    async fn a_save_keeps_the_grants_other_roots_hold() {
+        let dir = tempfile::tempdir().unwrap();
+        let top = dir.path().canonicalize().unwrap();
+        let proj = top.join("proj");
+        std::fs::create_dir(&proj).unwrap();
+        std::fs::write(proj.join("a.ipynb"), "{}").unwrap();
+        let db = top.join("ids.db");
+        let at_top = Arc::new(Collab::new(
+            ganymede_contents::FileIds::open(&db, &top),
+            Some(top.clone()),
+        ));
+        let at_proj = Arc::new(Collab::new(
+            ganymede_contents::FileIds::open(&db, &proj),
+            Some(proj.clone()),
+        ));
+        let contents = at_top.stamping(Arc::new(
+            ganymede_contents::FsContents::new(&top, Default::default()).unwrap(),
+        ));
+        let grant = r#"{"run":[""]}"#;
+        let (id, _) = at_proj.index("a.ipynb").await;
+        at_proj.set_grant(id, Some(grant.into())).await.unwrap();
+        let (id, _) = at_top.index("proj/a.ipynb").await;
+        at_top.set_grant(id, Some(grant.into())).await.unwrap();
+
+        let save = |text: &'static str| {
+            let contents = contents.clone();
+            async move {
+                contents
+                    .save("proj/a.ipynb", SaveRequest::text(text))
+                    .await
+                    .unwrap();
+            }
+        };
+        save("{\"saved\": \"through the parent root\"}").await;
+        assert!(at_proj.grant("a.ipynb").await.is_some(), "project root's");
+        assert!(at_top.grant("proj/a.ipynb").await.is_some(), "own root's");
+
+        // Replaced outside, then saved through the server: neither
+        // root's grant survives to bless the new file.
+        std::fs::write(proj.join("a.ipynb"), "{\"replaced\": \"outside\"}").unwrap();
+        save("{\"saved\": \"again, a longer one\"}").await;
+        assert_eq!(at_proj.grant("a.ipynb").await, None);
+        assert_eq!(at_top.grant("proj/a.ipynb").await, None);
+    }
+
+    /// A rename waits for a save of either path to finish, so the save's
+    /// restamp isn't lost to the rename.
+    #[tokio::test]
+    async fn a_rename_waits_for_a_save_of_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.ipynb"), "{}").unwrap();
+        let collab = Arc::new(Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            Some(root.clone()),
+        ));
+        let contents = collab.stamping(Arc::new(
+            ganymede_contents::FsContents::new(&root, Default::default()).unwrap(),
+        ));
+        let turn = collab.stamps.turn("a.ipynb").await;
+        let (c, k) = (collab.clone(), contents.clone());
+        let rename = tokio::spawn(async move { c.rename(&k, "a.ipynb", "b.ipynb").await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!rename.is_finished(), "waits for the save");
+        drop(turn);
+        rename.await.unwrap().unwrap();
+        assert!(root.join("b.ipynb").is_file());
     }
 }

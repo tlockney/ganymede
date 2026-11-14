@@ -72,12 +72,26 @@ the restamp, since the stamp is taken from the file as it is then.
 the `stat` inside the store's lock. A program that writes a notebook without
 the server (`ganymede execute`, `ganymede nb clear`) doesn't know which root
 its grant was made under: it may run from a subdirectory, or on a notebook
-outside the cwd. Their one writer, `write_notebook`, finds every root that
-has a file id for the file (one query of the shared database by each
-candidate (root, relative path) from the file's ancestor directories,
-`roots_with_id`), runs `check_for_write` under each just before writing, and
-restamps with the same compare-and-swap after. It doesn't go through the
-host API, with or without one. Its write is not marked in flight, so another
-process reading the grant in that window drops it, which fails safe. Windows
-has no inode in the stamp, so a same-size replacement by rename that keeps
-the modification time isn't seen there.
+outside the cwd. Their one writer, `write_notebook`, and the server's saves
+use the same helper in `ganymede-contents` (`held`, `Held`): it finds every
+root that has a file id for the file (one query of the shared database by
+each candidate (root, relative path) from the file's ancestor directories,
+`roots_with_id`), checks each root's grant just before writing, and restamps
+with the same compare-and-swap after. It doesn't go through the host API,
+with or without one. Its write is not marked in flight, so another process
+reading the grant in that window drops it, which fails safe. Windows has no
+inode in the stamp, so a same-size replacement by rename that keeps the
+modification time isn't seen there.
+
+Grants are per (root, path) in the shared database, so a server on `/` and
+`ganymede serve` or `ganymede grant` in a project directory each hold their
+own grant on one file, and a save by one must not drop the other's. The
+server's saves (`save`, `restore_checkpoint`, `copy`) look for the same
+file's grants under every other root (`Collab::check_others`), check them
+before the write and restamp them after, with the same tokens; with ids in
+memory there is only the own root. The in-flight marks and turns are this
+process's, so another process reading one of those other grants between the
+write and its restamp drops it, which fails safe. A rename moves only its
+own root's ids, so another root's grant stays with the old path. It takes
+the turns of both paths, in one order so two renames can't wait on each
+other, so a save in flight when it lands finishes and restamps first.

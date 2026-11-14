@@ -305,7 +305,11 @@ edit_self = true     # the self.* calls; false turns them off
   through Ganymede counts as its own and keeps the grant: the contents
   API (an upload over the file, a copy onto it), document rooms, MCP,
   `ganymede execute`, including `-o` to the notebook, and `ganymede nb
-  clear`, from whichever directory they run in. A grant from before this
+  clear`. A grant belongs to the root it was made under (a server's, or
+  `ganymede grant`'s in a project directory), and all of these keep a
+  file's grants under every root that has one, whichever root or
+  directory they run from. A rename moves only its own root's ids, so
+  another root's grant stays with the old path. A grant from before this
   check has no record of its file, so the first time it is used it takes
   the file as it is, and holds from then on.
 

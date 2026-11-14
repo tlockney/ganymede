@@ -320,6 +320,69 @@ impl Collab {
         .await
     }
 
+    /// The grants other contents roots hold on the file at `path` (a
+    /// `ganymede grant` run in a project directory, another server on a
+    /// parent folder), found in the shared file id database and checked,
+    /// as a write by this server is about to change the file: a grant
+    /// belongs to the (root, path) it was made under, and this server's
+    /// write is as much Ganymede's own under theirs. Nothing unless the
+    /// ids are in a database. The in-flight marks are this process's, so
+    /// another process reading one of these grants between the write and
+    /// [`Collab::restamp_others`] drops it, which fails safe.
+    pub(crate) async fn check_others(&self, path: &str) -> Vec<ganymede_contents::Held> {
+        let Some(root) = self.root.clone() else {
+            return Vec::new();
+        };
+        let file = root.join(normalize_api_path(path));
+        self.with_ids(move |ids| {
+            let Some(db) = ids.db_path() else {
+                return Vec::new();
+            };
+            let mut found = ganymede_contents::held(&db, &file, Some(&root));
+            found.iter_mut().for_each(|h| h.check());
+            found
+        })
+        .await
+    }
+
+    /// After the write: the grants [`Collab::check_others`] found keep
+    /// matching the file.
+    pub(crate) async fn restamp_others(&self, held: Vec<ganymede_contents::Held>) {
+        let failures = self
+            .with_ids(move |_| {
+                held.iter()
+                    .filter_map(|h| h.restamp().err())
+                    .collect::<Vec<_>>()
+            })
+            .await;
+        for e in failures {
+            tracing::warn!("{e}");
+        }
+    }
+
+    /// As [`Collab::restamp_others`] for a file whose path wasn't known
+    /// before the write.
+    pub(crate) async fn restamp_others_unchecked(&self, path: &str) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let file = root.join(normalize_api_path(path));
+        let failures = self
+            .with_ids(move |ids| {
+                let Some(db) = ids.db_path() else {
+                    return Vec::new();
+                };
+                ganymede_contents::held(&db, &file, Some(&root))
+                    .iter()
+                    .filter_map(|h| h.restamp_unchecked().err())
+                    .collect::<Vec<_>>()
+            })
+            .await;
+        for e in failures {
+            tracing::warn!("{e}");
+        }
+    }
+
     /// Stores `grant` (JSON) for the notebook with file id `id`, or
     /// removes it, stamped with its file as it is now.
     pub async fn set_grant(&self, id: String, grant: Option<String>) -> Result<(), String> {
@@ -393,6 +456,23 @@ impl Collab {
         let (old, new) = (old.to_string(), new.to_string());
         detached(async move {
             let _moving = collab.begin_move().await;
+            // Saves of either path finish first and wait, in one order so
+            // two renames can't wait on each other. Another root's grant
+            // on the old path stays with that path: ids only follow here.
+            let (first, second) = {
+                let (a, b) = (normalize_api_path(&old), normalize_api_path(&new));
+                if a <= b {
+                    (a, b)
+                } else {
+                    (b, a)
+                }
+            };
+            let _first = collab.stamps.turn(&first).await;
+            let _second = if second != first {
+                Some(collab.stamps.turn(&second).await)
+            } else {
+                None
+            };
             // A file replaced outside loses its grant before the rename,
             // which would otherwise stamp the new file as the old one.
             let seen = collab.check_for_write(&old).await;

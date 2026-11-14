@@ -40,6 +40,9 @@ struct Store {
     memory: Memory,
     #[cfg(feature = "sqlite")]
     db: Option<(rusqlite::Connection, String)>,
+    /// Where the database is.
+    #[cfg(feature = "sqlite")]
+    db_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Default)]
@@ -201,6 +204,8 @@ impl FileIds {
                 memory: Memory::default(),
                 #[cfg(feature = "sqlite")]
                 db: None,
+                #[cfg(feature = "sqlite")]
+                db_path: None,
             }),
         }
     }
@@ -219,6 +224,7 @@ impl FileIds {
                         store: Mutex::new(Store {
                             memory: Memory::default(),
                             db: Some((conn, root.to_string_lossy().into_owned())),
+                            db_path: Some(db.to_path_buf()),
                         }),
                     }
                 }
@@ -328,6 +334,15 @@ impl FileIds {
         current: impl FnOnce() -> Option<String>,
     ) -> Option<String> {
         check_locked(&mut self.lock(), id, None, current).grant()
+    }
+
+    /// The database these ids are kept in, if one opened: shared with
+    /// every other root's ids, which [`held`] looks through.
+    pub fn db_path(&self) -> Option<std::path::PathBuf> {
+        #[cfg(feature = "sqlite")]
+        return self.lock().db_path.clone();
+        #[cfg(not(feature = "sqlite"))]
+        None
     }
 
     /// Whether ids and grants outlive this process: kept in a database
@@ -562,6 +577,90 @@ pub fn roots_with_id(db: &Path, file: &Path) -> Vec<(std::path::PathBuf, String)
     }
     let _ = (db, file);
     Vec::new()
+}
+
+/// A grant held on a file under one contents root, found by [`held`].
+///
+/// Grants are per (root, path) in the shared database, and a program that
+/// writes a file doesn't know which root, a server's or `ganymede
+/// grant`'s, one was made under. It checks every root's grant before
+/// writing ([`Held::check`]) and restamps it after ([`Held::restamp`]),
+/// with the same compare-and-swap a server's own root gets (#767).
+pub struct Held {
+    ids: FileIds,
+    id: String,
+    root: std::path::PathBuf,
+    api: String,
+    /// What [`Held::check`] saw, for [`Held::restamp`].
+    seen: Option<Option<String>>,
+}
+
+/// The grants held on `file`, an absolute path, under every contents root
+/// above it that has one, except `except` (a root already looked after):
+/// one query of the database at `db` by each candidate (root, relative
+/// path), then a look at each hit's grant. The file's directory is
+/// resolved and its name kept, so a symlinked notebook keeps its own
+/// name. Empty when there is no such database.
+pub fn held(db: &Path, file: &Path, except: Option<&Path>) -> Vec<Held> {
+    let (Some(dir), Some(name)) = (file.parent(), file.file_name()) else {
+        return Vec::new();
+    };
+    let Ok(dir) = dir.canonicalize() else {
+        return Vec::new();
+    };
+    roots_with_id(db, &dir.join(name))
+        .into_iter()
+        .filter(|(root, _)| except != Some(root.as_path()))
+        .filter_map(|(root, api)| {
+            let ids = FileIds::open(db, &root);
+            let id = ids.get(&api)?;
+            ids.grant(&id)?;
+            Some(Held {
+                ids,
+                id,
+                root,
+                api,
+                seen: None,
+            })
+        })
+        .collect()
+}
+
+impl Held {
+    /// The root this grant is under.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The file's API path under that root.
+    pub fn api(&self) -> &str {
+        &self.api
+    }
+
+    /// Before a write: drops the grant if its file changed outside
+    /// Ganymede, and takes note of the stamp it stands under.
+    pub fn check(&mut self) {
+        let (root, api) = (&self.root, &self.api);
+        self.seen = self
+            .ids
+            .check_for_write_with(&self.id, || api_file_stamp(root, api));
+    }
+
+    /// After the write: the grant keeps matching the file, if it stood at
+    /// [`Held::check`] and is stored as it was then.
+    pub fn restamp(&self) -> Result<(), String> {
+        self.ids
+            .restamp_if(&self.id, &self.seen, |p| api_file_stamp(&self.root, p))
+            .map_err(|e| format!("keeping the grant for {}: {e}", self.api))
+    }
+
+    /// After a write that wasn't checked first, such as a copy whose
+    /// destination wasn't known: the grant matches the file as it is.
+    pub fn restamp_unchecked(&self) -> Result<(), String> {
+        self.ids
+            .restamp_with(&self.id, |p| api_file_stamp(&self.root, p))
+            .map_err(|e| format!("keeping the grant for {}: {e}", self.api))
+    }
 }
 
 impl Store {

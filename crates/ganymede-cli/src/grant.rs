@@ -95,76 +95,26 @@ pub(crate) fn grant_path(key: &str, path: &str) -> Result<String> {
     Ok(p)
 }
 
-/// A grant held on a file, under one root.
-pub(crate) struct Held {
-    ids: ganymede_contents::FileIds,
-    id: String,
-    root: PathBuf,
-    api: String,
-    /// The stamp the grant was stored under when it was last checked, for
-    /// [`restamp_held`]; `None` when it no longer stands.
-    seen: Option<Option<String>>,
-}
-
-/// The grants held on the file at `path` under every root that has one:
-/// a program that writes a notebook (`ganymede execute`, `nb clear`)
-/// doesn't know which root, a server's or `ganymede grant`'s, its grant
-/// was made under, and it may be run from a subdirectory, or from
-/// elsewhere (#767).
-fn held(path: &Path) -> Vec<Held> {
-    let Some(db) = ganymede_server::serve::file_ids_db() else {
-        return Vec::new();
-    };
-    // The directory resolved, the name as it is, as `api_path` does, so a
-    // symlinked notebook keeps its own name.
-    let Ok(abs) = std::path::absolute(path) else {
-        return Vec::new();
-    };
-    let (Some(dir), Some(name)) = (abs.parent(), abs.file_name()) else {
-        return Vec::new();
-    };
-    let Ok(dir) = dir.canonicalize() else {
-        return Vec::new();
-    };
-    ganymede_contents::roots_with_id(&db, &dir.join(name))
-        .into_iter()
-        .filter_map(|(root, api)| {
-            let ids = ganymede_contents::FileIds::open(&db, &root);
-            let id = ids.get(&api)?;
-            ids.grant(&id)?;
-            Some(Held {
-                ids,
-                id,
-                root,
-                api,
-                seen: None,
-            })
-        })
-        .collect()
-}
-
 /// Before a program writes the notebook at `path`: drops the grants,
 /// under every root, whose file changed outside Ganymede (#767). What
 /// comes back is for [`restamp_held`] after the write.
-pub(crate) fn check_held(path: &Path) -> Vec<Held> {
-    let mut all = held(path);
-    for h in &mut all {
-        h.seen = h
-            .ids
-            .check_for_write_with(&h.id, || ganymede_contents::api_file_stamp(&h.root, &h.api));
-    }
+pub(crate) fn check_held(path: &Path) -> Vec<ganymede_contents::Held> {
+    let (Some(db), Ok(abs)) = (
+        ganymede_server::serve::file_ids_db(),
+        std::path::absolute(path),
+    ) else {
+        return Vec::new();
+    };
+    let mut all = ganymede_contents::held(&db, &abs, None);
+    all.iter_mut().for_each(|h| h.check());
     all
 }
 
 /// The program wrote the notebook: the grants that stood before keep
 /// matching it.
-pub(crate) fn restamp_held(held: &[Held]) -> Result<()> {
+pub(crate) fn restamp_held(held: &[ganymede_contents::Held]) -> Result<()> {
     for h in held {
-        h.ids
-            .restamp_if(&h.id, &h.seen, |p| {
-                ganymede_contents::api_file_stamp(&h.root, p)
-            })
-            .map_err(|e| anyhow::anyhow!("keeping the grant for {}: {e}", h.api))?;
+        h.restamp().map_err(anyhow::Error::msg)?;
     }
     Ok(())
 }
