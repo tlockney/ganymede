@@ -4,7 +4,8 @@ Without `--config`, Ganymede now reads `ganymede.toml` from its own
 config dir: `$XDG_CONFIG_HOME/ganymede`, else `~/.config/ganymede`, on
 Linux and macOS, and `%APPDATA%\ganymede` on Windows.
 `GANYMEDE_CONFIG_DIR` overrides it on any OS, as `GANYMEDE_DATA_DIR` does
-for the data dir; the integration tests that start servers set it, so a
+for the data dir. The CLI integration tests set it, and
+`JUPYTER_CONFIG_DIR`, to an empty directory in `common::ganymede()`, so a
 developer's own file stays out of them. It was read from
 the Jupyter config dir (`~/.jupyter`), which a reader had to know and
 which is Jupyter's, not Ganymede's.

@@ -29,10 +29,20 @@ impl Drop for KillOnDrop {
     }
 }
 
+/// A ganymede command. Its config dirs are an empty directory of this test
+/// process's, so a developer's own `ganymede.toml` and JupyterLab settings
+/// stay out; a test that needs its own sets them again.
 pub fn ganymede(args: &[&str]) -> Command {
     let mut c = Command::new(bin());
-    c.args(args);
+    c.args(args)
+        .env("GANYMEDE_CONFIG_DIR", empty_config_dir())
+        .env("JUPYTER_CONFIG_DIR", empty_config_dir());
     c
+}
+
+fn empty_config_dir() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| tempfile::tempdir().unwrap()).path()
 }
 
 pub fn run_ok(mut cmd: impl std::borrow::BorrowMut<Command>) -> Output {
