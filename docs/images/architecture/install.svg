@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 406" width="900" height="406" role="img" aria-label="What the install puts where. The ganymede binary goes in ~/.local/bin. It finds kernels in the Jupyter data dir (~/.local/share/jupyter, or ~/Library/Jupyter on macOS), where cdp-kernel install writes kernels/cdp-node/kernel.json and where notebook signatures are kept; that kernel.json&#x27;s argv starts cdp-kernel, installed with npm on Node 22.18 or later. ganymede lab install puts JupyterLab and its extensions in Ganymede&#x27;s data dir. The Jupyter config dir, ~/.jupyter, holds an optional ganymede.toml and JupyterLab&#x27;s settings and workspaces, and the runtime dir holds each running kernel&#x27;s connection file and the cookie secret.">
-  <title>What the install puts where. The ganymede binary goes in ~/.local/bin. It finds kernels in the Jupyter data dir (~/.local/share/jupyter, or ~/Library/Jupyter on macOS), where cdp-kernel install writes kernels/cdp-node/kernel.json and where notebook signatures are kept; that kernel.json&#x27;s argv starts cdp-kernel, installed with npm on Node 22.18 or later. ganymede lab install puts JupyterLab and its extensions in Ganymede&#x27;s data dir. The Jupyter config dir, ~/.jupyter, holds an optional ganymede.toml and JupyterLab&#x27;s settings and workspaces, and the runtime dir holds each running kernel&#x27;s connection file and the cookie secret.</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 406" width="900" height="406" role="img" aria-label="What the install puts where. The ganymede binary goes in ~/.local/bin. It finds kernels in the Jupyter data dir (~/.local/share/jupyter, or ~/Library/Jupyter on macOS), where cdp-kernel install writes kernels/cdp-node/kernel.json and where notebook signatures are kept; that kernel.json&#x27;s argv starts cdp-kernel, installed with npm on Node 22.18 or later. ganymede lab install puts JupyterLab and its extensions in Ganymede&#x27;s data dir. Ganymede&#x27;s config dir, ~/.config/ganymede, holds an optional ganymede.toml; the Jupyter config dir, ~/.jupyter, holds JupyterLab&#x27;s settings and workspaces; and the runtime dir holds each running kernel&#x27;s connection file and the cookie secret.">
+  <title>What the install puts where. The ganymede binary goes in ~/.local/bin. It finds kernels in the Jupyter data dir (~/.local/share/jupyter, or ~/Library/Jupyter on macOS), where cdp-kernel install writes kernels/cdp-node/kernel.json and where notebook signatures are kept; that kernel.json&#x27;s argv starts cdp-kernel, installed with npm on Node 22.18 or later. ganymede lab install puts JupyterLab and its extensions in Ganymede&#x27;s data dir. Ganymede&#x27;s config dir, ~/.config/ganymede, holds an optional ganymede.toml; the Jupyter config dir, ~/.jupyter, holds JupyterLab&#x27;s settings and workspaces; and the runtime dir holds each running kernel&#x27;s connection file and the cookie secret.</title>
   <style>
     .bg { fill: #ffffff; }
     .box { fill: #f6f7f9; stroke: #9aa3ad; stroke-width: 1.2; }
@@ -65,10 +65,10 @@
   <line class="ln" x1="210" y1="165" x2="368" y2="165" marker-end="url(#a)"/>
   <text class="l" x="218" y="159">serves JupyterLab from</text>
   <rect class="box" x="370" y="216" width="320" height="79" rx="6"/>
-  <text class="t" x="382" y="236">Jupyter config dir</text>
-  <text class="l" x="382" y="252">~/.jupyter</text>
-  <text class="m" x="382" y="271">ganymede.toml, if you write one</text>
-  <text class="m" x="382" y="287">lab/user-settings/, lab/workspaces/</text>
+  <text class="t" x="382" y="236">Config dirs</text>
+  <text class="l" x="382" y="252">Ganymede&#x27;s, and Jupyter&#x27;s for JupyterLab</text>
+  <text class="m" x="382" y="271">~/.config/ganymede/ganymede.toml</text>
+  <text class="m" x="382" y="287">~/.jupyter/lab/: settings, workspaces</text>
   <line class="ln" x1="210" y1="255" x2="368" y2="255" marker-end="url(#a)"/>
   <text class="l" x="218" y="249">reads config; keeps settings</text>
   <rect class="box" x="370" y="307" width="320" height="79" rx="6"/>

@@ -17,8 +17,9 @@ use std::time::Duration;
 /// Command line flags. Each overrides the config file's setting.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct ServeArgs {
-    /// TOML config file. Default: `ganymede.toml` in the Jupyter config
-    /// dir (`$JUPYTER_CONFIG_DIR`, else `~/.jupyter`), if it exists.
+    /// TOML config file. Default: `ganymede.toml` in Ganymede's config
+    /// dir (`$XDG_CONFIG_HOME/ganymede`, else `~/.config/ganymede`;
+    /// `%APPDATA%\ganymede` on Windows), if it exists.
     #[arg(long)]
     pub config: Option<PathBuf>,
     /// Log level: trace, debug, info, warn or error (`WARNING` and
@@ -116,28 +117,137 @@ pub struct ServeArgs {
     pub mcp: bool,
 }
 
-/// The file name looked for in the Jupyter config dir when `--config` is
-/// not given.
+/// The file name looked for in [`ganymede_config_dir`] when `--config`
+/// is not given.
 pub const DEFAULT_CONFIG_FILE: &str = "ganymede.toml";
+
+/// Ganymede's config dir, which holds [`DEFAULT_CONFIG_FILE`]:
+/// `$GANYMEDE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/ganymede`, else
+/// `~/.config/ganymede`, on Linux and macOS; `$GANYMEDE_CONFIG_DIR`, else
+/// `%APPDATA%\ganymede`, on Windows.
+pub fn ganymede_config_dir() -> Option<PathBuf> {
+    let platform = if cfg!(windows) {
+        dirs::config_dir()
+    } else {
+        None
+    };
+    config_dir_from(
+        std::env::var_os("GANYMEDE_CONFIG_DIR"),
+        std::env::var_os("XDG_CONFIG_HOME"),
+        dirs::home_dir(),
+        platform,
+    )
+}
+
+/// [`ganymede_config_dir`] from its inputs. `platform` is the OS's config
+/// dir where it isn't XDG's (Windows), else `None`.
+fn config_dir_from(
+    ganymede: Option<std::ffi::OsString>,
+    xdg: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+    platform: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(d) = ganymede.filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(d));
+    }
+    if let Some(p) = platform {
+        return Some(p.join("ganymede"));
+    }
+    // The XDG spec ignores a relative value.
+    match xdg.map(PathBuf::from) {
+        Some(x) if x.is_absolute() => Some(x.join("ganymede")),
+        _ => home.map(|h| h.join(".config").join("ganymede")),
+    }
+}
+
+/// The default config file, as [`find_default_config`] finds it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DefaultConfig {
+    /// The file to read, if any.
+    pub path: Option<PathBuf>,
+    /// Said once when the file is, or would have been, the old one in the
+    /// Jupyter config dir.
+    pub warning: Option<String>,
+}
+
+/// The default config file: [`DEFAULT_CONFIG_FILE`] in `dir` when it
+/// exists, else in `legacy_dir` (the Jupyter config dir, where earlier
+/// releases read it), with a warning to move it.
+pub fn find_default_config(dir: Option<&Path>, legacy_dir: Option<&Path>) -> DefaultConfig {
+    let new = dir.map(|d| d.join(DEFAULT_CONFIG_FILE));
+    let old = legacy_dir
+        .map(|d| d.join(DEFAULT_CONFIG_FILE))
+        .filter(|p| p.is_file() && !same_file(Some(p), new.as_deref()));
+    let shown = |p: &Option<PathBuf>| {
+        p.as_deref()
+            .map_or("Ganymede's config dir".to_string(), |p| {
+                p.display().to_string()
+            })
+    };
+    match (new.clone().filter(|p| p.is_file()), old) {
+        (Some(path), Some(old)) => DefaultConfig {
+            path: Some(path),
+            warning: Some(format!(
+                "ignoring {}: the config file is now {}",
+                old.display(),
+                shown(&new)
+            )),
+        },
+        (Some(path), None) => DefaultConfig {
+            path: Some(path),
+            warning: None,
+        },
+        (None, Some(old)) => DefaultConfig {
+            warning: Some(format!(
+                "reading {}, from the Jupyter config dir; move it to {}, where Ganymede looks first",
+                old.display(),
+                shown(&new)
+            )),
+            path: Some(old),
+        },
+        (None, None) => DefaultConfig::default(),
+    }
+}
+
+/// Whether `a` and `b` name one file, through symlinks too.
+fn same_file(a: Option<&Path>, b: Option<&Path>) -> bool {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    match (a, b) {
+        (Some(a), Some(b)) => canon(a) == canon(b),
+        _ => false,
+    }
+}
+
+/// [`find_default_config`] in [`ganymede_config_dir`], then the Jupyter
+/// config dir.
+pub fn default_config() -> DefaultConfig {
+    find_default_config(
+        ganymede_config_dir().as_deref(),
+        Some(&ganymede_kernel_host::kernelspec::jupyter_config_dir()),
+    )
+}
 
 impl ServeArgs {
     /// The config file, if any, with these flags applied on top. Without
-    /// `--config`, [`DEFAULT_CONFIG_FILE`] in the Jupyter config dir is
-    /// read when it exists.
+    /// `--config`, [`default_config`] is read when there is one.
     pub fn into_config(self) -> Result<Config> {
-        let dir = ganymede_kernel_host::kernelspec::jupyter_config_dir();
-        self.into_config_from(Some(&dir))
+        let default = if self.config.is_some() {
+            None
+        } else {
+            let d = default_config();
+            if let Some(w) = &d.warning {
+                tracing::warn!("{w}");
+            }
+            d.path
+        };
+        self.into_config_with(default)
     }
 
-    /// [`ServeArgs::into_config`], looking for the default file in
-    /// `config_dir` (not at all when `None`).
-    pub fn into_config_from(self, config_dir: Option<&std::path::Path>) -> Result<Config> {
+    /// [`ServeArgs::into_config`], reading `default` when `--config` is
+    /// not given.
+    pub fn into_config_with(self, default: Option<PathBuf>) -> Result<Config> {
         let cli = self;
-        let path = cli.config.clone().or_else(|| {
-            config_dir
-                .map(|d| d.join(DEFAULT_CONFIG_FILE))
-                .filter(|p| p.is_file())
-        });
+        let path = cli.config.clone().or(default);
         let mut cfg = match &path {
             Some(p) => {
                 tracing::info!("reading config from {}", p.display());
@@ -926,7 +1036,7 @@ fn stop_signals() -> Result<tokio::sync::mpsc::Receiver<()>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{serve_until, ServeArgs};
+    use super::{find_default_config, serve_until, DefaultConfig, ServeArgs, DEFAULT_CONFIG_FILE};
     use std::path::PathBuf;
     use std::time::Duration;
     use tokio::io::AsyncWriteExt;
@@ -940,7 +1050,7 @@ mod tests {
 
     #[test]
     fn no_file_and_no_flags_is_the_default() {
-        let cfg = ServeArgs::default().into_config_from(None).unwrap();
+        let cfg = ServeArgs::default().into_config_with(None).unwrap();
         assert_eq!((cfg.ip.as_str(), cfg.port), ("127.0.0.1", 8888));
         assert_eq!(cfg.token, None);
     }
@@ -998,28 +1108,104 @@ mod tests {
 
     #[test]
     fn the_default_file_is_read_from_the_config_dir() {
-        let (dir, _path) = config_file("port = 9001\n");
+        let (dir, path) = config_file("port = 9001\n");
         let cfg = ServeArgs::default()
-            .into_config_from(Some(dir.path()))
+            .into_config_with(Some(path.clone()))
             .unwrap();
         assert_eq!(cfg.port, 9001);
 
         // --config wins over the default file.
-        let (_other, path) = config_file("port = 9002\n");
+        let (_other, other) = config_file("port = 9002\n");
         let cfg = ServeArgs {
-            config: Some(path),
+            config: Some(other),
             ..Default::default()
         }
-        .into_config_from(Some(dir.path()))
+        .into_config_with(Some(path))
         .unwrap();
         assert_eq!(cfg.port, 9002);
 
-        // No file there is the default config.
-        let empty = tempfile::tempdir().unwrap();
-        let cfg = ServeArgs::default()
-            .into_config_from(Some(empty.path()))
-            .unwrap();
+        // No file is the default config.
+        let cfg = ServeArgs::default().into_config_with(None).unwrap();
         assert_eq!(cfg.port, 8888);
+        drop(dir);
+    }
+
+    #[test]
+    fn the_default_file_falls_back_to_the_jupyter_config_dir() {
+        let new = tempfile::tempdir().unwrap();
+        let old = tempfile::tempdir().unwrap();
+        let file = |d: &tempfile::TempDir| d.path().join(DEFAULT_CONFIG_FILE);
+        let find = || find_default_config(Some(new.path()), Some(old.path()));
+
+        // Neither: no file, no warning.
+        assert_eq!(find(), DefaultConfig::default());
+
+        // Only the old one: read it, and say where it goes now.
+        std::fs::write(file(&old), "").unwrap();
+        let d = find();
+        assert_eq!(d.path, Some(file(&old)));
+        let w = d.warning.unwrap();
+        assert!(w.contains(&file(&new).display().to_string()), "{w}");
+
+        // Both: the new one, and the old one is named as ignored.
+        std::fs::write(file(&new), "").unwrap();
+        let d = find();
+        assert_eq!(d.path, Some(file(&new)));
+        assert!(d.warning.unwrap().starts_with("ignoring "));
+
+        // Only the new one: no warning.
+        std::fs::remove_file(file(&old)).unwrap();
+        assert_eq!(
+            find(),
+            DefaultConfig {
+                path: Some(file(&new)),
+                warning: None
+            }
+        );
+
+        // The same dir twice (JUPYTER_CONFIG_DIR pointed at it) is no
+        // fallback.
+        assert_eq!(
+            find_default_config(Some(new.path()), Some(new.path())).warning,
+            None
+        );
+    }
+
+    #[test]
+    fn the_config_dir_follows_ganymede_then_xdg_then_home() {
+        use super::config_dir_from;
+        let home = Some(PathBuf::from("/home/u"));
+        let at = |g: Option<&str>, x: Option<&str>, p: Option<&str>| {
+            config_dir_from(
+                g.map(Into::into),
+                x.map(Into::into),
+                home.clone(),
+                p.map(Into::into),
+            )
+        };
+        let p = |s: &str| Some(PathBuf::from(s));
+        assert_eq!(at(None, None, None), p("/home/u/.config/ganymede"));
+        assert_eq!(at(None, Some("/x"), None), p("/x/ganymede"));
+        // A relative or empty XDG_CONFIG_HOME is ignored, as the spec says.
+        assert_eq!(at(None, Some("rel"), None), p("/home/u/.config/ganymede"));
+        assert_eq!(at(None, Some(""), None), p("/home/u/.config/ganymede"));
+        // GANYMEDE_CONFIG_DIR wins, unless empty.
+        assert_eq!(at(Some("/g"), Some("/x"), Some("/w")), p("/g"));
+        assert_eq!(at(Some(""), Some("/x"), None), p("/x/ganymede"));
+        // Windows: %APPDATA%, not XDG.
+        assert_eq!(at(None, Some("/x"), Some("/w")), p("/w/ganymede"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_jupyter_dir_is_one_file() {
+        let new = tempfile::tempdir().unwrap();
+        std::fs::write(new.path().join(DEFAULT_CONFIG_FILE), "").unwrap();
+        let link = tempfile::tempdir().unwrap();
+        let old = link.path().join("jupyter");
+        std::os::unix::fs::symlink(new.path(), &old).unwrap();
+        let d = find_default_config(Some(new.path()), Some(&old));
+        assert_eq!(d.warning, None);
     }
 
     #[test]
