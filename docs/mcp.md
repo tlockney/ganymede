@@ -76,14 +76,14 @@ mcp_token = "a-long-random-string"
 route answers 403, and it sets no login cookie. `/mcp` takes the
 server's token too, so the page and `ganymede mcp` keep working, and
 the CLI's server info file keeps the server's token (the Mac app's
-differs; see [Server info file](reference.md#server-info-file)).
-<!-- **Unreleased in ganymede-ui.** The Mac app's server info file, with
-its `mcp_token`, ships in ganymede-ui's next release; keep this
-parenthetical, and drop this comment, once it is out. -->
-With auth off (an empty `token`) it adds nothing, since every route is
-open. A published
-page, from an agent or from the browser, replaces `mcp_token` as it
-does the server's token.
+differs; see [Server info file](reference.md#server-info-file)). With
+auth off (an empty `token`) it adds nothing, since every route is open.
+A published page, from an agent or from the browser, replaces
+`mcp_token` as it does the server's token.
+
+<!-- **Unreleased in ganymede-ui.** "the Mac app's differs" above: the
+app's server info file, holding its `mcp_token`, ships in ganymede-ui's
+next release. Keep the text and drop this comment once it is out. -->
 
 `mcp_token` limits the agent only while it can't run code, with
 `mcp_read_only` or `mcp_no_execute`. A cell it runs can read the
