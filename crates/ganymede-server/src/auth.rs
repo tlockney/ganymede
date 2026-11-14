@@ -398,8 +398,8 @@ pub enum Via {
     Cookie,
     /// An allowed tailnet login or tag, from `tailscale serve` or `tailscale
     /// whois` ([`crate::tailscale`]). Checked like the cookie: XSRF and
-    /// `Origin`, except that a [`tailnet_client`] request needs no XSRF
-    /// token.
+    /// `Origin`, except that a program's request ([`CLIENT_HEADER`], no
+    /// `Origin`) needs no XSRF token.
     Tailnet,
 }
 
