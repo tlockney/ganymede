@@ -603,6 +603,15 @@ minute); starting, interrupting, restarting and shutting down a kernel go
 through its REST API, and kernel messages through its websocket. HTTPS is
 checked against the system's trust store.
 
+The token may be left out when the kernel server is a Ganymede server
+that lets this machine in by
+[tailnet identity](security.md#tailnet-identity): the gateway marks its
+requests as a program's (`Ganymede-Client`).
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release: the gateway without a token on a tailnet.
+
 ## Server info file
 
 While it runs, `serve`, `lab` and `ui` write `jpserver-<pid>.json` in the

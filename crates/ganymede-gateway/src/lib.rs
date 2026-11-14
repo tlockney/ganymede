@@ -32,6 +32,11 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 const V1_PROTOCOL: &str = "v1.kernel.websocket.jupyter.org";
 
+/// Sent on every request, so a Ganymede server that lets this machine in
+/// by tailnet identity (`[tailscale] allow`) accepts it without a token:
+/// it marks a program's request, which no web page can send.
+const CLIENT_HEADER: (&str, &str) = ("Ganymede-Client", "ganymede-gateway");
+
 /// Errors from the remote server, in kernel-host's error type.
 fn remote(what: impl std::fmt::Display) -> Error {
     Error::Io(std::io::Error::other(format!("gateway: {what}")))
@@ -61,7 +66,9 @@ fn handle_key(process: &Arc<dyn KernelProcess>) -> usize {
 
 impl Gateway {
     /// A gateway to the server at `url` (`http(s)://host[:port][/base]`),
-    /// authenticating with `token` when given. No request is made yet.
+    /// authenticating with `token` when given. Without one, a Ganymede
+    /// server on the tailnet may let it in by tailnet identity. No request
+    /// is made yet.
     pub fn new(url: &str, token: Option<String>) -> Result<Gateway> {
         let mut base = reqwest::Url::parse(url).map_err(|e| remote(format!("{url}: {e}")))?;
         if !matches!(base.scheme(), "http" | "https") {
@@ -158,7 +165,10 @@ impl Inner {
     }
 
     fn request(&self, method: reqwest::Method, path: &str) -> Result<reqwest::RequestBuilder> {
-        let mut req = self.http.request(method, self.url(path)?);
+        let mut req = self
+            .http
+            .request(method, self.url(path)?)
+            .header(CLIENT_HEADER.0, CLIENT_HEADER.1);
         if let Some(t) = &self.token {
             req = req.header("Authorization", format!("token {t}"));
         }
@@ -338,6 +348,7 @@ impl TransportFactory for Gateway {
             "Sec-WebSocket-Protocol",
             HeaderValue::from_static(V1_PROTOCOL),
         );
+        headers.insert(CLIENT_HEADER.0, HeaderValue::from_static(CLIENT_HEADER.1));
         if let Some(t) = &self.inner.token {
             let value = HeaderValue::from_str(&format!("token {t}")).map_err(remote)?;
             headers.insert("Authorization", value);
