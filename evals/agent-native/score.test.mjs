@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { SCENARIOS, notebookFor } from "./scenarios.mjs";
-import { reportMarkdown, score, summarize } from "./score.mjs";
+import { ganymedeToolCalls, noEvidence, reportMarkdown, score, summarize } from "./score.mjs";
 
 const S = Object.fromEntries(SCENARIOS.map((s) => [s.id, s]));
 const agent = (extra = {}) => ({ ganymede: { agent: { by: "claude-code", mode: "note", at: "t", ...extra } } });
@@ -194,4 +194,27 @@ test("summarize leaves out sessions with no score", () => {
   assert.match(md, /\| a \| 1\/2 \| 1 \|/);
   assert.match(md, /excluded a-3: agent timed out/);
   assert.match(md, /failed a-2 \(a\): x/);
+});
+
+test("a run counts only when the agent called a ganymede tool", () => {
+  const call = (name) =>
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "ok" }, { type: "tool_use", name, input: {} }] } });
+  const used = [
+    JSON.stringify({ type: "system", subtype: "init" }),
+    call("Bash"),
+    call("mcp__plugin_ganymede-journal_ganymede__notebook_open"),
+    call("mcp__plugin_ganymede-journal_ganymede__cell_add"),
+    "not json",
+  ].join("\n");
+  assert.equal(ganymedeToolCalls(used), 2);
+  assert.equal(noEvidence(used), null);
+  // An agent that exits 0 without touching the server, or a plain-text log.
+  assert.match(noEvidence([call("Read"), call("Bash")].join("\n")), /no ganymede tool call/);
+  assert.match(noEvidence("I couldn't add the cell."), /no ganymede tool call/);
+  assert.match(noEvidence(""), /no ganymede tool call/);
+  // A tool_result or user event naming a ganymede tool is not a call.
+  assert.equal(
+    ganymedeToolCalls(JSON.stringify({ type: "user", message: { content: [{ type: "tool_use", name: "mcp__ganymede__x" }] } })),
+    0,
+  );
 });

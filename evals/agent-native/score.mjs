@@ -1,22 +1,10 @@
 // Scoring for the person-and-agent evals (#824): pure functions over the
-// finished .ipynb (and the person's log), so tests can feed them notebooks
-// by hand. No model judges anything.
+// finished .ipynb and the person's log (person.json: which steps ran, and
+// when), so tests can feed them by hand. No model judges anything.
 
-/** A cell's source as one string. */
-export function cellText(cell) {
-  return Array.isArray(cell.source) ? cell.source.join("") : String(cell.source ?? "");
-}
+import { agentOf, cellText } from "../lib/notebook.mjs";
 
-/** `[id, source]` for each cell. */
-export function sources(nb) {
-  return nb.cells.map((c) => [c.id, cellText(c)]);
-}
-
-/** `metadata.ganymede.agent`, or null for a cell a person wrote. */
-export function agentOf(cell) {
-  const a = cell.metadata?.ganymede?.agent;
-  return a && typeof a === "object" ? a : null;
-}
+export { agentOf, cellText };
 
 /** `metadata.ganymede.request`, set when an agent answered the cell. */
 export function requestOf(cell) {
@@ -91,4 +79,36 @@ export function reportMarkdown(results) {
     }
   }
   return lines.join("\n") + "\n";
+}
+
+/** The prefixes of the ganymede MCP tools' names, as the plugin or `claude mcp add` names them. */
+const TOOL_PREFIXES = ["mcp__plugin_ganymede-journal_ganymede__", "mcp__ganymede__"];
+
+/**
+ * How many ganymede MCP tools the agent called, read from a session's
+ * `--output-format stream-json` log. 0 means the agent never reached the
+ * server (or the log isn't stream-json), so what the notebook shows says
+ * nothing about it: the run is left out rather than scored.
+ */
+export function ganymedeToolCalls(log) {
+  let n = 0;
+  for (const line of String(log).split("\n")) {
+    if (!line.startsWith("{")) continue;
+    let ev;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (ev.type !== "assistant") continue;
+    for (const b of ev.message?.content ?? []) {
+      if (b.type === "tool_use" && TOOL_PREFIXES.some((p) => String(b.name).startsWith(p))) n++;
+    }
+  }
+  return n;
+}
+
+/** Why a run can't be scored from its agent log, or null. */
+export function noEvidence(log) {
+  return ganymedeToolCalls(log) > 0 ? null : "the agent made no ganymede tool call (or its log isn't stream-json)";
 }

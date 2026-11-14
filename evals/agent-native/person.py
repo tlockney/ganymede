@@ -19,8 +19,6 @@ the agent is doing. A step is
     {"agent_cells": N}                at least N cells carry agent provenance
     {"agent_cell_contains": "text"}   a cell with agent provenance holds text
     {"request_done": "id"}            the request cell id is marked done
-    {"agent_quiet": S}                no agent cell changed for S seconds,
-                                      once there is at least one
     {"sleep": S}                      S seconds from the previous step
 
 Actions:
@@ -43,6 +41,7 @@ written, 1 when it could not connect.
 import argparse
 import asyncio
 import json
+import os
 import signal
 import sys
 import time
@@ -77,21 +76,12 @@ def request_of(cell):
 class Person:
     def __init__(self, ynb):
         self.ynb = ynb
-        self.agent_sig = None
-        self.agent_changed = time.monotonic()
 
     def cells(self):
         return self.ynb.get()["cells"]
 
     def agent_cells(self):
         return [c for c in self.cells() if agent_of(c)]
-
-    def observe(self):
-        """Track when an agent cell last changed, for `agent_quiet`."""
-        sig = json.dumps([(c.get("id"), source(c)) for c in self.agent_cells()])
-        if sig != self.agent_sig:
-            self.agent_sig = sig
-            self.agent_changed = time.monotonic()
 
     def holds(self, cond, since):
         (kind, arg), = cond.items()
@@ -105,8 +95,6 @@ class Person:
                     r = request_of(c)
                     return bool(r and r.get("done"))
             return False
-        if kind == "agent_quiet":
-            return bool(self.agent_cells()) and time.monotonic() - self.agent_changed >= arg
         if kind == "sleep":
             return time.monotonic() - since >= arg
         raise ValueError(f"unknown condition {kind!r}")
@@ -171,7 +159,6 @@ async def run(args, report):
         async def until(cond, timeout, since):
             deadline = time.monotonic() + timeout
             while not stop.is_set():
-                person.observe()
                 if person.holds(cond, since):
                     return True
                 if any(t.done() for t in tasks):
@@ -228,7 +215,10 @@ async def run(args, report):
 
 
 def flush(report, out):
-    Path(out).write_text(json.dumps(report, indent=1) + "\n")
+    """Write the log whole, so the runner never reads half of it."""
+    tmp = out + ".tmp"
+    Path(tmp).write_text(json.dumps(report, indent=1) + "\n")
+    os.replace(tmp, out)
 
 
 def main():

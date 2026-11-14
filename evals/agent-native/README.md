@@ -15,9 +15,10 @@ real agent (`claude -p` with the
 room as steps say, each waiting for a condition on the live document ("a
 cell with agent provenance exists", "request `req1` is done"), so the
 person's edits land between the agent's, not before or after. The scorer
-reads the final `.ipynb` and `metadata.ganymede.agent` /
-`metadata.ganymede.request`. No model judges anything, and a scenario's
-check is a pure function ([`scenarios.mjs`](scenarios.mjs),
+reads the final `.ipynb` (`metadata.ganymede.agent`,
+`metadata.ganymede.request`) and the person's log (`person.json`: which
+steps ran, and when). No model judges anything, and a scenario's check is
+a pure function ([`scenarios.mjs`](scenarios.mjs),
 [`score.mjs`](score.mjs)).
 
 The notebooks hold Markdown only and the server runs with
@@ -28,7 +29,7 @@ The notebooks hold Markdown only and the server runs with
 | Id | What it checks |
 | --- | --- |
 | `request-answered` | The person writes an `@agent` request cell while the agent works. The agent answers it with `cell_add(answers)`: the answer is right below the request, has agent provenance and says the right day, and the request is marked done. |
-| `two-requests` | A second request, written after the first was answered, is also answered and marked done: the first answer doesn't end the agent's watch. |
+| `two-requests` | A second request, written after the first was answered, is also answered and marked done: the agent keeps polling after the first answer (the prompt asks it to). |
 | `concurrent-edits` | The person types into cell `a` (twice) and inserts a cell while the agent edits cell `b` and adds cells. Every edit of both is in the file; the agent leaves `a` alone. |
 | `person-edit-kept` | The person adds a note to a cell the agent wrote, then the agent tries to rewrite that cell. The server refuses a stale `cell_edit`; the agent must read with `since` and keep the note. Fails when the note survives only in `history`. |
 | `read-only` | On a read-only server (`mcp_read_only`) the agent adds nothing: no cell of its own, no cell added by writing the file, the person's request not answered, nothing rewritten. |
@@ -42,7 +43,11 @@ agent's last edit (`metadata.ganymede.agent.at`). A run also fails when the pers
 condition never held, for instance because the agent never wrote a cell),
 since the interleaving the scenario tests didn't happen. A session that
 exits non-zero or times out, or a person that couldn't connect, is
-reported and left out of the pass rate.
+reported and left out of the pass rate. So is one whose agent never
+called a ganymede tool (read from the session's stream-json log): a
+notebook left unchanged by an agent that didn't try would pass `read-only`
+for nothing. With `CLAUDE_ARGS` set, include
+`--output-format stream-json --verbose`, or every run is left out.
 
 ## Run
 
@@ -65,7 +70,7 @@ after the agent exits, to finish steps the agent didn't wait for.
 
 Under `--out`, each run leaves `<scenario>-<n>.ipynb` (the final file),
 `.person.json` (what the person did and when), `.log` (the agent's
-output) and `.server.log`, and the whole run `results.json` and
+stream-json output) and `.server.log`, and the whole run `results.json` and
 `report.md`. Score again after changing a check:
 
 ```sh

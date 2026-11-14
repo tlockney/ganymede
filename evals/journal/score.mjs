@@ -2,16 +2,9 @@
 // read from the .ipynb alone. Pure functions, so the tests can feed them
 // notebooks by hand.
 
-/** A cell's source as one string. */
-export function text(cell) {
-  return Array.isArray(cell.source) ? cell.source.join("") : String(cell.source ?? "");
-}
+import { agentOf, cellText as text } from "../lib/notebook.mjs";
 
-/** `metadata.ganymede.agent`, or null for a cell a person wrote. */
-export function agentOf(cell) {
-  const a = cell.metadata?.ganymede?.agent;
-  return a && typeof a === "object" ? a : null;
-}
+export { agentOf, text };
 
 /** Code cells the kernel ran: executed by the agent, or written by a person. */
 function kernelCells(nb) {

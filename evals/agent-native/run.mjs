@@ -19,7 +19,9 @@
 // agent session (default 15 minutes); EVAL_PERSON_GRACE_MS (default 30
 // seconds) is how long the person may keep going after the agent exits. A session that exits non-zero or
 // times out, or a person who couldn't connect, is reported and left out
-// of the pass rate.
+// of the pass rate. So is one whose agent never called a ganymede tool,
+// which the session's stream-json log shows; with CLAUDE_ARGS set, add
+// `--output-format stream-json --verbose` to it, or every run is left out.
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -29,7 +31,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { claudeInvocation, evalTimeoutMs } from "../lib/claude.mjs";
 import { NOTEBOOK, SCENARIOS, notebookFor } from "./scenarios.mjs";
-import { reportMarkdown, score, summarize } from "./score.mjs";
+import { noEvidence, reportMarkdown, score, summarize } from "./score.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -57,6 +59,14 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const readJson = (p) => JSON.parse(fs.readFileSync(p, "utf8"));
+/** The JSON in a file, or null when it is missing or being written. */
+function tryJson(p) {
+  try {
+    return readJson(p);
+  } catch {
+    return null;
+  }
+}
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -156,16 +166,21 @@ async function runOne(scenario, run, out) {
     person.on("error", () => {});
     live.add(person);
     // The agent starts once the person is in the room, so the notebook is open.
-    for (let i = 0; i < 150 && !(fs.existsSync(personOut) && readJson(personOut).connected); i++) {
+    for (let i = 0; i < 150 && !tryJson(personOut)?.connected; i++) {
       if (person.exitCode !== null) break;
       await sleep(200);
     }
-    if (person.exitCode !== null) throw new Error("the simulated person exited before the agent started");
+    if (person.exitCode !== null) {
+      throw new Error(`the simulated person exited before the agent started: ${tryJson(personOut)?.error ?? "no log"}`);
+    }
 
     const { bin, args: cargs, env } = claudeInvocation(scenario.prompt, {
       env: { ...server.env, GANYMEDE_JOURNAL_STOP: "off" },
       extraAllowed: ["Bash(sleep:*)"],
     });
+    // The log is stream-json, so the tool calls are there to read: a run
+    // whose agent never called a ganymede tool is left out, not scored.
+    if (!process.env.CLAUDE_ARGS) cargs.push("--output-format", "stream-json", "--verbose");
     const agent = spawn(bin, cargs, { cwd: server.root, env, stdio: ["ignore", "pipe", "inherit"] });
     live.add(agent);
     let log = "";
@@ -197,9 +212,10 @@ async function runOne(scenario, run, out) {
     await stop(server.child);
     const nbPath = path.join(server.root, NOTEBOOK);
     fs.copyFileSync(nbPath, path.join(out, `${run}.ipynb`));
-    const log2 = fs.existsSync(personOut) ? readJson(personOut) : null;
+    const log2 = tryJson(personOut);
     if (log2) fs.writeFileSync(path.join(out, `${run}.person.json`), JSON.stringify(log2, null, 2) + "\n");
     if (failed) result.error = `agent ${failed}`;
+    else if (noEvidence(log)) result.error = noEvidence(log);
     else if (!log2) result.error = "no log from the simulated person";
     else if (!log2.connected) result.error = `the simulated person couldn't connect: ${log2.error}`;
     else result.score = score(scenario, readJson(path.join(out, `${run}.ipynb`)), log2);
@@ -208,6 +224,8 @@ async function runOne(scenario, run, out) {
   } finally {
     if (person) await stop(person).catch(() => {});
     if (server) await stop(server.child).catch(() => {});
+    // Everything worth keeping was copied to `out`.
+    fs.rmSync(base, { recursive: true, force: true });
   }
   return result;
 }
@@ -243,6 +261,9 @@ export function rescore(out) {
     const nb = path.join(out, `${r.run}.ipynb`);
     const person = path.join(out, `${r.run}.person.json`);
     if (r.error || !scenario || !fs.existsSync(nb)) return { ...r, score: null };
+    const log = path.join(out, `${r.run}.log`);
+    const why = fs.existsSync(log) ? noEvidence(fs.readFileSync(log, "utf8")) : "no agent log";
+    if (why) return { ...r, error: why, score: null };
     return { ...r, score: score(scenario, readJson(nb), fs.existsSync(person) ? readJson(person) : null) };
   });
   finish(results, out);
