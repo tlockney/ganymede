@@ -66,6 +66,9 @@ pub struct AppState {
     /// Tailnet logins let in without the token when `tailscale serve`
     /// names them (`[tailscale] allow`); empty: off. See [`tailscale`].
     pub tailnet_allow: Arc<[String]>,
+    /// `[tailscale] whois`: looks up requests from tailnet addresses.
+    /// `None` when off.
+    pub tailnet_whois: Option<Arc<tailscale::WhoIs>>,
     /// Largest request body accepted, in bytes; larger ones get 413.
     pub max_body_size: usize,
     /// URL prefix the routes are nested under, with a trailing `/`.

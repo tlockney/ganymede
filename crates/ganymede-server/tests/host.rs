@@ -95,6 +95,7 @@ fn state_with(
         local_hostnames: vec!["localhost".into()],
         trust_xheaders: false,
         tailnet_allow: Arc::from([]),
+        tailnet_whois: None,
         max_body_size: 512 * 1024 * 1024,
         base_url: "/".into(),
         config_dir: root.join(".jupyter-config"),

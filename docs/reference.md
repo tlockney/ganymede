@@ -406,10 +406,12 @@ frame_ancestors = "'self'"       # who may frame the server's pages
 # edit_self = true               # self.add/edit/delete: a notebook edits its own cells
 # run = []                       # notebooks a notebook may run (notebooks.run); [""] is all
 
-# Tailnet logins let in without the token through `tailscale serve`, none by
+# Tailnet logins (and with whois, tags) let in without the token, none by
 # default (see Security, Tailnet identity):
 # [tailscale]
 # allow = ["you@example.com"]
+# whois = false                  # identify tailnet addresses with `tailscale whois`
+# cli = "tailscale"              # the tailscale command for whois
 
 # Language servers for jupyterlab-lsp, none by default. One table each:
 # [language_servers.pyright]
@@ -418,23 +420,26 @@ frame_ancestors = "'self'"       # who may frame the server's pages
 # mime_types = ["text/x-python"]
 ```
 
-These six keys have no flag. The terminal keys, the MCP keys other
+These eight keys have no flag. The terminal keys, the MCP keys other
 than `mcp_enabled`, `static_headers` and `language_servers` have none
 either; the sections below and [Agents over MCP](mcp.md#options) cover
 them.
 
 | Key | Effect |
 | --- | --- |
-| `local_hostnames` | Host names accepted besides loopback addresses while remote access is off. Default `["localhost"]`. |
+| `local_hostnames` | Host names, or IP addresses, accepted besides loopback addresses while remote access is off. Default `["localhost"]`. |
 | `trust_xheaders` | Trust `X-Forwarded-Proto` and `X-Scheme` from a reverse proxy, so login cookies sent over proxied HTTPS are marked `Secure`. |
 | `max_body_size` | Largest request body, in bytes, which caps a notebook's size. A `/login` form gets at most 64 KiB. Also the largest message a [document room](rooms.md#connections) takes, and how many bytes of messages a room client may fall behind before it is closed, so lowering it to cap uploads also closes slow room clients sooner. Default 512 MiB. |
 | `crash_reporting` | Send crash reports from `ganymede` to Sentry; see [Privacy and crash reporting](privacy.md). Default `false`. |
-| `[tailscale] allow` | Tailnet login names let in without the token when `tailscale serve` forwards their requests to a loopback port. Default `[]`, off. See [Security](security.md#tailnet-identity). |
+| `[tailscale] allow` | Tailnet login names let in without the token when `tailscale serve` forwards their requests to a loopback port, and with `whois` tags (`tag:agent`). Default `[]`, off. See [Security](security.md#tailnet-identity). |
+| `[tailscale] whois` | Identify requests from tailnet addresses with `tailscale whois`, for a server listening on its tailnet address. Default `false`. See [Security](security.md#on-the-tailnet-address). |
+| `[tailscale] cli` | The `tailscale` command `whois` runs. Default `tailscale` on `PATH`. |
 | `frame_ancestors` | The CSP sources allowed to frame the server's pages, added to every response as `frame-ancestors <sources>`. Default `'self'`, as `jupyter_server`; add an origin, such as `'self' https://portal.example.com`, to embed `/lab` in that site. See [Security](security.md#defaults). |
 
 > [!NOTE]
-> **Unreleased.** `[tailscale] allow` is available only from a build of
-> `main` (HEAD), not in the latest release.
+> **Unreleased.** `[tailscale]`, and IP addresses in `local_hostnames`,
+> are available only from a build of `main` (HEAD), not in the latest
+> release.
 
 ### The host API
 

@@ -90,6 +90,7 @@ fn state_with(
         local_hostnames: vec!["localhost".into()],
         trust_xheaders: false,
         tailnet_allow: Arc::from([]),
+        tailnet_whois: None,
         max_body_size: 512 * 1024 * 1024,
         base_url: "/".into(),
         config_dir: root.join(".jupyter-config"),
@@ -8244,4 +8245,171 @@ async fn a_tailnet_websocket_handshake_may_rely_on_origin() {
     // Same name over plain HTTP (`tailscale serve --http`): no identity.
     let (s, _, _) = send(&app, handshake(Some("http://box.example.ts.net"))).await;
     assert!(s.is_client_error(), "{s}");
+}
+
+/// A stand-in for the `tailscale` command: `whois --json <ip>` answers
+/// from `answers` (`ip` -> JSON), and fails for any other address.
+#[cfg(unix)]
+fn fake_tailscale(dir: &std::path::Path, answers: &[(&str, &str)]) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let mut script =
+        String::from("#!/bin/sh\n[ \"$1 $2\" = \"whois --json\" ] || exit 2\ncase \"$3\" in\n");
+    for (ip, json) in answers {
+        let file = dir.join(format!("whois-{ip}.json"));
+        std::fs::write(&file, json).unwrap();
+        script.push_str(&format!("  {ip}) cat '{}' ;;\n", file.display()));
+    }
+    script.push_str("  *) exit 1 ;;\nesac\n");
+    let path = dir.join("tailscale");
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+fn whois_app(dir: &std::path::Path, allow: &[&str]) -> axum::Router {
+    let cli = fake_tailscale(
+        dir,
+        &[
+            (
+                "100.64.0.2",
+                r#"{"Node":{"Tags":null},"UserProfile":{"LoginName":"me@example.com"}}"#,
+            ),
+            (
+                "100.64.0.3",
+                r#"{"Node":{"Tags":["tag:agent"]},"UserProfile":{"LoginName":"tagged-devices"}}"#,
+            ),
+            (
+                "100.64.0.4",
+                r#"{"Node":{"Tags":null},"UserProfile":{"LoginName":"you@example.com"}}"#,
+            ),
+        ],
+    );
+    let mut st = state(dir);
+    st.local_hostnames.push("100.64.0.1".into());
+    st.tailnet_allow = allow.iter().map(|s| s.to_string()).collect();
+    st.tailnet_whois = Some(Arc::new(ganymede_server::tailscale::WhoIs::new(Some(cli))));
+    build_router(st)
+}
+
+/// A program on the tailnet, talking to the server's tailnet address.
+#[cfg(unix)]
+fn whois_req(method: &str, path: &str, peer: &str) -> Request<Body> {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::HOST, "100.64.0.1:8888")
+        .header("ganymede-client", "test")
+        .body(Body::empty())
+        .unwrap();
+    req.extensions_mut().insert(axum::extract::ConnectInfo(
+        format!("{peer}:50000")
+            .parse::<std::net::SocketAddr>()
+            .unwrap(),
+    ));
+    req
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn whois_lets_in_allowed_logins_and_tags() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = whois_app(dir.path(), &["me@example.com", "tag:agent"]);
+    for peer in ["100.64.0.2", "100.64.0.3"] {
+        let (s, _, _) = send(&app, whois_req("GET", "/api/contents", peer)).await;
+        assert_eq!(s, StatusCode::OK, "{peer}");
+    }
+    // Another login, an address tailscaled doesn't know, or an address
+    // outside the tailnet ranges (never looked up): refused.
+    for peer in ["100.64.0.4", "100.64.0.9", "192.168.1.2"] {
+        let (s, _, _) = send(&app, whois_req("GET", "/api/contents", peer)).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{peer}");
+    }
+    // A program changes state without the XSRF token: its header is the
+    // proof that no other site sent the request.
+    let (s, _, _) = send(&app, whois_req("POST", "/api/contents", "100.64.0.2")).await;
+    assert_eq!(s, StatusCode::CREATED);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn whois_needs_a_request_no_other_site_could_send() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = whois_app(dir.path(), &["me@example.com"]);
+    // Without the client header: a page's `<img>` or `<script>`, or a form.
+    let mut req = whois_req("GET", "/api/contents", "100.64.0.2");
+    req.headers_mut().remove("ganymede-client");
+    let (s, _, _) = send(&app, req).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // With an `Origin`: a page's `fetch`, even a same-origin one over
+    // plain HTTP, where browsers send no Fetch Metadata.
+    for origin in ["http://evil.example", "http://100.64.0.1:8888"] {
+        let mut req = whois_req("GET", "/api/contents", "100.64.0.2");
+        req.headers_mut()
+            .insert(header::ORIGIN, origin.parse().unwrap());
+        let (s, _, _) = send(&app, req).await;
+        assert!(s.is_client_error(), "{origin}: {s}");
+    }
+    // With the Host check's answer for a name nobody listed (DNS
+    // rebinding): refused before auth.
+    let mut req = whois_req("GET", "/api/contents", "100.64.0.2");
+    req.headers_mut()
+        .insert(header::HOST, "rebound.example:8888".parse().unwrap());
+    let (s, _, _) = send(&app, req).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+/// `/mcp` keeps its own token, whatever `whois` says.
+#[cfg(unix)]
+#[tokio::test]
+async fn whois_does_not_reach_mcp() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_tailscale(
+        dir.path(),
+        &[(
+            "100.64.0.2",
+            r#"{"Node":{"Tags":null},"UserProfile":{"LoginName":"me@example.com"}}"#,
+        )],
+    );
+    let mut st = state(dir.path());
+    st.local_hostnames.push("100.64.0.1".into());
+    st.tailnet_allow = Arc::from(["me@example.com".to_string()]);
+    st.tailnet_whois = Some(Arc::new(ganymede_server::tailscale::WhoIs::new(Some(cli))));
+    st.mcp = Some(Arc::new(ganymede_server::mcp::McpState::new(
+        ganymede_server::mcp::McpOptions {
+            read_only: true,
+            no_execute: false,
+            images: false,
+            outputs_dir: Some(dir.path().join("spill")),
+        },
+    )));
+    let app = build_router(st);
+    let (s, _, _) = send(&app, whois_req("POST", "/mcp", "100.64.0.2")).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+/// The client header works through `tailscale serve` too, for an app
+/// that reaches the server at its `https://*.ts.net` name.
+#[tokio::test]
+async fn a_program_may_use_a_tailnet_login_from_tailscale_serve() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = tailnet_app(dir.path(), &["me@example.com"]);
+    let req = |client: bool| {
+        let mut r = tailnet_req(
+            "POST",
+            "/api/contents",
+            Some("me@example.com"),
+            "127.0.0.1:1",
+        );
+        r.headers_mut().remove("sec-fetch-site");
+        if client {
+            r.headers_mut()
+                .insert("ganymede-client", "test".parse().unwrap());
+        }
+        r
+    };
+    let (s, _, _) = send(&app, req(true)).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, _, _) = send(&app, req(false)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
 }
