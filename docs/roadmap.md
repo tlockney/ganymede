@@ -148,8 +148,11 @@ Wanted eventually, but not being worked on:
 
 ## Open
 
-- Trusting `tailscale serve`'s identity headers, so a client on the
-  tailnet needs no token.
+- Tailscale-aware Ganymede
+  ([#816](https://github.com/tlockney/ganymede/issues/816)): trusting
+  `tailscale serve`'s identity for listed logins is done; next, the
+  sender's identity from tailscaled for a server on its tailnet address,
+  tags included, then the apps and Tailscale SSH on iPad and iPhone.
 - A Linux build for musl (Alpine).
 - Distributing the iPad and iPhone app beyond internal TestFlight
   testers, which needs App Review (rule 2.5.2, apps that run code). The

@@ -16,7 +16,7 @@ protections match `jupyter_server`'s, so its security model applies here.
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `--ip` (`ip`) | `127.0.0.1` | Listens on loopback only. Other machines can't connect. |
-| `--token` (`token`) | A random token per start | Printed in the URL on stdout. Every API and websocket request needs it, or the login cookie it sets. |
+| `--token` (`token`) | A random token per start | Printed in the URL on stdout. Every API and websocket request needs it, or the login cookie it sets (or, when set up, a [tailnet identity](#tailnet-identity)). |
 | `--allow-remote-access` (`allow_remote_access`) | Off on a loopback `--ip`, on otherwise | Off, requests must be addressed to a loopback address or a name in `local_hostnames` (default `localhost`). |
 | `--allow-origin` (`allow_origins`) | None | Only the server's own origin may make browser requests. Other origins, once listed, need the token unless `--allow-credentials` is set. |
 | `trust_xheaders` | `false` | `X-Forwarded-Proto` and `X-Scheme` are ignored. |
@@ -123,7 +123,8 @@ machine and point it at the loopback port:
   ```
 
   Only devices on your tailnet can connect, and the token is still
-  required.
+  required unless you list tailnet logins, as in
+  [Tailnet identity](#tailnet-identity).
 - Caddy, nginx, or another reverse proxy works the same way. Serve it at
   a path with `--base-url /jupyter/` if the proxy shares a host.
 
@@ -150,6 +151,81 @@ port = 8888
 local_hostnames = ["localhost", "workstation.example-tailnet.ts.net"]
 trust_xheaders = true
 ```
+
+## Tailnet identity
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+Behind `tailscale serve`, the token can give way to who you are on the
+tailnet. `tailscale serve` adds the sender's login name to each request
+it forwards (`Tailscale-User-Login`). List the logins to let in:
+
+```toml
+ip = "127.0.0.1"
+port = 8888
+local_hostnames = ["localhost", "workstation.example-tailnet.ts.net"]
+trust_xheaders = true
+
+[tailscale]
+allow = ["you@example.com"]
+```
+
+Then a request with no token or login cookie gets in when it comes from
+a loopback address and names a listed login. Everything else is as
+before:
+
+- **Off by default.** An empty list lets no one in this way, and there
+  is no value that lets in every tailnet user. Entries are whole login
+  names; tags (`tag:server`) are refused, because `tailscale serve` sends
+  no identity for tagged devices.
+- **The token still works**, for scripts, the apps' remotes and agents,
+  and `/login` still takes it. The server refuses `allow` with auth off
+  (`token = ""`), where it would keep no one out.
+- **Only from the server's own pages.** Requests that change state need
+  the `_xsrf` token. A request whose `Origin` isn't the server's own is
+  refused, even for origins in `allow_origins` (those still work with
+  the token), and so is another site's `<script>`, image or other
+  subresource request (by its `Sec-Fetch-Site` header). A link from
+  another site still opens the page. So another site's page can't use
+  your identity.
+- **The `Host` check stays on.** The server refuses to start with
+  `allow` set and `allow_remote_access` on (or a non-loopback `--ip`,
+  which turns it on): a DNS-rebinding page could otherwise reach it
+  through `tailscale serve` as you. Put the tailnet name in
+  `local_hostnames`, as above.
+- **`/mcp` still needs a token** (`mcp_token` or the server's).
+- **Only `tailscale serve` may reach the port.** The header is believed
+  because the request arrives on loopback, where `tailscale serve`
+  connects from. Anything else that arrives there can send it too, so
+  the port must be reached only through `tailscale serve`'s HTTPS
+  proxy, which sets the header itself. Not through another reverse proxy
+  (Caddy, nginx), TCP-mode forwarding (`tailscale serve --tcp`,
+  `tailscale funnel --tcp`), or an `ssh -L` tunnel: each passes a
+  client's own header through. (`tailscale funnel` in HTTP mode drops
+  the header, so a funnel never carries an identity.)
+- **HTTPS only.** The server also needs the browser's `Sec-Fetch-Site`
+  header to tell its own pages' requests from another site's `<script>`
+  or image, and browsers send it only over HTTPS. Over
+  `tailscale serve --http`, or from a client that isn't a browser, the
+  identity is ignored; use the token there.
+- **Sandboxed HTML files lose their images.** Ganymede serves HTML from
+  `/files/` and exported notebooks in a sandbox, so their images and
+  styles count as another site's requests and get no identity. Open them
+  with the token, or sign in with it at `/login`, when they need those.
+- **One user per machine.** Any other process on the machine can also
+  connect to loopback and send the header. On a machine other people
+  log in to, keep the token.
+- **The page gets no token.** JupyterLab loaded this way authenticates
+  each request by identity, so removing a login from `allow` takes
+  effect once the server restarts. A listed login can run code, though,
+  and so read the token from the server's files; to cut one off for
+  sure, restart with a new token and delete `jupyter_cookie_secret`. Logging out doesn't sign a listed
+  login out.
+- Entries must match the login exactly, case included, and must be
+  ASCII: `tailscale serve` encodes other characters, so such a login
+  would never match.
 
 ## Cross-origin clients
 

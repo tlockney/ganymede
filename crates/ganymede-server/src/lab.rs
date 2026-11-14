@@ -12,7 +12,7 @@
 use crate::routes::HttpError;
 use crate::AppState;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, Extensions, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -371,40 +371,57 @@ type HttpResult<T> = std::result::Result<T, HttpError>;
 
 // ----- page -----------------------------------------------------------------
 
-async fn page_root(State(s): State<AppState>, headers: HeaderMap) -> HttpResult<Response> {
-    page(&s, &headers, "", "default")
+async fn page_root(
+    State(s): State<AppState>,
+    ext: Extensions,
+    headers: HeaderMap,
+) -> HttpResult<Response> {
+    page(&s, &ext, &headers, "", "default")
 }
 
 async fn page_tree(
     State(s): State<AppState>,
     Path(path): Path<String>,
+    ext: Extensions,
     headers: HeaderMap,
 ) -> HttpResult<Response> {
-    page(&s, &headers, &path, "default")
+    page(&s, &ext, &headers, &path, "default")
 }
 
 async fn page_workspace(
     State(s): State<AppState>,
     Path(name): Path<String>,
+    ext: Extensions,
     headers: HeaderMap,
 ) -> HttpResult<Response> {
     // `/lab/workspaces/{name}/tree/{path}` opens a path in a workspace.
     let (name, tree) = name.split_once("/tree/").unwrap_or((&name, ""));
-    page(&s, &headers, tree, name)
+    page(&s, &ext, &headers, tree, name)
 }
 
 /// The page, with an `_xsrf` cookie when the browser has none, as
 /// `jupyter_server` sets it on every page it renders.
 fn page(
     s: &AppState,
+    ext: &Extensions,
     headers: &HeaderMap,
     tree_path: &str,
     workspace: &str,
 ) -> HttpResult<Response> {
     let lab = lab_of(s)?;
+    // The page hands its token to the browser, so only to one that already
+    // has it (or its login cookie), as `auth::page` found: a tailnet login (`[tailscale] allow`)
+    // gets an empty one and keeps authenticating by identity, so it stays
+    // under the cookie's checks, off `/mcp`, and revocable.
+    let token = s.token.as_deref().filter(|_| {
+        matches!(
+            ext.get::<crate::auth::Via>(),
+            Some(crate::auth::Via::Token | crate::auth::Via::Cookie)
+        )
+    });
     let html = Html(lab.render_page(
         &s.base_url,
-        s.token.as_deref(),
+        token,
         tree_path,
         workspace,
         s.terminals.is_some(),

@@ -131,8 +131,12 @@ embedding them can fill differently.
 | `TransportFactory` | How a launched kernel gets its transport | ZeroMQ from its connection info; the gateway's websocket | An app's own, for an in-process kernel (the seam allows it: `LaunchedKernel.connection` is `None`) |
 | `KernelspecSource` | Which kernels can be launched | The Jupyter data dirs plus `--kernelspec-root`, which is how conda and venv kernels are found without the host knowing what a venv is; a fixed list (`StaticKernelspecs`); a gateway's list | An environment scanner, as VS Code has |
 | `Contents` | Files, directories, checkpoints | The local filesystem, with atomic writes and mtime and hash checks; on the iPad, any folder the app can open | Passing through to a remote host |
-| Auth | Who may call the API | A token, traded for a login cookie | `tailscale serve` identity headers; OIDC or a JupyterHub contract |
+| Auth | Who may call the API | A token, traded for a login cookie; listed tailnet logins behind `tailscale serve` | tailscaled WhoIs for a server on its tailnet address; OIDC or a JupyterHub contract |
 | Document | The live notebook model | The file, read and written per request; or a document room, a `yrs` document that reloads and merges changes made on disk ([Live editing and document rooms](rooms.md)) | Rooms for files other than notebooks |
+
+> [!NOTE]
+> **Unreleased.** Tailnet logins behind `tailscale serve` are available
+> only from a build of `main` (HEAD), not in the latest release.
 
 The server uses kernelspec dirs, subprocesses and ZMQ unless an app
 embedding it passes its own `KernelspecSource`, `Provisioner` and

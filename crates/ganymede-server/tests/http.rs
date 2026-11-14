@@ -89,6 +89,7 @@ fn state_with(
         allow_remote_access: false,
         local_hostnames: vec!["localhost".into()],
         trust_xheaders: false,
+        tailnet_allow: Arc::from([]),
         max_body_size: 512 * 1024 * 1024,
         base_url: "/".into(),
         config_dir: root.join(".jupyter-config"),
@@ -7894,4 +7895,353 @@ async fn notebooks_run_answers_with_named_results() {
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+// ----- tailnet identity (#816) ------------------------------------------------
+
+/// A request as `tailscale serve` forwards it: from a loopback peer, with
+/// the sender's login, and no token.
+fn tailnet_req(method: &str, path: &str, login: Option<&str>, peer: &str) -> Request<Body> {
+    let mut r = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::HOST, "box.example.ts.net")
+        .header("sec-fetch-site", "same-origin");
+    if let Some(l) = login {
+        r = r.header("tailscale-user-login", l);
+    }
+    let mut req = r.body(Body::empty()).unwrap();
+    req.extensions_mut().insert(axum::extract::ConnectInfo(
+        peer.parse::<std::net::SocketAddr>().unwrap(),
+    ));
+    req
+}
+
+fn tailnet_app(dir: &std::path::Path, allow: &[&str]) -> axum::Router {
+    let mut st = state(dir);
+    st.local_hostnames.push("box.example.ts.net".into());
+    st.tailnet_allow = allow.iter().map(|s| s.to_string()).collect();
+    build_router(st)
+}
+
+#[tokio::test]
+async fn an_allowed_tailnet_login_needs_no_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = tailnet_app(dir.path(), &["me@example.com"]);
+    let get = |login, peer| tailnet_req("GET", "/api/contents", login, peer);
+
+    let (s, _, _) = send(&app, get(Some("me@example.com"), "127.0.0.1:50000")).await;
+    assert_eq!(s, StatusCode::OK);
+    // No login cookie: each request carries the identity.
+    let resp = app
+        .clone()
+        .oneshot(get(Some("me@example.com"), "127.0.0.1:50000"))
+        .await
+        .unwrap();
+    assert!(resp.headers().get(header::SET_COOKIE).is_none());
+
+    // Another login, no login, or a peer that isn't loopback: refused.
+    for (login, peer) in [
+        (Some("you@example.com"), "127.0.0.1:50000"),
+        (None, "127.0.0.1:50000"),
+        (Some("me@example.com"), "100.64.0.7:50000"),
+    ] {
+        let (s, _, _) = send(&app, get(login, peer)).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{login:?} from {peer}");
+    }
+
+    // Off by default: the header alone gets nowhere.
+    let off = tailnet_app(dir.path(), &[]);
+    let (s, _, _) = send(&off, get(Some("me@example.com"), "127.0.0.1:50000")).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+/// The identity is ambient, as a cookie is, so the same checks apply:
+/// XSRF on changes, `Origin` on the rest, and pages load without login.
+#[tokio::test]
+async fn a_tailnet_login_is_checked_like_the_cookie() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = tailnet_app(dir.path(), &["me@example.com"]);
+    let me = Some("me@example.com");
+
+    let (s, _, _) = send(
+        &app,
+        tailnet_req("POST", "/api/contents", me, "127.0.0.1:1"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    let mut req = tailnet_req("POST", "/api/contents", me, "127.0.0.1:1");
+    req.headers_mut()
+        .insert(header::COOKIE, "_xsrf=abc".parse().unwrap());
+    req.headers_mut()
+        .insert("x-xsrftoken", "abc".parse().unwrap());
+    req.headers_mut()
+        .insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+    *req.body_mut() = Body::from(json!({"type": "notebook"}).to_string());
+    let (s, _, body) = send(&app, req).await;
+    assert_eq!(s, StatusCode::CREATED, "{body}");
+
+    let mut req = tailnet_req("GET", "/api/contents", me, "127.0.0.1:1");
+    req.headers_mut()
+        .insert(header::ORIGIN, "https://evil.example".parse().unwrap());
+    let (s, _, _) = send(&app, req).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // The login form still shows, so a tailnet login can sign in with the
+    // token for the token's reach.
+    let (s, _, page) = send(&app, tailnet_req("GET", "/login", me, "127.0.0.1:1")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(page.contains("password"), "{page}");
+}
+
+/// `/mcp` keeps to tokens: a tailnet login doesn't reach it.
+#[tokio::test]
+async fn a_tailnet_login_does_not_reach_mcp() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    st.local_hostnames.push("box.example.ts.net".into());
+    st.tailnet_allow = Arc::from(["me@example.com".to_string()]);
+    st.mcp = Some(Arc::new(ganymede_server::mcp::McpState::new(
+        ganymede_server::mcp::McpOptions {
+            read_only: true,
+            no_execute: false,
+            images: false,
+            outputs_dir: Some(dir.path().join("spill")),
+        },
+    )));
+    let app = build_router(st);
+    let mut req = tailnet_req("POST", "/mcp", Some("me@example.com"), "127.0.0.1:1");
+    req.headers_mut()
+        .insert(header::COOKIE, "_xsrf=abc".parse().unwrap());
+    req.headers_mut()
+        .insert("x-xsrftoken", "abc".parse().unwrap());
+    let (s, _, _) = send(&app, req).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+/// The lab page carries the token for the browser; a tailnet login must
+/// not get it, or it would leave the identity's checks, reach `/mcp`, and
+/// outlive removal from `allow`.
+#[tokio::test]
+async fn a_tailnet_login_gets_the_lab_page_without_the_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = lab_state(dir.path());
+    st.local_hostnames.push("box.example.ts.net".into());
+    st.tailnet_allow = Arc::from(["me@example.com".to_string()]);
+    let app = build_router(st);
+
+    let (s, _, page) = send(
+        &app,
+        tailnet_req("GET", "/lab", Some("me@example.com"), "127.0.0.1:1"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(page.contains("appVersion"), "{page}");
+    assert!(!page.contains(TOKEN), "{page}");
+
+    // A browser with the token still gets it.
+    let (s, page) = get_text_with(
+        &app,
+        "/lab",
+        &[(header::AUTHORIZATION, &format!("token {TOKEN}"))],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(page.contains(TOKEN));
+}
+
+/// Logging out can't end a tailnet login, and the page says so.
+#[tokio::test]
+async fn logout_tells_a_tailnet_login_it_is_still_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = tailnet_app(dir.path(), &["me@example.com"]);
+    let (s, _, page) = send(
+        &app,
+        tailnet_req("GET", "/logout", Some("me@example.com"), "127.0.0.1:1"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(page.contains("still signed in"), "{page}");
+}
+
+/// `allow_origins` is for the cookie and the token. The tailnet identity
+/// rides on every request from the device, so a listed origin (or `*`)
+/// mustn't get to use it: only the server's own origin does.
+#[tokio::test]
+async fn a_tailnet_login_is_only_for_the_servers_own_origin() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    st.local_hostnames.push("box.example.ts.net".into());
+    st.tailnet_allow = Arc::from(["me@example.com".to_string()]);
+    st.allow_origins = vec!["*".into()];
+    let app = build_router(st);
+    let from = |origin: &str| {
+        let mut req = tailnet_req(
+            "GET",
+            "/api/contents",
+            Some("me@example.com"),
+            "127.0.0.1:1",
+        );
+        req.headers_mut()
+            .insert(header::ORIGIN, origin.parse().unwrap());
+        req
+    };
+    let (s, _, _) = send(&app, from("https://thebe.example")).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _, _) = send(&app, from("https://box.example.ts.net")).await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+/// With the `Host` check off, a DNS-rebinding page could reach the server
+/// through `tailscale serve`, so the identity isn't believed then.
+#[tokio::test]
+async fn a_tailnet_login_needs_the_host_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    st.tailnet_allow = Arc::from(["me@example.com".to_string()]);
+    st.allow_remote_access = true;
+    let app = build_router(st);
+    let (s, _, _) = send(
+        &app,
+        tailnet_req(
+            "GET",
+            "/api/contents",
+            Some("me@example.com"),
+            "127.0.0.1:1",
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+/// Another site's `<script>` or `<img>` sends no `Origin`, but `tailscale
+/// serve` still adds the identity: `Sec-Fetch-Site` keeps those out, while
+/// a link followed from another site still opens the page.
+#[tokio::test]
+async fn a_tailnet_login_is_refused_on_cross_site_subresources() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = lab_state(dir.path());
+    st.local_hostnames.push("box.example.ts.net".into());
+    st.tailnet_allow = Arc::from(["me@example.com".to_string()]);
+    std::fs::write(dir.path().join("x.js"), "secret()").unwrap();
+    let app = build_router(st);
+    let req = |path: &str, fetch: &[(&'static str, &str)]| {
+        let mut r = tailnet_req("GET", path, Some("me@example.com"), "127.0.0.1:1");
+        for (k, v) in fetch {
+            r.headers_mut().insert(*k, v.parse().unwrap());
+        }
+        r
+    };
+    let cross = [
+        ("sec-fetch-site", "cross-site"),
+        ("sec-fetch-mode", "no-cors"),
+        ("sec-fetch-dest", "script"),
+    ];
+    let (s, _, _) = send(&app, req("/files/x.js", &cross)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = send(
+        &app,
+        req("/api/contents/x.js", &[("sec-fetch-site", "same-site")]),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, body) = send(
+        &app,
+        req("/files/x.js", &[("sec-fetch-site", "same-origin")]),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+
+    let link = [
+        ("sec-fetch-site", "cross-site"),
+        ("sec-fetch-mode", "navigate"),
+        ("sec-fetch-dest", "document"),
+    ];
+    let (s, _, _) = send(&app, req("/lab", &link)).await;
+    assert_eq!(s, StatusCode::OK);
+    let framed = [
+        ("sec-fetch-site", "cross-site"),
+        ("sec-fetch-mode", "navigate"),
+        ("sec-fetch-dest", "iframe"),
+    ];
+    let (s, h, _) = send(&app, req("/lab", &framed)).await;
+    assert_eq!(s, StatusCode::FOUND, "sent to log in");
+    assert!(h[header::LOCATION].to_str().unwrap().starts_with("/login"));
+}
+
+/// Over plain HTTP browsers send no `Sec-Fetch-*`, so another site's
+/// `<script>` would look like ours: without the header, no identity.
+#[tokio::test]
+async fn a_tailnet_login_needs_fetch_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = tailnet_app(dir.path(), &["me@example.com"]);
+    let mut req = tailnet_req(
+        "GET",
+        "/api/contents",
+        Some("me@example.com"),
+        "127.0.0.1:1",
+    );
+    req.headers_mut().remove("sec-fetch-site");
+    let (s, _, _) = send(&app, req).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+/// The navigation exception is for following a link: a cross-site form
+/// POST gets no identity, XSRF token or not.
+#[tokio::test]
+async fn a_cross_site_post_gets_no_tailnet_login() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = tailnet_app(dir.path(), &["me@example.com"]);
+    let mut req = tailnet_req(
+        "POST",
+        "/api/contents",
+        Some("me@example.com"),
+        "127.0.0.1:1",
+    );
+    for (k, v) in [
+        ("sec-fetch-site", "cross-site"),
+        ("sec-fetch-mode", "navigate"),
+        ("sec-fetch-dest", "document"),
+        ("cookie", "_xsrf=abc"),
+        ("x-xsrftoken", "abc"),
+    ] {
+        req.headers_mut().insert(k, v.parse().unwrap());
+    }
+    let (s, _, _) = send(&app, req).await;
+    assert_ne!(s, StatusCode::CREATED);
+    assert!(s.is_client_error(), "{s}");
+}
+
+/// Some browsers leave Fetch Metadata off a websocket handshake, which
+/// always carries `Origin`: a same-origin one keeps the identity, so
+/// kernels connect; another site's, or none, doesn't.
+#[tokio::test]
+async fn a_tailnet_websocket_handshake_may_rely_on_origin() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = tailnet_app(dir.path(), &["me@example.com"]);
+    let handshake = |origin: Option<&str>| {
+        let mut req = tailnet_req(
+            "GET",
+            "/api/contents",
+            Some("me@example.com"),
+            "127.0.0.1:1",
+        );
+        req.headers_mut().remove("sec-fetch-site");
+        req.headers_mut()
+            .insert(header::UPGRADE, "websocket".parse().unwrap());
+        if let Some(o) = origin {
+            req.headers_mut().insert(header::ORIGIN, o.parse().unwrap());
+        }
+        req
+    };
+    let (s, _, _) = send(&app, handshake(Some("https://box.example.ts.net"))).await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, _) = send(&app, handshake(Some("https://evil.example"))).await;
+    assert!(s.is_client_error(), "{s}");
+    let (s, _, _) = send(&app, handshake(None)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // Same name over plain HTTP (`tailscale serve --http`): no identity.
+    let (s, _, _) = send(&app, handshake(Some("http://box.example.ts.net"))).await;
+    assert!(s.is_client_error(), "{s}");
 }

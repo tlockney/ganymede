@@ -24,6 +24,7 @@ pub mod serve;
 pub mod server_info;
 pub mod static_headers;
 mod svg;
+pub mod tailscale;
 pub mod watch;
 pub mod ws;
 
@@ -62,6 +63,9 @@ pub struct AppState {
     /// `jupyter_server`'s `trust_xheaders`; off by default, since any
     /// client can send the header.
     pub trust_xheaders: bool,
+    /// Tailnet logins let in without the token when `tailscale serve`
+    /// names them (`[tailscale] allow`); empty: off. See [`tailscale`].
+    pub tailnet_allow: Arc<[String]>,
     /// Largest request body accepted, in bytes; larger ones get 413.
     pub max_body_size: usize,
     /// URL prefix the routes are nested under, with a trailing `/`.
