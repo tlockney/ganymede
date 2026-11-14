@@ -160,9 +160,8 @@ pub(crate) fn check_held(path: &Path) -> Vec<Held> {
 /// matching it.
 pub(crate) fn restamp_held(held: &[Held]) -> Result<()> {
     for h in held {
-        let Some(seen) = &h.seen else { continue };
         h.ids
-            .restamp_if(&h.id, seen.as_deref(), |p| {
+            .restamp_if(&h.id, &h.seen, |p| {
                 ganymede_contents::api_file_stamp(&h.root, p)
             })
             .map_err(|e| anyhow::anyhow!("keeping the grant for {}: {e}", h.api))?;

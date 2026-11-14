@@ -44,25 +44,29 @@ nothing when no grant stands), mark the path in flight, write, and restamp
 only if the grant is still stored under that stamp (`restamp_if`, a
 compare-and-swap), then unmark. All of that runs on a detached task so a
 dropped request can't leave a write unstamped. `copy` restamps its
-destination unconditionally, since its path isn't known beforehand. Rooms,
-REST, MCP and run copies all hold that wrapper. A rename keeps the inode and
-modification time, so it needs no new stamp; `Collab::rename` checks the old
-path's grant before renaming (a file replaced outside and then renamed
-doesn't carry its grant to the new name) and restamps the new path after the
-ids follow, with the new path marked in flight meanwhile, so a filesystem
-that differs is covered.
+destination unconditionally, since its path isn't known beforehand; only
+that restamp takes the path's turn and is marked in flight, so a reader
+between the copy's write and its mark can drop the grant, which fails safe.
+Rooms, REST, MCP and run copies all hold that wrapper. A rename keeps the
+inode and modification time, so it needs no new stamp; `Collab::rename`
+checks the old path's grant before renaming (a file replaced outside and
+then renamed doesn't carry its grant to the new name) and restamps the new
+path after the ids follow, with the new path marked in flight meanwhile, so
+a filesystem that differs is covered.
 
 The race that matters is a grant read between a write and its restamp, which
 would drop the grant of a file the server just saved. A check keeps the
 grant, with no stamp to compare, when a save of that path is in flight or
-any save began or ended while it looked at the file (a counter bumped at
-both ends, checked before and after the `stat`). That covers readers in this
-process. Another process (`ganymede grant --list`, a second server) checking
-in that window sees the new file and the old stamp and drops the grant: it
-fails safe, as does an older build's save. There is a known, tiny window the
-other way: an outside rewrite that lands between the server's write and its
-restamp is blessed by the restamp, since the stamp is taken from the file as
-it is then.
+any save began or ended while it looked at the file (each path keeps its
+in-flight count and the sequence number of its last begin or end, compared
+before and after the `stat`, so a save of another path doesn't void the
+check; a path forgotten to keep the table small voids the checks that began
+before it). That covers readers in this process. Another process (`ganymede
+grant --list`, a second server) checking in that window sees the new file
+and the old stamp and drops the grant: it fails safe, as does an older
+build's save. There is a known, tiny window the other way: an outside
+rewrite that lands between the server's write and its restamp is blessed by
+the restamp, since the stamp is taken from the file as it is then.
 
 `ganymede grant` stores the stamp and reads through the checked forms, with
 the `stat` inside the store's lock. A program that writes a notebook without

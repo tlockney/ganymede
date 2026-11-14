@@ -263,7 +263,22 @@ impl Collab {
         let stamps = self.stamps.clone();
         self.with_ids(move |ids| {
             let id = ids.get(&path)?;
-            ids.check_for_write_with(&id, || stamps.current(&path))
+            let mut unstable = false;
+            let seen = ids.check_for_write_with(&id, || match stamps.look(&path) {
+                crate::stamping::Look::Stamp(s) => Some(s),
+                crate::stamping::Look::Missing => None,
+                crate::stamping::Look::Unstable => {
+                    unstable = true;
+                    None
+                }
+            });
+            // A check that couldn't see the file for certain says nothing
+            // about the grant, so the write after it stamps nothing.
+            if unstable {
+                None
+            } else {
+                seen
+            }
         })
         .await
     }
@@ -276,9 +291,7 @@ impl Collab {
         path: &str,
         seen: &Option<Option<String>>,
     ) -> Result<(), String> {
-        let Some(seen) = seen.clone() else {
-            return Ok(());
-        };
+        let seen = seen.clone();
         let path = normalize_api_path(path);
         let stamps = self.stamps.clone();
         self.with_ids(move |ids| {
@@ -286,7 +299,7 @@ impl Collab {
                 return Ok(());
             };
             // The stamp is taken with the store held, so it is the latest.
-            ids.restamp_if(&id, seen.as_deref(), |_| stamps.own(&path))
+            ids.restamp_if(&id, &seen, |_| stamps.own(&path))
                 .map_err(|e| format!("restamping the host grant for {path}: {e}"))
         })
         .await

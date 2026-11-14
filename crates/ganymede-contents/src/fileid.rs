@@ -483,16 +483,20 @@ impl FileIds {
         }
     }
 
-    /// [`FileIds::restamp_with`], only if the grant is still stored under
-    /// `expected`, the stamp [`FileIds::check_for_write_with`] saw before
-    /// the write. A grant dropped, replaced or restamped since is left as
-    /// it is.
+    /// After a write through the server: [`FileIds::restamp_with`], if
+    /// the grant stood before the write and is still stored under the
+    /// stamp [`FileIds::check_for_write_with`] saw (`seen`). With `None`
+    /// (no grant stood), or a grant dropped, replaced or restamped since,
+    /// it does nothing.
     pub fn restamp_if(
         &self,
         id: &str,
-        expected: Option<&str>,
+        seen: &Option<Option<String>>,
         stamp: impl FnOnce(&str) -> Option<String>,
     ) -> Result<(), String> {
+        let Some(expected) = seen.as_ref().map(|s| s.as_deref()) else {
+            return Ok(());
+        };
         let store = &mut *self.lock();
         let path = store.path_of(id);
         let stamp = || path.as_deref().and_then(stamp);
@@ -939,21 +943,23 @@ mod sqlite {
         expected: Option<&str>,
         stamp: impl FnOnce() -> Option<String>,
     ) -> rusqlite::Result<()> {
-        let Some((json, seen)) = grant_row(db, id)? else {
+        let row: Option<(String, Option<String>)> = db
+            .query_row(
+                "SELECT grant_json, stamp FROM host_grants WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((json, raw)) = row else {
             return Ok(());
         };
-        if seen.as_deref() != expected {
+        if super::untag(&json, raw.as_deref()) != expected {
             return Ok(());
         }
         let Some(stamp) = stamp() else {
             return Ok(());
         };
         // Only the row just read: another server may have changed it.
-        let raw: Option<String> = db.query_row(
-            "SELECT stamp FROM host_grants WHERE id = ?1",
-            params![id],
-            |r| r.get(0),
-        )?;
         db.execute(
             "UPDATE host_grants SET stamp = ?2 WHERE id = ?1 AND grant_json = ?3 AND stamp IS ?4",
             params![id, super::tag(&json, &stamp), json, raw],
@@ -1413,11 +1419,10 @@ mod tests {
         assert_eq!(seen, Some(Some("s1".to_string())));
         // Another writer restamped meanwhile: left as it is.
         ids.restamp(&a, "s2").unwrap();
-        ids.restamp_if(&a, Some("s1"), |_| Some("s3".into()))
-            .unwrap();
+        ids.restamp_if(&a, &seen, |_| Some("s3".into())).unwrap();
         assert_eq!(ids.grant_checked(&a, Some("s2")).as_deref(), Some(G));
         // As it was seen: stamped.
-        ids.restamp_if(&a, Some("s2"), |_| Some("s3".into()))
+        ids.restamp_if(&a, &Some(Some("s2".into())), |_| Some("s3".into()))
             .unwrap();
         assert_eq!(ids.grant_checked(&a, Some("s3")).as_deref(), Some(G));
         // A dropped grant isn't brought back, and one with no stamp takes
@@ -1425,7 +1430,8 @@ mod tests {
         assert_eq!(ids.check_for_write_with(&a, || Some("other".into())), None);
         ids.set_grant(&b, Some(G), None).unwrap();
         assert_eq!(ids.check_for_write_with(&b, || None), Some(None));
-        ids.restamp_if(&b, None, |_| Some("t1".into())).unwrap();
+        ids.restamp_if(&b, &Some(None), |_| Some("t1".into()))
+            .unwrap();
         assert_eq!(ids.grant_checked(&b, Some("t1")).as_deref(), Some(G));
     }
 
@@ -1462,8 +1468,11 @@ mod tests {
         let seen = ids.check_for_write_with(&id, || Some("outside".into()));
         assert_eq!(seen, None);
         other.execute_batch("DROP TRIGGER no_delete").unwrap();
-        // The write's own restamp, as a caller with no token would do.
-        assert!(seen.is_none());
+        // The write happens, and its restamp, as callers make it with
+        // what the check returned: nothing is stamped, so the grant, still
+        // stored for the old file, doesn't match the new one.
+        ids.restamp_if(&id, &seen, |_| Some("written".into()))
+            .unwrap();
         assert_eq!(ids.grant_checked(&id, Some("written")), None);
     }
 }

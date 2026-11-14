@@ -56,13 +56,28 @@ impl Drop for Turn {
     }
 }
 
+/// Saves of paths to look at: how many are in flight, and when each path
+/// last had one begin or end.
 #[derive(Default)]
 struct Saving {
-    /// Saves in flight, by API path.
-    paths: HashMap<String, usize>,
-    /// Bumped whenever one begins or ends.
-    epoch: u64,
+    paths: HashMap<String, PathSaves>,
+    /// Counts every begin and end, of any path.
+    seq: u64,
+    /// Paths dropped from `paths` to keep it small are forgotten as of
+    /// here: a check that began before this can't say its path was
+    /// quiet.
+    floor: u64,
 }
+
+#[derive(Default)]
+struct PathSaves {
+    in_flight: usize,
+    /// `seq` at this path's last begin or end.
+    last: u64,
+}
+
+/// The most paths remembered once their saves are over.
+const REMEMBERED: usize = 256;
 
 /// A save of one path in flight, until dropped, however the save ends.
 pub(crate) struct SaveGuard {
@@ -73,14 +88,26 @@ pub(crate) struct SaveGuard {
 impl Drop for SaveGuard {
     fn drop(&mut self) {
         let mut s = self.stamps.lock();
-        s.epoch += 1;
-        if let Some(n) = s.paths.get_mut(&self.path) {
-            *n -= 1;
-            if *n == 0 {
-                s.paths.remove(&self.path);
-            }
+        s.seq += 1;
+        let seq = s.seq;
+        if let Some(p) = s.paths.get_mut(&self.path) {
+            p.in_flight -= 1;
+            p.last = seq;
+        }
+        if s.paths.len() > REMEMBERED {
+            s.paths.retain(|_, p| p.in_flight > 0);
+            s.floor = seq;
         }
     }
+}
+
+/// What a look at a file's stamp for a grant check found.
+pub(crate) enum Look {
+    Stamp(String),
+    /// The file can't be stat'ed.
+    Missing,
+    /// A save of this path was in flight, or began or ended meanwhile.
+    Unstable,
 }
 
 impl Stamps {
@@ -117,8 +144,11 @@ impl Stamps {
     pub(crate) fn begin(self: &Arc<Self>, path: &str) -> SaveGuard {
         let path = normalize_api_path(path);
         let mut s = self.lock();
-        s.epoch += 1;
-        *s.paths.entry(path.clone()).or_default() += 1;
+        s.seq += 1;
+        let seq = s.seq;
+        let p = s.paths.entry(path.clone()).or_default();
+        p.in_flight += 1;
+        p.last = seq;
         SaveGuard {
             stamps: self.clone(),
             path,
@@ -131,20 +161,49 @@ impl Stamps {
         ganymede_contents::api_file_stamp(self.root.as_deref()?, path)
     }
 
-    /// The stamp of the file at `path` to check a grant against: `None`
-    /// (keep the grant) when it can't be known, or when the server is
-    /// writing the file, or began or finished a save while this looked.
-    pub(crate) fn current(&self, path: &str) -> Option<String> {
+    /// Where a look at `path` starts, or `None` if a save of it is in
+    /// flight.
+    fn mark(&self, path: &str) -> Option<u64> {
+        let s = self.lock();
+        match s.paths.get(path) {
+            Some(p) if p.in_flight > 0 => None,
+            _ => Some(s.seq),
+        }
+    }
+
+    /// Whether no save of `path` began or ended since `mark`. Saves of
+    /// other paths don't count.
+    fn stable_since(&self, path: &str, mark: u64) -> bool {
+        let s = self.lock();
+        mark >= s.floor
+            && s.paths
+                .get(path)
+                .is_none_or(|p| p.in_flight == 0 && p.last <= mark)
+    }
+
+    /// The stamp of the file at `path` to check a grant against.
+    pub(crate) fn look(&self, path: &str) -> Look {
         let path = normalize_api_path(path);
-        let before = {
-            let s = self.lock();
-            if s.paths.contains_key(&path) {
-                return None;
-            }
-            s.epoch
+        let Some(mark) = self.mark(&path) else {
+            return Look::Unstable;
         };
-        let stamp = self.own(&path)?;
-        (self.lock().epoch == before).then_some(stamp)
+        let Some(stamp) = self.own(&path) else {
+            return Look::Missing;
+        };
+        if self.stable_since(&path, mark) {
+            Look::Stamp(stamp)
+        } else {
+            Look::Unstable
+        }
+    }
+
+    /// [`Stamps::look`] as a stamp to compare: `None` (keep the grant)
+    /// when it can't be known.
+    pub(crate) fn current(&self, path: &str) -> Option<String> {
+        match self.look(path) {
+            Look::Stamp(s) => Some(s),
+            _ => None,
+        }
     }
 }
 
@@ -230,6 +289,10 @@ impl Contents for Stamping {
     /// grant, which then keeps it.
     async fn copy(&self, from_path: &str, to_dir: Option<&str>) -> Result<ContentsModel> {
         let model = self.inner.copy(from_path, to_dir).await?;
+        // The destination isn't known until the copy is made, so only its
+        // restamp takes the path's turn and is marked in flight.
+        let _turn = self.collab.stamps.turn(&model.path).await;
+        let _saving = self.collab.stamps.begin(&model.path);
         if let Err(e) = self.collab.restamp_any(&model.path).await {
             tracing::warn!("{e}");
         }
@@ -279,7 +342,7 @@ mod tests {
         drop(guard);
         let after = stamps.current("a.ipynb").expect("a stamp again");
         assert_ne!(after, before);
-        assert!(stamps.lock().paths.is_empty());
+        assert!(!stamps.lock().paths.values().any(|p| p.in_flight > 0));
     }
 
     /// The guard clears on an error or a dropped future too, and nested
@@ -290,24 +353,43 @@ mod tests {
         let a = stamps.begin("x");
         let b = stamps.begin("x");
         drop(a);
-        assert_eq!(stamps.lock().paths.get("x"), Some(&1));
+        assert_eq!(stamps.lock().paths.get("x").map(|p| p.in_flight), Some(1));
         drop(b);
-        assert!(stamps.lock().paths.is_empty());
+        assert!(!stamps.lock().paths.values().any(|p| p.in_flight > 0));
         assert_eq!(stamps.current("x"), None, "no root, no stamp");
     }
 
-    /// A check compares the epoch from before it looked at the file with
-    /// the one after, so a save beginning or ending in between must move
-    /// it.
+    /// A check is void if a save of its own path began or ended while it
+    /// looked, and only then: a save of another path doesn't touch it.
     #[test]
-    fn beginning_and_ending_a_save_each_move_the_epoch() {
+    fn only_a_save_of_the_same_path_voids_a_check() {
         let stamps = Arc::new(Stamps::new(None));
-        let start = stamps.lock().epoch;
+        let mark = stamps.mark("a.ipynb").expect("no save of a in flight");
+        drop(stamps.begin("b.ipynb"));
+        assert!(
+            stamps.stable_since("a.ipynb", mark),
+            "b's save is no matter"
+        );
         let guard = stamps.begin("a.ipynb");
-        let begun = stamps.lock().epoch;
-        assert_ne!(begun, start);
+        assert!(!stamps.stable_since("a.ipynb", mark), "a save began");
+        assert!(stamps.mark("a.ipynb").is_none(), "and is in flight");
         drop(guard);
-        assert_ne!(stamps.lock().epoch, begun);
+        assert!(!stamps.stable_since("a.ipynb", mark), "and ended");
+        let again = stamps.mark("a.ipynb").unwrap();
+        assert!(stamps.stable_since("a.ipynb", again));
+    }
+
+    /// Paths remembered once their saves are over are bounded, and a
+    /// check that began before one was forgotten isn't called stable.
+    #[test]
+    fn forgetting_old_paths_voids_older_checks() {
+        let stamps = Arc::new(Stamps::new(None));
+        let mark = stamps.mark("a.ipynb").unwrap();
+        for i in 0..=REMEMBERED {
+            drop(stamps.begin(&format!("n{i}.ipynb")));
+        }
+        assert!(stamps.lock().paths.len() <= REMEMBERED);
+        assert!(!stamps.stable_since("a.ipynb", mark));
     }
 
     /// The file is written, its restamp not yet done: a grant read keeps
@@ -371,7 +453,7 @@ mod tests {
         let bad = SaveRequest::text("x")
             .with_if_match(ganymede_contents::IfMatch::Hashes(vec!["nope".into()]));
         assert!(contents.save("a.ipynb", bad).await.is_err());
-        assert!(collab.stamps.lock().paths.is_empty());
+        assert!(!collab.stamps.lock().paths.values().any(|p| p.in_flight > 0));
         assert!(collab.grant("a.ipynb").await.is_some());
     }
 

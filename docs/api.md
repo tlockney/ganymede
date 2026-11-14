@@ -398,6 +398,10 @@ outlive it. [The host API](reference.md#the-host-api) has the keys and
 the rest of the errors; `ganymede grant` does the same from the command
 line.
 
+> [!NOTE]
+> **Unreleased.** Dropping a stale grant on `GET` is available only from
+> a build of `main` (HEAD), not in the latest release.
+
 ## Every route
 
 What `ganymede serve` answers, beyond the examples above:
