@@ -12,7 +12,8 @@ the page from that state (`theme/widgets.ts`, copied from cdp-kernel's;
 the two should stay in step). cdp-kernel's docs runner saves each widget
 output's state as of its own cell in `metadata.docs`, and the page starts
 from that, so a later cell's change doesn't show in an earlier output.
-The example pages get this too, for any notebook saved with widget state.
+The example pages keep the "needs a running kernel" note: their notebooks
+carry no snapshots, so there is no state to start a widget from.
 
 `text/plain` outputs now drop terminal colours, as streams and errors
 already did: cdp-kernel's inspected values carry them.

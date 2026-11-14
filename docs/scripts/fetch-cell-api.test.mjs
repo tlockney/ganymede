@@ -70,3 +70,11 @@ test("a longer closing fence ends the block, and identical blocks get their own 
   const md = withOutputs(page, nb, "p", new Map());
   assert.ok(md.indexOf("first") < md.indexOf("second") && md.includes("second"), md);
 });
+
+test("prose right after a cell block stays apart from its output; indented blocks aren't cells", async () => {
+  const { withOutputs } = await import("./fetch-cell-api.mjs");
+  const nb = { metadata: {}, cells: [{ cell_type: "code", source: "x", outputs: [{ output_type: "execute_result", data: { "text/html": "<b>hi</b>" } }] }] };
+  const md = withOutputs("```ts cell\nx\n```\nAfter **this**.\n\n  ```ts cell\n  y\n  ```\n", nb, "p", new Map());
+  assert.match(md, /<\/div>\n\nAfter \*\*this\*\*\./);
+  assert.ok(md.includes("  ```ts cell\n  y\n  ```"));
+});

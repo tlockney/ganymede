@@ -132,7 +132,8 @@ export function withOutputs(markdown, nb, slug, files) {
     let j = i + 1;
     while (j < lines.length && !close.test(lines[j])) j++;
     const body = lines.slice(i + 1, j);
-    if (!/^\s+cell\b/.test(rest)) {
+    // Indented blocks aren't cells, as in cdp-kernel's runner.
+    if (indent || !/^\s+cell\b/.test(rest)) {
       out.push(...lines.slice(i, j + 1));
       i = j;
       continue;
@@ -146,8 +147,11 @@ export function withOutputs(markdown, nb, slug, files) {
     out.push(`${indent}${fence}${lang}${rest.replace(/^\s+cell\b/, "")}`, ...body, lines[j] ?? fence);
     for (const o of cell.outputs ?? []) {
       const md = output(o, slug, files, widgets);
-      if (md) out.push("", ...md.split("\n").map((l) => (l ? indent + l : l)));
+      if (md) out.push("", ...md.split("\n"));
     }
+    // An HTML output runs to the next blank line, so prose right after the
+    // block would join it.
+    if ((cell.outputs ?? []).length && lines[j + 1]?.trim()) out.push("");
     i = j;
   }
   return out.join("\n");
