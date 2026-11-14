@@ -594,6 +594,8 @@ jobs:
           GANYMEDE_E2E_BIN: ${{ github.workspace }}/target/debug/ganymede
       - name: Journal eval scoring tests
         run: node --test evals/journal/score.test.mjs
+      - name: Person and agent eval scoring tests
+        run: node --test evals/agent-native/score.test.mjs
 
   # The Linux release binary, built once and used by lsp, workstation
   # (ubuntu) and image instead of each compiling it (#460). It builds in
