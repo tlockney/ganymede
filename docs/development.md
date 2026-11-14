@@ -94,6 +94,15 @@ those), and puts line coverage in the job summary, with a row for each `.rs`
 file the pull request changes. It is informational and never fails on a
 number. Locally: `cargo llvm-cov --workspace --open`.
 
+### Evals
+
+Evals run a real agent (`claude -p` with the ganymede-journal plugin) and
+score the notebook it leaves, by hand and never in CI; CI runs only the
+scorers' unit tests. [`evals/journal`](../evals/journal/README.md) measures
+how good a journal is; [`evals/agent-native`](../evals/agent-native/README.md)
+has an agent and a simulated person edit one live notebook, and says when
+to run it (on changes to the MCP tools, rooms or the plugin, and weekly).
+
 ## CI
 
 - **Pins.** The cdp-kernel, ipykernel, nbclient, and `jupyter_server`
