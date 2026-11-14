@@ -89,6 +89,7 @@ fn state_with(
         allow_remote_access: false,
         local_hostnames: vec!["localhost".into()],
         trust_xheaders: false,
+        tailnet_allow: Arc::from([]),
         max_body_size: 512 * 1024 * 1024,
         base_url: "/".into(),
         config_dir: root.join(".jupyter-config"),
@@ -7893,5 +7894,126 @@ async fn notebooks_run_answers_with_named_results() {
         None,
     )
     .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+// ----- tailnet identity (#816) ------------------------------------------------
+
+/// A request as `tailscale serve` forwards it: from a loopback peer, with
+/// the sender's login, and no token.
+fn tailnet_req(method: &str, path: &str, login: Option<&str>, peer: &str) -> Request<Body> {
+    let mut r = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::HOST, "box.example.ts.net");
+    if let Some(l) = login {
+        r = r.header("tailscale-user-login", l);
+    }
+    let mut req = r.body(Body::empty()).unwrap();
+    req.extensions_mut().insert(axum::extract::ConnectInfo(
+        peer.parse::<std::net::SocketAddr>().unwrap(),
+    ));
+    req
+}
+
+fn tailnet_app(dir: &std::path::Path, allow: &[&str]) -> axum::Router {
+    let mut st = state(dir);
+    st.local_hostnames.push("box.example.ts.net".into());
+    st.tailnet_allow = allow.iter().map(|s| s.to_string()).collect();
+    build_router(st)
+}
+
+#[tokio::test]
+async fn an_allowed_tailnet_login_needs_no_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = tailnet_app(dir.path(), &["me@example.com"]);
+    let get = |login, peer| tailnet_req("GET", "/api/contents", login, peer);
+
+    let (s, _, _) = send(&app, get(Some("me@example.com"), "127.0.0.1:50000")).await;
+    assert_eq!(s, StatusCode::OK);
+    // No login cookie: each request carries the identity.
+    let resp = app
+        .clone()
+        .oneshot(get(Some("me@example.com"), "127.0.0.1:50000"))
+        .await
+        .unwrap();
+    assert!(resp.headers().get(header::SET_COOKIE).is_none());
+
+    // Another login, no login, or a peer that isn't loopback: refused.
+    for (login, peer) in [
+        (Some("you@example.com"), "127.0.0.1:50000"),
+        (None, "127.0.0.1:50000"),
+        (Some("me@example.com"), "100.64.0.7:50000"),
+    ] {
+        let (s, _, _) = send(&app, get(login, peer)).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{login:?} from {peer}");
+    }
+
+    // Off by default: the header alone gets nowhere.
+    let off = tailnet_app(dir.path(), &[]);
+    let (s, _, _) = send(&off, get(Some("me@example.com"), "127.0.0.1:50000")).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+/// The identity is ambient, as a cookie is, so the same checks apply:
+/// XSRF on changes, `Origin` on the rest, and pages load without login.
+#[tokio::test]
+async fn a_tailnet_login_is_checked_like_the_cookie() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = tailnet_app(dir.path(), &["me@example.com"]);
+    let me = Some("me@example.com");
+
+    let (s, _, _) = send(
+        &app,
+        tailnet_req("POST", "/api/contents", me, "127.0.0.1:1"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    let mut req = tailnet_req("POST", "/api/contents", me, "127.0.0.1:1");
+    req.headers_mut()
+        .insert(header::COOKIE, "_xsrf=abc".parse().unwrap());
+    req.headers_mut()
+        .insert("x-xsrftoken", "abc".parse().unwrap());
+    req.headers_mut()
+        .insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+    *req.body_mut() = Body::from(json!({"type": "notebook"}).to_string());
+    let (s, _, body) = send(&app, req).await;
+    assert_eq!(s, StatusCode::CREATED, "{body}");
+
+    let mut req = tailnet_req("GET", "/api/contents", me, "127.0.0.1:1");
+    req.headers_mut()
+        .insert(header::ORIGIN, "https://evil.example".parse().unwrap());
+    let (s, _, _) = send(&app, req).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // The login page sends an identified browser on.
+    let (s, h, _) = send(&app, tailnet_req("GET", "/login", me, "127.0.0.1:1")).await;
+    assert_eq!(s, StatusCode::FOUND);
+    assert_eq!(h[header::LOCATION], "/");
+}
+
+/// `/mcp` keeps to tokens: a tailnet login doesn't reach it.
+#[tokio::test]
+async fn a_tailnet_login_does_not_reach_mcp() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    st.local_hostnames.push("box.example.ts.net".into());
+    st.tailnet_allow = Arc::from(["me@example.com".to_string()]);
+    st.mcp = Some(Arc::new(ganymede_server::mcp::McpState::new(
+        ganymede_server::mcp::McpOptions {
+            read_only: true,
+            no_execute: false,
+            images: false,
+            outputs_dir: Some(dir.path().join("spill")),
+        },
+    )));
+    let app = build_router(st);
+    let mut req = tailnet_req("POST", "/mcp", Some("me@example.com"), "127.0.0.1:1");
+    req.headers_mut()
+        .insert(header::COOKIE, "_xsrf=abc".parse().unwrap());
+    req.headers_mut()
+        .insert("x-xsrftoken", "abc".parse().unwrap());
+    let (s, _, _) = send(&app, req).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
 }

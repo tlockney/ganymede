@@ -154,7 +154,8 @@ pub fn router(state: AppState, mcp: &McpState) -> axum::Router {
 }
 
 /// `/mcp`'s auth: `mcp_token` passes here, with no login cookie set, so
-/// it reaches no other route; anything else goes through the API's auth.
+/// it reaches no other route; anything else goes through the API's auth,
+/// except a tailnet login (`[tailscale] allow`), which `/mcp` refuses.
 async fn auth(
     axum::extract::State((state, token)): axum::extract::State<(AppState, Option<Arc<str>>)>,
     req: axum::http::Request<axum::body::Body>,
@@ -165,7 +166,7 @@ async fn auth(
     {
         return next.run(req).await;
     }
-    crate::auth::api(axum::extract::State(state), req, next).await
+    crate::auth::api_with(state, req, next, false).await
 }
 
 /// The MCP server: one per connection (MCP session).

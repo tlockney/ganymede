@@ -151,6 +151,44 @@ local_hostnames = ["localhost", "workstation.example-tailnet.ts.net"]
 trust_xheaders = true
 ```
 
+## Tailnet identity
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+Behind `tailscale serve`, the token can give way to who you are on the
+tailnet. `tailscale serve` adds the sender's login name to each request
+it forwards (`Tailscale-User-Login`). List the logins to let in:
+
+```toml
+ip = "127.0.0.1"
+port = 8888
+local_hostnames = ["localhost", "workstation.example-tailnet.ts.net"]
+trust_xheaders = true
+
+[tailscale]
+allow = ["you@example.com"]
+```
+
+Then a request with no token or login cookie gets in when it comes from
+a loopback address and names a listed login. Everything else is as
+before:
+
+- **Off by default.** An empty list lets no one in this way, and there
+  is no value that lets in every tailnet user. Entries are whole login
+  names; tags (`tag:server`) are refused, because `tailscale serve` sends
+  no identity for tagged devices.
+- **The token still works**, for scripts, the apps' remotes and agents.
+- **Checked like the login cookie.** Requests that change state need
+  the `_xsrf` token, and requests from another site's page are refused
+  by the `Origin` check, so a page you visit can't use your identity.
+- **`/mcp` still needs a token** (`mcp_token` or the server's).
+- **One user per machine.** The header is believed because the request
+  arrives on loopback, where `tailscale serve` connects from. Any other
+  process on the machine can also connect there and send it. On a
+  machine other people log in to, keep the token.
+
 ## Cross-origin clients
 
 A web page on another origin (a notebook UI hosted elsewhere, Thebe on a

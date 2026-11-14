@@ -132,6 +132,9 @@ pub struct Config {
     /// ask the server for. `[host] read` lists the API paths reads may
     /// reach; the root by default.
     pub host: crate::host::HostConfig,
+    /// Tailnet identity in place of the token (`docs/security.md`).
+    /// `[tailscale] allow` lists the logins let in; empty by default.
+    pub tailscale: crate::tailscale::TailscaleConfig,
 }
 
 impl Default for Config {
@@ -175,6 +178,7 @@ impl Default for Config {
             mcp_token: None,
             crash_reporting: false,
             host: Default::default(),
+            tailscale: Default::default(),
         }
     }
 }

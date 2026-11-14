@@ -13,7 +13,7 @@ use crate::routes::{origin_allowed, HttpError};
 use crate::AppState;
 use axum::body::Body;
 use axum::extract::{OriginalUri, Query, State};
-use axum::http::{header, HeaderMap, HeaderValue, Method, Request, StatusCode};
+use axum::http::{header, Extensions, HeaderMap, HeaderValue, Method, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
@@ -396,6 +396,9 @@ fn token_matches(expected: &str, sent: Option<&str>) -> bool {
 pub enum Via {
     Token,
     Cookie,
+    /// An allowed tailnet login named by `tailscale serve`
+    /// ([`crate::tailscale`]). Checked like the cookie: XSRF and `Origin`.
+    Tailnet,
 }
 
 fn query_param(query: Option<&str>, name: &str) -> Option<String> {
@@ -438,14 +441,25 @@ pub(crate) fn sends_token(expected: &str, headers: &HeaderMap, query: Option<&st
     token_matches(expected, sent_token(headers, query).as_deref())
 }
 
-/// A correct token wins over the cookie, as in `jupyter_server`; `None`
-/// when neither authenticates. Only meaningful when auth is on.
-pub fn identify(state: &AppState, headers: &HeaderMap, query: Option<&str>) -> Option<Via> {
+/// A correct token wins over the cookie, as in `jupyter_server`, and the
+/// cookie over a tailnet login, which is considered only when `tailnet`
+/// gives the request's extensions (for the peer address); `None` when
+/// none authenticates. Only meaningful when auth is on.
+pub fn identify(
+    state: &AppState,
+    headers: &HeaderMap,
+    query: Option<&str>,
+    tailnet: Option<&Extensions>,
+) -> Option<Via> {
     let expected = state.token.as_deref()?;
     if sends_token(expected, headers, query) {
         return Some(Via::Token);
     }
-    has_login_cookie(state, headers).then_some(Via::Cookie)
+    if has_login_cookie(state, headers) {
+        return Some(Via::Cookie);
+    }
+    let ext = tailnet?;
+    crate::tailscale::allowed_login(&state.tailnet_allow, headers, ext).map(|_| Via::Tailnet)
 }
 
 fn safe_method(m: &Method) -> bool {
@@ -481,6 +495,17 @@ pub(crate) async fn static_page(
 /// XSRF check, which `jupyter_server` runs before deciding who the user
 /// is. A token-authenticated request without a login cookie gets one.
 pub(crate) async fn api(State(state): State<AppState>, req: Request<Body>, next: Next) -> Response {
+    api_with(state, req, next, true).await
+}
+
+/// [`api`], letting in an allowed tailnet login only when `tailnet` is
+/// true: `/mcp` passes false, so agents need a token there.
+pub(crate) async fn api_with(
+    state: AppState,
+    req: Request<Body>,
+    next: Next,
+    tailnet: bool,
+) -> Response {
     if state.token.is_none() {
         // As in `jupyter_server`, a request that is not token-authenticated
         // still needs the XSRF token to change state, so other sites
@@ -493,7 +518,12 @@ pub(crate) async fn api(State(state): State<AppState>, req: Request<Body>, next:
         return next.run(req).await;
     }
     let headers = req.headers();
-    let via = identify(&state, headers, req.uri().query());
+    let via = identify(
+        &state,
+        headers,
+        req.uri().query(),
+        tailnet.then(|| req.extensions()),
+    );
     if via != Some(Via::Token) && !safe_method(req.method()) {
         if let Err(e) = check_xsrf(&state, headers, req.uri().query(), None) {
             return e.into_response();
@@ -509,7 +539,7 @@ pub(crate) async fn api(State(state): State<AppState>, req: Request<Body>, next:
             }
             resp
         }
-        Some(Via::Cookie) => {
+        Some(Via::Cookie | Via::Tailnet) => {
             if !origin_allowed(&state, headers) {
                 return HttpError(404, "Not Found".into()).into_response();
             }
@@ -584,7 +614,15 @@ pub(crate) async fn page(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    if state.token.is_none() || identify(&state, req.headers(), req.uri().query()).is_some() {
+    if state.token.is_none()
+        || identify(
+            &state,
+            req.headers(),
+            req.uri().query(),
+            Some(req.extensions()),
+        )
+        .is_some()
+    {
         return next.run(req).await;
     }
     if !matches!(*req.method(), Method::GET | Method::HEAD) {
@@ -726,9 +764,10 @@ fn safe_next(state: &AppState, next: Option<&str>) -> String {
 async fn login_form(
     State(state): State<AppState>,
     Query(q): Query<NextQuery>,
+    ext: Extensions,
     headers: HeaderMap,
 ) -> Response {
-    if state.token.is_none() || identify(&state, &headers, None).is_some() {
+    if state.token.is_none() || identify(&state, &headers, None, Some(&ext)).is_some() {
         return redirect(&safe_next(&state, q.next.as_deref()));
     }
     render_login(&state, &headers, q.next.as_deref(), StatusCode::OK, None)

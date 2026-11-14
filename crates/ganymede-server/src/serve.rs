@@ -442,6 +442,7 @@ impl LocalHost {
             allow_remote_access: false,
             local_hostnames: Vec::new(),
             trust_xheaders: false,
+            tailnet_allow: Arc::from([]),
             max_body_size: 0,
             base_url: "/".into(),
             config_dir: cfg
@@ -539,6 +540,7 @@ fn normalize_base_url(base_url: &str) -> String {
 
 /// [`run`], adjusted by `startup`.
 pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
+    cfg.tailscale.validate().map_err(anyhow::Error::msg)?;
     let token = match cfg.token.clone() {
         Some(t) if t.is_empty() => None,
         Some(t) => Some(t),
@@ -693,6 +695,7 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
         allow_remote_access: cfg.allow_remote_access(),
         local_hostnames: cfg.local_hostnames.clone(),
         trust_xheaders: cfg.trust_xheaders,
+        tailnet_allow: cfg.tailscale.allow.clone().into(),
         max_body_size: usize::try_from(cfg.max_body_size).unwrap_or(usize::MAX),
         base_url: base_url.clone(),
         config_dir,
@@ -772,6 +775,11 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     tracing::info!("serving {} at {url}", root_dir.display());
     if token.is_none() {
         tracing::warn!("auth disabled: anyone who can reach this port can run code");
+    } else if !cfg.tailscale.allow.is_empty() {
+        tracing::info!(
+            "also letting in, without the token, requests from `tailscale serve` for: {}",
+            cfg.tailscale.allow.join(", ")
+        );
     }
     // Written before the URL is printed, so whoever reads the URL finds
     // them. An embedding app has no use for them, and on iOS no runtime dir.
@@ -825,6 +833,7 @@ async fn serve_until(
     drain: Duration,
 ) -> std::io::Result<()> {
     let stopping = Arc::new(tokio::sync::Notify::new());
+    let app = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
     let server = axum::serve(listener, app)
         .with_graceful_shutdown({
             let stopping = stopping.clone();
@@ -1085,6 +1094,35 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
         (server, tx, conn)
+    }
+
+    /// Handlers see the peer address, which tailnet identity needs (#816).
+    #[tokio::test]
+    async fn requests_carry_the_peer_address() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::get(
+                |axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<
+                    std::net::SocketAddr,
+                >| async move { peer.ip().to_string() },
+            ),
+        );
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let server = tokio::spawn(serve_until(listener, app, rx, Duration::from_millis(100)));
+        let mut conn = tokio::net::TcpStream::connect(addr).await.unwrap();
+        conn.write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resp = String::new();
+        tokio::io::AsyncReadExt::read_to_string(&mut conn, &mut resp)
+            .await
+            .unwrap();
+        assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+        assert!(resp.ends_with("127.0.0.1"), "{resp}");
+        tx.send(()).await.unwrap();
+        server.await.unwrap().unwrap();
     }
 
     #[tokio::test]
