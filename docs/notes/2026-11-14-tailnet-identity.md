@@ -9,9 +9,14 @@ them. Empty by default, so nothing changes unless it is set.
 - The server now serves with `into_make_service_with_connect_info`, so
   auth can see the peer address. A request without one (a router driven
   directly, as in tests) never matches.
-- The identity is ambient like the login cookie, so it gets the
-  cookie's checks: XSRF on changes, `Origin` on the rest. No login
-  cookie is set; each request carries the header.
+- The identity is ambient, more so than the login cookie: `tailscale
+  serve` adds it to every request from the device, with or without
+  credentials. So it gets XSRF on changes and a stricter `Origin` check
+  than the cookie: same origin only, never `allow_origins`. And it needs
+  the `Host` check: with `allow_remote_access` on, a DNS-rebinding page
+  could come in through serve as the visitor, so the server refuses to
+  start with both set. No login cookie is set; each request carries the
+  header. (Both found in review.)
 - `/mcp` doesn't take it: agents keep to `mcp_token` or the server's
   token.
 - Tags are refused in the list: `tailscale serve` sends no identity for

@@ -123,3 +123,21 @@ async fn without_subprocess_a_provisioner_is_required() {
     let e = run_with(cfg, Startup::default()).await.unwrap_err();
     assert!(e.to_string().contains("provisioner"), "{e}");
 }
+
+/// `[tailscale] allow` is refused without the `Host` check, which stops a
+/// DNS-rebinding page from reaching the server through `tailscale serve`.
+#[tokio::test]
+async fn tailnet_logins_are_refused_with_remote_access_on() {
+    let root = tempfile::tempdir().unwrap();
+    let mut cfg = Config {
+        port: 0,
+        root_dir: root.path().into(),
+        cookie_secret_file: Some(root.path().join("secret")),
+        notary_dir: Some(root.path().join("notary")),
+        allow_remote_access: Some(true),
+        ..Default::default()
+    };
+    cfg.tailscale.allow = vec!["me@example.com".into()];
+    let e = run_with(cfg, Startup::default()).await.unwrap_err();
+    assert!(e.to_string().contains("Host check"), "{e}");
+}

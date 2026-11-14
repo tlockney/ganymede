@@ -541,6 +541,12 @@ fn normalize_base_url(base_url: &str) -> String {
 /// [`run`], adjusted by `startup`.
 pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
     cfg.tailscale.validate().map_err(anyhow::Error::msg)?;
+    if !cfg.tailscale.allow.is_empty() && cfg.allow_remote_access() {
+        anyhow::bail!(
+            "[tailscale] allow needs the Host check: listen on a loopback ip and leave \
+             allow_remote_access off (add the tailnet name to local_hostnames instead)"
+        );
+    }
     let token = match cfg.token.clone() {
         Some(t) if t.is_empty() => None,
         Some(t) => Some(t),
@@ -780,16 +786,10 @@ pub async fn run_with(cfg: Config, startup: Startup) -> Result<()> {
             "also letting in, without the token, requests from `tailscale serve` for: {}",
             cfg.tailscale.allow.join(", ")
         );
-        let loopback = cfg
-            .ip
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|a| a.is_loopback())
-            || cfg.ip == "localhost";
-        if !loopback {
+        if !addr.ip().is_loopback() {
             tracing::warn!(
-                "[tailscale] allow is set but the server listens on {}: tailnet logins are \
-                 believed only from loopback peers, that is through `tailscale serve`",
-                cfg.ip
+                "[tailscale] allow is set but the server listens on {addr}: tailnet logins are \
+                 believed only from loopback peers, that is through `tailscale serve`"
             );
         }
     }

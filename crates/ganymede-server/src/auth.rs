@@ -459,7 +459,24 @@ pub fn identify(
         return Some(Via::Cookie);
     }
     let ext = tailnet?;
-    crate::tailscale::allowed_login(&state.tailnet_allow, headers, ext).then_some(Via::Tailnet)
+    // With the `Host` check off, a DNS-rebinding page could reach the
+    // server through `tailscale serve` and get its visitor's identity;
+    // `run_with` refuses that combination, and this keeps it refused.
+    (!state.allow_remote_access
+        && crate::tailscale::allowed_login(&state.tailnet_allow, headers, ext))
+    .then_some(Via::Tailnet)
+}
+
+/// No `Origin`, or one whose host and port are the request's `Host`.
+fn same_origin(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return true;
+    };
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
+    match (origin.to_str().ok(), host) {
+        (Some(o), Some(h)) => o.split_once("://").is_some_and(|(_, oh)| oh == h),
+        _ => false,
+    }
 }
 
 fn safe_method(m: &Method) -> bool {
@@ -539,7 +556,17 @@ pub(crate) async fn api_with(
             }
             resp
         }
-        Some(Via::Cookie | Via::Tailnet) => {
+        // `tailscale serve` adds the identity to every request from the
+        // device, credentials or not, so `allow_origins` (meant for the
+        // cookie, which needs `allow_credentials`) doesn't apply: only the
+        // server's own pages may use it.
+        Some(Via::Tailnet) => {
+            if !same_origin(headers) {
+                return HttpError(404, "Not Found".into()).into_response();
+            }
+            next.run(req).await
+        }
+        Some(Via::Cookie) => {
             if !origin_allowed(&state, headers) {
                 return HttpError(404, "Not Found".into()).into_response();
             }

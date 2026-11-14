@@ -8062,3 +8062,53 @@ async fn logout_tells_a_tailnet_login_it_is_still_in() {
     assert_eq!(s, StatusCode::OK);
     assert!(page.contains("still signed in"), "{page}");
 }
+
+/// `allow_origins` is for the cookie and the token. The tailnet identity
+/// rides on every request from the device, so a listed origin (or `*`)
+/// mustn't get to use it: only the server's own origin does.
+#[tokio::test]
+async fn a_tailnet_login_is_only_for_the_servers_own_origin() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    st.local_hostnames.push("box.example.ts.net".into());
+    st.tailnet_allow = Arc::from(["me@example.com".to_string()]);
+    st.allow_origins = vec!["*".into()];
+    let app = build_router(st);
+    let from = |origin: &str| {
+        let mut req = tailnet_req(
+            "GET",
+            "/api/contents",
+            Some("me@example.com"),
+            "127.0.0.1:1",
+        );
+        req.headers_mut()
+            .insert(header::ORIGIN, origin.parse().unwrap());
+        req
+    };
+    let (s, _, _) = send(&app, from("https://thebe.example")).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _, _) = send(&app, from("https://box.example.ts.net")).await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+/// With the `Host` check off, a DNS-rebinding page could reach the server
+/// through `tailscale serve`, so the identity isn't believed then.
+#[tokio::test]
+async fn a_tailnet_login_needs_the_host_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    st.tailnet_allow = Arc::from(["me@example.com".to_string()]);
+    st.allow_remote_access = true;
+    let app = build_router(st);
+    let (s, _, _) = send(
+        &app,
+        tailnet_req(
+            "GET",
+            "/api/contents",
+            Some("me@example.com"),
+            "127.0.0.1:1",
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}

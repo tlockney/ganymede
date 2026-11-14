@@ -67,28 +67,25 @@ impl TailscaleConfig {
 /// exactly one `Tailscale-User-Login` header naming a login in `allow`.
 /// Logins are compared without regard to ASCII case.
 pub fn allowed_login(allow: &[String], headers: &HeaderMap, ext: &Extensions) -> bool {
-    sender(allow, headers, ext).is_some()
-}
-
-fn sender<'a>(allow: &[String], headers: &'a HeaderMap, ext: &Extensions) -> Option<&'a str> {
     if allow.is_empty() {
-        return None;
+        return false;
     }
     // Without the peer address (a router driven without a listener) the
     // header can't be believed.
-    let ConnectInfo(peer) = ext.get::<ConnectInfo<SocketAddr>>()?;
+    let Some(ConnectInfo(peer)) = ext.get::<ConnectInfo<SocketAddr>>() else {
+        return false;
+    };
     if !peer.ip().to_canonical().is_loopback() {
-        return None;
+        return false;
     }
     let mut values = headers.get_all(USER_LOGIN).iter();
-    let login = values.next()?.to_str().ok()?.trim();
+    let Some(login) = values.next().and_then(|v| v.to_str().ok()).map(str::trim) else {
+        return false;
+    };
     if values.next().is_some() || login.is_empty() {
-        return None;
+        return false;
     }
-    allow
-        .iter()
-        .any(|a| a.eq_ignore_ascii_case(login))
-        .then_some(login)
+    allow.iter().any(|a| a.eq_ignore_ascii_case(login))
 }
 
 #[cfg(test)]

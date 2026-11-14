@@ -181,9 +181,15 @@ before:
   names; tags (`tag:server`) are refused, because `tailscale serve` sends
   no identity for tagged devices.
 - **The token still works**, for scripts, the apps' remotes and agents.
-- **Checked like the login cookie.** Requests that change state need
-  the `_xsrf` token, and requests from another site's page are refused
-  by the `Origin` check, so a page you visit can't use your identity.
+- **Only from the server's own pages.** Requests that change state need
+  the `_xsrf` token, and a request whose `Origin` isn't the server's own
+  is refused, even for origins in `allow_origins` (those still work with
+  the token), so another site's page can't use your identity.
+- **The `Host` check stays on.** The server refuses to start with
+  `allow` set and `allow_remote_access` on (or a non-loopback `--ip`,
+  which turns it on): a DNS-rebinding page could otherwise reach it
+  through `tailscale serve` as you. Put the tailnet name in
+  `local_hostnames`, as above.
 - **`/mcp` still needs a token** (`mcp_token` or the server's).
 - **Only `tailscale serve` may reach the port.** The header is believed
   because the request arrives on loopback, where `tailscale serve`
@@ -198,8 +204,8 @@ before:
   log in to, keep the token.
 - **The page gets no token.** JupyterLab loaded this way authenticates
   each request by identity, so removing a login from `allow` takes
-  effect on its next request. Logging out doesn't sign a listed login
-  out.
+  effect once the server restarts. Logging out doesn't sign a listed
+  login out.
 - Entries must be ASCII: `tailscale serve` encodes other characters, so
   such a login would never match.
 
