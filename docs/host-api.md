@@ -296,27 +296,31 @@ edit_self = true     # the self.* calls; false turns them off
   notebook's [file id](rooms.md#file-ids), so they follow a rename or
   move. They live beside the file id database, not in the notebook.
   A grant is for the file as Ganymede last wrote or saw it: it is stored
-  with the file's size, modification time and, on Unix, inode number, and when
-  the file no longer matches (replaced by `git`, an editor, Finder, a
+  with the file's size, modification time and, on Unix, inode number, and
+  when the file no longer matches (replaced by `git`, an editor, Finder, a
   download or a sync tool, which keep the path and so its file id) the
   grant is dropped, back to the `[host]` defaults, and the server logs
-  it. `ganymede grant --list` shows only grants that still hold. A write
-  through the server counts as Ganymede's own and keeps the grant: the
-  contents API (an upload over the file, a copy onto it), document rooms,
-  MCP, `ganymede execute`, including `-o` to the notebook, and `ganymede nb
-  clear`, from whichever directory they run in. A grant
-  from before this check has no record of its file, so the first time it
-  is used it takes the file as it is, and holds from then on. The check
-  costs a `stat`, not a read, and doesn't see a rewrite in place that
-  keeps the size and puts the old modification time back, or one that
-  keeps the size within a tick of a filesystem with coarse timestamps
-  (exFAT's 2 seconds, HFS+'s 1 second). A `chmod`,
-  extended attributes or a link don't count as a change.
+  it. `ganymede grant --list` and `GET /api/host/grants/{path}` show only
+  grants that still hold, and drop a stale one when they look. A write
+  through Ganymede counts as its own and keeps the grant: the contents
+  API (an upload over the file, a copy onto it), document rooms, MCP,
+  `ganymede execute`, including `-o` to the notebook, and `ganymede nb
+  clear`, from whichever directory they run in. A grant from before this
+  check has no record of its file, so the first time it is used it takes
+  the file as it is, and holds from then on.
 
-  > [!NOTE]
-  > **Unreleased.** Dropping a grant when its file changes outside
-  > Ganymede is available only from a build of `main` (HEAD), not in the
-  > latest release, where a replaced file keeps its grant.
+  The check costs a `stat`, not a read, so it has blind spots. It doesn't
+  see a rewrite in place that keeps the size and puts the old
+  modification time back, or one that keeps the size within a tick of a
+  filesystem with coarse timestamps (exFAT's 2 seconds, HFS+'s 1 second);
+  on Windows, which has no inode here, it also misses a same-size
+  replacement by rename that keeps the modification time. A `chmod`,
+  extended attributes or a link don't count as a change. Two things fail
+  safe, by dropping a grant that was fine, never by keeping a stale one:
+  another process checking a grant in the instant between a write through
+  Ganymede and its restamp, and an older build sharing the file id
+  database, which saves without restamping.
+
 - **Asking.** A notebook may list what it wants in
   `metadata.ganymede.host.wants`, for example `["notebooks.run"]`. That
   grants nothing. A client shows it and lets the person grant it, the way
@@ -331,6 +335,11 @@ edit_self = true     # the self.* calls; false turns them off
   defaults, and a notebook's own grant over them, as a server does. It
   gives its kernels no `self.*` calls, since it writes the notebook
   itself when the run ends.
+
+> [!NOTE]
+> **Unreleased.** Dropping a grant when its file changes outside
+> Ganymede is available only from a build of `main` (HEAD), not in the
+> latest release, where a replaced file keeps its grant.
 
 This is the server's half of "scoped kernels" from the direction review:
 it limits what a kernel can ask the server for. It doesn't limit what a

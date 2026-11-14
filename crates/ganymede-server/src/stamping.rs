@@ -29,6 +29,31 @@ pub(crate) struct Stamps {
     /// stamped or checked.
     root: Option<PathBuf>,
     saving: Mutex<Saving>,
+    turns: Turns,
+}
+
+/// One server write of a path at a time: the lock for each path being
+/// written or waited for.
+type Turns = Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>;
+
+/// A turn to write one path, until dropped.
+pub(crate) struct Turn {
+    stamps: Arc<Stamps>,
+    path: String,
+    _held: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        let mut turns = self.stamps.turns.lock().unwrap_or_else(|e| e.into_inner());
+        // Ours, and the map's: no one else is waiting.
+        if turns
+            .get(&self.path)
+            .is_some_and(|m| Arc::strong_count(m) <= 2)
+        {
+            turns.remove(&self.path);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -63,11 +88,29 @@ impl Stamps {
         Stamps {
             root,
             saving: Mutex::default(),
+            turns: Mutex::default(),
         }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Saving> {
         self.saving.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Waits for the turn to write the file at `path`.
+    pub(crate) async fn turn(self: &Arc<Self>, path: &str) -> Turn {
+        let path = normalize_api_path(path);
+        let lock = self
+            .turns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(path.clone())
+            .or_default()
+            .clone();
+        Turn {
+            stamps: self.clone(),
+            path,
+            _held: Some(lock.lock_owned().await),
+        }
     }
 
     /// The server is about to write the file at `path`.
@@ -136,10 +179,13 @@ impl Stamping {
         let collab = self.collab.clone();
         let path = path.to_string();
         detached(async move {
-            collab.check_grant_at(&path).await;
+            // One save of a path at a time, so the stamp the check saw is
+            // the one this save's restamp compares with.
+            let _turn = collab.stamps.turn(&path).await;
+            let seen = collab.check_for_write(&path).await;
             let _saving = collab.stamps.begin(&path);
             let out = write.await?;
-            if let Err(e) = collab.restamp(&path).await {
+            if let Err(e) = collab.restamp(&path, &seen).await {
                 tracing::warn!("{e}");
             }
             Ok(out)
@@ -184,7 +230,7 @@ impl Contents for Stamping {
     /// grant, which then keeps it.
     async fn copy(&self, from_path: &str, to_dir: Option<&str>) -> Result<ContentsModel> {
         let model = self.inner.copy(from_path, to_dir).await?;
-        if let Err(e) = self.collab.restamp(&model.path).await {
+        if let Err(e) = self.collab.restamp_any(&model.path).await {
             tracing::warn!("{e}");
         }
         Ok(model)
@@ -285,7 +331,7 @@ mod tests {
         let saving = collab.stamps.begin("a.ipynb");
         std::fs::write(root.join("a.ipynb"), "{ \"written\": 1 }").unwrap();
         assert!(collab.grant("a.ipynb").await.is_some(), "mid-save");
-        collab.restamp("a.ipynb").await.unwrap();
+        collab.restamp_any("a.ipynb").await.unwrap();
         drop(saving);
         assert!(collab.grant("a.ipynb").await.is_some(), "after the restamp");
 
@@ -356,5 +402,56 @@ mod tests {
             .unwrap()
             .contains("longer"));
         assert!(collab.grant("b.ipynb").await.is_some());
+    }
+
+    /// A write after a check that left no grant standing (it was dropped,
+    /// or the database wouldn't delete it) stamps nothing; one after a
+    /// check that found the grant stamps it.
+    #[tokio::test]
+    async fn only_a_grant_that_stood_is_restamped() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.ipynb"), "{}").unwrap();
+        let collab = Arc::new(Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            Some(root.clone()),
+        ));
+        let (id, _) = collab.index("a.ipynb").await;
+        collab
+            .set_grant(id, Some(r#"{"run":[""]}"#.into()))
+            .await
+            .unwrap();
+        let seen = collab.check_for_write("a.ipynb").await;
+        assert!(seen.is_some());
+        std::fs::write(root.join("a.ipynb"), "{ \"written\": 1 }").unwrap();
+        collab.restamp("a.ipynb", &None).await.unwrap();
+        assert_eq!(collab.grant("a.ipynb").await, None, "nothing stamped");
+
+        let (id, _) = collab.index("a.ipynb").await;
+        collab
+            .set_grant(id, Some(r#"{"run":[""]}"#.into()))
+            .await
+            .unwrap();
+        let seen = collab.check_for_write("a.ipynb").await;
+        std::fs::write(root.join("a.ipynb"), "{ \"written\": 22 }").unwrap();
+        collab.restamp("a.ipynb", &seen).await.unwrap();
+        assert!(collab.grant("a.ipynb").await.is_some());
+    }
+
+    /// Saves of one path take turns, and the turn table empties.
+    #[tokio::test]
+    async fn saves_of_a_path_take_turns() {
+        let stamps = Arc::new(Stamps::new(None));
+        let first = stamps.turn("a.ipynb").await;
+        let s2 = stamps.clone();
+        let waiting = tokio::spawn(async move { drop(s2.turn("/a.ipynb/").await) });
+        let s3 = stamps.clone();
+        let second = tokio::spawn(async move { drop(s3.turn("a.ipynb").await) });
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert!(!second.is_finished(), "waits for the first");
+        drop(first);
+        second.await.unwrap();
+        waiting.abort();
+        assert!(stamps.turns.lock().unwrap().len() <= 1);
     }
 }

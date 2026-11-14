@@ -389,7 +389,9 @@ Authorization: token tok
 ```
 
 `GET` answers the same shape, and `DELETE` removes the grant
-(`"grant": {}`). A missing notebook is `404`. A server whose
+(`"grant": {}`). A `GET` of a notebook whose file was replaced outside
+Ganymede drops its stale grant and answers `{}`
+([Per notebook](host-api.md#grants)). A missing notebook is `404`. A server whose
 [file ids](rooms.md#file-ids) live only in memory answers `409` to `PUT`
 and `DELETE` before it looks for the notebook, since the grant wouldn't
 outlive it. [The host API](reference.md#the-host-api) has the keys and

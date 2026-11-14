@@ -1377,10 +1377,10 @@ fn print_results(
 fn write_notebook(nb: &Notebook, dest: Option<&Path>) -> Result<()> {
     match dest {
         Some(p) => {
-            grant::check_held(p);
+            let held = grant::check_held(p);
             ganymede_engine::nbformat::write_file(nb, p)
                 .with_context(|| format!("writing {}", p.display()))?;
-            if let Err(e) = grant::restamp_held(p) {
+            if let Err(e) = grant::restamp_held(&held) {
                 eprintln!("ganymede: {}", error_chain(&e));
             }
             eprintln!("  wrote {}", p.display());

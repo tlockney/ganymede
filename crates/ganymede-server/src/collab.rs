@@ -254,15 +254,31 @@ impl Collab {
         .await
     }
 
-    /// Drops the grant of the file at `path` if the file changed outside
-    /// the server, before the server writes it.
-    pub(crate) async fn check_grant_at(&self, path: &str) {
-        let _ = self.grant(path).await;
+    /// Before the server writes the file at `path`: drops its grant if the
+    /// file changed outside the server. What comes back is for
+    /// [`Collab::restamp`] after the write: `None`, no grant stands, so
+    /// none is stamped; `Some(stamp)`, the stamp it is stored under.
+    pub(crate) async fn check_for_write(&self, path: &str) -> Option<Option<String>> {
+        let path = normalize_api_path(path);
+        let stamps = self.stamps.clone();
+        self.with_ids(move |ids| {
+            let id = ids.get(&path)?;
+            ids.check_for_write_with(&id, || stamps.current(&path))
+        })
+        .await
     }
 
-    /// The server wrote the file at `path`: its grant, if any, keeps
-    /// matching it. Fails when the grant store does.
-    pub(crate) async fn restamp(&self, path: &str) -> Result<(), String> {
+    /// The server wrote the file at `path`: its grant keeps matching,
+    /// if it is still stored as [`Collab::check_for_write`] found it
+    /// (`seen`). Fails when the grant store does.
+    pub(crate) async fn restamp(
+        &self,
+        path: &str,
+        seen: &Option<Option<String>>,
+    ) -> Result<(), String> {
+        let Some(seen) = seen.clone() else {
+            return Ok(());
+        };
         let path = normalize_api_path(path);
         let stamps = self.stamps.clone();
         self.with_ids(move |ids| {
@@ -270,6 +286,21 @@ impl Collab {
                 return Ok(());
             };
             // The stamp is taken with the store held, so it is the latest.
+            ids.restamp_if(&id, seen.as_deref(), |_| stamps.own(&path))
+                .map_err(|e| format!("restamping the host grant for {path}: {e}"))
+        })
+        .await
+    }
+
+    /// As [`Collab::restamp`] with no check before the write, for a write
+    /// whose path wasn't known beforehand.
+    pub(crate) async fn restamp_any(&self, path: &str) -> Result<(), String> {
+        let path = normalize_api_path(path);
+        let stamps = self.stamps.clone();
+        self.with_ids(move |ids| {
+            let Some(id) = ids.get(&path) else {
+                return Ok(());
+            };
             ids.restamp_with(&id, |_| stamps.own(&path))
                 .map_err(|e| format!("restamping the host grant for {path}: {e}"))
         })
@@ -351,13 +382,13 @@ impl Collab {
             let _moving = collab.begin_move().await;
             // A file replaced outside loses its grant before the rename,
             // which would otherwise stamp the new file as the old one.
-            collab.check_grant_at(&old).await;
+            let seen = collab.check_for_write(&old).await;
             // A grant check mustn't look between the rename and the new
             // stamp, on a filesystem where a rename changes the stamp.
             let _saving = collab.stamps.begin(&new);
             let model = contents.rename(&old, &new).await?;
             collab.moved(&old, &model.path).await;
-            if let Err(e) = collab.restamp(&model.path).await {
+            if let Err(e) = collab.restamp(&model.path, &seen).await {
                 tracing::warn!("{e}");
             }
             Ok(model)
@@ -907,7 +938,6 @@ fn checked_grant(
     id: &str,
     path: &str,
 ) -> Option<String> {
-    ids.grant(id)?;
     // The stamp is taken with the store held: see `grant_checked_with`.
     ids.grant_checked_with(id, || stamps.current(path))
 }

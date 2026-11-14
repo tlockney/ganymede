@@ -104,17 +104,22 @@ fn untag<'a>(json: &str, stored: Option<&'a str>) -> Option<&'a str> {
     (hash == format!("{:016x}", fnv1a(json.as_bytes()))).then_some(stamp)
 }
 
-/// A stamp of the file at `path`, from its metadata, without reading
-/// it: its size, modification time and, on Unix, inode number
-/// (not the device, which isn't stable across remounts). `None` when it can't be read. A file replaced the way `git
-/// checkout`, most editors, downloads and sync tools do (a new file
-/// renamed over it) has a new inode, and one rewritten in place has a new
-/// modification time, so either changes the stamp. The change time is
-/// left out on purpose: it moves with `chmod`, extended attributes
-/// (Finder, quarantine, iCloud) and links, which are not edits. A
-/// same-size rewrite in place that puts the old modification time back
-/// is not seen, nor one within a tick of a filesystem with coarse
-/// timestamps (exFAT's 2 s, HFS+'s 1 s).
+/// A stamp of the file at `path`, from its metadata, without reading it:
+/// its size, modification time and, on Unix, inode number (not the
+/// device, which isn't stable across remounts). `None` when it can't be
+/// read.
+///
+/// A file replaced the way `git checkout`, most editors, downloads and
+/// sync tools do (a new file renamed over it) has a new inode, and one
+/// rewritten in place has a new modification time, so either changes the
+/// stamp. The change time is left out on purpose: it moves with `chmod`,
+/// extended attributes (Finder, quarantine, iCloud) and links, which are
+/// not edits.
+///
+/// Not seen: a same-size rewrite in place that puts the old modification
+/// time back; one within a tick of a filesystem with coarse timestamps
+/// (exFAT's 2 s, HFS+'s 1 s); and, on Windows, which has no inode here, a
+/// same-size replacement by rename that keeps the modification time.
 pub fn file_stamp(path: &Path) -> Option<String> {
     use std::time::UNIX_EPOCH;
     let meta = std::fs::metadata(path).ok()?;
@@ -299,18 +304,7 @@ impl FileIds {
     /// matches the stamp. Reads that decide anything use
     /// [`FileIds::grant_checked`].
     pub fn grant(&self, id: &str) -> Option<String> {
-        let store = &*self.lock();
-        if let Some(g) = store.memory.grants.get(id) {
-            return Some(g.json.clone());
-        }
-        #[cfg(feature = "sqlite")]
-        if let Some((db, _)) = &store.db {
-            return sqlite::grant(db, id).unwrap_or_else(|e| {
-                tracing::warn!("grant for file id {id}: {e}");
-                None
-            });
-        }
-        None
+        self.lock().grant_json(id)
     }
 
     /// The grant for file id `id`, if its file still matches. `current`
@@ -333,7 +327,7 @@ impl FileIds {
         id: &str,
         current: impl FnOnce() -> Option<String>,
     ) -> Option<String> {
-        check_locked(&mut self.lock(), id, None, current)
+        check_locked(&mut self.lock(), id, None, current).grant()
     }
 
     /// Whether ids and grants outlive this process: kept in a database
@@ -430,7 +424,7 @@ impl FileIds {
         let mut all: Vec<(String, String)> = Vec::new();
         for (id, path) in grant_rows(store) {
             let now = current(&path);
-            if let Some(json) = check_locked(store, &id, Some(&path), || now) {
+            if let Some(json) = check_locked(store, &id, Some(&path), || now).grant() {
                 all.push((path, json));
             }
         }
@@ -468,6 +462,51 @@ impl FileIds {
         #[cfg(feature = "sqlite")]
         if let Some((db, _)) = &store.db {
             return sqlite::restamp(db, id, &stamp).map_err(|e| e.to_string());
+        }
+        Ok(())
+    }
+
+    /// The check before a write through the server, for file id `id`:
+    /// as [`FileIds::grant_checked_with`], but what comes back is what
+    /// [`FileIds::restamp_if`] needs after the write. `None`: no grant
+    /// stands (there is none, it was dropped, or it should be and can't be
+    /// deleted), so the write must not stamp one. `Some(stamp)`: the grant
+    /// stands, stored under `stamp` (`None` when it has none).
+    pub fn check_for_write_with(
+        &self,
+        id: &str,
+        current: impl FnOnce() -> Option<String>,
+    ) -> Option<Option<String>> {
+        match check_locked(&mut self.lock(), id, None, current) {
+            Outcome::Grant(_, stamp) => Some(stamp),
+            _ => None,
+        }
+    }
+
+    /// [`FileIds::restamp_with`], only if the grant is still stored under
+    /// `expected`, the stamp [`FileIds::check_for_write_with`] saw before
+    /// the write. A grant dropped, replaced or restamped since is left as
+    /// it is.
+    pub fn restamp_if(
+        &self,
+        id: &str,
+        expected: Option<&str>,
+        stamp: impl FnOnce(&str) -> Option<String>,
+    ) -> Result<(), String> {
+        let store = &mut *self.lock();
+        let path = store.path_of(id);
+        let stamp = || path.as_deref().and_then(stamp);
+        if let Some(g) = store.memory.grants.get_mut(id) {
+            if g.stamp.as_deref() == expected {
+                if let Some(stamp) = stamp() {
+                    g.stamp = Some(stamp);
+                }
+            }
+            return Ok(());
+        }
+        #[cfg(feature = "sqlite")]
+        if let Some((db, _)) = &store.db {
+            return sqlite::restamp_if(db, id, expected, stamp).map_err(|e| e.to_string());
         }
         Ok(())
     }
@@ -529,7 +568,10 @@ impl Store {
         }
         #[cfg(feature = "sqlite")]
         if let Some((db, _)) = &self.db {
-            return sqlite::grant(db, id).ok().flatten();
+            return sqlite::grant(db, id).unwrap_or_else(|e| {
+                tracing::warn!("grant for file id {id}: {e}");
+                None
+            });
         }
         None
     }
@@ -548,16 +590,7 @@ impl Store {
 
     /// The path file id `id` names now, for a log line.
     fn path_for_log(&self, id: &str) -> String {
-        if let Some(p) = self.memory.by_id.get(id) {
-            return p.clone();
-        }
-        #[cfg(feature = "sqlite")]
-        if let Some((db, root)) = &self.db {
-            if let Ok(Some(p)) = sqlite::path(db, root, id) {
-                return p;
-            }
-        }
-        format!("file id {id}")
+        self.path_of(id).unwrap_or_else(|| format!("file id {id}"))
     }
 }
 
@@ -580,6 +613,26 @@ fn grant_rows(store: &Store) -> Vec<(String, String)> {
     rows
 }
 
+/// What a check found.
+enum Outcome {
+    /// No grant.
+    Missing,
+    /// The grant stands, with the file stamp it is stored under now.
+    Grant(String, Option<String>),
+    /// The file changed and the grant doesn't stand: it is gone, or it
+    /// should be and the database can't delete it.
+    Dropped,
+}
+
+impl Outcome {
+    fn grant(self) -> Option<String> {
+        match self {
+            Outcome::Grant(json, _) => Some(json),
+            _ => None,
+        }
+    }
+}
+
 /// The grant for `id` if its file matches: see [`FileIds::grant_checked`].
 /// `path` is the file's path when the caller has it, for the log.
 fn check_locked(
@@ -587,7 +640,7 @@ fn check_locked(
     id: &str,
     path: Option<&str>,
     current: impl FnOnce() -> Option<String>,
-) -> Option<String> {
+) -> Outcome {
     let dropped = |store: &Store| {
         let path = path.map_or_else(|| store.path_for_log(id), str::to_string);
         tracing::warn!("dropped the host grant for {path}: the file changed outside Ganymede");
@@ -596,43 +649,45 @@ fn check_locked(
         let json = g.json.clone();
         let current = current();
         match verdict(g.stamp.as_deref(), current.as_deref()) {
-            Verdict::Keep => return Some(json),
+            Verdict::Keep => return Outcome::Grant(json, g.stamp.clone()),
             Verdict::Stamp => {
-                g.stamp = current;
-                return Some(json);
+                g.stamp = current.clone();
+                return Outcome::Grant(json, current);
             }
             Verdict::Drop => {
                 store.memory.grants.remove(id);
                 dropped(store);
-                return None;
+                return Outcome::Dropped;
             }
         }
     }
     #[cfg(feature = "sqlite")]
     if let Some((db, _)) = &store.db {
-        let outcome = sqlite::check(db, id, current);
-        return match outcome {
-            Ok(sqlite::Checked::Missing) => None,
-            Ok(sqlite::Checked::Grant(json)) => Some(json),
+        return match sqlite::check(db, id, current) {
+            Ok(sqlite::Checked::Missing) => Outcome::Missing,
+            Ok(sqlite::Checked::Grant(json, stamp)) => Outcome::Grant(json, stamp),
             Ok(sqlite::Checked::Dropped) => {
                 dropped(store);
-                None
+                Outcome::Dropped
             }
             // The file changed and the grant can't be deleted: it isn't
             // handed out.
             Ok(sqlite::Checked::Stuck(e)) => {
                 tracing::warn!("dropping the grant for file id {id}: {e}");
-                None
+                Outcome::Dropped
             }
             // A read that failed keeps the grant, as an unreadable file
             // does.
             Err(e) => {
                 tracing::warn!("checking the grant for file id {id}: {e}");
-                store.grant_json(id)
+                match store.grant_json(id) {
+                    Some(json) => Outcome::Grant(json, None),
+                    None => Outcome::Missing,
+                }
             }
         };
     }
-    None
+    Outcome::Missing
 }
 
 #[cfg(feature = "sqlite")]
@@ -798,7 +853,8 @@ mod sqlite {
 
     pub enum Checked {
         Missing,
-        Grant(String),
+        /// The grant and the file stamp stored under it.
+        Grant(String, Option<String>),
         Dropped,
         /// The grant should go, and the database wouldn't delete it.
         Stuck(rusqlite::Error),
@@ -826,7 +882,10 @@ mod sqlite {
         let current = current();
         let current = current.as_deref();
         match super::verdict(super::untag(&json, raw.as_deref()), current) {
-            super::Verdict::Keep => Ok(Checked::Grant(json)),
+            super::Verdict::Keep => {
+                let stamp = super::untag(&json, raw.as_deref()).map(str::to_string);
+                Ok(Checked::Grant(json, stamp))
+            }
             super::Verdict::Stamp => {
                 let tagged = current.map(|c| super::tag(&json, c));
                 db.execute(
@@ -834,7 +893,7 @@ mod sqlite {
                         AND stamp IS ?4",
                     params![id, tagged, json, raw],
                 )?;
-                Ok(Checked::Grant(json))
+                Ok(Checked::Grant(json, current.map(str::to_string)))
             }
             super::Verdict::Drop => {
                 let gone = match db.execute(
@@ -847,12 +906,59 @@ mod sqlite {
                 if gone == 1 {
                     return Ok(Checked::Dropped);
                 }
-                Ok(match grant(db, id)? {
-                    Some(json) => Checked::Grant(json),
+                Ok(match grant_row(db, id)? {
+                    Some((json, stamp)) => Checked::Grant(json, stamp),
                     None => Checked::Missing,
                 })
             }
         }
+    }
+
+    /// The grant and the file stamp stored under it, if for that grant.
+    pub fn grant_row(
+        db: &Connection,
+        id: &str,
+    ) -> rusqlite::Result<Option<(String, Option<String>)>> {
+        let row: Option<(String, Option<String>)> = db
+            .query_row(
+                "SELECT grant_json, stamp FROM host_grants WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(row.map(|(json, raw)| {
+            let stamp = super::untag(&json, raw.as_deref()).map(str::to_string);
+            (json, stamp)
+        }))
+    }
+
+    /// As [`super::FileIds::restamp_if`], in the database.
+    pub fn restamp_if(
+        db: &Connection,
+        id: &str,
+        expected: Option<&str>,
+        stamp: impl FnOnce() -> Option<String>,
+    ) -> rusqlite::Result<()> {
+        let Some((json, seen)) = grant_row(db, id)? else {
+            return Ok(());
+        };
+        if seen.as_deref() != expected {
+            return Ok(());
+        }
+        let Some(stamp) = stamp() else {
+            return Ok(());
+        };
+        // Only the row just read: another server may have changed it.
+        let raw: Option<String> = db.query_row(
+            "SELECT stamp FROM host_grants WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )?;
+        db.execute(
+            "UPDATE host_grants SET stamp = ?2 WHERE id = ?1 AND grant_json = ?3 AND stamp IS ?4",
+            params![id, super::tag(&json, &stamp), json, raw],
+        )?;
+        Ok(())
     }
 
     pub fn roots_with_id(
@@ -1294,5 +1400,70 @@ mod tests {
                 (std::path::PathBuf::from("/p/s"), "nb.ipynb".to_string()),
             ]
         );
+    }
+
+    /// A restamp after a write goes by what the check before it saw.
+    fn restamps_compare(ids: &FileIds) {
+        let (a, _) = ids.index("a.ipynb");
+        let (b, _) = ids.index("b.ipynb");
+        // No grant: nothing to stamp.
+        assert_eq!(ids.check_for_write_with(&b, || Some("x".into())), None);
+        ids.set_grant(&a, Some(G), Some("s1")).unwrap();
+        let seen = ids.check_for_write_with(&a, || Some("s1".into()));
+        assert_eq!(seen, Some(Some("s1".to_string())));
+        // Another writer restamped meanwhile: left as it is.
+        ids.restamp(&a, "s2").unwrap();
+        ids.restamp_if(&a, Some("s1"), |_| Some("s3".into()))
+            .unwrap();
+        assert_eq!(ids.grant_checked(&a, Some("s2")).as_deref(), Some(G));
+        // As it was seen: stamped.
+        ids.restamp_if(&a, Some("s2"), |_| Some("s3".into()))
+            .unwrap();
+        assert_eq!(ids.grant_checked(&a, Some("s3")).as_deref(), Some(G));
+        // A dropped grant isn't brought back, and one with no stamp takes
+        // the file's.
+        assert_eq!(ids.check_for_write_with(&a, || Some("other".into())), None);
+        ids.set_grant(&b, Some(G), None).unwrap();
+        assert_eq!(ids.check_for_write_with(&b, || None), Some(None));
+        ids.restamp_if(&b, None, |_| Some("t1".into())).unwrap();
+        assert_eq!(ids.grant_checked(&b, Some("t1")).as_deref(), Some(G));
+    }
+
+    #[test]
+    fn in_memory_restamps_compare() {
+        restamps_compare(&FileIds::in_memory());
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_restamps_compare() {
+        let dir = tempfile::tempdir().unwrap();
+        restamps_compare(&FileIds::open(&dir.path().join("ids.db"), Path::new("/r")));
+    }
+
+    /// The database won't delete a grant its file outgrew: the write
+    /// that follows has nothing to restamp, and once the database works
+    /// again the grant doesn't match the new file.
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn a_stuck_grant_is_not_restamped() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ids.db");
+        let ids = FileIds::open(&db, Path::new("/r"));
+        let (id, _) = ids.index("a.ipynb");
+        ids.set_grant(&id, Some(G), Some("s1")).unwrap();
+        let other = sqlite::connect(&db).unwrap();
+        other
+            .execute_batch(
+                "CREATE TRIGGER no_delete BEFORE DELETE ON host_grants
+                BEGIN SELECT RAISE(FAIL, 'busy'); END;",
+            )
+            .unwrap();
+        let seen = ids.check_for_write_with(&id, || Some("outside".into()));
+        assert_eq!(seen, None);
+        other.execute_batch("DROP TRIGGER no_delete").unwrap();
+        // The write's own restamp, as a caller with no token would do.
+        assert!(seen.is_none());
+        assert_eq!(ids.grant_checked(&id, Some("written")), None);
     }
 }

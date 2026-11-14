@@ -95,12 +95,23 @@ pub(crate) fn grant_path(key: &str, path: &str) -> Result<String> {
     Ok(p)
 }
 
+/// A grant held on a file, under one root.
+pub(crate) struct Held {
+    ids: ganymede_contents::FileIds,
+    id: String,
+    root: PathBuf,
+    api: String,
+    /// The stamp the grant was stored under when it was last checked, for
+    /// [`restamp_held`]; `None` when it no longer stands.
+    seen: Option<Option<String>>,
+}
+
 /// The grants held on the file at `path` under every root that has one:
 /// a program that writes a notebook (`ganymede execute`, `nb clear`)
 /// doesn't know which root, a server's or `ganymede grant`'s, its grant
 /// was made under, and it may be run from a subdirectory, or from
-/// elsewhere. `(ids, id, root, API path)` for each (#767).
-fn held(path: &Path) -> Vec<(ganymede_contents::FileIds, String, PathBuf, String)> {
+/// elsewhere (#767).
+fn held(path: &Path) -> Vec<Held> {
     let Some(db) = ganymede_server::serve::file_ids_db() else {
         return Vec::new();
     };
@@ -121,24 +132,40 @@ fn held(path: &Path) -> Vec<(ganymede_contents::FileIds, String, PathBuf, String
             let ids = ganymede_contents::FileIds::open(&db, &root);
             let id = ids.get(&api)?;
             ids.grant(&id)?;
-            Some((ids, id, root, api))
+            Some(Held {
+                ids,
+                id,
+                root,
+                api,
+                seen: None,
+            })
         })
         .collect()
 }
 
-/// Drops the grants of the notebook at `path`, under every root, whose
-/// file changed outside Ganymede, before a program writes it (#767).
-pub(crate) fn check_held(path: &Path) {
-    for (ids, id, root, api) in held(path) {
-        ids.grant_checked_with(&id, || ganymede_contents::api_file_stamp(&root, &api));
+/// Before a program writes the notebook at `path`: drops the grants,
+/// under every root, whose file changed outside Ganymede (#767). What
+/// comes back is for [`restamp_held`] after the write.
+pub(crate) fn check_held(path: &Path) -> Vec<Held> {
+    let mut all = held(path);
+    for h in &mut all {
+        h.seen = h
+            .ids
+            .check_for_write_with(&h.id, || ganymede_contents::api_file_stamp(&h.root, &h.api));
     }
+    all
 }
 
-/// The program wrote the notebook at `path`: its grants keep matching.
-pub(crate) fn restamp_held(path: &Path) -> Result<()> {
-    for (ids, id, root, api) in held(path) {
-        ids.restamp_with(&id, |p| ganymede_contents::api_file_stamp(&root, p))
-            .map_err(|e| anyhow::anyhow!("keeping the grant for {api}: {e}"))?;
+/// The program wrote the notebook: the grants that stood before keep
+/// matching it.
+pub(crate) fn restamp_held(held: &[Held]) -> Result<()> {
+    for h in held {
+        let Some(seen) = &h.seen else { continue };
+        h.ids
+            .restamp_if(&h.id, seen.as_deref(), |p| {
+                ganymede_contents::api_file_stamp(&h.root, p)
+            })
+            .map_err(|e| anyhow::anyhow!("keeping the grant for {}: {e}", h.api))?;
     }
     Ok(())
 }
@@ -172,11 +199,11 @@ pub fn run(args: GrantArgs) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     };
     let path = api_path(&root, notebook)?;
-    let stamp = ganymede_contents::api_file_stamp(&root, &path);
+    let stamp = || ganymede_contents::api_file_stamp(&root, &path);
     if args.list {
         let grant = ids
             .get(&path)
-            .and_then(|id| ids.grant_checked(&id, stamp.as_deref()))
+            .and_then(|id| ids.grant_checked_with(&id, stamp))
             .map(|t| parse(&t))
             .unwrap_or_default();
         if grant.is_empty() {
@@ -192,7 +219,7 @@ pub fn run(args: GrantArgs) -> Result<ExitCode> {
     let (id, _) = ids.index(&path);
     // One its file outgrew is gone, so this starts from the defaults.
     let mut grant = ids
-        .grant_checked(&id, stamp.as_deref())
+        .grant_checked_with(&id, stamp)
         .map(|t| parse(&t))
         .unwrap_or_default();
     if args.revoke && args.grants.is_empty() {
@@ -244,8 +271,10 @@ pub fn run(args: GrantArgs) -> Result<ExitCode> {
         }
     }
     let text = (!grant.is_empty()).then(|| serde_json::to_string(&grant).expect("a grant is JSON"));
-    ids.set_grant(&id, text.as_deref(), stamp.as_deref())
-        .map_err(|e| anyhow::anyhow!("saving the grant: {e}"))?;
+    ids.set_grant_with(&id, text.as_deref(), |p| {
+        ganymede_contents::api_file_stamp(&root, p)
+    })
+    .map_err(|e| anyhow::anyhow!("saving the grant: {e}"))?;
     if grant.is_empty() {
         println!("{path}: the [host] defaults");
     } else {
