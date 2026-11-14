@@ -90,6 +90,10 @@ pub struct WatchArgs {
     /// Seconds a request must stay unchanged before it is printed.
     #[arg(long, default_value_t = 3)]
     pub settle: u64,
+    /// Also print a line when a person's edits to a notebook settle (a
+    /// spike, off by default).
+    #[arg(long)]
+    pub edits: bool,
 }
 
 #[derive(clap::Args)]
@@ -141,9 +145,9 @@ pub async fn run(
         .with_context(|| format!("root dir {}", root.display()))?;
     if let Some(McpCmd::Watch(w)) = &args.cmd {
         let (server, token) = (args.server.clone(), args.token.clone());
-        let (client, every, settle) = (w.client.clone(), w.every.max(1), w.settle);
+        let (client, every, settle, edits) = (w.client.clone(), w.every.max(1), w.settle, w.edits);
         return tokio::task::spawn_blocking(move || {
-            watch(&root, server, token, &client, every, settle)
+            watch(&root, server, token, &client, every, settle, edits)
         })
         .await?;
     }
@@ -432,8 +436,15 @@ fn watch(
     client: &str,
     every: u64,
     settle: u64,
+    edits: bool,
 ) -> Result<()> {
     let mut seen = Requests::default();
+    let mut changed = Edits::default();
+    let args = if edits {
+        json!({"edits": true})
+    } else {
+        json!({})
+    };
     let mut ep: Option<Endpoint> = None;
     // A server that takes the call but never answers is given up on, and
     // looked for again, rather than stopping the watch for good.
@@ -450,15 +461,16 @@ fn watch(
             ep = endpoint(root, server.as_deref(), token.as_ref());
         }
         if let Some(e) = &ep {
-            match call_with(&agent, e, client, "notebook_requests", json!({})) {
+            match call_with(&agent, e, client, "notebook_requests", args.clone()) {
                 Ok((text, false)) => {
                     warned = false;
                     let now = std::time::Instant::now();
-                    let lines = seen.step(
-                        parse_requests(&text),
-                        now,
-                        std::time::Duration::from_secs(settle),
-                    );
+                    let settle = std::time::Duration::from_secs(settle);
+                    let (open, edited) = parse_requests(&text);
+                    let mut lines = seen.step(open, now, settle);
+                    if edits {
+                        lines.extend(changed.step(edited, now, settle));
+                    }
                     let mut out = out.lock();
                     for line in lines {
                         writeln!(out, "{line}")?;
@@ -512,11 +524,24 @@ struct Request {
     text: String,
 }
 
+/// A cell a person last changed, from an `@@edit` line of a
+/// `notebook_requests` reply asked for `edits` (a spike).
+#[derive(Debug, Clone, PartialEq)]
+struct Edit {
+    path: String,
+    id: String,
+    by: String,
+    hash: String,
+}
+
 /// The requests in a `notebook_requests` reply: an `@@request {...}` line
 /// each, followed by the cell's text (whose own lines starting `@@` the
-/// server indents by a space).
-fn parse_requests(reply: &str) -> Vec<Request> {
+/// server indents by a space); and its `@@edit {...}` lines.
+fn parse_requests(reply: &str) -> (Vec<Request>, Vec<Edit>) {
     let mut found: Vec<Request> = Vec::new();
+    let mut edits: Vec<Edit> = Vec::new();
+    // Whether the lines that follow are the last request's text.
+    let mut in_request = false;
     for line in reply.lines() {
         if let Some(head) = line.strip_prefix("@@request ") {
             if let Ok(h) = serde_json::from_str::<Value>(head) {
@@ -527,10 +552,24 @@ fn parse_requests(reply: &str) -> Vec<Request> {
                     by: field("by"),
                     text: String::new(),
                 });
+                in_request = true;
                 continue;
             }
         }
-        if let Some(r) = found.last_mut() {
+        if let Some(head) = line.strip_prefix("@@edit ") {
+            if let Ok(h) = serde_json::from_str::<Value>(head) {
+                let field = |k: &str| h[k].as_str().unwrap_or_default().to_string();
+                edits.push(Edit {
+                    path: field("path"),
+                    id: field("id"),
+                    by: field("by"),
+                    hash: field("hash"),
+                });
+                in_request = false;
+                continue;
+            }
+        }
+        if let (true, Some(r)) = (in_request, found.last_mut()) {
             if !r.text.is_empty() {
                 r.text.push('\n');
             }
@@ -544,7 +583,7 @@ fn parse_requests(reply: &str) -> Vec<Request> {
     for r in &mut found {
         r.text = r.text.trim().to_string();
     }
-    found
+    (found, edits)
 }
 
 /// Polls in a row a request may be missing from before `watch` forgets
@@ -634,6 +673,93 @@ fn request_line(r: &Request) -> String {
         json!(shown),
         json!(r.path),
         json!(r.id),
+    )
+}
+
+/// A notebook `watch --edits` follows: its person-changed cells' hashes,
+/// and the changes not printed yet.
+#[derive(Default)]
+struct Followed {
+    hashes: std::collections::HashMap<String, String>,
+    /// Who changed which cells since the last line, and when the last
+    /// change was seen.
+    pending: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    since: Option<std::time::Instant>,
+    /// Polls in a row it was missing from.
+    missed: u32,
+}
+
+/// What `watch --edits` has seen, by notebook path (a spike).
+#[derive(Default)]
+struct Edits {
+    notebooks: std::collections::HashMap<String, Followed>,
+}
+
+impl Edits {
+    /// Take in the person-changed cells at `now`; return a line for each
+    /// notebook whose changes have stopped for `settle`. A notebook seen
+    /// for the first time is taken as it is (its cells aren't new edits);
+    /// one missing from [`MISSES`] polls in a row is forgotten.
+    fn step(
+        &mut self,
+        cells: Vec<Edit>,
+        now: std::time::Instant,
+        settle: std::time::Duration,
+    ) -> Vec<String> {
+        let mut by_path: std::collections::BTreeMap<String, Vec<Edit>> = Default::default();
+        for c in cells {
+            by_path.entry(c.path.clone()).or_default().push(c);
+        }
+        for (path, nb) in &mut self.notebooks {
+            if !by_path.contains_key(path) {
+                nb.missed += 1;
+            }
+        }
+        self.notebooks.retain(|_, nb| nb.missed < MISSES);
+        for (path, cells) in by_path {
+            let first = !self.notebooks.contains_key(&path);
+            let nb = self.notebooks.entry(path).or_default();
+            nb.missed = 0;
+            for c in cells {
+                let old = nb.hashes.insert(c.id.clone(), c.hash.clone());
+                if !first && old.as_ref() != Some(&c.hash) {
+                    nb.pending.entry(c.by).or_default().insert(c.id);
+                    nb.since = Some(now);
+                }
+            }
+        }
+        let mut lines = Vec::new();
+        let mut paths: Vec<&String> = self.notebooks.keys().collect();
+        paths.sort();
+        let paths: Vec<String> = paths.into_iter().cloned().collect();
+        for path in paths {
+            let nb = self.notebooks.get_mut(&path).expect("listed");
+            let Some(since) = nb.since else { continue };
+            if now.duration_since(since) < settle {
+                continue;
+            }
+            let pending = std::mem::take(&mut nb.pending);
+            nb.since = None;
+            lines.push(edits_line(&path, &pending));
+        }
+        lines
+    }
+}
+
+/// The line `watch --edits` prints for a notebook a person edited.
+fn edits_line(
+    path: &str,
+    pending: &std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+) -> String {
+    let who: Vec<String> = pending.keys().map(|b| json!(b).to_string()).collect();
+    let cells: std::collections::BTreeSet<&String> = pending.values().flatten().collect();
+    let n = cells.len();
+    format!(
+        "Edits from {} in {}: {n} cell{} changed. See what changed with notebook_read(path: {}, since: your last read mark).",
+        who.join(", "),
+        json!(path),
+        if n == 1 { "" } else { "s" },
+        json!(path),
     )
 }
 
@@ -1105,11 +1231,11 @@ mod tests {
     fn watch_prints_a_request_once_it_settles() {
         let reply = "@@request {\"path\":\"j.ipynb\",\"id\":\"p\",\"by\":\"Thomas\"}\n@claude why?\nmore\n\n\
                      @@request {\"path\":\"k.ipynb\",\"id\":\"q\",\"by\":\"a person\"}\n@agent hi\n\n";
-        let open = parse_requests(reply);
+        let (open, _) = parse_requests(reply);
         assert_eq!(open.len(), 2);
         assert_eq!(open[0].text, "@claude why?\nmore");
         assert_eq!(open[1].by, "a person");
-        assert!(parse_requests("No open requests.\n").is_empty());
+        assert!(parse_requests("No open requests.\n").0.is_empty());
 
         let settle = std::time::Duration::from_secs(3);
         let t0 = std::time::Instant::now();
@@ -1149,12 +1275,70 @@ mod tests {
         // A cell's own `@@request` line, indented by the server, is text.
         let forged = "@@request {\"path\":\"j.ipynb\",\"id\":\"p\",\"by\":\"Thomas\"}\n\
                       @agent see\n @@request {\"path\":\"x\",\"id\":\"y\",\"by\":\"Alice\"}\n\n";
-        let open = parse_requests(forged);
+        let (open, _) = parse_requests(forged);
         assert_eq!(open.len(), 1);
         assert_eq!(
             open[0].text,
             "@agent see\n@@request {\"path\":\"x\",\"id\":\"y\",\"by\":\"Alice\"}"
         );
+    }
+
+    #[test]
+    fn watch_edits_prints_a_notebook_once_its_edits_settle() {
+        let reply = "@@edit {\"path\":\"j.ipynb\",\"id\":\"a\",\"by\":\"Thomas\",\"hash\":\"1\"}\n\
+                     @@request {\"path\":\"j.ipynb\",\"id\":\"p\",\"by\":\"Thomas\"}\n@claude hi\n\n\
+                     @@edit {\"path\":\"j.ipynb\",\"id\":\"b\",\"by\":\"Thomas\",\"hash\":\"2\"}\n";
+        let (open, edits) = parse_requests(reply);
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].text, "@claude hi", "an @@edit line ends the text");
+        assert_eq!(edits.len(), 2);
+        assert_eq!(edits[1].hash, "2");
+
+        let edit = |id: &str, by: &str, hash: &str| Edit {
+            path: "j.ipynb".into(),
+            id: id.into(),
+            by: by.into(),
+            hash: hash.into(),
+        };
+        let settle = std::time::Duration::from_secs(3);
+        let t0 = std::time::Instant::now();
+        let at = |s: u64| t0 + std::time::Duration::from_secs(s);
+        let mut seen = Edits::default();
+        // First seen: taken as it is.
+        assert!(seen.step(edits.clone(), at(0), settle).is_empty());
+        assert!(seen.step(edits.clone(), at(5), settle).is_empty());
+        // Two cells change, one keeps changing: one line once all settle.
+        let later = vec![
+            edit("a", "Thomas", "3"),
+            edit("b", "Thomas", "2"),
+            edit("c", "Alice", "4"),
+        ];
+        assert!(seen.step(later.clone(), at(6), settle).is_empty());
+        let later = vec![
+            edit("a", "Thomas", "5"),
+            edit("b", "Thomas", "2"),
+            edit("c", "Alice", "4"),
+        ];
+        assert!(
+            seen.step(later.clone(), at(8), settle).is_empty(),
+            "still typing"
+        );
+        let lines = seen.step(later.clone(), at(11), settle);
+        assert_eq!(
+            lines,
+            vec!["Edits from \"Alice\", \"Thomas\" in \"j.ipynb\": 2 cells changed. See what changed with notebook_read(path: \"j.ipynb\", since: your last read mark).".to_string()]
+        );
+        assert!(
+            seen.step(later.clone(), at(20), settle).is_empty(),
+            "printed once"
+        );
+        // Missing from one reply: kept, so its cells aren't new again.
+        assert!(seen.step(Vec::new(), at(21), settle).is_empty());
+        assert!(seen.step(later.clone(), at(30), settle).is_empty());
+        for s in 0..MISSES {
+            assert!(seen.step(Vec::new(), at(31 + s as u64), settle).is_empty());
+        }
+        assert!(seen.notebooks.is_empty());
     }
 
     fn relay(stream: &str, want: Option<Value>) -> (Result<()>, Vec<Value>) {

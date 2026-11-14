@@ -6416,6 +6416,30 @@ async fn mcp_reports_who_changed_a_cell_and_requests() {
     )
     .await;
     assert!(out.contains("the request is marked done"), "{out}");
+
+    // With `edits` (a spike for `mcp watch --edits`): the person's other
+    // cells, each an `@@edit` line with a hash of its source, and not
+    // another agent's.
+    let edits = tool(agent.clone(), "notebook_requests", json!({"edits": true})).await;
+    let line = edits
+        .lines()
+        .find(|l| l.starts_with(r#"@@edit {"path":"j.ipynb","id":"p","by":"Thomas","hash":""#))
+        .unwrap_or_else(|| panic!("{edits}"));
+    assert_eq!(
+        line.len(),
+        r#"@@edit {"path":"j.ipynb","id":"p","by":"Thomas","hash":""}"#.len() + 16,
+        "{line}"
+    );
+    assert!(
+        !edits.contains("other-agent") && !edits.contains("@@request"),
+        "{edits}"
+    );
+    // Without it, none.
+    let plain = tool(agent.clone(), "notebook_requests", json!({})).await;
+    assert!(
+        plain.starts_with("No open requests.\n") && !plain.contains("@@edit"),
+        "{plain}"
+    );
 }
 
 /// `notebook_read(since)` lists what a person changed through the room

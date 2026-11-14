@@ -350,6 +350,10 @@ pub struct RequestsArgs {
     /// Notebook path; every notebook open in the server under this
     /// connection's folder when left out.
     pub path: Option<String>,
+    /// Also list every other cell a person last changed, as an `@@edit`
+    /// line with a hash of its source (a spike, for `ganymede mcp watch
+    /// --edits`).
+    pub edits: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -708,6 +712,7 @@ impl Notebooks {
         &self,
         Parameters(a): Parameters<RequestsArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let edits = a.edits.unwrap_or(false);
         let rooms = match a.path {
             Some(p) => {
                 let path = self.resolve(&p);
@@ -747,20 +752,24 @@ impl Notebooks {
                 &self.state.contents,
                 &room_id,
                 move |room| {
-                    let found: Vec<(String, String, String)> = match room.notebook_with_ids() {
+                    // (id, who, source, whether it is a request)
+                    let found: Vec<(String, String, String, bool)> = match room.notebook_with_ids()
+                    {
                         Some(Ok(nb)) => nb
                             .cells
                             .iter()
                             .filter_map(|c| {
                                 let id = c.id()?;
                                 let by = room.author(id).filter(|a| a.person)?;
-                                (marks::is_request(c, &client)).then(|| {
+                                let request = marks::is_request(c, &client);
+                                (request || edits).then(|| {
                                     (
                                         id.to_string(),
                                         by.name.clone(),
                                         c.source()
                                             .map(|s| s.as_str().to_string())
                                             .unwrap_or_default(),
+                                        request,
                                     )
                                 })
                             })
@@ -773,7 +782,20 @@ impl Notebooks {
             .await
             .unwrap_or_default();
             let shown = self.show(&path);
-            for (id, by, source) in found {
+            for (id, by, source, request) in found {
+                if !request {
+                    // A person's edit (the `edits` spike): a hash of the
+                    // source tells a poller it changed, without the text.
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    source.hash(&mut h);
+                    out.push_str(&format!(
+                        "@@edit {}\n",
+                        json!({"path": shown, "id": id, "by": by,
+                               "hash": format!("{:016x}", h.finish())})
+                    ));
+                    continue;
+                }
                 // A line of the cell's own that starts `@@` is indented by
                 // a space, so it can't pass for another request's header.
                 let body: Vec<String> = source
