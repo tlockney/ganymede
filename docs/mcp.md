@@ -73,10 +73,8 @@ auth off (an empty `token`) it adds nothing, since every route is open.
 A published page, from an agent or from the browser, replaces
 `mcp_token` as it does the server's token.
 
-> [!NOTE]
-> **Unreleased in ganymede-ui.** From a build of ganymede-ui's `main`,
-> the Mac app writes a server info file holding its `mcp_token`, which
-> opens only `/mcp`.
+From ganymede-ui 0.11.0 on, the Mac app writes a server info file
+holding its `mcp_token`, which opens only `/mcp`.
 
 `mcp_token` limits the agent only while it can't run code, with
 `mcp_read_only` or `mcp_no_execute`. A cell it runs can read the

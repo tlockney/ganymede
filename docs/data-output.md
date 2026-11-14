@@ -13,10 +13,6 @@ The rest of this note is the design, updated where 0.12.0 changed it.
 [Compared with Python](#compared-with-python) checks it against what
 Python notebooks do.
 
-> [!NOTE]
-> **Unreleased in ganymede-ui.** The apps render the table output only
-> in a build of ganymede-ui's `main`, not in its latest release.
-
 ## The problem
 
 A Python notebook shows a DataFrame as a table and a chart as a picture
@@ -158,11 +154,6 @@ in an untrusted notebook and needs no frame. It gives:
 
 The same renderer shows a pandas or Polars table from any notebook.
 
-> [!NOTE]
-> **Unreleased in ganymede-ui.** Paging and sorting through the kernel
-> come with ganymede-ui's next release. The latest release sorts and
-> pages the embedded rows only.
-
 ### In `ganymede nb publish`
 
 The published page has no scripts, so the page renders the table
@@ -229,11 +220,6 @@ module the same way. DuckDB's `.wasm` and worker (36 MB) are too big to
 bundle, so the app fetches them from jsDelivr into the page's cache the
 first time it is online, and maps them with cdp-kernel 0.12.1's
 `SQL_MODULES`. After that, SQL runs offline.
-
-> [!NOTE]
-> **Unreleased in ganymede-ui.** The latest release loads vega,
-> vega-lite and linkedom from esm.sh, and DuckDB from esm.sh and
-> jsDelivr, so the first chart and every SQL query need the network.
 
 With it, the journal skill's Plot section becomes one call, and its
 advice to end a cell with `chart.querySelector("svg")` and name the

@@ -42,10 +42,3 @@ The pages are built from the notebooks in
 as ganymede-ui last saved them. A widget needs a running kernel, so its
 page says so instead of showing it, and the Device notebook has no
 outputs, since its calls need the app.
-
-> [!NOTE]
-> **Unreleased in ganymede-ui.** The pages show ganymede-ui's `main`,
-> where Start Here, Web APIs, Charts and Diagrams and DuckDB use
-> `jupyter.table`, `jupyter.sql` and `jupyter.chart`. The apps' latest
-> release still has the earlier notebooks, which draw tables and charts
-> by hand.
