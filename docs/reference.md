@@ -74,7 +74,7 @@ same name in snake case, except where the last column says otherwise.
 | `--startup-timeout` | As above. | `startup_timeout_secs` |
 | `-q`, `--quiet` | As above. | `quiet` |
 | `--mcp` | Serve notebook tools for coding agents at `/mcp`, behind the token; see [Agents over MCP](mcp.md). | `mcp_enabled` |
-| `--config <file>` | The config file to read. Default: `ganymede.toml` in Ganymede's config dir, if it exists (unreleased; the latest release reads the Jupyter config dir); see [Config file](#config-file). | |
+| `--config <file>` | The config file to read. Default: `ganymede.toml` in Ganymede's config dir, if it exists; see [Config file](#config-file). | |
 | `--log-level`, `--log-file` | See [Logging](#logging). | |
 
 `serve` prints the URL, with its token, as the only line on stdout.
@@ -639,8 +639,8 @@ access-denied page; `--no-redirect-file` opens the URL itself instead, as
 
 | Variable | Effect |
 | --- | --- |
-| `GANYMEDE_CONFIG_DIR` | Ganymede's config dir, which holds `ganymede.toml`; see [Config file](#config-file). Unreleased. |
-| `XDG_CONFIG_HOME` | Holds Ganymede's config dir, `ganymede/`, on Linux and macOS, when `GANYMEDE_CONFIG_DIR` isn't set. Default `~/.config`. Unreleased. |
+| `GANYMEDE_CONFIG_DIR` | Ganymede's config dir, which holds `ganymede.toml`; see [Config file](#config-file). |
+| `XDG_CONFIG_HOME` | Holds Ganymede's config dir, `ganymede/`, on Linux and macOS, when `GANYMEDE_CONFIG_DIR` isn't set. Default `~/.config`. |
 | `JUPYTER_CONFIG_DIR` | The Jupyter config dir, for JupyterLab's settings and workspaces. Default `~/.jupyter`. |
 | `JUPYTER_DATA_DIR` | The user Jupyter data dir, where kernelspecs and signatures are. |
 | `JUPYTER_PATH` | More data dirs to search for kernelspecs, first. |
@@ -653,6 +653,11 @@ access-denied page; `--no-redirect-file` opens the URL itself instead, as
 | `GANYMEDE_CRASH_REPORTING` | `1` turns crash reporting on and `0` off, overriding `crash_reporting`; see [Privacy and crash reporting](privacy.md). |
 | `RUST_LOG` | The log filter, when `--log-level` isn't given. |
 | `HTTPS_PROXY` | Used for downloads. |
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release: `GANYMEDE_CONFIG_DIR` and `XDG_CONFIG_HOME`. The
+> latest release reads `ganymede.toml` from `JUPYTER_CONFIG_DIR`.
 
 `ganymede info` prints every directory in use.
 
