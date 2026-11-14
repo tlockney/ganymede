@@ -490,10 +490,13 @@ pub(crate) fn tailnet_login(
         // it another site's `<script>` or `<img>` looks like ours. Only
         // `tailscale serve` over HTTPS, then; other clients use the token.
         // A websocket handshake always carries `Origin`, which some
-        // browsers send there instead, so a same-origin one will do.
+        // browsers send there instead, so a same-origin HTTPS one will do.
         None => {
             is_websocket_upgrade(headers)
-                && headers.contains_key(header::ORIGIN)
+                && headers
+                    .get(header::ORIGIN)
+                    .and_then(|v| v.to_str().ok())
+                    .is_some_and(|o| o.starts_with("https://"))
                 && same_origin(headers)
         }
         Some(_) => {
@@ -919,7 +922,7 @@ async fn logout(State(state): State<AppState>, ext: Extensions, headers: HeaderM
     let name = login_cookie_name(&headers);
     let message = if state.token.is_some() && tailnet_login(&state, &Method::GET, &headers, &ext) {
         "Logged out, but your tailnet login is allowed in, so you are still signed in. \
-         Remove it from [tailscale] allow to keep it out."
+         Remove it from [tailscale] allow and restart the server to keep it out."
     } else if state.token.is_some() {
         "Successfully logged out."
     } else {

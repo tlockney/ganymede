@@ -8241,4 +8241,7 @@ async fn a_tailnet_websocket_handshake_may_rely_on_origin() {
     assert!(s.is_client_error(), "{s}");
     let (s, _, _) = send(&app, handshake(None)).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
+    // Same name over plain HTTP (`tailscale serve --http`): no identity.
+    let (s, _, _) = send(&app, handshake(Some("http://box.example.ts.net"))).await;
+    assert!(s.is_client_error(), "{s}");
 }
