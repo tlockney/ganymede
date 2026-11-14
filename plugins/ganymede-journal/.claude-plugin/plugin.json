@@ -1,6 +1,5 @@
 {
   "name": "ganymede-journal",
-  "version": "0.1.0",
   "description": "Journal an analysis into a live Jupyter notebook on a Ganymede server: MCP tools, a journaling skill, hooks and a reviewer agent.",
   "author": {
     "name": "Thomas Lockney",

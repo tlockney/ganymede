@@ -132,6 +132,24 @@ well, start the server with images on:
 the plugin's server to `ganymede mcp --images` (which always starts a
 server of its own, so a person can't watch live).
 
+### Updating the plugin
+
+The plugin installs from this repository's `main` and sets no version,
+so Claude Code takes each commit as a new version. Claude Code updates
+plugins from other marketplaces only when asked. To have it update the
+plugin in the background, open `/plugin`, go to **Marketplaces**,
+select `ganymede`, and choose **Enable auto-update**. To update by hand:
+
+```sh
+claude plugin marketplace update ganymede
+claude plugin update ganymede-journal@ganymede
+```
+
+Then restart Claude Code, or run `/reload-plugins` in a session. The
+plugin may be newer than the `ganymede` on your `PATH`; parts that need
+a newer `ganymede`, such as the `requests` monitor, stay off until you
+[update it](install.md#8-update-and-uninstall).
+
 ## Calling a tool from a script
 
 `ganymede mcp call TOOL [ARGS]` calls one tool and prints its text, for
