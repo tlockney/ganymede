@@ -596,6 +596,8 @@ jobs:
         run: node --test evals/journal/score.test.mjs
       - name: Review eval tests
         run: node --test evals/review/*.test.mjs
+      - name: Person and agent eval scoring tests
+        run: node --test evals/agent-native/score.test.mjs evals/lib/claude.test.mjs
 
   # The Linux release binary, built once and used by lsp, workstation
   # (ubuntu) and image instead of each compiling it (#460). It builds in

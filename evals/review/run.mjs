@@ -16,7 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assemblePrompt, branchOf, loadCases, selectCases, LENSES } from "./cases.mjs";
-import { runClaude } from "./claude.mjs";
+import { evalTimeoutMs, runClaude } from "./claude.mjs";
 import { judgeReview } from "./judge.mjs";
 import { aggregate, lensComparison, renderReport, reviewVerdict } from "./score.mjs";
 
@@ -152,7 +152,7 @@ async function main() {
   if (o.lens && !o.cases) cases = cases.filter((c) => c.kind !== "clean" && c.findings.some((f) => f.class === "A" || f.class === "B"));
   const entries = readResults(out);
   const done = new Set(entries.filter((e) => !e.error && e.judge).map(key));
-  const timeoutMs = Number(process.env.EVAL_TIMEOUT_MS ?? 60 * 60 * 1000);
+  const timeoutMs = evalTimeoutMs(60 * 60 * 1000);
   const work = path.join(o.cache, "work");
   const tasks = [];
   for (const c of cases) {

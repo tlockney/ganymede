@@ -57,8 +57,8 @@ def doc_sources(ynb):
     return [(c.get("id"), source(c)) for c in ynb.get()["cells"]]
 
 
-async def main(server, token, root, nb_path):
-    file = Path(root) / nb_path
+def room_ws_url(server, token, nb_path):
+    """Open (or join) the notebook's session and return its room's websocket URL."""
     req = urllib.request.Request(
         f"{server}/api/collaboration/session/{urllib.parse.quote(nb_path)}",
         data=json.dumps({"format": "json", "type": "notebook"}).encode(),
@@ -67,46 +67,57 @@ async def main(server, token, root, nb_path):
     )
     with OPENER.open(req, timeout=TIMEOUT) as r:
         session = json.load(r)
-    ws_url = (
+    return (
         server.replace("http", "ws", 1)
         + f"/api/collaboration/room/json:notebook:{session['fileId']}"
         + f"?sessionId={session['sessionId']}&token={token}"
     )
 
+
+class RoomSync:
+    """Keeps `doc` in sync with a room over `ws`: local edits go out, the room's come in."""
+
+    def __init__(self, doc):
+        self.doc = doc
+        self.applying = False
+        self.outgoing = asyncio.Queue()
+        doc.observe(self._on_update)
+
+    def _on_update(self, event):
+        if not self.applying:
+            self.outgoing.put_nowait(create_update_message(event.update))
+
+    async def pump(self, ws):
+        async for msg in ws:
+            if not isinstance(msg, bytes) or msg[0] != YMessageType.SYNC:
+                continue
+            self.applying = True
+            try:
+                reply = handle_sync_message(msg[1:], self.doc)
+            finally:
+                self.applying = False
+            if reply is not None:
+                await ws.send(reply)
+
+    async def send(self, ws):
+        while True:
+            await ws.send(await self.outgoing.get())
+
+
+async def main(server, token, root, nb_path):
+    file = Path(root) / nb_path
+    ws_url = room_ws_url(server, token, nb_path)
+
     doc = Doc()
     ynb = YNotebook(doc)
-    applying = False
-    outgoing = asyncio.Queue()
-
-    def on_update(event):
-        if not applying:
-            outgoing.put_nowait(create_update_message(event.update))
-
-    doc.observe(on_update)
+    sync = RoomSync(doc)
 
     async with connect(ws_url, max_size=None, proxy=None, open_timeout=TIMEOUT) as ws:
         await ws.send(create_sync_message(doc))
 
-        async def pump():
-            nonlocal applying
-            async for msg in ws:
-                if not isinstance(msg, bytes) or msg[0] != YMessageType.SYNC:
-                    continue
-                applying = True
-                try:
-                    reply = handle_sync_message(msg[1:], doc)
-                finally:
-                    applying = False
-                if reply is not None:
-                    await ws.send(reply)
-
-        async def send():
-            while True:
-                await ws.send(await outgoing.get())
-
         tasks = [
-            asyncio.create_task(pump(), name="pump"),
-            asyncio.create_task(send(), name="send"),
+            asyncio.create_task(sync.pump(ws), name="pump"),
+            asyncio.create_task(sync.send(ws), name="send"),
         ]
 
         def died():
