@@ -4,9 +4,11 @@ A design note for [#747](https://github.com/tlockney/ganymede/issues/747):
 one call that shows a table, one that draws a chart, and later an `sql`
 tag over DuckDB. Thomas agreed the design on 2026-11-13, with each
 decision's recommendation ([Decisions](#decisions)). cdp-kernel 0.11.0
-has `jupyter.table`, `jupyter.sql` and `jupyter.chart`;
+has `jupyter.table`, `jupyter.sql` and `jupyter.chart`; cdp-kernel 0.12.0
+adds paging through the kernel and the `modules` option the apps use to
+draw charts offline.
 [#747](https://github.com/tlockney/ganymede/issues/747) tracks the rest.
-The rest of this note describes the state before that work.
+The rest of this note is the design, updated where 0.12.0 changed it.
 [Compared with Python](#compared-with-python) checks it against what
 Python notebooks do.
 
@@ -131,9 +133,13 @@ as JSON typed `array` and `object`; binary as its length. A string over
 By default the output embeds 1,000 rows, and stops earlier at 1 MB of
 JSON. `limit` raises it to 10,000 or lowers it. The footer and the
 summary always say "1,000 of 52,410 rows", so a cut table is never
-mistaken for the whole. Paging through the kernel, where the viewer
-asks for more rows over a comm, comes later; the `ganymede` key leaves
-room for it.
+mistaken for the whole.
+
+A cut table pages through the kernel (cdp-kernel 0.12.0). The kernel
+keeps the last 16 cut tables it showed, and the output names its copy as
+`ganymede.page`. The viewer asks for more rows, and for sorted pages,
+over the `ganymede.table.v1` comm. A viewer with no kernel, or a kernel
+that no longer has the table, keeps to the embedded rows.
 
 ### In the apps
 
@@ -142,15 +148,24 @@ above HTML. It renders text into table cells, never HTML, so it is safe
 in an untrusted notebook and needs no frame. It gives:
 
 - a sticky header with each column's name and type;
-- sorting by a column, over the embedded rows, with nulls last; when
-  the table is cut, the footer says "sorted within the first 1,000 of
-  52,410 rows", so the top of a sorted view isn't read as the top of
-  the whole table (paging through the kernel fixes this later);
+- sorting by a column, with nulls last; when the table is cut and
+  can't page through the kernel (an untrusted notebook, or no kernel),
+  sorting covers the embedded rows, and the footer says "sorted within
+  the first 1,000 of 52,410 rows", so the top of a sorted view isn't
+  read as the top of the whole table;
+- paging and sorting through the kernel, for a trusted output whose
+  kernel still has the table: every row is reachable, and a sort covers
+  the whole table, up to a million rows;
 - pages of 50 rows, and the "N of M rows" footer;
 - numbers right-aligned with tabular figures, nulls dimmed, dates in
   ISO form, long text cut with the full value on hover.
 
 The same renderer shows a pandas or Polars table from any notebook.
+
+> [!NOTE]
+> **Unreleased in ganymede-ui.** Paging and sorting through the kernel
+> come with ganymede-ui's next release. The latest release sorts and
+> pages the embedded rows only.
 
 ### In `ganymede nb publish`
 
@@ -211,10 +226,15 @@ frontend that draws it interactively.
 The libraries load through the kernel's own module loading, pinned by
 cdp-kernel, the first time a cell draws a chart: nothing loads for a
 notebook that draws none, and nothing is added to cdp-kernel's install.
-In the apps they come through the same CDN as other `npm:` imports, so
-the first chart needs the network, as any import does today. Since the
-apps are meant to be a full runtime, bundling them with the in-app
-kernel is a later step (decision 7).
+The apps bundle all three and map cdp-kernel's specifiers to them with
+the browser kernel's `modules` option (cdp-kernel 0.12.0), so charts
+draw offline (decision 7). `jupyter.sql` still loads DuckDB's worker
+and `.wasm` from jsDelivr, so it needs the network.
+
+> [!NOTE]
+> **Unreleased in ganymede-ui.** The latest release loads vega,
+> vega-lite and linkedom from esm.sh, so the first chart needs the
+> network.
 
 With it, the journal skill's Plot section becomes one call, and its
 advice to end a cell with `chart.querySelector("svg")` and name the
@@ -279,7 +299,7 @@ takes from it.
 | Job | Python | This design |
 | --- | --- | --- |
 | Show a DataFrame | pandas: HTML and text, up to 60 rows, past that the first and last 5 (`display.max_rows`, `min_rows`). The Table Schema output exists but is off by default (`display.html.table_schema`). Polars: HTML with the shape, each column's dtype under its name, and head and tail rows. | Table Schema output always, with JSON rows capped at 1,000 and the total; HTML and text fallbacks |
-| Interactive table | itables: DataTables in HTML and JavaScript, so it needs a trusted notebook; it downsamples past a size limit. ipydatagrid: a widget, so it needs a live kernel or saved widget state. marimo: a table that sorts, searches and pages through the kernel. | A renderer in the apps over plain data: no scripts in the output, works untrusted and with no kernel; paging through the kernel later, as marimo does |
+| Interactive table | itables: DataTables in HTML and JavaScript, so it needs a trusted notebook; it downsamples past a size limit. ipydatagrid: a widget, so it needs a live kernel or saved widget state. marimo: a table that sorts, searches and pages through the kernel. | A renderer in the apps over plain data: no scripts in the output, works untrusted and with no kernel; paging and sorting through the kernel, as marimo does |
 | Vega-Lite chart | Altair: renders in the frontend through its JavaScript; `vl-convert` makes SVG or PNG without a browser; refuses more than 5,000 rows of inline data by default (`MaxRowsError`). | Always SVG, rendered in the kernel, so every reader shows the same picture |
 | Other charts | matplotlib: a PNG (or SVG) with its legend inside, which every reader shows. Plotly: JavaScript in the output, static only through Kaleido. | Plot drawn to SVG with the legend moved inside, which matplotlib always has |
 | SQL | JupySQL: `%sql` and `%%sql` magics, Python values put into the query text with `{{name}}`. DuckDB's Python API: `duckdb.sql(...)` reads a DataFrame in scope by its variable name. | A tagged template with bound parameters, so values never become query text; `sql.load` names a JavaScript value as a table, since JavaScript can't look a variable up by name |
