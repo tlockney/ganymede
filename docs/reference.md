@@ -613,7 +613,9 @@ checks and cleans up. A server embedded in an app writes neither.
 > [!NOTE]
 > **Unreleased in ganymede-ui.** From a build of ganymede-ui's `main`,
 > the Mac app writes `jpserver-<pid>.json` (no open page) while its MCP
-> setting is on, so `ganymede mcp` finds it.
+> setting is on, so `ganymede mcp` finds it. Its `token` is the server's
+> `mcp_token`, which opens only `/mcp`, so `jupyter server list` and other
+> readers of the file get a URL the server refuses.
 
 `lab` and `ui` open the browser on `jpserver-<pid>-open.html`, as
 `jupyter_server` does, so the token is not in the browser command's
