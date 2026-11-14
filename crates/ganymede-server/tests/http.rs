@@ -6416,6 +6416,59 @@ async fn mcp_reports_who_changed_a_cell_and_requests() {
     )
     .await;
     assert!(out.contains("the request is marked done"), "{out}");
+
+    // With `edits` (a spike for `mcp watch --edits`): each notebook
+    // read, and the person's other cells as `@@edit` lines with a hash,
+    // answered requests among them (the watch takes those as they are);
+    // not another agent's cells.
+    let edits = tool(agent.clone(), "notebook_requests", json!({"edits": true})).await;
+    assert!(
+        edits.starts_with("No open requests.\n@@notebook {\"path\":\"j.ipynb\"}\n")
+            && edits.contains(r#"@@edit {"path":"j.ipynb","id":"p","#)
+            && edits.contains(r#"@@edit {"path":"j.ipynb","id":"q","#)
+            && !edits.contains("other-agent"),
+        "{edits}"
+    );
+    let update = person_edit(Box::new(|txn, roots| {
+        let end = roots.cells.len(txn);
+        schema::insert_cell(
+            txn,
+            &roots.cells,
+            end,
+            json!({"cell_type": "markdown", "id": "n", "metadata": {}, "source": "a note"}),
+        );
+    }));
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::Update(update)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let edits = loop {
+        let edits = tool(agent.clone(), "notebook_requests", json!({"edits": true})).await;
+        if edits.contains(r#""id":"n""#) {
+            break edits;
+        }
+        assert!(std::time::Instant::now() < deadline, "{edits}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let line = edits
+        .lines()
+        .find(|l| l.starts_with(r#"@@edit {"path":"j.ipynb","id":"n","by":"Thomas","hash":""#))
+        .unwrap_or_else(|| panic!("{edits}"));
+    assert_eq!(
+        line.len(),
+        r#"@@edit {"path":"j.ipynb","id":"n","by":"Thomas","hash":""}"#.len() + 16,
+        "{line}"
+    );
+    assert_eq!(edits.matches("@@edit").count(), 3, "{edits}");
+    assert!(!edits.contains("other-agent"), "{edits}");
+    // Without it, none.
+    let plain = tool(agent.clone(), "notebook_requests", json!({})).await;
+    assert!(
+        plain.starts_with("No open requests.\n") && !plain.contains("@@edit"),
+        "{plain}"
+    );
 }
 
 /// `notebook_read(since)` lists what a person changed through the room

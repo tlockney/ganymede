@@ -192,6 +192,35 @@ a request while it is idle; with a `ganymede` that has no `mcp watch`
 nothing. Whether a monitor's line starts a turn by itself, or waits for
 the person's next message, Claude Code doesn't document.
 
+#### Waking the agent on any edit (spike)
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`ganymede mcp watch --edits` also prints a line when a person's edits
+to a notebook settle, so an agent can respond to an edit that isn't a
+request. It is a spike, off by default, to find out whether that helps
+or distracts (#794); the journal plugin's monitor passes it when
+`GANYMEDE_WATCH_EDITS` is set to anything non-empty:
+
+```text
+Edits from "Thomas" in "j.ipynb": 2 cells changed. See what changed with notebook_read(path: "j.ipynb", since: your last read mark).
+```
+
+It asks `notebook_requests` with `edits: true`, which adds an
+`@@notebook` line for each notebook it read and an `@@edit` line for
+each other cell a person last changed, with a hash of the cell's kind
+and source but not the text. A notebook the watch sees listed for the
+first time is taken as it is; after that, a changed or new cell is
+counted until no cell in that notebook has changed for `--settle`
+seconds, then one line names who changed how many cells. A request the
+agent answers is taken as it is, so the answer isn't an edit, but the
+person's later edits to it are. A cell that becomes a request is left
+to the request's line. Deleted cells, and cells an agent changed last,
+aren't counted. With `GANYMEDE_WATCH_EDITS` set and a `ganymede`
+without `--edits`, the monitor still watches for requests.
+
 `cell_add` takes a `mark`: a read mark to move past the new cell, so a
 hook that adds a cell for the agent (as the plugin's Bash hook does)
 isn't reported to the agent as someone else's edit.

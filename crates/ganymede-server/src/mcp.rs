@@ -350,6 +350,10 @@ pub struct RequestsArgs {
     /// Notebook path; every notebook open in the server under this
     /// connection's folder when left out.
     pub path: Option<String>,
+    /// Also list each notebook read, as an `@@notebook` line, and every
+    /// other cell a person last changed, as an `@@edit` line with a hash of its kind and source (a spike, for
+    /// `ganymede mcp watch --edits`).
+    pub edits: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -708,6 +712,7 @@ impl Notebooks {
         &self,
         Parameters(a): Parameters<RequestsArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let edits = a.edits.unwrap_or(false);
         let rooms = match a.path {
             Some(p) => {
                 let path = self.resolve(&p);
@@ -740,6 +745,9 @@ impl Notebooks {
             }
         };
         let mut out = String::new();
+        // `@@notebook` and `@@edit` lines (the `edits` spike), after the
+        // requests.
+        let mut changed = String::new();
         for (room_id, path) in rooms {
             let client = self.client_name();
             let found = with_notebook(
@@ -747,33 +755,57 @@ impl Notebooks {
                 &self.state.contents,
                 &room_id,
                 move |room| {
-                    let found: Vec<(String, String, String)> = match room.notebook_with_ids() {
-                        Some(Ok(nb)) => nb
-                            .cells
-                            .iter()
-                            .filter_map(|c| {
-                                let id = c.id()?;
-                                let by = room.author(id).filter(|a| a.person)?;
-                                (marks::is_request(c, &client)).then(|| {
-                                    (
-                                        id.to_string(),
-                                        by.name.clone(),
-                                        c.source()
-                                            .map(|s| s.as_str().to_string())
-                                            .unwrap_or_default(),
-                                    )
-                                })
-                            })
-                            .collect(),
-                        _ => Vec::new(),
-                    };
+                    let found: Option<Vec<(String, String, PersonCell)>> =
+                        match room.notebook_with_ids() {
+                            Some(Ok(nb)) => Some(
+                                nb.cells
+                                    .iter()
+                                    .filter_map(|c| {
+                                        let id = c.id()?;
+                                        let by = room.author(id).filter(|a| a.person)?;
+                                        let found = if marks::is_request(c, &client) {
+                                            PersonCell::Request(
+                                                c.source()
+                                                    .map(|s| s.as_str().to_string())
+                                                    .unwrap_or_default(),
+                                            )
+                                        } else if edits {
+                                            PersonCell::Edit(marks::fingerprint(c))
+                                        } else {
+                                            return None;
+                                        };
+                                        Some((id.to_string(), by.name.clone(), found))
+                                    })
+                                    .collect(),
+                            ),
+                            _ => None,
+                        };
                     (found, Effects::default())
                 },
             )
             .await
-            .unwrap_or_default();
+            .flatten();
+            let Some(found) = found else { continue };
             let shown = self.show(&path);
-            for (id, by, source) in found {
+            if edits {
+                // Every notebook read, even with no person's cells: a
+                // poller takes one it hasn't seen before as it is.
+                changed.push_str(&format!("@@notebook {}\n", json!({"path": shown})));
+            }
+            for (id, by, found) in found {
+                let source = match found {
+                    PersonCell::Request(source) => source,
+                    // A person's edit: a hash of the cell tells a poller
+                    // it changed, without the text.
+                    PersonCell::Edit(hash) => {
+                        changed.push_str(&format!(
+                            "@@edit {}\n",
+                            json!({"path": shown, "id": id, "by": by,
+                                   "hash": format!("{hash:016x}")})
+                        ));
+                        continue;
+                    }
+                };
                 // A line of the cell's own that starts `@@` is indented by
                 // a space, so it can't pass for another request's header.
                 let body: Vec<String> = source
@@ -797,6 +829,7 @@ impl Notebooks {
         if out.is_empty() {
             out.push_str("No open requests.\n");
         }
+        out.push_str(&changed);
         text(out)
     }
 
@@ -1638,6 +1671,15 @@ async fn adopt_own_runs(
         ((), Effects::default())
     })
     .await;
+}
+
+/// A person's cell `notebook_requests` lists.
+enum PersonCell {
+    /// An open request, with its text.
+    Request(String),
+    /// Another cell they last changed (the `edits` spike), with
+    /// [`marks::fingerprint`].
+    Edit(u64),
 }
 
 fn now() -> String {

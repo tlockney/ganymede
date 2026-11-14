@@ -68,7 +68,13 @@ test("the monitor runs ganymede mcp watch when the journal skill starts", () => 
   // `mcp watch` exits quietly.
   assert.match(m.command, /^g="\$\{GANYMEDE_BIN:-ganymede\}"; /);
   assert.match(m.command, /"\$g" mcp watch --help >\/dev\/null 2>&1 \|\| exit 0; /);
-  assert.match(m.command, /exec "\$g" mcp watch --client claude-code$/);
+  // `--edits` only when GANYMEDE_WATCH_EDITS is set and the binary has
+  // it, so an older one still watches for requests.
+  assert.match(
+    m.command,
+    /e=; \[ -n "\$GANYMEDE_WATCH_EDITS" \] && "\$g" mcp watch --help 2>\/dev\/null \| grep -q -- --edits && e=--edits; /,
+  );
+  assert.match(m.command, /exec "\$g" mcp watch --client claude-code \$e$/);
   assert.equal(m.when, "on-skill-invoke:journal");
 });
 

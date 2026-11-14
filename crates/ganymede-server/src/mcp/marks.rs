@@ -99,17 +99,7 @@ pub fn is_request(cell: &Cell, client: &str) -> bool {
     let Cell::Markdown(m) = cell else {
         return false;
     };
-    // Done only for this cell: a copy of an answered request (paste,
-    // duplicate, split) keeps the metadata under a new id, and a question
-    // written in it is a new request.
-    let done = m
-        .metadata
-        .get("ganymede")
-        .and_then(|g| g.get("request"))
-        .filter(|r| r.get("done").is_some())
-        .and_then(|r| r.get("id"))
-        .and_then(|i| i.as_str());
-    if done.is_some() && done == m.id.as_deref() {
+    if is_answered(cell) {
         return false;
     }
     let text = m.source.trim_start();
@@ -180,7 +170,26 @@ pub fn ran(
         .collect()
 }
 
-fn fingerprint(cell: &Cell) -> u64 {
+/// Whether `cell` is a request an agent answered: its
+/// `metadata.ganymede.request` is done for this cell's own id. A copy of
+/// an answered request (paste, duplicate, split) keeps the metadata under
+/// a new id, and a question written in it is a new request.
+pub fn is_answered(cell: &Cell) -> bool {
+    let Cell::Markdown(m) = cell else {
+        return false;
+    };
+    let done = m
+        .metadata
+        .get("ganymede")
+        .and_then(|g| g.get("request"))
+        .filter(|r| r.get("done").is_some())
+        .and_then(|r| r.get("id"))
+        .and_then(|i| i.as_str());
+    done.is_some() && done == m.id.as_deref()
+}
+
+/// A hash of a cell's kind and source.
+pub fn fingerprint(cell: &Cell) -> u64 {
     let (kind, source) = match cell {
         Cell::Code(c) => ("code", c.source.as_str()),
         Cell::Markdown(c) => ("markdown", c.source.as_str()),

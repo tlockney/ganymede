@@ -1,7 +1,7 @@
 [
   {
     "name": "requests",
-    "command": "g=\"${GANYMEDE_BIN:-ganymede}\"; \"$g\" mcp watch --help >/dev/null 2>&1 || exit 0; exec \"$g\" mcp watch --client claude-code",
+    "command": "g=\"${GANYMEDE_BIN:-ganymede}\"; \"$g\" mcp watch --help >/dev/null 2>&1 || exit 0; e=; [ -n \"$GANYMEDE_WATCH_EDITS\" ] && \"$g\" mcp watch --help 2>/dev/null | grep -q -- --edits && e=--edits; exec \"$g\" mcp watch --client claude-code $e",
     "description": "Requests to you that a person writes in a journal (@agent cells)",
     "when": "on-skill-invoke:journal"
   }
