@@ -23,11 +23,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { claudeInvocation, evalTimeoutMs } from "../lib/claude.mjs";
 import { measures, score } from "./score.mjs";
 import { TASKS } from "./tasks.mjs";
-
-const here = path.dirname(fileURLToPath(import.meta.url));
-const plugin = path.resolve(here, "../../plugins/ganymede-journal");
 
 function args(argv) {
   const o = { runs: 1, task: null, out: null, rescore: null };
@@ -42,34 +40,18 @@ function args(argv) {
   return o;
 }
 
-const ALLOWED = [
-  "mcp__plugin_ganymede-journal_ganymede",
-  "Read",
-  "Edit",
-  "Write",
-  "Bash(grep:*)",
-  "Bash(wc:*)",
-  "Bash(head:*)",
-  "Bash(ls:*)",
-].join(",");
-
 function session(task, dir) {
   for (const [name, body] of Object.entries(task.files)) {
     fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
     fs.writeFileSync(path.join(dir, name), body);
   }
-  const bin = process.env.CLAUDE_BIN ?? "claude";
-  const extra = process.env.CLAUDE_ARGS?.split(" ").filter(Boolean) ?? ["--allowedTools", ALLOWED];
-  const env = { ...process.env };
-  if (process.env.GANYMEDE_BIN) {
-    env.PATH = `${path.dirname(path.resolve(process.env.GANYMEDE_BIN))}${path.delimiter}${env.PATH}`;
-  }
-  const r = spawnSync(bin, ["-p", task.prompt, "--plugin-dir", plugin, ...extra], {
+  const { bin, args, env } = claudeInvocation(task.prompt);
+  const r = spawnSync(bin, args, {
     cwd: dir,
     env,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "inherit"],
-    timeout: Number(process.env.EVAL_TIMEOUT_MS ?? 30 * 60 * 1000),
+    timeout: evalTimeoutMs(30 * 60 * 1000),
   });
   if (r.error && r.error.code !== "ETIMEDOUT") throw r.error;
   const failed = r.error?.code === "ETIMEDOUT" ? "timed out" : r.status !== 0 ? `exited ${r.status ?? r.signal}` : null;
