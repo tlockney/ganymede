@@ -6,7 +6,8 @@ tag over DuckDB. Thomas agreed the design on 2026-11-13, with each
 decision's recommendation ([Decisions](#decisions)). cdp-kernel 0.11.0
 has `jupyter.table`, `jupyter.sql` and `jupyter.chart`; cdp-kernel 0.12.0
 adds paging through the kernel and the `modules` option the apps use to
-draw charts offline.
+draw charts offline, and cdp-kernel 0.12.1 lets the apps run `jupyter.sql`
+offline too.
 [#747](https://github.com/tlockney/ganymede/issues/747) tracks the rest.
 The rest of this note is the design, updated where 0.12.0 changed it.
 [Compared with Python](#compared-with-python) checks it against what
@@ -228,13 +229,16 @@ cdp-kernel, the first time a cell draws a chart: nothing loads for a
 notebook that draws none, and nothing is added to cdp-kernel's install.
 The apps bundle all three and map cdp-kernel's specifiers to them with
 the browser kernel's `modules` option (cdp-kernel 0.12.0), so charts
-draw offline (decision 7). `jupyter.sql` still loads DuckDB's worker
-and `.wasm` from jsDelivr, so it needs the network.
+draw offline (decision 7). For `jupyter.sql` they bundle DuckDB's
+module the same way. DuckDB's `.wasm` and worker (36 MB) are too big to
+bundle, so the app fetches them from jsDelivr into the page's cache the
+first time it is online, and maps them with cdp-kernel 0.12.1's
+`SQL_MODULES`. After that, SQL runs offline.
 
 > [!NOTE]
 > **Unreleased in ganymede-ui.** The latest release loads vega,
-> vega-lite and linkedom from esm.sh, so the first chart needs the
-> network.
+> vega-lite and linkedom from esm.sh, and DuckDB from esm.sh and
+> jsDelivr, so the first chart and every SQL query need the network.
 
 With it, the journal skill's Plot section becomes one call, and its
 advice to end a cell with `chart.querySelector("svg")` and name the
