@@ -171,16 +171,20 @@ current directory (with `--server URL`, in any notebook open in that
 server, as for `mcp call`):
 
 ```text
-Request from "Thomas" in j.ipynb: "@claude does 2019 change the trend?". Answer it in the notebook with cell_add(path: "j.ipynb", answers: "p").
+Request from "Thomas" in "j.ipynb": "@claude does 2019 change the trend?". Answer it in the notebook with cell_add(path: "j.ipynb", answers: "p").
 ```
 
 It finds the server as `mcp call` does, every `--every` seconds (2)
 asks it for the open requests (`notebook_requests`), and prints a
 request once its text has stayed the same for `--settle` seconds (3),
-so a person still typing isn't interrupted. A request is printed once,
-and again only if the person edits it; an answered one is gone. With no
-server, or one that stops answering, it waits for one; a server without
-`notebook_requests` gets one line on stderr. `--client` (default
+so a person still typing isn't interrupted. The line holds the
+request's text on one line, up to 200 characters. A request is printed
+once, and again only if the person edits it, or if its notebook was
+closed for a while and opened again; an answered one is gone. With no
+server, or one that stops answering, it waits for one; a call that
+fails (a server without `notebook_requests`, a wrong token) gets one
+line on stderr. The journal plugin's monitor runs `GANYMEDE_BIN` when
+it is set, as its hooks do. `--client` (default
 `claude-code`) is the name a request may use, `@claude` here. The
 journal plugin runs it as a monitor, so a Claude Code session learns of
 a request while it is idle; with a `ganymede` that has no `mcp watch`

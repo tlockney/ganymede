@@ -474,8 +474,16 @@ fn watch(
                     }
                     ep = None;
                 }
-                // The server went or didn't answer: look again next time.
-                Err(_) => ep = None,
+                // The server went or didn't answer, or refused the
+                // call (a wrong token): say so once, and look again next
+                // time.
+                Err(e) => {
+                    if !warned {
+                        eprintln!("ganymede mcp watch: {e:#}");
+                        warned = true;
+                    }
+                    ep = None;
+                }
             }
         }
         std::thread::sleep(std::time::Duration::from_secs(every));
@@ -611,18 +619,19 @@ impl Requests {
     }
 }
 
-/// The line `watch` prints for a request.
+/// The line `watch` prints for a request: its text on one line, up to
+/// 200 characters.
 fn request_line(r: &Request) -> String {
-    let first = r.text.lines().next().unwrap_or_default();
-    let mut first: String = first.chars().take(200).collect();
-    if first.len() < r.text.len() {
-        first.push_str(" …");
+    let flat = r.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut shown: String = flat.chars().take(200).collect();
+    if shown.len() < flat.len() {
+        shown.push_str(" …");
     }
     format!(
         "Request from {} in {}: {}. Answer it in the notebook with cell_add(path: {}, answers: {}).",
         json!(r.by),
-        r.path,
-        json!(first),
+        json!(r.path),
+        json!(shown),
         json!(r.path),
         json!(r.id),
     )
@@ -1114,7 +1123,7 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(
             lines[0],
-            "Request from \"Thomas\" in j.ipynb: \"@claude why? …\". Answer it in the notebook with cell_add(path: \"j.ipynb\", answers: \"p\")."
+            "Request from \"Thomas\" in \"j.ipynb\": \"@claude why? more\". Answer it in the notebook with cell_add(path: \"j.ipynb\", answers: \"p\")."
         );
         assert!(
             seen.step(open.clone(), at(9), settle).is_empty(),

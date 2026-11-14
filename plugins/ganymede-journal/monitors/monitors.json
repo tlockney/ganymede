@@ -1,7 +1,7 @@
 [
   {
     "name": "requests",
-    "command": "ganymede mcp watch --help >/dev/null 2>&1 || exit 0; exec ganymede mcp watch --client claude-code",
+    "command": "g=\"${GANYMEDE_BIN:-ganymede}\"; \"$g\" mcp watch --help >/dev/null 2>&1 || exit 0; exec \"$g\" mcp watch --client claude-code",
     "description": "Requests to you that a person writes in a journal (@agent cells)",
     "when": "on-skill-invoke:journal"
   }
