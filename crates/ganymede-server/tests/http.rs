@@ -7905,7 +7905,8 @@ fn tailnet_req(method: &str, path: &str, login: Option<&str>, peer: &str) -> Req
     let mut r = Request::builder()
         .method(method)
         .uri(path)
-        .header(header::HOST, "box.example.ts.net");
+        .header(header::HOST, "box.example.ts.net")
+        .header("sec-fetch-site", "same-origin");
     if let Some(l) = login {
         r = r.header("tailscale-user-login", l);
     }
@@ -8167,4 +8168,47 @@ async fn a_tailnet_login_is_refused_on_cross_site_subresources() {
     let (s, h, _) = send(&app, req("/lab", &framed)).await;
     assert_eq!(s, StatusCode::FOUND, "sent to log in");
     assert!(h[header::LOCATION].to_str().unwrap().starts_with("/login"));
+}
+
+/// Over plain HTTP browsers send no `Sec-Fetch-*`, so another site's
+/// `<script>` would look like ours: without the header, no identity.
+#[tokio::test]
+async fn a_tailnet_login_needs_fetch_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = tailnet_app(dir.path(), &["me@example.com"]);
+    let mut req = tailnet_req(
+        "GET",
+        "/api/contents",
+        Some("me@example.com"),
+        "127.0.0.1:1",
+    );
+    req.headers_mut().remove("sec-fetch-site");
+    let (s, _, _) = send(&app, req).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+/// The navigation exception is for following a link: a cross-site form
+/// POST gets no identity, XSRF token or not.
+#[tokio::test]
+async fn a_cross_site_post_gets_no_tailnet_login() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = tailnet_app(dir.path(), &["me@example.com"]);
+    let mut req = tailnet_req(
+        "POST",
+        "/api/contents",
+        Some("me@example.com"),
+        "127.0.0.1:1",
+    );
+    for (k, v) in [
+        ("sec-fetch-site", "cross-site"),
+        ("sec-fetch-mode", "navigate"),
+        ("sec-fetch-dest", "document"),
+        ("cookie", "_xsrf=abc"),
+        ("x-xsrftoken", "abc"),
+    ] {
+        req.headers_mut().insert(k, v.parse().unwrap());
+    }
+    let (s, _, _) = send(&app, req).await;
+    assert_ne!(s, StatusCode::CREATED);
+    assert!(s.is_client_error(), "{s}");
 }

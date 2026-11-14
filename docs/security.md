@@ -199,11 +199,21 @@ before:
 - **Only `tailscale serve` may reach the port.** The header is believed
   because the request arrives on loopback, where `tailscale serve`
   connects from. Anything else that arrives there can send it too, so
-  the port must be reached only through `tailscale serve`'s HTTP or
-  HTTPS proxy, which sets the header itself. Not through another reverse
-  proxy (Caddy, nginx), a TCP-mode `tailscale serve --tcp` or
-  `tailscale funnel`, or an `ssh -L` tunnel: each passes a client's own
-  header through.
+  the port must be reached only through `tailscale serve`'s HTTPS
+  proxy, which sets the header itself. Not through another reverse proxy
+  (Caddy, nginx), TCP-mode forwarding (`tailscale serve --tcp`,
+  `tailscale funnel --tcp`), or an `ssh -L` tunnel: each passes a
+  client's own header through. (`tailscale funnel` in HTTP mode drops
+  the header, so a funnel never carries an identity.)
+- **HTTPS only.** The server also needs the browser's `Sec-Fetch-Site`
+  header to tell its own pages' requests from another site's `<script>`
+  or image, and browsers send it only over HTTPS. Over
+  `tailscale serve --http`, or from a client that isn't a browser, the
+  identity is ignored; use the token there.
+- **Sandboxed HTML files lose their images.** Ganymede serves HTML from
+  `/files/` and exported notebooks in a sandbox, so their images and
+  styles count as another site's requests and get no identity. Open them
+  with the token, or sign in with it at `/login`, when they need those.
 - **One user per machine.** Any other process on the machine can also
   connect to loopback and send the header. On a machine other people
   log in to, keep the token.

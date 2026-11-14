@@ -470,16 +470,21 @@ pub fn identify(
 /// - Not on another site's subresource requests (`<script>`, `<img>`,
 ///   no-cors `fetch`), which send no `Origin`: `Sec-Fetch-Site` must be
 ///   `same-origin` or `none`, except for a top-level navigation, which
-///   the SameSite=Lax login cookie also goes with. Browsers without
-///   `Sec-Fetch-*` send `Origin` on the requests that matter, which
-///   [`api_with`] checks.
+///   the SameSite=Lax login cookie also goes with ([`api_with`] limits
+///   that to GET and HEAD). A request without `Sec-Fetch-Site` (plain
+///   HTTP, where browsers don't send it, or a non-browser client) gets no
+///   identity.
 pub(crate) fn tailnet_login(state: &AppState, headers: &HeaderMap, ext: &Extensions) -> bool {
     if state.allow_remote_access {
         return false;
     }
     let fetch = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
     let site_ok = match fetch("sec-fetch-site") {
-        None | Some("same-origin" | "none") => true,
+        Some("same-origin" | "none") => true,
+        // Browsers send Fetch Metadata only to HTTPS origins, and without
+        // it another site's `<script>` or `<img>` looks like ours. Only
+        // `tailscale serve` over HTTPS, then; other clients use the token.
+        None => false,
         Some(_) => {
             fetch("sec-fetch-mode") == Some("navigate")
                 && fetch("sec-fetch-dest") == Some("document")
@@ -582,7 +587,11 @@ pub(crate) async fn api_with(
         // cookie, which needs `allow_credentials`) doesn't apply: only the
         // server's own pages may use it.
         Some(Via::Tailnet) => {
-            if !same_origin(headers) {
+            let cross_site = !matches!(
+                headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()),
+                Some("same-origin" | "none")
+            );
+            if !same_origin(headers) || (cross_site && !safe_method(req.method())) {
                 return HttpError(404, "Not Found".into()).into_response();
             }
             next.run(req).await
