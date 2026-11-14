@@ -184,7 +184,8 @@ server, or one that stops answering, it waits for one; a server without
 `claude-code`) is the name a request may use, `@claude` here. The
 journal plugin runs it as a monitor, so a Claude Code session learns of
 a request while it is idle; with a `ganymede` that has no `mcp watch`
-(the latest release), the monitor exits at once and does nothing. Whether a monitor's line starts a turn by itself, or waits for
+(a release from before it), the monitor exits at once and does
+nothing. Whether a monitor's line starts a turn by itself, or waits for
 the person's next message, Claude Code doesn't document.
 
 `cell_add` takes a `mark`: a read mark to move past the new cell, so a
