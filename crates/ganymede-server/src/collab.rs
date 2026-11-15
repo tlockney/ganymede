@@ -436,10 +436,11 @@ impl Collab {
                 return contents.rename(&old, &new).await;
             }
             let _moving = collab.begin_move().await;
-            // Saves of any path, so of every file under a directory
-            // renamed, finish first and wait. Taken after the move lock,
-            // which nothing holds while it waits for a save.
-            let _no_saves = collab.stamps.begin_rename().await;
+            // Writes under either path, so under a directory renamed
+            // too, finish first and new ones wait; writes elsewhere go
+            // on. Taken after the move lock, which nothing holds while
+            // it waits for a write.
+            let _no_saves = collab.stamps.begin_rename(&old, &new).await;
             // A file replaced outside loses its grant before the rename,
             // which would otherwise stamp the new file as the old one.
             let seen = collab.check_for_write(&old).await;

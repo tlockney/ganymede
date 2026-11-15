@@ -31,10 +31,89 @@ pub(crate) struct Stamps {
     root: Option<PathBuf>,
     saving: Mutex<Saving>,
     turns: Turns,
-    /// Every save holds this for reading, and a rename for writing: a
-    /// rename waits for the saves in flight under both its paths, files
-    /// or a directory's, and none begins meanwhile.
-    tree: tokio::sync::RwLock<()>,
+    /// The paths the server's writes are registered under, and the
+    /// paths of renames in progress. A rename waits only for the writes
+    /// under its two paths, and holds back only new writes under them.
+    writes: Mutex<Writes>,
+    /// Woken whenever `writes` loses a write or a block.
+    changed: tokio::sync::Notify,
+}
+
+/// Writes in flight by the path each registered, and the paths renames
+/// have claimed.
+#[derive(Default)]
+struct Writes {
+    in_flight: HashMap<String, usize>,
+    /// One entry per rename waiting or running, for its old path and its
+    /// new one.
+    blocked: Vec<String>,
+}
+
+/// Whether the prefix `pre` covers `path`: the path itself, anything
+/// under it as a directory, or everything for the root's empty prefix.
+/// Both are normalized API paths.
+fn covers(pre: &str, path: &str) -> bool {
+    pre.is_empty()
+        || path == pre
+        || path
+            .strip_prefix(pre)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+impl Writes {
+    fn blocks_any(&self, paths: &[String]) -> bool {
+        self.blocked
+            .iter()
+            .any(|pre| paths.iter().any(|p| covers(pre, p)))
+    }
+
+    fn written_under(&self, prefixes: &[String]) -> bool {
+        self.in_flight
+            .keys()
+            .any(|p| prefixes.iter().any(|pre| covers(pre, p)))
+    }
+}
+
+/// A write registered under some paths, until dropped.
+pub(crate) struct WriteGuard {
+    stamps: Arc<Stamps>,
+    paths: Vec<String>,
+}
+
+impl Drop for WriteGuard {
+    fn drop(&mut self) {
+        let mut w = self.stamps.writes();
+        for path in &self.paths {
+            if let Some(n) = w.in_flight.get_mut(path) {
+                *n -= 1;
+                if *n == 0 {
+                    w.in_flight.remove(path);
+                }
+            }
+        }
+        drop(w);
+        self.stamps.changed.notify_waiters();
+    }
+}
+
+/// A rename's claim on its two paths, until dropped, including while it
+/// still waits for the writes under them.
+pub(crate) struct RenameGuard {
+    stamps: Arc<Stamps>,
+    paths: Vec<String>,
+}
+
+impl Drop for RenameGuard {
+    fn drop(&mut self) {
+        let mut w = self.stamps.writes();
+        for path in &self.paths {
+            if let Some(i) = w.blocked.iter().position(|b| b == path) {
+                w.blocked.remove(i);
+            }
+        }
+        drop(w);
+        self.stamps.changed.notify_waiters();
+    }
 }
 
 /// One server write of a path at a time: the lock for each path being
@@ -66,11 +145,15 @@ impl Drop for Turn {
 #[derive(Default)]
 struct Saving {
     paths: HashMap<String, PathSaves>,
+    /// How many of `paths` have no save in flight. Only these are ever
+    /// dropped, so saves in flight don't count towards [`REMEMBERED`].
+    quiet: usize,
     /// Counts every begin and end, of any path.
     seq: u64,
-    /// Paths dropped from `paths` to keep it small are forgotten as of
-    /// here: a check that began before this can't say its path was
-    /// quiet.
+    /// Quiet paths dropped from `paths` to keep it small are forgotten
+    /// as of here, the latest `last` of any of them: a check that began
+    /// before this can't say its path was quiet. It stays put while
+    /// nothing is dropped.
     floor: u64,
 }
 
@@ -81,7 +164,8 @@ struct PathSaves {
     last: u64,
 }
 
-/// The most paths remembered once their saves are over.
+/// The most paths remembered once their saves are over: a cleanup drops
+/// them all when more are.
 const REMEMBERED: usize = 256;
 
 /// How many times a look is made again after a cleanup of those.
@@ -101,10 +185,21 @@ impl Drop for SaveGuard {
         if let Some(p) = s.paths.get_mut(&self.path) {
             p.in_flight -= 1;
             p.last = seq;
+            if p.in_flight == 0 {
+                s.quiet += 1;
+            }
         }
-        if s.paths.len() > REMEMBERED {
-            s.paths.retain(|_, p| p.in_flight > 0);
-            s.floor = seq;
+        if s.quiet > REMEMBERED {
+            let mut floor = s.floor;
+            s.paths.retain(|_, p| {
+                let keep = p.in_flight > 0;
+                if !keep {
+                    floor = floor.max(p.last);
+                }
+                keep
+            });
+            s.quiet = 0;
+            s.floor = floor;
         }
     }
 }
@@ -124,19 +219,70 @@ impl Stamps {
             root,
             saving: Mutex::default(),
             turns: Mutex::default(),
-            tree: tokio::sync::RwLock::new(()),
+            writes: Mutex::default(),
+            changed: tokio::sync::Notify::new(),
         }
     }
 
-    /// A write of one path, until dropped, which a rename waits for.
-    async fn begin_write(&self) -> tokio::sync::RwLockReadGuard<'_, ()> {
-        self.tree.read().await
+    fn writes(&self) -> std::sync::MutexGuard<'_, Writes> {
+        self.writes.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Waits for the saves in flight, and holds new ones back, until
-    /// dropped. Taken after [`Collab::begin_move`]'s lock.
-    pub(crate) async fn begin_rename(&self) -> tokio::sync::RwLockWriteGuard<'_, ()> {
-        self.tree.write().await
+    /// A write under `paths` (a file's, or the directory a new file is
+    /// made in), registered until dropped, which a rename of one of them
+    /// or of a directory above them waits for. Waits first while a
+    /// rename holds any of them.
+    pub(crate) async fn begin_write(self: &Arc<Self>, paths: &[&str]) -> WriteGuard {
+        let paths: Vec<String> = paths.iter().map(|p| normalize_api_path(p)).collect();
+        loop {
+            // Listening before the state is read, so a change between the
+            // read and the wait isn't missed.
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            {
+                let mut w = self.writes();
+                if !w.blocks_any(&paths) {
+                    for p in &paths {
+                        *w.in_flight.entry(p.clone()).or_default() += 1;
+                    }
+                    return WriteGuard {
+                        stamps: self.clone(),
+                        paths,
+                    };
+                }
+            }
+            notified.await;
+        }
+    }
+
+    /// Claims `old` and `new` at once, so no write begins under either,
+    /// then waits for the writes in flight under them, files or a
+    /// directory's, until the guard is dropped. Taken after
+    /// [`Collab::begin_move`]'s lock. The claim is the guard's, so it
+    /// goes if the wait is dropped.
+    pub(crate) async fn begin_rename(self: &Arc<Self>, old: &str, new: &str) -> RenameGuard {
+        let paths = vec![normalize_api_path(old), normalize_api_path(new)];
+        self.writes().blocked.extend(paths.iter().cloned());
+        let guard = RenameGuard {
+            stamps: self.clone(),
+            paths,
+        };
+        loop {
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !self.writes().written_under(&guard.paths) {
+                return guard;
+            }
+            notified.await;
+        }
+    }
+
+    /// Whether any write is registered, for tests to wait on.
+    #[cfg(test)]
+    fn any_write(&self) -> bool {
+        !self.writes().in_flight.is_empty()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Saving> {
@@ -166,9 +312,27 @@ impl Stamps {
         let mut s = self.lock();
         s.seq += 1;
         let seq = s.seq;
-        let p = s.paths.entry(path.clone()).or_default();
-        p.in_flight += 1;
-        p.last = seq;
+        let was_quiet = match s.paths.get_mut(&path) {
+            Some(p) => {
+                let quiet = p.in_flight == 0;
+                p.in_flight += 1;
+                p.last = seq;
+                quiet
+            }
+            None => {
+                s.paths.insert(
+                    path.clone(),
+                    PathSaves {
+                        in_flight: 1,
+                        last: seq,
+                    },
+                );
+                false
+            }
+        };
+        if was_quiet {
+            s.quiet -= 1;
+        }
         SaveGuard {
             stamps: self.clone(),
             path,
@@ -273,7 +437,7 @@ impl Stamping {
         let collab = self.collab.clone();
         let path = path.to_string();
         detached(async move {
-            let _writing = collab.stamps.begin_write().await;
+            let _writing = collab.stamps.begin_write(&[&path]).await;
             // One save of a path at a time, so the stamp the check saw is
             // the one this save's restamp compares with.
             let _turn = collab.stamps.turn(&path).await;
@@ -332,7 +496,7 @@ impl Contents for Stamping {
             // The move lock first, as a rename takes it, so the ids at the
             // new path go with the file made and no room opens between.
             let _moving = collab.begin_move().await;
-            let _writing = collab.stamps.begin_write().await;
+            let _writing = collab.stamps.begin_write(&[&parent_dir]).await;
             let model = inner
                 .new_untitled(&parent_dir, kind, ext.as_deref())
                 .await?;
@@ -364,7 +528,8 @@ impl Contents for Stamping {
                 None => None,
             };
             if let Some(dest) = target {
-                let _writing = collab.stamps.begin_write().await;
+                // The source too, so a rename of it waits for the copy.
+                let _writing = collab.stamps.begin_write(&[&from_path, &dest]).await;
                 let _turn = collab.stamps.turn(&dest).await;
                 let seen = collab.check_for_write(&dest).await;
                 let others = collab.check_others(&dest).await;
@@ -380,7 +545,16 @@ impl Contents for Stamping {
             // a rename takes it, so the ids at its path go with the file
             // and no room opens between.
             let _moving = collab.begin_move().await;
-            let _writing = collab.stamps.begin_write().await;
+            // The new file's name isn't known yet: the write is
+            // registered on its directory, the source's own when none
+            // was given.
+            let dir = match &to_dir {
+                Some(d) => d.clone(),
+                None => from_path
+                    .rsplit_once('/')
+                    .map_or(String::new(), |(parent, _)| parent.to_string()),
+            };
+            let _writing = collab.stamps.begin_write(&[&from_path, &dir]).await;
             let model = inner.copy(&from_path, to_dir.as_deref()).await?;
             // Whatever grant is
             // stored at its path is from a file that was deleted outside.
@@ -693,7 +867,7 @@ mod tests {
         let contents = collab.stamping(Arc::new(
             ganymede_contents::FsContents::new(&root, Default::default()).unwrap(),
         ));
-        let turn = collab.stamps.begin_write().await;
+        let turn = collab.stamps.begin_write(&["a.ipynb"]).await;
         let (c, k) = (collab.clone(), contents.clone());
         let rename = tokio::spawn(async move { c.rename(&k, "a.ipynb", "b.ipynb").await });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -719,7 +893,7 @@ mod tests {
             ganymede_contents::FsContents::new(&root, Default::default()).unwrap(),
         ));
         // A save of d/a.ipynb in flight: it holds its turn and a write.
-        let writing = collab.stamps.begin_write().await;
+        let writing = collab.stamps.begin_write(&["d/a.ipynb"]).await;
         let turn = collab.stamps.turn("d/a.ipynb").await;
         let (c, k) = (collab.clone(), contents.clone());
         let rename = tokio::spawn(async move { c.rename(&k, "d", "e").await });
@@ -761,19 +935,136 @@ mod tests {
         (dir, collab, contents)
     }
 
-    /// Waits until a write holds the tree lock, as `begin_write` does. Gives
-    /// up after a second, and the caller's assertions then fail.
+    /// Waits until a write is registered, as `begin_write` does. Gives up
+    /// after a second, and the caller's assertions then fail.
     async fn until_a_write_begins(collab: &Collab) {
         for _ in 0..500 {
-            if collab.stamps.tree.try_write().is_err() {
+            if collab.stamps.any_write() {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
     }
 
+    /// A prefix covers itself and what is under it, not a sibling whose
+    /// name starts the same, and the root's empty prefix covers all.
+    #[test]
+    fn a_prefix_covers_its_directory_only() {
+        assert!(covers("d", "d"));
+        assert!(covers("d", "d/x.ipynb"));
+        assert!(covers("d", "d/e/x.ipynb"));
+        assert!(!covers("d", "dd/x.ipynb"));
+        assert!(!covers("d", "dd"));
+        assert!(!covers("d/e", "d"));
+        assert!(covers("", "d/x.ipynb"));
+        assert!(covers("", ""));
+    }
+
+    const SHORT: std::time::Duration = std::time::Duration::from_millis(50);
+    const LONG: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// A rename finishes while a save of an unrelated path is in flight.
+    #[tokio::test]
+    async fn a_rename_ignores_a_save_of_another_path() {
+        let stamps = Arc::new(Stamps::new(None));
+        let _other = stamps.begin_write(&["c.ipynb"]).await;
+        tokio::time::timeout(LONG, stamps.begin_rename("a.ipynb", "b.ipynb"))
+            .await
+            .expect("not held up by c.ipynb");
+    }
+
+    /// A rename of `d` waits for a write under `d` and not for one of
+    /// `dd/x.ipynb`, and a save of an unrelated path begins and ends
+    /// meanwhile, which the old server-wide lock queued behind it.
+    #[tokio::test]
+    async fn a_waiting_rename_holds_back_only_its_paths() {
+        let stamps = Arc::new(Stamps::new(None));
+        let _sibling = stamps.begin_write(&["dd/x.ipynb"]).await;
+        let under = stamps.begin_write(&["d/a.ipynb"]).await;
+        let s = stamps.clone();
+        let rename = tokio::spawn(async move { s.begin_rename("d", "e").await });
+        tokio::time::sleep(SHORT).await;
+        assert!(!rename.is_finished(), "waits for the save under d");
+        tokio::time::timeout(LONG, stamps.begin_write(&["x.ipynb"]))
+            .await
+            .expect("an unrelated save is not queued");
+        let s = stamps.clone();
+        let late = tokio::spawn(async move { s.begin_write(&["e/new.ipynb"]).await });
+        tokio::time::sleep(SHORT).await;
+        assert!(!late.is_finished(), "a save under the new path waits");
+        drop(under);
+        let renaming = tokio::time::timeout(LONG, rename)
+            .await
+            .expect("the rename goes ahead")
+            .unwrap();
+        drop(renaming);
+        tokio::time::timeout(LONG, late)
+            .await
+            .expect("the save goes ahead after the rename")
+            .unwrap();
+    }
+
+    /// A rename dropped while it waits gives its paths back.
+    #[tokio::test]
+    async fn a_rename_dropped_while_waiting_unblocks_its_paths() {
+        let stamps = Arc::new(Stamps::new(None));
+        let held = stamps.begin_write(&["d/a.ipynb"]).await;
+        let s = stamps.clone();
+        let rename = tokio::spawn(async move { s.begin_rename("d", "e").await });
+        tokio::time::sleep(SHORT).await;
+        assert!(!rename.is_finished());
+        assert!(
+            tokio::time::timeout(SHORT, stamps.begin_write(&["d/b.ipynb"]))
+                .await
+                .is_err(),
+            "held back while the rename waits"
+        );
+        rename.abort();
+        let _ = rename.await;
+        tokio::time::timeout(LONG, stamps.begin_write(&["d/b.ipynb"]))
+            .await
+            .expect("the block went with the rename");
+        assert!(stamps.writes().blocked.is_empty());
+        drop(held);
+    }
+
+    /// Saves in flight don't count towards the remembered paths, so a
+    /// cleanup that evicts nothing doesn't move the floor and looks at
+    /// quiet files stay stable.
+    #[test]
+    fn many_saves_in_flight_do_not_unsettle_looks() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.ipynb"), "{}").unwrap();
+        let stamps = Arc::new(Stamps::new(Some(dir.path().to_path_buf())));
+        let mut guards: Vec<_> = (0..REMEMBERED + 10)
+            .map(|i| stamps.begin(&format!("n{i}.ipynb")))
+            .collect();
+        guards.truncate(REMEMBERED + 5);
+        assert!(matches!(stamps.look("a.ipynb"), Look::Stamp(_)));
+        assert_eq!(stamps.lock().floor, 0, "nothing was forgotten");
+        drop(guards);
+        assert!(matches!(stamps.look("a.ipynb"), Look::Stamp(_)));
+        // Dropping all of them made more than REMEMBERED quiet: the
+        // floor is that of the latest end, no later.
+        let s = stamps.lock();
+        assert!(s.paths.len() <= REMEMBERED + 10);
+        assert!(s.floor <= s.seq);
+    }
+
+    /// A save of a path that was quiet takes it out of the quiet count.
+    #[test]
+    fn the_quiet_count_follows_saves() {
+        let stamps = Arc::new(Stamps::new(None));
+        drop(stamps.begin("x"));
+        assert_eq!(stamps.lock().quiet, 1);
+        let g = stamps.begin("x");
+        assert_eq!(stamps.lock().quiet, 0);
+        drop(g);
+        assert_eq!(stamps.lock().quiet, 1);
+    }
+
     /// A rename of a directory waits for a real `save` under it, which
-    /// holds the tree lock while it waits for its turn, and the save's
+    /// is registered while it waits for its turn, and the save's
     /// restamp lands before the rename moves the grant.
     #[tokio::test]
     async fn a_rename_waits_for_a_real_save() {
@@ -802,7 +1093,7 @@ mod tests {
     }
 
     /// A rename of a directory waits for a real `copy` into it, which
-    /// holds the tree lock while it waits for its destination's turn.
+    /// is registered while it waits for its destination's turn.
     #[tokio::test]
     async fn a_rename_waits_for_a_real_copy() {
         let (dir, collab, contents) = granted_in_d("b.ipynb").await;
@@ -1025,7 +1316,7 @@ mod tests {
     #[tokio::test]
     async fn new_untitled_waits_for_a_rename() {
         let (_dir, collab, contents) = granted_in_d("a.ipynb").await;
-        let renaming = collab.stamps.begin_rename().await;
+        let renaming = collab.stamps.begin_rename("d", "e").await;
         let k = contents.clone();
         let made = tokio::spawn(async move {
             k.new_untitled("d", ContentType::Notebook, Some(".ipynb"))
@@ -1054,8 +1345,8 @@ mod tests {
         made.await.unwrap().unwrap();
     }
 
-    /// A copy into a directory holds the move lock and a write of the
-    /// tree until its new path is forgotten, and a grant read waits too,
+    /// A copy into a directory holds the move lock and a write registered
+    /// on the directory until its new path is forgotten, and a grant read waits too,
     /// so it can't see a stale grant on the new file.
     #[tokio::test]
     async fn a_copy_into_a_directory_holds_the_locks_until_it_is_done() {
@@ -1074,8 +1365,10 @@ mod tests {
             "the move lock is held"
         );
         assert!(
-            collab.stamps.tree.try_write().is_err(),
-            "the tree is held for writing"
+            tokio::time::timeout(timeout, collab.stamps.begin_rename("sub", "sub2"))
+                .await
+                .is_err(),
+            "the write is registered on the directory"
         );
         let c = collab.clone();
         let read = tokio::spawn(async move { c.grant("sub/a.ipynb").await });
