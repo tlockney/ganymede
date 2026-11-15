@@ -1,0 +1,19 @@
+{
+  "id": "ganymede-827-copy-test",
+  "repo": "tlockney/ganymede",
+  "pr": 827,
+  "issue": 767,
+  "base": "a721fa9f3e329f683353f72b2b8e0f300717ca86",
+  "head": "6567c54bef7d2cc0367b27a0f666e3f7489a7759",
+  "branch": "claude/project-thread-6yjitj-ganymede-767",
+  "kind": "missed",
+  "findings": [
+    {
+      "summary": "The cross-root restamp added to `copy` (restamp_others_unchecked, stamping.rs around line 303) has no test: removing the call fails every test in the PR, while the dev log claims that a copy keeps the grants other roots hold. Only `rewrite` has a test (a_save_keeps_the_grants_other_roots_hold). Each call site the fix touches needs its own failing-without-the-change test.",
+      "severity": "Medium",
+      "class": "E",
+      "source": "https://github.com/tlockney/ganymede/pull/827 (GitHub review 5907911594 of 6567c54, Review: changes needed; Gaps entry 18)"
+    }
+  ],
+  "notes": "Added after the first baseline ran, so not in its numbers. Same PR as ganymede-827, one commit later: the review of the fix for the entry 17 finding. Base is main at a721fa9."
+}

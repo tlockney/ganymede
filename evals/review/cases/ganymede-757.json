@@ -1,0 +1,19 @@
+{
+  "id": "ganymede-757",
+  "repo": "tlockney/ganymede",
+  "pr": 757,
+  "issue": 756,
+  "base": "9261cc79bc6195b67e1a783fda276f4623e42b73",
+  "head": "e86c5ca4d84252f8651482290791bcda3dd41a24",
+  "branch": "claude/project-thread-kj8azj-publish",
+  "kind": "missed",
+  "findings": [
+    {
+      "summary": "`.table td { white-space: pre-wrap; overflow-wrap: anywhere }` lets a cell's min-content width shrink to about one character, and `.table table` still has max-width 100%, so a table wider than the page no longer scrolls sideways: columns shrink to header width and numbers break mid-value (25 numeric columns in an 800px page: cell 41px wide and 193px tall). `overflow-wrap: break-word` keeps min-content and scrolls.",
+      "severity": "Medium",
+      "class": "I",
+      "source": "reviews/pr-reviewer/2026-11-13-ganymede-757-after-merge.md"
+    }
+  ],
+  "notes": "No pass was posted on e86c5ca itself (it merged during the review); earlier heads passed. The finding is the e86c5ca CSS change."
+}

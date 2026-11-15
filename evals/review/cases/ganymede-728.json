@@ -1,0 +1,25 @@
+{
+  "id": "ganymede-728",
+  "repo": "tlockney/ganymede",
+  "pr": 728,
+  "issue": 727,
+  "base": "ea623ac97f57bc90afc5d2b0ce4cc0dcd00c1c6c",
+  "head": "3de8cbf38e8757a2cf2856744183e29e943ba3f3",
+  "branch": "claude/project-thread-g5mbgs-ganymede-727",
+  "kind": "known",
+  "findings": [
+    {
+      "summary": "`restart` reads its `since` baseline after taking the lifecycle lock, so an abandon_boot() bump from a shutdown or second restart queued behind it is folded into the baseline and its own boot never sees it. With a silent kernel, restart then restart then quit leaves the second restart booting for the full 3 x startup_timeout while the quit waits: the hang the issue is about. The baseline should come from the restart's own bump, before the lock.",
+      "severity": "Medium",
+      "class": "A",
+      "source": "https://github.com/tlockney/ganymede/pull/728"
+    },
+    {
+      "summary": "`crashed` has the same lost-bump window: a DELETE (shutdown) queued behind a crash handler is folded into the baseline and not honoured.",
+      "severity": "Medium",
+      "class": "A",
+      "source": "https://github.com/tlockney/ganymede/pull/728"
+    }
+  ],
+  "notes": ""
+}

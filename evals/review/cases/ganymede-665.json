@@ -1,0 +1,19 @@
+{
+  "id": "ganymede-665",
+  "repo": "tlockney/ganymede",
+  "pr": 665,
+  "issue": 664,
+  "base": "bd0468256423708c24af4f7f3448428bdb6b686e",
+  "head": "087f779276d6dda233ef5e2600960116c636da99",
+  "branch": "claude/project-thread-ga4fy6-host-run",
+  "kind": "known",
+  "findings": [
+    {
+      "summary": "`intersect` matches grant paths lexically while `covers` resolves symlinks. A callee grant entry that is a symlink inside the caller's granted folder lets a run read or run notebooks the caller itself is refused, so grants widen instead of narrowing.",
+      "severity": "Medium",
+      "class": "B",
+      "source": "https://github.com/tlockney/ganymede/pull/665"
+    }
+  ],
+  "notes": ""
+}

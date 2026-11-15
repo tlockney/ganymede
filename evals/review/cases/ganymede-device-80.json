@@ -1,0 +1,19 @@
+{
+  "id": "ganymede-device-80",
+  "repo": "tlockney/ganymede-device",
+  "pr": 80,
+  "issue": 60,
+  "base": "63d3f00acfb37ba55fa83845717d3bbcd9830a29",
+  "head": "ece94ff352c1060db61390fb57e2eb29e7928505",
+  "branch": "claude/project-thread-i4kv57-60",
+  "kind": "known",
+  "findings": [
+    {
+      "summary": "`dropPage()` and `dropAll()` do not clear the owner-to-notebook map. Owners restart numbering on a page reload, so a new kernel can be treated as the old page's notebook and use that notebook's ledger grants.",
+      "severity": "Medium",
+      "class": "A",
+      "source": "https://github.com/tlockney/ganymede-device/pull/80"
+    }
+  ],
+  "notes": "Stacked on #79 (63d3f00); the review diffed 63d3f00 to ece94ff. The review's second Medium (owner id reuse in PendingCalls) is inherited from #79 and not counted here. Head ece94ff was force-rewritten away; it is fetchable by sha."
+}

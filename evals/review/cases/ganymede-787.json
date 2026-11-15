@@ -1,0 +1,12 @@
+{
+  "id": "ganymede-787",
+  "repo": "tlockney/ganymede",
+  "pr": 787,
+  "issue": 758,
+  "base": "3147851a24825503b28661c956850ff4d37e50d9",
+  "head": "c1c84ceed6b9f034f6f5b6b2aa7feb28cccfedff",
+  "branch": "claude/project-thread-g5mbgs-ganymede-758",
+  "kind": "clean",
+  "findings": [],
+  "notes": "First-round review said Review: pass; merged at this head."
+}

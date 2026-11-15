@@ -102,6 +102,9 @@ scorers' unit tests. [`evals/journal`](../evals/journal/README.md) measures
 how good a journal is; [`evals/agent-native`](../evals/agent-native/README.md)
 has an agent and a simulated person edit one live notebook, and says when
 to run it (on changes to the MCP tools, rooms or the plugin, and weekly).
+[`evals/review`](../evals/review/README.md) replays the pre-push review
+prompt on known diffs and scores what it catches (on each change to
+`review-prompt.md`, and monthly).
 
 ## CI
 

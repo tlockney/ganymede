@@ -1,0 +1,12 @@
+{
+  "id": "cdp-kernel-416",
+  "repo": "tlockney/cdp-kernel",
+  "pr": 416,
+  "issue": 410,
+  "base": "2f37b96a086f7b466458e842f525a75a5670018e",
+  "head": "92a42fb11549c3b8bc46f06b87e72bd09cf61b8a",
+  "branch": "claude/project-thread-g5mbgs-cdp-kernel-410",
+  "kind": "clean",
+  "findings": [],
+  "notes": "First-round review said Review: pass; merged at this head."
+}

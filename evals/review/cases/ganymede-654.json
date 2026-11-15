@@ -1,0 +1,19 @@
+{
+  "id": "ganymede-654",
+  "repo": "tlockney/ganymede",
+  "pr": 654,
+  "issue": 653,
+  "base": "75adb831823cd2c78cee078102a3398bca57f8d2",
+  "head": "7ce9b596254509b76cd146bb16af8f57b4cb431d",
+  "branch": "claude/project-thread-ga4fy6-host-comm",
+  "kind": "missed",
+  "findings": [
+    {
+      "summary": "Late-open race in `HostLink::is_host_message`: the pump (RunningKernel::forward) and the Driver read separate subscriptions, so `comm_id` can lag the pump in both directions. A call's comm_msg right after a late comm_open reaches JupyterLab and the apps, and a comm_close handled by the driver first is forwarded too. The comm state should be updated in the pump's order, not from the driver task.",
+      "severity": "Medium",
+      "class": "A",
+      "source": "reviews/pr-reviewer/2026-11-11-ganymede-654-649-extra-findings.md"
+    }
+  ],
+  "notes": ""
+}

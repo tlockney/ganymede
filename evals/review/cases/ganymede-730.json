@@ -1,0 +1,19 @@
+{
+  "id": "ganymede-730",
+  "repo": "tlockney/ganymede",
+  "pr": 730,
+  "issue": 729,
+  "base": "ea623ac97f57bc90afc5d2b0ce4cc0dcd00c1c6c",
+  "head": "af8c722375f170c86f7f17f18651fb3cf33700b5",
+  "branch": "claude/mcp-proxy-paths",
+  "kind": "missed",
+  "findings": [
+    {
+      "summary": "`ganymede mcp call` now sends `_meta[\"ganymede/dir\"]` from its own cwd, but the journal plugin's hook (hooks/journal.mjs) runs it with cwd = input.cwd and passes a `state.path` taken from the agent's own tool args. After the agent cd's into a subfolder in Bash, paths like `journal/a.ipynb` resolve to `sub/journal/a.ipynb`. Before the change paths were root-relative and cwd only chose the server. A consumer of the changed behaviour was not updated.",
+      "severity": "Medium",
+      "class": "C",
+      "source": "reviews/pr-reviewer/2026-11-12-ganymede-730-extra-findings.md"
+    }
+  ],
+  "notes": "The posted pass was on af8c722; the finding was verified on the merged head 4d043ba."
+}
