@@ -431,6 +431,7 @@ impl Collab {
             let _deleting = collab.begin_move().await;
             contents.delete(&path).await?;
             collab.removed(&path).await;
+            collab.removed_in_other_roots(&path).await;
             Ok(())
         })
         .await
@@ -459,6 +460,9 @@ impl Collab {
             let seen = collab.check_for_write(&old).await;
             // A grant check mustn't look between the rename and the new
             // stamp, on a filesystem where a rename changes the stamp.
+            // No test holds this mark: it is open only across the
+            // rename on disk, which only a hook in the contents could
+            // hold, and no contents has one.
             let _saving = collab.stamps.begin(&new);
             let model = contents.rename(&old, &new).await?;
             collab.moved(&old, &model.path).await;
@@ -504,18 +508,29 @@ impl Collab {
     /// with their grants. The stamp of a file doesn't change with its
     /// path, so they need no restamp.
     async fn moved_in_other_roots(&self, old: &str, new: &str) {
-        let Some(root) = self.root.clone() else {
-            return;
-        };
-        let abs = |api: &str| -> Option<std::path::PathBuf> {
-            let file = root.join(normalize_api_path(api));
-            Some(file.parent()?.canonicalize().ok()?.join(file.file_name()?))
-        };
-        let (Some(old), Some(new)) = (abs(old), abs(new)) else {
+        let (Some(old), Some(new)) = (self.abs_path(old), self.abs_path(new)) else {
             return;
         };
         self.with_ids(move |ids| ids.moved_in_other_roots(&old, &new))
             .await;
+    }
+
+    /// `path` was deleted through this root: the ids, and so the grants,
+    /// that other roots above it hold under it go too, as
+    /// [`Collab::moved_in_other_roots`] moves them.
+    async fn removed_in_other_roots(&self, path: &str) {
+        let Some(path) = self.abs_path(path) else {
+            return;
+        };
+        self.with_ids(move |ids| ids.removed_in_other_roots(&path))
+            .await;
+    }
+
+    /// The absolute path of the API path `api`, with its directory
+    /// resolved, as the file ids database names files.
+    fn abs_path(&self, api: &str) -> Option<std::path::PathBuf> {
+        let file = self.root.as_ref()?.join(normalize_api_path(api));
+        Some(file.parent()?.canonicalize().ok()?.join(file.file_name()?))
     }
 
     /// The notebook at `path` as its room has it, with cell ids, when a

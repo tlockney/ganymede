@@ -106,3 +106,18 @@ The server's saves reuse the connection their `FileIds` already has for the
 returns only roots that hold a grant on the file, and `held_with` opens
 another root's `FileIds` only for those. `moved_in_other_roots` has its own
 query, since it moves every root's ids, grant or not.
+
+A delete through the server drops the ids, and so the grants, that every
+other root above the path holds on it (`FileIds::removed_in_other_roots`),
+so a file made anew at the path inherits none. A save that fails after
+writing still restamps, since the check's compare-and-swap blesses nothing
+that changed outside. `copy` runs detached, as a save does. A grant look
+that a cleanup of the remembered paths overlapped is made again, up to
+three times, not given up as unstable, so a quiet path's save keeps its
+restamp. The database check gives a row that changed under its compare the
+verdict once more before returning it.
+
+Known limit, left for a follow-up: a rename holds the move lock for writing
+while it waits for the write side of the tree lock, so the server's room
+opens and deletes pause for as long as the slowest save in flight. A
+per-path or per-prefix wait would avoid that.

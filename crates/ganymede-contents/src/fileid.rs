@@ -577,6 +577,21 @@ impl FileIds {
     }
 
     /// `path` (a file, or a directory and everything under it) was
+    /// deleted through this root, an absolute path whose directory is
+    /// resolved: the ids other roots above it have under `path` go too,
+    /// and with them their grants, so a file made anew at the path
+    /// doesn't inherit a grant.
+    pub fn removed_in_other_roots(&self, path: &Path) {
+        #[cfg(feature = "sqlite")]
+        if let Some((db, own)) = &self.lock().db {
+            if let Err(e) = sqlite::removed_in_other_roots(db, own, path) {
+                tracing::warn!("dropping file ids under {}: {e}", path.display());
+            }
+        }
+        let _ = path;
+    }
+
+    /// `path` (a file, or a directory and everything under it) was
     /// deleted.
     pub fn removed(&self, path: &str) {
         let store = &mut *self.lock();
@@ -1010,55 +1025,66 @@ mod sqlite {
     /// As [`super::FileIds::grant_checked`], in the database. Another
     /// server may restamp or replace the grant meanwhile, so the stamp
     /// and the delete go by the row that was read, and a changed row is
-    /// read again. An `Err` is a failed read or stamp: the grant stands.
+    /// read again and given the same verdict, once more: a row that
+    /// changed again is returned as it is. An `Err` is a failed read or
+    /// stamp: the grant stands.
     pub fn check(
         db: &Connection,
         id: &str,
         current: impl FnOnce() -> Option<String>,
     ) -> rusqlite::Result<Checked> {
-        let row: Option<(String, Option<String>)> = db
-            .query_row(
-                "SELECT grant_json, stamp FROM host_grants WHERE id = ?1",
-                params![id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        let Some((json, raw)) = row else {
-            return Ok(Checked::Missing);
-        };
-        let current = current();
-        let current = current.as_deref();
-        match super::verdict(super::untag(&json, raw.as_deref()), current) {
-            super::Verdict::Keep => {
-                let stamp = super::untag(&json, raw.as_deref()).map(str::to_string);
-                Ok(Checked::Grant(json, stamp))
-            }
-            super::Verdict::Stamp => {
-                let tagged = current.map(|c| super::tag(&json, c));
-                db.execute(
-                    "UPDATE host_grants SET stamp = ?2 WHERE id = ?1 AND grant_json = ?3
-                        AND stamp IS ?4",
-                    params![id, tagged, json, raw],
-                )?;
-                Ok(Checked::Grant(json, current.map(str::to_string)))
-            }
-            super::Verdict::Drop => {
-                let gone = match db.execute(
-                    "DELETE FROM host_grants WHERE id = ?1 AND grant_json = ?2 AND stamp = ?3",
-                    params![id, json, raw],
-                ) {
-                    Ok(n) => n,
-                    Err(e) => return Ok(Checked::Stuck(e)),
-                };
-                if gone == 1 {
-                    return Ok(Checked::Dropped);
+        let mut current = Some(current);
+        let mut looked: Option<Option<String>> = None;
+        for _ in 0..2 {
+            let row: Option<(String, Option<String>)> = db
+                .query_row(
+                    "SELECT grant_json, stamp FROM host_grants WHERE id = ?1",
+                    params![id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let Some((json, raw)) = row else {
+                return Ok(Checked::Missing);
+            };
+            // The file is looked at once, after the first read.
+            let current = looked
+                .get_or_insert_with(|| current.take().and_then(|f| f()))
+                .as_deref();
+            match super::verdict(super::untag(&json, raw.as_deref()), current) {
+                super::Verdict::Keep => {
+                    let stamp = super::untag(&json, raw.as_deref()).map(str::to_string);
+                    return Ok(Checked::Grant(json, stamp));
                 }
-                Ok(match grant_row(db, id)? {
-                    Some((json, stamp)) => Checked::Grant(json, stamp),
-                    None => Checked::Missing,
-                })
+                super::Verdict::Stamp => {
+                    let tagged = current.map(|c| super::tag(&json, c));
+                    let n = db.execute(
+                        "UPDATE host_grants SET stamp = ?2 WHERE id = ?1 AND grant_json = ?3
+                            AND stamp IS ?4",
+                        params![id, tagged, json, raw],
+                    )?;
+                    if n == 1 {
+                        return Ok(Checked::Grant(json, current.map(str::to_string)));
+                    }
+                }
+                super::Verdict::Drop => {
+                    match db.execute(
+                        "DELETE FROM host_grants WHERE id = ?1 AND grant_json = ?2 AND stamp = ?3",
+                        params![id, json, raw],
+                    ) {
+                        Ok(1) => return Ok(Checked::Dropped),
+                        Ok(_) => {}
+                        Err(e) => return Ok(Checked::Stuck(e)),
+                    }
+                }
             }
+            // The row changed under the compare: it is read again and
+            // given the verdict.
         }
+        // It changed again: it is returned as it stands.
+        Ok(match grant_row(db, id)? {
+            Some((json, stamp)) => Checked::Grant(json, stamp),
+            None => Checked::Missing,
+        })
     }
 
     /// The grant and the file stamp stored under it, if for that grant.
@@ -1141,6 +1167,20 @@ mod sqlite {
             if has {
                 moved(db, &r, &rel_old, &rel_new)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Drops the ids, and grants, of every root but `own` above `path`.
+    pub fn removed_in_other_roots(db: &Connection, own: &str, path: &Path) -> rusqlite::Result<()> {
+        for root in path.ancestors().skip(1) {
+            let Some((r, rel)) = relative(root, path) else {
+                continue;
+            };
+            if r == own {
+                continue;
+            }
+            removed(db, &r, &rel)?;
         }
         Ok(())
     }
@@ -1531,6 +1571,34 @@ mod tests {
         assert!(ids.grants_checked(|_| Some("other".into())).is_empty());
         // Not deleted, so a file that matches again has its grant.
         assert_eq!(ids.grant_checked(&id, Some("s1")).as_deref(), Some(G));
+    }
+
+    /// A row that changes between the check's read and its delete is
+    /// read again and given the verdict, not returned unchecked.
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn a_row_that_changed_under_the_check_is_checked_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ids.db");
+        let ids = FileIds::open(&db, Path::new("/r"));
+        let (id, _) = ids.index("a.ipynb");
+        ids.set_grant(&id, Some(G), Some("s1")).unwrap();
+        let (mine, other) = (sqlite::connect(&db).unwrap(), sqlite::connect(&db).unwrap());
+        let restamped = tag(G, "s2");
+        let out = sqlite::check(&mine, &id, || {
+            other
+                .execute(
+                    "UPDATE host_grants SET stamp = ?1 WHERE id = ?2",
+                    rusqlite::params![restamped, id],
+                )
+                .unwrap();
+            Some("s3".into())
+        })
+        .unwrap();
+        // The row it deleted by was gone, and the one now there is for
+        // another stamp than the file's: it goes.
+        assert!(matches!(out, sqlite::Checked::Dropped));
+        assert_eq!(ids.grant_checked(&id, None), None);
     }
 
     /// The stamp is taken with the store held, so a check and a restamp
