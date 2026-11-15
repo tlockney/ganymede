@@ -2,9 +2,10 @@
 //!
 //! One side registers under the paths it is working on; the other side
 //! claims paths, which holds back new registrations under them and waits
-//! for the ones already under them. A prefix covers itself and everything
-//! under it as a directory, the rule file ids follow for renames
-//! ([`ganymede_contents::path_under`]).
+//! for the ones already under them. A claim covers either a prefix, itself
+//! and everything under it as a directory, the rule file ids follow for
+//! renames ([`ganymede_contents::path_under`]), or only the direct children
+//! of a directory, where a create makes its new file.
 //!
 //! Two instances are used: the server's writes against renames
 //! ([`crate::stamping::Stamps`]), and grant lookups against creates
@@ -27,7 +28,16 @@ struct State {
     /// How many registrations there are by path.
     in_flight: HashMap<String, usize>,
     /// One entry per claim path, for a claim waiting or held.
-    blocked: Vec<String>,
+    blocked: Vec<(String, Scope)>,
+}
+
+/// What a claimed path covers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Scope {
+    /// The path and everything under it.
+    Subtree,
+    /// The direct children of the directory: not it, not deeper.
+    Children,
 }
 
 /// Whether the prefix `pre` covers `path`: the path itself, anything
@@ -37,17 +47,28 @@ pub(crate) fn covers(pre: &str, path: &str) -> bool {
     ganymede_contents::path_under(path, pre).is_some()
 }
 
+/// Whether a claim of `pre` with `scope` covers `path`. For `Children`,
+/// the path's parent is `pre`, the root's `""` for a top-level path.
+fn covered(scope: Scope, pre: &str, path: &str) -> bool {
+    match scope {
+        Scope::Subtree => covers(pre, path),
+        Scope::Children => {
+            !path.is_empty() && path.rsplit_once('/').map_or("", |(parent, _)| parent) == pre
+        }
+    }
+}
+
 impl State {
     fn blocks_any(&self, paths: &[String]) -> bool {
         self.blocked
             .iter()
-            .any(|pre| paths.iter().any(|p| covers(pre, p)))
+            .any(|(pre, scope)| paths.iter().any(|p| covered(*scope, pre, p)))
     }
 
-    fn registered_under(&self, prefixes: &[String]) -> bool {
+    fn registered_under(&self, claims: &[(String, Scope)]) -> bool {
         self.in_flight
             .keys()
-            .any(|p| prefixes.iter().any(|pre| covers(pre, p)))
+            .any(|p| claims.iter().any(|(pre, scope)| covered(*scope, pre, p)))
     }
 }
 
@@ -77,7 +98,7 @@ impl Drop for Registered {
 /// for the registrations under them.
 pub(crate) struct Claimed {
     locks: Arc<PathLocks>,
-    paths: Vec<String>,
+    paths: Vec<(String, Scope)>,
 }
 
 impl Drop for Claimed {
@@ -130,7 +151,22 @@ impl PathLocks {
     /// the guard is dropped. The claim is the guard's, so it goes if the
     /// wait is dropped. Claims don't wait for each other.
     pub(crate) async fn claim(self: &Arc<Self>, paths: &[&str]) -> Claimed {
-        let paths: Vec<String> = paths.iter().map(|p| normalize_api_path(p)).collect();
+        self.claim_scoped(paths, Scope::Subtree).await
+    }
+
+    /// As [`PathLocks::claim`], but covering only the direct children of
+    /// each directory, so the registrations that wait are those of paths
+    /// directly in it, and the directory itself and the paths deeper
+    /// are neither held back nor waited for.
+    pub(crate) async fn claim_children(self: &Arc<Self>, dirs: &[&str]) -> Claimed {
+        self.claim_scoped(dirs, Scope::Children).await
+    }
+
+    async fn claim_scoped(self: &Arc<Self>, paths: &[&str], scope: Scope) -> Claimed {
+        let paths: Vec<(String, Scope)> = paths
+            .iter()
+            .map(|p| (normalize_api_path(p), scope))
+            .collect();
         self.state().blocked.extend(paths.iter().cloned());
         let guard = Claimed {
             locks: self.clone(),
@@ -179,6 +215,45 @@ mod tests {
         assert!(!covers("d/e", "d"));
         assert!(covers("", "d/x.ipynb"));
         assert!(covers("", ""));
+    }
+
+    /// A children claim covers the paths directly in its directory.
+    #[test]
+    fn a_children_claim_covers_direct_children_only() {
+        let c = |pre, path| covered(Scope::Children, pre, path);
+        assert!(c("", "a.ipynb"));
+        assert!(!c("", "d/a.ipynb"));
+        assert!(!c("", ""));
+        assert!(c("d", "d/a"));
+        assert!(!c("d", "d"));
+        assert!(!c("d", "d/e/a"));
+        assert!(!c("d", "dd/a"));
+        assert!(!c("d", "a"));
+    }
+
+    /// A children claim of the root waits for and holds back top-level
+    /// paths only.
+    #[tokio::test]
+    async fn a_children_claim_ignores_paths_deeper() {
+        let locks = Arc::new(PathLocks::default());
+        let deep = locks.register(&["d/a.ipynb"]).await;
+        let top = locks.register(&["a.ipynb"]).await;
+        let l = locks.clone();
+        let claim = tokio::spawn(async move { l.claim_children(&[""]).await });
+        tokio::time::sleep(SHORT).await;
+        assert!(!claim.is_finished(), "waits for a.ipynb");
+        drop(top);
+        let claimed = tokio::time::timeout(LONG, claim).await.unwrap().unwrap();
+        tokio::time::timeout(LONG, locks.register(&["d/b.ipynb"]))
+            .await
+            .expect("a path deeper is not held");
+        let l = locks.clone();
+        let late = tokio::spawn(async move { l.register(&["b.ipynb"]).await });
+        tokio::time::sleep(SHORT).await;
+        assert!(!late.is_finished(), "a top-level path waits");
+        drop(claimed);
+        tokio::time::timeout(LONG, late).await.unwrap().unwrap();
+        drop(deep);
     }
 
     /// A claim waits for a registration under it, and a registration

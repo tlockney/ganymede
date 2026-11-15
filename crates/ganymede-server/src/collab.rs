@@ -120,12 +120,13 @@ pub struct Collab {
     /// turn. Readers don't wait for each other.
     move_lock: tokio::sync::RwLock<()>,
     /// What keeps a lookup from a path a create is about to make. A
-    /// create claims its directory here, from before the file is made
-    /// until [`Collab::forget_new_file`] is done; a grant read, an
-    /// [`Collab::index_existing`] and a room opening register the path
-    /// they read, which waits while a create claims a directory above it,
-    /// and a create waits for the lookups registered under its directory.
-    /// A lookup elsewhere is never held up. Taken after `move_lock`, and
+    /// create claims the direct children of its directory here, from
+    /// before the file is made until [`Collab::forget_new_file`] is done;
+    /// a grant read, an [`Collab::index_existing`] and a room opening
+    /// register the path they read, which waits while a create claims its
+    /// directory, and a create waits for the lookups registered directly in
+    /// its directory. A lookup of any other path, the root's included, is
+    /// never held up. Taken after `move_lock`, and
     /// nothing takes `move_lock` while holding it.
     lookups: Arc<crate::path_locks::PathLocks>,
     next_conn: AtomicU64,
@@ -378,9 +379,9 @@ impl Collab {
     /// stored at the path under this root or another, left by a file
     /// deleted outside, so those go, and rooms open on the path close.
     /// The guard holds the move lock for reading, so no rename, delete or
-    /// [`file_gone`] lands meanwhile, and claims the directory, so no
-    /// grant read, index or room open under it looks at the path before
-    /// this is done.
+    /// [`file_gone`] lands meanwhile, and claims the directory's
+    /// children, so no grant read, index or room open at a path directly
+    /// in it looks at the path before this is done.
     pub(crate) async fn forget_new_file(&self, path: &str) {
         self.removed(path).await;
         self.removed_in_other_roots(path).await;
@@ -518,12 +519,13 @@ impl Collab {
     /// `new_untitled`, at a path not known until it is. Until the guard
     /// drops, after [`Collab::forget_new_file`]: no rename, delete or
     /// [`file_gone`] lands (the move lock, for reading, which a rename
-    /// waits on for writing), and no grant read, index or room open under
-    /// `dir` looks at a path, which could still have the stale id or
-    /// grant of a file deleted outside. Looks elsewhere go on.
+    /// waits on for writing), and no grant read, index or room open at a
+    /// path directly in `dir` (`""` for the root) looks at it, as it could
+    /// still have the stale id or grant of a file deleted outside. The new
+    /// file is always one of these. Looks elsewhere go on.
     pub(crate) async fn begin_create(&self, dir: &str) -> Creating<'_> {
         let moves = self.move_lock.read().await;
-        let claim = self.lookups.claim(&[dir]).await;
+        let claim = self.lookups.claim_children(&[dir]).await;
         Creating {
             _claim: claim,
             _moves: moves,

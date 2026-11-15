@@ -8,17 +8,20 @@ reads, path-and-grant reads, indexing and room opens take the move lock for
 reading, so all of them waited until a large copy finished, whatever path
 they were after.
 
-A create now takes the move lock for reading and claims its directory (for a
-copy with no directory given, the directory of its source) until the new
-path is forgotten. A grant read, an index and a room open register the
-path they look at, and wait only while a create claims a directory above
-it; a create waits for the lookups already registered under its
-directory. A lookup by file id, which only learns the path after reading it,
+A create now takes the move lock for reading and claims the direct
+children of its directory (for a copy with no directory given, the
+directory of its source) until the new path is forgotten, the root's
+included. The new file is always one of them. A grant read, an index and a
+room open register the path they look at, and wait only while a create
+claims the directory that path is directly in; a create waits for the
+lookups already registered at paths directly in its directory. A lookup by file id, which only learns the path after reading it,
 registers it and reads it again, and starts over if it changed. So lookups
 of paths elsewhere no longer wait for a create, and a lookup under the
 directory still can't see the stale grant or id, or open a room on the new
-file under the stale id. A create in the root claims the whole tree, as
-every path is under the root, so lookups anywhere wait for it.
+file under the stale id. This holds for the root too: a copy or a new
+untitled file at the top waits for no lookup of a path in a folder, and
+holds none up. A rename's claim, unlike a create's, still covers its paths
+and all under them.
 
 Renames, deletes, and the check that finds a file deleted outside still take the move lock
 for writing, so they wait for a create in progress and none lands during

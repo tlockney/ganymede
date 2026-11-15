@@ -1597,9 +1597,74 @@ mod tests {
         }
     }
 
+    /// A copy or a new untitled file in the root holds up no lookup of a
+    /// path in a folder, though one of a top-level path waits.
+    #[tokio::test]
+    async fn a_create_in_the_root_does_not_hold_up_lookups_in_folders() {
+        for (kind, new_path) in [
+            ("copy with no directory", "a-Copy1.ipynb"),
+            ("copy into the root", "a-Copy1.ipynb"),
+            ("new untitled", "Untitled.ipynb"),
+        ] {
+            let (dir, collab, contents, wrote, release) = gated(false).await;
+            std::fs::create_dir(dir.path().join("other")).unwrap();
+            std::fs::write(dir.path().join("other/x.ipynb"), NOTEBOOK).unwrap();
+            let (id, _) = collab.index("other/x.ipynb").await;
+            collab
+                .set_grant(id.clone(), Some(GRANT.into()))
+                .await
+                .unwrap();
+            let k = contents.clone();
+            let create = tokio::spawn(async move {
+                match kind {
+                    "copy with no directory" => k.copy("a.ipynb", None).await,
+                    "copy into the root" => k.copy("a.ipynb", Some("")).await,
+                    _ => {
+                        k.new_untitled("", ContentType::Notebook, Some(".ipynb"))
+                            .await
+                    }
+                }
+            });
+            wrote.notified().await;
+            let c = &collab;
+            assert!(tokio::time::timeout(LONG, c.grant("other/x.ipynb"))
+                .await
+                .unwrap_or_else(|_| panic!("a grant read waited ({kind})"))
+                .is_some());
+            let found = tokio::time::timeout(LONG, c.path_and_grant(&id))
+                .await
+                .unwrap_or_else(|_| panic!("a path-and-grant read waited ({kind})"));
+            assert_eq!(found.unwrap().0, "other/x.ipynb");
+            let indexed = tokio::time::timeout(
+                LONG,
+                c.index_existing(&contents, "other/x.ipynb", GetOptions::default()),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("an index waited ({kind})"))
+            .unwrap();
+            assert_eq!(indexed, (id.clone(), false));
+            let room = tokio::time::timeout(
+                LONG,
+                crate::collab::send_to_notebook_room(c, &contents, &room_id(&id), room_cmd()),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("a room open waited ({kind})"));
+            assert!(room.is_some());
+            // A top-level path does wait.
+            let (k, top) = (collab.clone(), "zzz.ipynb");
+            let read = tokio::spawn(async move { k.grant(top).await });
+            tokio::time::sleep(SHORT).await;
+            assert!(!read.is_finished(), "a top-level read waits ({kind})");
+            release.notify_one();
+            let model = create.await.unwrap().unwrap();
+            assert_eq!(model.path, new_path, "{kind}");
+            read.await.unwrap();
+        }
+    }
+
     /// A copy with no directory goes beside its source, and claims the
-    /// source's directory: reads under it wait, others don't. A source
-    /// in the root claims the root.
+    /// source's directory: reads of other files directly in it wait,
+    /// others don't. A source in the root claims the top-level paths only.
     #[tokio::test]
     async fn a_copy_beside_its_source_claims_the_sources_directory() {
         for (source, under, elsewhere) in [
@@ -1620,11 +1685,9 @@ mod tests {
             let read = tokio::spawn(async move { c.grant(under).await });
             tokio::time::sleep(SHORT).await;
             assert!(!read.is_finished(), "a read beside {source} waits");
-            if source.starts_with("sub") {
-                tokio::time::timeout(LONG, collab.grant(elsewhere))
-                    .await
-                    .expect("a read in another directory goes on");
-            }
+            tokio::time::timeout(LONG, collab.grant(elsewhere))
+                .await
+                .expect("a read in another directory goes on");
             release.notify_one();
             copy.await.unwrap().unwrap();
             read.await.unwrap();
