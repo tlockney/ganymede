@@ -1036,6 +1036,69 @@ mod tests {
         made.await.unwrap().unwrap();
     }
 
+    /// A new untitled file is made under the move lock, so it waits for
+    /// a rename or delete in progress.
+    #[tokio::test]
+    async fn new_untitled_takes_the_move_lock() {
+        let (_dir, collab, contents) = granted_in_d("a.ipynb").await;
+        let moving = collab.begin_move().await;
+        let k = contents.clone();
+        let made = tokio::spawn(async move {
+            k.new_untitled("d", ContentType::Notebook, Some(".ipynb"))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!made.is_finished(), "waits for the move lock");
+        drop(moving);
+        made.await.unwrap().unwrap();
+    }
+
+    /// A copy into a directory holds the move lock and a write of the
+    /// tree until its new path is forgotten, and a grant read waits too,
+    /// so it can't see a stale grant on the new file.
+    #[tokio::test]
+    async fn a_copy_into_a_directory_holds_the_locks_until_it_is_done() {
+        let (dir, collab, contents, wrote, release) = gated(false).await;
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        // A grant with no stamp, left at the new path by a deleted file.
+        let (id, _) = collab.index("sub/a.ipynb").await;
+        collab.set_grant(id, Some(GRANT.into())).await.unwrap();
+        let copy = tokio::spawn(async move { contents.copy("a.ipynb", Some("sub")).await });
+        wrote.notified().await;
+        let timeout = std::time::Duration::from_millis(50);
+        assert!(
+            tokio::time::timeout(timeout, collab.begin_move())
+                .await
+                .is_err(),
+            "the move lock is held"
+        );
+        assert!(
+            collab.stamps.tree.try_write().is_err(),
+            "the tree is held for writing"
+        );
+        let c = collab.clone();
+        let read = tokio::spawn(async move { c.grant("sub/a.ipynb").await });
+        tokio::time::sleep(timeout).await;
+        assert!(!read.is_finished(), "a grant read waits for the copy");
+        release.notify_one();
+        copy.await.unwrap().unwrap();
+        assert_eq!(read.await.unwrap(), None, "no stale grant");
+    }
+
+    /// A path-and-grant read waits for the move lock, as a grant read does.
+    #[tokio::test]
+    async fn a_path_and_grant_read_takes_the_move_lock() {
+        let (_dir, collab, _contents) = granted_in_d("a.ipynb").await;
+        let (id, _) = collab.index("d/a.ipynb").await;
+        let moving = collab.begin_move().await;
+        let c = collab.clone();
+        let read = tokio::spawn(async move { c.path_and_grant(&id).await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!read.is_finished(), "waits for the move lock");
+        drop(moving);
+        assert!(read.await.unwrap().is_some());
+    }
+
     /// A rename holds the move lock, so no room opens or delete lands
     /// between the disk rename and the ids following.
     #[tokio::test]

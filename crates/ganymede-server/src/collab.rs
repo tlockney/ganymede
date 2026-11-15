@@ -231,6 +231,8 @@ impl Collab {
     /// its file is still the one it was granted to: one whose file was
     /// changed outside the server is dropped (#767).
     pub async fn grant(&self, path: &str) -> Option<String> {
+        // Not while a copy or a new file is being made and its path forgotten.
+        let _no_move = self.move_lock.read().await;
         let path = normalize_api_path(path);
         let stamps = self.stamps.clone();
         self.with_ids(move |ids| {
@@ -244,6 +246,7 @@ impl Collab {
     /// checked as [`Collab::grant`] does, read together, so no rename
     /// lands between them; `None` once it's gone.
     pub async fn path_and_grant(&self, id: &str) -> Option<(String, Option<String>)> {
+        let _no_move = self.move_lock.read().await;
         let id = id.to_string();
         let stamps = self.stamps.clone();
         self.with_ids(move |ids| {
