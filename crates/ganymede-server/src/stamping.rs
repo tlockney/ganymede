@@ -547,15 +547,12 @@ impl Contents for Stamping {
             // and no room opens between.
             let _moving = collab.begin_move().await;
             // The new file's name isn't known yet: the write is
-            // registered on its directory, the source's own when none
-            // was given.
-            let dir = match &to_dir {
-                Some(d) => d.clone(),
-                None => from_path
-                    .rsplit_once('/')
-                    .map_or(String::new(), |(parent, _)| parent.to_string()),
-            };
-            let _writing = collab.stamps.begin_write(&[&from_path, &dir]).await;
+            // registered on its directory. With none given, the copy goes
+            // beside its source, and the source's registration covers
+            // every rename that covers that directory.
+            let mut paths = vec![from_path.as_str()];
+            paths.extend(to_dir.as_deref());
+            let _writing = collab.stamps.begin_write(&paths).await;
             let model = inner.copy(&from_path, to_dir.as_deref()).await?;
             // Whatever grant is
             // stored at its path is from a file that was deleted outside.
@@ -1177,8 +1174,8 @@ mod tests {
         assert!(root.join("e/a.ipynb").is_file());
     }
 
-    /// A copy into a directory registers its source and the directory:
-    /// with no directory given, the source's own.
+    /// A copy into a directory registers its source and, when one is
+    /// given, the directory.
     #[tokio::test]
     async fn a_copy_into_a_directory_registers_its_source_and_directory() {
         for to_dir in [None, Some("x")] {

@@ -7,7 +7,9 @@ every other file queued behind it. A rename now waits only for the writes
 registered under its old and new paths, a directory's included, and holds
 back only new writes under those two paths. Saves and copies register the
 paths they write: a save its file, a copy its source and its destination
-(or the destination directory, when the new file's name isn't known yet),
+(or the destination directory, when the new file's name isn't known yet
+and one is given; a copy with none goes beside its source, which its
+source's registration already covers),
 and a new untitled file its directory. Prefixes match whole path
 segments, so a rename of `d` doesn't wait for `dd/x.ipynb`. A rename
 whose wait is dropped gives its paths back.
