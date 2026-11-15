@@ -347,7 +347,8 @@ edit_self = true     # the self.* calls; false turns them off
 
 > [!NOTE]
 > **Unreleased.** Dropping a grant when its file changes outside
-> Ganymede is available only from a build of `main` (HEAD), not in the
+> Ganymede, and other roots' grants following a rename or delete through
+> a server, are available only from a build of `main` (HEAD), not in the
 > latest release, where a replaced file keeps its grant.
 
 This is the server's half of "scoped kernels" from the direction review:
