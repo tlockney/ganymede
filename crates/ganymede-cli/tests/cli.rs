@@ -981,6 +981,26 @@ fn a_grant_is_gone_after_its_file_is_rewritten_on_disk() {
     }
 }
 
+/// Setting a key on a notebook rewritten on disk checks the old grant
+/// first, with no `--list` between: only the new key remains.
+#[test]
+fn granting_a_key_drops_the_grant_of_a_file_rewritten_on_disk() {
+    let data = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("a.ipynb"), "{}").unwrap();
+    let grant = |args: &[&str]| {
+        let mut c = ganymede(&["grant", "--root-dir", root.path().to_str().unwrap()]);
+        c.args(args)
+            .current_dir(root.path())
+            .env("JUPYTER_DATA_DIR", data.path());
+        stdout(&run_ok(c))
+    };
+    assert_eq!(grant(&["a.ipynb", "read=docs"]), "a.ipynb read=\"docs\"\n");
+    std::fs::write(root.path().join("a.ipynb"), "{\"replaced\": \"by git\"}").unwrap();
+    assert_eq!(grant(&["a.ipynb", "run=x"]), "a.ipynb run=\"x\"\n");
+    assert_eq!(grant(&["--list"]), "a.ipynb run=\"x\"\n");
+}
+
 #[test]
 fn execute_keeps_the_grant_through_its_own_write() {
     let data = tempfile::tempdir().unwrap();

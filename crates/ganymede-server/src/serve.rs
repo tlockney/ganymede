@@ -503,6 +503,17 @@ pub fn notary(dir: Option<PathBuf>) -> Notary {
     })
 }
 
+/// The contents a server on `root` serves: the files, with every save
+/// keeping its file's host grant (#767). The server, an embedded host
+/// and the tests all build it here, so none can leave the grants out.
+pub fn contents_for(
+    root: &std::path::Path,
+    options: FsOptions,
+    collab: &Arc<crate::collab::Collab>,
+) -> anyhow::Result<Arc<dyn ganymede_contents::Contents>> {
+    Ok(collab.stamping(Arc::new(FsContents::new(root, options)?)))
+}
+
 /// Document rooms' file ids for `root`, kept in the Jupyter data dir's
 /// `ganymede_file_ids.db` when there is one.
 pub fn file_ids(root: &std::path::Path) -> ganymede_contents::FileIds {
@@ -555,8 +566,7 @@ impl LocalHost {
         let state = AppState {
             sessions: Arc::new(SessionManager::new(kernels.clone())),
             kernels: kernels.clone(),
-            // A notebook the run writes keeps its grant (#767).
-            contents: collab.stamping(Arc::new(FsContents::new(&root_dir, FsOptions::default())?)),
+            contents: contents_for(&root_dir, FsOptions::default(), &collab)?,
             token: None,
             cookie_secret: Arc::from(&[][..]),
             allow_origins: Vec::new(),
@@ -810,14 +820,11 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
         },
     ));
     let sessions = Arc::new(SessionManager::new(kernels.clone()));
-    let contents = Arc::new(FsContents::new(
-        &root_dir,
-        FsOptions {
-            checkpoint_dir: cfg.checkpoint_dir.clone(),
-            notary: Some(Arc::new(notary(cfg.notary_dir.clone()))),
-            ..Default::default()
-        },
-    )?);
+    let fs_options = FsOptions {
+        checkpoint_dir: cfg.checkpoint_dir.clone(),
+        notary: Some(Arc::new(notary(cfg.notary_dir.clone()))),
+        ..Default::default()
+    };
     let cookie_secret_file = cfg.cookie_secret_file.clone().unwrap_or_else(|| {
         ganymede_kernel_host::kernelspec::jupyter_runtime_dir().join("jupyter_cookie_secret")
     });
@@ -847,11 +854,11 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
         );
     }
     let state_collab = Arc::new(collab);
+    let contents = contents_for(&root_dir, fs_options, &state_collab)?;
     let state = AppState {
         kernels: kernels.clone(),
         sessions,
-        // Saves keep their file's host grant (#767).
-        contents: state_collab.stamping(contents),
+        contents,
         token: token.clone(),
         cookie_secret: crate::auth::load_cookie_secret(&cookie_secret_file).into(),
         allow_origins: cfg.allow_origins.clone(),

@@ -102,5 +102,7 @@ flight under either path, files or a directory's, and none begins meanwhile;
 a save in flight when it lands finishes and restamps first.
 
 The server's saves reuse the connection their `FileIds` already has for the
-`roots_with_id` query (`held_with`) and open another root's `FileIds` only
-for a root that has a grant.
+`roots_with_id` query (`held_with`). The query joins `host_grants`, so it
+returns only roots that hold a grant on the file, and `held_with` opens
+another root's `FileIds` only for those. `moved_in_other_roots` has its own
+query, since it moves every root's ids, grant or not.

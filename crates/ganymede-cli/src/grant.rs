@@ -113,10 +113,13 @@ pub(crate) fn check_held(path: &Path) -> Vec<ganymede_contents::Held> {
 /// The program wrote the notebook: the grants that stood before keep
 /// matching it.
 pub(crate) fn restamp_held(held: &[ganymede_contents::Held]) -> Result<()> {
-    for h in held {
-        h.restamp().map_err(anyhow::Error::msg)?;
+    // Every grant is restamped, and every failure reported.
+    let errors: Vec<String> = held.iter().filter_map(|h| h.restamp().err()).collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        bail!("{}", errors.join("; "))
     }
-    Ok(())
 }
 
 pub fn run(args: GrantArgs) -> Result<ExitCode> {

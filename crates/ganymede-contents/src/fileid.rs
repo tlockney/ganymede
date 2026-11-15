@@ -592,8 +592,8 @@ impl FileIds {
 
 /// The contents roots the file ids database at `db` knows `file` under,
 /// each with the file's API path there: every directory above `file` is a
-/// candidate root, and a root has the file when it has an id for its path
-/// in it. `file` is an absolute path whose directory is resolved. A
+/// candidate root, and a root has the file when it has a grant on its id
+/// for its path in it. `file` is an absolute path whose directory is resolved. A
 /// program that writes a file doesn't know which server's root, or
 /// `ganymede grant`'s, a grant was made under, so it keeps the grant under
 /// every root that has one. Empty when there is no database, or this
@@ -1163,8 +1163,11 @@ mod sqlite {
         if candidates.is_empty() {
             return Ok(Vec::new());
         }
-        let clause = vec!["(root = ? AND path = ?)"; candidates.len()].join(" OR ");
-        let mut q = db.prepare(&format!("SELECT root, path FROM file_ids WHERE {clause}"))?;
+        let clause = vec!["(f.root = ? AND f.path = ?)"; candidates.len()].join(" OR ");
+        let mut q = db.prepare(&format!(
+            "SELECT f.root, f.path FROM file_ids f JOIN host_grants g ON g.id = f.id
+            WHERE {clause}"
+        ))?;
         let args = candidates.iter().flat_map(|(r, p)| [r, p]);
         let rows = q.query_map(rusqlite::params_from_iter(args), |r| {
             Ok((std::path::PathBuf::from(r.get::<_, String>(0)?), r.get(1)?))
@@ -1572,9 +1575,18 @@ mod tests {
         let outer = FileIds::open(&db, Path::new("/p"));
         let inner = FileIds::open(&db, Path::new("/p/s"));
         let unrelated = FileIds::open(&db, Path::new("/q"));
-        outer.index("s/nb.ipynb");
-        inner.index("nb.ipynb");
-        unrelated.index("s/nb.ipynb");
+        let (o, _) = outer.index("s/nb.ipynb");
+        let (i, _) = inner.index("nb.ipynb");
+        let (u, _) = unrelated.index("s/nb.ipynb");
+        // Only roots holding a grant are found.
+        assert!(roots_with_id(&db, Path::new("/p/s/nb.ipynb")).is_empty());
+        outer.set_grant(&o, Some("{}"), None).unwrap();
+        unrelated.set_grant(&u, Some("{}"), None).unwrap();
+        assert_eq!(
+            roots_with_id(&db, Path::new("/p/s/nb.ipynb")),
+            [(std::path::PathBuf::from("/p"), "s/nb.ipynb".to_string())]
+        );
+        inner.set_grant(&i, Some("{}"), None).unwrap();
         let mut found = roots_with_id(&db, Path::new("/p/s/nb.ipynb"));
         found.sort();
         assert_eq!(

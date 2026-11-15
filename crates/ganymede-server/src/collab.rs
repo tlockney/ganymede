@@ -472,7 +472,7 @@ impl Collab {
     }
 
     /// The path a file id names now.
-    async fn path_of(&self, id: &str) -> Option<String> {
+    pub(crate) async fn path_of(&self, id: &str) -> Option<String> {
         let id = id.to_string();
         self.with_ids(move |ids| ids.path(&id)).await
     }

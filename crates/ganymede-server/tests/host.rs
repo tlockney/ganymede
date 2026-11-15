@@ -6,7 +6,7 @@ use ganymede_api::{
     KernelManager, KernelManagerConfig, SessionCreate, SessionManager, StaticKernelspecs,
     TransportFactory,
 };
-use ganymede_contents::{FsContents, FsOptions};
+use ganymede_contents::FsOptions;
 use ganymede_host::{Caller, Responder};
 use ganymede_kernel_host::protocol::ConnectionInfo;
 use ganymede_kernel_host::testing::{FakeKernel, ReplyOrder};
@@ -92,10 +92,9 @@ fn state_with(
     AppState {
         sessions: Arc::new(SessionManager::new(kernels.clone())),
         kernels,
-        // Saves keep their file's grant, as in the server.
-        contents: collab.stamping(Arc::new(
-            FsContents::new(root, FsOptions::default()).unwrap(),
-        )),
+        // Saves keep their file's grant, built as the server builds it.
+        contents: ganymede_server::serve::contents_for(root, FsOptions::default(), &collab)
+            .unwrap(),
         token: Some(TOKEN.into()),
         cookie_secret: Arc::from(&b"test-secret"[..]),
         allow_origins: vec![],
