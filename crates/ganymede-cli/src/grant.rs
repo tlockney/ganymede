@@ -95,6 +95,33 @@ pub(crate) fn grant_path(key: &str, path: &str) -> Result<String> {
     Ok(p)
 }
 
+/// Before a program writes the notebook at `path`: drops the grants,
+/// under every root, whose file changed outside Ganymede (#767). What
+/// comes back is for [`restamp_held`] after the write.
+pub(crate) fn check_held(path: &Path) -> Vec<ganymede_contents::Held> {
+    let (Some(db), Ok(abs)) = (
+        ganymede_server::serve::file_ids_db(),
+        std::path::absolute(path),
+    ) else {
+        return Vec::new();
+    };
+    let mut all = ganymede_contents::held(&db, &abs, None);
+    all.iter_mut().for_each(|h| h.check());
+    all
+}
+
+/// The program wrote the notebook: the grants that stood before keep
+/// matching it.
+pub(crate) fn restamp_held(held: &[ganymede_contents::Held]) -> Result<()> {
+    // Every grant is restamped, and every failure reported.
+    let errors: Vec<String> = held.iter().filter_map(|h| h.restamp().err()).collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        bail!("{}", errors.join("; "))
+    }
+}
+
 pub fn run(args: GrantArgs) -> Result<ExitCode> {
     let root = args
         .root_dir
@@ -116,16 +143,19 @@ pub fn run(args: GrantArgs) -> Result<ExitCode> {
         if !args.list {
             bail!("name a notebook, or pass --list");
         }
-        for (path, text) in ids.grants() {
+        // Only grants whose files are as Ganymede left them: one whose
+        // file changed outside it is dropped here (#767).
+        for (path, text) in ids.grants_checked(|p| ganymede_contents::api_file_stamp(&root, p)) {
             println!("{}", show(&path, &parse(&text)));
         }
         return Ok(ExitCode::SUCCESS);
     };
     let path = api_path(&root, notebook)?;
+    let stamp = || ganymede_contents::api_file_stamp(&root, &path);
     if args.list {
         let grant = ids
             .get(&path)
-            .and_then(|id| ids.grant(&id))
+            .and_then(|id| ids.grant_checked_with(&id, stamp))
             .map(|t| parse(&t))
             .unwrap_or_default();
         if grant.is_empty() {
@@ -139,7 +169,11 @@ pub fn run(args: GrantArgs) -> Result<ExitCode> {
         bail!("say what to grant, such as read=journal, run=reports or edit_self=false");
     }
     let (id, _) = ids.index(&path);
-    let mut grant = ids.grant(&id).map(|t| parse(&t)).unwrap_or_default();
+    // One its file outgrew is gone, so this starts from the defaults.
+    let mut grant = ids
+        .grant_checked_with(&id, stamp)
+        .map(|t| parse(&t))
+        .unwrap_or_default();
     if args.revoke && args.grants.is_empty() {
         grant = Grant::default();
     }
@@ -189,8 +223,10 @@ pub fn run(args: GrantArgs) -> Result<ExitCode> {
         }
     }
     let text = (!grant.is_empty()).then(|| serde_json::to_string(&grant).expect("a grant is JSON"));
-    ids.set_grant(&id, text.as_deref())
-        .map_err(|e| anyhow::anyhow!("saving the grant: {e}"))?;
+    ids.set_grant_with(&id, text.as_deref(), |p| {
+        ganymede_contents::api_file_stamp(&root, p)
+    })
+    .map_err(|e| anyhow::anyhow!("saving the grant: {e}"))?;
     if grant.is_empty() {
         println!("{path}: the [host] defaults");
     } else {

@@ -181,7 +181,8 @@ enum Cmd {
     /// `jupyter.host()`: `read=PATH` (other notebooks it may read),
     /// `run=PATH` (notebooks it may run) and `edit_self` (its own cells). Kept by file id beside the server's
     /// file id database in the Jupyter data dir; a running server sees a
-    /// change on the next call.
+    /// change on the next call. A grant is dropped when its file is
+    /// replaced outside Ganymede.
     Grant(grant::GrantArgs),
     /// Trust notebooks' HTML and JavaScript, as jupyter trust does.
     ///
@@ -1369,11 +1370,19 @@ fn print_results(
     println!("{line}");
 }
 
+/// Writes `nb` to `dest`, or stdout. A file written is the program's own
+/// write, so a notebook's host grant, under whichever root holds it, keeps
+/// matching it; one whose file was replaced outside is dropped first, so
+/// this write doesn't bless it (#767).
 fn write_notebook(nb: &Notebook, dest: Option<&Path>) -> Result<()> {
     match dest {
         Some(p) => {
+            let held = grant::check_held(p);
             ganymede_engine::nbformat::write_file(nb, p)
                 .with_context(|| format!("writing {}", p.display()))?;
+            if let Err(e) = grant::restamp_held(&held) {
+                eprintln!("ganymede: {}", error_chain(&e));
+            }
             eprintln!("  wrote {}", p.display());
         }
         None => print!("{}", nb.to_file_string()),

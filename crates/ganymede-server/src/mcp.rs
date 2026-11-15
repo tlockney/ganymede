@@ -730,7 +730,7 @@ impl Notebooks {
                 let mut rooms = Vec::new();
                 for id in self.state.collab.notebook_rooms() {
                     let file = id.trim_start_matches("json:notebook:").to_string();
-                    if let Some((path, _)) = self.state.collab.path_and_grant(&file).await {
+                    if let Some(path) = self.state.collab.path_of(&file).await {
                         if dir.is_empty() || ganymede_contents::path_under(&path, &dir).is_some() {
                             rooms.push((id, path));
                         }

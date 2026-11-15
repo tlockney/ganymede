@@ -474,9 +474,21 @@ A notebook's own grant replaces these defaults for the keys it sets.
 server's file id database in the Jupyter data dir, so it follows a
 rename made through the server and goes when the notebook is deleted
 through it. A notebook deleted outside the server leaves its grant with
-the path, so a new file saved there gets it; `--revoke` it first. A
+the path until it is next read, and a new file made there, by a save
+through the server or by `ganymede execute -o`, doesn't keep it. A
 running server sees a change on the next call; a `notebooks.run` keeps
 the grant it started with until it ends.
+
+A grant is dropped, and the notebook is back to the defaults, when its
+file is replaced outside Ganymede (by `git`, an editor, Finder, a download
+or a sync tool); saves through the server, `ganymede execute` and
+`ganymede nb clear` keep it, under every root that holds a grant on the
+file. See [Per notebook](host-api.md#grants) for how.
+
+> [!NOTE]
+> **Unreleased.** Dropping a grant when its file changes outside
+> Ganymede is available only from a build of `main` (HEAD), not in the
+> latest release.
 
 ```sh
 ganymede grant journal/index.ipynb read=journal   # reads only journal/ (and itself)

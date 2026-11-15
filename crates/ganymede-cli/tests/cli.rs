@@ -926,6 +926,245 @@ fn grant_stores_lists_and_revokes_a_notebooks_grant() {
     }
 }
 
+/// A grant is for the file as Ganymede last wrote or saw it: one rewritten
+/// outside it (git, a download, sync) loses its grant (#767).
+#[test]
+fn a_grant_is_gone_after_its_file_is_rewritten_on_disk() {
+    let data = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("a.ipynb"), "{}").unwrap();
+    std::fs::write(root.path().join("b.ipynb"), "{}").unwrap();
+    let grant = |args: &[&str]| {
+        let mut c = ganymede(&["grant", "--root-dir", root.path().to_str().unwrap()]);
+        c.args(args)
+            .current_dir(root.path())
+            .env("JUPYTER_DATA_DIR", data.path());
+        stdout(&run_ok(c))
+    };
+    grant(&["a.ipynb", "read=docs"]);
+    grant(&["b.ipynb", "edit_self=false"]);
+    assert_eq!(
+        grant(&["--list"]),
+        "a.ipynb read=\"docs\"\nb.ipynb edit_self=false\n"
+    );
+
+    // A is replaced by another program.
+    std::fs::write(root.path().join("a.ipynb"), "{\"replaced\": \"by git\"}").unwrap();
+    assert_eq!(
+        grant(&["--list", "a.ipynb"]),
+        "a.ipynb: the [host] defaults\n"
+    );
+    assert_eq!(grant(&["--list"]), "b.ipynb edit_self=false\n");
+    // Gone for good: the next grant starts from the defaults.
+    assert_eq!(grant(&["a.ipynb", "run=x"]), "a.ipynb run=\"x\"\n");
+    assert_eq!(
+        grant(&["--revoke", "a.ipynb"]),
+        "a.ipynb: the [host] defaults\n"
+    );
+
+    // Replaced by a rename with the same size and the old modification
+    // time (an editor, `git checkout`): a new inode.
+    #[cfg(unix)]
+    {
+        let file = root.path().join("b.ipynb");
+        let mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
+        let new = root.path().join("b.new");
+        std::fs::write(&new, "[]").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&new)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        std::fs::rename(&new, &file).unwrap();
+        assert_eq!(grant(&["--list"]), "");
+    }
+}
+
+/// Setting a key on a notebook rewritten on disk checks the old grant
+/// first, with no `--list` between: only the new key remains.
+#[test]
+fn granting_a_key_drops_the_grant_of_a_file_rewritten_on_disk() {
+    let data = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("a.ipynb"), "{}").unwrap();
+    let grant = |args: &[&str]| {
+        let mut c = ganymede(&["grant", "--root-dir", root.path().to_str().unwrap()]);
+        c.args(args)
+            .current_dir(root.path())
+            .env("JUPYTER_DATA_DIR", data.path());
+        stdout(&run_ok(c))
+    };
+    assert_eq!(grant(&["a.ipynb", "read=docs"]), "a.ipynb read=\"docs\"\n");
+    std::fs::write(root.path().join("a.ipynb"), "{\"replaced\": \"by git\"}").unwrap();
+    assert_eq!(grant(&["a.ipynb", "run=x"]), "a.ipynb run=\"x\"\n");
+    assert_eq!(grant(&["--list"]), "a.ipynb run=\"x\"\n");
+}
+
+#[test]
+fn execute_keeps_the_grant_through_its_own_write() {
+    let data = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let nb = fake_notebook(&root);
+    let name = nb.file_name().unwrap().to_str().unwrap().to_string();
+    let go = |args: &[&str]| {
+        let mut c = ganymede(args);
+        c.current_dir(&root).env("JUPYTER_DATA_DIR", data.path());
+        stdout(&run_ok(c))
+    };
+    let want = format!("{name} read=\"docs\"\n");
+    go(&["grant", &name, "read=docs"]);
+    assert_eq!(go(&["grant", "--list"]), want);
+
+    let before = std::fs::read_to_string(&nb).unwrap();
+    go(&["execute", "--inplace", &name]);
+    assert_ne!(std::fs::read_to_string(&nb).unwrap(), before, "it wrote");
+    assert_eq!(go(&["grant", "--list"]), want, "the run kept the grant");
+    go(&["execute", "--inplace", &name]);
+    assert_eq!(go(&["grant", "--list"]), want, "and again");
+
+    // Replaced outside, then run: the run doesn't bless it.
+    std::fs::write(&nb, before.replace("# hi", "# changed by git")).unwrap();
+    go(&["execute", "--inplace", &name]);
+    assert_eq!(go(&["grant", "--list"]), "");
+}
+
+/// A notebook deleted outside and made anew by `execute -o` doesn't keep
+/// the grant of the old one.
+#[test]
+fn execute_over_a_notebook_deleted_outside_drops_its_grant() {
+    let data = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let nb = fake_notebook(&root);
+    let name = nb.file_name().unwrap().to_str().unwrap().to_string();
+    let go = |args: &[&str]| {
+        let mut c = ganymede(args);
+        c.current_dir(&root).env("JUPYTER_DATA_DIR", data.path());
+        stdout(&run_ok(c))
+    };
+    go(&["grant", &name, "read=docs"]);
+    assert_eq!(go(&["grant", "--list"]), format!("{name} read=\"docs\"\n"));
+    std::fs::copy(&nb, root.join("src.ipynb")).unwrap();
+    std::fs::remove_file(&nb).unwrap();
+    go(&["execute", "-o", &name, "src.ipynb"]);
+    assert!(nb.is_file(), "it made the notebook anew");
+    assert_eq!(go(&["grant", "--list"]), "");
+}
+
+/// The same when the config file doesn't load and the run has no host API.
+#[test]
+fn execute_without_a_host_api_keeps_the_grant_too() {
+    let data = tempfile::tempdir().unwrap();
+    let config = tempfile::tempdir().unwrap();
+    std::fs::write(config.path().join("ganymede.toml"), "[host\n").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let nb = fake_notebook(&root);
+    let name = nb.file_name().unwrap().to_str().unwrap().to_string();
+    let go = |args: &[&str]| {
+        let mut c = ganymede(args);
+        c.current_dir(&root)
+            .env("JUPYTER_DATA_DIR", data.path())
+            .env("GANYMEDE_CONFIG_DIR", config.path());
+        let out = run_ok(c);
+        (stdout(&out), stderr(&out))
+    };
+    let want = format!("{name} read=\"docs\"\n");
+    go(&["grant", &name, "read=docs"]);
+    let (_, err) = go(&["execute", "--inplace", &name]);
+    assert!(err.contains("no host API for this run"), "{err}");
+    assert_eq!(go(&["grant", "--list"]).0, want, "kept through the run");
+
+    let before = std::fs::read_to_string(&nb).unwrap();
+    std::fs::write(&nb, before.replace("# hi", "# changed by git")).unwrap();
+    go(&["execute", "--inplace", &name]);
+    assert_eq!(go(&["grant", "--list"]).0, "");
+}
+
+/// A grant is made under one root, and a run may start elsewhere: from a
+/// subdirectory of it, or from outside it with `-o` to the notebook. Its
+/// own write keeps the grant either way, with a host API or without one.
+#[test]
+fn execute_keeps_a_grant_made_under_another_root() {
+    for (label, toml) in [("host", None), ("no host", Some("[host\n"))] {
+        let data = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        if let Some(t) = toml {
+            std::fs::write(config.path().join("ganymede.toml"), t).unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().canonicalize().unwrap().join("proj");
+        let sub = proj.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let nb = fake_notebook(&sub);
+        let elsewhere = tempfile::tempdir().unwrap();
+        let go = |cwd: &std::path::Path, args: &[&str]| {
+            let mut c = ganymede(args);
+            c.current_dir(cwd)
+                .env("JUPYTER_DATA_DIR", data.path())
+                .env("GANYMEDE_CONFIG_DIR", config.path());
+            stdout(&run_ok(c))
+        };
+        let want = "sub/nb.ipynb read=\"docs\"\n";
+        go(&proj, &["grant", "sub/nb.ipynb", "read=docs"]);
+        assert_eq!(go(&proj, &["grant", "--list"]), want);
+
+        // From the subdirectory, the grant's root is above the cwd.
+        let before = std::fs::read_to_string(&nb).unwrap();
+        go(&sub, &["execute", "--inplace", "nb.ipynb"]);
+        assert_ne!(std::fs::read_to_string(&nb).unwrap(), before, "{label}");
+        assert_eq!(go(&proj, &["grant", "--list"]), want, "{label}: from sub");
+
+        // From outside, the notebook is not under the cwd at all.
+        let target = nb.to_str().unwrap();
+        go(
+            elsewhere.path(),
+            &["execute", "--inplace", "-k", "fake", target],
+        );
+        assert_eq!(
+            go(&proj, &["grant", "--list"]),
+            want,
+            "{label}: from elsewhere"
+        );
+        go(elsewhere.path(), &["execute", "-o", target, target]);
+        assert_eq!(go(&proj, &["grant", "--list"]), want, "{label}: -o");
+
+        // Replaced outside, then run from a subdirectory: dropped.
+        let now = std::fs::read_to_string(&nb).unwrap();
+        std::fs::write(&nb, now.replace("# hi", "# changed by git")).unwrap();
+        go(&sub, &["execute", "--inplace", "nb.ipynb"]);
+        assert_eq!(go(&proj, &["grant", "--list"]), "", "{label}: replaced");
+    }
+}
+
+/// `ganymede nb clear` rewrites the notebook in place, which keeps its
+/// grant; a notebook replaced outside loses it first.
+#[test]
+fn nb_clear_keeps_the_grant_through_its_own_write() {
+    let data = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let nb = fake_notebook(&root);
+    let go = |args: &[&str]| {
+        let mut c = ganymede(args);
+        c.current_dir(&root).env("JUPYTER_DATA_DIR", data.path());
+        stdout(&run_ok(c))
+    };
+    let want = "nb.ipynb read=\"docs\"\n";
+    go(&["grant", "nb.ipynb", "read=docs"]);
+    go(&["execute", "--inplace", "nb.ipynb"]);
+    let executed = std::fs::read_to_string(&nb).unwrap();
+    go(&["nb", "clear", "nb.ipynb"]);
+    assert_ne!(std::fs::read_to_string(&nb).unwrap(), executed, "it wrote");
+    assert_eq!(go(&["grant", "--list"]), want);
+
+    std::fs::write(&nb, executed.replace("# hi", "# changed by git")).unwrap();
+    go(&["nb", "clear", "nb.ipynb"]);
+    assert_eq!(go(&["grant", "--list"]), "");
+}
+
 #[test]
 fn completions_for_each_shell() {
     for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {

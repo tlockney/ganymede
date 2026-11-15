@@ -1,0 +1,1420 @@
+//! Keeping host grants through the server's own saves (#767).
+//!
+//! A notebook's host API grant is stored with a stamp of its file
+//! ([`ganymede_contents::file_stamp`]), and dropped when the file no
+//! longer matches it: a file replaced outside the server keeps its path's
+//! file id, and its new content must not inherit the grant. A write the
+//! server makes changes the stamp too, so [`Stamping`] wraps the server's
+//! [`Contents`] and records the new stamp after each one.
+//!
+//! A read of a grant can land between a write and its restamp, and must
+//! not take the write for an outside change. [`Stamps`] counts the saves
+//! in flight by path, and a check that overlaps one, or that sees a save
+//! of that path begin or end while it looks at the file, keeps the grant.
+
+use crate::collab::{detached, Collab};
+use async_trait::async_trait;
+use ganymede_contents::{
+    normalize_api_path, Checkpoint, ContentType, Contents, ContentsModel, GetOptions, Result,
+    SaveRequest,
+};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+/// Where the contents are on disk, and which of their files are being
+/// written by the server now.
+pub(crate) struct Stamps {
+    /// `None` when the contents are not a local directory: no file has a
+    /// stamp, so a look finds every file missing and nothing is stamped.
+    /// Saves still take turns and are marked in flight.
+    root: Option<PathBuf>,
+    saving: Mutex<Saving>,
+    turns: Turns,
+    /// Every save holds this for reading, and a rename for writing: a
+    /// rename waits for the saves in flight under both its paths, files
+    /// or a directory's, and none begins meanwhile.
+    tree: tokio::sync::RwLock<()>,
+}
+
+/// One server write of a path at a time: the lock for each path being
+/// written or waited for.
+type Turns = Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>;
+
+/// A turn to write one path, until dropped.
+pub(crate) struct Turn {
+    stamps: Arc<Stamps>,
+    path: String,
+    _held: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        let mut turns = self.stamps.turns.lock().unwrap_or_else(|e| e.into_inner());
+        // Ours, and the map's: no one else is waiting.
+        if turns
+            .get(&self.path)
+            .is_some_and(|m| Arc::strong_count(m) <= 2)
+        {
+            turns.remove(&self.path);
+        }
+    }
+}
+
+/// Saves of paths to look at: how many are in flight, and when each path
+/// last had one begin or end.
+#[derive(Default)]
+struct Saving {
+    paths: HashMap<String, PathSaves>,
+    /// Counts every begin and end, of any path.
+    seq: u64,
+    /// Paths dropped from `paths` to keep it small are forgotten as of
+    /// here: a check that began before this can't say its path was
+    /// quiet.
+    floor: u64,
+}
+
+#[derive(Default)]
+struct PathSaves {
+    in_flight: usize,
+    /// `seq` at this path's last begin or end.
+    last: u64,
+}
+
+/// The most paths remembered once their saves are over.
+const REMEMBERED: usize = 256;
+
+/// How many times a look is made again after a cleanup of those.
+const LOOKS: usize = 3;
+
+/// A save of one path in flight, until dropped, however the save ends.
+pub(crate) struct SaveGuard {
+    stamps: Arc<Stamps>,
+    path: String,
+}
+
+impl Drop for SaveGuard {
+    fn drop(&mut self) {
+        let mut s = self.stamps.lock();
+        s.seq += 1;
+        let seq = s.seq;
+        if let Some(p) = s.paths.get_mut(&self.path) {
+            p.in_flight -= 1;
+            p.last = seq;
+        }
+        if s.paths.len() > REMEMBERED {
+            s.paths.retain(|_, p| p.in_flight > 0);
+            s.floor = seq;
+        }
+    }
+}
+
+/// What a look at a file's stamp for a grant check found.
+pub(crate) enum Look {
+    Stamp(String),
+    /// The file can't be stat'ed.
+    Missing,
+    /// A save of this path was in flight, or began or ended meanwhile.
+    Unstable,
+}
+
+impl Stamps {
+    pub(crate) fn new(root: Option<PathBuf>) -> Self {
+        Stamps {
+            root,
+            saving: Mutex::default(),
+            turns: Mutex::default(),
+            tree: tokio::sync::RwLock::new(()),
+        }
+    }
+
+    /// A write of one path, until dropped, which a rename waits for.
+    async fn begin_write(&self) -> tokio::sync::RwLockReadGuard<'_, ()> {
+        self.tree.read().await
+    }
+
+    /// Waits for the saves in flight, and holds new ones back, until
+    /// dropped. Taken after [`Collab::begin_move`]'s lock.
+    pub(crate) async fn begin_rename(&self) -> tokio::sync::RwLockWriteGuard<'_, ()> {
+        self.tree.write().await
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Saving> {
+        self.saving.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Waits for the turn to write the file at `path`.
+    pub(crate) async fn turn(self: &Arc<Self>, path: &str) -> Turn {
+        let path = normalize_api_path(path);
+        let lock = self
+            .turns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(path.clone())
+            .or_default()
+            .clone();
+        Turn {
+            stamps: self.clone(),
+            path,
+            _held: Some(lock.lock_owned().await),
+        }
+    }
+
+    /// The server is about to write the file at `path`.
+    pub(crate) fn begin(self: &Arc<Self>, path: &str) -> SaveGuard {
+        let path = normalize_api_path(path);
+        let mut s = self.lock();
+        s.seq += 1;
+        let seq = s.seq;
+        let p = s.paths.entry(path.clone()).or_default();
+        p.in_flight += 1;
+        p.last = seq;
+        SaveGuard {
+            stamps: self.clone(),
+            path,
+        }
+    }
+
+    /// The stamp of the file at `path` as it is, to record after the
+    /// server wrote it.
+    pub(crate) fn own(&self, path: &str) -> Option<String> {
+        ganymede_contents::api_file_stamp(self.root.as_deref()?, path)
+    }
+
+    /// Where a look at `path` starts, or `None` if a save of it is in
+    /// flight.
+    fn mark(&self, path: &str) -> Option<u64> {
+        let s = self.lock();
+        match s.paths.get(path) {
+            Some(p) if p.in_flight > 0 => None,
+            _ => Some(s.seq),
+        }
+    }
+
+    /// Whether no save of `path` began or ended since `mark`. Saves of
+    /// other paths don't count.
+    fn stable_since(&self, path: &str, mark: u64) -> bool {
+        let s = self.lock();
+        mark >= s.floor
+            && s.paths
+                .get(path)
+                .is_none_or(|p| p.in_flight == 0 && p.last <= mark)
+    }
+
+    /// The stamp of the file at `path` to check a grant against.
+    pub(crate) fn look(&self, path: &str) -> Look {
+        self.look_with(path, || {})
+    }
+
+    /// [`Stamps::look`], with `between` run after each look's mark and
+    /// before its stamp is checked, for a test to make a save or a
+    /// cleanup land there.
+    fn look_with(&self, path: &str, mut between: impl FnMut()) -> Look {
+        let path = normalize_api_path(path);
+        // A look is retried when the cleanup of the remembered paths ran
+        // meanwhile: it forgot this path too, so the look can't say it
+        // was quiet, but a look begun after the cleanup can.
+        for _ in 0..LOOKS {
+            let Some(mark) = self.mark(&path) else {
+                return Look::Unstable;
+            };
+            let Some(stamp) = self.own(&path) else {
+                return Look::Missing;
+            };
+            between();
+            if self.stable_since(&path, mark) {
+                return Look::Stamp(stamp);
+            }
+            if self.lock().floor <= mark {
+                return Look::Unstable;
+            }
+        }
+        Look::Unstable
+    }
+
+    /// [`Stamps::look`] as a stamp to compare: `None` (keep the grant)
+    /// when it can't be known.
+    pub(crate) fn current(&self, path: &str) -> Option<String> {
+        match self.look(path) {
+            Look::Stamp(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+impl Collab {
+    /// The server's contents, with every save that rewrites a file
+    /// recording the new stamp of its grant. Install it as
+    /// `AppState::contents`, so rooms, REST, MCP and run copies all keep
+    /// their grants.
+    pub fn stamping(self: &Arc<Self>, contents: Arc<dyn Contents>) -> Arc<dyn Contents> {
+        Arc::new(Stamping {
+            collab: self.clone(),
+            inner: contents,
+        })
+    }
+}
+
+struct Stamping {
+    collab: Arc<Collab>,
+    inner: Arc<dyn Contents>,
+}
+
+impl Stamping {
+    /// Rewrite the file at `path` with `write`, and keep its grant: one
+    /// that its file already outgrew is dropped first, so this write
+    /// doesn't bless what came from outside. Runs to the end if the
+    /// caller goes away, so a write is never left unstamped.
+    async fn rewrite<T: Send + 'static>(
+        &self,
+        path: &str,
+        write: impl std::future::Future<Output = Result<T>> + Send + 'static,
+    ) -> Result<T> {
+        let collab = self.collab.clone();
+        let path = path.to_string();
+        detached(async move {
+            let _writing = collab.stamps.begin_write().await;
+            // One save of a path at a time, so the stamp the check saw is
+            // the one this save's restamp compares with.
+            let _turn = collab.stamps.turn(&path).await;
+            let seen = collab.check_for_write(&path).await;
+            // The same file's grants under other roots in the shared
+            // database get the same check and restamp.
+            let others = collab.check_others(&path).await;
+            let _saving = collab.stamps.begin(&path);
+            // A write that fails isn't restamped: whether it wrote the file
+            // can't be known, and an If-Match failure over an outside
+            // change must not bless it. The grant is then dropped on its
+            // next read if the file did change, which fails safe.
+            let out = write.await?;
+            if let Err(e) = collab.restamp(&path, &seen).await {
+                tracing::warn!("{e}");
+            }
+            collab.restamp_others(others).await;
+            Ok(out)
+        })
+        .await
+    }
+}
+
+#[async_trait]
+impl Contents for Stamping {
+    async fn get(&self, path: &str, options: GetOptions) -> Result<ContentsModel> {
+        self.inner.get(path, options).await
+    }
+
+    async fn save(&self, path: &str, request: SaveRequest) -> Result<ContentsModel> {
+        let inner = self.inner.clone();
+        let p = path.to_string();
+        self.rewrite(path, async move { inner.save(&p, request).await })
+            .await
+    }
+
+    async fn delete(&self, path: &str) -> Result<()> {
+        self.inner.delete(path).await
+    }
+
+    /// Not stamped here: [`Collab::rename`] moves the ids, and stamps the
+    /// file at its new path then.
+    async fn rename(&self, old_path: &str, new_path: &str) -> Result<ContentsModel> {
+        self.inner.rename(old_path, new_path).await
+    }
+
+    async fn new_untitled(
+        &self,
+        parent_dir: &str,
+        kind: ContentType,
+        ext: Option<&str>,
+    ) -> Result<ContentsModel> {
+        let (collab, inner) = (self.collab.clone(), self.inner.clone());
+        let (parent_dir, ext) = (parent_dir.to_string(), ext.map(str::to_string));
+        detached(async move {
+            // The move lock first, as a rename takes it, so the ids at the
+            // new path go with the file made and no room opens between.
+            let _moving = collab.begin_move().await;
+            let _writing = collab.stamps.begin_write().await;
+            let model = inner
+                .new_untitled(&parent_dir, kind, ext.as_deref())
+                .await?;
+            collab.forget_new_file(&model.path).await;
+            Ok(model)
+        })
+        .await
+    }
+
+    /// A copy named by its full path overwrites a file that may have a
+    /// grant, which then keeps it, unless the file was replaced outside.
+    /// Runs to the end if the caller goes away, as [`Stamping::rewrite`]
+    /// does, so a copy is never left unstamped.
+    async fn copy(&self, from_path: &str, to_dir: Option<&str>) -> Result<ContentsModel> {
+        let (collab, inner) = (self.collab.clone(), self.inner.clone());
+        let (from_path, to_dir) = (from_path.to_string(), to_dir.map(str::to_string));
+        detached(async move {
+            // A destination that isn't an existing directory is the file
+            // copied over: known beforehand, so it is checked, marked and
+            // restamped as a save is.
+            let target = match &to_dir {
+                Some(d) => {
+                    let is_dir = inner
+                        .get(d, GetOptions::default())
+                        .await
+                        .is_ok_and(|m| m.kind == ContentType::Directory);
+                    (!is_dir).then(|| d.clone())
+                }
+                None => None,
+            };
+            if let Some(dest) = target {
+                let _writing = collab.stamps.begin_write().await;
+                let _turn = collab.stamps.turn(&dest).await;
+                let seen = collab.check_for_write(&dest).await;
+                let others = collab.check_others(&dest).await;
+                let _saving = collab.stamps.begin(&dest);
+                let model = inner.copy(&from_path, to_dir.as_deref()).await?;
+                if let Err(e) = collab.restamp(&dest, &seen).await {
+                    tracing::warn!("{e}");
+                }
+                collab.restamp_others(others).await;
+                return Ok(model);
+            }
+            // A new file is made in the directory: the move lock first, as
+            // a rename takes it, so the ids at its path go with the file
+            // and no room opens between.
+            let _moving = collab.begin_move().await;
+            let _writing = collab.stamps.begin_write().await;
+            let model = inner.copy(&from_path, to_dir.as_deref()).await?;
+            // Whatever grant is
+            // stored at its path is from a file that was deleted outside.
+            collab.forget_new_file(&model.path).await;
+            Ok(model)
+        })
+        .await
+    }
+
+    async fn list_checkpoints(&self, path: &str) -> Result<Vec<Checkpoint>> {
+        self.inner.list_checkpoints(path).await
+    }
+
+    async fn create_checkpoint(&self, path: &str) -> Result<Checkpoint> {
+        self.inner.create_checkpoint(path).await
+    }
+
+    async fn restore_checkpoint(&self, path: &str, checkpoint_id: &str) -> Result<()> {
+        let inner = self.inner.clone();
+        let (p, id) = (path.to_string(), checkpoint_id.to_string());
+        self.rewrite(path, async move { inner.restore_checkpoint(&p, &id).await })
+            .await
+    }
+
+    async fn delete_checkpoint(&self, path: &str, checkpoint_id: &str) -> Result<()> {
+        self.inner.delete_checkpoint(path, checkpoint_id).await
+    }
+
+    async fn trust(&self, path: &str) -> Result<()> {
+        self.inner.trust(path).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_save_in_flight_hides_the_file_from_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.ipynb"), "{}").unwrap();
+        let stamps = Arc::new(Stamps::new(Some(dir.path().to_path_buf())));
+        let before = stamps.current("a.ipynb").expect("a stamp");
+        assert_eq!(stamps.current("/a.ipynb"), Some(before.clone()));
+
+        let guard = stamps.begin("a.ipynb");
+        std::fs::write(dir.path().join("a.ipynb"), "{ }").unwrap();
+        assert_eq!(stamps.current("a.ipynb"), None, "no stamp while saving");
+        assert!(stamps.current("b.ipynb").is_none(), "no file, no stamp");
+        drop(guard);
+        let after = stamps.current("a.ipynb").expect("a stamp again");
+        assert_ne!(after, before);
+        assert!(!stamps.lock().paths.values().any(|p| p.in_flight > 0));
+    }
+
+    /// The guard clears on an error or a dropped future too, and nested
+    /// saves of one path are counted.
+    #[test]
+    fn the_guard_clears_on_drop_and_counts() {
+        let stamps = Arc::new(Stamps::new(None));
+        let a = stamps.begin("x");
+        let b = stamps.begin("x");
+        drop(a);
+        assert_eq!(stamps.lock().paths.get("x").map(|p| p.in_flight), Some(1));
+        drop(b);
+        assert!(!stamps.lock().paths.values().any(|p| p.in_flight > 0));
+        assert_eq!(stamps.current("x"), None, "no root, no stamp");
+    }
+
+    /// A check is void if a save of its own path began or ended while it
+    /// looked, and only then: a save of another path doesn't touch it.
+    #[test]
+    fn only_a_save_of_the_same_path_voids_a_check() {
+        let stamps = Arc::new(Stamps::new(None));
+        let mark = stamps.mark("a.ipynb").expect("no save of a in flight");
+        drop(stamps.begin("b.ipynb"));
+        assert!(
+            stamps.stable_since("a.ipynb", mark),
+            "b's save is no matter"
+        );
+        let guard = stamps.begin("a.ipynb");
+        assert!(!stamps.stable_since("a.ipynb", mark), "a save began");
+        assert!(stamps.mark("a.ipynb").is_none(), "and is in flight");
+        drop(guard);
+        assert!(!stamps.stable_since("a.ipynb", mark), "and ended");
+        let again = stamps.mark("a.ipynb").unwrap();
+        assert!(stamps.stable_since("a.ipynb", again));
+    }
+
+    /// Paths remembered once their saves are over are bounded, and a
+    /// check that began before one was forgotten isn't called stable.
+    #[test]
+    fn forgetting_old_paths_voids_older_checks() {
+        let stamps = Arc::new(Stamps::new(None));
+        let mark = stamps.mark("a.ipynb").unwrap();
+        for i in 0..=REMEMBERED {
+            drop(stamps.begin(&format!("n{i}.ipynb")));
+        }
+        assert!(stamps.lock().paths.len() <= REMEMBERED);
+        assert!(!stamps.stable_since("a.ipynb", mark));
+    }
+
+    /// The file is written, its restamp not yet done: a grant read keeps
+    /// the grant, and once the save is over, the new stamp stands.
+    #[tokio::test]
+    async fn a_save_in_flight_does_not_drop_the_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.ipynb"), "{}").unwrap();
+        let collab = Arc::new(Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            Some(root.clone()),
+        ));
+        let (id, _) = collab.index("a.ipynb").await;
+        collab
+            .set_grant(id, Some(r#"{"run":[""]}"#.into()))
+            .await
+            .unwrap();
+        assert!(collab.grant("a.ipynb").await.is_some());
+
+        let seen = collab.check_for_write("a.ipynb").await;
+        let saving = collab.stamps.begin("a.ipynb");
+        std::fs::write(root.join("a.ipynb"), "{ \"written\": 1 }").unwrap();
+        assert!(collab.grant("a.ipynb").await.is_some(), "mid-save");
+        collab.restamp("a.ipynb", &seen).await.unwrap();
+        drop(saving);
+        assert!(collab.grant("a.ipynb").await.is_some(), "after the restamp");
+
+        // The same write with no save in flight is an outside change.
+        std::fs::write(root.join("a.ipynb"), "{ \"written\": 22 }").unwrap();
+        assert_eq!(collab.grant("a.ipynb").await, None);
+    }
+
+    /// Saves through the wrapper keep the grant, whether they succeed
+    /// or fail, and nothing stays marked in flight.
+    #[tokio::test]
+    async fn the_wrapper_restamps_and_clears_its_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.ipynb"), "{}").unwrap();
+        let collab = Arc::new(Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            Some(root.clone()),
+        ));
+        let contents = collab.stamping(Arc::new(
+            ganymede_contents::FsContents::new(&root, Default::default()).unwrap(),
+        ));
+        let (id, _) = collab.index("a.ipynb").await;
+        collab
+            .set_grant(id, Some(r#"{"run":[""]}"#.into()))
+            .await
+            .unwrap();
+        contents
+            .save(
+                "a.ipynb",
+                SaveRequest::text("{\"saved\": true, \"by\": \"server\"}"),
+            )
+            .await
+            .unwrap();
+        assert!(collab.grant("a.ipynb").await.is_some());
+        // A failed save: nothing changed, and the mark is gone.
+        let bad = SaveRequest::text("x")
+            .with_if_match(ganymede_contents::IfMatch::Hashes(vec!["nope".into()]));
+        assert!(contents.save("a.ipynb", bad).await.is_err());
+        assert!(!collab.stamps.lock().paths.values().any(|p| p.in_flight > 0));
+        assert!(collab.grant("a.ipynb").await.is_some());
+    }
+
+    /// A copy named by its full path overwrites a file with a grant, which
+    /// keeps it.
+    #[tokio::test]
+    async fn a_copy_over_a_file_restamps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.ipynb"), "{\"from\": \"a longer source file\"}").unwrap();
+        std::fs::write(root.join("b.ipynb"), "{}").unwrap();
+        let collab = Arc::new(Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            Some(root.clone()),
+        ));
+        let contents = collab.stamping(Arc::new(
+            ganymede_contents::FsContents::new(&root, Default::default()).unwrap(),
+        ));
+        let (id, _) = collab.index("b.ipynb").await;
+        collab
+            .set_grant(id, Some(r#"{"run":[""]}"#.into()))
+            .await
+            .unwrap();
+        assert!(collab.grant("b.ipynb").await.is_some());
+        let model = contents.copy("a.ipynb", Some("b.ipynb")).await.unwrap();
+        assert_eq!(model.path, "b.ipynb");
+        assert!(std::fs::read_to_string(root.join("b.ipynb"))
+            .unwrap()
+            .contains("longer"));
+        assert!(collab.grant("b.ipynb").await.is_some());
+    }
+
+    /// A write after a check that left no grant standing (it was dropped,
+    /// or the database wouldn't delete it) stamps nothing; one after a
+    /// check that found the grant stamps it.
+    #[tokio::test]
+    async fn only_a_grant_that_stood_is_restamped() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.ipynb"), "{}").unwrap();
+        let collab = Arc::new(Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            Some(root.clone()),
+        ));
+        let (id, _) = collab.index("a.ipynb").await;
+        collab
+            .set_grant(id, Some(r#"{"run":[""]}"#.into()))
+            .await
+            .unwrap();
+        let seen = collab.check_for_write("a.ipynb").await;
+        assert!(seen.is_some());
+        std::fs::write(root.join("a.ipynb"), "{ \"written\": 1 }").unwrap();
+        collab.restamp("a.ipynb", &None).await.unwrap();
+        assert_eq!(collab.grant("a.ipynb").await, None, "nothing stamped");
+
+        let (id, _) = collab.index("a.ipynb").await;
+        collab
+            .set_grant(id, Some(r#"{"run":[""]}"#.into()))
+            .await
+            .unwrap();
+        let seen = collab.check_for_write("a.ipynb").await;
+        std::fs::write(root.join("a.ipynb"), "{ \"written\": 22 }").unwrap();
+        collab.restamp("a.ipynb", &seen).await.unwrap();
+        assert!(collab.grant("a.ipynb").await.is_some());
+    }
+
+    /// Saves of one path take turns, and the turn table empties.
+    #[tokio::test]
+    async fn saves_of_a_path_take_turns() {
+        let stamps = Arc::new(Stamps::new(None));
+        let first = stamps.turn("a.ipynb").await;
+        let s2 = stamps.clone();
+        let waiting = tokio::spawn(async move { drop(s2.turn("/a.ipynb/").await) });
+        let s3 = stamps.clone();
+        let second = tokio::spawn(async move { drop(s3.turn("a.ipynb").await) });
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert!(!second.is_finished(), "waits for the first");
+        drop(first);
+        second.await.unwrap();
+        waiting.abort();
+        assert!(stamps.turns.lock().unwrap().len() <= 1);
+    }
+
+    /// Grants are per (root, path): a server on a parent folder and one in
+    /// a project directory share the database, and a save through either
+    /// keeps both roots' grants on the file, but never blesses a file
+    /// that changed outside.
+    #[tokio::test]
+    async fn a_save_keeps_the_grants_other_roots_hold() {
+        let dir = tempfile::tempdir().unwrap();
+        let top = dir.path().canonicalize().unwrap();
+        let proj = top.join("proj");
+        std::fs::create_dir(&proj).unwrap();
+        std::fs::write(proj.join("a.ipynb"), "{}").unwrap();
+        let db = top.join("ids.db");
+        let at_top = Arc::new(Collab::new(
+            ganymede_contents::FileIds::open(&db, &top),
+            Some(top.clone()),
+        ));
+        let at_proj = Arc::new(Collab::new(
+            ganymede_contents::FileIds::open(&db, &proj),
+            Some(proj.clone()),
+        ));
+        let contents = at_top.stamping(Arc::new(
+            ganymede_contents::FsContents::new(&top, Default::default()).unwrap(),
+        ));
+        let grant = r#"{"run":[""]}"#;
+        let (id, _) = at_proj.index("a.ipynb").await;
+        at_proj.set_grant(id, Some(grant.into())).await.unwrap();
+        let (id, _) = at_top.index("proj/a.ipynb").await;
+        at_top.set_grant(id, Some(grant.into())).await.unwrap();
+
+        let save = |text: &'static str| {
+            let contents = contents.clone();
+            async move {
+                contents
+                    .save("proj/a.ipynb", SaveRequest::text(text))
+                    .await
+                    .unwrap();
+            }
+        };
+        save("{\"saved\": \"through the parent root\"}").await;
+        assert!(at_proj.grant("a.ipynb").await.is_some(), "project root's");
+        assert!(at_top.grant("proj/a.ipynb").await.is_some(), "own root's");
+
+        // Replaced outside, then saved through the server: neither
+        // root's grant survives to bless the new file.
+        std::fs::write(proj.join("a.ipynb"), "{\"replaced\": \"outside\"}").unwrap();
+        save("{\"saved\": \"again, a longer one\"}").await;
+        assert_eq!(at_proj.grant("a.ipynb").await, None);
+        assert_eq!(at_top.grant("proj/a.ipynb").await, None);
+    }
+
+    /// A rename waits for a save in flight to finish, so the save's
+    /// restamp isn't lost to the rename.
+    #[tokio::test]
+    async fn a_rename_waits_for_a_save_of_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.ipynb"), "{}").unwrap();
+        let collab = Arc::new(Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            Some(root.clone()),
+        ));
+        let contents = collab.stamping(Arc::new(
+            ganymede_contents::FsContents::new(&root, Default::default()).unwrap(),
+        ));
+        let turn = collab.stamps.begin_write().await;
+        let (c, k) = (collab.clone(), contents.clone());
+        let rename = tokio::spawn(async move { c.rename(&k, "a.ipynb", "b.ipynb").await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!rename.is_finished(), "waits for the save");
+        drop(turn);
+        rename.await.unwrap().unwrap();
+        assert!(root.join("b.ipynb").is_file());
+    }
+
+    /// A rename of a directory waits for a save of a file under it, and
+    /// a save that begins meanwhile waits for the rename.
+    #[tokio::test]
+    async fn a_rename_of_a_directory_waits_for_saves_under_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("d")).unwrap();
+        std::fs::write(root.join("d/a.ipynb"), "{}").unwrap();
+        let collab = Arc::new(Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            Some(root.clone()),
+        ));
+        let contents = collab.stamping(Arc::new(
+            ganymede_contents::FsContents::new(&root, Default::default()).unwrap(),
+        ));
+        // A save of d/a.ipynb in flight: it holds its turn and a write.
+        let writing = collab.stamps.begin_write().await;
+        let turn = collab.stamps.turn("d/a.ipynb").await;
+        let (c, k) = (collab.clone(), contents.clone());
+        let rename = tokio::spawn(async move { c.rename(&k, "d", "e").await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!rename.is_finished(), "waits for the save under d");
+        // A save that begins now waits for the rename.
+        let k = contents.clone();
+        let late = tokio::spawn(async move {
+            k.save("d/a.ipynb", SaveRequest::text("{\"late\": 1}"))
+                .await
+        });
+        drop((turn, writing));
+        rename.await.unwrap().unwrap();
+        assert!(root.join("e/a.ipynb").is_file());
+        // It ran after the rename: its path was gone, so it failed or made
+        // the file anew, never wrote the renamed one before the rename.
+        let _ = late.await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("e/a.ipynb")).unwrap(),
+            "{}"
+        );
+    }
+
+    /// A root with `d/<name>` granted, and its contents.
+    async fn granted_in_d(name: &str) -> (tempfile::TempDir, Arc<Collab>, Arc<dyn Contents>) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("d")).unwrap();
+        std::fs::write(root.join("d").join(name), "{}").unwrap();
+        let collab = Arc::new(Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            Some(root.clone()),
+        ));
+        let contents = collab.stamping(Arc::new(
+            ganymede_contents::FsContents::new(&root, Default::default()).unwrap(),
+        ));
+        let (id, _) = collab.index(&format!("d/{name}")).await;
+        collab.set_grant(id, Some(GRANT.into())).await.unwrap();
+        (dir, collab, contents)
+    }
+
+    /// Waits until a write holds the tree lock, as `begin_write` does. Gives
+    /// up after a second, and the caller's assertions then fail.
+    async fn until_a_write_begins(collab: &Collab) {
+        for _ in 0..500 {
+            if collab.stamps.tree.try_write().is_err() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+    }
+
+    /// A rename of a directory waits for a real `save` under it, which
+    /// holds the tree lock while it waits for its turn, and the save's
+    /// restamp lands before the rename moves the grant.
+    #[tokio::test]
+    async fn a_rename_waits_for_a_real_save() {
+        let (dir, collab, contents) = granted_in_d("a.ipynb").await;
+        let root = dir.path().canonicalize().unwrap();
+        let turn = collab.stamps.turn("d/a.ipynb").await;
+        let k = contents.clone();
+        let save = tokio::spawn(async move {
+            k.save("d/a.ipynb", SaveRequest::text("{\"saved\": \"it\"}"))
+                .await
+        });
+        until_a_write_begins(&collab).await;
+        let (c, k) = (collab.clone(), contents.clone());
+        let rename = tokio::spawn(async move { c.rename(&k, "d", "e").await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!rename.is_finished(), "waits for the save");
+        assert!(!save.is_finished(), "the save waits for its turn");
+        drop(turn);
+        save.await.unwrap().unwrap();
+        rename.await.unwrap().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("e/a.ipynb")).unwrap(),
+            "{\"saved\": \"it\"}"
+        );
+        assert!(collab.grant("e/a.ipynb").await.is_some(), "held after");
+    }
+
+    /// A rename of a directory waits for a real `copy` into it, which
+    /// holds the tree lock while it waits for its destination's turn.
+    #[tokio::test]
+    async fn a_rename_waits_for_a_real_copy() {
+        let (dir, collab, contents) = granted_in_d("b.ipynb").await;
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("d/a.ipynb"), "{\"a\": 1}").unwrap();
+        let turn = collab.stamps.turn("d/b.ipynb").await;
+        let k = contents.clone();
+        let copy = tokio::spawn(async move { k.copy("d/a.ipynb", Some("d/b.ipynb")).await });
+        until_a_write_begins(&collab).await;
+        let (c, k) = (collab.clone(), contents.clone());
+        let rename = tokio::spawn(async move { c.rename(&k, "d", "e").await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!rename.is_finished(), "waits for the copy");
+        assert!(!copy.is_finished(), "the copy waits for its turn");
+        drop(turn);
+        copy.await.unwrap().unwrap();
+        rename.await.unwrap().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("e/b.ipynb")).unwrap(),
+            "{\"a\": 1}"
+        );
+        assert!(collab.grant("e/b.ipynb").await.is_some(), "held after");
+    }
+
+    /// Contents whose save writes the file, says so, and then waits to be
+    /// let go, or fails.
+    struct Gated {
+        inner: Arc<dyn Contents>,
+        wrote: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl Contents for Gated {
+        async fn get(&self, path: &str, options: GetOptions) -> Result<ContentsModel> {
+            self.inner.get(path, options).await
+        }
+        async fn save(&self, path: &str, request: SaveRequest) -> Result<ContentsModel> {
+            let model = self.inner.save(path, request).await?;
+            self.wrote.notify_one();
+            self.release.notified().await;
+            if self.fail {
+                return Err(std::io::Error::other("failed after writing").into());
+            }
+            Ok(model)
+        }
+        async fn delete(&self, path: &str) -> Result<()> {
+            self.inner.delete(path).await
+        }
+        async fn rename(&self, old_path: &str, new_path: &str) -> Result<ContentsModel> {
+            self.inner.rename(old_path, new_path).await
+        }
+        async fn new_untitled(
+            &self,
+            parent_dir: &str,
+            kind: ContentType,
+            ext: Option<&str>,
+        ) -> Result<ContentsModel> {
+            self.inner.new_untitled(parent_dir, kind, ext).await
+        }
+        async fn copy(&self, from_path: &str, to_dir: Option<&str>) -> Result<ContentsModel> {
+            let model = self.inner.copy(from_path, to_dir).await?;
+            self.wrote.notify_one();
+            self.release.notified().await;
+            Ok(model)
+        }
+        async fn list_checkpoints(&self, path: &str) -> Result<Vec<Checkpoint>> {
+            self.inner.list_checkpoints(path).await
+        }
+        async fn create_checkpoint(&self, path: &str) -> Result<Checkpoint> {
+            self.inner.create_checkpoint(path).await
+        }
+        async fn restore_checkpoint(&self, path: &str, checkpoint_id: &str) -> Result<()> {
+            self.inner.restore_checkpoint(path, checkpoint_id).await
+        }
+        async fn delete_checkpoint(&self, path: &str, checkpoint_id: &str) -> Result<()> {
+            self.inner.delete_checkpoint(path, checkpoint_id).await
+        }
+    }
+
+    /// A granted `a.ipynb`, and contents whose save is held open after
+    /// it writes the file.
+    async fn gated(
+        fail: bool,
+    ) -> (
+        tempfile::TempDir,
+        Arc<Collab>,
+        Arc<dyn Contents>,
+        Arc<tokio::sync::Notify>,
+        Arc<tokio::sync::Notify>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.ipynb"), "{}").unwrap();
+        let collab = Arc::new(Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            Some(root.clone()),
+        ));
+        let (wrote, release) = (Arc::default(), Arc::default());
+        let contents = collab.stamping(Arc::new(Gated {
+            inner: Arc::new(ganymede_contents::FsContents::new(&root, Default::default()).unwrap()),
+            wrote: Arc::clone(&wrote),
+            release: Arc::clone(&release),
+            fail,
+        }));
+        let (id, _) = collab.index("a.ipynb").await;
+        collab.set_grant(id, Some(GRANT.into())).await.unwrap();
+        (dir, collab, contents, wrote, release)
+    }
+
+    /// A real save is marked in flight from the check to the restamp: a
+    /// grant read after the file is written, before the save ends, keeps
+    /// the grant.
+    #[tokio::test]
+    async fn a_real_save_in_flight_does_not_drop_the_grant() {
+        let (_dir, collab, contents, wrote, release) = gated(false).await;
+        let save = tokio::spawn(async move {
+            contents
+                .save("a.ipynb", SaveRequest::text("{\"saved\": \"it\"}"))
+                .await
+        });
+        wrote.notified().await;
+        assert!(collab.grant("a.ipynb").await.is_some(), "mid-save");
+        release.notify_one();
+        save.await.unwrap().unwrap();
+        assert!(collab.grant("a.ipynb").await.is_some(), "after the save");
+    }
+
+    /// A save that fails isn't restamped, whether or not it wrote: the
+    /// grant is dropped on its next read, not blessed.
+    #[tokio::test]
+    async fn a_save_that_fails_is_not_restamped() {
+        let (_dir, collab, contents, wrote, release) = gated(true).await;
+        let save = tokio::spawn(async move {
+            contents
+                .save("a.ipynb", SaveRequest::text("{\"saved\": \"it\"}"))
+                .await
+        });
+        wrote.notified().await;
+        release.notify_one();
+        assert!(save.await.unwrap().is_err());
+        assert_eq!(collab.grant("a.ipynb").await, None, "not blessed");
+    }
+
+    /// A file deleted outside and made anew by a save through the server
+    /// doesn't keep the grant of the old one.
+    #[tokio::test]
+    async fn a_save_over_a_file_deleted_outside_drops_the_grant() {
+        let (dir, collab, contents) = granted_in_d("a.ipynb").await;
+        std::fs::remove_file(dir.path().join("d/a.ipynb")).unwrap();
+        contents
+            .save("d/a.ipynb", SaveRequest::text("{\"made\": \"anew\"}"))
+            .await
+            .unwrap();
+        assert_eq!(collab.grant("d/a.ipynb").await, None);
+    }
+
+    /// A copy over a file replaced outside doesn't bless it.
+    #[tokio::test]
+    async fn a_copy_over_a_file_replaced_outside_drops_the_grant() {
+        let (dir, collab, contents) = granted_in_d("b.ipynb").await;
+        std::fs::write(dir.path().join("d/a.ipynb"), "{\"a\": 1}").unwrap();
+        std::fs::write(dir.path().join("d/b.ipynb"), "{\"replaced\": \"by git\"}").unwrap();
+        contents.copy("d/a.ipynb", Some("d/b.ipynb")).await.unwrap();
+        assert_eq!(collab.grant("d/b.ipynb").await, None);
+    }
+
+    /// A grant set while a save of its file is in flight isn't stamped
+    /// with the file before the save, so the save doesn't cost it.
+    #[tokio::test]
+    async fn a_grant_set_during_a_save_survives_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.ipynb"), "{}").unwrap();
+        let collab = Arc::new(Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            Some(root.clone()),
+        ));
+        let (id, _) = collab.index("a.ipynb").await;
+        let saving = collab.stamps.begin("a.ipynb");
+        collab.set_grant(id, Some(GRANT.into())).await.unwrap();
+        std::fs::write(root.join("a.ipynb"), "{ \"written\": 1 }").unwrap();
+        drop(saving);
+        assert!(collab.grant("a.ipynb").await.is_some());
+    }
+
+    /// A copy onto a file is marked in flight from the check to the
+    /// restamp: a grant read after the file is written, before the copy
+    /// ends, keeps the grant.
+    #[tokio::test]
+    async fn a_copy_in_flight_does_not_drop_the_grant() {
+        let (dir, collab, contents, wrote, release) = gated(false).await;
+        std::fs::write(dir.path().join("src.ipynb"), "{\"copied\": \"over\"}").unwrap();
+        let copy = tokio::spawn(async move { contents.copy("src.ipynb", Some("a.ipynb")).await });
+        wrote.notified().await;
+        assert!(collab.grant("a.ipynb").await.is_some(), "mid-copy");
+        release.notify_one();
+        copy.await.unwrap().unwrap();
+        assert!(collab.grant("a.ipynb").await.is_some(), "after the copy");
+    }
+
+    /// A save that meets another write's mark on its path can't say the
+    /// file matched, so it stamps nothing: a file changed outside isn't
+    /// blessed.
+    #[tokio::test]
+    async fn a_save_beside_another_write_does_not_bless_an_outside_change() {
+        let (dir, collab, contents) = granted_in_d("a.ipynb").await;
+        std::fs::write(dir.path().join("d/a.ipynb"), "{\"outside\": \"change\"}").unwrap();
+        let mark = collab.stamps.begin("d/a.ipynb");
+        contents
+            .save("d/a.ipynb", SaveRequest::text("{\"saved\": \"it\"}"))
+            .await
+            .unwrap();
+        drop(mark);
+        assert_eq!(collab.grant("d/a.ipynb").await, None);
+    }
+
+    /// A new untitled file waits for a rename in progress, as saves do.
+    #[tokio::test]
+    async fn new_untitled_waits_for_a_rename() {
+        let (_dir, collab, contents) = granted_in_d("a.ipynb").await;
+        let renaming = collab.stamps.begin_rename().await;
+        let k = contents.clone();
+        let made = tokio::spawn(async move {
+            k.new_untitled("d", ContentType::Notebook, Some(".ipynb"))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!made.is_finished(), "waits for the rename");
+        drop(renaming);
+        made.await.unwrap().unwrap();
+    }
+
+    /// A new untitled file is made under the move lock, so it waits for
+    /// a rename or delete in progress.
+    #[tokio::test]
+    async fn new_untitled_takes_the_move_lock() {
+        let (_dir, collab, contents) = granted_in_d("a.ipynb").await;
+        let moving = collab.begin_move().await;
+        let k = contents.clone();
+        let made = tokio::spawn(async move {
+            k.new_untitled("d", ContentType::Notebook, Some(".ipynb"))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!made.is_finished(), "waits for the move lock");
+        drop(moving);
+        made.await.unwrap().unwrap();
+    }
+
+    /// A copy into a directory holds the move lock and a write of the
+    /// tree until its new path is forgotten, and a grant read waits too,
+    /// so it can't see a stale grant on the new file.
+    #[tokio::test]
+    async fn a_copy_into_a_directory_holds_the_locks_until_it_is_done() {
+        let (dir, collab, contents, wrote, release) = gated(false).await;
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        // A grant with no stamp, left at the new path by a deleted file.
+        let (id, _) = collab.index("sub/a.ipynb").await;
+        collab.set_grant(id, Some(GRANT.into())).await.unwrap();
+        let copy = tokio::spawn(async move { contents.copy("a.ipynb", Some("sub")).await });
+        wrote.notified().await;
+        let timeout = std::time::Duration::from_millis(50);
+        assert!(
+            tokio::time::timeout(timeout, collab.begin_move())
+                .await
+                .is_err(),
+            "the move lock is held"
+        );
+        assert!(
+            collab.stamps.tree.try_write().is_err(),
+            "the tree is held for writing"
+        );
+        let c = collab.clone();
+        let read = tokio::spawn(async move { c.grant("sub/a.ipynb").await });
+        tokio::time::sleep(timeout).await;
+        assert!(!read.is_finished(), "a grant read waits for the copy");
+        release.notify_one();
+        copy.await.unwrap().unwrap();
+        assert_eq!(read.await.unwrap(), None, "no stale grant");
+    }
+
+    /// A path-and-grant read waits for the move lock, as a grant read does.
+    #[tokio::test]
+    async fn a_path_and_grant_read_takes_the_move_lock() {
+        let (_dir, collab, _contents) = granted_in_d("a.ipynb").await;
+        let (id, _) = collab.index("d/a.ipynb").await;
+        let moving = collab.begin_move().await;
+        let c = collab.clone();
+        let read = tokio::spawn(async move { c.path_and_grant(&id).await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!read.is_finished(), "waits for the move lock");
+        drop(moving);
+        assert!(read.await.unwrap().is_some());
+    }
+
+    /// A rename holds the move lock, so no room opens or delete lands
+    /// between the disk rename and the ids following.
+    #[tokio::test]
+    async fn a_rename_takes_the_move_lock() {
+        let (_dir, collab, contents) = granted_in_d("a.ipynb").await;
+        let moving = collab.begin_move().await;
+        let (c, k) = (collab.clone(), contents.clone());
+        let rename = tokio::spawn(async move { c.rename(&k, "d/a.ipynb", "d/b.ipynb").await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!rename.is_finished(), "waits for the move lock");
+        drop(moving);
+        rename.await.unwrap().unwrap();
+    }
+
+    /// A look that a cleanup of the remembered paths overlapped is made
+    /// again, and finds the quiet path stable.
+    #[test]
+    fn a_look_overlapped_by_a_cleanup_is_made_again() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.ipynb"), "{}").unwrap();
+        let stamps = Arc::new(Stamps::new(Some(dir.path().to_path_buf())));
+        let mut cleanups = 0;
+        let look = stamps.look_with("a.ipynb", || {
+            if cleanups == 0 {
+                cleanups += 1;
+                for i in 0..=REMEMBERED {
+                    drop(stamps.begin(&format!("other/{i}.ipynb")));
+                }
+            }
+        });
+        assert!(matches!(look, Look::Stamp(_)));
+        // A save of the path itself in that window still makes it unstable.
+        let mut once = true;
+        let mut held = None;
+        let look = stamps.look_with("a.ipynb", || {
+            if std::mem::take(&mut once) {
+                held = Some(stamps.begin("a.ipynb"));
+            }
+        });
+        assert!(matches!(look, Look::Unstable));
+        drop(held);
+    }
+
+    /// A delete through a server on the parent folder drops the grant
+    /// another root holds on the file.
+    #[tokio::test]
+    async fn a_delete_drops_the_grants_other_roots_hold() {
+        let (_dir, proj, at_top, at_proj, contents) = two_roots();
+        std::fs::create_dir(proj.join("d")).unwrap();
+        std::fs::write(proj.join("a.ipynb"), "{}").unwrap();
+        std::fs::write(proj.join("d/b.ipynb"), "{}").unwrap();
+        for p in ["a.ipynb", "d/b.ipynb"] {
+            let (id, _) = at_proj.index(p).await;
+            at_proj.set_grant(id, Some(GRANT.into())).await.unwrap();
+        }
+        at_top.delete(&contents, "proj/a.ipynb").await.unwrap();
+        assert_eq!(at_proj.grant("a.ipynb").await, None, "file");
+        assert!(at_proj.grant("d/b.ipynb").await.is_some(), "others stay");
+        at_top.delete(&contents, "proj/d/b.ipynb").await.unwrap();
+        assert_eq!(at_proj.grant("d/b.ipynb").await, None, "in a directory");
+    }
+
+    /// Two servers on one database: one on a parent folder, one in a
+    /// project directory that holds the grants.
+    fn two_roots() -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        Arc<Collab>,
+        Arc<Collab>,
+        Arc<dyn Contents>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let top = dir.path().canonicalize().unwrap();
+        let proj = top.join("proj");
+        std::fs::create_dir(&proj).unwrap();
+        let db = top.join("ids.db");
+        let at_top = Arc::new(Collab::new(
+            ganymede_contents::FileIds::open(&db, &top),
+            Some(top.clone()),
+        ));
+        let at_proj = Arc::new(Collab::new(
+            ganymede_contents::FileIds::open(&db, &proj),
+            Some(proj.clone()),
+        ));
+        let contents = at_top.stamping(Arc::new(
+            ganymede_contents::FsContents::new(&top, Default::default()).unwrap(),
+        ));
+        (dir, proj, at_top, at_proj, contents)
+    }
+
+    const GRANT: &str = r#"{"run":[""]}"#;
+
+    /// A copy over a file keeps the grant another root holds on it.
+    #[tokio::test]
+    async fn a_copy_keeps_the_grants_other_roots_hold() {
+        let (_dir, proj, at_top, at_proj, contents) = two_roots();
+        std::fs::write(proj.join("a.ipynb"), "{\"a\": 1}").unwrap();
+        std::fs::write(proj.join("b.ipynb"), "{}").unwrap();
+        let (id, _) = at_proj.index("b.ipynb").await;
+        at_proj.set_grant(id, Some(GRANT.into())).await.unwrap();
+        assert!(at_proj.grant("b.ipynb").await.is_some());
+        contents
+            .copy("proj/a.ipynb", Some("proj/b.ipynb"))
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(proj.join("b.ipynb")).unwrap(),
+            "{\"a\": 1}"
+        );
+        assert!(at_proj.grant("b.ipynb").await.is_some(), "proj root's");
+        drop(at_top);
+    }
+
+    /// A copy onto a file another root's grant stands on, replaced
+    /// outside, doesn't bless it.
+    #[tokio::test]
+    async fn a_copy_over_a_file_replaced_outside_drops_other_roots_grants() {
+        let (_dir, proj, _at_top, at_proj, contents) = two_roots();
+        std::fs::write(proj.join("a.ipynb"), "{\"a\": 1}").unwrap();
+        std::fs::write(proj.join("b.ipynb"), "{}").unwrap();
+        let (id, _) = at_proj.index("b.ipynb").await;
+        at_proj.set_grant(id, Some(GRANT.into())).await.unwrap();
+        std::fs::write(proj.join("b.ipynb"), "{\"replaced\": \"by git\"}").unwrap();
+        contents
+            .copy("proj/a.ipynb", Some("proj/b.ipynb"))
+            .await
+            .unwrap();
+        assert_eq!(at_proj.grant("b.ipynb").await, None);
+    }
+
+    /// A grant with no stamp on a file deleted outside isn't taken by the
+    /// file a save makes there.
+    #[tokio::test]
+    async fn an_unstamped_grant_does_not_pass_to_a_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.ipynb"), "{}").unwrap();
+        let collab = Arc::new(Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            Some(root.clone()),
+        ));
+        let contents = collab.stamping(Arc::new(
+            ganymede_contents::FsContents::new(&root, Default::default()).unwrap(),
+        ));
+        let (id, _) = collab.index("a.ipynb").await;
+        // Set during a save, so it has no stamp.
+        let saving = collab.stamps.begin("a.ipynb");
+        collab.set_grant(id, Some(GRANT.into())).await.unwrap();
+        drop(saving);
+        std::fs::remove_file(root.join("a.ipynb")).unwrap();
+        contents
+            .save("a.ipynb", SaveRequest::text("{\"made\": \"anew\"}"))
+            .await
+            .unwrap();
+        assert_eq!(collab.grant("a.ipynb").await, None);
+    }
+
+    /// A copy into a directory is a new file: a grant stored at its path
+    /// by a file deleted outside doesn't pass to it, under this root or
+    /// another.
+    #[tokio::test]
+    async fn a_copy_into_a_directory_inherits_no_grant() {
+        let (_dir, proj, at_top, at_proj, contents) = two_roots();
+        std::fs::write(proj.join("a.ipynb"), "{\"a\": 1}").unwrap();
+        // Left by files that were deleted outside, with no stamp.
+        for (c, p) in [(&at_top, "proj/a-Copy1.ipynb"), (&at_proj, "a-Copy1.ipynb")] {
+            let (id, _) = c.index(p).await;
+            c.set_grant(id, Some(GRANT.into())).await.unwrap();
+        }
+        let model = contents.copy("proj/a.ipynb", Some("proj")).await.unwrap();
+        assert_eq!(model.path, "proj/a-Copy1.ipynb");
+        assert_eq!(at_top.grant("proj/a-Copy1.ipynb").await, None, "own root");
+        assert_eq!(at_proj.grant("a-Copy1.ipynb").await, None, "other root");
+    }
+
+    /// As a copy, for a new untitled file.
+    #[tokio::test]
+    async fn a_new_untitled_file_inherits_no_grant() {
+        let (_dir, _proj, at_top, at_proj, contents) = two_roots();
+        for (c, p) in [
+            (&at_top, "proj/Untitled.ipynb"),
+            (&at_proj, "Untitled.ipynb"),
+        ] {
+            let (id, _) = c.index(p).await;
+            c.set_grant(id, Some(GRANT.into())).await.unwrap();
+        }
+        let model = contents
+            .new_untitled("proj", ContentType::Notebook, Some(".ipynb"))
+            .await
+            .unwrap();
+        assert_eq!(model.path, "proj/Untitled.ipynb");
+        assert_eq!(at_top.grant("proj/Untitled.ipynb").await, None, "own root");
+        assert_eq!(at_proj.grant("Untitled.ipynb").await, None, "other root");
+    }
+
+    /// A save through one root over a file that is gone drops the grant
+    /// with no stamp that another root holds on it.
+    #[tokio::test]
+    async fn a_save_over_a_missing_file_drops_other_roots_unstamped_grants() {
+        let (_dir, proj, _at_top, at_proj, contents) = two_roots();
+        std::fs::write(proj.join("a.ipynb"), "{}").unwrap();
+        let (id, _) = at_proj.index("a.ipynb").await;
+        // Set during a save, so it has no stamp.
+        let saving = at_proj.stamps.begin("a.ipynb");
+        at_proj.set_grant(id, Some(GRANT.into())).await.unwrap();
+        drop(saving);
+        std::fs::remove_file(proj.join("a.ipynb")).unwrap();
+        contents
+            .save("proj/a.ipynb", SaveRequest::text("{\"made\": \"anew\"}"))
+            .await
+            .unwrap();
+        assert_eq!(at_proj.grant("a.ipynb").await, None);
+    }
+
+    /// A rename of a file onto itself keeps its grants, under this root
+    /// and another.
+    #[tokio::test]
+    async fn a_rename_onto_itself_keeps_the_grants() {
+        let (_dir, proj, at_top, at_proj, contents) = two_roots();
+        std::fs::write(proj.join("a.ipynb"), "{}").unwrap();
+        for (c, p) in [(&at_top, "proj/a.ipynb"), (&at_proj, "a.ipynb")] {
+            let (id, _) = c.index(p).await;
+            c.set_grant(id, Some(GRANT.into())).await.unwrap();
+        }
+        let _ = at_top
+            .rename(&contents, "proj/a.ipynb", "proj/a.ipynb")
+            .await;
+        assert!(at_top.grant("proj/a.ipynb").await.is_some(), "own root");
+        assert!(at_proj.grant("a.ipynb").await.is_some(), "other root");
+    }
+
+    /// A file renamed onto a path another root holds a grant on, left by
+    /// a file deleted outside, doesn't take the grant.
+    #[tokio::test]
+    async fn a_rename_onto_a_path_inherits_no_grant() {
+        let (_dir, proj, at_top, at_proj, contents) = two_roots();
+        std::fs::write(proj.join("x.ipynb"), "{}").unwrap();
+        let (id, _) = at_proj.index("x.ipynb").await;
+        // Set during a save, so it has no stamp.
+        let saving = at_proj.stamps.begin("x.ipynb");
+        at_proj.set_grant(id, Some(GRANT.into())).await.unwrap();
+        drop(saving);
+        std::fs::remove_file(proj.join("x.ipynb")).unwrap();
+        std::fs::write(proj.parent().unwrap().join("y.ipynb"), "{}").unwrap();
+        at_top
+            .rename(&contents, "y.ipynb", "proj/x.ipynb")
+            .await
+            .unwrap();
+        assert_eq!(at_proj.grant("x.ipynb").await, None);
+    }
+
+    /// A copy onto a named file that is gone inherits no grant either,
+    /// under this root or another.
+    #[tokio::test]
+    async fn a_copy_onto_a_missing_file_inherits_no_grant() {
+        let (_dir, proj, at_top, at_proj, contents) = two_roots();
+        std::fs::write(proj.join("a.ipynb"), "{\"a\": 1}").unwrap();
+        std::fs::write(proj.join("b.ipynb"), "{}").unwrap();
+        for (c, p) in [(&at_top, "proj/b.ipynb"), (&at_proj, "b.ipynb")] {
+            let (id, _) = c.index(p).await;
+            // Set during a save, so it has no stamp.
+            let saving = c.stamps.begin(p);
+            c.set_grant(id, Some(GRANT.into())).await.unwrap();
+            drop(saving);
+        }
+        std::fs::remove_file(proj.join("b.ipynb")).unwrap();
+        contents
+            .copy("proj/a.ipynb", Some("proj/b.ipynb"))
+            .await
+            .unwrap();
+        assert_eq!(at_top.grant("proj/b.ipynb").await, None, "own root");
+        assert_eq!(at_proj.grant("b.ipynb").await, None, "other root");
+    }
+
+    /// A rename out of a root drops the grants that root holds, as a
+    /// delete does, and not leave them on a path that is gone.
+    #[tokio::test]
+    async fn a_rename_out_of_a_root_drops_its_grants() {
+        let (_dir, proj, at_top, at_proj, contents) = two_roots();
+        std::fs::write(proj.join("a.ipynb"), "{}").unwrap();
+        let (id, _) = at_proj.index("a.ipynb").await;
+        at_proj.set_grant(id, Some(GRANT.into())).await.unwrap();
+        at_top
+            .rename(&contents, "proj/a.ipynb", "out.ipynb")
+            .await
+            .unwrap();
+        assert_eq!(at_proj.grant("a.ipynb").await, None);
+    }
+
+    /// A rename through a server on the parent folder moves the grant
+    /// another root holds on the file.
+    #[tokio::test]
+    async fn a_rename_moves_the_grants_other_roots_hold() {
+        let (_dir, proj, at_top, at_proj, contents) = two_roots();
+        std::fs::write(proj.join("a.ipynb"), "{}").unwrap();
+        let (id, _) = at_proj.index("a.ipynb").await;
+        at_proj.set_grant(id, Some(GRANT.into())).await.unwrap();
+        at_top
+            .rename(&contents, "proj/a.ipynb", "proj/b.ipynb")
+            .await
+            .unwrap();
+        assert!(at_proj.grant("b.ipynb").await.is_some(), "followed");
+        assert_eq!(at_proj.grant("a.ipynb").await, None);
+    }
+
+    /// As a file, for a directory with the file in it.
+    #[tokio::test]
+    async fn a_directory_rename_moves_the_grants_under_it() {
+        let (_dir, proj, at_top, at_proj, contents) = two_roots();
+        std::fs::create_dir(proj.join("d")).unwrap();
+        std::fs::write(proj.join("d/a.ipynb"), "{}").unwrap();
+        let (id, _) = at_proj.index("d/a.ipynb").await;
+        at_proj.set_grant(id, Some(GRANT.into())).await.unwrap();
+        at_top.rename(&contents, "proj/d", "proj/e").await.unwrap();
+        assert!(at_proj.grant("e/a.ipynb").await.is_some(), "followed");
+        assert_eq!(at_proj.grant("d/a.ipynb").await, None);
+    }
+}

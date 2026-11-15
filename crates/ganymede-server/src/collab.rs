@@ -51,7 +51,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use ganymede_api::bridge::CLIENT_QUEUE_LIMIT;
-use ganymede_contents::{ContentType, Contents, FileIds, GetOptions, IfMatch, SaveRequest};
+use ganymede_contents::{
+    normalize_api_path, ContentType, Contents, FileIds, GetOptions, IfMatch, SaveRequest,
+};
 use ganymede_documents::{ConnId, Room, SaveStatus, Target};
 use ganymede_nbformat::Notebook;
 use serde::Deserialize;
@@ -123,6 +125,9 @@ pub struct Collab {
     locks: crate::room_lock::Locks,
     /// Request ids the execute endpoint has queued.
     pub(crate) requests: crate::execute::Requests,
+    /// Stamps of files for host grants, and the saves in flight
+    /// ([`crate::stamping`]).
+    pub(crate) stamps: Arc<crate::stamping::Stamps>,
 }
 
 impl Default for Collab {
@@ -138,6 +143,7 @@ impl Collab {
         Collab {
             session_id: uuid::Uuid::new_v4().to_string(),
             ids: Arc::new(ids),
+            stamps: Arc::new(crate::stamping::Stamps::new(root.clone())),
             root,
             watcher: Watcher::new(),
             rooms: Mutex::default(),
@@ -221,24 +227,142 @@ impl Collab {
             .expect("file ids task")
     }
 
-    /// The host API grant stored for the notebook at `path`, if any.
+    /// The host API grant stored for the notebook at `path`, if any and
+    /// its file is still the one it was granted to: one whose file was
+    /// changed outside the server is dropped (#767).
     pub async fn grant(&self, path: &str) -> Option<String> {
-        let path = path.to_string();
-        self.with_ids(move |ids| ids.grant(&ids.get(&path)?)).await
+        // Not while a copy or a new file is being made and its path forgotten.
+        let _no_move = self.move_lock.read().await;
+        let path = normalize_api_path(path);
+        let stamps = self.stamps.clone();
+        self.with_ids(move |ids| {
+            let id = ids.get(&path)?;
+            checked_grant(ids, &stamps, &id, &path)
+        })
+        .await
     }
 
-    /// The path the file with id `id` has now and its host API grant, read
-    /// together, so no rename lands between them; `None` once it's gone.
+    /// The path the file with id `id` has now and its host API grant,
+    /// checked as [`Collab::grant`] does, read together, so no rename
+    /// lands between them; `None` once it's gone.
     pub async fn path_and_grant(&self, id: &str) -> Option<(String, Option<String>)> {
+        let _no_move = self.move_lock.read().await;
         let id = id.to_string();
-        self.with_ids(move |ids| Some((ids.path(&id)?, ids.grant(&id))))
-            .await
+        let stamps = self.stamps.clone();
+        self.with_ids(move |ids| {
+            let path = ids.path(&id)?;
+            let grant = checked_grant(ids, &stamps, &id, &path);
+            Some((path, grant))
+        })
+        .await
+    }
+
+    /// Before the server writes the file at `path`: drops its grant if the
+    /// file changed outside the server. What comes back is for
+    /// [`Collab::restamp`] after the write: `None`, no grant stands, so
+    /// none is stamped; `Some(stamp)`, the stamp it is stored under.
+    pub(crate) async fn check_for_write(&self, path: &str) -> Option<Option<String>> {
+        let path = normalize_api_path(path);
+        let stamps = self.stamps.clone();
+        self.with_ids(move |ids| {
+            let id = ids.get(&path)?;
+            let mut missing = false;
+            // A file that can't be seen for certain (a save of it is in
+            // flight, or it is gone) says nothing about the grant, and
+            // the check returns no stamp, so the write after it stamps
+            // nothing.
+            let seen = ids.check_for_write_with(&id, || match stamps.look(&path) {
+                crate::stamping::Look::Stamp(s) => Some(s),
+                crate::stamping::Look::Missing => {
+                    missing = true;
+                    None
+                }
+                crate::stamping::Look::Unstable => None,
+            });
+            // A file that is gone is about to be made anew: a grant that
+            // never had a stamp would take it.
+            if missing {
+                ids.drop_unstamped(&id);
+            }
+            seen
+        })
+        .await
+    }
+
+    /// The server wrote the file at `path`: its grant keeps matching,
+    /// if it is still stored as [`Collab::check_for_write`] found it
+    /// (`seen`). Fails when the grant store does.
+    pub(crate) async fn restamp(
+        &self,
+        path: &str,
+        seen: &Option<Option<String>>,
+    ) -> Result<(), String> {
+        let seen = seen.clone();
+        let path = normalize_api_path(path);
+        let stamps = self.stamps.clone();
+        self.with_ids(move |ids| {
+            let Some(id) = ids.get(&path) else {
+                return Ok(());
+            };
+            // The stamp is taken with the store held, so it is the latest.
+            ids.restamp_if(&id, &seen, |_| stamps.own(&path))
+                .map_err(|e| format!("restamping the host grant for {path}: {e}"))
+        })
+        .await
+    }
+
+    /// The grants other contents roots hold on the file at `path` (a
+    /// `ganymede grant` run in a project directory, another server on a
+    /// parent folder), found in the shared file id database and checked,
+    /// as a write by this server is about to change the file: a grant
+    /// belongs to the (root, path) it was made under, and this server's
+    /// write is as much Ganymede's own under theirs. Nothing unless the
+    /// ids are in a database. The in-flight marks are this process's, so
+    /// another process reading one of these grants between the write and
+    /// [`Collab::restamp_others`] drops it, which fails safe.
+    pub(crate) async fn check_others(&self, path: &str) -> Vec<ganymede_contents::Held> {
+        let Some(root) = self.root.clone() else {
+            return Vec::new();
+        };
+        let file = root.join(normalize_api_path(path));
+        self.with_ids(move |ids| {
+            let mut found = ganymede_contents::held_with(ids, &file, Some(&root));
+            found.iter_mut().for_each(|h| h.check());
+            found
+        })
+        .await
+    }
+
+    /// After the write: the grants [`Collab::check_others`] found keep
+    /// matching the file.
+    pub(crate) async fn restamp_others(&self, held: Vec<ganymede_contents::Held>) {
+        let failures = self
+            .with_ids(move |_| {
+                held.iter()
+                    .filter_map(|h| h.restamp().err())
+                    .collect::<Vec<_>>()
+            })
+            .await;
+        for e in failures {
+            tracing::warn!("{e}");
+        }
+    }
+
+    /// A file was just made at `path`, by a copy or `new_untitled`, under
+    /// [`Collab::begin_move`]'s lock: it has no grant, whatever is stored
+    /// at the path under this root or another, left by a file deleted
+    /// outside, so those go, and rooms open on the path close.
+    pub(crate) async fn forget_new_file(&self, path: &str) {
+        self.removed(path).await;
+        self.removed_in_other_roots(path).await;
     }
 
     /// Stores `grant` (JSON) for the notebook with file id `id`, or
-    /// removes it.
+    /// removes it, stamped with its file as it is now, or not stamped if
+    /// a save of the file is in flight (the first use stamps it then).
     pub async fn set_grant(&self, id: String, grant: Option<String>) -> Result<(), String> {
-        self.with_ids(move |ids| ids.set_grant(&id, grant.as_deref()))
+        let stamps = self.stamps.clone();
+        self.with_ids(move |ids| ids.set_grant_with(&id, grant.as_deref(), |p| stamps.current(p)))
             .await
     }
 
@@ -248,7 +372,7 @@ impl Collab {
     }
 
     /// The id for `path`, made the first time; and whether it was new.
-    async fn index(&self, path: &str) -> (String, bool) {
+    pub(crate) async fn index(&self, path: &str) -> (String, bool) {
         let path = path.to_string();
         self.with_ids(move |ids| ids.index(&path)).await
     }
@@ -288,6 +412,7 @@ impl Collab {
             let _deleting = collab.begin_move().await;
             contents.delete(&path).await?;
             collab.removed(&path).await;
+            collab.removed_in_other_roots(&path).await;
             Ok(())
         })
         .await
@@ -306,16 +431,42 @@ impl Collab {
         let (collab, contents) = (self.clone(), contents.clone());
         let (old, new) = (old.to_string(), new.to_string());
         detached(async move {
+            // A rename onto itself moves nothing: the ids and grants stay.
+            if normalize_api_path(&old) == normalize_api_path(&new) {
+                return contents.rename(&old, &new).await;
+            }
             let _moving = collab.begin_move().await;
+            // Saves of any path, so of every file under a directory
+            // renamed, finish first and wait. Taken after the move lock,
+            // which nothing holds while it waits for a save.
+            let _no_saves = collab.stamps.begin_rename().await;
+            // A file replaced outside loses its grant before the rename,
+            // which would otherwise stamp the new file as the old one.
+            let seen = collab.check_for_write(&old).await;
+            // The same for the grants other roots hold on it. Both
+            // restamps are only visible on a filesystem where a rename
+            // changes the stamp, so no test can see them on Linux.
+            let others = collab.check_others(&old).await;
+            // A grant check mustn't look between the rename and the new
+            // stamp, on a filesystem where a rename changes the stamp.
+            // No test holds this mark: it is open only across the
+            // rename on disk, which only a hook in the contents could
+            // hold, and no contents has one.
+            let _saving = collab.stamps.begin(&new);
             let model = contents.rename(&old, &new).await?;
             collab.moved(&old, &model.path).await;
+            collab.moved_in_other_roots(&old, &model.path).await;
+            if let Err(e) = collab.restamp(&model.path, &seen).await {
+                tracing::warn!("{e}");
+            }
+            collab.restamp_others(others).await;
             Ok(model)
         })
         .await
     }
 
     /// The path a file id names now.
-    async fn path_of(&self, id: &str) -> Option<String> {
+    pub(crate) async fn path_of(&self, id: &str) -> Option<String> {
         let id = id.to_string();
         self.with_ids(move |ids| ids.path(&id)).await
     }
@@ -340,6 +491,36 @@ impl Collab {
         for room in rooms.values() {
             let _ = room.send(Cmd::Moved(old.to_string(), new.to_string()));
         }
+    }
+
+    /// As [`Collab::moved`] for the ids other roots hold on the same
+    /// files in the shared database (a project directory's), which follow
+    /// with their grants. The stamp of a file doesn't change with its
+    /// path, so they need no restamp.
+    async fn moved_in_other_roots(&self, old: &str, new: &str) {
+        let (Some(old), Some(new)) = (self.abs_path(old), self.abs_path(new)) else {
+            return;
+        };
+        self.with_ids(move |ids| ids.moved_in_other_roots(&old, &new))
+            .await;
+    }
+
+    /// `path` was deleted through this root: the ids, and so the grants,
+    /// that other roots above it hold under it go too, as
+    /// [`Collab::moved_in_other_roots`] moves them.
+    async fn removed_in_other_roots(&self, path: &str) {
+        let Some(path) = self.abs_path(path) else {
+            return;
+        };
+        self.with_ids(move |ids| ids.removed_in_other_roots(&path))
+            .await;
+    }
+
+    /// The absolute path of the API path `api`, with its directory
+    /// resolved, as the file ids database names files.
+    fn abs_path(&self, api: &str) -> Option<std::path::PathBuf> {
+        let file = self.root.as_ref()?.join(normalize_api_path(api));
+        Some(file.parent()?.canonicalize().ok()?.join(file.file_name()?))
     }
 
     /// The notebook at `path` as its room has it, with cell ids, when a
@@ -847,9 +1028,22 @@ pub(crate) async fn send_to_notebook_room(
     send_to_room(collab, contents, room_id, Some(file_id), cmd).await
 }
 
+/// The grant of file id `id`, at `path`, if its file still matches its
+/// stamp; one that doesn't is dropped. Looks at the file only when there
+/// is a grant to check.
+fn checked_grant(
+    ids: &FileIds,
+    stamps: &crate::stamping::Stamps,
+    id: &str,
+    path: &str,
+) -> Option<String> {
+    // The stamp is taken with the store held: see `grant_checked_with`.
+    ids.grant_checked_with(id, || stamps.current(path))
+}
+
 /// Runs `f` on its own task and waits for it: dropping the wait leaves
 /// `f` running to the end. A panic in `f` comes back as an I/O error.
-async fn detached<T: Send + 'static>(
+pub(crate) async fn detached<T: Send + 'static>(
     f: impl std::future::Future<Output = ganymede_contents::Result<T>> + Send + 'static,
 ) -> ganymede_contents::Result<T> {
     tokio::spawn(f)
@@ -2087,6 +2281,54 @@ mod join_tests {
             .await
             .unwrap()
             .unwrap_or_else(|_| panic!("{what}"));
+    }
+
+    /// A file made at a path whose id a room is open on closes the room,
+    /// as a delete does: for a new untitled file and a copy.
+    #[tokio::test]
+    async fn a_new_file_closes_the_rooms_open_on_its_path() {
+        for copy in [false, true] {
+            let (dir, contents) = notebook_dir();
+            let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
+            let stamped = collab.stamping(contents.clone());
+            let stale = if copy {
+                "a-Copy1.ipynb"
+            } else {
+                "Untitled.ipynb"
+            };
+            std::fs::copy(dir.path().join("a.ipynb"), dir.path().join(stale)).unwrap();
+            let (id, _) = collab.index(stale).await;
+            let (cmd, rx) = report_loaded();
+            let room_id = format!("json:notebook:{id}");
+            let tx = send_to_room(&collab, &contents, &room_id, Some(&id), cmd)
+                .await
+                .unwrap();
+            loads(rx, "the room loaded").await;
+            // Deleted outside, and made anew through the server.
+            std::fs::remove_file(dir.path().join(stale)).unwrap();
+            if copy {
+                stamped.copy("a.ipynb", None).await.unwrap();
+            } else {
+                stamped
+                    .new_untitled("", ContentType::Notebook, Some(".ipynb"))
+                    .await
+                    .unwrap();
+            }
+            assert!(dir.path().join(stale).is_file(), "made at {stale}");
+            let mut closed = false;
+            for _ in 0..40 {
+                let (cmd, rx) = report_loaded();
+                if tx.send(cmd).is_err()
+                    || tokio::time::timeout(Duration::from_millis(50), rx)
+                        .await
+                        .is_ok_and(|r| r.is_err())
+                {
+                    closed = true;
+                    break;
+                }
+            }
+            assert!(closed, "the room on {stale} stayed open (copy: {copy})");
+        }
     }
 
     /// A join after a rename opens the room on the new path, not on the
