@@ -21,7 +21,7 @@
 ARG GANYMEDE_SOURCE=release
 ARG CDP_KERNEL_VERSION=0.12.2
 
-FROM node:24-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS node
+FROM node:24-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0 AS node
 
 # The binary, from the release or from the checkout. Only the stage that
 # GANYMEDE_SOURCE names is built.
