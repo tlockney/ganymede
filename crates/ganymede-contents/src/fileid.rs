@@ -1272,8 +1272,14 @@ mod sqlite {
         old: &Path,
         new: &Path,
     ) -> rusqlite::Result<()> {
-        let inside = roots_at_or_under(db, own, old)?;
-        let stale: Vec<String> = roots_at_or_under(db, own, new)?
+        // Read the roots inside the write transaction, so no other
+        // process adds a row under `new` between the read and the move
+        // (which would fail the move on `UNIQUE(root, path)`).
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let inside = roots_at_or_under(&tx, own, old)?;
+        // A rename can't go into its own subtree, so no root is in both;
+        // the filter only guards against dropping a root that moves.
+        let stale: Vec<String> = roots_at_or_under(&tx, own, new)?
             .into_iter()
             .filter(|r| !inside.contains(r))
             .collect();
@@ -1295,7 +1301,6 @@ mod sqlite {
                 Some((r, to))
             })
             .collect();
-        let tx = db.transaction()?;
         for r in &stale {
             removed(&tx, r, "")?;
         }
