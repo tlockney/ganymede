@@ -1076,6 +1076,31 @@ mod tests {
         assert_eq!(stamps.lock().quiet, 1);
     }
 
+    /// A rename waits for a real `save` of its new path, which is
+    /// registered while it waits for its turn.
+    #[tokio::test]
+    async fn a_rename_waits_for_a_real_save_of_its_new_path() {
+        let (dir, collab, contents) = granted_in_d("a.ipynb").await;
+        let root = dir.path().canonicalize().unwrap();
+        let turn = collab.stamps.turn("b.ipynb").await;
+        let k = contents.clone();
+        let save = tokio::spawn(async move {
+            k.save("b.ipynb", SaveRequest::text("{\"saved\": \"b\"}"))
+                .await
+        });
+        until_a_write_begins(&collab).await;
+        let (c, k) = (collab.clone(), contents.clone());
+        let rename = tokio::spawn(async move { c.rename(&k, "d/a.ipynb", "b.ipynb").await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!rename.is_finished(), "waits for the save of b.ipynb");
+        drop(turn);
+        save.await.unwrap().unwrap();
+        // The save made b.ipynb first, so the rename onto it may fail; it
+        // ran after the save either way.
+        let _ = rename.await.unwrap();
+        assert!(root.join("b.ipynb").is_file());
+    }
+
     /// A rename of a directory waits for a real `save` under it, which
     /// is registered while it waits for its turn, and the save's
     /// restamp lands before the rename moves the grant.
@@ -1436,8 +1461,8 @@ mod tests {
     }
 
     /// A copy into a directory holds the move lock and a write registered
-    /// on the directory until its new path is forgotten, and a grant read waits too,
-    /// so it can't see a stale grant on the new file.
+    /// on the directory until its new path is forgotten, and a grant read
+    /// waits too, so it can't see a stale grant on the new file.
     #[tokio::test]
     async fn a_copy_into_a_directory_holds_the_locks_until_it_is_done() {
         let (dir, collab, contents, wrote, release) = gated(false).await;
