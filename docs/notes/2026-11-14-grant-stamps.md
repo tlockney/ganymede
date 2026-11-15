@@ -43,10 +43,12 @@ write doesn't bless it, and returns the stamp the grant is stored under, or
 nothing when no grant stands), mark the path in flight, write, and restamp
 only if the grant is still stored under that stamp (`restamp_if`, a
 compare-and-swap), then unmark. All of that runs on a detached task so a
-dropped request can't leave a write unstamped. `copy` restamps its
-destination unconditionally, since its path isn't known beforehand; only
-that restamp takes the path's turn and is marked in flight, so a reader
-between the copy's write and its mark can drop the grant, which fails safe.
+dropped request can't leave a write unstamped. A `copy` onto a named
+file is checked and restamped like a save; a `copy` into a directory restamps
+its destination unconditionally, since the new path isn't known beforehand,
+and only that restamp takes the path's turn and is marked in flight, so a
+reader between the copy's write and its mark can drop the grant, which fails
+safe.
 Rooms, REST, MCP and run copies all hold that wrapper. A rename keeps the
 inode and modification time, so it needs no new stamp; `Collab::rename`
 checks the old path's grant before renaming (a file replaced outside and
@@ -109,15 +111,28 @@ query, since it moves every root's ids, grant or not.
 
 A delete through the server drops the ids, and so the grants, that every
 other root above the path holds on it (`FileIds::removed_in_other_roots`),
-so a file made anew at the path inherits none. A save that fails after
-writing still restamps, since the check's compare-and-swap blesses nothing
-that changed outside. `copy` runs detached, as a save does. A grant look
-that a cleanup of the remembered paths overlapped is made again, up to
-three times, not given up as unstable, so a quiet path's save keeps its
-restamp. The database check gives a row that changed under its compare the
-verdict once more before returning it.
+so a file made anew at the path inherits none. A write that is about to make
+a file the grant can't be checked against, because it was deleted outside,
+stamps nothing (`check_for_write_with` returns no stamp when the file can't
+be looked at), so the grant goes on its next read, from the server and from
+`ganymede execute -o` alike. A save that fails isn't restamped: whether it
+wrote can't be known, and an `If-Match` failure over an outside change must
+not bless it; if the file did change, the grant is dropped on its next read,
+which fails safe. `copy` runs detached, as a save does, and a copy onto a
+named file (a destination that isn't an existing directory) checks, marks and
+restamps it as a save does; a copy into a directory restamps the new file's
+path after the copy, since that path isn't known beforehand. A grant set
+while a save of its file is in flight is stored without a stamp, and the
+first use stamps it. A grant look that a cleanup of the remembered paths
+overlapped is made again, up to three times, not given up as unstable, so a
+quiet path's save keeps its restamp. The database check gives a row that
+changed under its compare the verdict once more, and one that changes again
+the verdict without a compare, not handed out if it doesn't match.
 
-Known limit, left for a follow-up: a rename holds the move lock for writing
-while it waits for the write side of the tree lock, so the server's room
-opens and deletes pause for as long as the slowest save in flight. A
-per-path or per-prefix wait would avoid that.
+Known limits, left for a follow-up (#829): a rename holds the move lock for
+writing while it waits for the write side of the tree lock, so the server's
+room opens and deletes pause for as long as the slowest save in flight; a
+per-path or per-prefix wait would avoid that. The cleanup that keeps the
+table of remembered paths to 256 resets a floor that voids looks begun
+before it, which are made again a few times, and which give up and keep the
+grant if cleanups keep coming.

@@ -485,15 +485,26 @@ impl FileIds {
     /// as [`FileIds::grant_checked_with`], but what comes back is what
     /// [`FileIds::restamp_if`] needs after the write. `None`: no grant
     /// stands (there is none, it was dropped, or it should be and can't be
-    /// deleted), so the write must not stamp one. `Some(stamp)`: the grant
-    /// stands, stored under `stamp` (`None` when it has none).
+    /// deleted, or the file couldn't be looked at), so the write must not
+    /// stamp one. `Some(stamp)`: the grant stands, stored under `stamp`
+    /// (`None` when it has none).
     pub fn check_for_write_with(
         &self,
         id: &str,
         current: impl FnOnce() -> Option<String>,
     ) -> Option<Option<String>> {
-        match check_locked(&mut self.lock(), id, None, current) {
-            Outcome::Grant(_, stamp) => Some(stamp),
+        // A file that can't be looked at, such as one deleted outside
+        // and about to be made anew by this write, leaves the grant as
+        // it is but doesn't let the write stamp it: the new file isn't
+        // the one the grant stood on, and the next read drops it.
+        let mut unseen = false;
+        let out = check_locked(&mut self.lock(), id, None, || {
+            let stamp = current();
+            unseen = stamp.is_none();
+            stamp
+        });
+        match out {
+            Outcome::Grant(_, stamp) if !unseen => Some(stamp),
             _ => None,
         }
     }
@@ -1026,7 +1037,8 @@ mod sqlite {
     /// server may restamp or replace the grant meanwhile, so the stamp
     /// and the delete go by the row that was read, and a changed row is
     /// read again and given the same verdict, once more: a row that
-    /// changed again is returned as it is. An `Err` is a failed read or
+    /// changed again is given it without a compare, and not handed out if
+    /// it doesn't match. An `Err` is a failed read or
     /// stamp: the grant stands.
     pub fn check(
         db: &Connection,
@@ -1080,9 +1092,16 @@ mod sqlite {
             // The row changed under the compare: it is read again and
             // given the verdict.
         }
-        // It changed again: it is returned as it stands.
+        // It changed twice under the compare. The row as it stands now is
+        // given the verdict without one: it is handed out only if it
+        // matches the file, and a mismatch isn't deleted, since another
+        // server keeps changing it, but isn't handed out either.
+        let current = looked.as_ref().and_then(|c| c.as_deref());
         Ok(match grant_row(db, id)? {
-            Some((json, stamp)) => Checked::Grant(json, stamp),
+            Some((json, stamp)) => match super::verdict(stamp.as_deref(), current) {
+                super::Verdict::Drop => Checked::Dropped,
+                _ => Checked::Grant(json, stamp),
+            },
             None => Checked::Missing,
         })
     }
@@ -1601,6 +1620,37 @@ mod tests {
         assert_eq!(ids.grant_checked(&id, None), None);
     }
 
+    /// A row another server changes under every compare is given the
+    /// verdict as it stands, and not handed out when it doesn't match.
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn a_row_that_keeps_changing_is_not_handed_out_unchecked() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ids.db");
+        let ids = FileIds::open(&db, Path::new("/r"));
+        let (id, _) = ids.index("a.ipynb");
+        ids.set_grant(&id, Some(G), Some("s1")).unwrap();
+        // Each delete finds the row restamped by someone else first.
+        let (t2, t3) = (tag(G, "s2"), tag(G, "s3"));
+        sqlite::connect(&db)
+            .unwrap()
+            .execute_batch(&format!(
+                "CREATE TRIGGER churn BEFORE DELETE ON host_grants BEGIN
+                    UPDATE host_grants SET stamp = CASE WHEN stamp = '{t2}' THEN '{t3}'
+                        ELSE '{t2}' END WHERE id = OLD.id;
+                    SELECT RAISE(IGNORE);
+                END;"
+            ))
+            .unwrap();
+        let conn = sqlite::connect(&db).unwrap();
+        let out = sqlite::check(&conn, &id, || Some("s9".into())).unwrap();
+        assert!(matches!(out, sqlite::Checked::Dropped));
+        // One that matches the file as it stands is handed out.
+        ids.set_grant(&id, Some(G), Some("s1")).unwrap();
+        let out = sqlite::check(&conn, &id, || Some("s3".into())).unwrap();
+        assert!(matches!(out, sqlite::Checked::Grant(..)), "matches s3");
+    }
+
     /// The stamp is taken with the store held, so a check and a restamp
     /// can't interleave with another thread's.
     #[test]
@@ -1687,7 +1737,8 @@ mod tests {
         // the file's.
         assert_eq!(ids.check_for_write_with(&a, || Some("other".into())), None);
         ids.set_grant(&b, Some(G), None).unwrap();
-        assert_eq!(ids.check_for_write_with(&b, || None), Some(None));
+        // A file that can't be looked at has no stamp to leave in place.
+        assert_eq!(ids.check_for_write_with(&b, || None), None);
         ids.restamp_if(&b, &Some(None), |_| Some("t1".into()))
             .unwrap();
         assert_eq!(ids.grant_checked(&b, Some("t1")).as_deref(), Some(G));

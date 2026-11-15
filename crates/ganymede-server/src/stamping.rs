@@ -281,15 +281,16 @@ impl Stamping {
             // database get the same check and restamp.
             let others = collab.check_others(&path).await;
             let _saving = collab.stamps.begin(&path);
-            // A write that failed may have changed the file all the same,
-            // so it is restamped too: only if the grant still stands as
-            // the check found it, so nothing outside is blessed.
-            let out = write.await;
+            // A write that fails isn't restamped: whether it wrote the file
+            // can't be known, and an If-Match failure over an outside
+            // change must not bless it. The grant is then dropped on its
+            // next read if the file did change, which fails safe.
+            let out = write.await?;
             if let Err(e) = collab.restamp(&path, &seen).await {
                 tracing::warn!("{e}");
             }
             collab.restamp_others(others).await;
-            out
+            Ok(out)
         })
         .await
     }
@@ -328,17 +329,43 @@ impl Contents for Stamping {
     }
 
     /// A copy named by its full path overwrites a file that may have a
-    /// grant, which then keeps it. Runs to the end if the caller goes
-    /// away, as [`Stamping::rewrite`] does, so a copy is never left
-    /// unstamped.
+    /// grant, which then keeps it, unless the file was replaced outside.
+    /// Runs to the end if the caller goes away, as [`Stamping::rewrite`]
+    /// does, so a copy is never left unstamped.
     async fn copy(&self, from_path: &str, to_dir: Option<&str>) -> Result<ContentsModel> {
         let (collab, inner) = (self.collab.clone(), self.inner.clone());
         let (from_path, to_dir) = (from_path.to_string(), to_dir.map(str::to_string));
         detached(async move {
             let _writing = collab.stamps.begin_write().await;
+            // A destination that isn't an existing directory is the file
+            // copied over: known beforehand, so it is checked, marked and
+            // restamped as a save is.
+            let target = match &to_dir {
+                Some(d) => {
+                    let is_dir = inner
+                        .get(d, GetOptions::default())
+                        .await
+                        .is_ok_and(|m| m.kind == ContentType::Directory);
+                    (!is_dir).then(|| d.clone())
+                }
+                None => None,
+            };
+            if let Some(dest) = target {
+                let _turn = collab.stamps.turn(&dest).await;
+                let seen = collab.check_for_write(&dest).await;
+                let others = collab.check_others(&dest).await;
+                let _saving = collab.stamps.begin(&dest);
+                let model = inner.copy(&from_path, to_dir.as_deref()).await?;
+                if let Err(e) = collab.restamp(&dest, &seen).await {
+                    tracing::warn!("{e}");
+                }
+                collab.restamp_others(others).await;
+                return Ok(model);
+            }
             let model = inner.copy(&from_path, to_dir.as_deref()).await?;
-            // The destination isn't known until the copy is made, so only
-            // its restamp takes the path's turn and is marked in flight.
+            // A new file is made in the directory, and its path isn't
+            // known until the copy is made, so only its restamp takes the
+            // path's turn and is marked in flight.
             let _turn = collab.stamps.turn(&model.path).await;
             // No test holds this mark: the write is over before it
             // begins, and only a hook between the copy and the restamp
@@ -891,10 +918,10 @@ mod tests {
         assert!(collab.grant("a.ipynb").await.is_some(), "after the save");
     }
 
-    /// A save that fails after writing the file still restamps, so the
-    /// server's own write doesn't cost the grant.
+    /// A save that fails isn't restamped, whether or not it wrote: the
+    /// grant is dropped on its next read, not blessed.
     #[tokio::test]
-    async fn a_save_that_fails_after_writing_keeps_the_grant() {
+    async fn a_save_that_fails_is_not_restamped() {
         let (_dir, collab, contents, wrote, release) = gated(true).await;
         let save = tokio::spawn(async move {
             contents
@@ -904,7 +931,49 @@ mod tests {
         wrote.notified().await;
         release.notify_one();
         assert!(save.await.unwrap().is_err());
-        assert!(collab.grant("a.ipynb").await.is_some(), "after the failure");
+        assert_eq!(collab.grant("a.ipynb").await, None, "not blessed");
+    }
+
+    /// A file deleted outside and made anew by a save through the server
+    /// doesn't keep the grant of the old one.
+    #[tokio::test]
+    async fn a_save_over_a_file_deleted_outside_drops_the_grant() {
+        let (dir, collab, contents) = granted_in_d("a.ipynb").await;
+        std::fs::remove_file(dir.path().join("d/a.ipynb")).unwrap();
+        contents
+            .save("d/a.ipynb", SaveRequest::text("{\"made\": \"anew\"}"))
+            .await
+            .unwrap();
+        assert_eq!(collab.grant("d/a.ipynb").await, None);
+    }
+
+    /// A copy over a file replaced outside doesn't bless it.
+    #[tokio::test]
+    async fn a_copy_over_a_file_replaced_outside_drops_the_grant() {
+        let (dir, collab, contents) = granted_in_d("b.ipynb").await;
+        std::fs::write(dir.path().join("d/a.ipynb"), "{\"a\": 1}").unwrap();
+        std::fs::write(dir.path().join("d/b.ipynb"), "{\"replaced\": \"by git\"}").unwrap();
+        contents.copy("d/a.ipynb", Some("d/b.ipynb")).await.unwrap();
+        assert_eq!(collab.grant("d/b.ipynb").await, None);
+    }
+
+    /// A grant set while a save of its file is in flight isn't stamped
+    /// with the file before the save, so the save doesn't cost it.
+    #[tokio::test]
+    async fn a_grant_set_during_a_save_survives_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.ipynb"), "{}").unwrap();
+        let collab = Arc::new(Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            Some(root.clone()),
+        ));
+        let (id, _) = collab.index("a.ipynb").await;
+        let saving = collab.stamps.begin("a.ipynb");
+        collab.set_grant(id, Some(GRANT.into())).await.unwrap();
+        std::fs::write(root.join("a.ipynb"), "{ \"written\": 1 }").unwrap();
+        drop(saving);
+        assert!(collab.grant("a.ipynb").await.is_some());
     }
 
     /// A look that a cleanup of the remembered paths overlapped is made

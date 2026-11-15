@@ -1030,6 +1030,29 @@ fn execute_keeps_the_grant_through_its_own_write() {
     assert_eq!(go(&["grant", "--list"]), "");
 }
 
+/// A notebook deleted outside and made anew by `execute -o` doesn't keep
+/// the grant of the old one.
+#[test]
+fn execute_over_a_notebook_deleted_outside_drops_its_grant() {
+    let data = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let nb = fake_notebook(&root);
+    let name = nb.file_name().unwrap().to_str().unwrap().to_string();
+    let go = |args: &[&str]| {
+        let mut c = ganymede(args);
+        c.current_dir(&root).env("JUPYTER_DATA_DIR", data.path());
+        stdout(&run_ok(c))
+    };
+    go(&["grant", &name, "read=docs"]);
+    assert_eq!(go(&["grant", "--list"]), format!("{name} read=\"docs\"\n"));
+    std::fs::copy(&nb, root.join("src.ipynb")).unwrap();
+    std::fs::remove_file(&nb).unwrap();
+    go(&["execute", "-o", &name, "src.ipynb"]);
+    assert!(nb.is_file(), "it made the notebook anew");
+    assert_eq!(go(&["grant", "--list"]), "");
+}
+
 /// The same when the config file doesn't load and the run has no host API.
 #[test]
 fn execute_without_a_host_api_keeps_the_grant_too() {

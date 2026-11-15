@@ -474,7 +474,8 @@ A notebook's own grant replaces these defaults for the keys it sets.
 server's file id database in the Jupyter data dir, so it follows a
 rename made through the server and goes when the notebook is deleted
 through it. A notebook deleted outside the server leaves its grant with
-the path, so a new file saved there gets it; `--revoke` it first. A
+the path until it is next read, and a new file made there, by a save
+through the server or by `ganymede execute -o`, doesn't keep it. A
 running server sees a change on the next call; a `notebooks.run` keeps
 the grant it started with until it ends.
 

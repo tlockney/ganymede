@@ -378,10 +378,11 @@ impl Collab {
     }
 
     /// Stores `grant` (JSON) for the notebook with file id `id`, or
-    /// removes it, stamped with its file as it is now.
+    /// removes it, stamped with its file as it is now, or not stamped if
+    /// a save of the file is in flight (the first use stamps it then).
     pub async fn set_grant(&self, id: String, grant: Option<String>) -> Result<(), String> {
         let stamps = self.stamps.clone();
-        self.with_ids(move |ids| ids.set_grant_with(&id, grant.as_deref(), |p| stamps.own(p)))
+        self.with_ids(move |ids| ids.set_grant_with(&id, grant.as_deref(), |p| stamps.current(p)))
             .await
     }
 
