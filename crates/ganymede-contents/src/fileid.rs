@@ -487,19 +487,16 @@ impl FileIds {
     /// A stamped one goes on its own at the next read.
     pub fn drop_unstamped(&self, id: &str) {
         let store = &mut *self.lock();
-        if store
-            .memory
-            .grants
-            .get(id)
-            .is_some_and(|g| g.stamp.is_none())
-        {
-            store.memory.grants.remove(id);
-            return;
-        }
-        #[cfg(feature = "sqlite")]
-        if let Some((db, _)) = &store.db {
-            if let Err(e) = sqlite::drop_unstamped(db, id) {
-                tracing::warn!("dropping the grant for file id {id}: {e}");
+        if let Some(g) = store.memory.grants.get(id) {
+            if g.stamp.is_none() {
+                store.memory.grants.remove(id);
+            }
+        } else {
+            #[cfg(feature = "sqlite")]
+            if let Some((db, _)) = &store.db {
+                if let Err(e) = sqlite::drop_unstamped(db, id) {
+                    tracing::warn!("dropping the grant for file id {id}: {e}");
+                }
             }
         }
     }
@@ -752,14 +749,6 @@ impl Held {
             .restamp_if(&self.id, &self.seen, |p| api_file_stamp(&self.root, p))
             .map_err(|e| format!("keeping the grant for {}: {e}", self.api))
     }
-
-    /// After a write that wasn't checked first, such as a copy whose
-    /// destination wasn't known: the grant matches the file as it is.
-    pub fn restamp_unchecked(&self) -> Result<(), String> {
-        self.ids
-            .restamp_with(&self.id, |p| api_file_stamp(&self.root, p))
-            .map_err(|e| format!("keeping the grant for {}: {e}", self.api))
-    }
 }
 
 impl Store {
@@ -878,14 +867,11 @@ fn check_locked(
                 tracing::warn!("dropping the grant for file id {id}: {e}");
                 Outcome::Dropped
             }
-            // A read that failed keeps the grant, as an unreadable file
-            // does.
+            // A check that failed can't say the file matches: the grant
+            // isn't handed out, and isn't deleted either.
             Err(e) => {
                 tracing::warn!("checking the grant for file id {id}: {e}");
-                match store.grant_json(id) {
-                    Some(json) => Outcome::Grant(json, None),
-                    None => Outcome::Missing,
-                }
+                Outcome::Dropped
             }
         };
     }
@@ -1213,7 +1199,8 @@ mod sqlite {
         Some((root.to_str()?.to_string(), parts?.join("/")))
     }
 
-    /// Moves the ids of every root but `own` above both `old` and `new`.
+    /// Moves the ids of every root but `own` above `old`: to `new` in a
+    /// root that is above it too, and out of the others.
     pub fn moved_in_other_roots(
         db: &mut Connection,
         own: &str,
@@ -1221,9 +1208,7 @@ mod sqlite {
         new: &Path,
     ) -> rusqlite::Result<()> {
         for root in old.ancestors().skip(1) {
-            let (Some((r, rel_old)), Some((_, rel_new))) =
-                (relative(root, old), relative(root, new))
-            else {
+            let Some((r, rel_old)) = relative(root, old) else {
                 continue;
             };
             if r == own {
@@ -1234,8 +1219,14 @@ mod sqlite {
                 params![r, rel_old],
                 |row| row.get(0),
             )?;
-            if has {
-                moved(db, &r, &rel_old, &rel_new)?;
+            if !has {
+                continue;
+            }
+            match relative(root, new) {
+                Some((_, rel_new)) => moved(db, &r, &rel_old, &rel_new)?,
+                // Renamed out of this root: its ids and grants go, as a
+                // delete drops them.
+                None => removed(db, &r, &rel_old)?,
             }
         }
         Ok(())
@@ -1793,6 +1784,47 @@ mod tests {
         ids.restamp_if(&b, &Some(None), |_| Some("t1".into()))
             .unwrap();
         assert_eq!(ids.grant_checked(&b, Some("t1")).as_deref(), Some(G));
+    }
+
+    /// A program about to write a file that is gone drops the grant with
+    /// no stamp that it holds: the new file doesn't take it.
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn a_held_check_on_a_missing_file_drops_an_unstamped_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let db = root.join("ids.db");
+        let ids = FileIds::open(&db, &root);
+        let (id, _) = ids.index("a.ipynb");
+        ids.set_grant(&id, Some(G), None).unwrap();
+        let mut held = held(&db, &root.join("a.ipynb"), None);
+        assert_eq!(held.len(), 1);
+        held.iter_mut().for_each(Held::check);
+        std::fs::write(root.join("a.ipynb"), "{}").unwrap();
+        assert_eq!(
+            ids.grant_checked(&id, api_file_stamp(&root, "a.ipynb").as_deref()),
+            None
+        );
+    }
+
+    /// A check that fails in the database hands out nothing.
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn a_failed_check_hands_out_no_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ids.db");
+        let ids = FileIds::open(&db, Path::new("/r"));
+        let (id, _) = ids.index("a.ipynb");
+        ids.set_grant(&id, Some(G), None).unwrap();
+        sqlite::connect(&db)
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER no_update BEFORE UPDATE ON host_grants
+                BEGIN SELECT RAISE(FAIL, 'busy'); END;",
+            )
+            .unwrap();
+        // Stamping the grant fails, so it can't be said to match.
+        assert_eq!(ids.grant_checked(&id, Some("s1")), None);
     }
 
     /// A missing file's grant with no stamp is dropped, a stamped one is

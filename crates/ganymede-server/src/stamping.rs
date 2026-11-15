@@ -325,7 +325,17 @@ impl Contents for Stamping {
         kind: ContentType,
         ext: Option<&str>,
     ) -> Result<ContentsModel> {
-        self.inner.new_untitled(parent_dir, kind, ext).await
+        let (collab, inner) = (self.collab.clone(), self.inner.clone());
+        let (parent_dir, ext) = (parent_dir.to_string(), ext.map(str::to_string));
+        detached(async move {
+            let _writing = collab.stamps.begin_write().await;
+            let model = inner
+                .new_untitled(&parent_dir, kind, ext.as_deref())
+                .await?;
+            collab.forget_new_file(&model.path).await;
+            Ok(model)
+        })
+        .await
     }
 
     /// A copy named by its full path overwrites a file that may have a
@@ -363,18 +373,9 @@ impl Contents for Stamping {
                 return Ok(model);
             }
             let model = inner.copy(&from_path, to_dir.as_deref()).await?;
-            // A new file is made in the directory, and its path isn't
-            // known until the copy is made, so only its restamp takes the
-            // path's turn and is marked in flight.
-            let _turn = collab.stamps.turn(&model.path).await;
-            // No test holds this mark: the write is over before it
-            // begins, and only a hook between the copy and the restamp
-            // could look in that gap.
-            let _saving = collab.stamps.begin(&model.path);
-            if let Err(e) = collab.restamp_any(&model.path).await {
-                tracing::warn!("{e}");
-            }
-            collab.restamp_others_unchecked(&model.path).await;
+            // A new file is made in the directory: whatever grant is
+            // stored at its path is from a file that was deleted outside.
+            collab.forget_new_file(&model.path).await;
             Ok(model)
         })
         .await
@@ -491,10 +492,11 @@ mod tests {
             .unwrap();
         assert!(collab.grant("a.ipynb").await.is_some());
 
+        let seen = collab.check_for_write("a.ipynb").await;
         let saving = collab.stamps.begin("a.ipynb");
         std::fs::write(root.join("a.ipynb"), "{ \"written\": 1 }").unwrap();
         assert!(collab.grant("a.ipynb").await.is_some(), "mid-save");
-        collab.restamp_any("a.ipynb").await.unwrap();
+        collab.restamp("a.ipynb", &seen).await.unwrap();
         drop(saving);
         assert!(collab.grant("a.ipynb").await.is_some(), "after the restamp");
 
@@ -854,7 +856,10 @@ mod tests {
             self.inner.new_untitled(parent_dir, kind, ext).await
         }
         async fn copy(&self, from_path: &str, to_dir: Option<&str>) -> Result<ContentsModel> {
-            self.inner.copy(from_path, to_dir).await
+            let model = self.inner.copy(from_path, to_dir).await?;
+            self.wrote.notify_one();
+            self.release.notified().await;
+            Ok(model)
         }
         async fn list_checkpoints(&self, path: &str) -> Result<Vec<Checkpoint>> {
             self.inner.list_checkpoints(path).await
@@ -974,6 +979,67 @@ mod tests {
         std::fs::write(root.join("a.ipynb"), "{ \"written\": 1 }").unwrap();
         drop(saving);
         assert!(collab.grant("a.ipynb").await.is_some());
+    }
+
+    /// A copy onto a file is marked in flight from the check to the
+    /// restamp: a grant read after the file is written, before the copy
+    /// ends, keeps the grant.
+    #[tokio::test]
+    async fn a_copy_in_flight_does_not_drop_the_grant() {
+        let (dir, collab, contents, wrote, release) = gated(false).await;
+        std::fs::write(dir.path().join("src.ipynb"), "{\"copied\": \"over\"}").unwrap();
+        let copy = tokio::spawn(async move { contents.copy("src.ipynb", Some("a.ipynb")).await });
+        wrote.notified().await;
+        assert!(collab.grant("a.ipynb").await.is_some(), "mid-copy");
+        release.notify_one();
+        copy.await.unwrap().unwrap();
+        assert!(collab.grant("a.ipynb").await.is_some(), "after the copy");
+    }
+
+    /// A save that meets another write's mark on its path can't say the
+    /// file matched, so it stamps nothing: a file changed outside isn't
+    /// blessed.
+    #[tokio::test]
+    async fn a_save_beside_another_write_does_not_bless_an_outside_change() {
+        let (dir, collab, contents) = granted_in_d("a.ipynb").await;
+        std::fs::write(dir.path().join("d/a.ipynb"), "{\"outside\": \"change\"}").unwrap();
+        let mark = collab.stamps.begin("d/a.ipynb");
+        contents
+            .save("d/a.ipynb", SaveRequest::text("{\"saved\": \"it\"}"))
+            .await
+            .unwrap();
+        drop(mark);
+        assert_eq!(collab.grant("d/a.ipynb").await, None);
+    }
+
+    /// A new untitled file waits for a rename in progress, as saves do.
+    #[tokio::test]
+    async fn new_untitled_waits_for_a_rename() {
+        let (_dir, collab, contents) = granted_in_d("a.ipynb").await;
+        let renaming = collab.stamps.begin_rename().await;
+        let k = contents.clone();
+        let made = tokio::spawn(async move {
+            k.new_untitled("d", ContentType::Notebook, Some(".ipynb"))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!made.is_finished(), "waits for the rename");
+        drop(renaming);
+        made.await.unwrap().unwrap();
+    }
+
+    /// A rename holds the move lock, so no room opens or delete lands
+    /// between the disk rename and the ids following.
+    #[tokio::test]
+    async fn a_rename_takes_the_move_lock() {
+        let (_dir, collab, contents) = granted_in_d("a.ipynb").await;
+        let moving = collab.begin_move().await;
+        let (c, k) = (collab.clone(), contents.clone());
+        let rename = tokio::spawn(async move { c.rename(&k, "d/a.ipynb", "d/b.ipynb").await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!rename.is_finished(), "waits for the move lock");
+        drop(moving);
+        rename.await.unwrap().unwrap();
     }
 
     /// A look that a cleanup of the remembered paths overlapped is made
@@ -1117,6 +1183,78 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(collab.grant("a.ipynb").await, None);
+    }
+
+    /// A copy into a directory is a new file: a grant stored at its path
+    /// by a file deleted outside doesn't pass to it, under this root or
+    /// another.
+    #[tokio::test]
+    async fn a_copy_into_a_directory_inherits_no_grant() {
+        let (_dir, proj, at_top, at_proj, contents) = two_roots();
+        std::fs::write(proj.join("a.ipynb"), "{\"a\": 1}").unwrap();
+        // Left by files that were deleted outside, with no stamp.
+        for (c, p) in [(&at_top, "proj/a-Copy1.ipynb"), (&at_proj, "a-Copy1.ipynb")] {
+            let (id, _) = c.index(p).await;
+            c.set_grant(id, Some(GRANT.into())).await.unwrap();
+        }
+        let model = contents.copy("proj/a.ipynb", Some("proj")).await.unwrap();
+        assert_eq!(model.path, "proj/a-Copy1.ipynb");
+        assert_eq!(at_top.grant("proj/a-Copy1.ipynb").await, None, "own root");
+        assert_eq!(at_proj.grant("a-Copy1.ipynb").await, None, "other root");
+    }
+
+    /// As a copy, for a new untitled file.
+    #[tokio::test]
+    async fn a_new_untitled_file_inherits_no_grant() {
+        let (_dir, _proj, at_top, at_proj, contents) = two_roots();
+        for (c, p) in [
+            (&at_top, "proj/Untitled.ipynb"),
+            (&at_proj, "Untitled.ipynb"),
+        ] {
+            let (id, _) = c.index(p).await;
+            c.set_grant(id, Some(GRANT.into())).await.unwrap();
+        }
+        let model = contents
+            .new_untitled("proj", ContentType::Notebook, Some(".ipynb"))
+            .await
+            .unwrap();
+        assert_eq!(model.path, "proj/Untitled.ipynb");
+        assert_eq!(at_top.grant("proj/Untitled.ipynb").await, None, "own root");
+        assert_eq!(at_proj.grant("Untitled.ipynb").await, None, "other root");
+    }
+
+    /// A save through one root over a file that is gone drops the grant
+    /// with no stamp that another root holds on it.
+    #[tokio::test]
+    async fn a_save_over_a_missing_file_drops_other_roots_unstamped_grants() {
+        let (_dir, proj, _at_top, at_proj, contents) = two_roots();
+        std::fs::write(proj.join("a.ipynb"), "{}").unwrap();
+        let (id, _) = at_proj.index("a.ipynb").await;
+        // Set during a save, so it has no stamp.
+        let saving = at_proj.stamps.begin("a.ipynb");
+        at_proj.set_grant(id, Some(GRANT.into())).await.unwrap();
+        drop(saving);
+        std::fs::remove_file(proj.join("a.ipynb")).unwrap();
+        contents
+            .save("proj/a.ipynb", SaveRequest::text("{\"made\": \"anew\"}"))
+            .await
+            .unwrap();
+        assert_eq!(at_proj.grant("a.ipynb").await, None);
+    }
+
+    /// A rename out of a root drops the grants that root holds, as a
+    /// delete does, and not leave them on a path that is gone.
+    #[tokio::test]
+    async fn a_rename_out_of_a_root_drops_its_grants() {
+        let (_dir, proj, at_top, at_proj, contents) = two_roots();
+        std::fs::write(proj.join("a.ipynb"), "{}").unwrap();
+        let (id, _) = at_proj.index("a.ipynb").await;
+        at_proj.set_grant(id, Some(GRANT.into())).await.unwrap();
+        at_top
+            .rename(&contents, "proj/a.ipynb", "out.ipynb")
+            .await
+            .unwrap();
+        assert_eq!(at_proj.grant("a.ipynb").await, None);
     }
 
     /// A rename through a server on the parent folder moves the grant

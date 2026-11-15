@@ -44,11 +44,10 @@ nothing when no grant stands), mark the path in flight, write, and restamp
 only if the grant is still stored under that stamp (`restamp_if`, a
 compare-and-swap), then unmark. All of that runs on a detached task so a
 dropped request can't leave a write unstamped. A `copy` onto a named
-file is checked and restamped like a save; a `copy` into a directory restamps
-its destination unconditionally, since the new path isn't known beforehand,
-and only that restamp takes the path's turn and is marked in flight, so a
-reader between the copy's write and its mark can drop the grant, which fails
-safe.
+file is checked and restamped like a save; a `copy` into a directory,
+and `new_untitled`, make a file that has no grant, so whatever grant is
+stored at its path, under this root or another, left by a file deleted
+outside, is dropped (`Collab::forget_new_file`), never restamped.
 Rooms, REST, MCP and run copies all hold that wrapper. A rename keeps the
 inode and modification time, so it needs no new stamp; `Collab::rename`
 checks the old path's grant before renaming (a file replaced outside and
@@ -96,8 +95,8 @@ process's, so another process reading one of those other grants between the
 write and its restamp drops it, which fails safe. A rename moves its own
 root's ids and those of every other root above both paths that has an id
 under the old one (`FileIds::moved_in_other_roots`, a file or a
-directory), so their grants follow; a rename out of such a root leaves that
-root's ids as they were. The stamp doesn't depend on the path, so they need
+directory), so their grants follow; a rename out of such a root (the new
+path isn't under it) drops that root's ids and grants, as a delete does. The stamp doesn't depend on the path, so they need
 no restamp. A rename takes the write side of a lock that every save, restore
 and copy holds for reading, after the move lock, so it waits for the saves in
 flight under either path, files or a directory's, and none begins meanwhile;
@@ -122,14 +121,14 @@ wrote can't be known, and an `If-Match` failure over an outside change must
 not bless it; if the file did change, the grant is dropped on its next read,
 which fails safe. `copy` runs detached, as a save does, and a copy onto a
 named file (a destination that isn't an existing directory) checks, marks and
-restamps it as a save does; a copy into a directory restamps the new file's
-path after the copy, since that path isn't known beforehand. A grant set
+restamps it as a save does. A grant set
 while a save of its file is in flight is stored without a stamp, and the
 first use stamps it. A grant look that a cleanup of the remembered paths
 overlapped is made again, up to three times, not given up as unstable, so a
 quiet path's save keeps its restamp. The database check gives a row that
 changed under its compare the verdict once more, and one that changes again
-the verdict without a compare, not handed out if it doesn't match.
+the verdict without a compare, not handed out if it doesn't match; a check
+that fails (an error from the database) hands out nothing either.
 
 Known limits, left for a follow-up (#829): a rename holds the move lock for
 writing while it waits for the write side of the tree lock, so the server's

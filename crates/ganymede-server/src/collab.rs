@@ -263,30 +263,25 @@ impl Collab {
         let stamps = self.stamps.clone();
         self.with_ids(move |ids| {
             let id = ids.get(&path)?;
-            let (mut unstable, mut missing) = (false, false);
+            let mut missing = false;
+            // A file that can't be seen for certain (a save of it is in
+            // flight, or it is gone) says nothing about the grant, and
+            // the check returns no stamp, so the write after it stamps
+            // nothing.
             let seen = ids.check_for_write_with(&id, || match stamps.look(&path) {
                 crate::stamping::Look::Stamp(s) => Some(s),
                 crate::stamping::Look::Missing => {
                     missing = true;
                     None
                 }
-                crate::stamping::Look::Unstable => {
-                    unstable = true;
-                    None
-                }
+                crate::stamping::Look::Unstable => None,
             });
             // A file that is gone is about to be made anew: a grant that
             // never had a stamp would take it.
             if missing {
                 ids.drop_unstamped(&id);
             }
-            // A check that couldn't see the file for certain says nothing
-            // about the grant, so the write after it stamps nothing.
-            if unstable {
-                None
-            } else {
-                seen
-            }
+            seen
         })
         .await
     }
@@ -308,21 +303,6 @@ impl Collab {
             };
             // The stamp is taken with the store held, so it is the latest.
             ids.restamp_if(&id, &seen, |_| stamps.own(&path))
-                .map_err(|e| format!("restamping the host grant for {path}: {e}"))
-        })
-        .await
-    }
-
-    /// As [`Collab::restamp`] with no check before the write, for a write
-    /// whose path wasn't known beforehand.
-    pub(crate) async fn restamp_any(&self, path: &str) -> Result<(), String> {
-        let path = normalize_api_path(path);
-        let stamps = self.stamps.clone();
-        self.with_ids(move |ids| {
-            let Some(id) = ids.get(&path) else {
-                return Ok(());
-            };
-            ids.restamp_with(&id, |_| stamps.own(&path))
                 .map_err(|e| format!("restamping the host grant for {path}: {e}"))
         })
         .await
@@ -365,24 +345,13 @@ impl Collab {
         }
     }
 
-    /// As [`Collab::restamp_others`] for a file whose path wasn't known
-    /// before the write.
-    pub(crate) async fn restamp_others_unchecked(&self, path: &str) {
-        let Some(root) = self.root.clone() else {
-            return;
-        };
-        let file = root.join(normalize_api_path(path));
-        let failures = self
-            .with_ids(move |ids| {
-                ganymede_contents::held_with(ids, &file, Some(&root))
-                    .iter()
-                    .filter_map(|h| h.restamp_unchecked().err())
-                    .collect::<Vec<_>>()
-            })
-            .await;
-        for e in failures {
-            tracing::warn!("{e}");
-        }
+    /// A file was just made at `path`, by a copy or `new_untitled`: it
+    /// has no grant, whatever is stored at the path under this root or
+    /// another, left by a file deleted outside, so those go.
+    pub(crate) async fn forget_new_file(&self, path: &str) {
+        let p = normalize_api_path(path);
+        self.with_ids(move |ids| ids.removed(&p)).await;
+        self.removed_in_other_roots(path).await;
     }
 
     /// Stores `grant` (JSON) for the notebook with file id `id`, or
