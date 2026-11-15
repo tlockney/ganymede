@@ -32,7 +32,7 @@ ganymede-gateway = { path = "../ganymede-gateway", optional = true }
 ganymede-terminals = { path = "../ganymede-terminals" }
 ganymede-lsp = { path = "../ganymede-lsp" }
 # No memory-mapped fonts (unsafe) and no raster images inside SVGs.
-resvg = { version = "0.49", default-features = false, features = ["text", "system-fonts"], optional = true }
+resvg = { version = "0.50", default-features = false, features = ["text", "system-fonts"], optional = true }
 axum.workspace = true
 tower-http.workspace = true
 tower.workspace = true
