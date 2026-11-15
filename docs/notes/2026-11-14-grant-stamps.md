@@ -115,7 +115,9 @@ so a file made anew at the path inherits none. A write that is about to make
 a file the grant can't be checked against, because it was deleted outside,
 stamps nothing (`check_for_write_with` returns no stamp when the file can't
 be looked at), so the grant goes on its next read, from the server and from
-`ganymede execute -o` alike. A save that fails isn't restamped: whether it
+`ganymede execute -o` alike. A grant with no stamp (from before the stamps, or set during a save) is dropped
+then too (`FileIds::drop_unstamped`), since the next read would stamp the new
+file with it. A save that fails isn't restamped: whether it
 wrote can't be known, and an `If-Match` failure over an outside change must
 not bless it; if the file did change, the grant is dropped on its next read,
 which fails safe. `copy` runs detached, as a save does, and a copy onto a

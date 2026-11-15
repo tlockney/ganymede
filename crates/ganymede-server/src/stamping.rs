@@ -1075,6 +1075,50 @@ mod tests {
         drop(at_top);
     }
 
+    /// A copy onto a file another root's grant stands on, replaced
+    /// outside, doesn't bless it.
+    #[tokio::test]
+    async fn a_copy_over_a_file_replaced_outside_drops_other_roots_grants() {
+        let (_dir, proj, _at_top, at_proj, contents) = two_roots();
+        std::fs::write(proj.join("a.ipynb"), "{\"a\": 1}").unwrap();
+        std::fs::write(proj.join("b.ipynb"), "{}").unwrap();
+        let (id, _) = at_proj.index("b.ipynb").await;
+        at_proj.set_grant(id, Some(GRANT.into())).await.unwrap();
+        std::fs::write(proj.join("b.ipynb"), "{\"replaced\": \"by git\"}").unwrap();
+        contents
+            .copy("proj/a.ipynb", Some("proj/b.ipynb"))
+            .await
+            .unwrap();
+        assert_eq!(at_proj.grant("b.ipynb").await, None);
+    }
+
+    /// A grant with no stamp on a file deleted outside isn't taken by the
+    /// file a save makes there.
+    #[tokio::test]
+    async fn an_unstamped_grant_does_not_pass_to_a_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.ipynb"), "{}").unwrap();
+        let collab = Arc::new(Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            Some(root.clone()),
+        ));
+        let contents = collab.stamping(Arc::new(
+            ganymede_contents::FsContents::new(&root, Default::default()).unwrap(),
+        ));
+        let (id, _) = collab.index("a.ipynb").await;
+        // Set during a save, so it has no stamp.
+        let saving = collab.stamps.begin("a.ipynb");
+        collab.set_grant(id, Some(GRANT.into())).await.unwrap();
+        drop(saving);
+        std::fs::remove_file(root.join("a.ipynb")).unwrap();
+        contents
+            .save("a.ipynb", SaveRequest::text("{\"made\": \"anew\"}"))
+            .await
+            .unwrap();
+        assert_eq!(collab.grant("a.ipynb").await, None);
+    }
+
     /// A rename through a server on the parent folder moves the grant
     /// another root holds on the file.
     #[tokio::test]

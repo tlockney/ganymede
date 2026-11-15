@@ -481,6 +481,29 @@ impl FileIds {
         Ok(())
     }
 
+    /// The file of grant `id` is missing and a write is about to make
+    /// it anew: a grant with no stamp, which the next read would stamp
+    /// with the new file, is dropped, so the new file doesn't inherit it.
+    /// A stamped one goes on its own at the next read.
+    pub fn drop_unstamped(&self, id: &str) {
+        let store = &mut *self.lock();
+        if store
+            .memory
+            .grants
+            .get(id)
+            .is_some_and(|g| g.stamp.is_none())
+        {
+            store.memory.grants.remove(id);
+            return;
+        }
+        #[cfg(feature = "sqlite")]
+        if let Some((db, _)) = &store.db {
+            if let Err(e) = sqlite::drop_unstamped(db, id) {
+                tracing::warn!("dropping the grant for file id {id}: {e}");
+            }
+        }
+    }
+
     /// The check before a write through the server, for file id `id`:
     /// as [`FileIds::grant_checked_with`], but what comes back is what
     /// [`FileIds::restamp_if`] needs after the write. `None`: no grant
@@ -711,9 +734,15 @@ impl Held {
     /// Ganymede, and takes note of the stamp it stands under.
     pub fn check(&mut self) {
         let (root, api) = (&self.root, &self.api);
-        self.seen = self
-            .ids
-            .check_for_write_with(&self.id, || api_file_stamp(root, api));
+        let mut missing = false;
+        self.seen = self.ids.check_for_write_with(&self.id, || {
+            let stamp = api_file_stamp(root, api);
+            missing = stamp.is_none();
+            stamp
+        });
+        if missing {
+            self.ids.drop_unstamped(&self.id);
+        }
     }
 
     /// After the write: the grant keeps matching the file, if it stood at
@@ -1104,6 +1133,28 @@ mod sqlite {
             },
             None => Checked::Missing,
         })
+    }
+
+    /// Deletes the grant of `id` if it holds no stamp for itself, by the
+    /// row as it is read.
+    pub fn drop_unstamped(db: &Connection, id: &str) -> rusqlite::Result<()> {
+        let Some((json, raw)) = db
+            .query_row(
+                "SELECT grant_json, stamp FROM host_grants WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+            )
+            .optional()?
+        else {
+            return Ok(());
+        };
+        if super::untag(&json, raw.as_deref()).is_none() {
+            db.execute(
+                "DELETE FROM host_grants WHERE id = ?1 AND grant_json = ?2 AND stamp IS ?3",
+                params![id, json, raw],
+            )?;
+        }
+        Ok(())
     }
 
     /// The grant and the file stamp stored under it, if for that grant.
@@ -1742,6 +1793,31 @@ mod tests {
         ids.restamp_if(&b, &Some(None), |_| Some("t1".into()))
             .unwrap();
         assert_eq!(ids.grant_checked(&b, Some("t1")).as_deref(), Some(G));
+    }
+
+    /// A missing file's grant with no stamp is dropped, a stamped one is
+    /// left for the next read.
+    fn drops_unstamped(ids: &FileIds) {
+        let (a, _) = ids.index("a.ipynb");
+        let (b, _) = ids.index("b.ipynb");
+        ids.set_grant(&a, Some(G), None).unwrap();
+        ids.set_grant(&b, Some(G), Some("s1")).unwrap();
+        ids.drop_unstamped(&a);
+        ids.drop_unstamped(&b);
+        assert_eq!(ids.grant_checked(&a, Some("s9")), None);
+        assert_eq!(ids.grant_checked(&b, Some("s1")).as_deref(), Some(G));
+    }
+
+    #[test]
+    fn in_memory_drops_unstamped() {
+        drops_unstamped(&FileIds::in_memory());
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_drops_unstamped() {
+        let dir = tempfile::tempdir().unwrap();
+        drops_unstamped(&FileIds::open(&dir.path().join("ids.db"), Path::new("/r")));
     }
 
     #[test]

@@ -263,15 +263,23 @@ impl Collab {
         let stamps = self.stamps.clone();
         self.with_ids(move |ids| {
             let id = ids.get(&path)?;
-            let mut unstable = false;
+            let (mut unstable, mut missing) = (false, false);
             let seen = ids.check_for_write_with(&id, || match stamps.look(&path) {
                 crate::stamping::Look::Stamp(s) => Some(s),
-                crate::stamping::Look::Missing => None,
+                crate::stamping::Look::Missing => {
+                    missing = true;
+                    None
+                }
                 crate::stamping::Look::Unstable => {
                     unstable = true;
                     None
                 }
             });
+            // A file that is gone is about to be made anew: a grant that
+            // never had a stamp would take it.
+            if missing {
+                ids.drop_unstamped(&id);
+            }
             // A check that couldn't see the file for certain says nothing
             // about the grant, so the write after it stamps nothing.
             if unstable {
