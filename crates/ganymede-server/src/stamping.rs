@@ -13,7 +13,7 @@
 //! of that path begin or end while it looks at the file, keeps the grant.
 
 use crate::collab::{detached, Collab};
-use crate::path_locks::{Claimed, PathLocks, Registered};
+use crate::path_locks::{Claimed, PathLocks, Registered, Scope};
 use async_trait::async_trait;
 use ganymede_contents::{
     normalize_api_path, Checkpoint, ContentType, Contents, ContentsModel, GetOptions, Result,
@@ -391,7 +391,13 @@ impl Contents for Stamping {
             // ids at the new path go with the file made, no rename or
             // delete lands, and nothing looks at a path under the
             // directory meanwhile. Lookups elsewhere go on.
-            let _creating = collab.begin_create(&parent_dir).await;
+            // A new folder's ids and grants go under its whole prefix, so
+            // lookups inside it wait too; a new file is a direct child.
+            let scope = match kind {
+                ContentType::Directory => Scope::Subtree,
+                _ => Scope::Children,
+            };
+            let _creating = collab.begin_create(&parent_dir, scope).await;
             let _writing = collab.stamps.begin_write(&[&parent_dir]).await;
             let model = inner
                 .new_untitled(&parent_dir, kind, ext.as_deref())
@@ -444,9 +450,10 @@ impl Contents for Stamping {
             let normalized = normalize_api_path(&from_path);
             let dir = match &to_dir {
                 Some(d) => d.as_str(),
-                None => normalized.rsplit_once('/').map_or("", |(dir, _)| dir),
+                None => crate::folder::dir_of(&normalized),
             };
-            let _creating = collab.begin_create(dir).await;
+            // A copy is always of a file, so a direct child.
+            let _creating = collab.begin_create(dir, Scope::Children).await;
             // The new file's name isn't known yet: the write is
             // registered on its directory. With none given, the copy goes
             // beside its source, and the source's registration covers
@@ -1660,6 +1667,56 @@ mod tests {
             assert_eq!(model.path, new_path, "{kind}");
             read.await.unwrap();
         }
+    }
+
+    /// Overlapping creates in one directory don't starve a lookup parked
+    /// behind the first: it goes ahead before the second create's claim
+    /// lands, not after both are done.
+    #[tokio::test]
+    async fn overlapping_creates_do_not_starve_a_lookup() {
+        let held = HeldCreate::new(true).await;
+        let c = held.collab.clone();
+        let read = tokio::spawn({
+            let c = c.clone();
+            async move { c.grant("sub/x.ipynb").await }
+        });
+        tokio::time::sleep(SHORT).await;
+        assert!(!read.is_finished(), "parked behind the first create");
+        let second = tokio::spawn({
+            let k = held.contents.clone();
+            async move { k.copy("a.ipynb", Some("sub")).await }
+        });
+        tokio::time::sleep(SHORT).await;
+        // The first create ends; the second is in the gate or still waiting
+        // for the lookup, which must not stay behind it.
+        held.release.notify_one();
+        tokio::time::timeout(LONG, read)
+            .await
+            .expect("the lookup goes ahead while the second create is held")
+            .unwrap();
+        held.release.notify_one();
+        held.create.await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+    }
+
+    /// A new folder's contents are looked up inside it: a grant read there
+    /// waits for the create, though it is not a direct child of `sub`.
+    #[tokio::test]
+    async fn a_new_folder_holds_back_lookups_inside_it() {
+        let (dir, collab, contents, wrote, release) = gated(false).await;
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let k = contents.clone();
+        let create =
+            tokio::spawn(async move { k.new_untitled("sub", ContentType::Directory, None).await });
+        wrote.notified().await;
+        let c = collab.clone();
+        let read = tokio::spawn(async move { c.grant("sub/Untitled Folder/x.ipynb").await });
+        tokio::time::sleep(SHORT).await;
+        assert!(!read.is_finished(), "waits for the new folder");
+        release.notify_one();
+        let model = create.await.unwrap().unwrap();
+        assert_eq!(model.path, "sub/Untitled Folder");
+        assert_eq!(read.await.unwrap(), None);
     }
 
     /// A copy with no directory goes beside its source, and claims the

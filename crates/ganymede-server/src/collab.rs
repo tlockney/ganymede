@@ -38,6 +38,7 @@
 //! one, so they survive restarts, and moved by renames through the
 //! contents API, which also move open rooms.
 
+use crate::path_locks::Scope;
 use crate::routes::{origin_allowed, HttpError, LenientJson};
 use crate::watch::{Watch, Watcher};
 use crate::AppState;
@@ -117,7 +118,8 @@ pub struct Collab {
     /// create ([`Collab::begin_create`]). So no room opens and no id is
     /// made for a path that is moving away or going (#522, #574), and no
     /// rename or delete lands during a create, which waits for them in
-    /// turn. Readers don't wait for each other.
+    /// turn. Readers don't wait for each other, but the lock is fair: a
+    /// reader arriving while a writer waits queues behind it.
     move_lock: tokio::sync::RwLock<()>,
     /// What keeps a lookup from a path a create is about to make. A
     /// create claims the direct children of its directory here, from
@@ -277,6 +279,10 @@ impl Collab {
                     Some((path, grant))
                 })
                 .await?;
+            // Under the read lock and the registration, the path can't
+            // change in this process: only another process sharing the
+            // file-id database could move it. Kept for that, and no
+            // test holds it.
             if found.0 == path {
                 return Some(found);
             }
@@ -521,11 +527,17 @@ impl Collab {
     /// [`file_gone`] lands (the move lock, for reading, which a rename
     /// waits on for writing), and no grant read, index or room open at a
     /// path directly in `dir` (`""` for the root) looks at it, as it could
-    /// still have the stale id or grant of a file deleted outside. The new
-    /// file is always one of these. Looks elsewhere go on.
-    pub(crate) async fn begin_create(&self, dir: &str) -> Creating<'_> {
+    /// still have the stale id or grant of a file deleted outside. A new
+    /// file is one of these; a new folder's contents are deeper, so
+    /// those creates claim the whole subtree. Looks elsewhere go on.
+    ///
+    /// `scope` is [`Scope::Children`] for a file, which is a direct child
+    /// of `dir`, and [`Scope::Subtree`] when the new path may be a folder,
+    /// whose ids and grants [`Collab::forget_new_file`] drops under the
+    /// whole prefix, so a lookup inside it must wait too.
+    pub(crate) async fn begin_create(&self, dir: &str, scope: Scope) -> Creating<'_> {
         let moves = self.move_lock.read().await;
-        let claim = self.lookups.claim_children(&[dir]).await;
+        let claim = self.lookups.claim_scoped(&[dir], scope).await;
         Creating {
             _claim: claim,
             _moves: moves,
@@ -1040,7 +1052,9 @@ async fn send_to_room(
         let mut rooms = collab.rooms.lock().expect("rooms");
         // The read lock keeps out renames and deletes through the contents
         // API; a change here could only come from a caller of `removed`
-        // that skips `begin_move`. Look the id up again to be safe.
+        // that doesn't hold it for writing. `forget_new_file`, which a
+        // create runs under the read lock, is one, and it may have
+        // dropped the id: the loop just starts over and looks it up again.
         if !rooms.contains_key(room_id) && collab.moves.load(Ordering::SeqCst) != read {
             continue;
         }

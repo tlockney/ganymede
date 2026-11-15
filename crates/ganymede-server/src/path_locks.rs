@@ -29,6 +29,8 @@ struct State {
     in_flight: HashMap<String, usize>,
     /// One entry per claim path, for a claim waiting or held.
     blocked: Vec<(String, Scope)>,
+    /// How many registrations are parked by path, held back by a claim.
+    waiting: HashMap<String, usize>,
 }
 
 /// What a claimed path covers.
@@ -52,9 +54,7 @@ pub(crate) fn covers(pre: &str, path: &str) -> bool {
 fn covered(scope: Scope, pre: &str, path: &str) -> bool {
     match scope {
         Scope::Subtree => covers(pre, path),
-        Scope::Children => {
-            !path.is_empty() && path.rsplit_once('/').map_or("", |(parent, _)| parent) == pre
-        }
+        Scope::Children => !path.is_empty() && crate::folder::dir_of(path) == pre,
     }
 }
 
@@ -66,9 +66,43 @@ impl State {
     }
 
     fn registered_under(&self, claims: &[(String, Scope)]) -> bool {
-        self.in_flight
-            .keys()
-            .any(|p| claims.iter().any(|(pre, scope)| covered(*scope, pre, p)))
+        Self::any_under(self.in_flight.keys(), claims)
+    }
+
+    fn waiting_under(&self, claims: &[(String, Scope)]) -> bool {
+        Self::any_under(self.waiting.keys(), claims)
+    }
+
+    fn any_under<'a>(
+        mut paths: impl Iterator<Item = &'a String>,
+        claims: &[(String, Scope)],
+    ) -> bool {
+        paths.any(|p| claims.iter().any(|(pre, scope)| covered(*scope, pre, p)))
+    }
+
+    fn unpark(&mut self, paths: &[String]) {
+        for path in paths {
+            if let Some(n) = self.waiting.get_mut(path) {
+                *n -= 1;
+                if *n == 0 {
+                    self.waiting.remove(path);
+                }
+            }
+        }
+    }
+}
+
+/// A registration parked behind a claim, until it registers or its wait
+/// is dropped.
+struct Parked {
+    locks: Arc<PathLocks>,
+    paths: Vec<String>,
+}
+
+impl Drop for Parked {
+    fn drop(&mut self) {
+        self.locks.state().unpark(&self.paths);
+        self.locks.changed.notify_waiters();
     }
 }
 
@@ -121,9 +155,12 @@ impl PathLocks {
 
     /// Registers under `paths`, which a claim of one of them, or of a
     /// directory above, waits for until the guard is dropped. Waits first
-    /// while a claim covers any of them.
+    /// while a claim covers any of them, and is parked meanwhile: a claim
+    /// made after that waits for the parked registration to go ahead
+    /// first, so a stream of overlapping claims can't keep it waiting.
     pub(crate) async fn register(self: &Arc<Self>, paths: &[&str]) -> Registered {
         let paths: Vec<String> = paths.iter().map(|p| normalize_api_path(p)).collect();
+        let mut parked: Option<Parked> = None;
         loop {
             // Listening before the state is read, so a change between the
             // read and the wait isn't missed.
@@ -133,6 +170,14 @@ impl PathLocks {
             {
                 let mut s = self.state();
                 if !s.blocks_any(&paths) {
+                    if let Some(p) = parked.as_mut() {
+                        // Leaves the parked count and registers in one
+                        // step, so a claim waiting for the parked sees
+                        // the registration. `p`'s drop, after this lock
+                        // is released, only wakes the waiters.
+                        s.unpark(&p.paths);
+                        p.paths.clear();
+                    }
                     for p in &paths {
                         *s.in_flight.entry(p.clone()).or_default() += 1;
                     }
@@ -140,6 +185,15 @@ impl PathLocks {
                         locks: self.clone(),
                         paths,
                     };
+                }
+                if parked.is_none() {
+                    for p in &paths {
+                        *s.waiting.entry(p.clone()).or_default() += 1;
+                    }
+                    parked = Some(Parked {
+                        locks: self.clone(),
+                        paths: paths.clone(),
+                    });
                 }
             }
             notified.await;
@@ -149,28 +203,42 @@ impl PathLocks {
     /// Claims `paths` at once, so nothing registers under any, then waits
     /// for the registrations under them, files or a directory's, until
     /// the guard is dropped. The claim is the guard's, so it goes if the
-    /// wait is dropped. Claims don't wait for each other.
+    /// wait is dropped. Claims don't wait for each other, but a claim
+    /// first waits for the registrations parked behind an earlier claim
+    /// under its paths to go ahead, and takes no hold until they have.
     pub(crate) async fn claim(self: &Arc<Self>, paths: &[&str]) -> Claimed {
         self.claim_scoped(paths, Scope::Subtree).await
     }
 
-    /// As [`PathLocks::claim`], but covering only the direct children of
-    /// each directory, so the registrations that wait are those of paths
-    /// directly in it, and the directory itself and the paths deeper
-    /// are neither held back nor waited for.
-    pub(crate) async fn claim_children(self: &Arc<Self>, dirs: &[&str]) -> Claimed {
-        self.claim_scoped(dirs, Scope::Children).await
-    }
-
-    async fn claim_scoped(self: &Arc<Self>, paths: &[&str], scope: Scope) -> Claimed {
+    /// [`PathLocks::claim`] with the given `scope`: `Scope::Children`
+    /// covers only the direct children of each directory, so the
+    /// registrations that wait are those of paths directly in it, and the
+    /// directory itself and the paths deeper are neither held back nor
+    /// waited for.
+    pub(crate) async fn claim_scoped(self: &Arc<Self>, paths: &[&str], scope: Scope) -> Claimed {
         let paths: Vec<(String, Scope)> = paths
             .iter()
             .map(|p| (normalize_api_path(p), scope))
             .collect();
-        self.state().blocked.extend(paths.iter().cloned());
-        let guard = Claimed {
-            locks: self.clone(),
-            paths,
+        // Not claimed yet while a registration under the paths is parked
+        // behind another claim: it goes ahead first, whatever claims
+        // follow it. Nothing is held until the claim is made, so a drop
+        // here leaves nothing behind.
+        let guard = loop {
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            {
+                let mut s = self.state();
+                if !s.waiting_under(&paths) {
+                    s.blocked.extend(paths.iter().cloned());
+                    break Claimed {
+                        locks: self.clone(),
+                        paths,
+                    };
+                }
+            }
+            notified.await;
         };
         loop {
             let notified = self.changed.notified();
@@ -239,7 +307,7 @@ mod tests {
         let deep = locks.register(&["d/a.ipynb"]).await;
         let top = locks.register(&["a.ipynb"]).await;
         let l = locks.clone();
-        let claim = tokio::spawn(async move { l.claim_children(&[""]).await });
+        let claim = tokio::spawn(async move { l.claim_scoped(&[""], Scope::Children).await });
         tokio::time::sleep(SHORT).await;
         assert!(!claim.is_finished(), "waits for a.ipynb");
         drop(top);
@@ -254,6 +322,53 @@ mod tests {
         drop(claimed);
         tokio::time::timeout(LONG, late).await.unwrap().unwrap();
         drop(deep);
+    }
+
+    /// A registration parked behind a claim goes ahead before a claim
+    /// made after it lands, so overlapping claims can't starve it.
+    #[tokio::test]
+    async fn overlapping_claims_do_not_starve_a_parked_registration() {
+        let locks = Arc::new(PathLocks::default());
+        let first = locks.claim(&["d"]).await;
+        let l = locks.clone();
+        let parked = tokio::spawn(async move { l.register(&["d/a.ipynb"]).await });
+        tokio::time::sleep(SHORT).await;
+        assert!(!parked.is_finished());
+        let l = locks.clone();
+        let second = tokio::spawn(async move { l.claim(&["d"]).await });
+        tokio::time::sleep(SHORT).await;
+        assert!(!second.is_finished(), "waits for the parked registration");
+        drop(first);
+        let registered = tokio::time::timeout(LONG, parked)
+            .await
+            .expect("the parked registration goes ahead")
+            .unwrap();
+        drop(registered);
+        tokio::time::timeout(LONG, second).await.unwrap().unwrap();
+    }
+
+    /// A claim dropped while it waits for parked registrations leaves no
+    /// claim behind, and a parked registration dropped leaves no count.
+    #[tokio::test]
+    async fn dropped_waits_leave_nothing_behind() {
+        let locks = Arc::new(PathLocks::default());
+        let first = locks.claim(&["d"]).await;
+        let l = locks.clone();
+        let parked = tokio::spawn(async move { l.register(&["d/a.ipynb"]).await });
+        tokio::time::sleep(SHORT).await;
+        let l = locks.clone();
+        let second = tokio::spawn(async move { l.claim(&["d"]).await });
+        tokio::time::sleep(SHORT).await;
+        second.abort();
+        let _ = second.await;
+        parked.abort();
+        let _ = parked.await;
+        drop(first);
+        assert!(locks.none_claimed());
+        assert!(locks.state().waiting.is_empty());
+        tokio::time::timeout(LONG, locks.claim(&["d"]))
+            .await
+            .unwrap();
     }
 
     /// A claim waits for a registration under it, and a registration
