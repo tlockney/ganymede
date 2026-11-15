@@ -1117,7 +1117,7 @@ mod tests {
                 .await,
             Err(Error::KernelDied)
         ));
-        tokio::time::timeout(Duration::from_secs(1), s.dead())
+        tokio::time::timeout(Duration::from_secs(10), s.dead())
             .await
             .unwrap();
         alive.wait_for(|a| !*a).await.unwrap();
@@ -1278,6 +1278,8 @@ mod tests {
     struct SilentSink {
         beating: Arc<AtomicBool>,
         closed: Arc<AtomicBool>,
+        /// Heartbeats answered so far.
+        beats: Arc<AtomicUsize>,
     }
 
     #[async_trait::async_trait]
@@ -1286,7 +1288,11 @@ mod tests {
             Ok(())
         }
         async fn heartbeat(&self, _timeout: Duration) -> Result<bool> {
-            Ok(self.beating.load(Ordering::SeqCst))
+            let answered = self.beating.load(Ordering::SeqCst);
+            if answered {
+                self.beats.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(answered)
         }
         async fn close(&self) {
             self.closed.store(true, Ordering::SeqCst);
@@ -1297,8 +1303,23 @@ mod tests {
         beating: bool,
         hb: Heartbeat,
     ) -> (KernelSession, Arc<AtomicBool>, Arc<AtomicBool>) {
+        let (s, beating, closed, _) = silent_session_counting(beating, hb);
+        (s, beating, closed)
+    }
+
+    /// `silent_session` and a count of the heartbeats its kernel answered.
+    fn silent_session_counting(
+        beating: bool,
+        hb: Heartbeat,
+    ) -> (
+        KernelSession,
+        Arc<AtomicBool>,
+        Arc<AtomicBool>,
+        Arc<AtomicUsize>,
+    ) {
         let beating = Arc::new(AtomicBool::new(beating));
         let closed = Arc::new(AtomicBool::new(false));
+        let beats = Arc::new(AtomicUsize::new(0));
         let (tx, incoming) = tokio::sync::mpsc::channel(1);
         // Hold the sender so `route` never ends on its own.
         tokio::spawn(async move { tx.closed().await });
@@ -1306,6 +1327,7 @@ mod tests {
             sink: Arc::new(SilentSink {
                 beating: beating.clone(),
                 closed: closed.clone(),
+                beats: beats.clone(),
             }),
             incoming,
         };
@@ -1314,7 +1336,7 @@ mod tests {
             [1, 2, 3, 4, 5],
         ));
         let s = KernelSession::start_with(transport, Some(&launched), Some(hb));
-        (s, beating, closed)
+        (s, beating, closed, beats)
     }
 
     const FAST: Heartbeat = Heartbeat {
@@ -1399,7 +1421,7 @@ mod tests {
                 Channel::Shell,
                 s.message(t, &serde_json::json!({})),
                 true,
-                Duration::from_millis(300),
+                Duration::from_secs(1),
             )
         };
         let (r, busy) = ask("execute_request").await;
@@ -1595,6 +1617,7 @@ mod tests {
             sink: Arc::new(SilentSink {
                 beating: Arc::new(AtomicBool::new(true)),
                 closed: Arc::new(AtomicBool::new(false)),
+                beats: Arc::new(AtomicUsize::new(0)),
             }),
             incoming,
         };
@@ -1647,7 +1670,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(exec.reply.msg_type(), "shutdown_reply");
-        tokio::time::timeout(Duration::from_secs(2), s.dead())
+        tokio::time::timeout(Duration::from_secs(10), s.dead())
             .await
             .unwrap();
     }
@@ -1744,16 +1767,32 @@ mod tests {
 
     #[tokio::test]
     async fn missed_heartbeats_mark_an_attached_kernel_dead() {
-        let (s, beating, closed) = silent_session(true, FAST);
-        tokio::time::sleep(FAST.period * 3).await;
+        let (s, beating, closed, beats) = silent_session_counting(true, FAST);
+        // A kernel is declared dead only after it has answered a beat, so
+        // wait for one on a wall-clock deadline: a runner that stalls the
+        // heartbeat task must not turn the beats off before the first (#832).
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while beats.load(Ordering::SeqCst) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no heartbeat was answered"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         assert!(s.is_alive());
         beating.store(false, Ordering::SeqCst);
-        tokio::time::timeout(Duration::from_secs(2), s.dead())
+        tokio::time::timeout(Duration::from_secs(10), s.dead())
             .await
             .unwrap();
         // The transport is closed so its tasks stop.
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert!(closed.load(Ordering::SeqCst));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !closed.load(Ordering::SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the transport was not closed"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
 
     #[tokio::test]

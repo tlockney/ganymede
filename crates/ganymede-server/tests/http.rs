@@ -702,8 +702,19 @@ async fn websocket_reconnect_replays_buffered_output() {
     .unwrap();
     ws.close(None).await.unwrap();
     drop(ws);
+    // The kernel's 300 ms run ends while no socket is attached (a longer
+    // wait only makes the replay more certain). The server drops the
+    // connection when it sees the close, which a stalled runner may take
+    // longer than the sleep, so wait for that on a deadline (#832).
     tokio::time::sleep(Duration::from_millis(600)).await;
-    assert_eq!(kernels.model(&k.id).unwrap().connections, 0);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while kernels.model(&k.id).unwrap().connections != 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the server still counts the closed socket"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 
     let mut ws = connect().await;
     let mut got_reply = false;
@@ -3419,7 +3430,7 @@ async fn rooms_ping_clients_and_drop_silent_ones() {
     let collab = Arc::new(
         ganymede_server::collab::Collab::new(ganymede_contents::FileIds::in_memory(), None)
             .with_cleanup_delay(Duration::from_millis(50))
-            .with_heartbeat(Duration::from_millis(50), Duration::from_millis(300)),
+            .with_heartbeat(Duration::from_millis(50), Duration::from_secs(1)),
     );
     st.collab = collab.clone();
     let app = build_router(st);
@@ -3436,10 +3447,12 @@ async fn rooms_ping_clients_and_drop_silent_ones() {
     };
 
     // Reading answers pings: the client stays well past the idle timeout.
+    // The idle timeout leaves a stalled runner a second to get back to
+    // reading (#832), and the loop runs 2.5 times that.
     let (mut live, _) = connect("Test:live").await.unwrap();
     let start = std::time::Instant::now();
     let mut pings = 0;
-    while start.elapsed() < Duration::from_millis(900) {
+    while start.elapsed() < Duration::from_millis(2500) {
         match tokio::time::timeout(Duration::from_millis(100), live.next()).await {
             Ok(Some(Ok(TMsg::Ping(_)))) => pings += 1,
             Ok(Some(Ok(TMsg::Close(f)))) => panic!("a live client was closed: {f:?}"),
@@ -3472,7 +3485,7 @@ async fn rooms_ping_clients_and_drop_silent_ones() {
     assert_eq!(collab.open_rooms(), 2);
     // The server needs the idle timeout and a ping interval to drop the
     // client, then the cleanup delay and up to one tick of the room's
-    // loop (250 ms) to retire the room: about 650 ms. The bound is a
+    // loop (250 ms) to retire the room: about 1.35 s. The bound is a
     // wall-clock deadline with room for a slow runner (#520), not a count
     // of iterations, which the live socket's pings cut short.
     let waited = std::time::Instant::now();
