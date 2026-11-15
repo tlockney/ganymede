@@ -345,12 +345,12 @@ impl Collab {
         }
     }
 
-    /// A file was just made at `path`, by a copy or `new_untitled`: it
-    /// has no grant, whatever is stored at the path under this root or
-    /// another, left by a file deleted outside, so those go.
+    /// A file was just made at `path`, by a copy or `new_untitled`, under
+    /// [`Collab::begin_move`]'s lock: it has no grant, whatever is stored
+    /// at the path under this root or another, left by a file deleted
+    /// outside, so those go, and rooms open on the path close.
     pub(crate) async fn forget_new_file(&self, path: &str) {
-        let p = normalize_api_path(path);
-        self.with_ids(move |ids| ids.removed(&p)).await;
+        self.removed(path).await;
         self.removed_in_other_roots(path).await;
     }
 

@@ -9,8 +9,8 @@
 //!
 //! A read of a grant can land between a write and its restamp, and must
 //! not take the write for an outside change. [`Stamps`] counts the saves
-//! in flight by path, and a check that overlaps one, or that sees any
-//! save begin or end while it looks at the file, keeps the grant.
+//! in flight by path, and a check that overlaps one, or that sees a save
+//! of that path begin or end while it looks at the file, keeps the grant.
 
 use crate::collab::{detached, Collab};
 use async_trait::async_trait;
@@ -328,6 +328,9 @@ impl Contents for Stamping {
         let (collab, inner) = (self.collab.clone(), self.inner.clone());
         let (parent_dir, ext) = (parent_dir.to_string(), ext.map(str::to_string));
         detached(async move {
+            // The move lock first, as a rename takes it, so the ids at the
+            // new path go with the file made and no room opens between.
+            let _moving = collab.begin_move().await;
             let _writing = collab.stamps.begin_write().await;
             let model = inner
                 .new_untitled(&parent_dir, kind, ext.as_deref())
@@ -346,7 +349,6 @@ impl Contents for Stamping {
         let (collab, inner) = (self.collab.clone(), self.inner.clone());
         let (from_path, to_dir) = (from_path.to_string(), to_dir.map(str::to_string));
         detached(async move {
-            let _writing = collab.stamps.begin_write().await;
             // A destination that isn't an existing directory is the file
             // copied over: known beforehand, so it is checked, marked and
             // restamped as a save is.
@@ -361,6 +363,7 @@ impl Contents for Stamping {
                 None => None,
             };
             if let Some(dest) = target {
+                let _writing = collab.stamps.begin_write().await;
                 let _turn = collab.stamps.turn(&dest).await;
                 let seen = collab.check_for_write(&dest).await;
                 let others = collab.check_others(&dest).await;
@@ -372,8 +375,13 @@ impl Contents for Stamping {
                 collab.restamp_others(others).await;
                 return Ok(model);
             }
+            // A new file is made in the directory: the move lock first, as
+            // a rename takes it, so the ids at its path go with the file
+            // and no room opens between.
+            let _moving = collab.begin_move().await;
+            let _writing = collab.stamps.begin_write().await;
             let model = inner.copy(&from_path, to_dir.as_deref()).await?;
-            // A new file is made in the directory: whatever grant is
+            // Whatever grant is
             // stored at its path is from a file that was deleted outside.
             collab.forget_new_file(&model.path).await;
             Ok(model)
@@ -1240,6 +1248,49 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(at_proj.grant("a.ipynb").await, None);
+    }
+
+    /// A file renamed onto a path another root holds a grant on, left by
+    /// a file deleted outside, doesn't take the grant.
+    #[tokio::test]
+    async fn a_rename_onto_a_path_inherits_no_grant() {
+        let (_dir, proj, at_top, at_proj, contents) = two_roots();
+        std::fs::write(proj.join("x.ipynb"), "{}").unwrap();
+        let (id, _) = at_proj.index("x.ipynb").await;
+        // Set during a save, so it has no stamp.
+        let saving = at_proj.stamps.begin("x.ipynb");
+        at_proj.set_grant(id, Some(GRANT.into())).await.unwrap();
+        drop(saving);
+        std::fs::remove_file(proj.join("x.ipynb")).unwrap();
+        std::fs::write(proj.parent().unwrap().join("y.ipynb"), "{}").unwrap();
+        at_top
+            .rename(&contents, "y.ipynb", "proj/x.ipynb")
+            .await
+            .unwrap();
+        assert_eq!(at_proj.grant("x.ipynb").await, None);
+    }
+
+    /// A copy onto a named file that is gone inherits no grant either,
+    /// under this root or another.
+    #[tokio::test]
+    async fn a_copy_onto_a_missing_file_inherits_no_grant() {
+        let (_dir, proj, at_top, at_proj, contents) = two_roots();
+        std::fs::write(proj.join("a.ipynb"), "{\"a\": 1}").unwrap();
+        std::fs::write(proj.join("b.ipynb"), "{}").unwrap();
+        for (c, p) in [(&at_top, "proj/b.ipynb"), (&at_proj, "b.ipynb")] {
+            let (id, _) = c.index(p).await;
+            // Set during a save, so it has no stamp.
+            let saving = c.stamps.begin(p);
+            c.set_grant(id, Some(GRANT.into())).await.unwrap();
+            drop(saving);
+        }
+        std::fs::remove_file(proj.join("b.ipynb")).unwrap();
+        contents
+            .copy("proj/a.ipynb", Some("proj/b.ipynb"))
+            .await
+            .unwrap();
+        assert_eq!(at_top.grant("proj/b.ipynb").await, None, "own root");
+        assert_eq!(at_proj.grant("b.ipynb").await, None, "other root");
     }
 
     /// A rename out of a root drops the grants that root holds, as a

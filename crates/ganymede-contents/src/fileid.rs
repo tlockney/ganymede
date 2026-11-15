@@ -1053,8 +1053,8 @@ mod sqlite {
     /// and the delete go by the row that was read, and a changed row is
     /// read again and given the same verdict, once more: a row that
     /// changed again is given it without a compare, and not handed out if
-    /// it doesn't match. An `Err` is a failed read or
-    /// stamp: the grant stands.
+    /// it doesn't match. An `Err` is a failed read or stamp: the grant is
+    /// not deleted, and not handed out.
     pub fn check(
         db: &Connection,
         id: &str,
@@ -1200,13 +1200,23 @@ mod sqlite {
     }
 
     /// Moves the ids of every root but `own` above `old`: to `new` in a
-    /// root that is above it too, and out of the others.
+    /// root that is above it too, and out of the others. What the roots
+    /// above `new` hold there goes first.
     pub fn moved_in_other_roots(
         db: &mut Connection,
         own: &str,
         old: &Path,
         new: &Path,
     ) -> rusqlite::Result<()> {
+        // Whatever other roots hold at the destination is from a file that
+        // was deleted outside: it isn't handed to the file renamed in.
+        for root in new.ancestors().skip(1) {
+            if let Some((r, rel_new)) = relative(root, new) {
+                if r != own {
+                    removed(db, &r, &rel_new)?;
+                }
+            }
+        }
         for root in old.ancestors().skip(1) {
             let Some((r, rel_old)) = relative(root, old) else {
                 continue;

@@ -47,7 +47,10 @@ dropped request can't leave a write unstamped. A `copy` onto a named
 file is checked and restamped like a save; a `copy` into a directory,
 and `new_untitled`, make a file that has no grant, so whatever grant is
 stored at its path, under this root or another, left by a file deleted
-outside, is dropped (`Collab::forget_new_file`), never restamped.
+outside, is dropped (`Collab::forget_new_file`, which also closes rooms open on it), never
+restamped; they take the move lock before the tree lock, as a rename does. A
+rename first clears what other roots above the destination hold there, so a
+file renamed in doesn't take a stale grant.
 Rooms, REST, MCP and run copies all hold that wrapper. A rename keeps the
 inode and modification time, so it needs no new stamp; `Collab::rename`
 checks the old path's grant before renaming (a file replaced outside and
