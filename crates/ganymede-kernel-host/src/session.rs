@@ -1416,18 +1416,21 @@ mod tests {
         });
         let s = KernelSession::start(host, None);
         s.nudge(Duration::from_secs(5)).await.unwrap();
-        let ask = |t: &str| {
+        let ask = |t: &str, wait: Duration| {
             s.request_with_busy(
                 Channel::Shell,
                 s.message(t, &serde_json::json!({})),
                 true,
-                Duration::from_secs(1),
+                wait,
             )
         };
-        let (r, busy) = ask("execute_request").await;
+        // The kernel's busy must arrive within the wait, so it has a
+        // margin for a stalled runner (#832).
+        let (r, busy) = ask("execute_request", Duration::from_secs(1)).await;
         assert!(matches!(r, Err(Error::Timeout("reply"))), "{r:?}");
         assert!(busy, "the kernel took it up");
-        let (r, busy) = ask("comm_info_request").await;
+        // No busy may come here, which a short wait only makes easier.
+        let (r, busy) = ask("comm_info_request", Duration::from_millis(300)).await;
         assert!(matches!(r, Err(Error::Timeout("reply"))), "{r:?}");
         assert!(!busy, "still queued");
         assert_eq!(s.pending_len(), 0);

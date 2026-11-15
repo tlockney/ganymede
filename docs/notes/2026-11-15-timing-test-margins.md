@@ -18,7 +18,9 @@ test waits for the first one before it turns them off. A few other
 waits changed the same way: the reconnect test polls for the closed
 socket to leave the connection count, the kernel-host tests that gave a
 kernel 300 ms to take up a request, or 1 to 2 s to be marked dead after
-an exit, now allow 1 s and 10 s.
+an exit, now allow 1 s and 10 s, and the two-servers test waits 2.5 s,
+not 1.5 s, for the read-only room's next try at the lock (up to about
+1.25 s).
 
 The rule: a test waits on a condition with a wall-clock deadline of
 several seconds, not on a fixed sleep, and a server timeout that a live

@@ -7396,8 +7396,10 @@ async fn a_second_servers_room_is_read_only_until_the_owner_leaves() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    // The read-only room tries the lock again every second.
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // The read-only room tries the lock again on its 250 ms tick once a
+    // second has passed since its last try, so it can take up to about
+    // 1.25 s; the rest is margin for a stalled runner (#832).
+    tokio::time::sleep(Duration::from_millis(2500)).await;
     type_at_end(&mut ws2, &doc2, " and two").await;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !std::fs::read_to_string(&file)
