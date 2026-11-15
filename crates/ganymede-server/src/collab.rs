@@ -122,8 +122,9 @@ pub struct Collab {
     /// reader arriving while a writer waits queues behind it.
     move_lock: tokio::sync::RwLock<()>,
     /// What keeps a lookup from a path a create is about to make. A
-    /// create claims the direct children of its directory here, from
-    /// before the file is made until [`Collab::forget_new_file`] is done;
+    /// create claims the direct children of its directory here (a new
+    /// folder: its directory's whole subtree), from before the file is
+    /// made until [`Collab::forget_new_file`] is done;
     /// a grant read, an [`Collab::index_existing`] and a room opening
     /// register the path they read, which waits while a create claims its
     /// directory, and a create waits for the lookups registered directly in
@@ -386,8 +387,9 @@ impl Collab {
     /// deleted outside, so those go, and rooms open on the path close.
     /// The guard holds the move lock for reading, so no rename, delete or
     /// [`file_gone`] lands meanwhile, and claims the directory's
-    /// children, so no grant read, index or room open at a path directly
-    /// in it looks at the path before this is done.
+    /// children (a new folder: its directory's whole subtree), so no
+    /// grant read, index or room open at a path directly in it looks at
+    /// the path before this is done.
     pub(crate) async fn forget_new_file(&self, path: &str) {
         self.removed(path).await;
         self.removed_in_other_roots(path).await;
@@ -1006,8 +1008,8 @@ pub(crate) struct Creating<'a> {
 /// [`Collab::begin_move`]'s lock for reading, so no rename is between its
 /// disk change and the ids, and the path registered in `lookups`, so no
 /// file is being made at it, until the room is open; a rename or delete
-/// finished meanwhile changes `moves`, and the path is looked up again. `None` when the file id is
-/// gone.
+/// finished meanwhile changes `moves`, and the path is looked up again.
+/// `None` when the file id is gone.
 async fn send_to_room(
     collab: &Arc<Collab>,
     contents: &Arc<dyn Contents>,

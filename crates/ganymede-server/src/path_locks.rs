@@ -172,9 +172,10 @@ impl PathLocks {
                 if !s.blocks_any(&paths) {
                     if let Some(p) = parked.as_mut() {
                         // Leaves the parked count and registers in one
-                        // step, so a claim waiting for the parked sees
-                        // the registration. `p`'s drop, after this lock
-                        // is released, only wakes the waiters.
+                        // step, which is defensive: a claim waiting for
+                        // the parked would see the registration either
+                        // way. `p`'s drop, after this lock is released,
+                        // only wakes the waiters.
                         s.unpark(&p.paths);
                         p.paths.clear();
                     }

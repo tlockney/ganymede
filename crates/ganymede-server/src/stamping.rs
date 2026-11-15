@@ -1700,11 +1700,19 @@ mod tests {
     }
 
     /// A new folder's contents are looked up inside it: a grant read there
-    /// waits for the create, though it is not a direct child of `sub`.
+    /// waits for the create, though it is not a direct child of `sub`,
+    /// while lookups of paths elsewhere, `other` and the root's, go on.
     #[tokio::test]
     async fn a_new_folder_holds_back_lookups_inside_it() {
         let (dir, collab, contents, wrote, release) = gated(false).await;
         std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::create_dir(dir.path().join("other")).unwrap();
+        std::fs::write(dir.path().join("other/x.ipynb"), NOTEBOOK).unwrap();
+        let (id, _) = collab.index("other/x.ipynb").await;
+        collab
+            .set_grant(id.clone(), Some(GRANT.into()))
+            .await
+            .unwrap();
         let k = contents.clone();
         let create =
             tokio::spawn(async move { k.new_untitled("sub", ContentType::Directory, None).await });
@@ -1713,6 +1721,35 @@ mod tests {
         let read = tokio::spawn(async move { c.grant("sub/Untitled Folder/x.ipynb").await });
         tokio::time::sleep(SHORT).await;
         assert!(!read.is_finished(), "waits for the new folder");
+        let c = &collab;
+        assert!(tokio::time::timeout(LONG, c.grant("other/x.ipynb"))
+            .await
+            .expect("a grant read elsewhere waited")
+            .is_some());
+        assert_eq!(
+            tokio::time::timeout(LONG, c.path_and_grant(&id))
+                .await
+                .expect("a path-and-grant read elsewhere waited")
+                .unwrap()
+                .0,
+            "other/x.ipynb"
+        );
+        let indexed = tokio::time::timeout(
+            LONG,
+            c.index_existing(&contents, "other/x.ipynb", GetOptions::default()),
+        )
+        .await
+        .expect("an index elsewhere waited")
+        .unwrap();
+        assert_eq!(indexed, (id.clone(), false));
+        let room = tokio::time::timeout(
+            LONG,
+            crate::collab::send_to_notebook_room(c, &contents, &room_id(&id), room_cmd()),
+        )
+        .await
+        .expect("a room open elsewhere waited");
+        assert!(room.is_some());
+        assert!(!read.is_finished(), "still waiting for the new folder");
         release.notify_one();
         let model = create.await.unwrap().unwrap();
         assert_eq!(model.path, "sub/Untitled Folder");
