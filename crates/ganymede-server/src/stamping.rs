@@ -1825,4 +1825,80 @@ mod tests {
         assert!(at_proj.grant("e/a.ipynb").await.is_some(), "followed");
         assert_eq!(at_proj.grant("d/a.ipynb").await, None);
     }
+
+    /// A rename of the project directory itself through a server on the
+    /// parent moves the root, with its ids and grants, to the new name.
+    #[tokio::test]
+    async fn a_rename_of_a_root_directory_moves_its_grants() {
+        let (dir, proj, at_top, at_proj, contents) = two_roots();
+        std::fs::write(proj.join("a.ipynb"), "{}").unwrap();
+        let (id, _) = at_proj.index("a.ipynb").await;
+        at_proj.set_grant(id, Some(GRANT.into())).await.unwrap();
+        at_top.rename(&contents, "proj", "proj2").await.unwrap();
+        let top = dir.path().canonicalize().unwrap();
+        let moved = top.join("proj2");
+        assert!(moved.join("a.ipynb").exists());
+        let at_moved = Collab::new(
+            ganymede_contents::FileIds::open(&top.join("ids.db"), &moved),
+            Some(moved.clone()),
+        );
+        assert!(at_moved.grant("a.ipynb").await.is_some(), "followed");
+        assert_eq!(at_proj.grant("a.ipynb").await, None, "none at the old root");
+    }
+
+    /// A delete of the project directory itself drops its grants: a file
+    /// made anew there doesn't inherit them. The directory is empty by then
+    /// (the contents API deletes only empty ones), so the file went outside.
+    #[tokio::test]
+    async fn a_delete_of_a_root_directory_drops_its_grants() {
+        let (dir, proj, at_top, at_proj, contents) = two_roots();
+        std::fs::write(proj.join("a.ipynb"), "{}").unwrap();
+        let (id, _) = at_proj.index("a.ipynb").await;
+        at_proj.set_grant(id, Some(GRANT.into())).await.unwrap();
+        std::fs::remove_file(proj.join("a.ipynb")).unwrap();
+        at_top.delete(&contents, "proj").await.unwrap();
+        std::fs::create_dir(&proj).unwrap();
+        std::fs::write(proj.join("a.ipynb"), "{}").unwrap();
+        let db = dir.path().canonicalize().unwrap().join("ids.db");
+        let again = Collab::new(
+            ganymede_contents::FileIds::open(&db, &proj),
+            Some(proj.clone()),
+        );
+        // No row is left for the path (an unstamped grant on one would take
+        // the new file): the id is new, and so holds no grant.
+        let (_, new) = again.index("a.ipynb").await;
+        assert!(new, "a stale row is left");
+        assert_eq!(again.grant("a.ipynb").await, None);
+    }
+
+    /// As a directory above the root.
+    #[tokio::test]
+    async fn a_delete_of_a_directory_above_a_root_drops_its_grants() {
+        let (dir, _proj, at_top, _at_proj, contents) = two_roots();
+        let top = dir.path().canonicalize().unwrap();
+        let inner = top.join("outer/proj");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(inner.join("a.ipynb"), "{}").unwrap();
+        let db = top.join("ids.db");
+        let at_inner = Collab::new(
+            ganymede_contents::FileIds::open(&db, &inner),
+            Some(inner.clone()),
+        );
+        let (id, _) = at_inner.index("a.ipynb").await;
+        at_inner.set_grant(id, Some(GRANT.into())).await.unwrap();
+        std::fs::remove_file(inner.join("a.ipynb")).unwrap();
+        std::fs::remove_dir(&inner).unwrap();
+        at_top.delete(&contents, "outer").await.unwrap();
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(inner.join("a.ipynb"), "{}").unwrap();
+        let again = Collab::new(
+            ganymede_contents::FileIds::open(&db, &inner),
+            Some(inner.clone()),
+        );
+        // No row is left for the path (an unstamped grant on one would take
+        // the new file): the id is new, and so holds no grant.
+        let (_, new) = again.index("a.ipynb").await;
+        assert!(new, "a stale row is left");
+        assert_eq!(again.grant("a.ipynb").await, None);
+    }
 }
