@@ -592,7 +592,10 @@ impl FileIds {
     /// this root: the ids other roots above both have under `old` follow
     /// too, and with them their grants. Without this a grant made in a
     /// project directory stays on a path that is gone when a server on
-    /// its parent renames the file.
+    /// its parent renames the file. Other roots at or inside `old` move
+    /// with it (their ids, paths and grants stay, their root becomes the
+    /// same place under `new`), after what roots at or inside `new` hold
+    /// is dropped.
     pub fn moved_in_other_roots(&self, old: &Path, new: &Path) {
         #[cfg(feature = "sqlite")]
         if let Some((db, own)) = &mut self.lock().db {
@@ -611,7 +614,8 @@ impl FileIds {
     /// deleted through this root, an absolute path whose directory is
     /// resolved: the ids other roots above it have under `path` go too,
     /// and with them their grants, so a file made anew at the path
-    /// doesn't inherit a grant.
+    /// doesn't inherit a grant. So do all the ids of other roots at or
+    /// inside `path`, whose directories are gone.
     pub fn removed_in_other_roots(&self, path: &Path) {
         #[cfg(feature = "sqlite")]
         if let Some((db, own)) = &self.lock().db {
@@ -1239,11 +1243,77 @@ mod sqlite {
                 None => removed(db, &r, &rel_old)?,
             }
         }
-        Ok(())
+        moved_roots_inside(db, own, old, new)
     }
 
-    /// Drops the ids, and grants, of every root but `own` above `path`.
+    /// Every root in the database but `own` that is at or under `path`
+    /// (whole path segments: `d` is not above `dd`).
+    fn roots_at_or_under(db: &Connection, own: &str, path: &Path) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = db.prepare("SELECT DISTINCT root FROM file_ids")?;
+        let roots = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut found = Vec::new();
+        for root in roots {
+            let root = root?;
+            if root != own && Path::new(&root).starts_with(path) {
+                found.push(root);
+            }
+        }
+        Ok(found)
+    }
+
+    /// The roots at or under `old` follow it to `new`: their ids, paths
+    /// and grants stay, and their root becomes `new` joined with what
+    /// was below `old`. What roots at or under `new` hold is from
+    /// something deleted outside and goes first, except the roots just
+    /// found under `old`. One transaction, so a failure moves nothing.
+    fn moved_roots_inside(
+        db: &mut Connection,
+        own: &str,
+        old: &Path,
+        new: &Path,
+    ) -> rusqlite::Result<()> {
+        let inside = roots_at_or_under(db, own, old)?;
+        let stale: Vec<String> = roots_at_or_under(db, own, new)?
+            .into_iter()
+            .filter(|r| !inside.contains(r))
+            .collect();
+        if inside.is_empty() && stale.is_empty() {
+            return Ok(());
+        }
+        // Where each root goes. A root that can't be placed (not valid
+        // UTF-8, or not below `old` after all) stays where it is.
+        let moves: Vec<(String, String)> = inside
+            .into_iter()
+            .filter_map(|r| {
+                let rest = Path::new(&r).strip_prefix(old).ok()?;
+                // `join` of an empty path would leave a trailing `/`.
+                let to = if rest.as_os_str().is_empty() {
+                    new.to_str()?.to_string()
+                } else {
+                    new.join(rest).to_str()?.to_string()
+                };
+                Some((r, to))
+            })
+            .collect();
+        let tx = db.transaction()?;
+        for r in &stale {
+            removed(&tx, r, "")?;
+        }
+        for (from, to) in &moves {
+            tx.execute(
+                "UPDATE file_ids SET root = ?2 WHERE root = ?1",
+                params![from, to],
+            )?;
+        }
+        tx.commit()
+    }
+
+    /// Drops the ids, and grants, of every root but `own` above `path`,
+    /// and all of those of every root but `own` at or under it.
     pub fn removed_in_other_roots(db: &Connection, own: &str, path: &Path) -> rusqlite::Result<()> {
+        for r in roots_at_or_under(db, own, path)? {
+            removed(db, &r, "")?;
+        }
         for root in path.ancestors().skip(1) {
             let Some((r, rel)) = relative(root, path) else {
                 continue;
@@ -1766,6 +1836,111 @@ mod tests {
                 (std::path::PathBuf::from("/p/s"), "nb.ipynb".to_string()),
             ]
         );
+    }
+
+    /// Opens roots under `/t` in one database and gives each a file with a
+    /// grant: `/t` (the server), `/t/proj`, `/t/proj/deep`, `/t/projx`,
+    /// and `/t/dst` for the destination.
+    #[cfg(feature = "sqlite")]
+    fn nested_roots(db: &Path) -> Vec<(FileIds, String)> {
+        ["/t", "/t/proj", "/t/proj/deep", "/t/projx", "/t/dst"]
+            .iter()
+            .map(|r| {
+                let ids = FileIds::open(db, Path::new(r));
+                let (id, _) = ids.index("nb.ipynb");
+                ids.set_grant(&id, Some("{}"), None).unwrap();
+                (ids, id)
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn a_rename_moves_roots_at_or_inside_the_old_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ids.db");
+        let roots = nested_roots(&db);
+        roots[0]
+            .0
+            .moved_in_other_roots(Path::new("/t/proj"), Path::new("/t/proj2"));
+        let at = |i: usize, root: &str| {
+            let ids = FileIds::open(&db, Path::new(root));
+            (ids.get("nb.ipynb"), ids.grant(&roots[i].1))
+        };
+        // The root equal to `old` and the one inside follow, with ids and grants.
+        assert_eq!(
+            at(1, "/t/proj2"),
+            (Some(roots[1].1.clone()), Some("{}".into()))
+        );
+        assert_eq!(
+            at(2, "/t/proj2/deep"),
+            (Some(roots[2].1.clone()), Some("{}".into()))
+        );
+        // Nothing is left at the old roots.
+        assert_eq!(
+            FileIds::open(&db, Path::new("/t/proj")).get("nb.ipynb"),
+            None
+        );
+        assert_eq!(
+            FileIds::open(&db, Path::new("/t/proj/deep")).get("nb.ipynb"),
+            None
+        );
+        // A sibling that shares the prefix stays, as does the destination root.
+        assert_eq!(
+            at(3, "/t/projx"),
+            (Some(roots[3].1.clone()), Some("{}".into()))
+        );
+        assert_eq!(
+            at(4, "/t/dst"),
+            (Some(roots[4].1.clone()), Some("{}".into()))
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn a_rename_drops_what_roots_at_the_destination_hold_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ids.db");
+        let roots = nested_roots(&db);
+        // `/t/dst` is renamed onto by `/t/proj`: its stale rows go, and so do
+        // those of a root inside it; the roots that move in take their place.
+        let stale = FileIds::open(&db, Path::new("/t/dst/inner"));
+        let (sid, _) = stale.index("nb.ipynb");
+        stale.set_grant(&sid, Some("{}"), None).unwrap();
+        roots[0]
+            .0
+            .moved_in_other_roots(Path::new("/t/proj"), Path::new("/t/dst"));
+        assert_eq!(stale.get("nb.ipynb"), None);
+        assert_eq!(stale.grant(&sid), None);
+        assert_eq!(
+            roots[4].0.get("nb.ipynb").as_deref(),
+            Some(roots[1].1.as_str())
+        );
+        assert_eq!(roots[4].0.grant(&roots[4].1), None);
+        let moved = FileIds::open(&db, Path::new("/t/dst/deep"));
+        assert_eq!(moved.get("nb.ipynb").as_deref(), Some(roots[2].1.as_str()));
+        assert_eq!(moved.grant(&roots[2].1).as_deref(), Some("{}"));
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn a_delete_drops_roots_at_or_inside_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ids.db");
+        let roots = nested_roots(&db);
+        roots[0].0.removed_in_other_roots(Path::new("/t/proj"));
+        for i in [1, 2] {
+            assert_eq!(roots[i].0.get("nb.ipynb"), None);
+            assert_eq!(roots[i].0.grant(&roots[i].1), None);
+        }
+        // The server's own root, a prefix sibling and another root stay.
+        for i in [0, 3, 4] {
+            assert_eq!(
+                roots[i].0.get("nb.ipynb").as_deref(),
+                Some(roots[i].1.as_str())
+            );
+            assert_eq!(roots[i].0.grant(&roots[i].1).as_deref(), Some("{}"));
+        }
     }
 
     /// A restamp after a write goes by what the check before it saw.

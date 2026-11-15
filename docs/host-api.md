@@ -311,7 +311,10 @@ edit_self = true     # the self.* calls; false turns them off
   directory they run from. A rename through a server also moves
   the ids, and so the grants, that another root above both paths holds on
   the file or on files under a directory renamed, and a delete through a
-  server drops the ones another root holds on the file. A grant from before this
+  server drops the ones another root holds on the file. A root inside a
+  renamed folder (a project directory with its own grants) moves with it,
+  and a root inside a deleted folder, or the folder itself, loses its
+  grants. A grant from before this
   check has no record of its file, so the first time it is used it takes
   the file as it is, and holds from then on.
 
