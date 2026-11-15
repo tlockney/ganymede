@@ -674,6 +674,90 @@ mod tests {
         );
     }
 
+    /// A root with `d/<name>` granted, and its contents.
+    async fn granted_in_d(name: &str) -> (tempfile::TempDir, Arc<Collab>, Arc<dyn Contents>) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("d")).unwrap();
+        std::fs::write(root.join("d").join(name), "{}").unwrap();
+        let collab = Arc::new(Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            Some(root.clone()),
+        ));
+        let contents = collab.stamping(Arc::new(
+            ganymede_contents::FsContents::new(&root, Default::default()).unwrap(),
+        ));
+        let (id, _) = collab.index(&format!("d/{name}")).await;
+        collab.set_grant(id, Some(GRANT.into())).await.unwrap();
+        (dir, collab, contents)
+    }
+
+    /// Waits until a write holds the tree lock, as `begin_write` does. Gives
+    /// up after a second, and the caller's assertions then fail.
+    async fn until_a_write_begins(collab: &Collab) {
+        for _ in 0..500 {
+            if collab.stamps.tree.try_write().is_err() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+    }
+
+    /// A rename of a directory waits for a real `save` under it, which
+    /// holds the tree lock while it waits for its turn, and the save's
+    /// restamp lands before the rename moves the grant.
+    #[tokio::test]
+    async fn a_rename_waits_for_a_real_save() {
+        let (dir, collab, contents) = granted_in_d("a.ipynb").await;
+        let root = dir.path().canonicalize().unwrap();
+        let turn = collab.stamps.turn("d/a.ipynb").await;
+        let k = contents.clone();
+        let save = tokio::spawn(async move {
+            k.save("d/a.ipynb", SaveRequest::text("{\"saved\": \"it\"}"))
+                .await
+        });
+        until_a_write_begins(&collab).await;
+        let (c, k) = (collab.clone(), contents.clone());
+        let rename = tokio::spawn(async move { c.rename(&k, "d", "e").await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!rename.is_finished(), "waits for the save");
+        assert!(!save.is_finished(), "the save waits for its turn");
+        drop(turn);
+        save.await.unwrap().unwrap();
+        rename.await.unwrap().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("e/a.ipynb")).unwrap(),
+            "{\"saved\": \"it\"}"
+        );
+        assert!(collab.grant("e/a.ipynb").await.is_some(), "held after");
+    }
+
+    /// A rename of a directory waits for a real `copy` into it, which
+    /// holds the tree lock while it waits for its destination's turn.
+    #[tokio::test]
+    async fn a_rename_waits_for_a_real_copy() {
+        let (dir, collab, contents) = granted_in_d("b.ipynb").await;
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("d/a.ipynb"), "{\"a\": 1}").unwrap();
+        let turn = collab.stamps.turn("d/b.ipynb").await;
+        let k = contents.clone();
+        let copy = tokio::spawn(async move { k.copy("d/a.ipynb", Some("d/b.ipynb")).await });
+        until_a_write_begins(&collab).await;
+        let (c, k) = (collab.clone(), contents.clone());
+        let rename = tokio::spawn(async move { c.rename(&k, "d", "e").await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!rename.is_finished(), "waits for the copy");
+        assert!(!copy.is_finished(), "the copy waits for its turn");
+        drop(turn);
+        copy.await.unwrap().unwrap();
+        rename.await.unwrap().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("e/b.ipynb")).unwrap(),
+            "{\"a\": 1}"
+        );
+        assert!(collab.grant("e/b.ipynb").await.is_some(), "held after");
+    }
+
     /// Two servers on one database: one on a parent folder, one in a
     /// project directory that holds the grants.
     fn two_roots() -> (
