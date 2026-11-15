@@ -13,6 +13,7 @@
 //! of that path begin or end while it looks at the file, keeps the grant.
 
 use crate::collab::{detached, Collab};
+use crate::path_locks::{Claimed, PathLocks, Registered, Scope};
 use async_trait::async_trait;
 use ganymede_contents::{
     normalize_api_path, Checkpoint, ContentType, Contents, ContentsModel, GetOptions, Result,
@@ -34,84 +35,15 @@ pub(crate) struct Stamps {
     /// The paths the server's writes are registered under, and the
     /// paths of renames in progress. A rename waits only for the writes
     /// under its two paths, and holds back only new writes under them.
-    writes: Mutex<Writes>,
-    /// Woken whenever `writes` loses a write or a block.
-    changed: tokio::sync::Notify,
-}
-
-/// Writes in flight by the path each registered, and the paths renames
-/// have claimed.
-#[derive(Default)]
-struct Writes {
-    in_flight: HashMap<String, usize>,
-    /// One entry per rename waiting or running, for its old path and its
-    /// new one.
-    blocked: Vec<String>,
-}
-
-/// Whether the prefix `pre` covers `path`: the path itself, anything
-/// under it as a directory, or everything for the root's empty prefix.
-/// Both are normalized API paths. The rule is the one file ids follow for
-/// renames, [`ganymede_contents::path_under`].
-fn covers(pre: &str, path: &str) -> bool {
-    ganymede_contents::path_under(path, pre).is_some()
-}
-
-impl Writes {
-    fn blocks_any(&self, paths: &[String]) -> bool {
-        self.blocked
-            .iter()
-            .any(|pre| paths.iter().any(|p| covers(pre, p)))
-    }
-
-    fn written_under(&self, prefixes: &[String]) -> bool {
-        self.in_flight
-            .keys()
-            .any(|p| prefixes.iter().any(|pre| covers(pre, p)))
-    }
+    writes: Arc<PathLocks>,
 }
 
 /// A write registered under some paths, until dropped.
-pub(crate) struct WriteGuard {
-    stamps: Arc<Stamps>,
-    paths: Vec<String>,
-}
-
-impl Drop for WriteGuard {
-    fn drop(&mut self) {
-        let mut w = self.stamps.writes();
-        for path in &self.paths {
-            if let Some(n) = w.in_flight.get_mut(path) {
-                *n -= 1;
-                if *n == 0 {
-                    w.in_flight.remove(path);
-                }
-            }
-        }
-        drop(w);
-        self.stamps.changed.notify_waiters();
-    }
-}
+pub(crate) type WriteGuard = Registered;
 
 /// A rename's claim on its two paths, until dropped, including while it
 /// still waits for the writes under them.
-pub(crate) struct RenameGuard {
-    stamps: Arc<Stamps>,
-    paths: Vec<String>,
-}
-
-impl Drop for RenameGuard {
-    fn drop(&mut self) {
-        let mut w = self.stamps.writes();
-        for path in &self.paths {
-            if let Some(i) = w.blocked.iter().position(|b| b == path) {
-                w.blocked.remove(i);
-            }
-        }
-        drop(w);
-        self.stamps.changed.notify_waiters();
-    }
-}
+pub(crate) type RenameGuard = Claimed;
 
 /// One server write of a path at a time: the lock for each path being
 /// written or waited for.
@@ -220,13 +152,8 @@ impl Stamps {
             root,
             saving: Mutex::default(),
             turns: Mutex::default(),
-            writes: Mutex::default(),
-            changed: tokio::sync::Notify::new(),
+            writes: Arc::default(),
         }
-    }
-
-    fn writes(&self) -> std::sync::MutexGuard<'_, Writes> {
-        self.writes.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// A write under `paths` (a file's, or the directory a new file is
@@ -234,27 +161,7 @@ impl Stamps {
     /// or of a directory above them waits for. Waits first while a
     /// rename holds any of them.
     pub(crate) async fn begin_write(self: &Arc<Self>, paths: &[&str]) -> WriteGuard {
-        let paths: Vec<String> = paths.iter().map(|p| normalize_api_path(p)).collect();
-        loop {
-            // Listening before the state is read, so a change between the
-            // read and the wait isn't missed.
-            let notified = self.changed.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            {
-                let mut w = self.writes();
-                if !w.blocks_any(&paths) {
-                    for p in &paths {
-                        *w.in_flight.entry(p.clone()).or_default() += 1;
-                    }
-                    return WriteGuard {
-                        stamps: self.clone(),
-                        paths,
-                    };
-                }
-            }
-            notified.await;
-        }
+        self.writes.register(paths).await
     }
 
     /// Claims `old` and `new` at once, so no write begins under either,
@@ -263,27 +170,13 @@ impl Stamps {
     /// [`Collab::begin_move`]'s lock. The claim is the guard's, so it
     /// goes if the wait is dropped.
     pub(crate) async fn begin_rename(self: &Arc<Self>, old: &str, new: &str) -> RenameGuard {
-        let paths = vec![normalize_api_path(old), normalize_api_path(new)];
-        self.writes().blocked.extend(paths.iter().cloned());
-        let guard = RenameGuard {
-            stamps: self.clone(),
-            paths,
-        };
-        loop {
-            let notified = self.changed.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            if !self.writes().written_under(&guard.paths) {
-                return guard;
-            }
-            notified.await;
-        }
+        self.writes.claim(&[old, new]).await
     }
 
     /// Whether any write is registered, for tests to wait on.
     #[cfg(test)]
     fn any_write(&self) -> bool {
-        !self.writes().in_flight.is_empty()
+        self.writes.any_registered()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Saving> {
@@ -494,9 +387,17 @@ impl Contents for Stamping {
         let (collab, inner) = (self.collab.clone(), self.inner.clone());
         let (parent_dir, ext) = (parent_dir.to_string(), ext.map(str::to_string));
         detached(async move {
-            // The move lock first, as a rename takes it, so the ids at the
-            // new path go with the file made and no room opens between.
-            let _moving = collab.begin_move().await;
+            // The move lock for reading and the directory claimed, so the
+            // ids at the new path go with the file made, no rename or
+            // delete lands, and nothing looks at a path under the
+            // directory meanwhile. Lookups elsewhere go on.
+            // A new folder's ids and grants go under its whole prefix, so
+            // lookups inside it wait too; a new file is a direct child.
+            let scope = match kind {
+                ContentType::Directory => Scope::Subtree,
+                _ => Scope::Children,
+            };
+            let _creating = collab.begin_create(&parent_dir, scope).await;
             let _writing = collab.stamps.begin_write(&[&parent_dir]).await;
             let model = inner
                 .new_untitled(&parent_dir, kind, ext.as_deref())
@@ -542,10 +443,17 @@ impl Contents for Stamping {
                 collab.restamp_others(others).await;
                 return Ok(model);
             }
-            // A new file is made in the directory: the move lock first, as
-            // a rename takes it, so the ids at its path go with the file
-            // and no room opens between.
-            let _moving = collab.begin_move().await;
+            // A new file is made in the directory: the move lock for
+            // reading and the directory claimed, as `new_untitled` does,
+            // so the ids at its path go with the file. With no directory
+            // given, the copy goes beside its source.
+            let normalized = normalize_api_path(&from_path);
+            let dir = match &to_dir {
+                Some(d) => d.as_str(),
+                None => crate::folder::dir_of(&normalized),
+            };
+            // A copy is always of a file, so a direct child.
+            let _creating = collab.begin_create(dir, Scope::Children).await;
             // The new file's name isn't known yet: the write is
             // registered on its directory. With none given, the copy goes
             // beside its source, and the source's registration covers
@@ -944,20 +852,6 @@ mod tests {
         }
     }
 
-    /// A prefix covers itself and what is under it, not a sibling whose
-    /// name starts the same, and the root's empty prefix covers all.
-    #[test]
-    fn a_prefix_covers_its_directory_only() {
-        assert!(covers("d", "d"));
-        assert!(covers("d", "d/x.ipynb"));
-        assert!(covers("d", "d/e/x.ipynb"));
-        assert!(!covers("d", "dd/x.ipynb"));
-        assert!(!covers("d", "dd"));
-        assert!(!covers("d/e", "d"));
-        assert!(covers("", "d/x.ipynb"));
-        assert!(covers("", ""));
-    }
-
     const SHORT: std::time::Duration = std::time::Duration::from_millis(50);
     const LONG: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -1022,7 +916,7 @@ mod tests {
         tokio::time::timeout(LONG, stamps.begin_write(&["d/b.ipynb"]))
             .await
             .expect("the block went with the rename");
-        assert!(stamps.writes().blocked.is_empty());
+        assert!(stamps.writes.none_claimed());
         drop(held);
     }
 
@@ -1233,8 +1127,8 @@ mod tests {
         }
     }
 
-    /// Contents whose save writes the file, says so, and then waits to be
-    /// let go, or fails.
+    /// Contents whose save, copy and new untitled file write the file, say
+    /// so, and then wait to be let go; a save can fail instead.
     struct Gated {
         inner: Arc<dyn Contents>,
         wrote: Arc<tokio::sync::Notify>,
@@ -1268,7 +1162,10 @@ mod tests {
             kind: ContentType,
             ext: Option<&str>,
         ) -> Result<ContentsModel> {
-            self.inner.new_untitled(parent_dir, kind, ext).await
+            let model = self.inner.new_untitled(parent_dir, kind, ext).await?;
+            self.wrote.notify_one();
+            self.release.notified().await;
+            Ok(model)
         }
         async fn copy(&self, from_path: &str, to_dir: Option<&str>) -> Result<ContentsModel> {
             let model = self.inner.copy(from_path, to_dir).await?;
@@ -1443,55 +1340,452 @@ mod tests {
         made.await.unwrap().unwrap();
     }
 
-    /// A new untitled file is made under the move lock, so it waits for
-    /// a rename or delete in progress.
+    /// A new untitled file and a copy into a directory take the move lock
+    /// for reading, so they wait for a rename or delete in progress.
     #[tokio::test]
-    async fn new_untitled_takes_the_move_lock() {
-        let (_dir, collab, contents) = granted_in_d("a.ipynb").await;
-        let moving = collab.begin_move().await;
-        let k = contents.clone();
-        let made = tokio::spawn(async move {
-            k.new_untitled("d", ContentType::Notebook, Some(".ipynb"))
-                .await
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert!(!made.is_finished(), "waits for the move lock");
-        drop(moving);
-        made.await.unwrap().unwrap();
+    async fn a_create_waits_for_a_move() {
+        for copy in [false, true] {
+            let (_dir, collab, contents) = granted_in_d("a.ipynb").await;
+            std::fs::create_dir(_dir.path().join("sub")).unwrap();
+            let moving = collab.begin_move().await;
+            let k = contents.clone();
+            let made = tokio::spawn(async move {
+                if copy {
+                    k.copy("d/a.ipynb", Some("sub")).await
+                } else {
+                    k.new_untitled("d", ContentType::Notebook, Some(".ipynb"))
+                        .await
+                }
+            });
+            tokio::time::sleep(SHORT).await;
+            assert!(!made.is_finished(), "waits for the move lock ({copy})");
+            drop(moving);
+            made.await.unwrap().unwrap();
+        }
     }
 
-    /// A copy into a directory holds the move lock and a write registered
-    /// on the directory until its new path is forgotten, and a grant read
-    /// waits too, so it can't see a stale grant on the new file.
+    const NOTEBOOK: &str = r#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
+
+    /// A create into `sub`, held after it made its file. `gated`'s root
+    /// has a granted `a.ipynb`; `other/x.ipynb` is granted too, and a
+    /// grant with no stamp is stored at the path the create will make,
+    /// as a file deleted outside would leave.
+    struct HeldCreate {
+        _dir: tempfile::TempDir,
+        collab: Arc<Collab>,
+        contents: Arc<dyn Contents>,
+        release: Arc<tokio::sync::Notify>,
+        create: tokio::task::JoinHandle<Result<ContentsModel>>,
+        /// The path the create makes.
+        new_path: &'static str,
+        stale_id: String,
+        other_id: String,
+    }
+
+    impl HeldCreate {
+        async fn new(copy: bool) -> Self {
+            let (dir, collab, contents, wrote, release) = gated(false).await;
+            let root = dir.path();
+            std::fs::create_dir(root.join("sub")).unwrap();
+            std::fs::create_dir(root.join("other")).unwrap();
+            std::fs::write(root.join("other/x.ipynb"), NOTEBOOK).unwrap();
+            let (other_id, _) = collab.index("other/x.ipynb").await;
+            collab
+                .set_grant(other_id.clone(), Some(GRANT.into()))
+                .await
+                .unwrap();
+            let new_path = if copy {
+                "sub/a.ipynb"
+            } else {
+                "sub/Untitled.ipynb"
+            };
+            let (stale_id, _) = collab.index(new_path).await;
+            collab
+                .set_grant(stale_id.clone(), Some(GRANT.into()))
+                .await
+                .unwrap();
+            let k = contents.clone();
+            let create = tokio::spawn(async move {
+                if copy {
+                    k.copy("a.ipynb", Some("sub")).await
+                } else {
+                    k.new_untitled("sub", ContentType::Notebook, Some(".ipynb"))
+                        .await
+                }
+            });
+            wrote.notified().await;
+            HeldCreate {
+                _dir: dir,
+                collab,
+                contents,
+                release,
+                create,
+                new_path,
+                stale_id,
+                other_id,
+            }
+        }
+
+        /// Lets the create end, and checks it made the path.
+        async fn finish(self) {
+            self.release.notify_one();
+            let model = self.create.await.unwrap().unwrap();
+            assert_eq!(model.path, self.new_path);
+        }
+    }
+
+    /// A command for a room that reports when it has loaded.
+    fn room_cmd() -> crate::collab::Cmd {
+        crate::collab::Cmd::With(Box::new(|_: &mut ganymede_documents::Room| {
+            Default::default()
+        }))
+    }
+
+    fn room_id(id: &str) -> String {
+        format!("json:notebook:{id}")
+    }
+
+    /// While a copy or a new untitled file is made in `sub`, the lookups
+    /// of files elsewhere don't wait: a grant read, a path-and-grant read,
+    /// an index and a room open.
     #[tokio::test]
-    async fn a_copy_into_a_directory_holds_the_locks_until_it_is_done() {
+    async fn a_create_does_not_hold_up_lookups_elsewhere() {
+        for copy in [true, false] {
+            let held = HeldCreate::new(copy).await;
+            let c = &held.collab;
+            let what = if copy { "copy" } else { "new untitled" };
+            assert!(tokio::time::timeout(LONG, c.grant("other/x.ipynb"))
+                .await
+                .unwrap_or_else(|_| panic!("a grant read waited for the {what}"))
+                .is_some());
+            let found = tokio::time::timeout(LONG, c.path_and_grant(&held.other_id))
+                .await
+                .unwrap_or_else(|_| panic!("a path-and-grant read waited for the {what}"));
+            assert_eq!(found.unwrap().0, "other/x.ipynb");
+            let indexed = tokio::time::timeout(
+                LONG,
+                c.index_existing(&held.contents, "other/x.ipynb", GetOptions::default()),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("an index waited for the {what}"))
+            .unwrap();
+            assert_eq!(indexed, (held.other_id.clone(), false));
+            let room = tokio::time::timeout(
+                LONG,
+                crate::collab::send_to_notebook_room(
+                    c,
+                    &held.contents,
+                    &room_id(&held.other_id),
+                    room_cmd(),
+                ),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("a room open waited for the {what}"));
+            assert!(room.is_some());
+            held.finish().await;
+        }
+    }
+
+    /// A create holds the move lock and its directory until its new path
+    /// is forgotten: a rename waits, and so does a grant read at the new
+    /// path, which finds no stale grant.
+    #[tokio::test]
+    async fn a_create_holds_the_locks_until_it_is_done() {
+        for copy in [true, false] {
+            let held = HeldCreate::new(copy).await;
+            let c = &held.collab;
+            assert!(
+                tokio::time::timeout(SHORT, c.begin_move()).await.is_err(),
+                "the move lock is held ({copy})"
+            );
+            assert!(
+                tokio::time::timeout(SHORT, c.stamps.begin_rename("sub", "sub2"))
+                    .await
+                    .is_err(),
+                "the write is registered on the directory ({copy})"
+            );
+            let k = c.clone();
+            let path = held.new_path;
+            let read = tokio::spawn(async move { k.grant(path).await });
+            tokio::time::sleep(SHORT).await;
+            assert!(!read.is_finished(), "a grant read waits ({copy})");
+            held.release.notify_one();
+            let release_done = held.create;
+            release_done.await.unwrap().unwrap();
+            assert_eq!(read.await.unwrap(), None, "no stale grant ({copy})");
+        }
+    }
+
+    /// A path-and-grant read of the id a create's path had before waits
+    /// for it, and then finds the id gone, not its stale grant.
+    #[tokio::test]
+    async fn a_path_and_grant_read_at_the_new_path_waits_for_the_create() {
+        for copy in [true, false] {
+            let held = HeldCreate::new(copy).await;
+            let (k, id) = (held.collab.clone(), held.stale_id.clone());
+            let read = tokio::spawn(async move { k.path_and_grant(&id).await });
+            tokio::time::sleep(SHORT).await;
+            assert!(!read.is_finished(), "waits for the create ({copy})");
+            let collab = held.collab.clone();
+            let stale = held.stale_id.clone();
+            held.finish().await;
+            assert_eq!(read.await.unwrap(), None, "the stale id is gone ({copy})");
+            assert_eq!(collab.path_of(&stale).await, None);
+        }
+    }
+
+    /// Indexing the new path waits for the create, and then gets a fresh
+    /// id, not the stale one the create forgot.
+    #[tokio::test]
+    async fn indexing_the_new_path_waits_for_the_create() {
+        for copy in [true, false] {
+            let held = HeldCreate::new(copy).await;
+            let (k, contents, path) = (held.collab.clone(), held.contents.clone(), held.new_path);
+            let index = tokio::spawn(async move {
+                k.index_existing(&contents, path, GetOptions::default())
+                    .await
+            });
+            tokio::time::sleep(SHORT).await;
+            assert!(!index.is_finished(), "waits for the create ({copy})");
+            let stale = held.stale_id.clone();
+            held.finish().await;
+            let (id, fresh) = index.await.unwrap().unwrap();
+            assert!(fresh, "a new id ({copy})");
+            assert_ne!(id, stale, "not the stale one ({copy})");
+        }
+    }
+
+    /// Opening a room by the id a create's path had before waits for the
+    /// create, and then finds the id gone: no room opens on the new file
+    /// under the stale id.
+    #[tokio::test]
+    async fn a_room_open_at_the_new_path_waits_for_the_create() {
+        for copy in [true, false] {
+            let held = HeldCreate::new(copy).await;
+            let (k, contents) = (held.collab.clone(), held.contents.clone());
+            let room = room_id(&held.stale_id);
+            let open = tokio::spawn(async move {
+                crate::collab::send_to_notebook_room(&k, &contents, &room, room_cmd())
+                    .await
+                    .is_some()
+            });
+            tokio::time::sleep(SHORT).await;
+            assert!(!open.is_finished(), "waits for the create ({copy})");
+            assert_eq!(held.collab.open_rooms(), 0);
+            let collab = held.collab.clone();
+            held.finish().await;
+            assert!(!open.await.unwrap(), "no room for a gone id ({copy})");
+            assert_eq!(collab.open_rooms(), 0, "no room opened ({copy})");
+        }
+    }
+
+    /// A delete and a rename wait for a create in progress, which holds
+    /// the move lock too.
+    #[tokio::test]
+    async fn a_delete_and_a_rename_wait_for_a_create() {
+        for rename in [false, true] {
+            let held = HeldCreate::new(true).await;
+            let (k, contents) = (held.collab.clone(), held.contents.clone());
+            let op = tokio::spawn(async move {
+                if rename {
+                    k.rename(&contents, "other/x.ipynb", "other/y.ipynb")
+                        .await
+                        .map(drop)
+                } else {
+                    k.delete(&contents, "other/x.ipynb").await
+                }
+            });
+            tokio::time::sleep(SHORT).await;
+            assert!(!op.is_finished(), "waits for the create (rename {rename})");
+            assert!(held._dir.path().join("other/x.ipynb").exists());
+            held.release.notify_one();
+            held.create.await.unwrap().unwrap();
+            op.await.unwrap().unwrap();
+        }
+    }
+
+    /// A copy or a new untitled file in the root holds up no lookup of a
+    /// path in a folder, though one of a top-level path waits.
+    #[tokio::test]
+    async fn a_create_in_the_root_does_not_hold_up_lookups_in_folders() {
+        for (kind, new_path) in [
+            ("copy with no directory", "a-Copy1.ipynb"),
+            ("copy into the root", "a-Copy1.ipynb"),
+            ("new untitled", "Untitled.ipynb"),
+        ] {
+            let (dir, collab, contents, wrote, release) = gated(false).await;
+            std::fs::create_dir(dir.path().join("other")).unwrap();
+            std::fs::write(dir.path().join("other/x.ipynb"), NOTEBOOK).unwrap();
+            let (id, _) = collab.index("other/x.ipynb").await;
+            collab
+                .set_grant(id.clone(), Some(GRANT.into()))
+                .await
+                .unwrap();
+            let k = contents.clone();
+            let create = tokio::spawn(async move {
+                match kind {
+                    "copy with no directory" => k.copy("a.ipynb", None).await,
+                    "copy into the root" => k.copy("a.ipynb", Some("")).await,
+                    _ => {
+                        k.new_untitled("", ContentType::Notebook, Some(".ipynb"))
+                            .await
+                    }
+                }
+            });
+            wrote.notified().await;
+            let c = &collab;
+            assert!(tokio::time::timeout(LONG, c.grant("other/x.ipynb"))
+                .await
+                .unwrap_or_else(|_| panic!("a grant read waited ({kind})"))
+                .is_some());
+            let found = tokio::time::timeout(LONG, c.path_and_grant(&id))
+                .await
+                .unwrap_or_else(|_| panic!("a path-and-grant read waited ({kind})"));
+            assert_eq!(found.unwrap().0, "other/x.ipynb");
+            let indexed = tokio::time::timeout(
+                LONG,
+                c.index_existing(&contents, "other/x.ipynb", GetOptions::default()),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("an index waited ({kind})"))
+            .unwrap();
+            assert_eq!(indexed, (id.clone(), false));
+            let room = tokio::time::timeout(
+                LONG,
+                crate::collab::send_to_notebook_room(c, &contents, &room_id(&id), room_cmd()),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("a room open waited ({kind})"));
+            assert!(room.is_some());
+            // A top-level path does wait.
+            let (k, top) = (collab.clone(), "zzz.ipynb");
+            let read = tokio::spawn(async move { k.grant(top).await });
+            tokio::time::sleep(SHORT).await;
+            assert!(!read.is_finished(), "a top-level read waits ({kind})");
+            release.notify_one();
+            let model = create.await.unwrap().unwrap();
+            assert_eq!(model.path, new_path, "{kind}");
+            read.await.unwrap();
+        }
+    }
+
+    /// Overlapping creates in one directory don't starve a lookup parked
+    /// behind the first: it goes ahead before the second create's claim
+    /// lands, not after both are done.
+    #[tokio::test]
+    async fn overlapping_creates_do_not_starve_a_lookup() {
+        let held = HeldCreate::new(true).await;
+        let c = held.collab.clone();
+        let read = tokio::spawn({
+            let c = c.clone();
+            async move { c.grant("sub/x.ipynb").await }
+        });
+        tokio::time::sleep(SHORT).await;
+        assert!(!read.is_finished(), "parked behind the first create");
+        let second = tokio::spawn({
+            let k = held.contents.clone();
+            async move { k.copy("a.ipynb", Some("sub")).await }
+        });
+        tokio::time::sleep(SHORT).await;
+        // The first create ends; the second is in the gate or still waiting
+        // for the lookup, which must not stay behind it.
+        held.release.notify_one();
+        tokio::time::timeout(LONG, read)
+            .await
+            .expect("the lookup goes ahead while the second create is held")
+            .unwrap();
+        held.release.notify_one();
+        held.create.await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+    }
+
+    /// A new folder's contents are looked up inside it: a grant read there
+    /// waits for the create, though it is not a direct child of `sub`,
+    /// while lookups of paths elsewhere, `other` and the root's, go on.
+    #[tokio::test]
+    async fn a_new_folder_holds_back_lookups_inside_it() {
         let (dir, collab, contents, wrote, release) = gated(false).await;
         std::fs::create_dir(dir.path().join("sub")).unwrap();
-        // A grant with no stamp, left at the new path by a deleted file.
-        let (id, _) = collab.index("sub/a.ipynb").await;
-        collab.set_grant(id, Some(GRANT.into())).await.unwrap();
-        let copy = tokio::spawn(async move { contents.copy("a.ipynb", Some("sub")).await });
+        std::fs::create_dir(dir.path().join("other")).unwrap();
+        std::fs::write(dir.path().join("other/x.ipynb"), NOTEBOOK).unwrap();
+        let (id, _) = collab.index("other/x.ipynb").await;
+        collab
+            .set_grant(id.clone(), Some(GRANT.into()))
+            .await
+            .unwrap();
+        let k = contents.clone();
+        let create =
+            tokio::spawn(async move { k.new_untitled("sub", ContentType::Directory, None).await });
         wrote.notified().await;
-        let timeout = std::time::Duration::from_millis(50);
-        assert!(
-            tokio::time::timeout(timeout, collab.begin_move())
-                .await
-                .is_err(),
-            "the move lock is held"
-        );
-        assert!(
-            tokio::time::timeout(timeout, collab.stamps.begin_rename("sub", "sub2"))
-                .await
-                .is_err(),
-            "the write is registered on the directory"
-        );
         let c = collab.clone();
-        let read = tokio::spawn(async move { c.grant("sub/a.ipynb").await });
-        tokio::time::sleep(timeout).await;
-        assert!(!read.is_finished(), "a grant read waits for the copy");
+        let read = tokio::spawn(async move { c.grant("sub/Untitled Folder/x.ipynb").await });
+        tokio::time::sleep(SHORT).await;
+        assert!(!read.is_finished(), "waits for the new folder");
+        let c = &collab;
+        assert!(tokio::time::timeout(LONG, c.grant("other/x.ipynb"))
+            .await
+            .expect("a grant read elsewhere waited")
+            .is_some());
+        assert_eq!(
+            tokio::time::timeout(LONG, c.path_and_grant(&id))
+                .await
+                .expect("a path-and-grant read elsewhere waited")
+                .unwrap()
+                .0,
+            "other/x.ipynb"
+        );
+        let indexed = tokio::time::timeout(
+            LONG,
+            c.index_existing(&contents, "other/x.ipynb", GetOptions::default()),
+        )
+        .await
+        .expect("an index elsewhere waited")
+        .unwrap();
+        assert_eq!(indexed, (id.clone(), false));
+        let room = tokio::time::timeout(
+            LONG,
+            crate::collab::send_to_notebook_room(c, &contents, &room_id(&id), room_cmd()),
+        )
+        .await
+        .expect("a room open elsewhere waited");
+        assert!(room.is_some());
+        assert!(!read.is_finished(), "still waiting for the new folder");
         release.notify_one();
-        copy.await.unwrap().unwrap();
-        assert_eq!(read.await.unwrap(), None, "no stale grant");
+        let model = create.await.unwrap().unwrap();
+        assert_eq!(model.path, "sub/Untitled Folder");
+        assert_eq!(read.await.unwrap(), None);
+    }
+
+    /// A copy with no directory goes beside its source, and claims the
+    /// source's directory: reads of other files directly in it wait,
+    /// others don't. A source in the root claims the top-level paths only.
+    #[tokio::test]
+    async fn a_copy_beside_its_source_claims_the_sources_directory() {
+        for (source, under, elsewhere) in [
+            ("sub/b.ipynb", "sub/zzz.ipynb", "other/x.ipynb"),
+            ("a.ipynb", "zzz.ipynb", "other/x.ipynb"),
+        ] {
+            let (dir, collab, contents, wrote, release) = gated(false).await;
+            let root = dir.path();
+            std::fs::create_dir(root.join("sub")).unwrap();
+            std::fs::create_dir(root.join("other")).unwrap();
+            std::fs::write(root.join("sub/b.ipynb"), NOTEBOOK).unwrap();
+            let (id, _) = collab.index("other/x.ipynb").await;
+            collab.set_grant(id, Some(GRANT.into())).await.unwrap();
+            let k = contents.clone();
+            let copy = tokio::spawn(async move { k.copy(source, None).await });
+            wrote.notified().await;
+            let c = collab.clone();
+            let read = tokio::spawn(async move { c.grant(under).await });
+            tokio::time::sleep(SHORT).await;
+            assert!(!read.is_finished(), "a read beside {source} waits");
+            tokio::time::timeout(LONG, collab.grant(elsewhere))
+                .await
+                .expect("a read in another directory goes on");
+            release.notify_one();
+            copy.await.unwrap().unwrap();
+            read.await.unwrap();
+        }
     }
 
     /// A path-and-grant read waits for the move lock, as a grant read does.

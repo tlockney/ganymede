@@ -16,6 +16,7 @@ pub mod host;
 pub mod lab;
 pub mod mcp;
 pub mod metrics;
+mod path_locks;
 pub(crate) mod room_lock;
 mod room_ops;
 pub mod routes;

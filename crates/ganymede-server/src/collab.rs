@@ -38,6 +38,7 @@
 //! one, so they survive restarts, and moved by renames through the
 //! contents API, which also move open rooms.
 
+use crate::path_locks::Scope;
 use crate::routes::{origin_allowed, HttpError, LenientJson};
 use crate::watch::{Watch, Watcher};
 use crate::AppState;
@@ -110,11 +111,27 @@ pub struct Collab {
     /// looked up without the lock can be checked before a room opens on it.
     moves: AtomicU64,
     /// Held for writing by a rename or delete through the contents API,
-    /// from its disk change until the ids follow ([`Collab::begin_move`]),
-    /// and for reading by a room opening across its path lookup and by
-    /// [`Collab::index_existing`], so no room opens and no id is made for a
-    /// path that is moving away or going (#522, #574).
+    /// and by [`file_gone`], from the disk change until the ids follow
+    /// ([`Collab::begin_move`]). Held for reading by a room opening across
+    /// its path lookup, by [`Collab::index_existing`], by a grant read, and
+    /// by a copy into a directory or a new untitled file for the whole
+    /// create ([`Collab::begin_create`]). So no room opens and no id is
+    /// made for a path that is moving away or going (#522, #574), and no
+    /// rename or delete lands during a create, which waits for them in
+    /// turn. Readers don't wait for each other, but the lock is fair: a
+    /// reader arriving while a writer waits queues behind it.
     move_lock: tokio::sync::RwLock<()>,
+    /// What keeps a lookup from a path a create is about to make. A
+    /// create claims the direct children of its directory here (a new
+    /// folder: its directory's whole subtree), from before the file is
+    /// made until [`Collab::forget_new_file`] is done;
+    /// a grant read, an [`Collab::index_existing`] and a room opening
+    /// register the path they read, which waits while a create claims its
+    /// directory, and a create waits for the lookups registered directly in
+    /// its directory. A lookup of any other path, the root's included, is
+    /// never held up. Taken after `move_lock`, and
+    /// nothing takes `move_lock` while holding it.
+    lookups: Arc<crate::path_locks::PathLocks>,
     next_conn: AtomicU64,
     /// How long a room with no clients is kept: [`CLEANUP_DELAY`].
     cleanup_delay: Duration,
@@ -149,6 +166,7 @@ impl Collab {
             rooms: Mutex::default(),
             moves: AtomicU64::new(0),
             move_lock: tokio::sync::RwLock::new(()),
+            lookups: Arc::default(),
             next_conn: AtomicU64::new(1),
             cleanup_delay: CLEANUP_DELAY,
             heartbeat: (PING_INTERVAL, IDLE_TIMEOUT),
@@ -231,9 +249,11 @@ impl Collab {
     /// its file is still the one it was granted to: one whose file was
     /// changed outside the server is dropped (#767).
     pub async fn grant(&self, path: &str) -> Option<String> {
-        // Not while a copy or a new file is being made and its path forgotten.
         let _no_move = self.move_lock.read().await;
         let path = normalize_api_path(path);
+        // Not while a copy or a new file is being made in the directory
+        // and its path forgotten: a grant stored there is stale.
+        let _lookup = self.lookups.register(&[&path]).await;
         let stamps = self.stamps.clone();
         self.with_ids(move |ids| {
             let id = ids.get(&path)?;
@@ -244,17 +264,30 @@ impl Collab {
 
     /// The path the file with id `id` has now and its host API grant,
     /// checked as [`Collab::grant`] does, read together, so no rename
-    /// lands between them; `None` once it's gone.
+    /// lands between them; `None` once it's gone. The path is registered
+    /// as a grant read does, once known, and read again under it; a path
+    /// that changed meanwhile starts over.
     pub async fn path_and_grant(&self, id: &str) -> Option<(String, Option<String>)> {
         let _no_move = self.move_lock.read().await;
-        let id = id.to_string();
-        let stamps = self.stamps.clone();
-        self.with_ids(move |ids| {
-            let path = ids.path(&id)?;
-            let grant = checked_grant(ids, &stamps, &id, &path);
-            Some((path, grant))
-        })
-        .await
+        loop {
+            let path = self.path_of(id).await?;
+            let _lookup = self.lookups.register(&[&path]).await;
+            let (id, stamps) = (id.to_string(), self.stamps.clone());
+            let found = self
+                .with_ids(move |ids| {
+                    let path = ids.path(&id)?;
+                    let grant = checked_grant(ids, &stamps, &id, &path);
+                    Some((path, grant))
+                })
+                .await?;
+            // Under the read lock and the registration, the path can't
+            // change in this process: only another process sharing the
+            // file-id database could move it. Kept for that, and no
+            // test holds it.
+            if found.0 == path {
+                return Some(found);
+            }
+        }
     }
 
     /// Before the server writes the file at `path`: drops its grant if the
@@ -349,9 +382,14 @@ impl Collab {
     }
 
     /// A file was just made at `path`, by a copy or `new_untitled`, under
-    /// [`Collab::begin_move`]'s lock: it has no grant, whatever is stored
-    /// at the path under this root or another, left by a file deleted
-    /// outside, so those go, and rooms open on the path close.
+    /// [`Collab::begin_create`]'s guard: it has no grant, whatever is
+    /// stored at the path under this root or another, left by a file
+    /// deleted outside, so those go, and rooms open on the path close.
+    /// The guard holds the move lock for reading, so no rename, delete or
+    /// [`file_gone`] lands meanwhile, and claims the directory's
+    /// children (a new folder: its directory's whole subtree), so no
+    /// grant read, index or room open at a path directly in it looks at
+    /// the path before this is done.
     pub(crate) async fn forget_new_file(&self, path: &str) {
         self.removed(path).await;
         self.removed_in_other_roots(path).await;
@@ -381,7 +419,9 @@ impl Collab {
     /// has one matching `options` (a notebook, say), or the contents
     /// error. Under [`Collab::begin_move`]'s lock for reading, so no
     /// rename or delete through the contents API lands between the check
-    /// and the id: a path that is gone never gets one.
+    /// and the id: a path that is gone never gets one. The path is
+    /// registered as a grant read does, so a file being made at it
+    /// doesn't get the id of a stale one.
     pub(crate) async fn index_existing(
         &self,
         contents: &Arc<dyn Contents>,
@@ -393,6 +433,7 @@ impl Collab {
         // queued rename or delete, and rooms behind that. Releasing the
         // guard before the insert would let a gone path get an id again.
         let _no_move = self.move_lock.read().await;
+        let _lookup = self.lookups.register(&[path]).await;
         contents.get(path, options).await?;
         Ok(self.index(path).await)
     }
@@ -480,6 +521,29 @@ impl Collab {
     /// the same way, until [`Collab::removed`] (#574).
     pub(crate) async fn begin_move(&self) -> tokio::sync::RwLockWriteGuard<'_, ()> {
         self.move_lock.write().await
+    }
+
+    /// A file is about to be made in the directory `dir` by a copy or
+    /// `new_untitled`, at a path not known until it is. Until the guard
+    /// drops, after [`Collab::forget_new_file`]: no rename, delete or
+    /// [`file_gone`] lands (the move lock, for reading, which a rename
+    /// waits on for writing), and no grant read, index or room open at a
+    /// path directly in `dir` (`""` for the root) looks at it, as it could
+    /// still have the stale id or grant of a file deleted outside. A new
+    /// file is one of these; a new folder's contents are deeper, so
+    /// those creates claim the whole subtree. Looks elsewhere go on.
+    ///
+    /// `scope` is [`Scope::Children`] for a file, which is a direct child
+    /// of `dir`, and [`Scope::Subtree`] when the new path may be a folder,
+    /// whose ids and grants [`Collab::forget_new_file`] drops under the
+    /// whole prefix, so a lookup inside it must wait too.
+    pub(crate) async fn begin_create(&self, dir: &str, scope: Scope) -> Creating<'_> {
+        let moves = self.move_lock.read().await;
+        let claim = self.lookups.claim_scoped(&[dir], scope).await;
+        Creating {
+            _claim: claim,
+            _moves: moves,
+        }
     }
 
     /// `old` (a file or directory) was renamed to `new` through the
@@ -929,15 +993,23 @@ async fn serve_socket(
     let _ = room.send(Cmd::Leave(conn));
 }
 
+/// A file being made in a directory, until dropped: see
+/// [`Collab::begin_create`].
+pub(crate) struct Creating<'a> {
+    _claim: crate::path_locks::Claimed,
+    _moves: tokio::sync::RwLockReadGuard<'a, ()>,
+}
+
 /// Send `cmd` to `room_id`, opening the room if needed, and return its
 /// sender: the one way into a room, for websocket clients and for the
 /// server's own callers. An open room takes `cmd` with no path lookup;
 /// an entry whose task has stopped is replaced by a fresh room. Opening a
 /// notebook room (`file_id` given) looks its path up holding
 /// [`Collab::begin_move`]'s lock for reading, so no rename is between its
-/// disk change and the ids; a rename or delete finished meanwhile changes
-/// `moves`, and the path is looked up again. `None` when the file id is
-/// gone.
+/// disk change and the ids, and the path registered in `lookups`, so no
+/// file is being made at it, until the room is open; a rename or delete
+/// finished meanwhile changes `moves`, and the path is looked up again.
+/// `None` when the file id is gone.
 async fn send_to_room(
     collab: &Arc<Collab>,
     contents: &Arc<dyn Contents>,
@@ -967,12 +1039,24 @@ async fn send_to_room(
         }
         let id = file_id?;
         let _no_rename = collab.move_lock.read().await;
-        let read = collab.moves.load(Ordering::SeqCst);
-        let path = collab.path_of(id).await?;
+        // The path is only known once looked up: register it, which waits
+        // while a create claims a directory above it, and look again. A
+        // path that is the same under the registration can't be one a
+        // create is about to make.
+        let (path, _lookup, read) = loop {
+            let path = collab.path_of(id).await?;
+            let lookup = collab.lookups.register(&[&path]).await;
+            let read = collab.moves.load(Ordering::SeqCst);
+            if collab.path_of(id).await? == path {
+                break (path, lookup, read);
+            }
+        };
         let mut rooms = collab.rooms.lock().expect("rooms");
         // The read lock keeps out renames and deletes through the contents
         // API; a change here could only come from a caller of `removed`
-        // that skips `begin_move`. Look the id up again to be safe.
+        // that doesn't hold it for writing. `forget_new_file`, which a
+        // create runs under the read lock, is one, and it may have
+        // dropped the id: the loop just starts over and looks it up again.
         if !rooms.contains_key(room_id) && collab.moves.load(Ordering::SeqCst) != read {
             continue;
         }
