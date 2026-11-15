@@ -25,8 +25,9 @@ use std::sync::{Arc, Mutex};
 /// Where the contents are on disk, and which of their files are being
 /// written by the server now.
 pub(crate) struct Stamps {
-    /// `None` when the contents are not a local directory: nothing is
-    /// stamped or checked.
+    /// `None` when the contents are not a local directory: no file has a
+    /// stamp, so a look finds every file missing and nothing is stamped.
+    /// Saves still take turns and are marked in flight.
     root: Option<PathBuf>,
     saving: Mutex<Saving>,
     turns: Turns,
@@ -1311,6 +1312,23 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(at_proj.grant("a.ipynb").await, None);
+    }
+
+    /// A rename of a file onto itself keeps its grants, under this root
+    /// and another.
+    #[tokio::test]
+    async fn a_rename_onto_itself_keeps_the_grants() {
+        let (_dir, proj, at_top, at_proj, contents) = two_roots();
+        std::fs::write(proj.join("a.ipynb"), "{}").unwrap();
+        for (c, p) in [(&at_top, "proj/a.ipynb"), (&at_proj, "a.ipynb")] {
+            let (id, _) = c.index(p).await;
+            c.set_grant(id, Some(GRANT.into())).await.unwrap();
+        }
+        let _ = at_top
+            .rename(&contents, "proj/a.ipynb", "proj/a.ipynb")
+            .await;
+        assert!(at_top.grant("proj/a.ipynb").await.is_some(), "own root");
+        assert!(at_proj.grant("a.ipynb").await.is_some(), "other root");
     }
 
     /// A file renamed onto a path another root holds a grant on, left by

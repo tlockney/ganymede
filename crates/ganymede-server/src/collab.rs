@@ -431,6 +431,10 @@ impl Collab {
         let (collab, contents) = (self.clone(), contents.clone());
         let (old, new) = (old.to_string(), new.to_string());
         detached(async move {
+            // A rename onto itself moves nothing: the ids and grants stay.
+            if normalize_api_path(&old) == normalize_api_path(&new) {
+                return contents.rename(&old, &new).await;
+            }
             let _moving = collab.begin_move().await;
             // Saves of any path, so of every file under a directory
             // renamed, finish first and wait. Taken after the move lock,
@@ -439,6 +443,10 @@ impl Collab {
             // A file replaced outside loses its grant before the rename,
             // which would otherwise stamp the new file as the old one.
             let seen = collab.check_for_write(&old).await;
+            // The same for the grants other roots hold on it. Both
+            // restamps are only visible on a filesystem where a rename
+            // changes the stamp, so no test can see them on Linux.
+            let others = collab.check_others(&old).await;
             // A grant check mustn't look between the rename and the new
             // stamp, on a filesystem where a rename changes the stamp.
             // No test holds this mark: it is open only across the
@@ -451,6 +459,7 @@ impl Collab {
             if let Err(e) = collab.restamp(&model.path, &seen).await {
                 tracing::warn!("{e}");
             }
+            collab.restamp_others(others).await;
             Ok(model)
         })
         .await
@@ -2272,6 +2281,54 @@ mod join_tests {
             .await
             .unwrap()
             .unwrap_or_else(|_| panic!("{what}"));
+    }
+
+    /// A file made at a path whose id a room is open on closes the room,
+    /// as a delete does: for a new untitled file and a copy.
+    #[tokio::test]
+    async fn a_new_file_closes_the_rooms_open_on_its_path() {
+        for copy in [false, true] {
+            let (dir, contents) = notebook_dir();
+            let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
+            let stamped = collab.stamping(contents.clone());
+            let stale = if copy {
+                "a-Copy1.ipynb"
+            } else {
+                "Untitled.ipynb"
+            };
+            std::fs::copy(dir.path().join("a.ipynb"), dir.path().join(stale)).unwrap();
+            let (id, _) = collab.index(stale).await;
+            let (cmd, rx) = report_loaded();
+            let room_id = format!("json:notebook:{id}");
+            let tx = send_to_room(&collab, &contents, &room_id, Some(&id), cmd)
+                .await
+                .unwrap();
+            loads(rx, "the room loaded").await;
+            // Deleted outside, and made anew through the server.
+            std::fs::remove_file(dir.path().join(stale)).unwrap();
+            if copy {
+                stamped.copy("a.ipynb", None).await.unwrap();
+            } else {
+                stamped
+                    .new_untitled("", ContentType::Notebook, Some(".ipynb"))
+                    .await
+                    .unwrap();
+            }
+            assert!(dir.path().join(stale).is_file(), "made at {stale}");
+            let mut closed = false;
+            for _ in 0..40 {
+                let (cmd, rx) = report_loaded();
+                if tx.send(cmd).is_err()
+                    || tokio::time::timeout(Duration::from_millis(50), rx)
+                        .await
+                        .is_ok_and(|r| r.is_err())
+                {
+                    closed = true;
+                    break;
+                }
+            }
+            assert!(closed, "the room on {stale} stayed open (copy: {copy})");
+        }
     }
 
     /// A join after a rename opens the room on the new path, not on the

@@ -100,7 +100,7 @@ root's ids and those of every other root above both paths that has an id
 under the old one (`FileIds::moved_in_other_roots`, a file or a
 directory), so their grants follow; a rename out of such a root (the new
 path isn't under it) drops that root's ids and grants, as a delete does. The stamp doesn't depend on the path, so they need
-no restamp. A rename takes the write side of a lock that every save, restore
+no restamp. A rename onto itself does nothing. A rename takes the write side of a lock that every save, restore
 and copy holds for reading, after the move lock, so it waits for the saves in
 flight under either path, files or a directory's, and none begins meanwhile;
 a save in flight when it lands finishes and restamps first.
@@ -138,5 +138,6 @@ writing while it waits for the write side of the tree lock, so the server's
 room opens and deletes pause for as long as the slowest save in flight; a
 per-path or per-prefix wait would avoid that. The cleanup that keeps the
 table of remembered paths to 256 resets a floor that voids looks begun
-before it, which are made again a few times, and which give up and keep the
-grant if cleanups keep coming.
+before it, which are made again a few times, and then give up as unstable: a read
+keeps the grant, but a check before a write returns no stamp, so the save
+restamps nothing and the grant is dropped on its next read.
