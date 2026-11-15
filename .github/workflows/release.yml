@@ -169,7 +169,7 @@ jobs:
         run: |
           bin="target/$TARGET/release/ganymede"
           if [[ "$TARGET" == *apple* ]]; then strip -x "$bin"; else strip "$bin"; fi
-      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-about
       - name: Third-party notices for this target's dependency tree
@@ -250,7 +250,7 @@ jobs:
           key: xcframework
       - name: Build
         run: scripts/build-xcframework.sh
-      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-about
       # The zip redistributes ganymede-ffi's dependencies, so their
