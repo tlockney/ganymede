@@ -51,13 +51,10 @@ struct Writes {
 
 /// Whether the prefix `pre` covers `path`: the path itself, anything
 /// under it as a directory, or everything for the root's empty prefix.
-/// Both are normalized API paths.
+/// Both are normalized API paths. The rule is the one file ids follow for
+/// renames, [`ganymede_contents::path_under`].
 fn covers(pre: &str, path: &str) -> bool {
-    pre.is_empty()
-        || path == pre
-        || path
-            .strip_prefix(pre)
-            .is_some_and(|rest| rest.starts_with('/'))
+    ganymede_contents::path_under(path, pre).is_some()
 }
 
 impl Writes {
@@ -165,7 +162,7 @@ struct PathSaves {
 }
 
 /// The most paths remembered once their saves are over: a cleanup drops
-/// them all when more are.
+/// them all, but the one that just ended, when more are.
 const REMEMBERED: usize = 256;
 
 /// How many times a look is made again after a cleanup of those.
@@ -191,14 +188,18 @@ impl Drop for SaveGuard {
         }
         if s.quiet > REMEMBERED {
             let mut floor = s.floor;
-            s.paths.retain(|_, p| {
-                let keep = p.in_flight > 0;
+            // The path that just ended stays, so the floor is the end of
+            // an older one and a look begun before this end, but after
+            // every older end, isn't voided.
+            let ended = &self.path;
+            s.paths.retain(|path, p| {
+                let keep = p.in_flight > 0 || path == ended;
                 if !keep {
                     floor = floor.max(p.last);
                 }
                 keep
             });
-            s.quiet = 0;
+            s.quiet = 1;
             s.floor = floor;
         }
     }
@@ -1044,11 +1045,26 @@ mod tests {
         assert_eq!(stamps.lock().floor, 0, "nothing was forgotten");
         drop(guards);
         assert!(matches!(stamps.look("a.ipynb"), Look::Stamp(_)));
-        // Dropping all of them made more than REMEMBERED quiet: the
-        // floor is that of the latest end, no later.
+    }
+
+    /// A cleanup's floor is the latest end among the paths it dropped,
+    /// not the end that triggered it, so a look begun after the older
+    /// ends and before the last one is only made again if its own path
+    /// was among those dropped.
+    #[test]
+    fn the_floor_is_the_latest_end_of_what_was_dropped() {
+        let stamps = Arc::new(Stamps::new(None));
+        for i in 0..REMEMBERED {
+            drop(stamps.begin(&format!("n{i}.ipynb")));
+        }
+        assert_eq!(stamps.lock().floor, 0, "nothing dropped yet");
+        let last_dropped = stamps.lock().paths["n255.ipynb"].last;
+        drop(stamps.begin("trigger.ipynb"));
         let s = stamps.lock();
-        assert!(s.paths.len() <= REMEMBERED + 10);
-        assert!(s.floor <= s.seq);
+        assert_eq!(s.floor, last_dropped);
+        assert!(s.floor < s.seq);
+        assert_eq!(s.paths.len(), 1, "only the path that just ended stays");
+        assert_eq!(s.quiet, 1);
     }
 
     /// A save of a path that was quiet takes it out of the quiet count.
@@ -1116,6 +1132,83 @@ mod tests {
             "{\"a\": 1}"
         );
         assert!(collab.grant("e/b.ipynb").await.is_some(), "held after");
+    }
+
+    /// A rename of `d` waits for a real copy whose only registration under
+    /// `d` is the destination, a file copied from outside it.
+    #[tokio::test]
+    async fn a_rename_waits_for_a_copy_onto_a_file_under_it() {
+        let (dir, collab, contents) = granted_in_d("b.ipynb").await;
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.ipynb"), "{\"a\": 1}").unwrap();
+        let turn = collab.stamps.turn("d/b.ipynb").await;
+        let k = contents.clone();
+        let copy = tokio::spawn(async move { k.copy("a.ipynb", Some("d/b.ipynb")).await });
+        until_a_write_begins(&collab).await;
+        let (c, k) = (collab.clone(), contents.clone());
+        let rename = tokio::spawn(async move { c.rename(&k, "d", "e").await });
+        tokio::time::sleep(SHORT).await;
+        assert!(!rename.is_finished(), "waits for the copy");
+        drop(turn);
+        copy.await.unwrap().unwrap();
+        rename.await.unwrap().unwrap();
+        assert!(root.join("e/b.ipynb").is_file());
+    }
+
+    /// The same for a copy whose only registration under `d` is its
+    /// source, a file copied onto one outside it.
+    #[tokio::test]
+    async fn a_rename_waits_for_a_copy_from_a_file_under_it() {
+        let (dir, collab, contents) = granted_in_d("a.ipynb").await;
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("x")).unwrap();
+        std::fs::write(root.join("x/b.ipynb"), "{}").unwrap();
+        let turn = collab.stamps.turn("x/b.ipynb").await;
+        let k = contents.clone();
+        let copy = tokio::spawn(async move { k.copy("d/a.ipynb", Some("x/b.ipynb")).await });
+        until_a_write_begins(&collab).await;
+        let (c, k) = (collab.clone(), contents.clone());
+        let rename = tokio::spawn(async move { c.rename(&k, "d", "e").await });
+        tokio::time::sleep(SHORT).await;
+        assert!(!rename.is_finished(), "waits for the copy");
+        drop(turn);
+        copy.await.unwrap().unwrap();
+        rename.await.unwrap().unwrap();
+        assert!(root.join("e/a.ipynb").is_file());
+    }
+
+    /// A copy into a directory registers its source and the directory:
+    /// with no directory given, the source's own.
+    #[tokio::test]
+    async fn a_copy_into_a_directory_registers_its_source_and_directory() {
+        for to_dir in [None, Some("x")] {
+            let (dir, collab, contents, wrote, release) = gated(false).await;
+            let root = dir.path().canonicalize().unwrap();
+            std::fs::create_dir(root.join("d")).unwrap();
+            std::fs::create_dir(root.join("x")).unwrap();
+            std::fs::write(root.join("d/a.ipynb"), "{}").unwrap();
+            let copy = tokio::spawn(async move { contents.copy("d/a.ipynb", to_dir).await });
+            wrote.notified().await;
+            assert!(
+                tokio::time::timeout(SHORT, collab.stamps.begin_rename("d", "e"))
+                    .await
+                    .is_err(),
+                "a rename of d waits for the copy ({to_dir:?})"
+            );
+            if let Some(dir) = to_dir {
+                assert!(
+                    tokio::time::timeout(SHORT, collab.stamps.begin_rename(dir, "y"))
+                        .await
+                        .is_err(),
+                    "a rename of the directory copied into waits too"
+                );
+            }
+            release.notify_one();
+            copy.await.unwrap().unwrap();
+            tokio::time::timeout(LONG, collab.stamps.begin_rename("d", "e"))
+                .await
+                .expect("free once the copy is done");
+        }
     }
 
     /// Contents whose save writes the file, says so, and then waits to be
