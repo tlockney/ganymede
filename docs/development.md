@@ -151,6 +151,18 @@ prompt on known diffs and scores what it catches (on each change to
   and other scripts and workflows), and both `ffi` cells build without
   LTO except on the weekly schedule. The release profile build is also
   `release.yml`'s, on every push to `main` and every tag.
+- **The macOS e2e and workstation cells.** `e2e (macos-latest)` and
+  `workstation (macos-latest)` run their steps only when the change can
+  affect them (the script's `macos` output): anything under `crates/`, the
+  Cargo and toolchain files, `site/install.sh`, `e2e/`, `validation/`,
+  `docs/reference.md`, `docs/mcp-tools.md`, `scripts/test-install.sh`,
+  `scripts/test-workstation.sh`, `ci.yml`, and any path the script doesn't
+  list. A pull request that changes only `evals/`, `plugins/`,
+  `container/`, other scripts or other workflows leaves them as an
+  ubuntu run with every step skipped, under the same check names. A
+  push to `main` that changes code runs them on macOS regardless.
+  `scripts/test-ci-changes.sh` (the `install-script` job) checks the
+  script's outputs; add a case when you add a path.
 - **Actions** are pinned by full commit SHA, with the version in a
   comment. Let Dependabot move them; don't hand-edit a tag back in.
 - **Permissions.** Every workflow starts from `contents: read` (or

@@ -45,7 +45,9 @@ jobs:
   # install-script, workstation) runs on Linux with every step skipped,
   # since a matrix job skipped whole wouldn't report per-cell checks. If
   # this job fails, its output is empty and everything runs. The
-  # schedule and manual runs run everything.
+  # schedule and manual runs run everything. Its `ffi` and `macos` outputs
+  # likewise move the macOS cells of ffi, e2e and workstation to Linux
+  # when the change can't affect them (#457, #841).
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -53,6 +55,7 @@ jobs:
       code: ${{ steps.changes.outputs.code }}
       ffi: ${{ steps.changes.outputs.ffi }}
       deps: ${{ steps.changes.outputs.deps }}
+      macos: ${{ steps.changes.outputs.macos }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -181,38 +184,40 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ needs.changes.outputs.code == 'false' && 'ubuntu-latest' || matrix.os }}
+    runs-on: ${{ (needs.changes.outputs.code == 'false' || (matrix.os == 'macos-latest' && needs.changes.outputs.macos == 'false')) && 'ubuntu-latest' || matrix.os }}
     timeout-minutes: 15
     env:
+      BUILD: ${{ needs.changes.outputs.code != 'false' && (matrix.os != 'macos-latest' || needs.changes.outputs.macos != 'false') }}
       GANYMEDE_E2E_KERNELS: cdp-node,python3
       GANYMEDE_E2E_REQUIRE_JUPYTER: "1"
       GANYMEDE_E2E_LAB: "1"
       GANYMEDE_E2E_UI: "1"
     steps:
-      - if: needs.changes.outputs.code == 'false'
-        run: echo "Only docs, the site or Markdown changed, so nothing to build (#418)."
-      - if: needs.changes.outputs.code != 'false'
+      - if: env.BUILD != 'true'
+        # Quoted: in a plain scalar, " #" would start a YAML comment.
+        run: 'echo "Nothing this job tests changed, so nothing to build (#418, #841)."'
+      - if: env.BUILD == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - if: needs.changes.outputs.code != 'false'
+      - if: env.BUILD == 'true'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
-      - if: needs.changes.outputs.code != 'false'
+      - if: env.BUILD == 'true'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - if: needs.changes.outputs.code != 'false'
+      - if: env.BUILD == 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-      - if: needs.changes.outputs.code != 'false'
+      - if: env.BUILD == 'true'
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
           cache: pip
           # The pins live in this file.
           cache-dependency-path: .github/workflows/ci.yml
-      - if: needs.changes.outputs.code != 'false'
+      - if: env.BUILD == 'true'
         name: Install kernels and the reference implementation
         run: |
           npm install -g "@tlockney/cdp-kernel@$CDP_KERNEL_VERSION"
@@ -226,17 +231,17 @@ jobs:
           # The Python that has the rooms oracle; collab.rs fails if it can't
           # import it, rather than skipping.
           echo "GANYMEDE_E2E_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
-      - if: needs.changes.outputs.code != 'false'
+      - if: env.BUILD == 'true'
         run: cargo run -q -p ganymede-cli -- kernelspec list
       # The whole workspace, so the unit tests also run on macOS.
-      - if: needs.changes.outputs.code != 'false'
+      - if: env.BUILD == 'true'
         name: cargo test --workspace
         run: |
           set -o pipefail
           cargo test --workspace -- --nocapture 2>&1 | tee "$RUNNER_TEMP/test.log"
       # The GANYMEDE_E2E_* variables above already make a missing kernel or
       # Jupyter a failure; this catches any other way a test could skip.
-      - if: needs.changes.outputs.code != 'false'
+      - if: env.BUILD == 'true'
         name: Nothing skipped
         run: |
           if grep -o 'skipping: .*' "$RUNNER_TEMP/test.log"; then
@@ -507,7 +512,9 @@ jobs:
         with:
           persist-credentials: false
       - if: needs.changes.outputs.code != 'false'
-        run: shellcheck -s sh site/install.sh scripts/test-install.sh scripts/test-workstation.sh validation/nb-cli.sh scripts/ci-changes.sh
+        run: shellcheck -s sh site/install.sh scripts/test-install.sh scripts/test-workstation.sh validation/nb-cli.sh scripts/ci-changes.sh scripts/test-ci-changes.sh
+      - if: needs.changes.outputs.code != 'false'
+        run: scripts/test-ci-changes.sh
       - if: needs.changes.outputs.code != 'false'
         run: scripts/test-install.sh sh
       - if: needs.changes.outputs.code != 'false'
@@ -702,29 +709,32 @@ jobs:
         os: [ubuntu-latest]
     runs-on: ${{ needs.changes.outputs.code == 'false' && 'ubuntu-latest' || matrix.os }}
     timeout-minutes: 40
+    env:
+      BUILD: ${{ needs.changes.outputs.code != 'false' }}
     steps: &workstation-steps
-      - if: needs.changes.outputs.code == 'false'
-        run: echo "Only docs, the site or Markdown changed, so nothing to build (#418)."
-      - if: needs.changes.outputs.code != 'false'
+      - if: env.BUILD != 'true'
+        # Quoted: in a plain scalar, " #" would start a YAML comment.
+        run: 'echo "Nothing this job tests changed, so nothing to build (#418, #841)."'
+      - if: env.BUILD == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - if: needs.changes.outputs.code != 'false' && matrix.os == 'ubuntu-latest'
+      - if: env.BUILD == 'true' && matrix.os == 'ubuntu-latest'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ganymede-linux-release
           path: target/release
-      - if: needs.changes.outputs.code != 'false' && matrix.os == 'ubuntu-latest'
+      - if: env.BUILD == 'true' && matrix.os == 'ubuntu-latest'
         run: chmod +x target/release/ganymede
-      - if: needs.changes.outputs.code != 'false' && matrix.os != 'ubuntu-latest'
+      - if: env.BUILD == 'true' && matrix.os != 'ubuntu-latest'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
-      - if: needs.changes.outputs.code != 'false' && matrix.os != 'ubuntu-latest'
+      - if: env.BUILD == 'true' && matrix.os != 'ubuntu-latest'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - if: needs.changes.outputs.code != 'false' && matrix.os != 'ubuntu-latest'
+      - if: env.BUILD == 'true' && matrix.os != 'ubuntu-latest'
         run: cargo build --release --locked -p ganymede-cli
-      - if: needs.changes.outputs.code != 'false'
+      - if: env.BUILD == 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
@@ -736,14 +746,14 @@ jobs:
       # so an apt mirror outage shouldn't fail the job (#686). Bounded:
       # apt takes ~10 minutes to give up, and `timeout` stops npx, not
       # the apt-get it started.
-      - if: needs.changes.outputs.code != 'false'
+      - if: env.BUILD == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cache/ms-playwright
             ~/Library/Caches/ms-playwright
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('validation/package-lock.json') }}
-      - if: needs.changes.outputs.code != 'false'
+      - if: env.BUILD == 'true'
         name: Playwright
         working-directory: validation
         run: |
@@ -757,25 +767,25 @@ jobs:
       # validation/nb-cli.sh. A test tool only, built from crates.io.
       # Restore and save are separate so a failing job still keeps the
       # binary; the scheduled run builds the latest release uncached.
-      - if: needs.changes.outputs.code != 'false' && (env.NB_CLI_VERSION != '')
+      - if: env.BUILD == 'true' && (env.NB_CLI_VERSION != '')
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: nb-cli
         with:
           path: ${{ runner.temp }}/nb-cli
           key: nb-cli-${{ env.NB_CLI_VERSION }}-${{ runner.os }}-${{ runner.arch }}
       # Linux skipped the toolchain above; a miss builds nb-cli on stable.
-      - if: needs.changes.outputs.code != 'false' && matrix.os == 'ubuntu-latest' && steps.nb-cli.outputs.cache-hit != 'true'
+      - if: env.BUILD == 'true' && matrix.os == 'ubuntu-latest' && steps.nb-cli.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
-      - if: needs.changes.outputs.code != 'false' && (steps.nb-cli.outputs.cache-hit != 'true')
+      - if: env.BUILD == 'true' && (steps.nb-cli.outputs.cache-hit != 'true')
         run: cargo install nb-cli ${NB_CLI_VERSION:+--version "$NB_CLI_VERSION"} --locked --root "$RUNNER_TEMP/nb-cli"
-      - if: needs.changes.outputs.code != 'false' && (env.NB_CLI_VERSION != '' && steps.nb-cli.outputs.cache-hit != 'true')
+      - if: env.BUILD == 'true' && (env.NB_CLI_VERSION != '' && steps.nb-cli.outputs.cache-hit != 'true')
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/nb-cli
           key: nb-cli-${{ env.NB_CLI_VERSION }}-${{ runner.os }}-${{ runner.arch }}
-      - if: needs.changes.outputs.code != 'false'
+      - if: env.BUILD == 'true'
         name: Install and use Ganymede with no Python on PATH
         run: scripts/test-workstation.sh target/release/ganymede
         env:
@@ -785,16 +795,16 @@ jobs:
       # macOS runner of their own. They run even if the workstation test
       # failed. bash stands in for dash, which macOS lacks; TEST_KERNEL
       # goes last since it changes the global npm packages.
-      - if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && matrix.os == 'macos-latest' }}
+      - if: ${{ !cancelled() && env.BUILD == 'true' && matrix.os == 'macos-latest' }}
         name: site/install.sh under sh
         run: scripts/test-install.sh sh
-      - if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && matrix.os == 'macos-latest' }}
+      - if: ${{ !cancelled() && env.BUILD == 'true' && matrix.os == 'macos-latest' }}
         name: site/install.sh under bash
         run: scripts/test-install.sh bash
-      - if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && matrix.os == 'macos-latest' }}
+      - if: ${{ !cancelled() && env.BUILD == 'true' && matrix.os == 'macos-latest' }}
         name: site/install.sh installing cdp-kernel
         run: TEST_KERNEL=1 scripts/test-install.sh sh
-      - if: needs.changes.outputs.code != 'false' && (failure())
+      - if: env.BUILD == 'true' && (failure())
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workstation-${{ matrix.os }}
@@ -809,8 +819,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest]
-    runs-on: ${{ needs.changes.outputs.code == 'false' && 'ubuntu-latest' || matrix.os }}
+    runs-on: ${{ (needs.changes.outputs.code == 'false' || needs.changes.outputs.macos == 'false') && 'ubuntu-latest' || matrix.os }}
     timeout-minutes: 40
+    env:
+      BUILD: ${{ needs.changes.outputs.code != 'false' && needs.changes.outputs.macos != 'false' }}
     steps: *workstation-steps
 
   # A failed scheduled run opens an issue, or comments on the open one
