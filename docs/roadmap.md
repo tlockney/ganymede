@@ -102,6 +102,22 @@ pull request with a GitHub issue, and records what it learned in the
   notebook on what another app shares (experimental, off by default
   behind a Settings switch)
   ([ganymede-ui#477](https://github.com/tlockney/ganymede-ui/pull/477)).
+- **Notebook widgets.** Widgets show what a notebook's run published
+  (experimental, off by default behind a Settings switch; ganymede-ui
+  0.11.0) ([ganymede-ui#495](https://github.com/tlockney/ganymede-ui/pull/495)).
+- **An agent that hears your edits.** `ganymede mcp` tells the agent who
+  changed a cell and which cells others changed or ran since its read,
+  refuses edits to cells changed since then, and reports `@agent`
+  request cells; `ganymede mcp watch` and the journal plugin wake the
+  agent for a request, and pass a person's changes to it mid-turn
+  ([Changes by others](mcp.md#changes-by-others),
+  [An agent that responds to your edits](live-agent-edits.md)).
+- **Tables, charts and SQL in TypeScript notebooks.** cdp-kernel's
+  `jupyter.table`, `jupyter.sql` over DuckDB and `jupyter.chart` show as
+  a table and one SVG in the apps, JupyterLab, published pages and
+  snapshots; the apps sort and page the table and run charts and SQL
+  offline (cdp-kernel 0.11.0 to 0.12.1, ganymede-ui 0.11.0)
+  ([Tables and charts for TypeScript notebooks](data-output.md)).
 
 ## Next
 
@@ -118,21 +134,20 @@ In order of priority.
      device rules it out (measured in `spikes/v8-engine/`);
    - device APIs (ganymede-ui's [`packages/device`](https://github.com/tlockney/ganymede-ui/tree/main/packages/device));
    - automation: Shortcuts, links, MCP from the Mac app, Spotlight
-     ([ganymede-ui#301](https://github.com/tlockney/ganymede-ui/issues/301));
-   - widgets ([ganymede-ui#436](https://github.com/tlockney/ganymede-ui/issues/436)).
+     ([ganymede-ui#301](https://github.com/tlockney/ganymede-ui/issues/301)).
 3. **A person and an agent in one live notebook.** The apps open
    notebooks through rooms (done, above). Next: the app shows the
    agent's journal as it is written
    ([ganymede-ui#184](https://github.com/tlockney/ganymede-ui/issues/184)), and journal
    sessions get evals
-   ([#316](https://github.com/tlockney/ganymede/issues/316)). How the
-   agent learns of and answers a person's edits is proposed in
-   [An agent that responds to your edits](live-agent-edits.md).
+   ([#316](https://github.com/tlockney/ganymede/issues/316)). The agent
+   learns of a person's edits and requests (done, above); whether
+   `ganymede mcp watch --edits` stays a spike, becomes the default or
+   goes is [#795](https://github.com/tlockney/ganymede/issues/795).
 4. **TypeScript notebooks for TypeScript developers.**
    [cdp-kernel](https://github.com/tlockney/cdp-kernel) is the
-   first-class kernel, on Node and Deno first. Next: a table output and
-   a chart helper, then an `sql` tag over DuckDB, proposed in
-   [Tables and charts for TypeScript notebooks](data-output.md).
+   first-class kernel, on Node and Deno first. Tables, charts and SQL
+   are done (above).
 
 ## Not now
 
@@ -148,12 +163,6 @@ Wanted eventually, but not being worked on:
 
 ## Open
 
-- Tailscale-aware Ganymede
-  ([#816](https://github.com/tlockney/ganymede/issues/816)): listed
-  logins behind `tailscale serve`, and logins and tags from `tailscale
-  whois` for a server on its tailnet address, are done; next, the
-  identity in rooms and the log, then the apps and Tailscale SSH on iPad
-  and iPhone.
 - A Linux build for musl (Alpine).
 - Distributing the iPad and iPhone app beyond internal TestFlight
   testers, which needs App Review (rule 2.5.2, apps that run code). The
@@ -163,6 +172,22 @@ Wanted eventually, but not being worked on:
   the engine runs in a page and not only under WASI.
 - Windows interrupts, which ipykernel does through a named event rather
   than a signal.
+
+Tailscale-aware Ganymede
+([#816](https://github.com/tlockney/ganymede/issues/816)): listed
+logins behind `tailscale serve`, logins and tags from `tailscale whois`
+for a server on its tailnet address, the identity in rooms and the log,
+the Mac app sharing its server on the tailnet, remotes with no token,
+and Tailscale SSH on iPad and iPhone are done. Left: an embedded tailnet
+node through tailscale-rs, once it has certificates and `whois`.
+
+> [!NOTE]
+> **Unreleased.** The server's part is available only from a build of
+> `main` (HEAD), not in the latest release.
+
+> [!NOTE]
+> **Unreleased in ganymede-ui.** The apps' part is available only from
+> a build of ganymede-ui's `main`, not in its latest release.
 
 ## Not planned
 

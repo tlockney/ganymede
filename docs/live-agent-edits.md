@@ -5,9 +5,14 @@ when a person edits a journal the agent is working in, how the agent
 learns of it, who it learns made the change, and when it acts on it.
 Thomas agreed the four recommendations on 2026-11-13
 ([Decisions](#decisions)), and asked for waking on any edit (1b) to be
-tried as a spike once request cells work. Nothing is built yet.
+tried as a spike once request cells work. What was built from it is in
+[Agents over MCP](mcp.md#changes-by-others) and the
+[Roadmap](roadmap.md); the note below describes the server as it was
+when it was written.
 
 ## What happens today
+
+As of 2026-11-13, before any of this was built.
 
 The journal is a [room](rooms.md): the Ganymede apps (since ganymede-ui
 0.10.0) and JupyterLab with the collaboration extensions edit the same
@@ -95,8 +100,8 @@ can go further and pass the changes themselves, as the prompt hook does.
 
 ### 4. Tell the agent while it is idle
 
-Today nothing can start an agent's turn but the person's message. Three
-ways to change that:
+When this was written, nothing could start an agent's turn but the
+person's message. Three ways to change that:
 
 - **A plugin monitor.** A new `ganymede mcp watch` command prints one
   line per settled change and keeps running. Claude Code plugins can
