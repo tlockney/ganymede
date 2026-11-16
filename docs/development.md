@@ -159,7 +159,8 @@ prompt on known diffs and scores what it catches (on each change to
   `scripts/test-workstation.sh`, `ci.yml`, and any path the script doesn't
   list. A pull request that changes only `evals/`, `plugins/`,
   `container/`, other scripts or other workflows leaves them as an
-  ubuntu run with every step skipped, under the same check names.
+  ubuntu run with every step skipped, under the same check names. A
+  push to `main` that changes code runs them on macOS regardless.
   `scripts/test-ci-changes.sh` (the `install-script` job) checks the
   script's outputs; add a case when you add a path.
 - **Actions** are pinned by full commit SHA, with the version in a

@@ -20,8 +20,9 @@ read them), `scripts/test-install.sh` and `scripts/test-workstation.sh`,
 `.github/workflows/ci.yml`, and any path the script doesn't know.
 `macos=false` for code that only Linux jobs use: `evals/`, `plugins/`,
 `container/`, the other scripts and workflows, and the rest of
-`.github/`. Pushes to `main`, the weekly schedule and manual runs still
-run everything. `scripts/test-ci-changes.sh` runs the real script over
+`.github/`. Only pull requests filter on it: a push to `main` gives
+`macos=true` whenever it changes code, and the weekly schedule and
+manual runs still run everything. `scripts/test-ci-changes.sh` runs the real script over
 scratch repositories for each class of path and for each event; it runs
 in the `install-script` job.
 

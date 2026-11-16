@@ -105,7 +105,7 @@ mkdir "$repo"
   git commit -q -m change
 )
 got=$(cd "$repo" && GITHUB_EVENT_NAME=push "$script" | tr '\n' ' ')
-if [ "$got" = "code=true ffi=false deps=false macos=false " ]; then
+if [ "$got" = "code=true ffi=false deps=false macos=true " ]; then
   echo "ok   push without BASE_SHA"
 else
   echo "FAIL push without BASE_SHA: got '$got'"

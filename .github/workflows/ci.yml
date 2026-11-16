@@ -195,7 +195,7 @@ jobs:
     steps:
       - if: env.BUILD != 'true'
         # Quoted: in a plain scalar, " #" would start a YAML comment.
-        run: 'echo "Only code that cannot affect this job changed (docs, the site, Markdown, or nothing the macOS cell runs), so nothing to build (#418, #841)."'
+        run: 'echo "Nothing this job tests changed, so nothing to build (#418, #841)."'
       - if: env.BUILD == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -714,7 +714,7 @@ jobs:
     steps: &workstation-steps
       - if: env.BUILD != 'true'
         # Quoted: in a plain scalar, " #" would start a YAML comment.
-        run: 'echo "Only code that cannot affect this job changed (docs, the site, Markdown, or nothing the macOS cell runs), so nothing to build (#418, #841)."'
+        run: 'echo "Nothing this job tests changed, so nothing to build (#418, #841)."'
       - if: env.BUILD == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
