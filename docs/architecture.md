@@ -134,11 +134,6 @@ embedding them can fill differently.
 | Auth | Who may call the API | A token, traded for a login cookie; listed tailnet logins behind `tailscale serve`, or logins and tags from `tailscale whois` on the tailnet address | OIDC or a JupyterHub contract |
 | Document | The live notebook model | The file, read and written per request; or a document room, a `yrs` document that reloads and merges changes made on disk ([Live editing and document rooms](rooms.md)) | Rooms for files other than notebooks |
 
-> [!NOTE]
-> **Unreleased.** Tailnet identity (`tailscale serve` and `tailscale
-> whois`) is available only from a build of `main` (HEAD), not in the
-> latest release.
-
 The server uses kernelspec dirs, subprocesses and ZMQ unless an app
 embedding it passes its own `KernelspecSource`, `Provisioner` and
 `TransportFactory` in `serve::Startup`; its `subprocess` and `zmq`

@@ -152,10 +152,6 @@ null`, as in `jupyter-server-documents`.
 
 ### Running the room's current source
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 The saved file can lag the room, so a client that hashes the file's
 source runs stale code or gets a `409`. Ganymede lets the room pick the
 cells instead. An entry without `source_hash` (or with `null`) runs the

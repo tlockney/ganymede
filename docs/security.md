@@ -154,10 +154,6 @@ trust_xheaders = true
 
 ## Tailnet identity
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 Behind `tailscale serve`, the token can give way to who you are on the
 tailnet. `tailscale serve` adds the sender's login name to each request
 it forwards (`Tailscale-User-Login`). List the logins to let in:
