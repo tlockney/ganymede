@@ -616,7 +616,7 @@ toward a limit of 3. The fourth loss in a row leaves it dead: clients see
 `status: dead` with `"reason": "lost"`, the cell that was running gets an
 error saying the system ended the kernel too often, and the kernel's log
 says why. With `kernel_restart_limit` at `0`, a lost kernel is left dead
-the same way, with the same `reason`. So is a kernel the platform ended
+with the same `reason`, and the cell's error says restarts are off. So is a kernel the platform ended
 on each of its three launches before it first answered. The limit and
 window are `KernelManagerConfig` fields for embedders, not server
 settings.

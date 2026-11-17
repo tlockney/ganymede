@@ -1125,6 +1125,8 @@ impl Core {
                 }
             };
             let _ = session.shutdown(false, Duration::from_millis(200)).await;
+            // Kept if the next relaunch fails to start: the last attempt
+            // that ran was ended by the platform, so the death is `lost`.
             lost = kernel
                 .launched
                 .lock()
