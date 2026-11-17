@@ -1531,10 +1531,67 @@ mod tests {
         let (m, _) = losing(KernelManagerConfig::default());
         let k = started(&m, Some("fake"), None).await.unwrap();
         let mut c = m.connect_client(&k.id).unwrap();
-        let (_, got) = die_and_wait(&mut c, "restarting").await;
+        let (cell, got) = die_and_wait(&mut c, "restarting").await;
         assert_eq!(announced(&got, "restarting").content["reason"], "lost");
+        let reply = got
+            .iter()
+            .find(|(ch, m)| *ch == Channel::Shell && m.parent_id() == Some(cell.as_str()))
+            .expect("the cell is answered");
+        let text = reply.1.content["evalue"].as_str().unwrap();
+        assert!(text.contains("system ended the kernel"), "{text}");
+        assert!(text.contains("being restarted"), "{text}");
         until_idle(&m, &k.id).await;
         m.shutdown(&k.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_kernel_lost_before_it_answers_is_dead_with_a_reason() {
+        let lost = Arc::new(AtomicBool::new(true));
+        let (m, t) = with_provisioner(
+            KernelManagerConfig::default(),
+            Arc::new(LostProvisioner(lost)),
+        );
+        t.script.lock().unwrap().extend([Launch::Die; 3]);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        let got = until_none(&mut c).await;
+        assert_eq!(announced(&got, "dead").content["reason"], "lost");
+        assert!(m.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_kernel_that_dies_before_it_answers_has_no_reason() {
+        let (m, t) = scripted(None);
+        t.script.lock().unwrap().extend([Launch::Die; 3]);
+        let k = m.start(Some("fake"), None).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        let got = until_none(&mut c).await;
+        assert!(announced(&got, "dead").content.get("reason").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_lost_kernel_with_no_loss_restarts_is_left_dead() {
+        let (m, _) = losing(KernelManagerConfig {
+            lost_restart_limit: 0,
+            ..Default::default()
+        });
+        let k = started(&m, Some("fake"), None).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        let cell = run(&mut c, "die").await;
+        let got = until_none(&mut c).await;
+        assert!(!statuses(&got).contains(&"restarting".to_string()));
+        assert_eq!(announced(&got, "dead").content["reason"], "lost");
+        let reply = got
+            .iter()
+            .find(|(ch, m)| *ch == Channel::Shell && m.parent_id() == Some(cell.as_str()))
+            .expect("the cell is answered");
+        let text = reply.1.content["evalue"].as_str().unwrap();
+        assert!(text.contains("restarts are off"), "{text}");
+        let log = m.log(&k.id, None, 100).unwrap();
+        assert!(log
+            .lines
+            .iter()
+            .any(|l| l.text.contains("restarts are off")));
     }
 
     #[tokio::test]

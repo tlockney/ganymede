@@ -9,6 +9,8 @@ without end, and clients saw only the same `restarting`.
   row leaves the kernel dead. Both are `KernelManagerConfig` fields only;
   there is no CLI flag or TOML key, since only an app that registers kernels
   can see a loss.
+- `lost_restart_limit` 0 never restarts a loss, with the same "restarts
+  are off" texts as `restart_limit` 0.
 - Both counters are a `RestartCount`, which also replaces the crash
   counter's tuple. The window is exclusive: a loss exactly one window after
   the last counts from one.
@@ -21,7 +23,9 @@ without end, and clients saw only the same `restarting`.
   being restarted." or, when capped, "...too often; it was not restarted."
   The kernel log says `restarting it (n/limit)` or `leaving it dead`.
 - A loss before the first `kernel_info_reply` is still a failed start,
-  capped by the three launches in `Core::boot`.
+  capped by the three launches in `Core::boot`. `boot` reads the failed
+  attempt's `exit_reason`, so a kernel the platform ended on its last
+  launch is dead with `reason: lost` too.
 - The test double ends a session with a process that reports `lost`. It
   needs a pid, or the dead kernel's log isn't kept for the log route.
 - Follow-up: the notebook-side notice is ganymede-ui#469.

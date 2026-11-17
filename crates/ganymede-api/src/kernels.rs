@@ -34,6 +34,10 @@ const STABLE_START: Duration = Duration::from_secs(10);
 /// The cell error when the platform ended the kernel and it restarts.
 const LOST_TEXT: &str = "The system ended the kernel, and it is being restarted.";
 
+/// The cell error when the platform ended the kernel and restarts are off.
+const LOST_OFF_TEXT: &str =
+    "The system ended the kernel; restarts are off, so it was not restarted.";
+
 /// Restarts in a row, each within a window of the last.
 #[derive(Default)]
 struct RestartCount {
@@ -1000,7 +1004,7 @@ impl Core {
         if limit == 0 {
             kernel.log.host("the kernel died; restarts are off");
             kernel.answer_for_crashed_kernel(if lost {
-                "The system ended the kernel; restarts are off, so it was not restarted."
+                LOST_OFF_TEXT
             } else {
                 "The kernel died."
             });
@@ -1019,13 +1023,20 @@ impl Core {
             if n > lost_limit {
                 // Kernel failures log at `warn`, never `error` (#431).
                 let window = self.config.lost_restart_window.as_secs();
-                tracing::warn!(kernel = %kernel.id, "the platform ended the kernel {n} times in a row; leaving it dead");
-                kernel.log.host(&format!(
-                    "the platform ended the kernel {n} times within {window}s of each restart; leaving it dead"
-                ));
-                kernel.answer_for_crashed_kernel(
-                    "The system ended the kernel too often; it was not restarted.",
-                );
+                if lost_limit == 0 {
+                    kernel
+                        .log
+                        .host("the platform ended the kernel; restarts are off");
+                    kernel.answer_for_crashed_kernel(LOST_OFF_TEXT);
+                } else {
+                    tracing::warn!(kernel = %kernel.id, "the platform ended the kernel {n} times in a row; leaving it dead");
+                    kernel.log.host(&format!(
+                        "the platform ended the kernel {n} times, each within {window}s of the last; leaving it dead"
+                    ));
+                    kernel.answer_for_crashed_kernel(
+                        "The system ended the kernel too often; it was not restarted.",
+                    );
+                }
                 kernel.remove_dead(&self, reason);
                 return;
             }
@@ -1089,6 +1100,8 @@ impl Core {
         let mut abandon = kernel.abandon_boot.subscribe();
         let mut attempt = 1;
         let mut abandoned = false;
+        // The platform ended the kernel's last failed attempt.
+        let mut lost = false;
         let result = loop {
             let session = kernel.session();
             let answered = tokio::select! {
@@ -1112,7 +1125,12 @@ impl Core {
                 }
             };
             let _ = session.shutdown(false, Duration::from_millis(200)).await;
-            kernel.launched.lock().unwrap().take();
+            lost = kernel
+                .launched
+                .lock()
+                .unwrap()
+                .take()
+                .is_some_and(|l| l.process.exit_reason() == Some("lost"));
             let retry = matches!(
                 e,
                 HostError::KernelDied | HostError::Timeout(_) | HostError::SendTimeout
@@ -1186,7 +1204,9 @@ impl Core {
                 tracing::warn!(kernel = %kernel.id, "kernel failed to start: {e}");
                 kernel.log.host(&format!("the kernel failed to start: {e}"));
                 *kernel.start_failure.lock().unwrap() = Some(e.message.clone());
-                kernel.remove_dead(self, None);
+                // A kernel the platform keeps ending before it answers is
+                // dead for that reason, as one capped after it started.
+                kernel.remove_dead(self, lost.then_some("lost"));
                 Err(e)
             }
         }

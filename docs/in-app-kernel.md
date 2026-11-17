@@ -166,9 +166,11 @@ with these differences:
 
 - A loss within 60 seconds of the last one counts toward a limit of 3.
   The fourth in a row leaves the kernel dead: `status: dead` carries
-  `"reason": "lost"`, so a kernel that is lost every time it starts, such
-  as a page that runs out of memory loading, doesn't restart without end.
-  A loss after a longer quiet spell counts from one again.
+  `"reason": "lost"`. A loss after a longer quiet spell counts from one
+  again. A kernel lost before it first answers, such as a page that runs
+  out of memory loading, is launched up to three times, as above; if the
+  platform ended the last attempt, it too is dead with `"reason":
+  "lost"`.
 
 The app can then show "iOS stopped the kernel while the app was in the
 background" with a **Restore** action. Restore re-runs, on the new
