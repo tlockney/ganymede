@@ -8,12 +8,12 @@ made that file. The server code was right; the test deleted the file.
 dropped, and the directory deleted, when `finish` returned. The index
 task the test had spawned was waiting on the create's claim on `sub`;
 once the create ended it went on to `contents.get`, which `FsContents`
-runs on a blocking thread. On a current-thread runtime the test task
-usually got there first only by luck of scheduling: when the index task
-was polled after `finish` returned, the file was gone.
+runs on a blocking thread. The index task's `get` usually finished
+before `finish` dropped the root; when it didn't, the file was gone.
 
-A 100 ms delay in the test contents' `get` makes the failure happen on
-every run on main, and not with the fix. `finish` now returns the root
+A 100 ms delay in the test contents' `get` makes the test fail on every
+run on main (as `OutsideRoot`, since by then the root itself can't be
+resolved; same cause), and not with the fix. `finish` now returns the root
 and is `#[must_use]`, so each caller keeps it until the task it spawned
 has ended.
 
