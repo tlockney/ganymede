@@ -149,17 +149,28 @@ gone.
 
 With registration, Swift calls `ganymede_kernel_ended(server, id,
 "lost")` for each kernel the page held. The server treats it as a crash
-with two differences:
+with these differences:
 
-- It restarts the kernel, unless restarts are off (`restart_limit` 0),
-  without counting toward `restart_limit`, since the platform ended it,
-  not a fault in the kernel. With no count, a kernel the platform keeps
-  ending restarts each time; see Restart after a loss below. A loss
-  before the kernel's first `kernel_info_reply` is a failed start: the
-  server launches it up to three times in all, as for any kernel.
+- It restarts the kernel, unless restarts are off (`restart_limit` 0).
+  Losses have their own count, not `restart_limit`, since the platform
+  ended it, not a fault in the kernel. A loss before the kernel's first
+  `kernel_info_reply` is a failed start: the server launches it up to
+  three times in all, as for any kernel.
 - The `status: restarting` message on iopub carries `"reason": "lost"` in
   its content. Clients that don't know the key ignore it, as Jupyter
   clients ignore unknown content keys.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+- A loss within 60 seconds of the last one counts toward a limit of 3.
+  The fourth in a row leaves the kernel dead: `status: dead` carries
+  `"reason": "lost"`. A loss after a longer quiet spell counts from one
+  again. A kernel lost before it first answers, such as a page that runs
+  out of memory loading, is launched up to three times, as above; if the
+  platform ended the last attempt, it too is dead with `"reason":
+  "lost"`.
 
 The app can then show "iOS stopped the kernel while the app was in the
 background" with a **Restore** action. Restore re-runs, on the new
@@ -254,10 +265,9 @@ today's relay already pays.
 - **Restart after a loss.** The proposal restarts at once, so the
   notebook has a kernel when the app comes back. The alternative leaves
   it dead until the person picks Restart or Restore, which starts no
-  kernel the person didn't ask for. Losses don't count toward
-  `restart_limit`, so nothing yet caps or spaces out restarts after
-  repeated losses, such as a page killed under memory pressure each time
-  it starts.
+  kernel the person didn't ask for. Restarts are capped (see above), so
+  repeated losses end with a dead kernel; whether the first restart
+  should wait for the person is still open.
 - **Where the kernel web view lives on the Mac.** WebKit suspends a web
   view in no window. With kernels owned by the app, the kernel web view
   needs a home that outlives any one window.

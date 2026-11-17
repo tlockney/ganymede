@@ -598,6 +598,29 @@ is reported `status: dead` and removed, as it always is with the limit
 set to `0`. The kernel's state is lost in a restart, as it is under
 Jupyter.
 
+### When the platform ends a kernel
+
+An app's kernel that the platform ended (iOS ends a suspended app's web
+content; see [In-app kernel](in-app-kernel.md)) is restarted the same
+way, but its restarts have their own count. Clients see
+`status: restarting` with `"reason": "lost"` in its content, so they can
+tell the kernel's state is gone. Clients that don't know the key ignore
+it, and a restart after a crash has no `reason`.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+A kernel the platform ends again within 60 seconds of the last loss counts
+toward a limit of 3. The fourth loss in a row leaves it dead: clients see
+`status: dead` with `"reason": "lost"`, the cell that was running gets an
+error saying the system ended the kernel too often, and the kernel's log
+says why. With `kernel_restart_limit` at `0`, a lost kernel is left dead
+with the same `reason`, and the cell's error says restarts are off. So is a kernel the platform ended
+on each of its three launches before it first answered. The limit and
+window are `KernelManagerConfig` fields for embedders, not server
+settings.
+
 ## Gateway
 
 `--gateway-url` runs kernels on another Jupyter or Ganymede server while

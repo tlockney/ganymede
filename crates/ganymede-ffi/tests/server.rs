@@ -300,7 +300,7 @@ fn runs_a_kernel_the_app_registers() {
         get(&url, &format!("/api/kernels/{id}")).contains(r#""execution_state":"idle""#)
     });
     // Twice within ten seconds, with a restart limit of one: a crash
-    // would now be left dead, but a loss doesn't count.
+    // would now be left dead, but a loss has its own limit.
     unsafe { ganymede_kernel_ended(server, cid.as_ptr(), c"lost".as_ptr()) };
     eventually("the second restart", || {
         app.starts.lock().unwrap().len() == 3
@@ -325,4 +325,68 @@ fn runs_a_kernel_the_app_registers() {
     assert_eq!(app.released.load(Ordering::SeqCst), 0);
     unsafe { ganymede_server_stop(server) };
     assert_eq!(app.released.load(Ordering::SeqCst), 1);
+}
+
+/// With the default limits, three losses in a row restart the kernel and
+/// the fourth leaves it dead (#844).
+#[test]
+fn a_kernel_the_platform_keeps_ending_is_left_dead() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("a.ipynb"), "").unwrap();
+    let cfg = CString::new(format!(
+        r#"{{"root_dir": {:?}, "cookie_secret_file": {:?}}}"#,
+        root.path(),
+        root.path().join("secret")
+    ))
+    .unwrap();
+    let mut err: *mut c_char = std::ptr::null_mut();
+    let server = unsafe { ganymede_server_start(cfg.as_ptr(), &mut err) };
+    assert!(!server.is_null());
+    let url = str_of(unsafe { ganymede_server_url(server) }).to_string();
+
+    let app = Box::leak(Box::<App>::default());
+    app.server.store(server, Ordering::SeqCst);
+    let callbacks = GanymedeKernelCallbacks {
+        ctx: app as *mut App as *mut c_void,
+        start: Some(start),
+        send: Some(send),
+        stop: Some(stop),
+        release: Some(release),
+    };
+    let spec = CString::new(
+        r#"{"name": "app-ts", "display_name": "TypeScript (app)", "language": "typescript"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        unsafe { ganymede_kernel_register(server, spec.as_ptr(), &callbacks, &mut err) },
+        0
+    );
+    let reply = request(
+        &url,
+        "POST",
+        "/api/sessions",
+        r#"{"path": "a.ipynb", "type": "notebook", "name": "a.ipynb", "kernel": {"name": "app-ts"}}"#,
+    );
+    assert!(reply.starts_with("HTTP/1.1 201"), "{reply}");
+    let body: serde_json::Value =
+        serde_json::from_str(reply.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    let id = body["kernel"]["id"].as_str().unwrap().to_string();
+    let cid = CString::new(id.clone()).unwrap();
+    let idle =
+        |url: &str| get(url, &format!("/api/kernels/{id}")).contains(r#""execution_state":"idle""#);
+    eventually("the kernel", || idle(&url));
+
+    for n in 2..=4 {
+        unsafe { ganymede_kernel_ended(server, cid.as_ptr(), c"lost".as_ptr()) };
+        eventually("the restart", || app.starts.lock().unwrap().len() == n);
+        eventually("the restarted kernel", || idle(&url));
+    }
+    // The fourth loss in a row is left dead.
+    unsafe { ganymede_kernel_ended(server, cid.as_ptr(), c"lost".as_ptr()) };
+    eventually("the kernel to be removed", || {
+        get(&url, &format!("/api/kernels/{id}")).starts_with("HTTP/1.1 404")
+    });
+    assert_eq!(app.starts.lock().unwrap().len(), 4);
+
+    unsafe { ganymede_server_stop(server) };
 }

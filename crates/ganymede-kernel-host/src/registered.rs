@@ -43,7 +43,8 @@ pub enum Ended {
     /// restart limit, as any crash does.
     Exited,
     /// The platform ended it, as iOS does to a suspended app's web
-    /// content. Restarted without counting toward the limit.
+    /// content. The host restarts it, counted against its own limit, not the
+    /// crash limit.
     Lost,
     /// The host stopped it.
     Stopped,
