@@ -161,6 +161,7 @@ export function groups(has: (name: string) => boolean = () => true, examples: Pa
         { text: "A host API for kernels", link: "/host-api" },
         { text: "Tables and charts for TypeScript notebooks", link: "/data-output" },
         { text: "An agent that responds to your edits", link: "/live-agent-edits" },
+        { text: "Several folders in one server", link: "/multi-root" },
         { text: "Other Jupyter clients", link: "/clients" },
         { text: "Prior art", link: "/prior-art" },
       ],
