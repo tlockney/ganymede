@@ -999,7 +999,11 @@ impl Core {
         let limit = self.config.restart_limit;
         if limit == 0 {
             kernel.log.host("the kernel died; restarts are off");
-            kernel.answer_for_crashed_kernel(if lost { LOST_TEXT } else { "The kernel died." });
+            kernel.answer_for_crashed_kernel(if lost {
+                "The system ended the kernel; restarts are off, so it was not restarted."
+            } else {
+                "The kernel died."
+            });
             kernel.remove_dead(&self, reason);
             return;
         }

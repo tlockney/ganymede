@@ -1644,10 +1644,17 @@ mod tests {
         });
         let k = started(&m, Some("fake"), None).await.unwrap();
         let mut c = m.connect_client(&k.id).unwrap();
-        run(&mut c, "die").await;
+        let cell = run(&mut c, "die").await;
         let got = until_none(&mut c).await;
         assert!(!statuses(&got).contains(&"restarting".to_string()));
         assert_eq!(announced(&got, "dead").content["reason"], "lost");
+        let reply = got
+            .iter()
+            .find(|(ch, m)| *ch == Channel::Shell && m.parent_id() == Some(cell.as_str()))
+            .expect("the cell is answered");
+        let text = reply.1.content["evalue"].as_str().unwrap();
+        assert!(text.contains("restarts are off"), "{text}");
+        assert!(!text.contains("being restarted"), "{text}");
         assert!(m.list().is_empty());
     }
 
