@@ -545,30 +545,54 @@ impl ChildProcess {
     }
 }
 
-/// The error for a kernel program that failed to spawn. A program that
-/// doesn't exist names the kernelspec, its `kernel.json` and the fix;
-/// the kind stays as it was, so callers that match on it still work.
+/// The error for a kernel program that failed to spawn. `NotFound` can
+/// mean a missing working directory, a missing program, or a program whose
+/// `#!` interpreter or loader is missing; each gets its own text, naming
+/// the kernelspec, its `kernel.json` and the fix. The kind stays as it
+/// was, so callers that match on it still work.
 #[cfg(feature = "subprocess")]
-fn spawn_error(spec: &Kernelspec, program: &str, e: std::io::Error) -> std::io::Error {
-    if e.kind() != std::io::ErrorKind::NotFound {
-        return std::io::Error::new(e.kind(), format!("spawning {program:?}: {e}"));
+fn spawn_error(
+    spec: &Kernelspec,
+    program: &str,
+    cwd: Option<&Path>,
+    e: std::io::Error,
+) -> std::io::Error {
+    let kind = e.kind();
+    if kind != std::io::ErrorKind::NotFound {
+        return std::io::Error::new(kind, format!("spawning {program:?}: {e}"));
     }
     let origin = if spec.resource_dir.as_os_str().is_empty() {
         String::new()
     } else {
         format!(" ({})", spec.resource_dir.join("kernel.json").display())
     };
-    let missing = if program.contains(['/', std::path::MAIN_SEPARATOR]) {
-        format!("{program}, which doesn't exist")
+    let name = &spec.name;
+    if let Some(cwd) = cwd.filter(|c| !c.is_dir()) {
+        return std::io::Error::new(
+            kind,
+            format!(
+                "starting kernelspec {name}{origin}: its working directory {} doesn't exist",
+                cwd.display()
+            ),
+        );
+    }
+    let what = if program.contains(['/', std::path::MAIN_SEPARATOR]) {
+        // A relative path resolves against the kernel's working directory.
+        let path = match cwd {
+            Some(cwd) => cwd.join(program),
+            None => PathBuf::from(program),
+        };
+        if path.exists() {
+            format!("{program}, which exists but its interpreter (#! line) or loader is missing")
+        } else {
+            format!("{program}, which doesn't exist")
+        }
     } else {
         format!("`{program}`, which isn't on PATH")
     };
     std::io::Error::new(
-        e.kind(),
-        format!(
-            "kernelspec {}{origin} runs {missing}; reinstall the kernel or fix argv in kernel.json",
-            spec.name
-        ),
+        kind,
+        format!("kernelspec {name}{origin} runs {what}; reinstall the kernel or fix argv in kernel.json"),
     )
 }
 
@@ -636,7 +660,7 @@ impl Provisioner for SubprocessProvisioner {
 
         let mut child = spawn_tied_to_host(cmd).await.map_err(|e| {
             let _ = std::fs::remove_file(&connection_file);
-            Error::Io(spawn_error(spec, &argv[0], e))
+            Error::Io(spawn_error(spec, &argv[0], opts.cwd.as_deref(), e))
         })?;
         let pid = child.id().ok_or(Error::KernelDied)?;
         #[cfg(windows)]
@@ -1565,6 +1589,10 @@ mod tests {
     }
 
     async fn launch_missing(argv0: &str, resource_dir: &Path) -> Error {
+        launch_failing(argv0, resource_dir, None).await
+    }
+
+    async fn launch_failing(argv0: &str, resource_dir: &Path, cwd: Option<PathBuf>) -> Error {
         let dir = tempfile::tempdir().unwrap();
         let mut spec: Kernelspec = serde_json::from_value(serde_json::json!({
             "argv": [argv0, "-f", "{connection_file}"],
@@ -1580,9 +1608,57 @@ mod tests {
         };
         let opts = LaunchOptions {
             quiet: true,
+            cwd,
             ..Default::default()
         };
         prov.launch(&spec, opts).await.err().unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn missing_cwd_is_named_not_the_program() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gone = tmp.path().join("moved-notebook-folder");
+        let err = launch_failing("/bin/sh", &tmp.path().join("k"), Some(gone.clone())).await;
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!(
+                "working directory {} doesn't exist",
+                gone.display()
+            )),
+            "{msg}"
+        );
+        assert!(!msg.contains("reinstall"), "{msg}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn missing_interpreter_says_program_exists() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let launcher = tmp.path().join("launcher");
+        std::fs::write(&launcher, "#!/ganymede/no/such/interp\n").unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let err = launch_missing(launcher.to_str().unwrap(), &tmp.path().join("k")).await;
+        let msg = err.to_string();
+        assert!(
+            msg.contains("which exists but its interpreter (#! line) or loader is missing"),
+            "{msg}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn other_spawn_errors_keep_spawning_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prog = tmp.path().join("not-executable");
+        std::fs::write(&prog, "").unwrap();
+        let err = launch_missing(prog.to_str().unwrap(), &tmp.path().join("k")).await;
+        let Error::Io(io) = &err else {
+            panic!("expected Io, got {err:?}");
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(io.to_string().starts_with("spawning "), "{io}");
     }
 
     #[tokio::test]

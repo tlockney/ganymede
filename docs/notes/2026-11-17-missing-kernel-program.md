@@ -10,6 +10,10 @@ such file or directory`, which didn't say which kernelspec, where its
   kernel.json`. A bare name (no path separator) reads "runs `prog`, which
   isn't on PATH". A spec with an empty `resource_dir` (not loaded from disk)
   omits the parenthesised path.
+- `NotFound` from a spawn has other causes, so it checks before blaming the
+  program: a missing working directory (a notebook folder moved while its
+  kernel ran, then a restart) is named as such, and a program that exists
+  but whose `#!` interpreter or loader is missing says so.
 - The `io::ErrorKind::NotFound` is kept, so callers that match on kind still
   work. The text goes out unchanged through `Error::Io` ("io: ..."), so the
   REST error body, `ganymede execute` and the apps show it as they showed the
