@@ -3773,26 +3773,59 @@ async fn terminals_rest_and_websocket() {
         .unwrap()
         .unwrap();
     assert_eq!(first, TMsg::Text(json!(["setup", {}]).to_string().into()));
-    for msg in [
-        json!(["set_size", 33, 101, 600, 800]),
-        json!(["stdin", "stty size; pwd; echo done-$((20+22))\n"]),
-    ] {
-        ws.send(TMsg::Text(msg.to_string().into())).await.unwrap();
+    // Reads stdout frames until `marker` shows in the output; each frame
+    // must be stdout and arrive within 10 s.
+    async fn read_until<S>(ws: &mut S, marker: &str) -> String
+    where
+        S: futures::Stream<Item = Result<TMsg, tokio_tungstenite::tungstenite::Error>> + Unpin,
+    {
+        let mut out = String::new();
+        while !out.contains(marker) {
+            let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
+                .await
+                .expect("output in time")
+                .unwrap()
+                .unwrap();
+            let TMsg::Text(t) = frame else { continue };
+            let v: Value = serde_json::from_str(t.as_str()).unwrap();
+            assert_eq!(v[0], "stdout", "{v}");
+            out.push_str(v[1].as_str().unwrap());
+        }
+        out
     }
-    let mut out = String::new();
-    while !out.contains("done-42") {
-        let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
-            .await
-            .expect("output in time")
-            .unwrap()
-            .unwrap();
-        let TMsg::Text(t) = frame else { continue };
-        let v: Value = serde_json::from_str(t.as_str()).unwrap();
-        assert_eq!(v[0], "stdout", "{v}");
-        out.push_str(v[1].as_str().unwrap());
-    }
-    assert!(out.contains("33 101"), "{out}");
+    ws.send(TMsg::Text(
+        json!(["set_size", 33, 101, 600, 800]).to_string().into(),
+    ))
+    .await
+    .unwrap();
+    ws.send(TMsg::Text(
+        json!(["stdin", "pwd; echo done-$((20+22))\n"])
+            .to_string()
+            .into(),
+    ))
+    .await
+    .unwrap();
+    let out = read_until(&mut ws, "done-42").await;
     assert!(out.contains("/sub"), "{out}");
+    // The server applies set_size before the stdin that follows it, but on
+    // macOS a `stty size` right after a resize can still print the old size
+    // (#345, #368). Ask until the new size shows, as the terminals crate's
+    // own test does; `size-N` in the output, not in the echoed input, ends
+    // each try.
+    let mut tries = Vec::new();
+    for i in 1..=20 {
+        let line = format!("stty size; echo size-$(({i}+0))\n");
+        ws.send(TMsg::Text(json!(["stdin", line]).to_string().into()))
+            .await
+            .unwrap();
+        let out = read_until(&mut ws, &format!("size-{i}")).await;
+        if out.contains("33 101") {
+            break;
+        }
+        tries.push(out);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(tries.len() < 20, "stty never reported 33 101: {tries:#?}");
 
     let (s, _) = call(&app, "DELETE", "/api/terminals/work", None, Some(TOKEN)).await;
     assert_eq!(s, StatusCode::NO_CONTENT);
