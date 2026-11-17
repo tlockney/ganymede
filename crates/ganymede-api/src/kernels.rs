@@ -1012,8 +1012,7 @@ impl Core {
             return;
         }
         let mut status = serde_json::json!({"execution_state": "restarting"});
-        let why;
-        if lost {
+        let why = if lost {
             let n = kernel
                 .losses
                 .lock()
@@ -1046,7 +1045,7 @@ impl Core {
             ));
             // Clients that don't know the key ignore it.
             status["reason"] = "lost".into();
-            why = LOST_TEXT;
+            LOST_TEXT
         } else {
             let count = kernel.crashes.lock().unwrap().record(now, STABLE_START);
             if count > limit {
@@ -1066,8 +1065,8 @@ impl Core {
             kernel
                 .log
                 .host(&format!("the kernel died; restarting it ({count}/{limit})"));
-            why = "The kernel died, and is being restarted.";
-        }
+            "The kernel died, and is being restarted."
+        };
         kernel.booting.store(true, Ordering::SeqCst);
         kernel.answer_for_crashed_kernel(why);
         kernel.announce("status", status);
