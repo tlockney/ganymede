@@ -545,6 +545,57 @@ impl ChildProcess {
     }
 }
 
+/// The error for a kernel program that failed to spawn. `NotFound` can
+/// mean a missing working directory, a missing program, or a program whose
+/// `#!` interpreter or loader is missing; each gets its own text, naming
+/// the kernelspec, its `kernel.json` and the fix. The kind stays as it
+/// was, so callers that match on it still work.
+#[cfg(feature = "subprocess")]
+fn spawn_error(
+    spec: &Kernelspec,
+    program: &str,
+    cwd: Option<&Path>,
+    e: std::io::Error,
+) -> std::io::Error {
+    let kind = e.kind();
+    if kind != std::io::ErrorKind::NotFound {
+        return std::io::Error::new(kind, format!("spawning {program:?}: {e}"));
+    }
+    let origin = if spec.resource_dir.as_os_str().is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", spec.resource_dir.join("kernel.json").display())
+    };
+    let name = &spec.name;
+    if let Some(cwd) = cwd.filter(|c| !c.is_dir()) {
+        return std::io::Error::new(
+            kind,
+            format!(
+                "starting kernelspec {name}{origin}: its working directory {} doesn't exist",
+                cwd.display()
+            ),
+        );
+    }
+    let what = if program.contains(['/', std::path::MAIN_SEPARATOR]) {
+        // A relative path resolves against the kernel's working directory.
+        let path = match cwd {
+            Some(cwd) => cwd.join(program),
+            None => PathBuf::from(program),
+        };
+        if path.exists() {
+            format!("{program}, which exists but its interpreter (#! line) or loader is missing")
+        } else {
+            format!("{program}, which doesn't exist")
+        }
+    } else {
+        format!("`{program}`, which isn't on PATH")
+    };
+    std::io::Error::new(
+        kind,
+        format!("kernelspec {name}{origin} runs {what}; reinstall the kernel or fix argv in kernel.json"),
+    )
+}
+
 #[cfg(feature = "subprocess")]
 #[async_trait]
 impl Provisioner for SubprocessProvisioner {
@@ -609,10 +660,7 @@ impl Provisioner for SubprocessProvisioner {
 
         let mut child = spawn_tied_to_host(cmd).await.map_err(|e| {
             let _ = std::fs::remove_file(&connection_file);
-            Error::Io(std::io::Error::new(
-                e.kind(),
-                format!("spawning {:?}: {e}", argv[0]),
-            ))
+            Error::Io(spawn_error(spec, &argv[0], opts.cwd.as_deref(), e))
         })?;
         let pid = child.id().ok_or(Error::KernelDied)?;
         #[cfg(windows)]
@@ -1538,6 +1586,150 @@ mod tests {
         ));
         k.process.terminate().await.unwrap();
         k.process.kill().await.unwrap();
+    }
+
+    async fn launch_missing(argv0: &str, resource_dir: &Path) -> Error {
+        launch_failing(argv0, resource_dir, None).await
+    }
+
+    async fn launch_failing(argv0: &str, resource_dir: &Path, cwd: Option<PathBuf>) -> Error {
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec: Kernelspec = serde_json::from_value(serde_json::json!({
+            "argv": [argv0, "-f", "{connection_file}"],
+            "display_name": "",
+            "language": "",
+        }))
+        .unwrap();
+        spec.name = "gone".into();
+        spec.resource_dir = resource_dir.into();
+        let prov = SubprocessProvisioner {
+            runtime_dir: dir.path().into(),
+            ip: "127.0.0.1".into(),
+        };
+        let opts = LaunchOptions {
+            quiet: true,
+            cwd,
+            ..Default::default()
+        };
+        prov.launch(&spec, opts).await.err().unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn missing_cwd_is_named_not_the_program() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gone = tmp.path().join("moved-notebook-folder");
+        let err = launch_failing("/bin/sh", &tmp.path().join("k"), Some(gone.clone())).await;
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!(
+                "working directory {} doesn't exist",
+                gone.display()
+            )),
+            "{msg}"
+        );
+        assert!(!msg.contains("reinstall"), "{msg}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn missing_interpreter_says_program_exists() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let launcher = tmp.path().join("launcher");
+        std::fs::write(&launcher, "#!/ganymede/no/such/interp\n").unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let err = launch_missing(launcher.to_str().unwrap(), &tmp.path().join("k")).await;
+        let msg = err.to_string();
+        assert!(
+            msg.contains("which exists but its interpreter (#! line) or loader is missing"),
+            "{msg}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn relative_program_resolves_against_the_kernel_cwd() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let launcher = bin.join("launcher");
+        std::fs::write(&launcher, "#!/ganymede/no/such/interp\n").unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let err = launch_failing(
+            "./bin/launcher",
+            &tmp.path().join("k"),
+            Some(tmp.path().into()),
+        )
+        .await;
+        let msg = err.to_string();
+        assert!(
+            msg.contains("runs ./bin/launcher, which exists but its interpreter"),
+            "{msg}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn other_spawn_errors_keep_spawning_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prog = tmp.path().join("not-executable");
+        std::fs::write(&prog, "").unwrap();
+        let err = launch_missing(prog.to_str().unwrap(), &tmp.path().join("k")).await;
+        let Error::Io(io) = &err else {
+            panic!("expected Io, got {err:?}");
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(io.to_string().starts_with("spawning "), "{io}");
+    }
+
+    #[tokio::test]
+    async fn missing_absolute_program_names_spec_and_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let program = tmp.path().join("no-such-dir").join("kernel-prog");
+        let spec_dir = tmp.path().join("kernels").join("gone");
+        let err = launch_missing(program.to_str().unwrap(), &spec_dir).await;
+        let Error::Io(io) = &err else {
+            panic!("expected Io, got {err:?}");
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
+        let msg = io.to_string();
+        assert!(msg.contains("kernelspec gone"), "{msg}");
+        assert!(
+            msg.contains(&spec_dir.join("kernel.json").display().to_string()),
+            "{msg}"
+        );
+        assert!(
+            msg.contains(&format!("runs {}, which doesn't exist", program.display())),
+            "{msg}"
+        );
+        assert!(msg.contains("fix argv in kernel.json"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn missing_bare_program_says_not_on_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spec_dir = tmp.path().join("gone");
+        let err = launch_missing("ganymede-no-such-program", &spec_dir).await;
+        let Error::Io(io) = &err else {
+            panic!("expected Io, got {err:?}");
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
+        let msg = io.to_string();
+        assert!(
+            msg.contains("runs `ganymede-no-such-program`, which isn't on PATH"),
+            "{msg}"
+        );
+        assert!(msg.contains("kernel.json"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn missing_program_without_resource_dir_omits_path() {
+        let err = launch_missing("ganymede-no-such-program", Path::new("")).await;
+        let msg = err.to_string();
+        assert!(msg.contains("kernelspec gone runs `"), "{msg}");
+        assert!(!msg.contains("kernel.json)"), "{msg}");
     }
 
     #[cfg(unix)]
