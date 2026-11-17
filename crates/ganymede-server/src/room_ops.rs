@@ -27,7 +27,13 @@ pub const HISTORY_LIMIT: usize = 10;
 
 /// Now, as provenance records it.
 pub(crate) fn now() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    iso_millis(jiff::Timestamp::now())
+}
+
+/// `t` as `YYYY-MM-DDTHH:MM:SS.fffZ`: UTC, three fraction digits
+/// (truncated, not rounded), `Z`.
+fn iso_millis(t: jiff::Timestamp) -> String {
+    t.strftime("%Y-%m-%dT%H:%M:%S.%3fZ").to_string()
 }
 
 /// A new cell's JSON: `cell_type` is `code`, `markdown` or `raw`; `None`
@@ -167,4 +173,27 @@ pub(crate) fn stamp(txn: &mut TransactionMut, cell: &MapRef, by: &str, supersede
     }
     agent["at"] = json!(at);
     meta.insert(txn, "ganymede", schema::json_to_any(&g));
+}
+
+#[cfg(test)]
+mod iso_tests {
+    use super::*;
+
+    /// Fixed instants, so the format is pinned independent of the clock. The
+    /// expected strings are what chrono's formatting gave before the port.
+    #[test]
+    fn format_is_pinned() {
+        // 2026-01-02T03:04:05Z
+        let at = |nanos: i32| jiff::Timestamp::new(1_767_323_045, nanos).unwrap();
+        for (nanos, want) in [
+            (0, "2026-01-02T03:04:05.000Z"),
+            (123000000, "2026-01-02T03:04:05.123Z"),
+            (123456789, "2026-01-02T03:04:05.123Z"),
+            (1000000, "2026-01-02T03:04:05.001Z"),
+            (999999999, "2026-01-02T03:04:05.999Z"),
+            (100, "2026-01-02T03:04:05.000Z"),
+        ] {
+            assert_eq!(iso_millis(at(nanos)), want, "nanos {nanos}");
+        }
+    }
 }

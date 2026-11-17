@@ -45,6 +45,6 @@ windows-sys = { version = "0.61", optional = true, features = [
 ] }
 
 # Browser wasm has no OS randomness; uuid takes it from JavaScript.
-# (ganymede-protocol does the same for chrono's clock.)
+# (ganymede-protocol does the same for jiff's clock.)
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 uuid = { workspace = true, features = ["js"] }

@@ -456,7 +456,13 @@ impl Utf8Decoder {
 }
 
 fn now_iso() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
+    iso_micros(jiff::Timestamp::now())
+}
+
+/// `t` as `YYYY-MM-DDTHH:MM:SS.ffffffZ`: UTC, six fraction digits
+/// (truncated, not rounded), `Z`.
+fn iso_micros(t: jiff::Timestamp) -> String {
+    t.strftime("%Y-%m-%dT%H:%M:%S.%6fZ").to_string()
 }
 
 #[cfg(not(any(
@@ -850,6 +856,30 @@ mod tests {
             });
             assert!(matches!(m.create(None, None), Err(Error::Spawn(_))));
             assert!(m.list().is_empty());
+        }
+    }
+}
+
+#[cfg(test)]
+mod iso_tests {
+    use super::*;
+
+    /// Fixed instants, so the format is pinned independent of the clock. The
+    /// expected strings are what chrono's formatting gave before the port.
+    #[test]
+    fn format_is_pinned() {
+        // 2026-01-02T03:04:05Z
+        let at = |nanos: i32| jiff::Timestamp::new(1_767_323_045, nanos).unwrap();
+        for (nanos, want) in [
+            (0, "2026-01-02T03:04:05.000000Z"),
+            (123000000, "2026-01-02T03:04:05.123000Z"),
+            (123456000, "2026-01-02T03:04:05.123456Z"),
+            (123456789, "2026-01-02T03:04:05.123456Z"),
+            (1000, "2026-01-02T03:04:05.000001Z"),
+            (100, "2026-01-02T03:04:05.000000Z"),
+            (999999999, "2026-01-02T03:04:05.999999Z"),
+        ] {
+            assert_eq!(iso_micros(at(nanos)), want, "nanos {nanos}");
         }
     }
 }

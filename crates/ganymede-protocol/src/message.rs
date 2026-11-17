@@ -73,6 +73,12 @@ pub struct Header {
     pub extra: Map<String, Value>,
 }
 
+/// `t` as `YYYY-MM-DDTHH:MM:SS.ffffffZ`, the form a Jupyter header's
+/// `date` takes: UTC, six fraction digits (truncated, not rounded), `Z`.
+fn iso_micros(t: jiff::Timestamp) -> String {
+    t.strftime("%Y-%m-%dT%H:%M:%S.%6fZ").to_string()
+}
+
 impl Header {
     pub fn new(
         msg_type: impl Into<String>,
@@ -83,7 +89,7 @@ impl Header {
             msg_id: uuid::Uuid::new_v4().to_string(),
             session: session.into(),
             username: username.into(),
-            date: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+            date: iso_micros(jiff::Timestamp::now()),
             msg_type: msg_type.into(),
             version: PROTOCOL_VERSION.to_string(),
             subshell_id: None,
@@ -236,5 +242,29 @@ mod tests {
         assert!(m.metadata.is_empty());
         assert!(parse_metadata(b"null").unwrap().is_empty());
         assert!(parse_metadata(b"[]").is_err());
+    }
+}
+
+#[cfg(test)]
+mod iso_tests {
+    use super::*;
+
+    /// Fixed instants, so the format is pinned independent of the clock. The
+    /// expected strings are what chrono's formatting gave before the port.
+    #[test]
+    fn format_is_pinned() {
+        // 2026-01-02T03:04:05Z
+        let at = |nanos: i32| jiff::Timestamp::new(1_767_323_045, nanos).unwrap();
+        for (nanos, want) in [
+            (0, "2026-01-02T03:04:05.000000Z"),
+            (123000000, "2026-01-02T03:04:05.123000Z"),
+            (123456000, "2026-01-02T03:04:05.123456Z"),
+            (123456789, "2026-01-02T03:04:05.123456Z"),
+            (1000, "2026-01-02T03:04:05.000001Z"),
+            (100, "2026-01-02T03:04:05.000000Z"),
+            (999999999, "2026-01-02T03:04:05.999999Z"),
+        ] {
+            assert_eq!(iso_micros(at(nanos)), want, "nanos {nanos}");
+        }
     }
 }

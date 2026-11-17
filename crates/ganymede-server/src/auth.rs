@@ -123,7 +123,7 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
 }
 
 fn now() -> i64 {
-    chrono::Utc::now().timestamp()
+    jiff::Timestamp::now().as_second()
 }
 
 // ----- signed values ----------------------------------------------------------
@@ -206,8 +206,21 @@ pub fn request_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
 }
 
 fn expires(days: i64) -> String {
-    (chrono::Utc::now() + chrono::Duration::days(days))
-        .format("%a, %d %b %Y %H:%M:%S GMT")
+    expires_at(jiff::Timestamp::now(), days)
+}
+
+/// The cookie `Expires` value `days` after `now`: an RFC 7231 IMF-fixdate,
+/// such as `Sun, 01 Feb 2026 03:04:05 GMT`. A date out of range is clamped
+/// to the nearest one that is in it.
+fn expires_at(now: jiff::Timestamp, days: i64) -> String {
+    let span = jiff::SignedDuration::from_hours(days.saturating_mul(24));
+    now.checked_add(span)
+        .unwrap_or(if days < 0 {
+            jiff::Timestamp::MIN
+        } else {
+            jiff::Timestamp::MAX
+        })
+        .strftime("%a, %d %b %Y %H:%M:%S GMT")
         .to_string()
 }
 
@@ -1097,6 +1110,45 @@ async fn logout(State(state): State<AppState>, ext: Extensions, headers: HeaderM
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cookie `Expires` format, as chrono wrote it before the port to
+    /// jiff: English names, a zero-padded day, GMT.
+    #[test]
+    fn expires_is_an_imf_fixdate() {
+        let at = |s: &str| s.parse::<jiff::Timestamp>().unwrap();
+        assert_eq!(
+            expires_at(at("2026-01-02T03:04:05Z"), 0),
+            "Fri, 02 Jan 2026 03:04:05 GMT"
+        );
+        assert_eq!(
+            expires_at(at("2026-01-02T03:04:05Z"), 30),
+            "Sun, 01 Feb 2026 03:04:05 GMT"
+        );
+        assert_eq!(
+            expires_at(at("2026-11-17T23:59:59Z"), 30),
+            "Thu, 17 Dec 2026 23:59:59 GMT"
+        );
+        assert_eq!(
+            expires_at(at("2027-03-09T00:00:00Z"), 30),
+            "Thu, 08 Apr 2027 00:00:00 GMT"
+        );
+        assert_eq!(
+            expires_at(at("2026-01-02T03:04:05Z"), -365),
+            "Thu, 02 Jan 2025 03:04:05 GMT"
+        );
+        // A silly number of days clamps, not panics.
+        assert!(expires_at(at("2026-01-02T03:04:05Z"), i64::MAX).ends_with(" GMT"));
+    }
+
+    #[test]
+    fn now_is_unix_seconds() {
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let t = now();
+        assert!(t >= before && t <= before + 5, "{t} vs {before}");
+    }
 
     #[test]
     fn request_logs_hide_the_token() {
