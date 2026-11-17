@@ -259,7 +259,7 @@ And the [server flags](#server-flags).
 
 | Flag | Effect |
 | --- | --- |
-| `--version <VERSION>` | ganymede-ui version, exactly. Default `0.10.1`. |
+| `--version <VERSION>` | ganymede-ui version, exactly. Default `0.11.0`. |
 | `--force` | Reinstall if this version is already installed. |
 
 ### `ui list`
@@ -333,16 +333,6 @@ can set it to choose its file.
 `ganymede info` prints the path. Flags override the file, and an unknown
 key is an error, so a misspelt `token` can't start a server with a
 random one.
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. The latest release reads `ganymede.toml` from the
-> Jupyter config dir (`$JUPYTER_CONFIG_DIR`, else `~/.jupyter`). A build
-> of `main` still reads it there when Ganymede's config dir has none,
-> and warns that it should move. A setup that chose its file with
-> `JUPYTER_CONFIG_DIR` should set `GANYMEDE_CONFIG_DIR` to the same
-> directory, or a `ganymede.toml` in the user's `~/.config/ganymede`
-> wins over it.
 
 ```toml
 root_dir = "/srv/notebooks"
@@ -436,11 +426,6 @@ them.
 | `[tailscale] cli` | The `tailscale` command `whois` runs. Default `tailscale` on `PATH`. |
 | `frame_ancestors` | The CSP sources allowed to frame the server's pages, added to every response as `frame-ancestors <sources>`. Default `'self'`, as `jupyter_server`; add an origin, such as `'self' https://portal.example.com`, to embed `/lab` in that site. See [Security](security.md#defaults). |
 
-> [!NOTE]
-> **Unreleased.** `[tailscale]`, and IP addresses in `local_hostnames`,
-> are available only from a build of `main` (HEAD), not in the latest
-> release.
-
 ### The host API
 
 `[host] read` lists the API paths that cell code may read through the
@@ -484,11 +469,6 @@ file is replaced outside Ganymede (by `git`, an editor, Finder, a download
 or a sync tool); saves through the server, `ganymede execute` and
 `ganymede nb clear` keep it, under every root that holds a grant on the
 file. See [Per notebook](host-api.md#grants) for how.
-
-> [!NOTE]
-> **Unreleased.** Dropping a grant when its file changes outside
-> Ganymede is available only from a build of `main` (HEAD), not in the
-> latest release.
 
 ```sh
 ganymede grant journal/index.ipynb read=journal   # reads only journal/ (and itself)
@@ -607,10 +587,6 @@ way, but its restarts have their own count. Clients see
 tell the kernel's state is gone. Clients that don't know the key ignore
 it, and a restart after a crash has no `reason`.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 A kernel the platform ends again within 60 seconds of the last loss counts
 toward a limit of 3. The fourth loss in a row leaves it dead: clients see
 `status: dead` with `"reason": "lost"`, the cell that was running gets an
@@ -643,10 +619,6 @@ that lets this machine in by
 [tailnet identity](security.md#tailnet-identity): the gateway marks its
 requests as a program's (`Ganymede-Client`).
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release: the gateway without a token on a tailnet.
-
 ## Server info file
 
 While it runs, `serve`, `lab` and `ui` write `jpserver-<pid>.json` in the
@@ -658,7 +630,7 @@ given them.
 ```json
 {
   "base_url": "/",
-  "ganymede_version": "0.11.0",
+  "ganymede_version": "0.12.0",
   "hostname": "127.0.0.1",
   "password": false,
   "pid": 41237,
@@ -712,11 +684,6 @@ access-denied page; `--no-redirect-file` opens the URL itself instead, as
 | `GANYMEDE_CRASH_REPORTING` | `1` turns crash reporting on and `0` off, overriding `crash_reporting`; see [Privacy and crash reporting](privacy.md). |
 | `RUST_LOG` | The log filter, when `--log-level` isn't given. |
 | `HTTPS_PROXY` | Used for downloads. |
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release: `GANYMEDE_CONFIG_DIR` and `XDG_CONFIG_HOME`. The
-> latest release reads `ganymede.toml` from `JUPYTER_CONFIG_DIR`.
 
 `ganymede info` prints every directory in use.
 

@@ -182,10 +182,6 @@ and Tailscale SSH on iPad and iPhone are done. Left: an embedded tailnet
 node through tailscale-rs, once it has certificates and `whois`.
 
 > [!NOTE]
-> **Unreleased.** The server's part is available only from a build of
-> `main` (HEAD), not in the latest release.
-
-> [!NOTE]
 > **Unreleased in ganymede-ui.** The apps' part is available only from
 > a build of ganymede-ui's `main`, not in its latest release.
 

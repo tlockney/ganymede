@@ -565,10 +565,6 @@ control characters. These are
 kept in memory: after a restart, cells nobody has changed since carry
 no `"by"`.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release: naming a person by their tailnet identity.
-
 A Markdown cell that starts with `@agent`, or `@` and the agent's client
 name or its first part (`@claude` for `claude-code`), is a request to
 the agent when a person added or edited it through the room since the

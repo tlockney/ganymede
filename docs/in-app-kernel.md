@@ -160,10 +160,6 @@ with these differences:
   its content. Clients that don't know the key ignore it, as Jupyter
   clients ignore unknown content keys.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 - A loss within 60 seconds of the last one counts toward a limit of 3.
   The fourth in a row leaves the kernel dead: `status: dead` carries
   `"reason": "lost"`. A loss after a longer quiet spell counts from one
