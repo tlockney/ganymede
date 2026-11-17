@@ -9,3 +9,8 @@ moment, as in #345 and #368 for the terminals crate's
 `names_echo_resize_and_delete`. The REST/websocket test now checks the cwd
 on its own, then asks `stty size` up to 20 times until it reports the new
 size, like that test, and panics with every try's output if it never does.
+
+Two limits. #368 saw the crate test fail once even with retries, so a
+rare failure here is not by itself a regression. And this test can't
+read the pty's size the way the crate test does, so it can't tell a
+failed resize from a slow `stty`; the crate test is the place to look.
