@@ -545,6 +545,33 @@ impl ChildProcess {
     }
 }
 
+/// The error for a kernel program that failed to spawn. A program that
+/// doesn't exist names the kernelspec, its `kernel.json` and the fix;
+/// the kind stays as it was, so callers that match on it still work.
+#[cfg(feature = "subprocess")]
+fn spawn_error(spec: &Kernelspec, program: &str, e: std::io::Error) -> std::io::Error {
+    if e.kind() != std::io::ErrorKind::NotFound {
+        return std::io::Error::new(e.kind(), format!("spawning {program:?}: {e}"));
+    }
+    let origin = if spec.resource_dir.as_os_str().is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", spec.resource_dir.join("kernel.json").display())
+    };
+    let missing = if program.contains(['/', std::path::MAIN_SEPARATOR]) {
+        format!("{program}, which doesn't exist")
+    } else {
+        format!("`{program}`, which isn't on PATH")
+    };
+    std::io::Error::new(
+        e.kind(),
+        format!(
+            "kernelspec {}{origin} runs {missing}; reinstall the kernel or fix argv in kernel.json",
+            spec.name
+        ),
+    )
+}
+
 #[cfg(feature = "subprocess")]
 #[async_trait]
 impl Provisioner for SubprocessProvisioner {
@@ -609,10 +636,7 @@ impl Provisioner for SubprocessProvisioner {
 
         let mut child = spawn_tied_to_host(cmd).await.map_err(|e| {
             let _ = std::fs::remove_file(&connection_file);
-            Error::Io(std::io::Error::new(
-                e.kind(),
-                format!("spawning {:?}: {e}", argv[0]),
-            ))
+            Error::Io(spawn_error(spec, &argv[0], e))
         })?;
         let pid = child.id().ok_or(Error::KernelDied)?;
         #[cfg(windows)]
@@ -1538,6 +1562,75 @@ mod tests {
         ));
         k.process.terminate().await.unwrap();
         k.process.kill().await.unwrap();
+    }
+
+    async fn launch_missing(argv0: &str, resource_dir: &Path) -> Error {
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec: Kernelspec = serde_json::from_value(serde_json::json!({
+            "argv": [argv0, "-f", "{connection_file}"],
+            "display_name": "",
+            "language": "",
+        }))
+        .unwrap();
+        spec.name = "gone".into();
+        spec.resource_dir = resource_dir.into();
+        let prov = SubprocessProvisioner {
+            runtime_dir: dir.path().into(),
+            ip: "127.0.0.1".into(),
+        };
+        let opts = LaunchOptions {
+            quiet: true,
+            ..Default::default()
+        };
+        prov.launch(&spec, opts).await.err().unwrap()
+    }
+
+    #[tokio::test]
+    async fn missing_absolute_program_names_spec_and_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let program = tmp.path().join("no-such-dir").join("kernel-prog");
+        let spec_dir = tmp.path().join("kernels").join("gone");
+        let err = launch_missing(program.to_str().unwrap(), &spec_dir).await;
+        let Error::Io(io) = &err else {
+            panic!("expected Io, got {err:?}");
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
+        let msg = io.to_string();
+        assert!(msg.contains("kernelspec gone"), "{msg}");
+        assert!(
+            msg.contains(&spec_dir.join("kernel.json").display().to_string()),
+            "{msg}"
+        );
+        assert!(
+            msg.contains(&format!("runs {}, which doesn't exist", program.display())),
+            "{msg}"
+        );
+        assert!(msg.contains("fix argv in kernel.json"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn missing_bare_program_says_not_on_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spec_dir = tmp.path().join("gone");
+        let err = launch_missing("ganymede-no-such-program", &spec_dir).await;
+        let Error::Io(io) = &err else {
+            panic!("expected Io, got {err:?}");
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
+        let msg = io.to_string();
+        assert!(
+            msg.contains("runs `ganymede-no-such-program`, which isn't on PATH"),
+            "{msg}"
+        );
+        assert!(msg.contains("kernel.json"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn missing_program_without_resource_dir_omits_path() {
+        let err = launch_missing("ganymede-no-such-program", Path::new("")).await;
+        let msg = err.to_string();
+        assert!(msg.contains("kernelspec gone runs `"), "{msg}");
+        assert!(!msg.contains("kernel.json)"), "{msg}");
     }
 
     #[cfg(unix)]
