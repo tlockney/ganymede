@@ -14,6 +14,11 @@ ignore = [
     # 0.28, the only Rust Yjs, which ganymede-documents needs; yrs has no
     # release without it yet. Drop this when yrs moves off smallstr.
     { id = "RUSTSEC-2026-0215", reason = "unmaintained, via yrs; no alternative" },
+    # chrono is unmaintained (no vulnerability, no fixed release). It is a
+    # direct workspace dependency; the port to jiff or time is
+    # https://github.com/tlockney/ganymede/issues/855. Drop this when that
+    # lands. Revisit by 2027-02-17.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained; port to jiff/time tracked in #855" },
 ]
 
 [bans]
