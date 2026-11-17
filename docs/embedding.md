@@ -325,7 +325,15 @@ endpoint as any kernel. The design is
 |---|---|
 | `int ganymede_kernel_register(GanymedeServer *server, const char *spec_json, const GanymedeKernelCallbacks *callbacks, char **error_out)` | Lists `spec_json` (`kernel.json`'s keys plus `"name"`; `argv` may be left out) as a kernelspec the callbacks run. The name is lowercased and, as on disk, takes only `[a-z0-9._-]`. Returns 0, or nonzero for a bad spec or name, a NULL `start`, `send` or `stop`, or a name already registered; then no callback is ever called, `release` included, and `*error_out` holds a message. |
 | `int ganymede_kernel_deliver(GanymedeServer *server, const char *kernel_id, const char *channel, const char *msg_json)` | A message from the kernel on `shell`, `control`, `stdin` or `iopub`. Any thread; doesn't block. Returns 0; 1 for a NULL string or a message or channel it can't read; 2 when the kernel isn't running, as after a stop. |
-| `void ganymede_kernel_ended(GanymedeServer *server, const char *kernel_id, const char *reason)` | The kernel ended without being asked to. `"lost"` (the platform ended it) restarts it, unless restarts are off (`kernel_restart_limit` 0), without counting toward the limit (a loss before the kernel first answers is a failed start, retried as one), and the `status: restarting` message carries `"reason": "lost"`. Anything else is a crash. Call it once per run, never for a run already stopped. |
+| `void ganymede_kernel_ended(GanymedeServer *server, const char *kernel_id, const char *reason)` | The kernel ended without being asked to. `"lost"` (the platform ended it) restarts it, unless restarts are off (`kernel_restart_limit` 0), counted apart from crashes (a loss before the kernel first answers is a failed start, retried as one), and the `status: restarting` message carries `"reason": "lost"`. Anything else is a crash. Call it once per run, never for a run already stopped. |
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+A kernel lost 4 times in a row, each within 60 seconds of the last, is left
+dead, and `status: dead` carries `"reason": "lost"`
+([details](reference.md#when-the-platform-ends-a-kernel)).
 
 `GanymedeKernelCallbacks` holds `ctx` and four callbacks, each passed
 `ctx`:

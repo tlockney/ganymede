@@ -31,6 +31,29 @@ const PUMP_BACKLOG_WARN: usize = 10_000;
 /// its next crash counts from one again (`KernelRestarter.stable_start_time`).
 const STABLE_START: Duration = Duration::from_secs(10);
 
+/// The cell error when the platform ended the kernel and it restarts.
+const LOST_TEXT: &str = "The system ended the kernel, and it is being restarted.";
+
+/// Restarts in a row, each within a window of the last.
+#[derive(Default)]
+struct RestartCount {
+    count: u32,
+    last: Option<tokio::time::Instant>,
+}
+
+impl RestartCount {
+    /// Record one at `now` and return the count: 1 when the last was
+    /// `window` or more ago (or there was none).
+    fn record(&mut self, now: tokio::time::Instant, window: Duration) -> u32 {
+        self.count = match self.last {
+            Some(last) if now.saturating_duration_since(last) < window => self.count + 1,
+            _ => 1,
+        };
+        self.last = Some(now);
+        self.count
+    }
+}
+
 #[cfg(feature = "zmq")]
 pub use ganymede_kernel_host::zmq::ZmqTransportFactory;
 /// How a launched kernel gets its transport. ZMQ in the server; an
@@ -62,6 +85,13 @@ pub struct KernelManagerConfig {
     /// as `KernelRestarter.restart_limit`. A crash more than ten seconds
     /// after the last restart counts from one again. 0 never restarts.
     pub restart_limit: u32,
+    /// Restarts in a row after the platform ends an app's kernel (`lost`)
+    /// before it is left dead. Counted apart from crashes. 0 never
+    /// restarts a kernel after `lost`.
+    pub lost_restart_limit: u32,
+    /// A loss within this long of the last one counts toward
+    /// `lost_restart_limit`; a later one counts from one again.
+    pub lost_restart_window: Duration,
     /// Working directories for kernels are resolved under this root.
     pub root_dir: PathBuf,
     /// URL prefix for kernelspec resource links, as `jupyter_server`
@@ -78,6 +108,8 @@ impl Default for KernelManagerConfig {
             quiet: false,
             cull_idle: None,
             restart_limit: 5,
+            lost_restart_limit: 3,
+            lost_restart_window: Duration::from_secs(60),
             root_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             base_url: "/".into(),
         }
@@ -131,7 +163,9 @@ pub struct RunningKernel {
     /// answered, oldest first. Answered for the kernel if it crashes.
     unanswered: Mutex<VecDeque<Header>>,
     /// Restarts after crashes in a row, and when the last one was.
-    crashes: Mutex<(u32, Option<tokio::time::Instant>)>,
+    crashes: Mutex<RestartCount>,
+    /// Restarts after the platform ended the kernel, in a row.
+    losses: Mutex<RestartCount>,
     /// A client asked the current session's kernel to exit with a
     /// `shutdown_request`, so its exit is not a crash.
     asked_to_exit: AtomicBool,
@@ -323,7 +357,7 @@ impl RunningKernel {
             return;
         }
         if self.asked_to_exit.load(Ordering::SeqCst) {
-            self.remove_dead(core);
+            self.remove_dead(core, None);
             return;
         }
         tokio::spawn(core.clone().crashed(self.clone(), session_id.to_string()));
@@ -386,8 +420,9 @@ impl RunningKernel {
 
     /// Drop a dead kernel from the map, tell clients `status: dead`, and
     /// close them, as `jupyter_server` does when a kernel dies and is not
-    /// restarted.
-    fn remove_dead(self: &Arc<Self>, core: &Core) {
+    /// restarted. `reason` goes in the `dead` status when known
+    /// (`"lost"`); clients that don't know the key ignore it.
+    fn remove_dead(self: &Arc<Self>, core: &Core, reason: Option<&str>) {
         {
             let mut map = core.kernels.write().unwrap();
             match map.get(&self.id) {
@@ -399,7 +434,11 @@ impl RunningKernel {
         core.keep_log(self);
         tracing::warn!(kernel = %self.id, "kernel died");
         self.set_state("dead");
-        self.announce("status", serde_json::json!({"execution_state": "dead"}));
+        let mut status = serde_json::json!({"execution_state": "dead"});
+        if let Some(reason) = reason {
+            status["reason"] = reason.into();
+        }
+        self.announce("status", status);
         self.alive.send_replace(false);
         self.clients.lock().unwrap().discard_parked(&self.id);
         self.launched.lock().unwrap().take();
@@ -637,6 +676,7 @@ impl KernelManager {
             execution_state: Mutex::new("starting".into()),
             unanswered: Mutex::default(),
             crashes: Mutex::default(),
+            losses: Mutex::default(),
             asked_to_exit: AtomicBool::new(false),
             log,
         });
@@ -836,7 +876,7 @@ impl KernelManager {
         if let Err(e) = self.core.relaunch(&kernel).await {
             tracing::warn!(kernel = %id, "kernel failed to restart: {e}");
             kernel.booting.store(false, Ordering::SeqCst);
-            kernel.remove_dead(&self.core);
+            kernel.remove_dead(&self.core, None);
             return Err(e);
         }
         self.core.boot(&kernel, since).await?;
@@ -931,6 +971,10 @@ impl Core {
     /// `KernelRestarter` does: clients see `status: restarting`, then the
     /// new kernel's own statuses. After `restart_limit` crashes in a row,
     /// each within [`STABLE_START`] of the last restart, it is left dead.
+    /// An app's kernel that the platform ended (`lost`) has its own count:
+    /// after `lost_restart_limit` losses in a row, each within
+    /// `lost_restart_window` of the last, it is left dead with
+    /// `reason: lost`. `restart_limit` 0 leaves it dead after either.
     async fn crashed(self: Arc<Self>, kernel: Arc<RunningKernel>, session_id: String) {
         // Read before the lock, so a shutdown or restart that queues
         // behind this handler still stops its boot.
@@ -942,8 +986,7 @@ impl Core {
             return;
         }
         // An app's kernel that the platform ended, as iOS ends a suspended
-        // app's web content, is restarted without counting as a crash:
-        // nothing is wrong with it (docs/in-app-kernel.md).
+        // app's web content (docs/in-app-kernel.md).
         let lost = kernel
             .launched
             .lock()
@@ -951,21 +994,47 @@ impl Core {
             .as_ref()
             .and_then(|l| l.process.exit_reason())
             == Some("lost");
-        let count = {
-            let mut crashes = kernel.crashes.lock().unwrap();
-            if !lost {
-                let now = tokio::time::Instant::now();
-                crashes.0 = match crashes.1 {
-                    Some(last) if now - last < STABLE_START => crashes.0 + 1,
-                    _ => 1,
-                };
-                crashes.1 = Some(now);
-            }
-            crashes.0
-        };
+        let reason = lost.then_some("lost");
+        let now = tokio::time::Instant::now();
         let limit = self.config.restart_limit;
-        if limit == 0 || count > limit {
-            if limit > 0 {
+        if limit == 0 {
+            kernel.log.host("the kernel died; restarts are off");
+            kernel.answer_for_crashed_kernel(if lost { LOST_TEXT } else { "The kernel died." });
+            kernel.remove_dead(&self, reason);
+            return;
+        }
+        let mut status = serde_json::json!({"execution_state": "restarting"});
+        let why;
+        if lost {
+            let n = kernel
+                .losses
+                .lock()
+                .unwrap()
+                .record(now, self.config.lost_restart_window);
+            let lost_limit = self.config.lost_restart_limit;
+            if n > lost_limit {
+                // Kernel failures log at `warn`, never `error` (#431).
+                let window = self.config.lost_restart_window.as_secs();
+                tracing::warn!(kernel = %kernel.id, "the platform ended the kernel {n} times in a row; leaving it dead");
+                kernel.log.host(&format!(
+                    "the platform ended the kernel {n} times within {window}s of each restart; leaving it dead"
+                ));
+                kernel.answer_for_crashed_kernel(
+                    "The system ended the kernel too often; it was not restarted.",
+                );
+                kernel.remove_dead(&self, reason);
+                return;
+            }
+            tracing::info!(kernel = %kernel.id, "the app's kernel was lost; restarting it ({n}/{lost_limit})");
+            kernel.log.host(&format!(
+                "the platform ended the kernel; restarting it ({n}/{lost_limit})"
+            ));
+            // Clients that don't know the key ignore it.
+            status["reason"] = "lost".into();
+            why = LOST_TEXT;
+        } else {
+            let count = kernel.crashes.lock().unwrap().record(now, STABLE_START);
+            if count > limit {
                 // Kernel failures log at `warn`, never `error`: crash
                 // reporting sends Ganymede's `error` events, and a kernel
                 // that dies or won't start is the user's code or
@@ -974,36 +1043,25 @@ impl Core {
                 kernel.log.host(&format!(
                     "the kernel died {count} times in a row; leaving it dead"
                 ));
-            } else {
-                kernel.log.host("the kernel died; restarts are off");
+                kernel.answer_for_crashed_kernel("The kernel died.");
+                kernel.remove_dead(&self, None);
+                return;
             }
-            kernel.answer_for_crashed_kernel("The kernel died.");
-            kernel.remove_dead(&self);
-            return;
-        }
-        let mut status = serde_json::json!({"execution_state": "restarting"});
-        if lost {
-            tracing::info!(kernel = %kernel.id, "the app's kernel was lost; restarting it");
-            kernel
-                .log
-                .host("the platform ended the kernel; restarting it");
-            // Clients that don't know the key ignore it.
-            status["reason"] = "lost".into();
-        } else {
             tracing::warn!(kernel = %kernel.id, "kernel died; restarting it ({count}/{limit})");
             kernel
                 .log
                 .host(&format!("the kernel died; restarting it ({count}/{limit})"));
+            why = "The kernel died, and is being restarted.";
         }
         kernel.booting.store(true, Ordering::SeqCst);
-        kernel.answer_for_crashed_kernel("The kernel died, and is being restarted.");
+        kernel.answer_for_crashed_kernel(why);
         kernel.announce("status", status);
         kernel.set_state("restarting");
         kernel.launched.lock().unwrap().take();
         if let Err(e) = self.relaunch(&kernel).await {
             tracing::warn!(kernel = %kernel.id, "kernel failed to restart: {e}");
             kernel.booting.store(false, Ordering::SeqCst);
-            kernel.remove_dead(&self);
+            kernel.remove_dead(&self, None);
             return;
         }
         // On failure `boot` reports the kernel dead and removes it.
@@ -1124,7 +1182,7 @@ impl Core {
                 tracing::warn!(kernel = %kernel.id, "kernel failed to start: {e}");
                 kernel.log.host(&format!("the kernel failed to start: {e}"));
                 *kernel.start_failure.lock().unwrap() = Some(e.message.clone());
-                kernel.remove_dead(self);
+                kernel.remove_dead(self, None);
                 Err(e)
             }
         }
@@ -1276,4 +1334,58 @@ fn tracks_state(status: &Message) -> bool {
         .map(|h| h.msg_type.as_str())
         .unwrap_or_default();
     !UNTRACKED.contains(&parent_type)
+}
+
+#[cfg(test)]
+mod restart_count_tests {
+    use super::RestartCount;
+    use std::time::Duration;
+    use tokio::time::Instant;
+
+    const WINDOW: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn the_first_counts_one() {
+        assert_eq!(RestartCount::default().record(Instant::now(), WINDOW), 1);
+    }
+
+    #[test]
+    fn each_within_the_window_of_the_last_adds_one() {
+        let mut c = RestartCount::default();
+        let t0 = Instant::now();
+        let at = |s| t0 + Duration::from_secs(s);
+        assert_eq!(c.record(t0, WINDOW), 1);
+        assert_eq!(c.record(at(59), WINDOW), 2);
+        assert_eq!(c.record(at(118), WINDOW), 3);
+    }
+
+    #[test]
+    fn exactly_the_window_starts_over() {
+        let t0 = Instant::now();
+        let mut c = RestartCount::default();
+        c.record(t0, WINDOW);
+        assert_eq!(c.record(t0 + WINDOW, WINDOW), 1);
+        let mut c = RestartCount::default();
+        c.record(t0, WINDOW);
+        assert_eq!(c.record(t0 + Duration::from_secs(61), WINDOW), 1);
+    }
+
+    #[test]
+    fn a_gap_resets_the_count() {
+        let t0 = Instant::now();
+        let mut c = RestartCount::default();
+        for s in 0..3 {
+            c.record(t0 + Duration::from_secs(s), WINDOW);
+        }
+        assert_eq!(c.record(t0 + Duration::from_secs(200), WINDOW), 1);
+    }
+
+    #[test]
+    fn a_zero_window_always_counts_one() {
+        let t0 = Instant::now();
+        let mut c = RestartCount::default();
+        for _ in 0..3 {
+            assert_eq!(c.record(t0, Duration::ZERO), 1);
+        }
+    }
 }

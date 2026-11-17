@@ -69,9 +69,10 @@ int ganymede_kernel_deliver(GanymedeServer *server, const char *kernel_id,
                             const char *channel, const char *msg_json);
 
 /* A registered kernel ended without being asked to. reason "lost" (the
- * platform ended it) restarts it, unless restarts are off, without
- * counting a crash, once it has started (a loss before its first
- * kernel_info_reply is a failed start, retried as one); anything else, or NULL, is a crash. Any thread. Call
+ * platform ended it) restarts it, unless restarts are off, counted
+ * against its own limit (3 within 60 s) and not as a crash, once it has
+ * started (a loss before its first kernel_info_reply is a failed start,
+ * retried as one); anything else, or NULL, is a crash. Any thread. Call
  * it once per run, never for a run already stopped. */
 void ganymede_kernel_ended(GanymedeServer *server, const char *kernel_id,
                            const char *reason);

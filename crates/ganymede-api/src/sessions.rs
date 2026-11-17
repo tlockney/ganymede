@@ -343,6 +343,7 @@ mod tests {
         Provisioner,
     };
     use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -587,13 +588,20 @@ mod tests {
     }
 
     fn with_config(config: KernelManagerConfig) -> (Arc<KernelManager>, Arc<FakeTransports>) {
+        with_provisioner(config, Arc::new(FakeProvisioner))
+    }
+
+    fn with_provisioner(
+        config: KernelManagerConfig,
+        provisioner: Arc<dyn Provisioner>,
+    ) -> (Arc<KernelManager>, Arc<FakeTransports>) {
         let transports = Arc::new(FakeTransports::default());
         let m = Arc::new(KernelManager::new(
             Arc::new(StaticKernelspecs(vec![
                 fake_spec("fake"),
                 fake_spec("other"),
             ])),
-            Arc::new(FakeProvisioner),
+            provisioner,
             transports.clone(),
             KernelManagerConfig {
                 startup_timeout: Duration::from_secs(5),
@@ -1431,6 +1439,216 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(m.model(&k.id).unwrap().execution_state, "busy");
         m.shutdown(&k.id).await.unwrap();
+    }
+
+    /// A process that says the platform ended it while `lost` is set.
+    struct LostProcess(
+        Arc<dyn ganymede_kernel_host::KernelProcess>,
+        Arc<AtomicBool>,
+    );
+    #[async_trait]
+    impl ganymede_kernel_host::KernelProcess for LostProcess {
+        // A pid, so the kernel's log is kept once it is left dead.
+        fn pid(&self) -> Option<u32> {
+            Some(1)
+        }
+        async fn interrupt(&self) -> ganymede_kernel_host::Result<()> {
+            self.0.interrupt().await
+        }
+        async fn terminate(&self) -> ganymede_kernel_host::Result<()> {
+            self.0.terminate().await
+        }
+        async fn kill(&self) -> ganymede_kernel_host::Result<()> {
+            self.0.kill().await
+        }
+        async fn wait(&self) -> Option<i32> {
+            self.0.wait().await
+        }
+        fn is_alive(&self) -> bool {
+            self.0.is_alive()
+        }
+        fn kill_now(&self) {
+            self.0.kill_now()
+        }
+        fn exit_reason(&self) -> Option<&'static str> {
+            self.1.load(Ordering::SeqCst).then_some("lost")
+        }
+    }
+
+    struct LostProvisioner(Arc<AtomicBool>);
+    #[async_trait]
+    impl Provisioner for LostProvisioner {
+        async fn launch(
+            &self,
+            _spec: &Kernelspec,
+            _opts: LaunchOptions,
+        ) -> ganymede_kernel_host::Result<LaunchedKernel> {
+            let mut launched = in_process();
+            launched.process = Arc::new(LostProcess(launched.process.clone(), self.0.clone()));
+            Ok(launched)
+        }
+    }
+
+    /// A manager whose kernels read as lost while the flag is set.
+    fn losing(config: KernelManagerConfig) -> (Arc<KernelManager>, Arc<AtomicBool>) {
+        let lost = Arc::new(AtomicBool::new(true));
+        let (m, _) = with_provisioner(config, Arc::new(LostProvisioner(lost.clone())));
+        (m, lost)
+    }
+
+    async fn until_idle(m: &KernelManager, id: &str) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while m.model(id).unwrap().execution_state != "idle" {
+            assert!(tokio::time::Instant::now() < deadline, "never idle again");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Kill the kernel with a cell and wait for the announced status.
+    async fn die_and_wait(
+        c: &mut crate::ClientConnection,
+        state: &str,
+    ) -> (String, Vec<(Channel, Message)>) {
+        let id = run(c, "die").await;
+        (id, until_announced(c, state).await)
+    }
+
+    fn announced(got: &[(Channel, Message)], state: &str) -> Message {
+        got.iter()
+            .find(|(ch, m)| {
+                *ch == Channel::IoPub
+                    && m.msg_type() == "status"
+                    && m.parent_header.is_none()
+                    && m.content["execution_state"] == state
+            })
+            .unwrap_or_else(|| panic!("no announced {state}"))
+            .1
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn a_lost_kernel_restarts_with_a_reason() {
+        let (m, _) = losing(KernelManagerConfig::default());
+        let k = started(&m, Some("fake"), None).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        let (_, got) = die_and_wait(&mut c, "restarting").await;
+        assert_eq!(announced(&got, "restarting").content["reason"], "lost");
+        until_idle(&m, &k.id).await;
+        m.shutdown(&k.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_crash_restart_has_no_reason() {
+        let m = manager(None);
+        let k = started(&m, Some("fake"), None).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        let (_, got) = die_and_wait(&mut c, "restarting").await;
+        assert!(announced(&got, "restarting")
+            .content
+            .get("reason")
+            .is_none());
+        until_idle(&m, &k.id).await;
+        m.shutdown(&k.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_kernel_lost_too_often_is_left_dead_with_a_reason() {
+        let (m, _) = losing(KernelManagerConfig {
+            restart_limit: 1,
+            lost_restart_limit: 2,
+            ..Default::default()
+        });
+        let k = started(&m, Some("fake"), None).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        for _ in 0..2 {
+            let (_, got) = die_and_wait(&mut c, "restarting").await;
+            assert_eq!(announced(&got, "restarting").content["reason"], "lost");
+            until_idle(&m, &k.id).await;
+        }
+        let cell = run(&mut c, "die").await;
+        let got = until_none(&mut c).await;
+        let last = got
+            .iter()
+            .rev()
+            .find(|(ch, m)| *ch == Channel::IoPub && m.msg_type() == "status")
+            .unwrap();
+        assert_eq!(last.1.content["execution_state"], "dead");
+        assert_eq!(last.1.content["reason"], "lost");
+        assert!(!statuses(&got).contains(&"restarting".to_string()));
+        let reply = got
+            .iter()
+            .find(|(ch, m)| *ch == Channel::Shell && m.parent_id() == Some(cell.as_str()))
+            .expect("the cell is answered");
+        assert_eq!(reply.1.content["status"], "error");
+        assert!(reply.1.content["evalue"]
+            .as_str()
+            .unwrap()
+            .contains("too often"));
+        assert!(m.list().is_empty());
+        let log = m.log(&k.id, None, 100).unwrap();
+        assert!(
+            log.lines.iter().any(|l| l.text.contains("leaving it dead")),
+            "{:?}",
+            log.lines
+        );
+    }
+
+    #[tokio::test]
+    async fn losses_outside_the_window_never_reach_the_limit() {
+        let (m, _) = losing(KernelManagerConfig {
+            lost_restart_limit: 1,
+            lost_restart_window: Duration::ZERO,
+            ..Default::default()
+        });
+        let k = started(&m, Some("fake"), None).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        for _ in 0..3 {
+            die_and_wait(&mut c, "restarting").await;
+            until_idle(&m, &k.id).await;
+        }
+        m.shutdown(&k.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn losses_and_crashes_are_counted_apart() {
+        let (m, lost) = losing(KernelManagerConfig {
+            restart_limit: 1,
+            lost_restart_limit: 5,
+            ..Default::default()
+        });
+        let k = started(&m, Some("fake"), None).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        // A loss does not use up the crash restart.
+        die_and_wait(&mut c, "restarting").await;
+        until_idle(&m, &k.id).await;
+        lost.store(false, Ordering::SeqCst);
+        die_and_wait(&mut c, "restarting").await;
+        until_idle(&m, &k.id).await;
+        run(&mut c, "die").await;
+        let got = until_none(&mut c).await;
+        let last = got
+            .iter()
+            .rev()
+            .find(|(ch, m)| *ch == Channel::IoPub && m.msg_type() == "status")
+            .unwrap();
+        assert_eq!(last.1.content["execution_state"], "dead");
+        assert!(last.1.content.get("reason").is_none());
+        assert!(m.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_restarts_leaves_a_lost_kernel_dead_with_a_reason() {
+        let (m, _) = losing(KernelManagerConfig {
+            restart_limit: 0,
+            ..Default::default()
+        });
+        let k = started(&m, Some("fake"), None).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        run(&mut c, "die").await;
+        let got = until_none(&mut c).await;
+        assert!(!statuses(&got).contains(&"restarting".to_string()));
+        assert_eq!(announced(&got, "dead").content["reason"], "lost");
+        assert!(m.list().is_empty());
     }
 
     fn statuses(got: &[(Channel, Message)]) -> Vec<String> {

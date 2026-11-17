@@ -496,8 +496,10 @@ pub unsafe extern "C" fn ganymede_kernel_deliver(
 
 /// Kernel `kernel_id` ended without the server asking. `reason` is
 /// `"lost"` when the platform ended it, as iOS ends a suspended app's web
-/// content: the server restarts it without counting a crash, and tells
-/// clients `"reason": "lost"` with `status: restarting`. Anything else,
+/// content: the server restarts it, counted against its own limit (3
+/// within 60 s of each other) and not as a crash, and tells clients
+/// `"reason": "lost"` with `status: restarting`; past the limit it leaves
+/// the kernel dead, with `"reason": "lost"` on `status: dead`. Anything else,
 /// NULL included, is a crash, restarted as the server's restart limit
 /// says. Takes any thread; an unknown kernel is ignored.
 ///
