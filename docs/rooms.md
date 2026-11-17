@@ -150,6 +150,49 @@ with each requested cell as the room has it, before the room saves:
 the reply shows them as they were. Without `wait`, the answer is `200
 null`, as in `jupyter-server-documents`.
 
+### Running the room's current source
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+The saved file can lag the room, so a client that hashes the file's
+source runs stale code or gets a `409`. Ganymede lets the room pick the
+cells instead. An entry without `source_hash` (or with `null`) runs the
+room's current source, unsaved edits included. A hash, when given, is
+still checked.
+
+```json
+{"document_id": "json:notebook:<file id>",
+ "cells": [{"cell_id": "a"}, {"cell_id": "b", "source_hash": "123"}, {"tag": "report"}],
+ "wait": 60}
+```
+
+- `{"tag": "x"}` runs every code cell whose `metadata.tags` has `x`.
+- `"cells": "all"` runs every code cell with source, in order. With none,
+  the answer is `{"finished": true, "cells": []}` (`null` without `wait`).
+- A cell named twice runs once, where it is first named.
+- The room resolves the cells and checks them in one step. If any is
+  refused, none runs and no outputs are cleared.
+
+With `wait`, the reply lists the cells that ran, with the room's ids. A
+notebook saved as nbformat 4.4 or older has no cell ids on disk, so a
+client learns its ids from that reply (or `"all"`). They are the room's,
+are never saved, and last only while the room is open (a minute after the
+last client leaves, if nothing is running).
+
+An unknown id is `400`:
+
+```json
+{"message": "Cell \"zz\" not found in document", "reason": null, "error": "cell_not_found", "cell_id": "zz"}
+```
+
+For a 4.4 notebook the message adds that its ids are the room's. A tag
+that matches no code cell is `cell_not_found` with `tag` in place of
+`cell_id`. With no room open, the room is opened from the file, as
+before. A read-only room (see below) refuses as before. The latest release
+answers `400` `source_hash is required`.
+
 ## Two servers on one notebook
 
 On one machine, the first server to open a room on a notebook owns it

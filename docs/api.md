@@ -418,8 +418,8 @@ What `ganymede serve` answers, beyond the examples above:
 - Extensions' routes, with no Python behind them: `jupyter-lsp`'s
   `/lsp/status` and `/lsp/ws/{name}`; `jupyter-collaboration`'s
   `/api/collaboration` rooms with `/api/fileid/*`, and
-  `jupyter-server-documents`' `/api/kernels/{id}/execute`
-  ([Live editing and document rooms](rooms.md)); `jupyter-resource-usage`'s
+  `jupyter-server-documents`' `/api/kernels/{id}/execute`, with Ganymede's
+  `wait` and room-source extensions ([Live editing and document rooms](rooms.md)); `jupyter-resource-usage`'s
   `/api/metrics/v1`.
 - Ganymede's own: `/api/kernels/{id}/log`, `/api/notebooks/run`
   ([Run a notebook](#run-a-notebook),

@@ -7,13 +7,22 @@
 //!  "client_id": "...", "request_id": "...", "previous_request_id": "..."}
 //! ```
 //!
-//! The room checks every cell's hash against its current source, then
-//! clears their outputs, marks them running, and queues the batch, all in
-//! one step of its task, so no other request interleaves with it. The
-//! answer is `200 null` once queued; `409 {"error": "source_mismatch",
-//! "cell_id"}` when a cell's source changed since the client hashed it;
-//! `408` when `previous_request_id` was not queued within ten seconds;
-//! `400` for the rest. A room that isn't open is opened, so an agent with
+//! Ganymede's extensions (#566, #843): `wait`, and cells chosen against
+//! the room's current source. An entry without `source_hash` (or with
+//! `null`) runs whatever the room holds, unsaved edits included;
+//! `{"tag": "x"}` names every code cell tagged `x`; `"cells": "all"` is
+//! every code cell with source. The room resolves them in its task, in the
+//! same step as the checks, so a notebook with no cell ids on disk
+//! (nbformat 4.4) runs by the ids its room gave.
+//!
+//! The room checks every given hash against its cell's current source,
+//! then clears the cells' outputs, marks them running, and queues the
+//! batch, all in one step of its task, so no other request interleaves
+//! with it. The answer is `200 null` once queued; `409 {"error":
+//! "source_mismatch", "cell_id"}` when a cell's source changed since the
+//! client hashed it; `408` when `previous_request_id` was not queued within
+//! ten seconds; `400` for the rest, `"error": "cell_not_found"` among them
+//! for an id or tag the room doesn't have. A room that isn't open is opened, so an agent with
 //! no websocket can run cells.
 //!
 //! One worker per room runs the queue in order on the named kernel,
@@ -32,7 +41,7 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use ganymede_api::KernelManager;
 use ganymede_documents::schema::{self, Roots};
-use ganymede_documents::yrs::{Any, Map, Out};
+use ganymede_documents::yrs::{Any, Array, Map, MapRef, Out};
 use ganymede_documents::{Effects, Room};
 use ganymede_exec::{CellStatus, Event, NotebookRun, Options};
 use ganymede_nbformat::Cell;
@@ -66,10 +75,27 @@ pub struct ExecuteBody {
     wait: Option<f64>,
 }
 
+/// Which cells a request names.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Selector {
+    /// A cell by id, with the source hash to check (`None`: don't check).
+    Id(String, Option<String>),
+    /// Every code cell tagged so.
+    Tag(String),
+    /// Every code cell with source.
+    All,
+}
+
 /// Why a batch was refused.
 #[derive(Debug)]
 pub(crate) enum Refused {
     SourceMismatch(String),
+    /// An id or tag the room doesn't have; `message` says so.
+    NotFound {
+        cell_id: Option<String>,
+        tag: Option<String>,
+        message: String,
+    },
     Bad(String),
 }
 
@@ -79,9 +105,9 @@ pub(crate) enum RoomCmd {
     Enqueue {
         kernels: Arc<KernelManager>,
         kernel_id: String,
-        /// Cell ids, with the source hash to check (`None`: don't check).
-        cells: Vec<(String, Option<String>)>,
-        reply: oneshot::Sender<Result<(), Refused>>,
+        cells: Vec<Selector>,
+        /// The ids the selectors resolved to, in the order they run.
+        reply: oneshot::Sender<Result<Vec<String>, Refused>>,
         /// Told when the whole batch has run.
         finished: Option<oneshot::Sender<()>>,
     },
@@ -178,8 +204,15 @@ impl RoomExec {
                 finished,
             } => {
                 let (checked, fx) = enqueue(room, &cells);
-                if checked.is_ok() {
-                    self.pending += cells.len();
+                if let Ok(ids) = &checked {
+                    if ids.is_empty() {
+                        if let Some(f) = finished {
+                            let _ = f.send(());
+                        }
+                        let _ = reply.send(checked);
+                        return fx;
+                    }
+                    self.pending += ids.len();
                     let worker = self.worker.get_or_insert_with(|| {
                         let (tx, rx) = mpsc::unbounded_channel();
                         tokio::spawn(run_worker(self.me.clone(), rx));
@@ -188,7 +221,7 @@ impl RoomExec {
                     let _ = worker.send(Batch {
                         kernels,
                         kernel_id,
-                        cells: cells.into_iter().map(|(id, _)| id).collect(),
+                        cells: ids.clone(),
                         finished,
                     });
                 }
@@ -263,8 +296,9 @@ impl RoomExec {
     }
 }
 
-/// Check every cell, then clear and mark them all, or none.
-fn enqueue(room: &mut Room, cells: &[(String, Option<String>)]) -> (Result<(), Refused>, Effects) {
+/// Resolve the selectors against the room's cells, check them, then clear
+/// and mark every cell, or none. The ids come back in run order, each once.
+fn enqueue(room: &mut Room, selectors: &[Selector]) -> (Result<Vec<String>, Refused>, Effects) {
     if room.notebook().is_none() {
         return (
             Err(Refused::Bad("not a notebook room".into())),
@@ -283,29 +317,93 @@ fn enqueue(room: &mut Room, cells: &[(String, Option<String>)]) -> (Result<(), R
         );
     }
     room.edit(|txn, roots: &Roots| {
-        let mut found = Vec::new();
-        for (id, hash) in cells {
-            let Some(cell) = schema::find_cell(txn, roots, id) else {
-                return Err(Refused::Bad(format!("Cell {id:?} not found in document")));
-            };
-            let code = matches!(cell.get(txn, "cell_type"), Some(Out::Any(Any::String(t))) if &*t == "code");
-            if !code {
-                return Err(Refused::Bad(format!("Cell {id:?} is not a code cell")));
+        let is_code = |cell: &MapRef| {
+            matches!(cell.get(txn, "cell_type"), Some(Out::Any(Any::String(t))) if &*t == "code")
+        };
+        let id_of = |cell: &MapRef| match cell.get(txn, "id") {
+            Some(Out::Any(Any::String(s))) => Some(s.to_string()),
+            _ => None,
+        };
+        let code_cells: Vec<(String, MapRef)> = roots
+            .cells
+            .iter(txn)
+            .filter_map(|out| match out {
+                Out::YMap(m) if is_code(&m) => id_of(&m).map(|id| (id, m)),
+                _ => None,
+            })
+            .collect();
+        let mut found: Vec<(String, MapRef)> = Vec::new();
+        let mut add = |id: &str, cell: &MapRef| {
+            if !found.iter().any(|(f, _)| f == id) {
+                found.push((id.to_string(), cell.clone()));
             }
-            let source = room_ops::source_of(txn, &cell).unwrap_or_default();
-            let stale = hash
-                .as_ref()
-                .is_some_and(|h| ganymede_documents::murmur2(source.as_bytes(), 0).to_string() != *h);
-            if stale {
-                return Err(Refused::SourceMismatch(id.clone()));
+        };
+        for selector in selectors {
+            match selector {
+                Selector::Id(id, hash) => {
+                    let Some(cell) = schema::find_cell(txn, roots, id) else {
+                        let hint = if schema::keeps_no_ids(txn, roots) {
+                            "; this notebook (nbformat 4.4) keeps no cell ids on disk, so its ids are the room's and last only while its room is open"
+                        } else {
+                            ""
+                        };
+                        return Err(Refused::NotFound {
+                            cell_id: Some(id.clone()),
+                            tag: None,
+                            message: format!("Cell {id:?} not found in document{hint}"),
+                        });
+                    };
+                    if !is_code(&cell) {
+                        return Err(Refused::Bad(format!("Cell {id:?} is not a code cell")));
+                    }
+                    let stale = hash.as_ref().is_some_and(|h| {
+                        let source = room_ops::source_of(txn, &cell).unwrap_or_default();
+                        ganymede_documents::murmur2(source.as_bytes(), 0).to_string() != *h
+                    });
+                    if stale {
+                        return Err(Refused::SourceMismatch(id.clone()));
+                    }
+                    add(id, &cell);
+                }
+                Selector::Tag(tag) => {
+                    let mut any = false;
+                    for (id, cell) in &code_cells {
+                        let tagged = cell
+                            .get(txn, "metadata")
+                            .map(|m| schema::out_to_json(txn, &m))
+                            .is_some_and(|m| {
+                                m["tags"]
+                                    .as_array()
+                                    .is_some_and(|t| t.iter().any(|t| t.as_str() == Some(tag)))
+                            });
+                        if tagged {
+                            any = true;
+                            add(id, cell);
+                        }
+                    }
+                    if !any {
+                        return Err(Refused::NotFound {
+                            cell_id: None,
+                            tag: Some(tag.clone()),
+                            message: format!("No code cell has the tag {tag:?} in document"),
+                        });
+                    }
+                }
+                Selector::All => {
+                    for (id, cell) in &code_cells {
+                        let source = room_ops::source_of(txn, cell).unwrap_or_default();
+                        if !source.trim().is_empty() {
+                            add(id, cell);
+                        }
+                    }
+                }
             }
-            found.push(cell);
         }
-        for cell in found {
-            schema::set_outputs(txn, &cell, Vec::new());
+        for (_, cell) in &found {
+            schema::set_outputs(txn, cell, Vec::new());
             cell.insert(txn, "execution_state", "running");
         }
-        Ok(())
+        Ok(found.into_iter().map(|(id, _)| id).collect())
     })
 }
 
@@ -608,6 +706,50 @@ fn bad(msg: impl Into<String>) -> HttpError {
     HttpError(400, msg.into())
 }
 
+/// The request's `cells`: `"all"`, or a non-empty list of `{cell_id,
+/// source_hash?}` and `{tag}` entries.
+fn parse_cells(cells: Option<Value>) -> Result<Vec<Selector>, HttpError> {
+    let entries = match cells {
+        Some(Value::String(s)) if s == "all" => return Ok(vec![Selector::All]),
+        Some(Value::Array(a)) if !a.is_empty() => a,
+        _ => {
+            return Err(bad(
+                "cells must be \"all\" or a non-empty list of {cell_id, source_hash} or {tag}",
+            ))
+        }
+    };
+    entries
+        .iter()
+        .map(|entry| {
+            let wrong = || {
+                bad(format!(
+                    "Each cell entry must have a cell_id string or a tag string, not both, got {entry}"
+                ))
+            };
+            let Value::Object(o) = entry else {
+                return Err(wrong());
+            };
+            match (o.get("cell_id"), o.get("tag")) {
+                (Some(Value::String(id)), None) => {
+                    let hash = match o.get("source_hash") {
+                        None | Some(Value::Null) => None,
+                        Some(Value::String(s)) => Some(s.clone()),
+                        Some(Value::Number(n)) => Some(n.to_string()),
+                        Some(_) => {
+                            return Err(bad(format!(
+                                "source_hash must be a string or number for cell {id:?}"
+                            )))
+                        }
+                    };
+                    Ok(Selector::Id(id.clone(), hash))
+                }
+                (None, Some(Value::String(tag))) => Ok(Selector::Tag(tag.clone())),
+                _ => Err(wrong()),
+            }
+        })
+        .collect()
+}
+
 pub async fn execute(
     State(state): State<AppState>,
     Path(kernel_id): Path<String>,
@@ -617,31 +759,7 @@ pub async fn execute(
         .document_id
         .filter(|d| !d.is_empty())
         .ok_or_else(|| bad("document_id is required"))?;
-    let entries = match body.cells {
-        Some(Value::Array(a)) if !a.is_empty() => a,
-        _ => {
-            return Err(bad(
-                "cells must be a non-empty list of {cell_id, source_hash}",
-            ))
-        }
-    };
-    let mut cells = Vec::new();
-    for entry in &entries {
-        let id = entry
-            .get("cell_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                bad(format!(
-                    "Each cell entry must have a cell_id string, got {entry}"
-                ))
-            })?;
-        let hash = match entry.get("source_hash") {
-            Some(Value::String(s)) => s.clone(),
-            Some(Value::Number(n)) => n.to_string(),
-            _ => return Err(bad(format!("source_hash is required for cell {id:?}"))),
-        };
-        cells.push((id.to_string(), Some(hash)));
-    }
+    let cells = parse_cells(body.cells)?;
     let wait = match body.wait {
         None => None,
         // Clamped first: `from_secs_f64` panics past `Duration::MAX`.
@@ -654,7 +772,6 @@ pub async fn execute(
             )))
         }
     };
-    let ids: Vec<String> = cells.iter().map(|(id, _)| id.clone()).collect();
     // 404 for an unknown kernel, as the other kernel endpoints answer.
     state.kernels.get(&kernel_id).map_err(HttpError::from)?;
 
@@ -694,8 +811,22 @@ pub async fn execute(
     let room = send_to_notebook_room(&state.collab, &state.contents, &document_id, cmd)
         .await
         .ok_or_else(|| bad(format!("No YRoom available for document: {document_id:?}")))?;
-    match answer.await {
-        Ok(Ok(())) => {}
+    let ids = match answer.await {
+        Ok(Ok(ids)) => ids,
+        Ok(Err(Refused::NotFound {
+            cell_id,
+            tag,
+            message,
+        })) => {
+            let mut body = json!({"message": message, "reason": null, "error": "cell_not_found"});
+            if let Some(id) = cell_id {
+                body["cell_id"] = json!(id);
+            }
+            if let Some(tag) = tag {
+                body["tag"] = json!(tag);
+            }
+            return Ok((StatusCode::BAD_REQUEST, axum::Json(body)).into_response());
+        }
         Ok(Err(Refused::SourceMismatch(cell_id))) => {
             return Ok((
                 StatusCode::CONFLICT,
@@ -705,7 +836,7 @@ pub async fn execute(
         }
         Ok(Err(Refused::Bad(msg))) => return Err(bad(msg)),
         Err(_) => return Err(bad(format!("Room {document_id:?} closed"))),
-    }
+    };
     if let Some(id) = body.request_id.as_deref().filter(|p| !p.is_empty()) {
         state.collab.requests.mark(id);
     }
@@ -758,7 +889,7 @@ pub(crate) async fn run_and_wait(
     let cmd = Cmd::Exec(RoomCmd::Enqueue {
         kernels: state.kernels.clone(),
         kernel_id: kernel_id.to_string(),
-        cells: cells.into_iter().map(|c| (c, None)).collect(),
+        cells: cells.into_iter().map(|c| Selector::Id(c, None)).collect(),
         reply,
         finished: Some(finished),
     });
@@ -769,8 +900,12 @@ pub(crate) async fn run_and_wait(
         .await
         .ok_or_else(|| format!("cannot open {path}"))?;
     match answer.await {
-        Ok(Ok(())) => {}
-        Ok(Err(Refused::SourceMismatch(id) | Refused::Bad(id))) => return Err(id),
+        Ok(Ok(_)) => {}
+        Ok(Err(
+            Refused::SourceMismatch(message)
+            | Refused::Bad(message)
+            | Refused::NotFound { message, .. },
+        )) => return Err(message),
         Err(_) => return Err(format!("{path}: room closed")),
     }
     let mut done = done;
@@ -788,25 +923,118 @@ pub(crate) async fn run_and_wait(
 mod request_tests {
     use super::*;
 
-    #[test]
-    fn a_read_only_room_queues_nothing() {
+    fn room_of(minor: u32) -> Room {
         let nb: ganymede_nbformat::Notebook = serde_json::from_value(json!({
-            "cells": [{"cell_type": "code", "id": "a", "metadata": {},
-                       "source": "1", "outputs": [], "execution_count": null}],
-            "metadata": {}, "nbformat": 4, "nbformat_minor": 5
+            "cells": [
+                {"cell_type": "code", "id": "a", "metadata": {"tags": ["t"]},
+                 "source": "1", "outputs": [], "execution_count": null},
+                {"cell_type": "markdown", "id": "m", "metadata": {"tags": ["t"]}, "source": "x"},
+                {"cell_type": "code", "id": "b", "metadata": {"tags": "t"},
+                 "source": "  \n", "outputs": [], "execution_count": null},
+                {"cell_type": "code", "id": "c", "metadata": {"tags": ["u", "t"]},
+                 "source": "2", "outputs": [], "execution_count": null}],
+            "metadata": {}, "nbformat": 4, "nbformat_minor": minor
         }))
         .unwrap();
-        let mut room = Room::notebook_room(&nb, "a.ipynb");
-        let cells = [("a".to_string(), None)];
-        assert!(enqueue(&mut room, &cells).0.is_ok());
+        Room::notebook_room(&nb, "a.ipynb")
+    }
+
+    fn id(s: &str) -> Selector {
+        Selector::Id(s.into(), None)
+    }
+
+    #[test]
+    fn a_read_only_room_queues_nothing() {
+        let mut room = room_of(5);
+        assert!(enqueue(&mut room, &[id("a")]).0.is_ok());
         room.set_read_only(true);
-        let (r, fx) = enqueue(&mut room, &cells);
+        for sel in [id("a"), Selector::Tag("t".into()), Selector::All] {
+            let (r, fx) = enqueue(&mut room, &[sel]);
+            assert!(
+                matches!(&r, Err(Refused::Bad(m)) if m.contains("read-only")),
+                "{:?}",
+                r.err().map(|_| ())
+            );
+            assert!(!fx.changed);
+        }
+    }
+
+    #[test]
+    fn selectors_resolve_in_room_order_once_each() {
+        let mut room = room_of(5);
+        let mut ids = |sels: &[Selector]| enqueue(&mut room, sels).0.unwrap();
+        // Tags: code cells only, a non-list `tags` ignored.
+        assert_eq!(ids(&[Selector::Tag("t".into())]), ["a", "c"]);
+        // An id and a tag covering it run once, at the first mention.
+        assert_eq!(
+            ids(&[id("c"), Selector::Tag("t".into()), id("a")]),
+            ["c", "a"]
+        );
+        // All: code cells with source, not blank ones or markdown.
+        assert_eq!(ids(&[Selector::All]), ["a", "c"]);
+    }
+
+    #[test]
+    fn a_refused_batch_changes_nothing() {
+        let mut room = room_of(5);
+        let (r, fx) = enqueue(&mut room, &[id("a"), id("zz")]);
         assert!(
-            matches!(&r, Err(Refused::Bad(m)) if m.contains("read-only")),
-            "{:?}",
-            r.err().map(|_| ())
+            matches!(&r, Err(Refused::NotFound { cell_id: Some(c), message, .. })
+            if c == "zz" && !message.contains("4.4"))
         );
         assert!(!fx.changed);
+        let (r, fx) = enqueue(&mut room, &[id("a"), Selector::Tag("none".into())]);
+        assert!(matches!(&r, Err(Refused::NotFound { tag: Some(t), .. }) if t == "none"));
+        assert!(!fx.changed);
+        let (r, fx) = enqueue(
+            &mut room,
+            &[id("a"), Selector::Id("c".into(), Some("0".into()))],
+        );
+        assert!(matches!(&r, Err(Refused::SourceMismatch(c)) if c == "c"));
+        assert!(!fx.changed);
+        let (r, fx) = enqueue(&mut room, &[id("m")]);
+        assert!(matches!(&r, Err(Refused::Bad(m)) if m.contains("not a code cell")));
+        assert!(!fx.changed);
+        // The 4.4 hint.
+        let mut old = room_of(4);
+        let (r, _) = enqueue(&mut old, &[id("zz")]);
+        assert!(
+            matches!(&r, Err(Refused::NotFound { message, .. }) if message.contains("nbformat 4.4"))
+        );
+    }
+
+    #[test]
+    fn cells_parse_into_selectors() {
+        let ok = |v: Value| parse_cells(Some(v)).unwrap_or_else(|_| panic!("refused"));
+        assert_eq!(ok(json!("all")), [Selector::All]);
+        assert_eq!(
+            ok(
+                json!([{"cell_id": "a"}, {"cell_id": "b", "source_hash": null},
+                      {"cell_id": "c", "source_hash": 5}, {"cell_id": "d", "source_hash": "9"},
+                      {"tag": "t"}])
+            ),
+            [
+                id("a"),
+                id("b"),
+                Selector::Id("c".into(), Some("5".into())),
+                Selector::Id("d".into(), Some("9".into())),
+                Selector::Tag("t".into())
+            ]
+        );
+        for bad in [
+            json!("some"),
+            json!(3),
+            json!([]),
+            json!([{}]),
+            json!(["a"]),
+            json!([{"cell_id": "a", "tag": "t"}]),
+            json!([{"cell_id": 1}]),
+            json!([{"tag": 1}]),
+            json!([{"cell_id": "a", "source_hash": true}]),
+        ] {
+            assert!(parse_cells(Some(bad.clone())).is_err(), "{bad}");
+        }
+        assert!(parse_cells(None).is_err());
     }
 
     #[test]

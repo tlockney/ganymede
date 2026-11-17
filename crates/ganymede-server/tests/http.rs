@@ -4285,6 +4285,405 @@ async fn execute_wait_answers_with_the_cells() {
     assert_eq!(v["cells"][0]["execution_count"], Value::Null);
 }
 
+/// A notebook `name` with the given cells, a kernel, and the room's
+/// document id, for the room-source execute tests (#843).
+async fn room_source_setup(
+    app: &axum::Router,
+    dir: &std::path::Path,
+    name: &str,
+    minor: u32,
+    cells: Value,
+) -> (String, String) {
+    let nb = json!({"cells": cells, "metadata": {}, "nbformat": 4, "nbformat_minor": minor});
+    std::fs::write(dir.join(name), serde_json::to_string_pretty(&nb).unwrap()).unwrap();
+    let (_, kernel) = call(app, "POST", "/api/kernels", Some(json!({})), Some(TOKEN)).await;
+    let (_, v) = call(
+        app,
+        "POST",
+        &format!("/api/fileid/index?path={name}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    (
+        kernel["id"].as_str().unwrap().to_string(),
+        format!("json:notebook:{}", v["id"].as_str().unwrap()),
+    )
+}
+
+fn code_cell(id: Option<&str>, src: &str, tags: &[&str]) -> Value {
+    let mut c = json!({"cell_type": "code", "execution_count": null, "metadata": {"tags": tags},
+        "outputs": [], "source": src});
+    if let Some(id) = id {
+        c["id"] = json!(id);
+    }
+    c
+}
+
+/// An id with no hash runs the room's current source, edits not yet saved
+/// included; the file's hash no longer matches the room (#843).
+#[tokio::test]
+async fn execute_without_a_hash_runs_the_rooms_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = mcp_app(dir.path());
+    let (kid, doc) = room_source_setup(
+        &app,
+        dir.path(),
+        "t.ipynb",
+        5,
+        json!([code_cell(Some("a"), "hello", &[])]),
+    )
+    .await;
+    let sid = mcp_connect(&app, "agent").await;
+    mcp_tool(&app, &sid, "notebook_open", json!({"path": "t.ipynb"})).await;
+    let edit = mcp_tool(
+        &app,
+        &sid,
+        "cell_edit",
+        json!({"id": "a", "source": "edited"}),
+    )
+    .await;
+    assert!(!mcp_text(&edit).is_empty());
+    let url = format!("/api/kernels/{kid}/execute");
+    let hash = ganymede_documents::murmur2(b"hello", 0).to_string();
+    let (s, v) = call(
+        &app,
+        "POST",
+        &url,
+        Some(json!({"document_id": doc, "cells": [{"cell_id": "a", "source_hash": hash}]})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(
+        (s, &v["error"]),
+        (StatusCode::CONFLICT, &json!("source_mismatch"))
+    );
+    let (s, v) = call(
+        &app,
+        "POST",
+        &url,
+        Some(json!({"document_id": doc, "wait": 15, "cells": [{"cell_id": "a"}]})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert_eq!(v["finished"], true, "{v:#}");
+    let out = v["cells"][0]["outputs"].to_string();
+    assert!(out.contains("edited") && !out.contains("hello"), "{out}");
+}
+
+/// With no room open the file's source runs, as with its hash (#843).
+#[tokio::test]
+async fn execute_without_a_hash_and_without_a_room_runs_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(state(dir.path()));
+    let (kid, doc) = room_source_setup(
+        &app,
+        dir.path(),
+        "f.ipynb",
+        5,
+        json!([code_cell(Some("a"), "hello", &[])]),
+    )
+    .await;
+    let (s, v) = call(
+        &app,
+        "POST",
+        &format!("/api/kernels/{kid}/execute"),
+        Some(json!({"document_id": doc, "wait": 15, "cells": [{"cell_id": "a"}]})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert!(
+        v["cells"][0]["outputs"].to_string().contains("hello"),
+        "{v:#}"
+    );
+}
+
+/// A notebook with no cell ids on disk (nbformat 4.4) runs by the room's
+/// ids, which the `wait` reply gives; the file keeps none (#843).
+#[tokio::test]
+async fn execute_all_runs_a_44_notebook_by_the_rooms_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(state(dir.path()));
+    let markdown = json!({"cell_type": "markdown", "metadata": {}, "source": "text"});
+    let (kid, doc) = room_source_setup(
+        &app,
+        dir.path(),
+        "old.ipynb",
+        4,
+        json!([
+            code_cell(None, "one", &[]),
+            markdown,
+            code_cell(None, "  ", &[]),
+            code_cell(None, "two", &[])
+        ]),
+    )
+    .await;
+    let url = format!("/api/kernels/{kid}/execute");
+    let (s, v) = call(
+        &app,
+        "POST",
+        &url,
+        Some(json!({"document_id": doc, "wait": 15, "cells": "all"})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert_eq!(v["finished"], true, "{v:#}");
+    let cells = v["cells"].as_array().unwrap();
+    assert_eq!(cells.len(), 2, "{v:#}");
+    let ids: Vec<String> = cells
+        .iter()
+        .map(|c| c["id"].as_str().expect("a room id").to_string())
+        .collect();
+    assert!(cells[0]["outputs"].to_string().contains("one"));
+    assert!(cells[1]["outputs"].to_string().contains("two"));
+
+    // D: the room is still open, so its ids run that cell, and only it.
+    let (s, v) = call(
+        &app,
+        "POST",
+        &url,
+        Some(json!({"document_id": doc, "wait": 15, "cells": [{"cell_id": ids[1]}]})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert_eq!(v["cells"].as_array().unwrap().len(), 1, "{v:#}");
+    assert_eq!(v["cells"][0]["id"], json!(ids[1]));
+
+    // The file is saved with outputs and without ids.
+    let file = dir.path().join("old.ipynb");
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let saved = loop {
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        if v["cells"][0]["outputs"]
+            .as_array()
+            .is_some_and(|o| !o.is_empty())
+        {
+            break v;
+        }
+        assert!(std::time::Instant::now() < deadline, "not saved: {v:#}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert!(
+        saved["cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c.get("id").is_none()),
+        "{saved:#}"
+    );
+}
+
+/// Once the room has closed, its ids are gone, and a 4.4 notebook says so
+/// (#843).
+#[tokio::test]
+async fn execute_by_a_stale_44_id_says_the_ids_are_the_rooms() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state(dir.path());
+    st.collab = Arc::new(
+        ganymede_server::collab::Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            dir.path().canonicalize().ok(),
+        )
+        .with_cleanup_delay(Duration::ZERO),
+    );
+    let app = build_router(st);
+    let (kid, doc) = room_source_setup(
+        &app,
+        dir.path(),
+        "old.ipynb",
+        4,
+        json!([code_cell(None, "one", &[])]),
+    )
+    .await;
+    let url = format!("/api/kernels/{kid}/execute");
+    let (_, v) = call(
+        &app,
+        "POST",
+        &url,
+        Some(json!({"document_id": doc, "wait": 15, "cells": "all"})),
+        Some(TOKEN),
+    )
+    .await;
+    let id = v["cells"][0]["id"].as_str().unwrap().to_string();
+    // Give the room time to save and close; asking earlier would keep it
+    // open (the stale id still runs there) and dirty again.
+    let deadline = std::time::Instant::now() + Duration::from_secs(40);
+    loop {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let (s, v) = call(
+            &app,
+            "POST",
+            &url,
+            Some(json!({"document_id": doc, "cells": [{"cell_id": id}]})),
+            Some(TOKEN),
+        )
+        .await;
+        if s == StatusCode::BAD_REQUEST && v["error"] == "cell_not_found" {
+            assert_eq!(v["cell_id"], json!(id));
+            let m = v["message"].as_str().unwrap();
+            assert!(m.contains("nbformat 4.4") && m.contains("room"), "{v:#}");
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "{s} {v:#}");
+    }
+}
+
+/// An unknown id is refused as `cell_not_found`, with no 4.4 hint on a
+/// notebook that keeps ids, and nothing in the batch is cleared (#843).
+#[tokio::test]
+async fn execute_unknown_id_refuses_the_whole_batch() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = mcp_app(dir.path());
+    let (kid, doc) = room_source_setup(
+        &app,
+        dir.path(),
+        "u.ipynb",
+        5,
+        json!([code_cell(Some("a"), "hello", &[])]),
+    )
+    .await;
+    let url = format!("/api/kernels/{kid}/execute");
+    let (s, _) = call(
+        &app,
+        "POST",
+        &url,
+        Some(json!({"document_id": doc, "wait": 15, "cells": [{"cell_id": "a"}]})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, v) = call(
+        &app,
+        "POST",
+        &url,
+        Some(json!({"document_id": doc, "wait": 15,
+            "cells": [{"cell_id": "a"}, {"cell_id": "zz"}]})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        v,
+        json!({"message": "Cell \"zz\" not found in document", "reason": null,
+               "error": "cell_not_found", "cell_id": "zz"})
+    );
+    // `a` kept its output: nothing was cleared.
+    let sid = mcp_connect(&app, "agent").await;
+    mcp_tool(&app, &sid, "notebook_open", json!({"path": "u.ipynb"})).await;
+    let read = mcp_text(&mcp_tool(&app, &sid, "notebook_read", json!({})).await);
+    assert!(
+        read.contains("@@output") && read.contains("hello"),
+        "{read}"
+    );
+}
+
+/// Tags pick code cells in room order; an unmatched tag is refused; a
+/// stale hash anywhere queues nothing; odd shapes are 400s (#843).
+#[tokio::test]
+async fn execute_by_tag_and_bad_shapes() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(state(dir.path()));
+    let md =
+        json!({"cell_type": "markdown", "id": "m", "metadata": {"tags": ["t"]}, "source": "x"});
+    let (kid, doc) = room_source_setup(
+        &app,
+        dir.path(),
+        "g.ipynb",
+        5,
+        json!([
+            code_cell(Some("a"), "one", &["t"]),
+            md,
+            code_cell(Some("b"), "two", &["t", "u"]),
+            code_cell(Some("c"), "  ", &[])
+        ]),
+    )
+    .await;
+    let url = format!("/api/kernels/{kid}/execute");
+    let exec = |body: Value| call(&app, "POST", &url, Some(body), Some(TOKEN));
+    let (s, v) = exec(json!({"document_id": doc, "wait": 15, "cells": [{"tag": "t"}]})).await;
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    let ids: Vec<&str> = v["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["a", "b"]);
+    let (s, v) = exec(json!({"document_id": doc, "cells": [{"tag": "nope"}]})).await;
+    assert_eq!(
+        (s, &v["error"], &v["tag"]),
+        (
+            StatusCode::BAD_REQUEST,
+            &json!("cell_not_found"),
+            &json!("nope")
+        )
+    );
+
+    // I: a stale hash next to a hashless id queues nothing.
+    let (s, v) = exec(json!({"document_id": doc, "wait": 15, "cells": [
+        {"cell_id": "a"}, {"cell_id": "b", "source_hash": "0"}]}))
+    .await;
+    assert_eq!((s, &v["cell_id"]), (StatusCode::CONFLICT, &json!("b")));
+
+    // J: shapes.
+    for cells in [
+        json!([{"cell_id": "a", "tag": "t"}]),
+        json!([{}]),
+        json!("some"),
+        json!([]),
+    ] {
+        let (s, _) = exec(json!({"document_id": doc, "cells": cells.clone()})).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{cells}");
+    }
+    let (s, v) = exec(json!({"document_id": doc, "wait": 15,
+        "cells": [{"cell_id": "a", "source_hash": null}]}))
+    .await;
+    assert_eq!((s, &v["finished"]), (StatusCode::OK, &json!(true)));
+
+    // K: nothing to run answers at once.
+    let (kid2, doc2) = room_source_setup(
+        &app,
+        dir.path(),
+        "k.ipynb",
+        5,
+        json!([
+            code_cell(Some("a"), " ", &[]),
+            json!({"cell_type": "markdown", "id": "m", "metadata": {}, "source": "x"})
+        ]),
+    )
+    .await;
+    let url2 = format!("/api/kernels/{kid2}/execute");
+    let (s, v) = tokio::time::timeout(
+        Duration::from_secs(5),
+        call(
+            &app,
+            "POST",
+            &url2,
+            Some(json!({"document_id": doc2, "wait": 60, "cells": "all"})),
+            Some(TOKEN),
+        ),
+    )
+    .await
+    .expect("answers promptly");
+    assert_eq!(
+        (s, v),
+        (StatusCode::OK, json!({"finished": true, "cells": []}))
+    );
+    let (s, v) = call(
+        &app,
+        "POST",
+        &url2,
+        Some(json!({"document_id": doc2, "cells": "all"})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!((s, v), (StatusCode::OK, Value::Null));
+}
+
 /// A progress-style cell (clear with wait, then print) updates a
 /// connected client live, before the cell finishes.
 #[tokio::test]

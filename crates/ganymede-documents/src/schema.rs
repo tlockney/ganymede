@@ -497,6 +497,19 @@ pub fn get_with_ids<T: ReadTxn>(
     read(txn, roots, baseline, true)
 }
 
+/// The notebook is nbformat 4.4 or older, which keeps no cell ids on disk:
+/// the room's ids are its own and are left out of what it saves.
+pub fn keeps_no_ids<T: ReadTxn>(txn: &T, roots: &Roots) -> bool {
+    let number = |key: &str| {
+        roots
+            .meta
+            .get(txn, key)
+            .and_then(|o| out_to_json(txn, &o).as_u64())
+            .unwrap_or(0)
+    };
+    number("nbformat") == 4 && number("nbformat_minor") <= 4
+}
+
 fn read<T: ReadTxn>(
     txn: &T,
     roots: &Roots,
@@ -507,12 +520,7 @@ fn read<T: ReadTxn>(
         Value::Object(m) => m,
         _ => JsonMap::new(),
     };
-    let minor = top
-        .get("nbformat_minor")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let major = top.get("nbformat").and_then(Value::as_u64).unwrap_or(0);
-    let strip_ids = !keep_ids && major == 4 && minor <= 4;
+    let strip_ids = !keep_ids && keeps_no_ids(txn, roots);
     let cells: Vec<Value> = roots
         .cells
         .iter(txn)
