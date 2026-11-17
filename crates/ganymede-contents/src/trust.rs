@@ -294,12 +294,15 @@ mod sqlite {
     /// `datetime.now(tz=timezone.utc).isoformat()`, the form nbformat
     /// stores: microseconds only when non-zero, `+00:00`.
     fn now_isoformat() -> String {
-        let now = chrono::Utc::now();
-        let micros = now.timestamp_subsec_micros();
+        isoformat(jiff::Timestamp::now())
+    }
+
+    fn isoformat(now: jiff::Timestamp) -> String {
+        let micros = now.subsec_nanosecond().rem_euclid(1_000_000_000) / 1000;
         if micros == 0 {
-            now.format("%Y-%m-%dT%H:%M:%S+00:00").to_string()
+            now.strftime("%Y-%m-%dT%H:%M:%S+00:00").to_string()
         } else {
-            format!("{}.{micros:06}+00:00", now.format("%Y-%m-%dT%H:%M:%S"))
+            format!("{}.{micros:06}+00:00", now.strftime("%Y-%m-%dT%H:%M:%S"))
         }
     }
 
@@ -311,7 +314,21 @@ mod sqlite {
         fn isoformat_shape() {
             let s = now_isoformat();
             assert!(s.ends_with("+00:00"), "{s}");
-            assert!(chrono::DateTime::parse_from_rfc3339(&s).is_ok(), "{s}");
+            assert!(s.parse::<jiff::Timestamp>().is_ok(), "{s}");
+        }
+
+        /// The fraction is left out when it is zero and is six digits
+        /// otherwise (chrono's output, pinned before the port to jiff).
+        #[test]
+        fn isoformat_is_pinned() {
+            let at = |nanos: i32| jiff::Timestamp::new(1_767_323_045, nanos).unwrap();
+            assert_eq!(isoformat(at(0)), "2026-01-02T03:04:05+00:00");
+            assert_eq!(isoformat(at(999)), "2026-01-02T03:04:05+00:00");
+            assert_eq!(isoformat(at(1_000)), "2026-01-02T03:04:05.000001+00:00");
+            assert_eq!(
+                isoformat(at(123_456_789)),
+                "2026-01-02T03:04:05.123456+00:00"
+            );
         }
     }
 }

@@ -899,15 +899,11 @@ impl KernelManager {
         let cullable = |k: &RunningKernel| {
             k.clients.lock().unwrap().connections() == 0
                 && k.execution_state.lock().unwrap().as_str() == "idle"
-                && chrono::DateTime::parse_from_rfc3339(&k.last_activity.lock().unwrap())
-                    .map(|t| {
-                        chrono::Utc::now()
-                            .signed_duration_since(t)
-                            .to_std()
-                            .unwrap_or_default()
-                            > limit
-                    })
-                    .unwrap_or(false)
+                && idle_longer_than(
+                    &k.last_activity.lock().unwrap(),
+                    jiff::Timestamp::now(),
+                    limit,
+                )
         };
         let candidates: Vec<String> = self
             .core
@@ -1361,9 +1357,19 @@ fn tracks_state(status: &Message) -> bool {
     !UNTRACKED.contains(&parent_type)
 }
 
+/// Whether `last_activity` (RFC 3339) is more than `limit` before `now`.
+/// A time in the future counts as no time elapsed, and one that does not
+/// parse is not idle.
+fn idle_longer_than(last_activity: &str, now: jiff::Timestamp, limit: std::time::Duration) -> bool {
+    last_activity
+        .parse::<jiff::Timestamp>()
+        .map(|t| std::time::Duration::try_from(now.duration_since(t)).unwrap_or_default() > limit)
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod restart_count_tests {
-    use super::RestartCount;
+    use super::{idle_longer_than, RestartCount};
     use std::time::Duration;
     use tokio::time::Instant;
 
@@ -1412,5 +1418,23 @@ mod restart_count_tests {
         for _ in 0..3 {
             assert_eq!(c.record(t0, Duration::ZERO), 1);
         }
+    }
+
+    #[test]
+    fn idleness_is_measured_from_last_activity() {
+        let now: jiff::Timestamp = "2026-01-02T03:04:05Z".parse().unwrap();
+        let limit = Duration::from_secs(60);
+        // Exactly at the limit is not past it; a microsecond more is.
+        assert!(!idle_longer_than("2026-01-02T03:03:05.000000Z", now, limit));
+        assert!(idle_longer_than("2026-01-02T03:03:04.999999Z", now, limit));
+        // An offset is honoured.
+        assert!(idle_longer_than("2026-01-02T04:00:00+02:00", now, limit));
+        // The future is no time elapsed, and garbage is not idle.
+        assert!(!idle_longer_than(
+            "2026-01-02T03:04:06Z",
+            now,
+            Duration::ZERO
+        ));
+        assert!(!idle_longer_than("not a time", now, Duration::ZERO));
     }
 }

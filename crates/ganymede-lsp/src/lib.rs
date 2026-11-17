@@ -579,7 +579,13 @@ async fn write_shadow(server: &str, shadow: &shadow::Shadow, uri: &str, text: Op
 }
 
 fn now_iso() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false)
+    iso_micros_offset(jiff::Timestamp::now())
+}
+
+/// `t` as `YYYY-MM-DDTHH:MM:SS.ffffff+00:00`: UTC, six fraction digits
+/// (truncated, not rounded), and the offset spelled out, not `Z`.
+fn iso_micros_offset(t: jiff::Timestamp) -> String {
+    t.strftime("%Y-%m-%dT%H:%M:%S.%6f+00:00").to_string()
 }
 
 /// A bare program name found in `path` with one of the `pathext`
@@ -939,5 +945,29 @@ mod tests {
             virtual_documents_uri(Path::new("/srv/nb")),
             "file:///srv/nb/.virtual_documents"
         );
+    }
+}
+
+#[cfg(test)]
+mod iso_tests {
+    use super::*;
+
+    /// Fixed instants, so the format is pinned independent of the clock. The
+    /// expected strings are what chrono's formatting gave before the port.
+    #[test]
+    fn format_is_pinned() {
+        // 2026-01-02T03:04:05Z
+        let at = |nanos: i32| jiff::Timestamp::new(1_767_323_045, nanos).unwrap();
+        for (nanos, want) in [
+            (0, "2026-01-02T03:04:05.000000+00:00"),
+            (123000000, "2026-01-02T03:04:05.123000+00:00"),
+            (123456000, "2026-01-02T03:04:05.123456+00:00"),
+            (123456789, "2026-01-02T03:04:05.123456+00:00"),
+            (1000, "2026-01-02T03:04:05.000001+00:00"),
+            (100, "2026-01-02T03:04:05.000000+00:00"),
+            (999999999, "2026-01-02T03:04:05.999999+00:00"),
+        ] {
+            assert_eq!(iso_micros_offset(at(nanos)), want, "nanos {nanos}");
+        }
     }
 }

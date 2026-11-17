@@ -252,7 +252,8 @@ impl Lab {
         let settings: Value = json5::from_str(&raw).unwrap_or_else(|_| json!({}));
         let meta = user.as_ref().and_then(|p| std::fs::metadata(p).ok());
         let time = |t: Option<std::time::SystemTime>| -> Value {
-            t.map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339().into())
+            t.and_then(|t| jiff::Timestamp::try_from(t).ok())
+                .map(|t| rfc3339(t).into())
                 .unwrap_or(Value::Null)
         };
         json!({
@@ -890,6 +891,20 @@ async fn change_extension() -> Response {
 
 // ----- helpers --------------------------------------------------------------
 
+/// `t` as RFC 3339 with `+00:00` for UTC and the fraction only as long as it
+/// has to be: none when it is zero, else three, six or nine digits, the
+/// fewest that are exact.
+fn rfc3339(t: jiff::Timestamp) -> String {
+    let nanos = t.as_nanosecond().rem_euclid(1_000_000_000);
+    let secs = t.strftime("%Y-%m-%dT%H:%M:%S");
+    match nanos {
+        0 => format!("{secs}+00:00"),
+        n if n % 1_000_000 == 0 => format!("{secs}.{:03}+00:00", n / 1_000_000),
+        n if n % 1_000 == 0 => format!("{secs}.{:06}+00:00", n / 1_000),
+        n => format!("{secs}.{n:09}+00:00"),
+    }
+}
+
 fn read_json(p: &FsPath) -> Option<Value> {
     serde_json::from_slice(&std::fs::read(p).ok()?).ok()
 }
@@ -1248,6 +1263,32 @@ pub(crate) fn html_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A settings file's times, as chrono's `to_rfc3339` wrote them before
+    /// the port to jiff.
+    #[test]
+    fn times_use_the_shortest_exact_fraction() {
+        // 2026-01-02T03:04:05Z
+        let at = |nanos: i32| jiff::Timestamp::new(1_767_323_045, nanos).unwrap();
+        for (nanos, want) in [
+            (0, "2026-01-02T03:04:05+00:00"),
+            (123_000_000, "2026-01-02T03:04:05.123+00:00"),
+            (1_000_000, "2026-01-02T03:04:05.001+00:00"),
+            (123_456_000, "2026-01-02T03:04:05.123456+00:00"),
+            (1_000, "2026-01-02T03:04:05.000001+00:00"),
+            (123_456_789, "2026-01-02T03:04:05.123456789+00:00"),
+            (100, "2026-01-02T03:04:05.000000100+00:00"),
+            (999_999_999, "2026-01-02T03:04:05.999999999+00:00"),
+        ] {
+            assert_eq!(rfc3339(at(nanos)), want, "nanos {nanos}");
+        }
+        // Before 1970 the fraction still counts forward from the second.
+        let before = jiff::Timestamp::try_from(
+            std::time::UNIX_EPOCH - std::time::Duration::from_millis(1500),
+        )
+        .unwrap();
+        assert_eq!(rfc3339(before), "1969-12-31T23:59:58.500+00:00");
+    }
 
     /// Slugs as `jupyterlab_server` 2.28's `slugify` makes them (#492).
     #[test]

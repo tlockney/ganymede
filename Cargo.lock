@@ -395,10 +395,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
- "js-sys",
  "num-traits",
  "serde",
- "wasm-bindgen",
  "windows-link",
 ]
 
@@ -1075,11 +1073,11 @@ name = "ganymede-api"
 version = "0.12.0"
 dependencies = [
  "async-trait",
- "chrono",
  "futures",
  "ganymede-contents",
  "ganymede-host",
  "ganymede-kernel-host",
+ "jiff",
  "serde",
  "serde_json",
  "tempfile",
@@ -1128,11 +1126,11 @@ version = "0.12.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
- "chrono",
  "ganymede-nbformat",
  "getrandom 0.4.3",
  "hex",
  "hmac",
+ "jiff",
  "libc",
  "mime_guess",
  "rusqlite",
@@ -1180,9 +1178,9 @@ version = "0.12.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
- "chrono",
  "ganymede-kernel-host",
  "ganymede-nbformat",
+ "jiff",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
@@ -1266,8 +1264,8 @@ dependencies = [
 name = "ganymede-lsp"
 version = "0.12.0"
 dependencies = [
- "chrono",
  "ganymede-kernel-host",
+ "jiff",
  "libc",
  "percent-encoding",
  "serde",
@@ -1296,9 +1294,9 @@ name = "ganymede-protocol"
 version = "0.12.0"
 dependencies = [
  "bytes",
- "chrono",
  "hex",
  "hmac",
+ "jiff",
  "serde",
  "serde_json",
  "sha2",
@@ -1314,7 +1312,6 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
- "chrono",
  "clap",
  "dirs",
  "form_urlencoded",
@@ -1333,6 +1330,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "hmac",
+ "jiff",
  "json5",
  "mime_guess",
  "notify",
@@ -1358,7 +1356,7 @@ dependencies = [
 name = "ganymede-terminals"
 version = "0.12.0"
 dependencies = [
- "chrono",
+ "jiff",
  "portable-pty",
  "tempfile",
  "thiserror 2.0.21",
@@ -1795,6 +1793,60 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "jiff"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cc767b5763de45e810109520123bb2829a653f3a7ed9be40b2bc4f81158f595"
+dependencies = [
+ "jiff-core",
+ "jiff-static",
+ "jiff-tzdb-platform",
+ "js-sys",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+ "wasm-bindgen",
+ "windows-link",
+]
+
+[[package]]
+name = "jiff-core"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "894f7ac42105f584100691b3bf6e6b92dd12fcfa225f6c397f95c8a94b47b68f"
+dependencies = [
+ "log",
+]
+
+[[package]]
+name = "jiff-static"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "955491488dc99b572ea6d67b172dcd98787d00744b1fb44a5689b4e6413695a6"
+dependencies = [
+ "jiff-core",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
+name = "jiff-tzdb"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12e71a1b68a875a44a33bb7a1dd84392cb77145a3367a552a3cfe6a4f5cf3afc"
+
+[[package]]
+name = "jiff-tzdb-platform"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc65b284afcfa8f6cf189c7274c805505314a7ab975c60e1f548bff56525420e"
+dependencies = [
+ "jiff-tzdb",
+]
 
 [[package]]
 name = "jni"
@@ -2449,6 +2501,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "50596ddc09eb5ad5f75cacd40209568e66df71baf86e1499a0e99c4cff12a5a6"
 dependencies = [
  "arrayvec",
+]
+
+[[package]]
+name = "portable-atomic"
+version = "1.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
+
+[[package]]
+name = "portable-atomic-util"
+version = "0.2.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10ab3eb7f3becc3a1cbc4f2c6f20267996cfc1a6467a873763411b136a122715"
+dependencies = [
+ "portable-atomic",
 ]
 
 [[package]]

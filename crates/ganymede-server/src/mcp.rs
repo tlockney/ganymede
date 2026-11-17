@@ -205,6 +205,12 @@ pub struct Notebooks {
 /// it, so an agent's `a.ipynb` is the file in its own folder.
 pub const DIR_META: &str = "ganymede/dir";
 
+/// The local date for a byline: the day without padding and the full
+/// English month, as in `2 January 2026`.
+fn local_date(now: &jiff::ZonedDateTime) -> String {
+    now.strftime("%-d %B %Y").to_string()
+}
+
 /// Whether `dir` can be a connection's directory: no `..` segment and no
 /// backslash, so it stays under the root.
 fn valid_dir(dir: &str) -> bool {
@@ -1264,7 +1270,7 @@ impl Notebooks {
             code,
             byline: Some(
                 a.byline
-                    .unwrap_or_else(|| chrono::Local::now().format("%-d %B %Y").to_string()),
+                    .unwrap_or_else(|| local_date(&jiff::ZonedDateTime::now())),
             ),
             redact: crate::routes::server_redactions(&self.state),
             download: a
@@ -3045,6 +3051,33 @@ fn svg_source(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The byline's format, as chrono wrote it before the port to jiff,
+    /// and in the zone's own day, not UTC's.
+    #[test]
+    fn bylines_are_the_local_date() {
+        let at = |s: &str, hours: i8| {
+            s.parse::<jiff::Timestamp>()
+                .unwrap()
+                .to_zoned_datetime(jiff::tz::offset(hours).to_time_zone())
+        };
+        assert_eq!(local_date(&at("2026-01-02T12:00:00Z", 0)), "2 January 2026");
+        assert_eq!(
+            local_date(&at("2026-11-17T12:00:00Z", 0)),
+            "17 November 2026"
+        );
+        assert_eq!(local_date(&at("2026-03-09T12:00:00Z", 0)), "9 March 2026");
+        assert_eq!(
+            local_date(&at("2026-12-31T12:00:00Z", 0)),
+            "31 December 2026"
+        );
+        // 03:04 UTC on the 2nd is still the 1st five hours west.
+        assert_eq!(
+            local_date(&at("2026-01-02T03:04:05Z", -5)),
+            "1 January 2026"
+        );
+        assert_eq!(local_date(&at("2026-01-01T23:04:05Z", 5)), "2 January 2026");
+    }
 
     #[test]
     fn paths_from_a_connections_directory() {

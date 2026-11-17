@@ -115,7 +115,7 @@ nbclient, papermill, Quarto), the REST surface must match `jupyter_server`:
   from disk, as `ganymede lab install` unpacks it, rather than embedding
   one.
 
-Stack: tokio, axum, tokio-tungstenite, serde, hmac/sha2, uuid, chrono.
+Stack: tokio, axum, tokio-tungstenite, serde, hmac/sha2, uuid, jiff.
 
 Beyond these, Ganymede serves `jupyter-lsp`'s `/lsp/status` and
 `/lsp/ws/<name>` ([Language servers](frontends.md#language-servers)),

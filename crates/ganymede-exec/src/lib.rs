@@ -841,16 +841,81 @@ fn cell_timeout(cell: &CodeCell) -> Option<Duration> {
 }
 
 /// A message's header date in `nbclient`'s format: microseconds and `Z`,
-/// with the wall time as the kernel wrote it.
+/// with the wall time as the kernel wrote it. A date this can't read comes
+/// back as it was.
 pub fn timestamp(m: &Message) -> String {
-    let d = &m.header.date;
-    let parsed = chrono::DateTime::parse_from_rfc3339(d)
-        .map(|t| t.naive_local())
-        .or_else(|_| chrono::NaiveDateTime::parse_from_str(d, "%Y-%m-%dT%H:%M:%S%.f"));
-    match parsed {
-        Ok(t) => t.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string(),
-        Err(_) => d.clone(),
+    wall_time(&m.header.date).unwrap_or_else(|| m.header.date.clone())
+}
+
+/// Reformats an RFC 3339 time, or the same without an offset, keeping the
+/// wall time and dropping the offset: `2026-01-02T03:04:05.1+02:00` is
+/// `2026-01-02T03:04:05.100000Z`. The fraction is cut to microseconds, not
+/// rounded. Following RFC 3339, the date and time may be separated by `T`,
+/// `t` or a space and the zone is `Z`, `z` or `+HH:MM`; with no zone the
+/// separator must be `T`. (jiff's own parser is looser about all of these,
+/// and refuses offsets and long fractions where a civil time is wanted.)
+fn wall_time(d: &str) -> Option<String> {
+    let b = d.as_bytes();
+    let num = |from: usize, to: usize| -> Option<i32> {
+        let digits = b.get(from..to)?;
+        digits
+            .iter()
+            .all(u8::is_ascii_digit)
+            .then(|| digits.iter().fold(0, |n, c| n * 10 + i32::from(c - b'0')))
+    };
+    let punct = [(4, b'-'), (7, b'-'), (13, b':'), (16, b':')];
+    if b.len() < 19 || punct.iter().any(|&(i, c)| b[i] != c) {
+        return None;
     }
+    let (year, month, day) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    let (hour, minute, second) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    let mut rest = &b[19..];
+    let mut nanos = 0;
+    if let Some(frac) = rest.strip_prefix(b".") {
+        let len = frac.iter().take_while(|c| c.is_ascii_digit()).count();
+        if len == 0 {
+            return None;
+        }
+        nanos = (0..9).fold(0, |n, i| {
+            n * 10
+                + frac
+                    .get(i)
+                    .filter(|_| i < len)
+                    .map_or(0, |c| i32::from(c - b'0'))
+        });
+        rest = &frac[len..];
+    }
+    let with_zone = match rest {
+        [] => false,
+        [b'Z' | b'z'] => true,
+        [b'+' | b'-', h1, h2, b':', m1, m2]
+            if [h1, h2, m1, m2].into_iter().all(u8::is_ascii_digit)
+                && (h1 - b'0') * 10 + (h2 - b'0') <= 23
+                && *m1 <= b'5' =>
+        {
+            true
+        }
+        _ => return None,
+    };
+    let sep_ok = match b[10] {
+        b'T' => true,
+        b't' | b' ' => with_zone,
+        _ => false,
+    };
+    if !sep_ok {
+        return None;
+    }
+    let dt = jiff::civil::DateTime::new(
+        i16::try_from(year).ok()?,
+        i8::try_from(month).ok()?,
+        i8::try_from(day).ok()?,
+        i8::try_from(hour).ok()?,
+        i8::try_from(minute).ok()?,
+        i8::try_from(second).ok()?,
+        nanos,
+    )
+    .ok()?;
+    Some(dt.strftime("%Y-%m-%dT%H:%M:%S.%6fZ").to_string())
 }
 
 /// nbformat's `output_from_msg`: the output record for an iopub message,
@@ -1094,6 +1159,86 @@ mod tests {
         assert_eq!(timestamp(&m), "2026-10-17T16:41:06.123000Z");
         m.header.date = "2026-10-17T16:41:06.123456+00:00".into();
         assert_eq!(timestamp(&m), "2026-10-17T16:41:06.123456Z");
+    }
+
+    /// Edge inputs for [`timestamp`]. The expected values were recorded from
+    /// the chrono implementation before the port to jiff. The wall time is
+    /// kept and the offset ignored; anything that is not an RFC 3339 time
+    /// (or the same without an offset) comes back unchanged. (chrono also
+    /// accepted a `:60` leap second and a signed year, which are not pinned.)
+    #[test]
+    fn timestamp_edge_inputs() {
+        let table: &[(&str, &str)] = &[
+            (
+                "2026-01-02T03:04:05.123456789+02:00",
+                "2026-01-02T03:04:05.123456Z",
+            ),
+            (
+                "2026-01-02T03:04:05.123456789-05:30",
+                "2026-01-02T03:04:05.123456Z",
+            ),
+            ("2026-01-02T03:04:05Z", "2026-01-02T03:04:05.000000Z"),
+            ("2026-01-02T03:04:05z", "2026-01-02T03:04:05.000000Z"),
+            ("2026-01-02t03:04:05Z", "2026-01-02T03:04:05.000000Z"),
+            ("2026-01-02 03:04:05Z", "2026-01-02T03:04:05.000000Z"),
+            ("2026-01-02 03:04:05.5+02:00", "2026-01-02T03:04:05.500000Z"),
+            ("2026-01-02T03:04:05", "2026-01-02T03:04:05.000000Z"),
+            ("2026-01-02T03:04:05.5", "2026-01-02T03:04:05.500000Z"),
+            (
+                "2026-01-02T03:04:05.9999999Z",
+                "2026-01-02T03:04:05.999999Z",
+            ),
+            (
+                "2026-01-02T03:04:05.123456789123Z",
+                "2026-01-02T03:04:05.123456Z",
+            ),
+            ("2026-01-02T03:04:05.123z", "2026-01-02T03:04:05.123000Z"),
+            ("2026-01-02T03:04:05+23:59", "2026-01-02T03:04:05.000000Z"),
+            ("2026-01-02T03:04:05-00:00", "2026-01-02T03:04:05.000000Z"),
+            ("0000-01-02T03:04:05Z", "0000-01-02T03:04:05.000000Z"),
+            ("2026-01-02 03:04:05", "2026-01-02 03:04:05"),
+            ("2026-01-02t03:04:05", "2026-01-02t03:04:05"),
+            ("2026-01-02T03:04:05.", "2026-01-02T03:04:05."),
+            ("2026-01-02T03:04:05+0200", "2026-01-02T03:04:05+0200"),
+            ("2026-01-02T03:04:05+02", "2026-01-02T03:04:05+02"),
+            ("2026-01-02T03:04:05+24:00", "2026-01-02T03:04:05+24:00"),
+            ("2026-01-02T03:04:05+00:60", "2026-01-02T03:04:05+00:60"),
+            (
+                "2026-01-02T03:04:05+02:00:30",
+                "2026-01-02T03:04:05+02:00:30",
+            ),
+            ("2026-01-02T03:04:05,5Z", "2026-01-02T03:04:05,5Z"),
+            ("2026-01-02T03:04:61Z", "2026-01-02T03:04:61Z"),
+            ("2026-01-02T24:00:00Z", "2026-01-02T24:00:00Z"),
+            ("2026-02-30T03:04:05Z", "2026-02-30T03:04:05Z"),
+            ("10000-01-02T03:04:05Z", "10000-01-02T03:04:05Z"),
+            ("  2026-01-02T03:04:05Z", "  2026-01-02T03:04:05Z"),
+            ("2026-01-02T03:04:05Z ", "2026-01-02T03:04:05Z "),
+            ("2026-01-02T03:04:05 Z", "2026-01-02T03:04:05 Z"),
+            ("2026-01-02T03:04:05Zjunk", "2026-01-02T03:04:05Zjunk"),
+            ("2026-1-2T3:4:5Z", "2026-1-2T3:4:5Z"),
+            // chrono's no-offset fallback took these; they now come back
+            // unchanged.
+            ("2026-1-2T3:4:5", "2026-1-2T3:4:5"),
+            ("2026-01-02T03:04:5", "2026-01-02T03:04:5"),
+            (" 2026-01-02T03:04:05", " 2026-01-02T03:04:05"),
+            ("2026-01-02T 03:04:05", "2026-01-02T 03:04:05"),
+            ("+2026-01-02T03:04:05", "+2026-01-02T03:04:05"),
+            ("-0001-01-02T03:04:05", "-0001-01-02T03:04:05"),
+            ("2026-01-02T03:04:60Z", "2026-01-02T03:04:60Z"),
+            ("2026-01-02T03:04Z", "2026-01-02T03:04Z"),
+            (
+                "2026-01-02T03:04:05\u{ff11}Z",
+                "2026-01-02T03:04:05\u{ff11}Z",
+            ),
+            ("garbage", "garbage"),
+            ("", ""),
+        ];
+        for (input, want) in table {
+            let mut m = msg("status", json!({}));
+            m.header.date = (*input).into();
+            assert_eq!(timestamp(&m), *want, "input {input:?}");
+        }
     }
 
     /// Counts `on_busy` calls.

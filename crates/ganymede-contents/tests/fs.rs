@@ -83,7 +83,7 @@ fn assert_timestamp(ts: &str) {
     assert_eq!(ts.len(), 27, "{ts}");
     assert!(ts.ends_with('Z'), "{ts}");
     assert_eq!(&ts[19..20], ".", "{ts}");
-    chrono::DateTime::parse_from_rfc3339(ts).unwrap();
+    ts.parse::<jiff::Timestamp>().unwrap();
 }
 
 #[tokio::test]
@@ -954,9 +954,7 @@ async fn conflict_detection() {
 
     // Changes within the 500 ms window are not conflicts.
     let fresh = c.get("a.txt", GetOptions::default()).await.unwrap();
-    let t: SystemTime = chrono::DateTime::parse_from_rfc3339(&fresh.last_modified)
-        .unwrap()
-        .into();
+    let t = SystemTime::try_from(fresh.last_modified.parse::<jiff::Timestamp>().unwrap()).unwrap();
     set_mtime(&path, t + Duration::from_millis(300));
     c.save(
         "a.txt",

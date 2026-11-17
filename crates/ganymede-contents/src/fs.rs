@@ -10,8 +10,8 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use chrono::{DateTime, TimeDelta, Utc};
 use ganymede_nbformat::Notebook;
+use jiff::{SignedDuration, Timestamp};
 use serde_json::Value;
 
 use crate::model::{
@@ -31,7 +31,7 @@ pub const DEFAULT_CHECKPOINT_DIR: &str = ".ipynb_checkpoints";
 /// before a save is a conflict. A client echoing the `last_modified` the
 /// server reported is within it (that value is the mtime cut to
 /// microseconds); the slack covers clients that round it to coarser units.
-const CONFLICT_WINDOW: TimeDelta = TimeDelta::milliseconds(500);
+const CONFLICT_WINDOW: SignedDuration = SignedDuration::from_millis(500);
 
 // Lenient base64 decoder for uploads: `jupyter_server` uses
 // `base64.decodebytes`, which ignores padding problems and whitespace.
@@ -645,16 +645,17 @@ impl Inner {
     /// The external-change check. The file on disk must not be newer than
     /// the client's `last_modified` by more than [`CONFLICT_WINDOW`].
     fn check_conflict(&self, r: &Resolved, client_ts: &str) -> Result<()> {
-        let client = DateTime::parse_from_rfc3339(client_ts)
-            .map_err(|e| Error::BadRequest(format!("invalid last_modified {client_ts:?}: {e}")))?
-            .with_timezone(&Utc);
+        let client: Timestamp = client_ts
+            .parse()
+            .map_err(|e| Error::BadRequest(format!("invalid last_modified {client_ts:?}: {e}")))?;
         let meta = match fs::metadata(&r.os) {
             Ok(meta) => meta,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(Error::Io(e)),
         };
-        let disk: DateTime<Utc> = meta.modified()?.into();
-        if disk > client && disk - client > CONFLICT_WINDOW {
+        let disk = Timestamp::try_from(meta.modified()?)
+            .map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+        if disk > client && disk.duration_since(client) > CONFLICT_WINDOW {
             return Err(Error::Conflict(format!(
                 "{} changed on disk at {} after the client's copy from {}",
                 r.api,
@@ -1181,11 +1182,19 @@ fn guess_mime(path: &Path) -> Option<String> {
 
 /// RFC 3339 UTC with microseconds, `jupyter_server`'s timestamp form.
 fn format_time(t: SystemTime) -> String {
-    format_datetime(t.into())
+    // A time outside jiff's range (years -9999 to 9999) is clamped to its
+    // nearest end, not an error: a stat call that worked must not fail a
+    // listing.
+    let ts = Timestamp::try_from(t).unwrap_or(if t < SystemTime::UNIX_EPOCH {
+        Timestamp::MIN
+    } else {
+        Timestamp::MAX
+    });
+    format_datetime(ts)
 }
 
-fn format_datetime(dt: DateTime<Utc>) -> String {
-    dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
+fn format_datetime(ts: Timestamp) -> String {
+    ts.strftime("%Y-%m-%dT%H:%M:%S.%6fZ").to_string()
 }
 
 /// Birth time where the platform reports one, else the inode change time on
@@ -1542,5 +1551,28 @@ mod tests {
         assert_eq!(normalize_ext(Some("")), "");
         assert_eq!(normalize_ext(Some(".txt")), ".txt");
         assert_eq!(normalize_ext(Some("txt")), ".txt");
+    }
+
+    /// The `created` and `last_modified` format, pinned at fixed instants:
+    /// the expected strings are what chrono's formatting gave before the
+    /// port to jiff.
+    #[test]
+    fn contents_time_format_is_pinned() {
+        // 2026-01-02T03:04:05Z
+        let at = |nanos: u32| SystemTime::UNIX_EPOCH + Duration::new(1_767_323_045, nanos);
+        for (nanos, want) in [
+            (0, "2026-01-02T03:04:05.000000Z"),
+            (123_000_000, "2026-01-02T03:04:05.123000Z"),
+            (123_456_000, "2026-01-02T03:04:05.123456Z"),
+            (123_456_789, "2026-01-02T03:04:05.123456Z"),
+            (1_000, "2026-01-02T03:04:05.000001Z"),
+            (999_999_999, "2026-01-02T03:04:05.999999Z"),
+        ] {
+            assert_eq!(format_time(at(nanos)), want, "nanos {nanos}");
+        }
+        assert_eq!(
+            format_time(SystemTime::UNIX_EPOCH - Duration::from_millis(1500)),
+            "1969-12-31T23:59:58.500000Z"
+        );
     }
 }

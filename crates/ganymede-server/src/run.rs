@@ -178,7 +178,7 @@ pub async fn run_notebook(
         message: e,
     })?;
     let limit = request.limit;
-    let started = chrono::Utc::now();
+    let started = jiff::Timestamp::now();
     let not_found = || RunError {
         status: 404,
         message: format!("cannot read {path} as a notebook"),
@@ -332,7 +332,7 @@ pub async fn run_notebook(
 
 /// The API path of `path`'s copy for a run started at `started`, `n`
 /// for the nth of that second.
-fn copy_path(path: &str, started: chrono::DateTime<chrono::Utc>, n: u32) -> String {
+fn copy_path(path: &str, started: jiff::Timestamp, n: u32) -> String {
     // A leading dot would hide the copy's folder, and with hidden files
     // off the copy could not be written or read; `.private` becomes
     // `_private`.
@@ -346,7 +346,7 @@ fn copy_path(path: &str, started: chrono::DateTime<chrono::Utc>, n: u32) -> Stri
         })
         .collect::<Vec<_>>()
         .join("/");
-    let stamp = started.format("%Y-%m-%dT%H%M%SZ");
+    let stamp = started.strftime("%Y-%m-%dT%H%M%SZ");
     match n {
         0 | 1 => format!("{RUNS_DIR}/{stem}/{stamp}.ipynb"),
         n => format!("{RUNS_DIR}/{stem}/{stamp}-{n}.ipynb"),
@@ -359,7 +359,7 @@ async fn save_copy(
     state: &AppState,
     path: &str,
     nb: &ganymede_nbformat::Notebook,
-    started: chrono::DateTime<chrono::Utc>,
+    started: jiff::Timestamp,
 ) -> Result<String, String> {
     use ganymede_contents::{ContentType, Format, GetOptions, SaveRequest};
     let first = copy_path(path, started, 0);
@@ -429,9 +429,7 @@ mod tests {
 
     #[test]
     fn copies_are_named_for_the_notebook_and_the_start() {
-        let at = chrono::DateTime::parse_from_rfc3339("2026-11-11T19:30:05.250Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
+        let at: jiff::Timestamp = "2026-11-11T19:30:05.250Z".parse().unwrap();
         assert_eq!(
             copy_path("reports/daily.ipynb", at, 1),
             "runs/reports/daily/2026-11-11T193005Z.ipynb"
