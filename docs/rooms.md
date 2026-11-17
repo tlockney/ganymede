@@ -171,7 +171,8 @@ still checked.
 - `{"tag": "x"}` runs every code cell whose `metadata.tags` has `x`.
 - `"cells": "all"` runs every code cell with source, in order. With none,
   the answer is `{"finished": true, "cells": []}` (`null` without `wait`).
-- A cell named twice runs once, where it is first named.
+- A tag or `"all"` skips a cell the batch already runs. A cell id
+  given twice runs twice, as in `jupyter-server-documents`.
 - The room resolves the cells and checks them in one step. If any is
   refused, none runs and no outputs are cleared.
 

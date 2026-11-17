@@ -22,8 +22,8 @@
 //! "source_mismatch", "cell_id"}` when a cell's source changed since the
 //! client hashed it; `408` when `previous_request_id` was not queued within
 //! ten seconds; `400` for the rest, `"error": "cell_not_found"` among them
-//! for an id or tag the room doesn't have. A room that isn't open is opened, so an agent with
-//! no websocket can run cells.
+//! for an id or tag the room doesn't have. A room that isn't open is
+//! opened, so an agent with no websocket can run cells.
 //!
 //! One worker per room runs the queue in order on the named kernel,
 //! through `ganymede-exec`'s [`NotebookRun`] (display updates, clears,
@@ -333,8 +333,10 @@ fn enqueue(room: &mut Room, selectors: &[Selector]) -> (Result<Vec<String>, Refu
             })
             .collect();
         let mut found: Vec<(String, MapRef)> = Vec::new();
-        let mut add = |id: &str, cell: &MapRef| {
-            if !found.iter().any(|(f, _)| f == id) {
+        // A tag or "all" skips a cell already queued; an id given twice
+        // runs twice, as in jupyter-server-documents.
+        let mut add = |id: &str, cell: &MapRef, again: bool| {
+            if again || !found.iter().any(|(f, _)| f == id) {
                 found.push((id.to_string(), cell.clone()));
             }
         };
@@ -363,7 +365,7 @@ fn enqueue(room: &mut Room, selectors: &[Selector]) -> (Result<Vec<String>, Refu
                     if stale {
                         return Err(Refused::SourceMismatch(id.clone()));
                     }
-                    add(id, &cell);
+                    add(id, &cell, true);
                 }
                 Selector::Tag(tag) => {
                     let mut any = false;
@@ -378,7 +380,7 @@ fn enqueue(room: &mut Room, selectors: &[Selector]) -> (Result<Vec<String>, Refu
                             });
                         if tagged {
                             any = true;
-                            add(id, cell);
+                            add(id, cell, false);
                         }
                     }
                     if !any {
@@ -393,7 +395,7 @@ fn enqueue(room: &mut Room, selectors: &[Selector]) -> (Result<Vec<String>, Refu
                     for (id, cell) in &code_cells {
                         let source = room_ops::source_of(txn, cell).unwrap_or_default();
                         if !source.trim().is_empty() {
-                            add(id, cell);
+                            add(id, cell, false);
                         }
                     }
                 }
@@ -960,16 +962,18 @@ mod request_tests {
     }
 
     #[test]
-    fn selectors_resolve_in_room_order_once_each() {
+    fn selectors_resolve_in_room_order() {
         let mut room = room_of(5);
         let mut ids = |sels: &[Selector]| enqueue(&mut room, sels).0.unwrap();
         // Tags: code cells only, a non-list `tags` ignored.
         assert_eq!(ids(&[Selector::Tag("t".into())]), ["a", "c"]);
-        // An id and a tag covering it run once, at the first mention.
+        // A tag skips a cell already queued; an id given again runs again.
         assert_eq!(
             ids(&[id("c"), Selector::Tag("t".into()), id("a")]),
-            ["c", "a"]
+            ["c", "a", "a"]
         );
+        assert_eq!(ids(&[id("a"), id("a")]), ["a", "a"]);
+        assert_eq!(ids(&[Selector::Tag("t".into()), Selector::All]), ["a", "c"]);
         // All: code cells with source, not blank ones or markdown.
         assert_eq!(ids(&[Selector::All]), ["a", "c"]);
     }
