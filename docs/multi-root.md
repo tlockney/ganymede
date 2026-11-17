@@ -136,7 +136,7 @@ replies carry the full API path.
 
 The server keeps one `Watcher` and hands it to every mount's `Collab`
 (today `Collab::new` makes its own). It already keys subscriptions by
-absolute directory, so each event reaches only the rooms of the mount
+the watched file's absolute path, so each event reaches only the rooms of the mount
 that holds the file. On iOS rooms poll, per room, as now. Room locks are
 keyed by absolute path and work per mount where they are on; in the
 embedded server they are off.
@@ -225,12 +225,17 @@ phone.
 In the server, a mount is a contents root as today: its own
 `FsContents` and its own `Collab`, with that `Collab`'s file ids, room
 map, move lock, path locks and `Stamps`. Only the `Watcher` is shared,
-one per server, dispatching by absolute directory. Mounts may not
+one per server, dispatching by absolute path. Mounts may not
 overlap. `AppState` holds the mount table; `contents` becomes a
 `Contents` that strips the first segment and calls the mount's, adding
 it back to the paths it returns; `/api/collaboration` finds the mount by
-path or by file id; and the other users of the root (the host API, kernels'
-working directories, `.ganymede.toml`, MCP) look the mount up by path.
+path or by file id; and the other users of the root look the mount up
+by path or file id: the host API, kernels' working directories,
+`.ganymede.toml`, MCP, `/api/fileid/{index,id,path}` (an id resolves to
+a mount, and a returned path carries its prefix), `/files/{*path}`,
+`/nbconvert/{format}/{*path}`, `/api/notebooks/run`, and
+`/api/kernels/{id}/execute`, whose queued requests live on `Collab` and
+so become per mount.
 
 Kernels start in the directory of their notebook, inside its mount
 (`kernel_cwd` against that mount's folder); a kernel started with no
