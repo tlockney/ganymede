@@ -21,8 +21,9 @@ What to know:
   comes out as `03:04:05.123456Z`. jiff's own parser won't read a civil
   time with an offset or a fraction longer than nine digits, and is looser
   about separators, so the reader is small and strict, and a table test
-  pins its edge inputs. Two chrono quirks are not kept: a `:60` leap second
-  and a signed year come back unchanged now.
+  pins its edge inputs. chrono's lenient forms are not kept: a `:60` leap
+  second, a signed year, single-digit fields and stray whitespace now come
+  back unchanged, as the table shows. Kernels don't send them.
 - chrono's default `to_rfc3339` (settings files' times in the lab routes)
   writes `+00:00` and a fraction of 0, 3, 6 or 9 digits, so that is
   spelled out by hand. Before 1970 jiff's sub-second part is negative, so
@@ -32,7 +33,13 @@ What to know:
   and `wasm32-wasip1` uses its real clock.
 - A `SystemTime` out of jiff's range (years +-9999) is an I/O error in the
   conflict check and is clamped in `created` and `last_modified`.
-- The error text for an unparseable `last_modified` is jiff's now.
+- The save conflict check parses `last_modified` with jiff, which is a
+  little different from chrono: it refuses a fraction longer than nine
+  digits (a 400) and accepts a few forms RFC 3339 doesn't (`+0200`, a
+  `[UTC]` annotation, the compact `20260102T030405Z`). Clients echo the
+  server's own six-digit value, so neither comes up. The error text is
+  jiff's now.
 - chrono is still in the tree through rmcp and schemars, and the
   advisory fires on any copy in the tree, so the `deny.toml` ignore stays,
-  now naming rmcp. It goes when rmcp moves off chrono.
+  now naming rmcp. It goes when rmcp moves off chrono, and #855 stays
+  open until then.

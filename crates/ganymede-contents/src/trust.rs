@@ -298,7 +298,7 @@ mod sqlite {
     }
 
     fn isoformat(now: jiff::Timestamp) -> String {
-        let micros = now.subsec_nanosecond() / 1000;
+        let micros = now.subsec_nanosecond().rem_euclid(1_000_000_000) / 1000;
         if micros == 0 {
             now.strftime("%Y-%m-%dT%H:%M:%S+00:00").to_string()
         } else {

@@ -205,14 +205,14 @@ pub struct Notebooks {
 /// it, so an agent's `a.ipynb` is the file in its own folder.
 pub const DIR_META: &str = "ganymede/dir";
 
-/// Whether `dir` can be a connection's directory: no `..` segment and no
-/// backslash, so it stays under the root.
 /// The local date for a byline: the day without padding and the full
 /// English month, as in `2 January 2026`.
 fn local_date(now: &jiff::ZonedDateTime) -> String {
     now.strftime("%-d %B %Y").to_string()
 }
 
+/// Whether `dir` can be a connection's directory: no `..` segment and no
+/// backslash, so it stays under the root.
 fn valid_dir(dir: &str) -> bool {
     !dir.contains('\\') && dir.split('/').all(|part| part != "..")
 }

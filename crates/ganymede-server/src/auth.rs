@@ -213,8 +213,8 @@ fn expires(days: i64) -> String {
 /// such as `Sun, 01 Feb 2026 03:04:05 GMT`. A date out of range is clamped
 /// to the nearest one that is in it.
 fn expires_at(now: jiff::Timestamp, days: i64) -> String {
-    let span = jiff::SignedDuration::from_hours(days.saturating_mul(24));
-    now.checked_add(span)
+    jiff::SignedDuration::try_from_hours(days.saturating_mul(24))
+        .and_then(|span| now.checked_add(span).ok())
         .unwrap_or(if days < 0 {
             jiff::Timestamp::MIN
         } else {
@@ -1137,7 +1137,25 @@ mod tests {
             "Thu, 02 Jan 2025 03:04:05 GMT"
         );
         // A silly number of days clamps, not panics.
-        assert!(expires_at(at("2026-01-02T03:04:05Z"), i64::MAX).ends_with(" GMT"));
+        assert_eq!(
+            expires_at(at("2026-01-02T03:04:05Z"), i64::MAX),
+            jiff::Timestamp::MAX
+                .strftime("%a, %d %b %Y %H:%M:%S GMT")
+                .to_string()
+        );
+        assert_eq!(
+            expires_at(at("2026-01-02T03:04:05Z"), i64::MIN),
+            jiff::Timestamp::MIN
+                .strftime("%a, %d %b %Y %H:%M:%S GMT")
+                .to_string()
+        );
+        // In range for hours, out of range for the date.
+        assert_eq!(
+            expires_at(at("2026-01-02T03:04:05Z"), 10_000_000),
+            jiff::Timestamp::MAX
+                .strftime("%a, %d %b %Y %H:%M:%S GMT")
+                .to_string()
+        );
     }
 
     #[test]

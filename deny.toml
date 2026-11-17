@@ -16,8 +16,8 @@ ignore = [
     { id = "RUSTSEC-2026-0215", reason = "unmaintained, via yrs; no alternative" },
     # chrono is unmaintained (no vulnerability, no fixed release). Ganymede's
     # own crates use jiff since #855; chrono still comes in through rmcp
-    # (and schemars, through rmcp). Drop this when rmcp moves off chrono.
-    # Revisit by 2027-02-17.
+    # (and schemars, through rmcp). Drop this when rmcp moves off chrono;
+    # #855 stays open for that. Revisit by 2027-02-17.
     { id = "RUSTSEC-2026-0543", reason = "unmaintained, via rmcp and schemars" },
 ]
 
