@@ -1426,11 +1426,17 @@ mod tests {
             }
         }
 
-        /// Lets the create end, and checks it made the path.
-        async fn finish(self) {
+        /// Lets the create end, and checks it made the path. Returns the
+        /// temporary root, which the caller keeps until the tasks it
+        /// spawned against the files have ended: dropping it deletes
+        /// them, and a task the create held up runs after this returns
+        /// (#849).
+        #[must_use = "dropping the root deletes the files a waiting task reads"]
+        async fn finish(self) -> tempfile::TempDir {
             self.release.notify_one();
             let model = self.create.await.unwrap().unwrap();
             assert_eq!(model.path, self.new_path);
+            self._dir
         }
     }
 
@@ -1482,7 +1488,7 @@ mod tests {
             .await
             .unwrap_or_else(|_| panic!("a room open waited for the {what}"));
             assert!(room.is_some());
-            held.finish().await;
+            let _dir = held.finish().await;
         }
     }
 
@@ -1528,7 +1534,7 @@ mod tests {
             assert!(!read.is_finished(), "waits for the create ({copy})");
             let collab = held.collab.clone();
             let stale = held.stale_id.clone();
-            held.finish().await;
+            let _dir = held.finish().await;
             assert_eq!(read.await.unwrap(), None, "the stale id is gone ({copy})");
             assert_eq!(collab.path_of(&stale).await, None);
         }
@@ -1548,7 +1554,7 @@ mod tests {
             tokio::time::sleep(SHORT).await;
             assert!(!index.is_finished(), "waits for the create ({copy})");
             let stale = held.stale_id.clone();
-            held.finish().await;
+            let _dir = held.finish().await;
             let (id, fresh) = index.await.unwrap().unwrap();
             assert!(fresh, "a new id ({copy})");
             assert_ne!(id, stale, "not the stale one ({copy})");
@@ -1573,7 +1579,7 @@ mod tests {
             assert!(!open.is_finished(), "waits for the create ({copy})");
             assert_eq!(held.collab.open_rooms(), 0);
             let collab = held.collab.clone();
-            held.finish().await;
+            let _dir = held.finish().await;
             assert!(!open.await.unwrap(), "no room for a gone id ({copy})");
             assert_eq!(collab.open_rooms(), 0, "no room opened ({copy})");
         }
