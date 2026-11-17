@@ -1649,6 +1649,29 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn relative_program_resolves_against_the_kernel_cwd() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let launcher = bin.join("launcher");
+        std::fs::write(&launcher, "#!/ganymede/no/such/interp\n").unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let err = launch_failing(
+            "./bin/launcher",
+            &tmp.path().join("k"),
+            Some(tmp.path().into()),
+        )
+        .await;
+        let msg = err.to_string();
+        assert!(
+            msg.contains("runs ./bin/launcher, which exists but its interpreter"),
+            "{msg}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn other_spawn_errors_keep_spawning_text() {
         let tmp = tempfile::tempdir().unwrap();
         let prog = tmp.path().join("not-executable");
