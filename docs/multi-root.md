@@ -20,13 +20,17 @@ As of 2026-11-17.
   `..`, an absolute path or a symlink, is refused. The same root is
   handed to the file ids (`FileIds::open(db, root)`), to document rooms
   and their watcher (`Collab::new(ids, Some(root))`), to grant stamping
-  (`Stamps`), to kernels' working directories (`kernel_cwd`), to
-  per-folder settings (`.ganymede.toml`, read up to the root), to the
-  host API's grant checks, and to MCP's paths and publish redactions.
+  (`Stamps`), to kernels' working directories
+  (`KernelManagerConfig.root_dir`, through `kernel_cwd`), to terminals'
+  starting directory (`TerminalConfig.root_dir`), to language servers'
+  workspace (`LspConfig.root_dir`), to per-folder settings
+  (`.ganymede.toml`, read up to the root), to the host API's grant
+  checks, and to MCP's paths and publish redactions. The embedded iOS
+  server has no terminals, language servers or subprocess kernels.
 - **The Mac app** roots its server at `/` and opens every window by
   absolute path, so any folder is reachable without a restart.
 - **The iPhone and iPad apps** root it at the one open folder
-  (`AppModel.serverRoot`): the app's Documents folder, or a folder from
+  (`AppModel.serverRootFolder`, from `AppModel.root`): the app's Documents folder, or a folder from
   the picker, held by a security-scoped bookmark. Opening another folder
   restarts the server on it, which shuts down its kernels; a
   `ganymede://open` link to a notebook in another granted folder does the
@@ -38,8 +42,12 @@ As of 2026-11-17.
   grant carries a stamp of its file (#827). A save through any server
   checks and restamps the grants every other root holds on the same file
   (`held_with`), and a rename or delete moves or drops the ids of every
-  other root above or inside the path (#831). Saves, renames and creates
-  wait only for each other's paths (#830, #833).
+  other root above or inside the path (#831). Server writes and renames
+  wait only for each other's paths (#830). Everything else meets on one
+  server-wide lock, `Collab::move_lock`: a rename, a delete, and a file
+  found deleted outside take it for writing; a create, a grant read,
+  indexing a path and a room opening take it for reading. #833 only
+  narrowed what a create holds up among the readers.
 - **Rooms** are named by file id
   (`json:notebook:<id>`), watch the file's directory on Linux, macOS and
   Windows, and poll elsewhere, which includes iOS. A room's lock, which
@@ -68,8 +76,9 @@ refused with 403, as a read-only root is today. A mount can't be renamed
 or deleted through the API, as the root can't be now. Without `mounts`
 in the config the server is exactly what it is today, with no prefix.
 
-Mount names are path segments, so they follow the API path rules: no
-`/`, `\`, NUL or leading `.`, and on Windows no `:`; the server refuses
+Mount names are single path segments that `ApiPath::parse` accepts and
+the hidden-file rule doesn't hide: not empty, `.` or `..`, no `/`, `\` or
+NUL, no leading `.`, and on Windows no `:`. The server refuses
 duplicates. They should be stable, since they are in every path a client
 keeps (open tabs, recent files, sessions, links); the app chooses
 them and keeps each with its bookmark.
@@ -91,9 +100,10 @@ would. So a mount's grants are the same rows a `ganymede serve` or
 `ganymede grant` on that folder reads and writes, and the cross-root
 work of #827 and #831 (checking and restamping other roots' grants on a
 save, moving and dropping them on a rename or delete) applies to each
-mount unchanged, with the other mounts as other roots. Stamps and the
-path locks of #830 and #833 stay per mount, so a save in one mount never
-waits on a rename in another.
+mount unchanged, with the other mounts as other roots. Stamps, the path
+locks of #830 and #833 and the move lock belong to each mount's `Collab`
+(below), so a rename or delete in one mount never holds up a save, a
+grant read or a room opening in another.
 
 A per-notebook grant's paths are relative to its own mount, since the
 grant is shared with servers rooted at that folder. The host API adds
@@ -109,14 +119,27 @@ A notebook can never read or run anything in another folder.
 
 ### Rooms and file watching
 
-(a): file ids are UUIDs, unique across roots in the database, so room
-names stay `format:type:fileId` and a room is found by asking each
-mount's ids for the id. A room opened through
-`PUT /api/collaboration/session/{path}` goes to the mount its path names.
-The watcher already watches absolute directories, one OS watcher per
-server, so it serves every mount; on iOS rooms poll, per room, as now.
-Room locks are keyed by absolute path and work per mount where they are
-on.
+(a): each mount gets its own `Collab`, built as a single-root server
+builds it today: its file ids, room map, move lock, lookup locks,
+`Stamps` and root, which `abs_path`, room lock `acquire` and
+`publish_redactions` join paths to. A shared `Collab` would need every
+one of those to learn mounts, and its move lock would make a rename in
+one folder hold up room openings and grant reads in all of them.
+
+File ids are UUIDs, unique across roots in the database, so room names
+stay `format:type:fileId`; a room is found by asking each mount's
+`Collab` for the id, and a room opened through
+`PUT /api/collaboration/session/{path}` goes to the mount its path
+names. Paths inside a mount's `Collab` stay relative to its folder; the
+router adds and strips the mount name at the edge, so room and MCP
+replies carry the full API path.
+
+The server keeps one `Watcher` and hands it to every mount's `Collab`
+(today `Collab::new` makes its own). It already keys subscriptions by
+absolute directory, so each event reaches only the rooms of the mount
+that holds the file. On iOS rooms poll, per room, as now. Room locks are
+keyed by absolute path and work per mount where they are on; in the
+embedded server they are off.
 
 (b): rooms are per server, unchanged. The page connects each notebook's
 room to its own server.
@@ -124,10 +147,14 @@ room to its own server.
 ### Rename and move across roots
 
 Within a mount, everything is as today. A rename from one mount to
-another is refused with 400 ("can't move between folders"). Today a
-rename is one `rename(2)`, which can't cross volumes, and two picked
-folders are usually on different ones (the app's container, iCloud
-Drive, a file provider). A copy across mounts can work: the router
+another is refused with 400 ("can't move between folders"). Not because
+of volumes: on iOS the app's container, iCloud Drive's local copies and
+most file providers are likely on one data volume. But the two folders
+are separate roots: separate `FsContents`, each readable under its own
+security scope, with files in a provider's folder meant to be changed
+under file coordination, and with ids, grants and rooms kept per root.
+A move would have to carry all of that across, and leave neither side
+half done on a failure. A copy across mounts can work: the router
 makes it a read from one mount and a save to the other. The page can offer Move as a copy then
 a delete. The copy is a new file, so it has no grant, as any copy today.
 
@@ -145,7 +172,18 @@ folder is readable only while the app holds its security scope, which it
 must hold for as long as the server serves it, as it does for the one
 folder now.
 
+Mounts must not overlap. The same folder picked twice, or a folder and
+one inside it (Documents and Documents/Work), would give one file two
+API paths, two file ids and two rooms; with room locks off in the
+embedded server, both rooms would save over each other and edits would
+be lost. The server refuses to start with a mount whose canonical folder
+is at, inside or above another mount's, naming both, and the app doesn't
+offer such a folder in the picker's result (it says which mount already
+covers it).
+
 (b): the same per folder, plus one token and one listener per server.
+Overlapping folders are as bad there: two servers on one file, with no
+room locks between them.
 
 ### What the apps need
 
@@ -184,12 +222,24 @@ page, which then has to know about several servers wherever it handles a
 path, and costs a runtime, a listener and a port per folder on the
 phone.
 
-In the server, a mount is a contents root as today, with its own
-`FsContents`, file ids, stamping and path locks. `AppState` holds the
-mount table; `contents` becomes a `Contents` that strips the first
-segment and calls the mount's, adding it back to the paths it returns,
-and the other users of the root (rooms, the host API, kernels'
+In the server, a mount is a contents root as today: its own
+`FsContents` and its own `Collab`, with that `Collab`'s file ids, room
+map, move lock, path locks and `Stamps`. Only the `Watcher` is shared,
+one per server, dispatching by absolute directory. Mounts may not
+overlap. `AppState` holds the mount table; `contents` becomes a
+`Contents` that strips the first segment and calls the mount's, adding
+it back to the paths it returns; `/api/collaboration` finds the mount by
+path or by file id; and the other users of the root (the host API, kernels'
 working directories, `.ganymede.toml`, MCP) look the mount up by path.
+
+Kernels start in the directory of their notebook, inside its mount
+(`kernel_cwd` against that mount's folder); a kernel started with no
+path has no folder to start in, and starts in the first mount. Terminals
+(`TerminalConfig.root_dir`) and language servers (`LspConfig.root_dir`)
+take one directory and don't exist on iOS, so at first a server with
+mounts starts terminals in the first mount and runs no language
+servers, and mounts are offered in the apps' config only (open question
+6).
 
 A third option was considered: root the iOS server at `/`, as the Mac
 app does. It needs no new code in the server, but it serves the whole
@@ -218,7 +268,8 @@ installs and restores, so every path a client kept would break.
    `ganymede://open` links (Settings › Link Folders) be the same list as
    the sidebar's picked folders, so every granted folder is mounted?
 6. **Outside the apps.** Offer `mounts` in `ganymede.toml` and as a
-   `ganymede serve` flag too, or only in the apps' config at first? A
-   server with mounts has no single `root_dir` to write in its server
-   info file, which `ganymede mcp` and other clients read to map local
-   paths to API paths.
+   `ganymede serve` flag too, or only in the apps' config at first
+   (recommended)? A server with mounts has no single `root_dir` for
+   its server info file, which `ganymede mcp` and other clients read to
+   map local paths to API paths, nor for terminals and language servers,
+   which take one workspace directory.

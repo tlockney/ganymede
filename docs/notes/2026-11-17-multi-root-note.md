@@ -10,8 +10,14 @@ stamps, rooms and watching, moves between folders, security, and what
 the apps need.
 
 It recommends mounts: each mount is a contents root as today, with its
-own `FsContents`, file ids, stamping and path locks, behind a router that
-takes the first path segment as the mount's name. File ids are keyed by
+own `FsContents` and its own `Collab` (file ids, rooms, the move lock,
+path locks and stamps), behind a router that takes the first path
+segment as the mount's name; only the file watcher is shared. Mounts
+may not overlap: a folder at, inside or above another mount's would
+give one file two ids and two rooms, and the embedded server has no
+room locks to stop them saving over each other. A move between mounts
+is refused, since the two are separate roots with their own security
+scopes, ids and grants, not because of volumes. File ids are keyed by
 the mount's real folder, so a mount's grants are the same rows a server
 or `ganymede grant` on that folder uses, and the cross-root work of #827
 and #831 covers the other mounts with no change. One server per folder
