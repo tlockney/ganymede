@@ -58,12 +58,13 @@ Edit.
    share (types, object definitions, utility functions, a data loader)
    goes in a helper cell of its own near the top, after the goal, not
    in a module next to the notebook. When shared code turns up
-   mid-analysis, move it there with `cell_add(after: <goal cell id>)`
-   (or after the last helper) and take it out of the cell where it
-   first appeared. The notebook then holds the whole analysis and
-   re-runs anywhere the kernel and data are. A person can collapse
-   helper cells, and a published page folds code anyway; start each
-   with a one-line comment saying what it defines. Use a module only
+   mid-analysis, move it there with `cell_run(after: <goal cell id>)`
+   (or after the last helper), which runs it so the move is checked,
+   and take it out of the cell where it first appeared. The notebook
+   then holds the whole analysis and re-runs anywhere the kernel and
+   data are. A person can collapse helper cells, and a published page
+   folds code anyway; start each with a one-line comment saying what
+   it defines. Use a module only
    when another notebook imports the same code (see "Journal and
    notebook") or the code is too long to read as a cell; say in a note
    why. Leave modules the user already has as they are.
