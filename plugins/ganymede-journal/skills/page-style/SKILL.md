@@ -107,6 +107,22 @@ exporter does:
   content="default-src 'none'; img-src data:; style-src 'unsafe-inline';
   font-src data:; form-action 'none'">`. `sandbox` alone blocks scripts,
   not loads: an `<img>` or stylesheet from the network would still fetch.
+- After the policy, the frame's own style, so the output follows the
+  page's light or dark setting (without `color-scheme` a dark page
+  shows the frame as a white box):
+
+  ```css
+  :root{color-scheme:light dark;--fg:#1b1f24;--soft:#4a525c;--line:#dedad0;--alt:#f2f0ea}
+  @media (prefers-color-scheme:dark){:root{--fg:#e6e8ea;--soft:#a4adb6;--line:#2a3238;--alt:#171c20}}
+  html,body{margin:0;background:transparent;color:var(--fg);font:15px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif}
+  body{padding:2px 0;overflow-x:auto}
+  table{border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:13.5px}
+  th,td{padding:5px 10px;border-bottom:1px solid var(--line);text-align:right}
+  th{font-weight:600;color:var(--soft)}
+  tr:nth-child(even) td{background:var(--alt)}
+  img,svg{max-width:100%;height:auto}
+  ```
+
 - Escape `&` and `"` in the `srcdoc` value.
 - `.frame` is 12rem tall. Size each frame to its content with a short
   inline script on the page, as the exporter's does:
