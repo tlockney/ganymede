@@ -58,11 +58,12 @@ Edit.
    share (types, object definitions, utility functions, a data loader)
    goes in a helper cell of its own near the top, after the goal, not
    in a module next to the notebook. When shared code turns up
-   mid-analysis, move it there with `cell_add(after: <goal cell id>)`
-   (or after the last helper) and take it out of the cell where it
-   first appeared. The notebook then holds the whole analysis and
-   re-runs anywhere the kernel and data are. Pass `collapse: true` to
-   `cell_run` or `cell_add` for a helper cell, so it shows folded in
+   mid-analysis, move it there with `cell_run(after: <goal cell id>)`
+   (or after the last helper), which runs it so the move is checked,
+   and take it out of the cell where it first appeared. The notebook
+   then holds the whole analysis and re-runs anywhere the kernel and
+   data are. Pass `collapse: true` to `cell_run` (or to `cell_add`
+   with `cell_type: "code"`) for a helper cell, so it shows folded in
    JupyterLab, VS Code and the apps (a Ganymede newer than 0.12.0;
    older ones ignore it). A published page folds code anyway. Start
    each helper with a one-line comment saying what it defines: that
