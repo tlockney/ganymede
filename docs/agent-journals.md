@@ -100,6 +100,12 @@ kernel and libraries, and shares code through modules both notebooks
 import rather than copied cells. The journal stays runnable in plain
 Jupyter.
 
+A journal stands alone: code its cells share, such as types and
+utility functions, goes in helper cells near the top rather than a
+script next to the notebook, unless another notebook imports it too
+or it is too long to read as a cell. Collapse those cells if you like;
+a published page folds code anyway. Your own modules stay as they are.
+
 The kernel a new journal starts is, in order: the one you ask for; the
 folder's default, `kernel = "python3"` in a
 [`.ganymede.toml`](mcp.md#kernel-for-a-new-notebook) in that folder or
