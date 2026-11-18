@@ -103,14 +103,6 @@ extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
 }
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
 fn start_ganymede() -> Server {
     start_ganymede_with(&[])
 }
@@ -144,18 +136,52 @@ fn start_ganymede_with(extra: &[&std::ffi::OsStr]) -> Server {
     }
 }
 
+/// Starts the reference jupyter_server and waits until it answers. It
+/// picks its own port, but in 2.x it binds that port, closes it, writes
+/// its info file and only then binds again to listen, so another test's
+/// server or kernel can take the port in between: jupyter_server then
+/// logs "is already in use" and exits, and the start is tried again, up
+/// to three times in all.
 fn start_jupyter(jupyter: &std::path::Path) -> Server {
+    let mut lost = Vec::new();
+    for _ in 0..3 {
+        match try_start_jupyter(jupyter) {
+            Ok(server) => return server,
+            Err(log) => lost.push(log),
+        }
+    }
+    panic!(
+        "jupyter_server lost its port three times:\n{}",
+        lost.join("\n---\n")
+    );
+}
+
+/// One start of jupyter_server. `Err` with its log when it exited because
+/// its port was taken; any other failure kills it and panics with the log.
+fn try_start_jupyter(jupyter: &std::path::Path) -> Result<Server, String> {
     let root = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
-    let port = free_port();
     // nbformat writes the signing key there but does not create the dir.
     std::fs::create_dir(state.path().join("notary")).unwrap();
-    let child = Command::new(jupyter)
+    // Only this server's root has this file (the tempdir's name is
+    // unique), so only this server can answer for it; see
+    // `wait_jupyter_answers`. Removed once it has.
+    let marker = format!(
+        "ready-{}.txt",
+        root.path().file_name().unwrap().to_str().unwrap()
+    );
+    std::fs::write(root.path().join(&marker), "").unwrap();
+    let log_path = state.path().join("jupyter.log");
+    let mut child = Command::new(jupyter)
         .args([
             "server",
             "--no-browser",
             "--allow-root",
-            &format!("--ServerApp.port={port}"),
+            // Port 0: jupyter_server asks the OS for a free port itself,
+            // which narrows the window in which another process can take
+            // it (see `start_jupyter`). The real port is read back from
+            // the server info file.
+            "--ServerApp.port=0",
             "--ServerApp.port_retries=0",
             &format!("--IdentityProvider.token={TOKEN}"),
             // Delete for good, as ganymede does. On a fresh home, two
@@ -172,15 +198,105 @@ fn start_jupyter(jupyter: &std::path::Path) -> Server {
         .env("GANYMEDE_CONFIG_DIR", state.path().join("config"))
         .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        // jupyter_server logs to stderr; keep it so a failed start says why.
+        .stderr(std::fs::File::create(&log_path).unwrap())
         .spawn()
         .unwrap();
-    Server {
+    let port = wait_jupyter_answers(
+        &mut child,
+        &state.path().join("runtime"),
+        &marker,
+        &log_path,
+    )?;
+    std::fs::remove_file(root.path().join(&marker)).unwrap();
+    Ok(Server {
         child,
         base: format!("http://127.0.0.1:{port}/"),
         _root: root,
         _state: state,
+    })
+}
+
+/// Waits until jupyter_server answers on its port and returns the port.
+/// The port comes from the `jpserver-*.json` it writes to the runtime dir
+/// (a fresh dir per server, so any such file is this one's). That file is
+/// written before the server listens, and whatever took the port may be
+/// listening on it, so a connection proves nothing: the port counts once
+/// it serves `marker`, a file only this server's root holds. If the
+/// server exits first: `Err` with its log when its port was taken, else a
+/// panic with the exit status and log. If it doesn't answer in
+/// [`CALL_SECS`], it is killed and the panic carries its log.
+fn wait_jupyter_answers(
+    child: &mut Child,
+    runtime: &std::path::Path,
+    marker: &str,
+    log: &std::path::Path,
+) -> Result<u16, String> {
+    let log_text = || std::fs::read_to_string(log).unwrap_or_default();
+    let deadline = std::time::Instant::now() + Duration::from_secs(CALL_SECS);
+    let mut port = None;
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            let text = log_text();
+            if text.contains("already in use") {
+                return Err(text);
+            }
+            panic!("jupyter_server exited with {status} before answering:\n{text}");
+        }
+        if port.is_none() {
+            port = info_port(runtime);
+        }
+        if let Some(p) = port {
+            if serves(p, marker) {
+                return Ok(p);
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "jupyter_server did not answer in {CALL_SECS} s (port {port:?}):\n{}",
+                log_text()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Whether the server on `port` answers 200 for the file `name` in its
+/// root, with the token. Anything else listening there (a kernel's ZMQ
+/// socket, another test's server) doesn't.
+fn serves(port: u16, name: &str) -> bool {
+    use std::io::{Read, Write};
+    let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) else {
+        return false;
+    };
+    let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = s.set_write_timeout(Some(Duration::from_secs(2)));
+    let req = format!(
+        "GET /api/contents/{name}?content=0 HTTP/1.0\r\n\
+         Host: 127.0.0.1:{port}\r\n\
+         Authorization: token {TOKEN}\r\n\r\n"
+    );
+    if s.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut head = [0u8; 12];
+    s.read_exact(&mut head).is_ok() && head.starts_with(b"HTTP/1.") && &head[9..12] == b"200"
+}
+
+/// The `port` in a `jpserver-*.json` in `runtime`, once one parses; a
+/// half-written file doesn't yet.
+fn info_port(runtime: &std::path::Path) -> Option<u16> {
+    std::fs::read_dir(runtime).ok()?.flatten().find_map(|e| {
+        let name = e.file_name();
+        let name = name.to_str()?;
+        if !(name.starts_with("jpserver-") && name.ends_with(".json")) {
+            return None;
+        }
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()?;
+        u16::try_from(v["port"].as_u64()?).ok()
+    })
 }
 
 struct Client {
