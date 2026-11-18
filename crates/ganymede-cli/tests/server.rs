@@ -103,14 +103,6 @@ extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
 }
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
 fn start_ganymede() -> Server {
     start_ganymede_with(&[])
 }
@@ -147,15 +139,18 @@ fn start_ganymede_with(extra: &[&std::ffi::OsStr]) -> Server {
 fn start_jupyter(jupyter: &std::path::Path) -> Server {
     let root = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
-    let port = free_port();
     // nbformat writes the signing key there but does not create the dir.
     std::fs::create_dir(state.path().join("notary")).unwrap();
-    let child = Command::new(jupyter)
+    let log_path = state.path().join("jupyter.log");
+    let mut child = Command::new(jupyter)
         .args([
             "server",
             "--no-browser",
             "--allow-root",
-            &format!("--ServerApp.port={port}"),
+            // Port 0: the OS picks one at bind time, so no other process
+            // can take it between choosing and listening. The real port is
+            // read back from the server info file below.
+            "--ServerApp.port=0",
             "--ServerApp.port_retries=0",
             &format!("--IdentityProvider.token={TOKEN}"),
             // Delete for good, as ganymede does. On a fresh home, two
@@ -172,14 +167,49 @@ fn start_jupyter(jupyter: &std::path::Path) -> Server {
         .env("GANYMEDE_CONFIG_DIR", state.path().join("config"))
         .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        // jupyter_server logs to stderr; keep it so a failed start says why.
+        .stderr(std::fs::File::create(&log_path).unwrap())
         .spawn()
         .unwrap();
+    let port = wait_jupyter_port(&mut child, &state.path().join("runtime"), &log_path);
     Server {
         child,
         base: format!("http://127.0.0.1:{port}/"),
         _root: root,
         _state: state,
+    }
+}
+
+/// The port jupyter_server bound, read from `jpserver-<pid>.json` in the
+/// runtime dir, which it writes once it is listening. Panics with the
+/// server's log if it exits first or writes nothing in [`CALL_SECS`].
+fn wait_jupyter_port(child: &mut Child, runtime: &std::path::Path, log: &std::path::Path) -> u16 {
+    let info = runtime.join(format!("jpserver-{}.json", child.id()));
+    let log_text = || std::fs::read_to_string(log).unwrap_or_default();
+    let deadline = std::time::Instant::now() + Duration::from_secs(CALL_SECS);
+    loop {
+        // A half-written file fails to parse: not ready yet.
+        if let Some(port) = std::fs::read_to_string(&info)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| v["port"].as_u64())
+        {
+            return port as u16;
+        }
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!(
+                "jupyter_server exited with {status} before listening:\n{}",
+                log_text()
+            );
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!(
+                "jupyter_server wrote no {} in {CALL_SECS} s:\n{}",
+                info.display(),
+                log_text()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
