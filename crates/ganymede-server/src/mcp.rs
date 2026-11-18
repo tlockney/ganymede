@@ -309,6 +309,11 @@ pub struct RunArgs {
     /// it runs again: for output too large or too private to keep. You
     /// still get the outputs back.
     pub keep_outputs: Option<bool>,
+    /// Save the cell with its code collapsed (default false), as
+    /// JupyterLab's collapser does (`metadata.jupyter.source_hidden`):
+    /// for helper code (types, utility functions) a reader can skip.
+    /// A person can expand it.
+    pub collapse: Option<bool>,
     /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
 }
@@ -341,6 +346,11 @@ pub struct AddArgs {
     pub mode: Option<AddMode>,
     /// Insert after this cell id (default: at the end).
     pub after: Option<String>,
+    /// Code cells only: save the cell with its code collapsed (default false), as
+    /// JupyterLab's collapser does (`metadata.jupyter.source_hidden`):
+    /// for helper code (types, utility functions) a reader can skip.
+    /// A person can expand it.
+    pub collapse: Option<bool>,
     /// Notebook path; the one last opened when left out.
     pub path: Option<String>,
     /// A read mark (from an `@@read` line) to move past the new cell, as
@@ -669,6 +679,9 @@ impl Notebooks {
             // Marked before it runs, so a failed run leaves it marked.
             metadata["ganymede"]["outputs"] = json!("dropped");
         }
+        if a.collapse == Some(true) {
+            collapse(&mut metadata);
+        }
         let cell = room_ops::new_cell("code", &id, &a.source, metadata).expect("a known cell type");
         self.insert(&path, cell, a.after, None).await?;
         self.run_dropping(&path, &kernel_id, id, timeout, drop)
@@ -690,12 +703,20 @@ impl Notebooks {
             Some(AddMode::Recorded) => "recorded",
             _ => "note",
         };
-        let metadata = provenance(&context.peer, mode);
+        let mut metadata = provenance(&context.peer, mode);
         let cell_type = match a.cell_type.unwrap_or(CellKind::Markdown) {
             CellKind::Code => "code",
             CellKind::Markdown => "markdown",
             CellKind::Raw => "raw",
         };
+        if a.collapse == Some(true) {
+            if cell_type != "code" {
+                return Err(err(format!(
+                    "collapse is for code cells; this one is {cell_type} (pass cell_type: \"code\")"
+                )));
+            }
+            collapse(&mut metadata);
+        }
         let cell =
             room_ops::new_cell(cell_type, &id, &a.source, metadata).expect("a known cell type");
         if let Some(request) = a.answers {
@@ -1648,6 +1669,13 @@ pub(crate) fn new_id() -> String {
 
 fn provenance(peer: &Peer<RoleServer>, mode: &str) -> Value {
     json!({"ganymede": {"agent": {"by": client_name(peer), "mode": mode, "at": now()}}})
+}
+
+/// Mark a new cell's code collapsed, where JupyterLab keeps it
+/// (`metadata.jupyter.source_hidden`), so JupyterLab, VS Code and the
+/// apps show it folded.
+fn collapse(metadata: &mut Value) {
+    metadata["jupyter"]["source_hidden"] = json!(true);
 }
 
 /// The note a run adds when the notebook leaves out its outputs.

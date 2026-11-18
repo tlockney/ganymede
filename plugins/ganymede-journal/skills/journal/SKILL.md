@@ -62,9 +62,12 @@ Edit.
    (or after the last helper), which runs it so the move is checked,
    and take it out of the cell where it first appeared. The notebook
    then holds the whole analysis and re-runs anywhere the kernel and
-   data are. A person can collapse helper cells, and a published page
-   folds code anyway; start each with a one-line comment saying what
-   it defines. Use a module only
+   data are. Pass `collapse: true` to `cell_run` (or to `cell_add`
+   with `cell_type: "code"`) for a helper cell, so it shows folded in
+   JupyterLab, VS Code and the apps (a Ganymede newer than 0.12.0;
+   older ones ignore it). A published page folds code anyway. Start
+   each helper with a one-line comment saying what it defines: that
+   line shows while it is folded. Use a module only
    when another notebook imports the same code (see "Journal and
    notebook") or the code is too long to read as a cell; say in a note
    why. Leave modules the user already has as they are.

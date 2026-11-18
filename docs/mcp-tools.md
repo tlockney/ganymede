@@ -18,6 +18,7 @@ Add a cell without running it: Markdown narration (the default), or with `mode: 
 | `cell_type` | `markdown`, `code`, `raw` | Default markdown. |
 | `mode` | `note` (Narration), `recorded` (A step that ran outside the kernel (a shell command, a file the agent wrote), recorded so the notebook tells the whole story) | Default note. |
 | `after` | string | Insert after this cell id (default: at the end). |
+| `collapse` | boolean | Code cells only: save the cell with its code collapsed (default false), as JupyterLab's collapser does (`metadata.jupyter.source_hidden`): for helper code (types, utility functions) a reader can skip. A person can expand it. |
 | `path` | string | Notebook path; the one last opened when left out. |
 | `mark` | string | A read mark (from an `@@read` line) to move past the new cell, as if its reader had added it: for a hook adding a cell on an agent's behalf, so the agent isn't told of it as someone else's. |
 | `answers` | string | The id of a request cell this cell answers: the cell goes after it (unless `after` says otherwise), and the request is marked done, so it is no longer reported as a request. |
@@ -75,6 +76,7 @@ Run code in the notebook's kernel and return its outputs. By default the code is
 | `record` | boolean | Record the run as a cell (default true). `false` is a scratch run: it runs in the kernel and leaves nothing in the notebook, but its variables stay defined in the kernel. |
 | `timeout` | integer | Seconds to wait for the result (default 600). A recorded cell keeps running after a timeout; a scratch run is interrupted. |
 | `keep_outputs` | boolean | Keep the outputs in the notebook (default true). `false` records the code but leaves its outputs out of the notebook, now and when it runs again: for output too large or too private to keep. You still get the outputs back. |
+| `collapse` | boolean | Save the cell with its code collapsed (default false), as JupyterLab's collapser does (`metadata.jupyter.source_hidden`): for helper code (types, utility functions) a reader can skip. A person can expand it. |
 | `path` | string | Notebook path; the one last opened when left out. |
 
 ## `cell_snapshot`

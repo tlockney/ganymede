@@ -5574,6 +5574,65 @@ async fn mcp_keep_outputs_false_leaves_outputs_out() {
     assert_eq!(cell["source"], json!(["kept"]));
 }
 
+/// `collapse: true` saves a new cell with its code collapsed, where
+/// JupyterLab keeps it (`metadata.jupyter.source_hidden`), from both
+/// `cell_run` and `cell_add`; without it the cell isn't collapsed.
+#[tokio::test]
+async fn mcp_collapse_saves_the_cell_collapsed() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = mcp_app(dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    let call = |name: &'static str, args: Value| {
+        let (app, sid) = (app.clone(), sid.clone());
+        async move { mcp_text(&mcp_tool(&app, &sid, name, args).await) }
+    };
+    call("notebook_open", json!({"path": "t.ipynb"})).await;
+    call("cell_run", json!({"source": "helper", "collapse": true})).await;
+    call(
+        "cell_add",
+        json!({"source": "added helper", "cell_type": "code", "collapse": true}),
+    )
+    .await;
+    call("cell_run", json!({"source": "plain"})).await;
+    // Only code collapses: a collapsed note would hide the narration.
+    let res = mcp_tool(
+        &app,
+        &sid,
+        "cell_add",
+        json!({"source": "note", "collapse": true}),
+    )
+    .await;
+    assert!(
+        res.to_string().contains("collapse is for code cells"),
+        "{res}"
+    );
+    let file = dir.path().join("t.ipynb");
+    let cells = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(s) = std::fs::read_to_string(&file) {
+                let nb: Value = serde_json::from_str(&s).unwrap();
+                let cells = nb["cells"].as_array().unwrap().clone();
+                if cells.len() == 3 {
+                    return cells;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("saved");
+    let hidden = |source: &str| {
+        let c = cells
+            .iter()
+            .find(|c| c["source"] == json!([source]))
+            .unwrap_or_else(|| panic!("no cell {source}: {cells:?}"));
+        c["metadata"]["jupyter"]["source_hidden"].clone()
+    };
+    assert_eq!(hidden("helper"), json!(true));
+    assert_eq!(hidden("added helper"), json!(true));
+    assert_eq!(hidden("plain"), Value::Null);
+}
+
 /// A scratch run that times out interrupts the kernel, so the next run
 /// doesn't queue behind it (#323).
 #[tokio::test]
