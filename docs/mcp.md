@@ -86,6 +86,7 @@ token if an output shows it (a printed URL with `?token=`, say).
 
 `ganymede-journal` packs the journaling mode into one Claude Code
 plugin: the `ganymede mcp` server, a skill with the conventions, a
+`page-style` skill for pages that match a published notebook, a
 reviewer agent, and hooks that keep the record honest. Install it from
 this repository's marketplace:
 

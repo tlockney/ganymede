@@ -98,15 +98,26 @@ When the page shows HTML you didn't write (a library's output), put it
 in a frame that can neither run scripts nor load anything, as the
 exporter does:
 
-- `<iframe class="frame" sandbox referrerpolicy="no-referrer"
-  title="Output" style="height: …" srcdoc="…">`, with no
-  `allow-scripts`.
+- `<iframe class="frame" sandbox="allow-same-origin"
+  referrerpolicy="no-referrer" title="Output" srcdoc="…">`, with no
+  `allow-scripts`: the frame runs nothing, and `allow-same-origin`
+  only lets the page's own script read the frame's height.
 - The `srcdoc` document starts with this policy, before the output, so
   the output can only narrow it: `<meta http-equiv="Content-Security-Policy"
   content="default-src 'none'; img-src data:; style-src 'unsafe-inline';
   font-src data:; form-action 'none'">`. `sandbox` alone blocks scripts,
   not loads: an `<img>` or stylesheet from the network would still fetch.
 - Escape `&` and `"` in the `srcdoc` value.
-- `.frame` is 12rem tall; set a height that fits the output. (The
-  exporter's own page script sizes its frames; a hand-written page
-  either sets the height or carries a short inline script that does.)
+- `.frame` is 12rem tall. Size each frame to its content with a short
+  inline script on the page, as the exporter's does:
+
+  ```js
+  for (const f of document.querySelectorAll('iframe.frame')) {
+    const fit = () => { try { const d = f.contentDocument;
+      if (d && d.body) f.style.height = Math.ceil(d.body.getBoundingClientRect().height + 4) + 'px';
+    } catch (e) {} };
+    f.addEventListener('load', fit); fit();
+  }
+  ```
+
+  Without a script, set `style="height: …"` on the frame instead.
