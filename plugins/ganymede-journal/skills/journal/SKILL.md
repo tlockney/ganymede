@@ -242,7 +242,9 @@ the work there. Keep both sides usable:
     it needs the `downloads` capability, so declare
     `capabilities: {downloads: true}` when you publish it there.
     Otherwise give the path. Don't rewrite the page by hand: a fix
-    belongs in the notebook, then publish again.
+    belongs in the notebook, then publish again. For a page that isn't
+    one notebook, such as a report across journals, use the
+    `page-style` skill so it matches.
 24. Before you host it anywhere, read the notebook once for what
     shouldn't leave the machine. The server replaces its root path, the
     home directory and its token (if 8 characters or more), but not

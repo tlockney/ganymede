@@ -86,6 +86,7 @@ token if an output shows it (a printed URL with `?token=`, say).
 
 `ganymede-journal` packs the journaling mode into one Claude Code
 plugin: the `ganymede mcp` server, a skill with the conventions, a
+`page-style` skill for pages that match a published notebook, a
 reviewer agent, and hooks that keep the record honest. Install it from
 this repository's marketplace:
 
@@ -451,6 +452,15 @@ published page there, but another file only with `overwrite: true`.
 `byline` sets the line
 under the title (default: today's date). It runs nothing, so run the
 notebook first if its outputs may be stale. Not in read-only mode.
+
+### The page's style
+
+The page's stylesheet is one file,
+[`crates/ganymede-nbformat/src/page.css`](https://github.com/tlockney/ganymede/blob/main/crates/ganymede-nbformat/src/page.css):
+the site's palette, serif prose, light and dark. The journal plugin's
+`page-style` skill carries a copy, with the page's structure and rules,
+so an agent writing another page (a report across journals, a summary)
+can match it without publishing a notebook.
 
 ### Downloading the notebook
 

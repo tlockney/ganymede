@@ -9,7 +9,7 @@
     {
       "name": "ganymede-journal",
       "source": "./plugins/ganymede-journal",
-      "description": "Keep a live Jupyter notebook as the record of an analysis while the agent does it: the ganymede MCP tools, a journaling skill, hooks that keep the record honest, and a reviewer agent."
+      "description": "Keep a live Jupyter notebook as the record of an analysis while the agent does it: the ganymede MCP tools, journaling and page-style skills, hooks that keep the record honest, and a reviewer agent."
     }
   ]
 }
