@@ -20,7 +20,10 @@ given its path.
    there (a Ganymede 0.7.0 server), check the numbers in a table instead.
 4. Read files the notebook imports or loads (helper modules, data
    files), if they are next to it, to check they exist and say what the
-   notebook says they do.
+   notebook says they do. Flag a local helper module the agent wrote
+   that only this notebook imports, unless a note says why it can't be
+   a cell (too long to read): its code belongs in a helper cell, so the
+   notebook stands alone. Leave the user's own modules alone.
 
 Check:
 

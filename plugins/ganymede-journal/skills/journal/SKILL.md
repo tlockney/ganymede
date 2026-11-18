@@ -54,14 +54,28 @@ Edit.
    says what you are about to find out and why.
 6. Run the code that produces a result with `cell_run`, so the notebook
    keeps the code and its output. Keep cells small enough to re-run.
-   Code several cells share goes in a module next to the notebook (a
-   `.ts` file the kernel imports), written with your Edit tool.
+   Keep the notebook standalone: code you write that several cells
+   share (types, object definitions, utility functions, a data loader)
+   goes in a helper cell of its own near the top, after the goal, not
+   in a module next to the notebook. When shared code turns up
+   mid-analysis, move it there with `cell_add(after: <goal cell id>)`
+   (or after the last helper) and take it out of the cell where it
+   first appeared. The notebook then holds the whole analysis and
+   re-runs anywhere the kernel and data are. A person can collapse
+   helper cells, and a published page folds code anyway; start each
+   with a one-line comment saying what it defines. Use a module only
+   when another notebook imports the same code (see "Journal and
+   notebook") or the code is too long to read as a cell; say in a note
+   why. Leave modules the user already has as they are.
 7. Probe with `cell_run(record: false)`: peeking at a value, checking a
    column name, trying a call. Probes run on the same kernel and leave
    nothing in the notebook, but the names they declare stay defined. In
-   TypeScript, wrap a probe in a block, `{ const { hourly } = await
-   import("./data.ts"); hourly().head(); }`, so a later cell's
-   `import { hourly }` or `let` doesn't fail with "already been declared".
+   TypeScript, wrap a probe in a block, `{ const pl = await
+   import("npm:nodejs-polars@0.18.0"); pl.readCSV("data/trips.csv")
+   .head(); }`, so its names stay out of the kernel's scope and can't
+   clash with a later cell's. To change a helper, edit its cell with
+   `cell_edit(run: true)`, then re-run the cells that use it (or
+   `notebook_run_all`), and check the findings below still hold.
 8. Keep outputs. They are the record of what the run produced, and the
    server signs the notebook so charts and HTML render when someone
    opens it. Leave a cell's outputs out only when they don't belong in
@@ -133,10 +147,12 @@ the work there. Keep both sides usable:
   both stay readable in one file.
 - Match their setup: their kernel, their libraries, their data paths.
   Don't move a Python user to TypeScript, or the reverse.
-- Share code through a module both import (a `.py` or `.ts` file next
-  to the notebooks), not by copying cells between notebooks. Changes to
-  a module need a kernel restart (or `importlib.reload` in Python) in
-  every notebook that imported it.
+- Code you write for one notebook stays in that notebook's helper
+  cells; a module of the user's stays a module.
+  Code another notebook also needs goes in a module both import (a
+  `.py` or `.ts` file next to the notebooks), not copied between
+  notebooks. Changes to a module need a kernel restart (or
+  `importlib.reload` in Python) in every notebook that imported it.
 - Keep the journal runnable in plain Jupyter: no step should depend on
   this plugin or on Ganymede to re-run. `notebook_run_all` checks the
   order; a user re-running it in JupyterLab gets the same results.

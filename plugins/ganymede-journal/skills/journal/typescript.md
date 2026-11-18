@@ -40,8 +40,8 @@ rows, and `cell_snapshot` turns it into a Markdown table.
 Import what a cell needs from npm with an exact version,
 `import * as pl from "npm:nodejs-polars@0.18.0"`. The kernel
 fetches it the first time a cell runs, on any machine, so the notebook
-needs no install step. Import in the cell that first uses it, or in the
-module next to the notebook, not in a probe.
+needs no install step. Import in the cell that first uses it, or in a
+helper cell near the top when several cells use it, not in a probe.
 
 ## Tables
 
