@@ -103,8 +103,16 @@ Jupyter.
 A journal stands alone: code its cells share, such as types and
 utility functions, goes in helper cells near the top rather than a
 script next to the notebook, unless another notebook imports it too
-or it is too long to read as a cell. Collapse those cells if you like;
-a published page folds code anyway. Your own modules stay as they are.
+or it is too long to read as a cell. A published page folds code
+anyway. Your own modules stay as they are.
+
+The agent saves helper cells collapsed, as JupyterLab's collapser does,
+so the notebook opens on the analysis; expand one to read it.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release, which ignores `collapse` and saves helper cells
+> expanded.
 
 The kernel a new journal starts is, in order: the one you ask for; the
 folder's default, `kernel = "python3"` in a
