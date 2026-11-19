@@ -147,7 +147,18 @@ In order of priority.
 4. **TypeScript notebooks for TypeScript developers.**
    [cdp-kernel](https://github.com/tlockney/cdp-kernel) is the
    first-class kernel, on Node and Deno first. Tables, charts and SQL
-   are done (above).
+   are done (above). Now: the apps' editing experience
+   ([ganymede-ui#663](https://github.com/tlockney/ganymede-ui/issues/663)).
+   Type errors as you type, signature help, go to definition and rename
+   in TypeScript cells (cdp-kernel 0.13.0 and 0.14.0), table and tree
+   views for data files, live Markdown preview, a DuckDB console, and the
+   same TypeScript help in the in-app and browser kernels are on
+   ganymede-ui's `main`.
+
+   > [!NOTE]
+   > **Unreleased in ganymede-ui.** The apps' editing features are
+   > available only from a build of ganymede-ui's `main`, not in its
+   > latest release.
 
 ## Not now
 
@@ -180,10 +191,6 @@ for a server on its tailnet address, the identity in rooms and the log,
 the Mac app sharing its server on the tailnet, remotes with no token,
 and Tailscale SSH on iPad and iPhone are done. Left: an embedded tailnet
 node through tailscale-rs, once it has certificates and `whois`.
-
-> [!NOTE]
-> **Unreleased in ganymede-ui.** The apps' part is available only from
-> a build of ganymede-ui's `main`, not in its latest release.
 
 ## Not planned
 
