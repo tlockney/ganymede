@@ -311,7 +311,7 @@ html:not(.js) .pager { display: none; }
     <h1>A primer on how Ganymede's code fits together</h1>
     <p class="lede">A guided tour of the three repositories, the Rust crates, the TypeScript kernel and the apps: what each part is for, how its code is laid out, and which files to open first.</p>
     <ul class="meta">
-      <li>Describes <code>main</code> as of 18 Nov 2026</li>
+      <li>Describes <code>main</code> as of 19 Nov 2026</li>
       <li>14 chapters</li>
       <li>ganymede · cdp-kernel · ganymede-ui</li>
       <li><a href="../docs/">Ganymede docs</a></li>
@@ -1234,7 +1234,7 @@ html:not(.js) .pager { display: none; }
 </tr>
 <tr>
 <td><a class="code-link" href="https://github.com/tlockney/cdp-kernel/blob/main/src/language-service.ts" target="_blank" rel="noopener"><code>language-service.ts</code></a></td>
-<td>Typed completion and hover from a TypeScript language service in a worker thread, started on first use, with a time budget per request</td>
+<td>Typed completion and hover from a TypeScript language service in a worker thread, started on first use, with a time budget per request. The same service answers two comms for frontends: type errors as you type (<code>cdp-kernel.diagnostics.v1</code>) and signature help, go to definition and rename (<code>cdp-kernel.language.v1</code>). TypeScript itself is found or installed on first use, not shipped in the package. The request handling on both sides (<a class="code-link" href="https://github.com/tlockney/cdp-kernel/blob/main/src/language-client.ts" target="_blank" rel="noopener"><code>language-client.ts</code></a>, the kernel&#39;s; <a class="code-link" href="https://github.com/tlockney/cdp-kernel/blob/main/src/language-server.ts" target="_blank" rel="noopener"><code>language-server.ts</code></a>, the worker&#39;s) has no Node imports, so the browser build runs it too</td>
 </tr>
 <tr>
 <td><a class="code-link" href="https://github.com/tlockney/cdp-kernel/blob/main/src/debugger.ts" target="_blank" rel="noopener"><code>debugger.ts</code></a></td>
@@ -1272,7 +1272,7 @@ html:not(.js) .pager { display: none; }
 </tr>
 <tr>
 <td>Browser</td>
-<td><a class="code-link" href="https://github.com/tlockney/cdp-kernel/blob/main/src/kernel-core.ts" target="_blank" rel="noopener"><code>kernel-core.ts</code></a> on the page, cells in a Web Worker. Published as <code>@tlockney/cdp-kernel/browser</code>; this is what ganymede-ui and the apps run. A page can map import specifiers to files it serves (the <code>modules</code> option), which is how the apps draw charts and run SQL offline</td>
+<td><a class="code-link" href="https://github.com/tlockney/cdp-kernel/blob/main/src/kernel-core.ts" target="_blank" rel="noopener"><code>kernel-core.ts</code></a> on the page, cells in a Web Worker. Published as <code>@tlockney/cdp-kernel/browser</code>; this is what ganymede-ui and the apps run. A page can map import specifiers to files it serves (the <code>modules</code> option), which is how the apps draw charts and run SQL offline. With the typescript option, the language service runs in a Web Worker of its own (<a class="code-link" href="https://github.com/tlockney/cdp-kernel/blob/main/src/browser/language-worker.ts" target="_blank" rel="noopener"><code>browser/language-worker.ts</code></a>), loading TypeScript and its lib files from URLs the page serves</td>
 <td><code>src/browser/</code>, <a class="code-link" href="https://github.com/tlockney/cdp-kernel/blob/main/runtime/browser-worker.mjs" target="_blank" rel="noopener"><code>runtime/browser-worker.mjs</code></a></td>
 </tr>
 </tbody></table></div>
@@ -1393,6 +1393,16 @@ html:not(.js) .pager { display: none; }
 <td>Kernel modules</td>
 <td><a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/scripts/kernel-modules.ts" target="_blank" rel="noopener"><code>scripts/kernel-modules.ts</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/kernel-modules.ts" target="_blank" rel="noopener"><code>lib/kernel-modules.ts</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/duckdb-files.ts" target="_blank" rel="noopener"><code>lib/duckdb-files.ts</code></a></td>
 <td>Bundles the chart libraries and DuckDB&#39;s module for the in-page kernel, and fetches DuckDB&#39;s wasm once into Cache Storage, so charts and SQL work offline</td>
+</tr>
+<tr>
+<td>Editing</td>
+<td><a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/kernel-comm.ts" target="_blank" rel="noopener"><code>lib/kernel-comm.ts</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/type-errors.ts" target="_blank" rel="noopener"><code>lib/type-errors.ts</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/language-service.ts" target="_blank" rel="noopener"><code>lib/language-service.ts</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/language-editor.ts" target="_blank" rel="noopener"><code>lib/language-editor.ts</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/markdown-preview.ts" target="_blank" rel="noopener"><code>lib/markdown-preview.ts</code></a></td>
+<td>Type errors as you type, signature help, go to definition and rename in TypeScript cells, each over a comm cdp-kernel&#39;s language service answers (chapter 10), opened once per kernel and again after a restart; a kernel that doesn&#39;t answer closes them and nothing shows. The in-app and browser kernels answer too, from TypeScript 6 shipped with the app and loaded in a Worker of its own on first use (<a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/kernel-typescript.ts" target="_blank" rel="noopener"><code>lib/kernel-typescript.ts</code></a>). Live Markdown preview: CodeMirror decorations over a Markdown cell, so the text itself never changes (off by default)</td>
+</tr>
+<tr>
+<td>Data files</td>
+<td><a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/components/DataPane.tsx" target="_blank" rel="noopener"><code>components/DataPane.tsx</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/data-files.ts" target="_blank" rel="noopener"><code>lib/data-files.ts</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/data-read.ts" target="_blank" rel="noopener"><code>lib/data-read.ts</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/parquet.ts" target="_blank" rel="noopener"><code>lib/parquet.ts</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/components/DuckdbConsole.tsx" target="_blank" rel="noopener"><code>components/DuckdbConsole.tsx</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/duckdb-console.ts" target="_blank" rel="noopener"><code>lib/duckdb-console.ts</code></a></td>
+<td>CSV and TSV open as a table (the table renderer), JSON as a tree, Parquet through DuckDB wasm, in the notebook&#39;s place. The DuckDB console is a SQL prompt that opens in the same place, on the DuckDB wasm build a notebook&#39;s SQL uses, in a worker of its own; it reads the files a statement names and can export the session to a notebook</td>
 </tr>
 <tr>
 <td>Small features</td>
@@ -1639,11 +1649,11 @@ html:not(.js) .pager { display: none; }
 <li><strong>Automation on iPad and iPhone.</strong> Shortcuts actions are Mac-only, since iOS suspends the in-app kernel shortly after the app goes to the background. <code>ganymede://open</code> links do work there.</li>
 </ul>
 <h3 id="ch14-keeping-this-primer-current">Keeping this primer current</h3>
-<p>This primer describes <code>main</code> on 2026-11-13, and was checked against the changes merged through 2026-11-18. File names and line counts drift; the module headers it points to live next to the code and change with it, so when the two disagree, trust the header.</p>
+<p>This primer describes <code>main</code> on 2026-11-13, and was checked against the changes merged through 2026-11-19. File names and line counts drift; the module headers it points to live next to the code and change with it, so when the two disagree, trust the header.</p>
 
   <nav class="pager" aria-label="Chapter navigation"><a class="pg pg-prev" href="#ch13" rel="prev"><span class="pg-k">← Previous</span><span class="pg-t">13. Building, testing, shipping</span></a><span></span></nav>
 </section>
-    <p class="colophon">Part of the <a href="../docs/book">Ganymede docs</a>. Written from the code's module headers and the project docs, and rebuilt by hand, so it describes <code>main</code> as of 18 Nov 2026; where it and a module's header comment disagree, trust the header.</p>
+    <p class="colophon">Part of the <a href="../docs/book">Ganymede docs</a>. Written from the code's module headers and the project docs, and rebuilt by hand, so it describes <code>main</code> as of 19 Nov 2026; where it and a module's header comment disagree, trust the header.</p>
   </article>
 </div>
 
