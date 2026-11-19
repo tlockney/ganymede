@@ -147,6 +147,7 @@ export function groups(has: (name: string) => boolean = () => true, examples: Pa
         { text: "Privacy and crash reporting", link: "/privacy" },
         { text: "Embedding", link: "/embedding" },
         { text: "Replacing Python", link: "/python-free" },
+        { text: "The book: a code primer", link: "/book" },
       ],
     },
     {

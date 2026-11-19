@@ -1,0 +1,1654 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ganymede Code Primer</title>
+<meta name="description" content="A guided tour of Ganymede's code: the three repositories, the Rust crates, the TypeScript kernel and the apps.">
+<link rel="canonical" href="https://ganymede-server.com/book/">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<script>
+  // Use the light/dark choice made with the docs' switch, if there is one.
+  try {
+    const mode = localStorage.getItem("vitepress-theme-appearance");
+    if (mode === "light" || mode === "dark") document.documentElement.dataset.theme = mode;
+  } catch {}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a book. Sticky chapter rail on the left, one reading column of ~68ch, diagrams break slightly wider. */
+:root {
+  --bg: #f5f6f8;
+  --paper: #ffffff;
+  --ink: #1a202b;
+  --muted: #5b6577;
+  --rule: #dde2ea;
+  --accent: #2c5a87;
+  --accent-soft: #e6eef7;
+  --code-bg: #eef1f5;
+  --band-1: #d9e3ee;
+  --band-2: #c3d3e4;
+  --band-3: #e9e0d4;
+  --d-edge: #8a94a6;
+  --d-grid: #c7ced9;
+  --d-accent: #2c5a87;
+  --d-tint: #f1f4f8;
+  --d-ink: #1a202b;
+  --d-quiet: #5b6577;
+  --f-display: "Schibsted Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --f-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --measure: 68ch;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11151c; --paper: #171c25; --ink: #e2e6ed; --muted: #9aa4b4; --rule: #2a313d;
+    --accent: #8fb6de; --accent-soft: #1d2a3a; --code-bg: #222935;
+    --band-1: #1e2938; --band-2: #26364a; --band-3: #332c25;
+    --d-edge: #7c879a; --d-grid: #3a4352; --d-accent: #8fb6de; --d-tint: #1c222c; --d-ink: #e2e6ed; --d-quiet: #9aa4b4;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11151c; --paper: #171c25; --ink: #e2e6ed; --muted: #9aa4b4; --rule: #2a313d;
+  --accent: #8fb6de; --accent-soft: #1d2a3a; --code-bg: #222935;
+  --band-1: #1e2938; --band-2: #26364a; --band-3: #332c25;
+  --d-edge: #7c879a; --d-grid: #3a4352; --d-accent: #8fb6de; --d-tint: #1c222c; --d-ink: #e2e6ed; --d-quiet: #9aa4b4;
+  color-scheme: dark;
+}
+
+html { scroll-behavior: smooth; scroll-padding-top: 24px; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 18px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+
+.shell {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  gap: 56px;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding-block: 48px 96px;
+  padding-left: max(24px, env(safe-area-inset-left, 0px));
+  padding-right: max(24px, env(safe-area-inset-right, 0px));
+}
+
+/* Rail */
+.rail { position: sticky; top: calc(24px + env(safe-area-inset-top, 0px)); align-self: start; max-height: calc(100vh - 48px); overflow-y: auto; }
+.rail details { border: 0; }
+.rail summary {
+  font-family: var(--f-display); font-weight: 600; font-size: 12px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--muted); list-style: none; cursor: default; padding-bottom: 12px;
+}
+.rail summary::-webkit-details-marker { display: none; }
+.rail ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.rail a {
+  display: grid; grid-template-columns: 26px 1fr; gap: 6px; align-items: baseline;
+  padding: 6px 10px; border-radius: 6px; text-decoration: none;
+  font-family: var(--f-display); font-size: 14px; line-height: 1.35; color: var(--muted);
+}
+.rail a .n { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--muted); opacity: .8; }
+.rail a:hover { color: var(--ink); background: var(--accent-soft); }
+.rail a.active { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+.rail a.active .n { color: var(--accent); opacity: 1; }
+
+/* Hero */
+.hero { display: grid; gap: 20px; padding-bottom: 40px; border-bottom: 1px solid var(--rule); margin-bottom: 8px; }
+.eyebrow { font-family: var(--f-display); font-size: 13px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); margin: 0; }
+.hero h1 {
+  font-family: var(--f-display); font-weight: 700; font-size: clamp(36px, 5.2vw, 56px); line-height: 1.05;
+  letter-spacing: -0.02em; margin: 0; text-wrap: balance;
+}
+.lede { font-size: 21px; line-height: 1.5; color: var(--muted); margin: 0; max-width: 56ch; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 22px; font-family: var(--f-display); font-size: 14px; color: var(--muted); margin: 0; padding: 0; list-style: none; }
+.meta strong { color: var(--ink); font-weight: 600; }
+
+/* The three layers, as bands */
+.bands { display: grid; gap: 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--rule); max-width: 640px; }
+.band { display: grid; grid-template-columns: 130px 1fr; gap: 16px; align-items: baseline; padding: 12px 18px; font-family: var(--f-display); font-size: 14px; }
+.band b { font-weight: 600; color: var(--ink); }
+.band span { color: var(--muted); }
+.band:nth-child(1) { background: var(--band-1); }
+.band:nth-child(2) { background: var(--band-2); }
+.band:nth-child(3) { background: var(--band-3); }
+
+/* Chapters */
+article { min-width: 0; }
+.chapter { padding-top: 64px; max-width: 760px; }
+.chapter-head { margin-bottom: 20px; }
+.chapter-num { font-family: var(--f-display); font-size: 13px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); margin: 0 0 6px; font-variant-numeric: tabular-nums; }
+.chapter h2 { font-family: var(--f-display); font-weight: 700; font-size: clamp(28px, 3.4vw, 36px); line-height: 1.15; letter-spacing: -0.015em; margin: 0; text-wrap: balance; }
+.chapter h3 { font-family: var(--f-display); font-weight: 600; font-size: 21px; line-height: 1.3; margin: 40px 0 10px; text-wrap: balance; }
+.chapter h3 .kicker { display: inline-block; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); background: var(--accent-soft); padding: 3px 8px; border-radius: 4px; margin-right: 10px; vertical-align: 3px; }
+.chapter p, .chapter ul, .chapter ol { max-width: var(--measure); }
+.chapter p { margin: 0 0 16px; }
+.chapter ul, .chapter ol { margin: 0 0 18px; padding-left: 1.3em; }
+.chapter li { margin: 6px 0; }
+.chapter li::marker { color: var(--muted); }
+.chapter strong { font-weight: 600; }
+
+/* Ordered lists are flows: step rail */
+.chapter ol { list-style: none; padding-left: 0; counter-reset: step; }
+.chapter ol > li { counter-increment: step; position: relative; padding-left: 44px; margin: 0; padding-bottom: 14px; }
+.chapter ol > li::before {
+  content: counter(step); position: absolute; left: 0; top: 2px; width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center; font-family: var(--f-display); font-size: 13px; font-weight: 600;
+  background: var(--paper); color: var(--accent); border: 1.5px solid var(--accent); font-variant-numeric: tabular-nums;
+}
+.chapter ol > li:not(:last-child)::after { content: ""; position: absolute; left: 13px; top: 30px; bottom: 0; width: 1.5px; background: var(--rule); }
+
+code {
+  font-family: var(--f-mono); font-size: 0.82em; background: var(--code-bg); padding: 0.12em 0.36em; border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+
+/* Tables */
+.table-wrap { overflow-x: auto; margin: 8px 0 24px; border: 1px solid var(--rule); border-radius: 10px; background: var(--paper); }
+table { border-collapse: collapse; width: 100%; font-family: var(--f-display); font-size: 14.5px; line-height: 1.5; }
+th { text-align: left; font-weight: 600; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); background: var(--bg); }
+th, td { padding: 10px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+td:first-child { min-width: 130px; }
+td code { font-size: 0.86em; }
+
+/* Diagrams */
+figure.diagram { margin: 28px 0 12px; background: var(--paper); border: 1px solid var(--rule); border-radius: 12px; padding: 16px 12px 12px; }
+.diagram-scroll { overflow-x: auto; }
+.diagram svg { display: block; width: 100%; min-width: 620px; height: auto; font-family: var(--f-display); }
+figcaption { font-family: var(--f-display); font-size: 13px; color: var(--muted); padding: 10px 6px 0; border-top: 1px solid var(--rule); margin-top: 10px; }
+
+/* Dive in */
+aside.dive { margin: 36px 0 8px; padding: 18px 22px 8px; border-radius: 12px; background: var(--accent-soft); max-width: var(--measure); }
+aside.dive h3 { margin: 0 0 8px; font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+aside.dive ul { padding-left: 1.1em; font-size: 16.5px; }
+
+.colophon { margin-top: 80px; padding-top: 20px; border-top: 1px solid var(--rule); font-family: var(--f-display); font-size: 13px; color: var(--muted); max-width: 760px; }
+
+@media (max-width: 900px) {
+  .shell { grid-template-columns: minmax(0, 1fr); gap: 0; padding-block: 28px 64px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .rail { position: static; max-height: none; order: 2; margin: 24px 0 0; padding: 14px 16px; border: 1px solid var(--rule); border-radius: 10px; background: var(--paper); }
+  .rail summary { cursor: pointer; padding-bottom: 0; }
+  .rail summary::after { content: " (tap to open)"; text-transform: none; letter-spacing: 0; font-weight: 500; }
+  .rail details[open] summary::after { content: ""; }
+  .rail details[open] summary { padding-bottom: 10px; }
+  .page-top { order: 1; }
+  article { order: 3; }
+  body { font-size: 17px; }
+  .lede { font-size: 19px; }
+  .band { grid-template-columns: 1fr; gap: 2px; }
+  .chapter { padding-top: 48px; }
+}
+
+/* Single-chapter reading: one view at a time, routed by the URL hash */
+.js .chapter { display: none; }
+.js .chapter.current { display: block; }
+.chapter { padding-top: 0; }
+.js body.reading .hero { display: none; }
+.js body.reading .home { display: none; }
+.js body:not(.reading) .topbar { display: none; }
+.js body:not(.reading) .colophon { display: none; }
+.js body:not(.reading) .rail { display: none; }
+.js body:not(.reading) article { grid-column: 1 / -1; }
+html:not(.js) .home, html:not(.js) .topbar { display: none; }
+html:not(.js) .chapter { padding-top: 64px; }
+.topbar { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-family: var(--f-display); font-size: 13px; color: var(--muted); margin-bottom: 28px; padding-bottom: 12px; border-bottom: 1px solid var(--rule); max-width: 760px; }
+.home-link { font-weight: 600; text-decoration: none; letter-spacing: .02em; }
+.chapter-num .of { color: var(--muted); letter-spacing: .12em; }
+.start { display: inline-block; font-family: var(--f-display); font-weight: 600; font-size: 15px; text-decoration: none; background: var(--accent); color: var(--paper); padding: 10px 18px; border-radius: 8px; }
+.start:hover { opacity: .92; }
+.home { max-width: 760px; padding-top: 0; }
+.home-h { font-family: var(--f-display); font-size: 13px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 0 0 14px; }
+.cards { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.card { display: grid; grid-template-columns: 34px 1fr; gap: 12px; align-items: baseline; padding: 14px 16px; border: 1px solid var(--rule); border-radius: 10px; background: var(--paper); text-decoration: none; color: var(--ink); }
+.card:hover { border-color: var(--accent); }
+.card-n { font-family: var(--f-display); font-weight: 700; font-size: 18px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.card-b { display: grid; gap: 4px; min-width: 0; }
+.card-t { font-family: var(--f-display); font-weight: 600; font-size: 17px; line-height: 1.3; }
+.card-s { font-family: var(--f-display); font-size: 13px; color: var(--muted); line-height: 1.45; }
+.pager { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--rule); max-width: 760px; }
+.pg { display: grid; gap: 4px; padding: 14px 16px; border: 1px solid var(--rule); border-radius: 10px; background: var(--paper); text-decoration: none; color: var(--ink); min-width: 0; }
+.pg:hover { border-color: var(--accent); }
+.pg-next { text-align: right; }
+.pg-k { font-family: var(--f-display); font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+.pg-t { font-family: var(--f-display); font-weight: 600; font-size: 15px; line-height: 1.3; }
+html:not(.js) .pager { display: none; }
+.rail .subs { display: none; margin: 2px 0 8px 32px; gap: 0; border-left: 1px solid var(--rule); }
+.rail li.open > .subs { display: grid; }
+.rail .subs a { display: block; font-size: 13px; padding: 4px 10px; color: var(--muted); border-radius: 0 6px 6px 0; }
+.rail .subs a.active { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+@media (max-width: 900px) {
+  .kbd-hint { display: none; }
+  .pager { grid-template-columns: 1fr; }
+  .pg-next { text-align: left; }
+  .js body.reading .rail { order: 0; margin: 0 0 20px; }
+  .js body.reading article { order: 3; }
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <header class="page-top hero" style="grid-column: 1 / -1;">
+    <p class="eyebrow">Ganymede · code architecture</p>
+    <h1>A primer on how Ganymede's code fits together</h1>
+    <p class="lede">A guided tour of the three repositories, the Rust crates, the TypeScript kernel and the apps: what each part is for, how its code is laid out, and which files to open first.</p>
+    <ul class="meta">
+      <li>Describes <code>main</code> as of 18 Nov 2026</li>
+      <li>14 chapters</li>
+      <li>ganymede · cdp-kernel · ganymede-ui</li>
+      <li><a href="../docs/">Ganymede docs</a></li>
+    </ul>
+    <div class="bands" aria-label="The three layers">
+      <div class="band"><b>Clients</b><span>JupyterLab, ganymede-ui, the apps, agents</span></div>
+      <div class="band"><b>Rust core</b><span>ganymede: API, rooms, runs, host API, MCP</span></div>
+      <div class="band"><b>Kernels</b><span>cdp-kernel first, any Jupyter kernel</span></div>
+    </div>
+    <p><a class="start" href="#how-to-read-this">Start reading →</a></p>
+  </header>
+
+  <nav class="rail" aria-label="Chapters">
+    <details id="toc" open>
+      <summary>Contents</summary>
+      <ol>
+<li data-ch="how-to-read-this"><a href="#how-to-read-this" data-target="how-to-read-this"><span class="n">·</span><span>How to read this</span></a></li>
+<li data-ch="ch1"><a href="#ch1" data-target="ch1"><span class="n">1</span><span>The map</span></a><ol class="subs"><li><a href="#ch1-three-layers" data-sub="ch1-three-layers">Three layers</a></li><li><a href="#ch1-four-repositories" data-sub="ch1-four-repositories">Four repositories</a></li><li><a href="#ch1-where-it-runs" data-sub="ch1-where-it-runs">Where it runs</a></li><li><a href="#ch1-vocabulary" data-sub="ch1-vocabulary">Vocabulary</a></li><li><a href="#ch1-rules-that-shape-the-code" data-sub="ch1-rules-that-shape-the-code">Rules that shape the code</a></li></ol></li>
+<li data-ch="ch2"><a href="#ch2" data-target="ch2"><span class="n">2</span><span>Pure foundations: protocol and nbformat</span></a><ol class="subs"><li><a href="#ch2-ganymede-protocol-about-1-350-lines" data-sub="ch2-ganymede-protocol-about-1-350-lines">Ganymede-protocol (about 1,350 lines)</a></li><li><a href="#ch2-ganymede-nbformat-about-6-700-lines" data-sub="ch2-ganymede-nbformat-about-6-700-lines">Ganymede-nbformat (about 6,700 lines)</a></li></ol></li>
+<li data-ch="ch3"><a href="#ch3" data-target="ch3"><span class="n">3</span><span>Kernel host: getting a kernel and talking to it</span></a><ol class="subs"><li><a href="#ch3-the-seams" data-sub="ch3-the-seams">The seams</a></li><li><a href="#ch3-kernelsession-the-state-machine" data-sub="ch3-kernelsession-the-state-machine">KernelSession: the state machine</a></li><li><a href="#ch3-flow-starting-a-kernel" data-sub="ch3-flow-starting-a-kernel">Starting a kernel</a></li></ol></li>
+<li data-ch="ch4"><a href="#ch4" data-target="ch4"><span class="n">4</span><span>API and contents: the server's logic without HTTP</span></a><ol class="subs"><li><a href="#ch4-ganymede-api-about-3-800-lines" data-sub="ch4-ganymede-api-about-3-800-lines">Ganymede-api (about 3,800 lines)</a></li><li><a href="#ch4-ganymede-contents-about-5-900-lines" data-sub="ch4-ganymede-contents-about-5-900-lines">Ganymede-contents (about 5,900 lines)</a></li><li><a href="#ch4-flow-saving-a-notebook" data-sub="ch4-flow-saving-a-notebook">Saving a notebook</a></li></ol></li>
+<li data-ch="ch5"><a href="#ch5" data-target="ch5"><span class="n">5</span><span>The server</span></a><ol class="subs"><li><a href="#ch5-code-map" data-sub="ch5-code-map">Code map</a></li><li><a href="#ch5-who-gets-in" data-sub="ch5-who-gets-in">Who gets in</a></li><li><a href="#ch5-how-a-request-is-served" data-sub="ch5-how-a-request-is-served">How a request is served</a></li><li><a href="#ch5-flow-running-a-cell" data-sub="ch5-flow-running-a-cell">Running a cell</a></li></ol></li>
+<li data-ch="ch6"><a href="#ch6" data-target="ch6"><span class="n">6</span><span>Rooms: one live notebook for everyone</span></a><ol class="subs"><li><a href="#ch6-two-halves" data-sub="ch6-two-halves">Two halves</a></li><li><a href="#ch6-what-a-room-39-s-task-does" data-sub="ch6-what-a-room-39-s-task-does">What a room&#39;s task does</a></li><li><a href="#ch6-flow-an-edit-in-a-room" data-sub="ch6-flow-an-edit-in-a-room">An edit in a room</a></li><li><a href="#ch6-flow-running-cells-into-a-room" data-sub="ch6-flow-running-cells-into-a-room">Running cells into a room</a></li></ol></li>
+<li data-ch="ch7"><a href="#ch7" data-target="ch7"><span class="n">7</span><span>The notebook as a program</span></a><ol class="subs"><li><a href="#ch7-ganymede-exec-one-1-700-line-file" data-sub="ch7-ganymede-exec-one-1-700-line-file">Ganymede-exec (one 1,700-line file)</a></li><li><a href="#ch7-the-run-contract" data-sub="ch7-the-run-contract">The run contract</a></li><li><a href="#ch7-the-host-api" data-sub="ch7-the-host-api">The host API</a></li><li><a href="#ch7-grants" data-sub="ch7-grants">Grants</a></li><li><a href="#ch7-flow-a-notebook-running-another-notebook" data-sub="ch7-flow-a-notebook-running-another-notebook">A notebook running another notebook</a></li></ol></li>
+<li data-ch="ch8"><a href="#ch8" data-target="ch8"><span class="n">8</span><span>Agent-native: an agent in the same live notebook</span></a><ol class="subs"><li><a href="#ch8-the-pieces" data-sub="ch8-the-pieces">The pieces</a></li><li><a href="#ch8-design-choices-visible-in-the-code" data-sub="ch8-design-choices-visible-in-the-code">Design choices visible in the code</a></li><li><a href="#ch8-how-the-agent-hears-about-a-person-39-s-edits" data-sub="ch8-how-the-agent-hears-about-a-person-39-s-edits">How the agent hears about a person&#39;s edits</a></li><li><a href="#ch8-the-journal-plugin" data-sub="ch8-the-journal-plugin">The journal plugin</a></li><li><a href="#ch8-flow-an-agent-editing-the-notebook-a-person-has-open" data-sub="ch8-flow-an-agent-editing-the-notebook-a-person-has-open">An agent editing the notebook a person has open</a></li></ol></li>
+<li data-ch="ch9"><a href="#ch9" data-target="ch9"><span class="n">9</span><span>CLI and embedding: three ways to use the core</span></a><ol class="subs"><li><a href="#ch9-ganymede-cli-about-13-700-lines" data-sub="ch9-ganymede-cli-about-13-700-lines">Ganymede-cli (about 13,700 lines)</a></li><li><a href="#ch9-ganymede-engine-about-1-100-lines" data-sub="ch9-ganymede-engine-about-1-100-lines">Ganymede-engine (about 1,100 lines)</a></li><li><a href="#ch9-ganymede-ffi-about-1-100-lines" data-sub="ch9-ganymede-ffi-about-1-100-lines">Ganymede-ffi (about 1,100 lines)</a></li></ol></li>
+<li data-ch="ch10"><a href="#ch10" data-target="ch10"><span class="n">10</span><span>cdp-kernel: the TypeScript kernel</span></a><ol class="subs"><li><a href="#ch10-the-two-halves" data-sub="ch10-the-two-halves">The two halves</a></li><li><a href="#ch10-the-cell-pipeline" data-sub="ch10-the-cell-pipeline">The cell pipeline</a></li><li><a href="#ch10-inside-the-runtime-jupyter" data-sub="ch10-inside-the-runtime-jupyter">Inside the runtime: jupyter.*</a></li><li><a href="#ch10-flow-a-typescript-cell-on-node" data-sub="ch10-flow-a-typescript-cell-on-node">A TypeScript cell on Node</a></li></ol></li>
+<li data-ch="ch11"><a href="#ch11" data-target="ch11"><span class="n">11</span><span>ganymede-ui: the web app</span></a><ol class="subs"><li><a href="#ch11-code-map" data-sub="ch11-code-map">Code map</a></li><li><a href="#ch11-backends" data-sub="ch11-backends">Backends</a></li><li><a href="#ch11-saving-two-paths" data-sub="ch11-saving-two-paths">Saving: two paths</a></li><li><a href="#ch11-flow-opening-a-notebook-browser-ganymede-backend" data-sub="ch11-flow-opening-a-notebook-browser-ganymede-backend">Opening a notebook (browser, Ganymede backend)</a></li><li><a href="#ch11-packages-agent" data-sub="ch11-packages-agent">Packages/agent</a></li></ol></li>
+<li data-ch="ch12"><a href="#ch12" data-target="ch12"><span class="n">12</span><span>The Apple apps</span></a><ol class="subs"><li><a href="#ch12-code-map-apple-sources-ganymede" data-sub="ch12-code-map-apple-sources-ganymede">Code map (apple/Sources/Ganymede/)</a></li><li><a href="#ch12-in-app-kernels" data-sub="ch12-in-app-kernels">In-app kernels</a></li><li><a href="#ch12-packages-device-the-device-api" data-sub="ch12-packages-device-the-device-api">Packages/device: the device API</a></li><li><a href="#ch12-flow-the-mac-app-opening-a-notebook" data-sub="ch12-flow-the-mac-app-opening-a-notebook">The Mac app opening a notebook</a></li></ol></li>
+<li data-ch="ch13"><a href="#ch13" data-target="ch13"><span class="n">13</span><span>Building, testing, shipping</span></a><ol class="subs"><li><a href="#ch13-build-profiles" data-sub="ch13-build-profiles">Build profiles</a></li><li><a href="#ch13-where-each-promise-is-tested-ganymede" data-sub="ch13-where-each-promise-is-tested-ganymede">Where each promise is tested (ganymede)</a></li><li><a href="#ch13-how-a-change-lands" data-sub="ch13-how-a-change-lands">How a change lands</a></li><li><a href="#ch13-releases" data-sub="ch13-releases">Releases</a></li></ol></li>
+<li data-ch="ch14"><a href="#ch14" data-target="ch14"><span class="n">14</span><span>Where to dive next</span></a><ol class="subs"><li><a href="#ch14-open-edges-worth-knowing-about" data-sub="ch14-open-edges-worth-knowing-about">Open edges worth knowing about</a></li><li><a href="#ch14-keeping-this-primer-current" data-sub="ch14-keeping-this-primer-current">Keeping this primer current</a></li></ol></li>
+      </ol>
+    </details>
+  </nav>
+
+  <article>
+    <div class="topbar"><a href="#" class="home-link">Ganymede code primer</a><span class="kbd-hint">← → to turn chapters</span></div>
+    <section class="home" id="home" aria-label="Chapters">
+      <h2 class="home-h">Chapters</h2>
+      <ol class="cards">
+<li><a class="card" href="#how-to-read-this"><span class="card-n">·</span><span class="card-b"><span class="card-t">How to read this</span><span class="card-s"></span></span></a></li>
+<li><a class="card" href="#ch1"><span class="card-n">1</span><span class="card-b"><span class="card-t">The map</span><span class="card-s">Three layers · Four repositories · Where it runs · Vocabulary</span></span></a></li>
+<li><a class="card" href="#ch2"><span class="card-n">2</span><span class="card-b"><span class="card-t">Pure foundations: protocol and nbformat</span><span class="card-s">Ganymede-protocol (about 1,350 lines) · Ganymede-nbformat (about 6,700 lines)</span></span></a></li>
+<li><a class="card" href="#ch3"><span class="card-n">3</span><span class="card-b"><span class="card-t">Kernel host: getting a kernel and talking to it</span><span class="card-s">The seams · KernelSession: the state machine · Starting a kernel</span></span></a></li>
+<li><a class="card" href="#ch4"><span class="card-n">4</span><span class="card-b"><span class="card-t">API and contents: the server's logic without HTTP</span><span class="card-s">Ganymede-api (about 3,800 lines) · Ganymede-contents (about 5,900 lines) · Saving a notebook</span></span></a></li>
+<li><a class="card" href="#ch5"><span class="card-n">5</span><span class="card-b"><span class="card-t">The server</span><span class="card-s">Code map · Who gets in · How a request is served · Running a cell</span></span></a></li>
+<li><a class="card" href="#ch6"><span class="card-n">6</span><span class="card-b"><span class="card-t">Rooms: one live notebook for everyone</span><span class="card-s">Two halves · What a room&amp;#39;s task does · An edit in a room · Running cells into a room</span></span></a></li>
+<li><a class="card" href="#ch7"><span class="card-n">7</span><span class="card-b"><span class="card-t">The notebook as a program</span><span class="card-s">Ganymede-exec (one 1,700-line file) · The run contract · The host API · Grants</span></span></a></li>
+<li><a class="card" href="#ch8"><span class="card-n">8</span><span class="card-b"><span class="card-t">Agent-native: an agent in the same live notebook</span><span class="card-s">The pieces · Design choices visible in the code · How the agent hears about a person&amp;#39;s edits · The journal plugin</span></span></a></li>
+<li><a class="card" href="#ch9"><span class="card-n">9</span><span class="card-b"><span class="card-t">CLI and embedding: three ways to use the core</span><span class="card-s">Ganymede-cli (about 13,700 lines) · Ganymede-engine (about 1,100 lines) · Ganymede-ffi (about 1,100 lines)</span></span></a></li>
+<li><a class="card" href="#ch10"><span class="card-n">10</span><span class="card-b"><span class="card-t">cdp-kernel: the TypeScript kernel</span><span class="card-s">The two halves · The cell pipeline · Inside the runtime: jupyter.* · A TypeScript cell on Node</span></span></a></li>
+<li><a class="card" href="#ch11"><span class="card-n">11</span><span class="card-b"><span class="card-t">ganymede-ui: the web app</span><span class="card-s">Code map · Backends · Saving: two paths · Opening a notebook (browser, Ganymede backend)</span></span></a></li>
+<li><a class="card" href="#ch12"><span class="card-n">12</span><span class="card-b"><span class="card-t">The Apple apps</span><span class="card-s">Code map (apple/Sources/Ganymede/) · In-app kernels · Packages/device: the device API · The Mac app opening a notebook</span></span></a></li>
+<li><a class="card" href="#ch13"><span class="card-n">13</span><span class="card-b"><span class="card-t">Building, testing, shipping</span><span class="card-s">Build profiles · Where each promise is tested (ganymede) · How a change lands · Releases</span></span></a></li>
+<li><a class="card" href="#ch14"><span class="card-n">14</span><span class="card-b"><span class="card-t">Where to dive next</span><span class="card-s">Open edges worth knowing about · Keeping this primer current</span></span></a></li>
+      </ol>
+    </section>
+
+<section class="chapter" id="how-to-read-this" aria-labelledby="how-to-read-this-h">
+  <header class="chapter-head">
+    <p class="chapter-num">Before you start<span class="of"></span></p>
+    <h2 id="how-to-read-this-h">How to read this</h2>
+  </header>
+  <p>This primer explains how Ganymede&#39;s code fits together across its three active repositories (ganymede, cdp-kernel, ganymede-ui), so you can pick any part and dive in already knowing where it sits, why it exists and which files to open first. It is written for an experienced engineer who is new to this codebase. It describes <code>main</code> as of the date above.</p>
+<p>Each chapter follows the same shape:</p>
+<ul>
+<li><strong>Why it exists</strong>: the problem the part solves and what it deliberately does not do.</li>
+<li><strong>How the code is laid out</strong>: crates, modules and files, with sizes where they help you judge effort.</li>
+<li><strong>Flows</strong>: one or two real paths traced through named files, such as running a cell or an agent editing a live notebook.</li>
+<li><strong>Dive in</strong>: where to start reading, and which user docs already go deeper.</li>
+</ul>
+<p>The primer does not repeat the user docs. Where a topic is already covered well, it links to the page. The most useful ones to keep open are ganymede&#39;s <a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede/blob/main/docs/architecture.md">architecture</a>, <a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede/blob/main/docs/rooms.md">rooms</a> and <a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede/blob/main/docs/host-api.md">host API</a> pages, ganymede-ui&#39;s <a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede-ui/blob/main/docs/architecture.md">architecture</a>, and cdp-kernel&#39;s <a target="_blank" rel="noopener" href="https://github.com/tlockney/cdp-kernel/blob/main/docs/architecture.md">architecture</a>.</p>
+<p>One habit worth knowing from the start: almost every Rust module and many TypeScript files open with a doc comment (<code>//!</code>) that states the module&#39;s contract, its edge cases and the issue it came from. Reading those headers is the fastest way through the code, and this primer points to them often.</p>
+
+  <nav class="pager" aria-label="Chapter navigation"><span></span><a class="pg pg-next" href="#ch1" rel="next"><span class="pg-k">Next →</span><span class="pg-t">1. The map</span></a></nav>
+</section>
+
+<section class="chapter" id="ch1" aria-labelledby="ch1-h">
+  <header class="chapter-head">
+    <p class="chapter-num">Chapter 1<span class="of"> of 14</span></p>
+    <h2 id="ch1-h">The map</h2>
+  </header>
+  <p>Ganymede is a Rust replacement for the middle of the Jupyter stack, <code>jupyter_server</code>. It keeps both of that server&#39;s interfaces: the REST and websocket API above it, and the kernel messaging protocol over ZeroMQ below it. Everything else in the project is either a client of that API (the web UI and the apps) or a kernel behind it (cdp-kernel).</p>
+<h3 id="ch1-three-layers">Three layers</h3>
+<ul>
+<li><strong>Clients</strong> call the Jupyter REST and websocket API. JupyterLab and VS Code work unchanged. ganymede-ui&#39;s web app is a client too, and so are agents, through MCP or the host API. No client gets a private side door into the core.</li>
+<li><strong>The Rust core</strong> (repo <code>ganymede</code>) is the server: kernel lifecycle, notebook files, live document rooms, runs, the host API and MCP. It knows no kernel language.</li>
+<li><strong>Kernels</strong> run code. Any Jupyter kernel works, launched from its kernelspec. cdp-kernel is the first-class one, for TypeScript and JavaScript.</li>
+</ul>
+<h3 id="ch1-four-repositories">Four repositories</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Repo</th>
+<th>Language</th>
+<th>What it holds</th>
+<th>Size of the main code</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>tlockney/ganymede</code></td>
+<td>Rust</td>
+<td>15 crates under <code>crates/</code>, the <code>ganymede</code> CLI, docs site, journal plugin for Claude Code</td>
+<td>About 81,000 lines of Rust, tests included; <code>ganymede-server</code> alone is about 29,000</td>
+</tr>
+<tr>
+<td><code>tlockney/cdp-kernel</code></td>
+<td>TypeScript</td>
+<td>The kernel (<code>src/</code>) and the code it injects into each runtime (<code>runtime/</code>)</td>
+<td>About 40 files in <code>src/</code>, 20 runtime modules</td>
+</tr>
+<tr>
+<td><code>tlockney/ganymede-ui</code></td>
+<td>TypeScript, Swift</td>
+<td>Web app (<code>src/</code>), the Mac, iPad and iPhone app (<code>apple/</code>), <code>packages/device</code>, <code>packages/agent</code></td>
+<td>About 19,000 lines of Swift in <code>apple/Sources</code></td>
+</tr>
+<tr>
+<td><code>tlockney/ganymede-device</code></td>
+<td></td>
+<td>Archived. Its code moved into ganymede-ui <code>packages/device</code> on 2026-11-13</td>
+<td></td>
+</tr>
+</tbody></table></div>
+<p>The repos are joined at four points. ganymede-ui pins a ganymede commit or tag (<code>GANYMEDE_REF</code> in its <code>ci.yml</code>) and links <code>ganymede-ffi</code> built from it as an XCFramework. ganymede-ui depends on <code>@tlockney/cdp-kernel</code> from npm for the in-page kernel. ganymede launches cdp-kernel like any other kernel, from a kernelspec. ganymede&#39;s docs site copies ganymede-ui&#39;s docs and cell API reference at build time.</p>
+<figure class="diagram"><div class="diagram-scroll"><svg viewBox="0 0 760 464" role="img" aria-label="The apps and web UI are clients of the Rust core; cdp-kernel sits behind it" font-size="13"><defs><marker id="repos-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--d-edge);"></path></marker></defs><text x="24" y="32" font-size="15" font-weight="600" style="fill:var(--d-ink);">The apps and web UI are clients of the Rust core; cdp-kernel sits behind it</text><g><rect x="24" y="52" width="344" height="188" rx="8" stroke-width="1" style="fill:var(--d-tint);stroke:var(--d-edge);"></rect><text x="40" y="76" font-weight="600" style="fill:var(--d-ink);">tlockney/ganymede (Rust)</text><rect x="208" y="88" width="152" height="60" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="220" y="110" font-weight="600" style="fill:var(--d-ink);">ganymede-server</text><text x="220" y="130" font-size="11.5" style="fill:var(--d-quiet);">API, rooms, MCP, runs</text><rect x="40" y="88" width="152" height="60" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="52" y="110" font-weight="600" style="fill:var(--d-ink);">ganymede-cli</text><text x="52" y="130" font-size="11.5" style="fill:var(--d-quiet);">the ganymede binary</text><rect x="40" y="160" width="152" height="60" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="52" y="182" font-weight="600" style="fill:var(--d-ink);">core crates</text><text x="52" y="202" font-size="11.5" style="fill:var(--d-quiet);">kernel host, files</text><rect x="208" y="160" width="152" height="60" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="220" y="182" font-weight="600" style="fill:var(--d-ink);">ganymede-ffi</text><text x="220" y="202" font-size="11.5" style="fill:var(--d-quiet);">server inside an app</text></g><g><rect x="24" y="300" width="344" height="140" rx="8" stroke-width="1" style="fill:var(--d-tint);stroke:var(--d-edge);"></rect><text x="40" y="430" font-weight="600" style="fill:var(--d-ink);">tlockney/cdp-kernel (TypeScript)</text><rect x="40" y="316" width="152" height="80" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="52" y="338" font-weight="600" style="fill:var(--d-ink);">kernel</text><text x="52" y="358" font-size="11.5" style="fill:var(--d-quiet);">Node, Deno over CDP</text><text x="52" y="374" font-size="11.5" style="fill:var(--d-quiet);">Bun, workerd, celld</text><rect x="208" y="316" width="152" height="80" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="220" y="338" font-weight="600" style="fill:var(--d-ink);">./browser build</text><text x="220" y="358" font-size="11.5" style="fill:var(--d-quiet);">core in a web page</text><text x="220" y="374" font-size="11.5" style="fill:var(--d-quiet);">cells in a Worker</text></g><g><rect x="424" y="52" width="312" height="388" rx="8" stroke-width="1" style="fill:var(--d-tint);stroke:var(--d-edge);"></rect><text x="440" y="76" font-weight="600" style="fill:var(--d-ink);">tlockney/ganymede-ui (TS, Swift)</text><rect x="440" y="88" width="280" height="76" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="452" y="110" font-weight="600" style="fill:var(--d-ink);">web app (src/)</text><text x="452" y="130" font-size="11.5" style="fill:var(--d-quiet);">React shell + JupyterLab notebook packages</text><text x="452" y="146" font-size="11.5" style="fill:var(--d-quiet);">every backend via @jupyterlab/services</text><rect x="440" y="176" width="280" height="92" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="452" y="198" font-weight="600" style="fill:var(--d-ink);">apple/: Mac, iPad, iPhone app</text><text x="452" y="218" font-size="11.5" style="fill:var(--d-quiet);">SwiftUI shell, server in its own process</text><text x="452" y="234" font-size="11.5" style="fill:var(--d-quiet);">web view shows the web app</text><text x="452" y="250" font-size="11.5" style="fill:var(--d-quiet);">cdp-kernel in a hidden web view</text><rect x="440" y="280" width="136" height="76" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="452" y="302" font-weight="600" style="fill:var(--d-ink);">packages/device</text><text x="452" y="322" font-size="11.5" style="fill:var(--d-quiet);">device API in cells</text><text x="452" y="338" font-size="11.5" style="fill:var(--d-quiet);">answered by Swift</text><rect x="584" y="280" width="136" height="76" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="596" y="302" font-weight="600" style="fill:var(--d-ink);">packages/agent</text><text x="596" y="322" font-size="11.5" style="fill:var(--d-quiet);">optional agent</text><text x="596" y="338" font-size="11.5" style="fill:var(--d-quiet);">off by default</text><rect x="440" y="368" width="280" height="56" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="452" y="390" font-weight="600" style="fill:var(--d-ink);">docs/</text><text x="452" y="410" font-size="11.5" style="fill:var(--d-quiet);">copied into ganymede's docs site</text></g><g fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"><path d="M440 126L360 118" marker-end="url(#repos-arrow)"></path><path d="M440 222L360 196" marker-end="url(#repos-arrow)"></path><path d="M424 356H360" marker-end="url(#repos-arrow)"></path><path d="M116 220V316" stroke-dasharray="5 4" marker-end="url(#repos-arrow)"></path></g><text x="400" y="106" text-anchor="middle" font-size="11.5" style="fill:var(--d-quiet);">API client</text><text font-size="11.5" text-anchor="middle" style="fill:var(--d-quiet);"><tspan x="394" y="238">links ffi</tspan><tspan x="394" y="252">XCFramework</tspan></text><text x="392" y="348" text-anchor="middle" font-size="11.5" style="fill:var(--d-quiet);">npm</text><text x="124" y="274" font-size="11.5" style="fill:var(--d-quiet);">launches it via its kernelspec</text></svg></div><figcaption>The four repositories and what joins them</figcaption></figure>
+
+<p>Arrows point from a repo to what it uses. The XCFramework is built from the ganymede commit in <code>GANYMEDE_REF</code>, so an app change that needs a server change waits for that pin to move.</p>
+<h3 id="ch1-where-it-runs">Where it runs</h3>
+<p>The same crates run in four setups (<a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede/blob/main/docs/architecture.md#where-it-runs">architecture: where it runs</a> has the picture):</p>
+<ol>
+<li><strong>Workstation or server</strong>: <code>ganymede serve</code> or <code>ganymede lab</code> as a process, kernels as child processes over ZeroMQ.</li>
+<li><strong>Mac app</strong>: the server runs inside the app&#39;s process through <code>ganymede-ffi</code>, on loopback, and the web view loads ganymede-ui from it. Kernels are the Mac&#39;s kernelspecs, plus cdp-kernel in a hidden web view registered with the server.</li>
+<li><strong>iPad and iPhone app</strong>: the same app. iOS won&#39;t let an app launch processes, so the only local kernel is cdp-kernel in a hidden web view; others come from a remote server through the gateway.</li>
+<li><strong>Browser only</strong>: ganymede-ui alone, notebooks in IndexedDB, kernels in Web Workers. The Rust core is not involved.</li>
+</ol>
+<h3 id="ch1-vocabulary">Vocabulary</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Meaning here</th>
+<th>Where in code</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Kernelspec</td>
+<td>A <code>kernel.json</code> saying how to launch a kernel: command line, language, interrupt mode</td>
+<td><code>ganymede-kernel-host</code></td>
+</tr>
+<tr>
+<td>Kernel channels</td>
+<td>Five ZeroMQ sockets per kernel: shell, iopub, stdin, control, heartbeat</td>
+<td><code>ganymede-protocol</code></td>
+</tr>
+<tr>
+<td>Session</td>
+<td>Jupyter&#39;s record binding a notebook path to a kernel (<code>/api/sessions</code>)</td>
+<td><code>ganymede-api</code></td>
+</tr>
+<tr>
+<td>Comm</td>
+<td>A named channel between kernel and client inside the protocol; carries widgets and the host API</td>
+<td><code>ganymede-host</code>, cdp-kernel <code>runtime/comm.mjs</code></td>
+</tr>
+<tr>
+<td>Room</td>
+<td>A notebook held live in memory as a Yjs document, which every client and agent edits</td>
+<td><code>ganymede-documents</code>, server <code>collab.rs</code></td>
+</tr>
+<tr>
+<td>File id</td>
+<td>A stable id for a notebook path, kept across renames and restarts; rooms are keyed by it</td>
+<td>server <code>collab.rs</code>, <code>FileIds</code></td>
+</tr>
+<tr>
+<td>Run</td>
+<td>A notebook executed top to bottom in a fresh kernel, with parameters in and named results out</td>
+<td>server <code>run.rs</code>, <code>ganymede-exec</code></td>
+</tr>
+<tr>
+<td>Grant</td>
+<td>A per-notebook permission for the host API (<code>read</code>, <code>run</code>, <code>edit_self</code>); nested runs only narrow it</td>
+<td>server <code>host.rs</code></td>
+</tr>
+<tr>
+<td>Journal</td>
+<td>A notebook an agent keeps as it works, through the MCP tools</td>
+<td>server <code>mcp.rs</code>, <code>plugins/ganymede-journal</code></td>
+</tr>
+<tr>
+<td>Backend</td>
+<td>In ganymede-ui, what builds the <code>ServiceManager</code> the UI talks to: a server, or services in the page</td>
+<td>ganymede-ui <code>src/lib/backends.ts</code></td>
+</tr>
+</tbody></table></div>
+<h3 id="ch1-rules-that-shape-the-code">Rules that shape the code</h3>
+<ul>
+<li><strong>Only the core is Rust.</strong> UIs are API clients and live outside the <code>ganymede</code> repo.</li>
+<li><strong>The host knows no language.</strong> Nothing in the host crates special-cases Python or TypeScript; language facts come from the kernelspec, <code>kernel_info_reply</code> and output MIME types. The test suite runs the same scenarios against cdp-kernel and ipykernel.</li>
+<li><strong>The Jupyter API is a compatibility target.</strong> A difference from <code>jupyter_server</code> is a bug. The e2e suite runs <code>jupyter_server</code> 2.21.1 side by side to check.</li>
+<li><strong>Conservative security defaults.</strong> Grants and permissions are scoped as narrowly as possible, and nested runs can only narrow them.</li>
+<li><strong>The bottom crates do no I/O</strong>, so they build for any target, including wasm and iOS.</li>
+</ul>
+
+  <nav class="pager" aria-label="Chapter navigation"><a class="pg pg-prev" href="#how-to-read-this" rel="prev"><span class="pg-k">← Previous</span><span class="pg-t">How to read this</span></a><a class="pg pg-next" href="#ch2" rel="next"><span class="pg-k">Next →</span><span class="pg-t">2. Pure foundations: protocol and nbformat</span></a></nav>
+</section>
+
+<section class="chapter" id="ch2" aria-labelledby="ch2-h">
+  <header class="chapter-head">
+    <p class="chapter-num">Chapter 2<span class="of"> of 14</span></p>
+    <h2 id="ch2-h">Pure foundations: protocol and nbformat</h2>
+  </header>
+  <p>Two crates sit at the bottom and do no network or file I/O: <code>ganymede-protocol</code> models the Jupyter messages and their byte layouts, and <code>ganymede-nbformat</code> models the <code>.ipynb</code> file. Because they do no I/O, they build for wasm and iOS, and every higher crate can trust one definition of a message and of a notebook. (<code>ganymede-documents</code>, the third no-I/O crate, belongs to rooms and is in chapter 6.)</p>
+<h3 id="ch2-ganymede-protocol-about-1-350-lines">ganymede-protocol (about 1,350 lines)</h3>
+<p>It answers one question: given a message, what bytes go on each kind of wire, and back.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>What it holds</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>message.rs</code></td>
+<td><code>Message</code> (header, parent header, metadata, content, binary buffers), <code>Header</code>, the <code>Channel</code> enum. Protocol version 5.5, including <code>subshell_id</code></td>
+</tr>
+<tr>
+<td><code>content.rs</code></td>
+<td>Typed content only for messages the host itself reads or sends: <code>execute_request</code>, <code>kernel_info_reply</code>, <code>status</code>, <code>stream</code> and so on. Everything else stays raw JSON</td>
+</tr>
+<tr>
+<td><code>wire.rs</code></td>
+<td>ZeroMQ multipart framing: identities, the &lt;IDS|MSG&gt; delimiter, an HMAC-SHA256 signature, then header, parent header, metadata, content and buffers. Signs and verifies frames</td>
+</tr>
+<tr>
+<td><code>ws.rs</code></td>
+<td>The two websocket framings clients use on <code>/api/kernels/{id}/channels</code>: <code>v1.kernel.websocket.jupyter.org</code> (binary, an offset table then the parts) and the legacy JSON form</td>
+</tr>
+<tr>
+<td><code>connection.rs</code></td>
+<td>The connection file a host writes for a kernel: ports, transport, key, signature scheme</td>
+</tr>
+</tbody></table></div>
+<p>Two design rules run through it, stated in <code>lib.rs</code>:</p>
+<ul>
+<li><strong>Unknown fields survive.</strong> Every struct has a <code>#[serde(flatten)] extra</code> map, so a field a kernel adds (a capability list in <code>kernel_info_reply</code>, say) reaches clients untouched.</li>
+<li><strong>Content is kept as JSON</strong> on <code>Message</code> and parsed into a typed struct only on demand (<code>Message::content_as</code>). The server mostly forwards messages, so it avoids parsing what it doesn&#39;t need.</li>
+</ul>
+<p>Lenience is deliberate too: a header missing <code>username</code>, <code>date</code> or <code>version</code> is accepted, because <code>jupyter_client</code> accepts it and rejecting it would drop a reply the host is waiting for.</p>
+<h3 id="ch2-ganymede-nbformat-about-6-700-lines">ganymede-nbformat (about 6,700 lines)</h3>
+<p>Its core promise is in the crate doc: a notebook saved by Ganymede is byte for byte what Python&#39;s <code>nbformat</code> would write, so saving never produces a spurious git diff. The rest of the crate has grown into the toolkit for anything that turns a notebook into something else.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>types.rs</code></td>
+<td><code>Notebook</code>, <code>Cell</code>, <code>Output</code>, <code>MimeBundle</code>, each with an <code>extra</code> map; unknown cell and output types are kept verbatim</td>
+</tr>
+<tr>
+<td><code>reader.rs</code></td>
+<td>Lenient reading, as Python&#39;s nbformat: string or list multi-line text, nulls read as defaults, missing or duplicate cell ids repaired. <code>ReadReport</code> says what was repaired</td>
+</tr>
+<tr>
+<td><code>upgrade.rs</code></td>
+<td>nbformat 3 upgraded to 4 on read</td>
+</tr>
+<tr>
+<td><code>writer.rs</code></td>
+<td>The byte-identical writer: split lines, strip transient metadata, sort keys, indent 1, Python&#39;s float formatting (<code>python_float_repr</code>), trailing newline</td>
+</tr>
+<tr>
+<td><code>atomic.rs</code></td>
+<td><code>atomic_write</code>: temp file then rename. Shared with the contents layer</td>
+</tr>
+<tr>
+<td><code>params.rs</code>, <code>results.rs</code></td>
+<td>The run contract&#39;s data side: parameters go to the kernel in <code>GANYMEDE_PARAMS</code>; named results are outputs of type <code>application/vnd.ganymede.result+json</code> (scrapbook&#39;s types are read too)</td>
+</tr>
+<tr>
+<td><code>html.rs</code>, <code>highlight.rs</code></td>
+<td><code>ganymede nb publish</code>: one self-contained HTML page with no scripts from the notebook, HTML outputs in sandboxed iframes, server-side syntax highlighting</td>
+</tr>
+<tr>
+<td><code>export.rs</code></td>
+<td>Script and Markdown export, the two nbconvert formats that need no templates</td>
+</tr>
+</tbody></table></div>
+<p>Note what <code>params.rs</code> and <code>results.rs</code> do not do: they never mention a language. A parameter is JSON in an environment variable, and a result is a MIME type in an output. Each kernel decides how to expose them; cdp-kernel reads them as <code>jupyter.params</code> and writes them with <code>jupyter.result</code>.</p>
+<aside class="dive" aria-labelledby="ch2-dive-in"><h3 id="ch2-dive-in">Dive in</h3><ul>
+<li>Read <code>ganymede-protocol/src/lib.rs</code> and <code>wire.rs</code> first; they are short and set the vocabulary for chapter 3.</li>
+<li>For nbformat, <code>tests/roundtrip.rs</code> shows the byte-for-byte promise being checked, and <code>tests/lenient.rs</code> lists the malformed inputs it tolerates.</li>
+<li><a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede/blob/main/docs/protocol.md">docs/protocol.md</a> covers what a host must get right in the protocol and what is usually missed.</li>
+</ul></aside>
+
+  <nav class="pager" aria-label="Chapter navigation"><a class="pg pg-prev" href="#ch1" rel="prev"><span class="pg-k">← Previous</span><span class="pg-t">1. The map</span></a><a class="pg pg-next" href="#ch3" rel="next"><span class="pg-k">Next →</span><span class="pg-t">3. Kernel host: getting a kernel and talking to it</span></a></nav>
+</section>
+
+<section class="chapter" id="ch3" aria-labelledby="ch3-h">
+  <header class="chapter-head">
+    <p class="chapter-num">Chapter 3<span class="of"> of 14</span></p>
+    <h2 id="ch3-h">Kernel host: getting a kernel and talking to it</h2>
+  </header>
+  <p><code>ganymede-kernel-host</code> (about 6,500 lines) is Ganymede&#39;s <code>jupyter_client</code>. It finds kernels, launches them, connects to them and runs the per-kernel state machine. It is built around three seams, so the same code drives a local process over ZeroMQ, a kernel on another server, and a kernel the iPad app runs inside a web view.</p>
+<h3 id="ch3-the-seams">The seams</h3>
+<p>A kernel comes to life in three steps, each behind a trait:</p>
+<ol>
+<li><strong><code>KernelspecSource</code></strong> (<code>kernelspec.rs</code>) lists what can be launched. <code>FsKernelspecs</code> searches the Jupyter data directories in <code>jupyter_client</code>&#39;s order, plus extra roots from <code>--kernelspec-root</code>. That is how conda and venv kernels are found without the host knowing what a venv is.</li>
+<li><strong><code>Provisioner</code></strong> (<code>process.rs</code>) makes a kernel exist and returns a <code>LaunchedKernel</code>: its connection info (if any) and a <code>KernelProcess</code> handle for interrupt and kill. <code>SubprocessProvisioner</code> allocates five ports, writes the connection file in the runtime directory and spawns the kernelspec&#39;s command. <code>attach</code> adopts a kernel that is already running.</li>
+<li><strong><code>TransportFactory</code></strong> (<code>transport.rs</code>) turns a <code>LaunchedKernel</code> into a <code>KernelTransport</code>: a <code>TransportSink</code> to send on and a stream of <code>(Channel, Message)</code> coming back. <code>ZmqTransport</code> (<code>zmq.rs</code>) uses the pure-Rust <code>zeromq</code> crate: DEALER sockets for shell, control and stdin, SUB for iopub, REQ for heartbeat, one task per socket.</li>
+</ol>
+<p>Two other implementations fill all three seams at once:</p>
+<ul>
+<li><strong><code>ganymede-gateway</code></strong> (one 600-line file): kernels on another Jupyter server. Its kernelspecs are the remote <code>GET /api/kernelspecs</code>, launch is <code>POST /api/kernels</code>, and the transport is the remote channels websocket. This is <code>--gateway-url</code>, and how the iPad app reaches a Mac&#39;s kernels.</li>
+<li><strong><code>registered.rs</code></strong>: kernels an app runs itself. The app implements <code>AppKernel</code> (<code>start</code>, <code>send</code>, <code>stop</code>) and pushes messages back with <code>RegisteredKernels::deliver</code>. No process, no ZeroMQ. The Apple apps register cdp-kernel running in a hidden web view this way, through <code>ganymede-ffi</code>, so it appears in <code>/api/kernels</code> beside every other kernel (chapter 12).</li>
+</ul>
+<p>The Cargo features <code>zmq</code> and <code>subprocess</code> are on by default. Without them the crate is the state machine, kernelspec parsing and the in-process transport, which is what builds for iOS and wasm.</p>
+<figure class="diagram"><div class="diagram-scroll"><svg viewBox="0 0 760 324" role="img" aria-label="Three seams let one session drive local, remote and in-app kernels" font-size="12"><defs><marker id="seam-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--d-edge);"></path></marker></defs><text x="24" y="32" font-size="15" font-weight="600" style="fill:var(--d-ink);">Three seams let one session drive local, remote and in-app kernels</text><g><rect x="132" y="60" width="136" height="48" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="200" y="82" text-anchor="middle" font-weight="600" style="fill:var(--d-ink);">KernelspecSource</text><text x="200" y="98" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">what can launch</text><rect x="292" y="60" width="136" height="48" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="360" y="82" text-anchor="middle" font-weight="600" style="fill:var(--d-ink);">Provisioner</text><text x="360" y="98" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">make it exist</text><rect x="452" y="60" width="136" height="48" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="520" y="82" text-anchor="middle" font-weight="600" style="fill:var(--d-ink);">TransportFactory</text><text x="520" y="98" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">connect to it</text></g><g><rect x="612" y="60" width="124" height="240" rx="8" fill-opacity="0.12" stroke-width="2" style="fill:var(--d-accent);stroke:var(--d-accent);"></rect><text x="674" y="82" text-anchor="middle" font-weight="600" style="fill:var(--d-ink);">KernelSession</text><text x="674" y="160" text-anchor="middle" font-size="11" style="fill:var(--d-ink);">handshake</text><text x="674" y="178" text-anchor="middle" font-size="11" style="fill:var(--d-ink);">reply + idle</text><text x="674" y="196" text-anchor="middle" font-size="11" style="fill:var(--d-ink);">iopub fan-out</text><text x="674" y="214" text-anchor="middle" font-size="11" style="fill:var(--d-ink);">interrupt, death</text><text x="674" y="284" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">session.rs</text></g><g><text x="24" y="144" font-weight="600" style="fill:var(--d-ink);">Local</text><text x="24" y="160" font-size="11" style="fill:var(--d-quiet);">process.rs, zmq.rs</text><rect x="132" y="128" width="136" height="40" rx="8" fill="none" stroke-width="1" style="stroke:var(--d-grid);"></rect><text x="200" y="152" text-anchor="middle" font-size="11.5" style="fill:var(--d-ink);">Jupyter data dirs</text><rect x="292" y="128" width="136" height="40" rx="8" fill="none" stroke-width="1" style="stroke:var(--d-grid);"></rect><text x="360" y="152" text-anchor="middle" font-size="11.5" style="fill:var(--d-ink);">child process</text><rect x="452" y="128" width="136" height="40" rx="8" fill="none" stroke-width="1" style="stroke:var(--d-grid);"></rect><text x="520" y="152" text-anchor="middle" font-size="11.5" style="fill:var(--d-ink);">five ZeroMQ sockets</text></g><g><text x="24" y="200" font-weight="600" style="fill:var(--d-ink);">Gateway</text><text x="24" y="216" font-size="11" style="fill:var(--d-quiet);">ganymede-gateway</text><rect x="132" y="184" width="136" height="40" rx="8" fill="none" stroke-width="1" style="stroke:var(--d-grid);"></rect><text x="200" y="208" text-anchor="middle" font-size="11.5" style="fill:var(--d-ink);">remote kernelspecs</text><rect x="292" y="184" width="136" height="40" rx="8" fill="none" stroke-width="1" style="stroke:var(--d-grid);"></rect><text x="360" y="208" text-anchor="middle" font-size="11.5" style="fill:var(--d-ink);">POST /api/kernels</text><rect x="452" y="184" width="136" height="40" rx="8" fill="none" stroke-width="1" style="stroke:var(--d-grid);"></rect><text x="520" y="208" text-anchor="middle" font-size="11.5" style="fill:var(--d-ink);">channels websocket</text></g><g><text x="24" y="256" font-weight="600" style="fill:var(--d-ink);">In-app</text><text x="24" y="272" font-size="11" style="fill:var(--d-quiet);">registered.rs</text><rect x="132" y="240" width="136" height="40" rx="8" fill="none" stroke-width="1" style="stroke:var(--d-grid);"></rect><text x="200" y="264" text-anchor="middle" font-size="11.5" style="fill:var(--d-ink);">specs the app lists</text><rect x="292" y="240" width="136" height="40" rx="8" fill="none" stroke-width="1" style="stroke:var(--d-grid);"></rect><text x="360" y="264" text-anchor="middle" font-size="11.5" style="fill:var(--d-ink);">AppKernel.start</text><rect x="452" y="240" width="136" height="40" rx="8" fill="none" stroke-width="1" style="stroke:var(--d-grid);"></rect><text x="520" y="264" text-anchor="middle" font-size="11.5" style="fill:var(--d-ink);">send + deliver</text></g><g fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"><path d="M268 84H292" marker-end="url(#seam-arrow)"></path><path d="M428 84H452" marker-end="url(#seam-arrow)"></path><path d="M588 84H612" marker-end="url(#seam-arrow)"></path><path d="M588 148H612" marker-end="url(#seam-arrow)"></path><path d="M588 204H612" marker-end="url(#seam-arrow)"></path><path d="M588 260H612" marker-end="url(#seam-arrow)"></path></g></svg></div><figcaption>Kernel host seams and their three families of implementations</figcaption></figure>
+
+<p>Read each row left to right: the same three questions get a local, a remote or an in-app answer, and <code>KernelSession</code> on the right never knows which.</p>
+<h3 id="ch3-kernelsession-the-state-machine">KernelSession: the state machine</h3>
+<p><code>session.rs</code> (about 1,800 lines) is the heart of the crate. One <code>KernelSession</code> wraps one connected kernel and knows what a plain message pipe does not:</p>
+<ul>
+<li><strong>The startup nudge</strong> (<code>nudge</code>). ZeroMQ&#39;s PUB/SUB silently drops messages published before the subscriber connects. So the host sends <code>kernel_info_request</code> on shell and control until both answer and at least one iopub message has arrived. A kernel with an XPUB socket (ipykernel 7) sends <code>iopub_welcome</code>, which settles the iopub half at once.</li>
+<li><strong>Two-part completion.</strong> A request is done when its reply has arrived on shell and an iopub <code>status: idle</code> with the request as parent has arrived. They come on different sockets, in either order. The <code>Pending</code> struct tracks both.</li>
+<li><strong>Routing.</strong> Replies go to the requester by <code>parent_header.msg_id</code>; iopub fans out to every subscriber (<code>subscribe</code>, or <code>subscribe_lossless</code> for consumers that must not miss a message).</li>
+<li><strong>Interrupt</strong> by signal or by <code>interrupt_request</code>, as the kernelspec&#39;s <code>interrupt_mode</code> says. <strong>Shutdown</strong> sends <code>shutdown_request</code>, waits a grace period, then kills.</li>
+<li><strong>Death</strong>: the process exiting, the transport closing, or missed heartbeats for a kernel with no process handle.</li>
+</ul>
+<p>Crash restarts are not here: they belong to the kernel manager in <code>ganymede-api</code> (chapter 4), which restarts a crashed kernel under the same id up to <code>restart_limit</code> times, as <code>jupyter_server</code>&#39;s restarter does. A kernel the platform ended (<code>lost</code>, as iOS does to the app&#39;s kernel in the background) has its own limit: three losses within 60 seconds of each other restart it, and the next leaves it dead, with the reason on <code>status: dead</code>.</p>
+<h3 id="ch3-flow-starting-a-kernel"><span class="kicker">Flow</span>Starting a kernel</h3>
+<ol>
+<li>The kernel manager picks a <code>Kernelspec</code> from the <code>KernelspecSource</code>.</li>
+<li><code>Provisioner::launch</code> reserves five ports (in-process and in a per-user directory, so two Ganymede processes don&#39;t hand out the same port), writes <code>kernel-&lt;id&gt;.json</code>, and spawns the command with the connection file path substituted.</li>
+<li><code>TransportFactory::connect</code> opens the five sockets.</li>
+<li><code>KernelSession::start</code> begins reading; <code>nudge</code> runs the handshake and stores <code>kernel_info_reply</code>.</li>
+<li>The session is live: clients can send on shell, and iopub flows to all of them.</li>
+</ol>
+<aside class="dive" aria-labelledby="ch3-dive-in"><h3 id="ch3-dive-in">Dive in</h3><ul>
+<li>Start with <code>lib.rs</code> (84 lines) for the seams, then <code>transport.rs</code> (78 lines), then <code>session.rs</code>.</li>
+<li><code>testing.rs</code> is a fake kernel over the in-process transport. It speaks the protocol and no language, and is the quickest way to see the state machine exercised.</li>
+<li><code>process.rs</code> is long because of platform detail: port reservation, process groups, and Windows job objects so a kernel&#39;s children die with it.</li>
+<li>The design note for registered kernels is <a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede/blob/main/docs/in-app-kernel.md">docs/in-app-kernel.md</a>.</li>
+</ul></aside>
+
+  <nav class="pager" aria-label="Chapter navigation"><a class="pg pg-prev" href="#ch2" rel="prev"><span class="pg-k">← Previous</span><span class="pg-t">2. Pure foundations: protocol and nbformat</span></a><a class="pg pg-next" href="#ch4" rel="next"><span class="pg-k">Next →</span><span class="pg-t">4. API and contents: the server's logic without HTTP</span></a></nav>
+</section>
+
+<section class="chapter" id="ch4" aria-labelledby="ch4-h">
+  <header class="chapter-head">
+    <p class="chapter-num">Chapter 4<span class="of"> of 14</span></p>
+    <h2 id="ch4-h">API and contents: the server's logic without HTTP</h2>
+  </header>
+  <p>Two crates hold the logic behind <code>jupyter_server</code>&#39;s REST API, with no HTTP in either. <code>ganymede-api</code> manages kernels, sessions and per-client connections; <code>ganymede-contents</code> manages files. The HTTP server (chapter 5) is a thin mapping onto them. They were kept free of HTTP so an app could call them directly; in practice the apps run the full server on loopback instead, which turned out simpler, but the split still keeps the logic testable on its own.</p>
+<h3 id="ch4-ganymede-api-about-3-800-lines">ganymede-api (about 3,800 lines)</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>What it holds</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>kernels.rs</code></td>
+<td><code>KernelManager</code>: start, restart, interrupt, shut down, cull idle kernels, list. Crash restarts under the same id up to <code>restart_limit</code> (default 5), as <code>jupyter_server</code>&#39;s <code>KernelRestarter</code>. A <code>lost</code> kernel restarts at most 3 times within 60 s, then stays dead and says why. Holds a weak reference to the host API responder (<code>set_host</code>)</td>
+</tr>
+<tr>
+<td><code>sessions.rs</code></td>
+<td><code>SessionManager</code>: Jupyter sessions, a notebook path bound to a kernel. <code>notebook_of_kernel</code> is how the host API and MCP find which notebook a kernel belongs to</td>
+</tr>
+<tr>
+<td><code>bridge.rs</code></td>
+<td><code>ClientConnection</code>: one websocket&#39;s share of a kernel&#39;s traffic</td>
+</tr>
+<tr>
+<td><code>kernel_log.rs</code></td>
+<td>The last lines of each kernel&#39;s stdout and stderr, for <code>GET /api/kernels/{id}/log</code>. A Ganymede extension, so a client can show why a kernel died</td>
+</tr>
+<tr>
+<td><code>models.rs</code></td>
+<td>The JSON models, field for field as <code>jupyter_server</code> returns them</td>
+</tr>
+</tbody></table></div>
+<p><strong>The bridge is the part worth understanding.</strong> <code>jupyter_server</code> gives each websocket its own DEALER sockets to the kernel. Ganymede shares one set of sockets per kernel and dispatches each incoming message to per-client queues instead: iopub to everyone, replies only to the client whose <code>session</code> is in the parent header. It keeps <code>jupyter_server</code>&#39;s behaviors on top of that:</p>
+<ul>
+<li>When the last client disconnects, its queue keeps filling. A client that reconnects with the same <code>session_id</code> gets the buffered messages, so a laptop waking from sleep sees what ran while it was away.</li>
+<li>A new connection with the session id of an open one replaces it, since the old one is most likely a dead socket.</li>
+<li>Reply queues are unbounded, so a slow client never loses its own <code>execute_reply</code>. Iopub beyond a limit is dropped, and the client is told with a stderr <code>stream</code> message.</li>
+</ul>
+<p>One gotcha from the host API work: <code>KernelManager</code> holds the host responder weakly. A strong reference formed a cycle that kept embedding apps alive after they stopped the server.</p>
+<h3 id="ch4-ganymede-contents-about-5-900-lines">ganymede-contents (about 5,900 lines)</h3>
+<p>The contents API: files, directories, checkpoints. Its design comes from the iPad case, where the notebook folder is in iCloud Drive and other writers touch the same files.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>What it holds</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>lib.rs</code></td>
+<td>The <code>Contents</code> trait and the wire model (<code>ContentsModel</code>, <code>SaveRequest</code>, <code>Checkpoint</code>)</td>
+</tr>
+<tr>
+<td><code>fs.rs</code></td>
+<td><code>FsContents</code>, the local filesystem implementation</td>
+</tr>
+<tr>
+<td><code>paths.rs</code></td>
+<td><code>ApiPath::parse</code>, the only way client input becomes a path. It rejects anything that could leave the root before any filesystem call</td>
+</tr>
+<tr>
+<td><code>fileid.rs</code></td>
+<td><code>FileIds</code>: a stable id per file, kept in SQLite, moved by renames through the API. Rooms are keyed by these ids. Host API grants are stored here too, so they follow a rename, each with a stamp of its file (size, mtime, inode) so a grant is dropped when its file changes outside Ganymede</td>
+</tr>
+<tr>
+<td><code>trust.rs</code></td>
+<td>Notebook trust, compatible with Jupyter&#39;s own <code>nbsignatures.db</code>: a notebook Jupyter trusts is trusted here, and the other way round</td>
+</tr>
+</tbody></table></div>
+<p>The rules: files are the source of truth and nothing is cached. Writes are atomic (temp file, fsync, rename). The checkpoint directory can live outside the root, so checkpoints aren&#39;t synced with notebooks.</p>
+<h3 id="ch4-flow-saving-a-notebook"><span class="kicker">Flow</span>Saving a notebook</h3>
+<ol>
+<li>A client sends <code>PUT /api/contents/{path}</code> with the whole notebook, and either <code>If-Match</code> with the ETag it read or <code>last_modified</code> in the body.</li>
+<li><code>paths.rs</code> parses the path; <code>fs.rs</code> reads the file on disk now.</li>
+<li>If the sha256 doesn&#39;t match <code>If-Match</code>, the answer is 412. If the file is more than 500 ms newer than <code>last_modified</code>, it is 409. Nothing is written either way: that is how an edit from another device isn&#39;t overwritten.</li>
+<li>The notebook is validated through <code>ganymede-nbformat</code>, written to a temp file in the same directory, fsynced and renamed over the old file.</li>
+<li><code>trust.rs</code> signs it if every code cell is trusted. The first checkpoint is created if there is none.</li>
+<li>The answer is 200 or 201 with the model and its new ETag.</li>
+</ol>
+<p>With rooms on (chapter 6), most saves no longer come from clients: the room&#39;s own task saves the live document, through this same path, with <code>If-Match</code> on the hash it last wrote. The <a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede/blob/main/docs/architecture.md#saving-a-notebook">architecture page&#39;s save diagram</a> shows the client path.</p>
+<aside class="dive" aria-labelledby="ch4-dive-in"><h3 id="ch4-dive-in">Dive in</h3><ul>
+<li><code>ganymede-api/src/lib.rs</code> (65 lines), then <code>bridge.rs</code> for the per-client queues.</li>
+<li><code>ganymede-contents/src/lib.rs</code> has the whole contract in its header; <code>paths.rs</code> is the security boundary for file access.</li>
+</ul></aside>
+
+  <nav class="pager" aria-label="Chapter navigation"><a class="pg pg-prev" href="#ch3" rel="prev"><span class="pg-k">← Previous</span><span class="pg-t">3. Kernel host: getting a kernel and talking to it</span></a><a class="pg pg-next" href="#ch5" rel="next"><span class="pg-k">Next →</span><span class="pg-t">5. The server</span></a></nav>
+</section>
+
+<section class="chapter" id="ch5" aria-labelledby="ch5-h">
+  <header class="chapter-head">
+    <p class="chapter-num">Chapter 5<span class="of"> of 14</span></p>
+    <h2 id="ch5-h">The server</h2>
+  </header>
+  <p><code>ganymede-server</code> is the biggest crate (about 29,000 lines with tests, 18,000 in <code>src/</code>). Its own description is &quot;every handler is a thin mapping from a route to an API call&quot;, and that holds for the Jupyter API. Most of its size is in the Ganymede extensions that have no <code>jupyter_server</code> equivalent: rooms, MCP, the host API, runs.</p>
+<h3 id="ch5-code-map">Code map</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>Lines</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>serve.rs</code></td>
+<td>1,400</td>
+<td>Flags, config, startup and shutdown. <code>Startup</code> is how an embedder swaps in its own kernelspecs, provisioner, transports and registered kernels. Shared by <code>ganymede serve</code>, <code>ganymede mcp</code> and the apps</td>
+</tr>
+<tr>
+<td><code>routes.rs</code></td>
+<td>1,200</td>
+<td><code>router(state)</code>: every route, and the plain REST handlers</td>
+</tr>
+<tr>
+<td><code>lib.rs</code></td>
+<td>250</td>
+<td><code>AppState</code>: the managers, contents, token, origin rules, base URL, JupyterLab, static dir</td>
+</tr>
+<tr>
+<td><code>auth.rs</code>, <code>tailscale.rs</code></td>
+<td>1,700</td>
+<td>Who gets in: the token and its login cookie, <code>mcp_token</code>, tailnet identities, the <code>Host</code> check (below)</td>
+</tr>
+<tr>
+<td><code>ws.rs</code></td>
+<td>240</td>
+<td>The websockets: kernel channels, events, terminals, language servers</td>
+</tr>
+<tr>
+<td><code>lab.rs</code></td>
+<td>1,400</td>
+<td>Serving JupyterLab itself: its page, bundle, themes, prebuilt extensions and <code>/lab/api/*</code></td>
+</tr>
+<tr>
+<td><code>collab.rs</code>, <code>room_lock.rs</code>, <code>watch.rs</code></td>
+<td>3,100</td>
+<td>Rooms (chapter 6)</td>
+</tr>
+<tr>
+<td><code>execute.rs</code></td>
+<td>860</td>
+<td><code>POST /api/kernels/{id}/execute</code>: run cells into a room (chapter 6)</td>
+</tr>
+<tr>
+<td><code>room_ops.rs</code></td>
+<td>170</td>
+<td>Cell edits on a room, shared by MCP, the execute endpoint and the host API&#39;s <code>self.*</code> calls</td>
+</tr>
+<tr>
+<td><code>run.rs</code>, <code>host.rs</code></td>
+<td>1,500</td>
+<td>Runs and the host API (chapter 7)</td>
+</tr>
+<tr>
+<td><code>mcp.rs</code>, <code>mcp/</code></td>
+<td>4,800</td>
+<td>The MCP server (chapter 8)</td>
+</tr>
+<tr>
+<td><code>config.rs</code>, <code>folder.rs</code></td>
+<td>530</td>
+<td><code>ganymede.toml</code>, read from Ganymede&#39;s config dir (<code>~/.config/ganymede</code>, or <code>GANYMEDE_CONFIG_DIR</code>); per-folder <code>.ganymede.toml</code> (which kernel new notebooks in a folder start). <code>ganymede info</code> prints every directory Ganymede uses</td>
+</tr>
+<tr>
+<td><code>metrics.rs</code>, <code>server_info.rs</code></td>
+<td>650</td>
+<td><code>/api/metrics/v1</code>; the <code>jpserver-&lt;pid&gt;.json</code> file other tools use to find a running server</td>
+</tr>
+</tbody></table></div>
+<p>Two neighbor crates fill specific routes: <code>ganymede-terminals</code> (<code>/api/terminals</code>, the user&#39;s shell in a pseudo-terminal) and <code>ganymede-lsp</code> (<code>/lsp/*</code>, language servers started on demand and shared by every client). Neither exists on iOS or wasm.</p>
+<h3 id="ch5-who-gets-in">Who gets in</h3>
+<p>Every request passes <code>auth.rs</code>, which does what <code>jupyter_server</code> does and adds two ways in:</p>
+<ul>
+<li><strong>The token</strong>, in an <code>Authorization</code> header or <code>?token=</code>, traded for a signed login cookie in tornado&#39;s format, with <code>_xsrf</code> on cookie requests that change state. The apps start their server with a new random token each launch.</li>
+<li><strong><code>mcp_token</code></strong>, a second token that only <code>/mcp</code> accepts and that sets no cookie, so an agent given it can&#39;t reach the REST API. The Mac app gives agents this one.</li>
+<li><strong>A tailnet identity</strong> (<code>tailscale.rs</code>, off by default). With <code>[tailscale] allow</code> listing logins or tags, a request gets in without a token when <code>tailscale serve</code> names its sender on loopback, or when <code>tailscale whois</code> says which login or tagged device owns the peer&#39;s tailnet address. The name shows in <code>/api/me</code>, in the log, and in the room&#39;s credit for edits (chapter 6). <code>/mcp</code> doesn&#39;t accept it, and a browser request needs same-origin fetch metadata, so another site can&#39;t ride on it. Programs such as the gateway (chapter 3) mark their requests with a <code>Ganymede-Client</code> header.</li>
+</ul>
+<p>A <code>Host</code> check against DNS rebinding runs before any of these, and the server refuses to start with tailnet identity on and that check off.</p>
+<h3 id="ch5-how-a-request-is-served">How a request is served</h3>
+<p><code>serve.rs</code> builds the <code>KernelManager</code>, <code>SessionManager</code> and <code>FsContents</code> from config, or from what the embedder passed in <code>Startup</code>, wraps them in <code>AppState</code>, and hands that to <code>routes::router</code>. Routes nest under <code>base_url</code>. Requests pass the auth layer, then a handler calls into <code>ganymede-api</code> or <code>ganymede-contents</code>, and blocking filesystem work goes through a <code>blocking</code> helper onto tokio&#39;s blocking pool. Anything not matched falls through to JupyterLab or <code>--static-dir</code> (which is how ganymede-ui is served).</p>
+<p><code>GET /api</code> reports <code>jupyter_server</code> version 2.21.1, the version whose API this server matches. Clients use it to decide what they&#39;re talking to.</p>
+<h3 id="ch5-flow-running-a-cell"><span class="kicker">Flow</span>Running a cell</h3>
+<ol>
+<li>A client opens <code>/api/kernels/{id}/channels?session_id=…</code>. <code>ws.rs</code> picks the <code>v1.kernel.websocket.jupyter.org</code> framing if the client offers it, legacy JSON otherwise, and attaches a <code>ClientConnection</code> from <code>ganymede-api/bridge.rs</code>.</li>
+<li>The client sends an <code>execute_request</code> frame. <code>ganymede-protocol::ws</code> decodes it into <code>(Channel::Shell, Message)</code>.</li>
+<li>The bridge notes the client&#39;s session and calls <code>KernelSession::send</code>, which <code>ZmqTransport</code> writes to the kernel&#39;s shell socket, signed with the connection key.</li>
+<li>The kernel publishes <code>status: busy</code>, <code>execute_input</code>, outputs, then <code>status: idle</code> on iopub. The session fans these out; the bridge puts each in every client&#39;s queue, so a second tab sees the same outputs.</li>
+<li>The <code>execute_reply</code> comes back on shell, before or after idle. The bridge sends it only to the client whose session is in its parent header.</li>
+<li>If the cell calls <code>input()</code>, an <code>input_request</code> on stdin goes to the requesting client, which answers with <code>input_reply</code>.</li>
+</ol>
+<figure class="diagram"><div class="diagram-scroll"><svg viewBox="0 0 760 316" role="img" aria-label="A cell request crosses five layers; outputs reach every client, the reply only the asker" font-size="12"><defs><marker id="cell-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--d-edge);"></path></marker><marker id="cell-arrow-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--d-accent);"></path></marker></defs><text x="24" y="32" font-size="15" font-weight="600" style="fill:var(--d-ink);">Outputs reach every client; the reply reaches only the one that asked</text><g><rect x="26" y="56" width="108" height="52" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="80" y="78" text-anchor="middle" font-weight="600" style="fill:var(--d-ink);">Client A</text><text x="80" y="96" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">JupyterLab, UI</text></g><g><rect x="146" y="56" width="108" height="52" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="200" y="78" text-anchor="middle" font-weight="600" style="fill:var(--d-ink);">ws.rs</text><text x="200" y="96" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">v1 or legacy frames</text></g><g><rect x="266" y="56" width="108" height="52" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="320" y="78" text-anchor="middle" font-weight="600" style="fill:var(--d-ink);">bridge.rs</text><text x="320" y="96" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">per-client queues</text></g><g><rect x="386" y="56" width="108" height="52" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="440" y="78" text-anchor="middle" font-weight="600" style="fill:var(--d-ink);">KernelSession</text><text x="440" y="96" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">reply + idle</text></g><g><rect x="506" y="56" width="108" height="52" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="560" y="78" text-anchor="middle" font-weight="600" style="fill:var(--d-ink);">zmq.rs</text><text x="560" y="96" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">signed frames</text></g><g><rect x="626" y="56" width="108" height="52" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="680" y="78" text-anchor="middle" font-weight="600" style="fill:var(--d-ink);">Kernel</text><text x="680" y="96" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">any language</text></g><g><path d="M80 156H676" fill="none" stroke-width="1.25" marker-end="url(#cell-arrow)" style="stroke:var(--d-edge);"></path><circle cx="80" cy="156" r="3.5" style="fill:var(--d-edge);"></circle><circle cx="200" cy="156" r="3.5" style="fill:var(--d-edge);"></circle><circle cx="320" cy="156" r="3.5" style="fill:var(--d-edge);"></circle><circle cx="440" cy="156" r="3.5" style="fill:var(--d-edge);"></circle><circle cx="560" cy="156" r="3.5" style="fill:var(--d-edge);"></circle><circle cx="680" cy="156" r="3.5" style="fill:var(--d-edge);"></circle><text x="80" y="144" font-size="11.5" style="fill:var(--d-ink);">1. execute_request on shell; the bridge records A's session</text></g><g><path d="M680 216H84" fill="none" stroke-width="2" marker-end="url(#cell-arrow-acc)" style="stroke:var(--d-accent);"></path><circle cx="80" cy="216" r="3.5" style="fill:var(--d-accent);"></circle><circle cx="200" cy="216" r="3.5" style="fill:var(--d-accent);"></circle><circle cx="320" cy="216" r="3.5" style="fill:var(--d-accent);"></circle><circle cx="440" cy="216" r="3.5" style="fill:var(--d-accent);"></circle><circle cx="560" cy="216" r="3.5" style="fill:var(--d-accent);"></circle><circle cx="680" cy="216" r="3.5" style="fill:var(--d-accent);"></circle><text x="80" y="204" font-size="11.5" style="fill:var(--d-ink);">2. busy, execute_input, outputs, idle on iopub: copied to every client's queue</text></g><g><path d="M680 276H84" fill="none" stroke-width="1.25" marker-end="url(#cell-arrow)" style="stroke:var(--d-edge);"></path><circle cx="80" cy="276" r="3.5" style="fill:var(--d-edge);"></circle><circle cx="200" cy="276" r="3.5" style="fill:var(--d-edge);"></circle><circle cx="320" cy="276" r="3.5" style="fill:var(--d-edge);"></circle><circle cx="440" cy="276" r="3.5" style="fill:var(--d-edge);"></circle><circle cx="560" cy="276" r="3.5" style="fill:var(--d-edge);"></circle><circle cx="680" cy="276" r="3.5" style="fill:var(--d-edge);"></circle><text x="80" y="264" font-size="11.5" style="fill:var(--d-ink);">3. execute_reply on shell, before or after idle: only to A</text></g></svg></div><figcaption>Running a cell, by file</figcaption></figure>
+
+<p>Each dot is a layer the message passes through. <code>KernelSession</code> marks the request done only once both the reply (3) and its idle status (2) have arrived.</p>
+<p>The <a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede/blob/main/docs/architecture.md#running-a-cell">architecture page</a> has the same flow as a message sequence.</p>
+<aside class="dive" aria-labelledby="ch5-dive-in"><h3 id="ch5-dive-in">Dive in</h3><ul>
+<li><code>routes.rs</code> from <code>router()</code> down is the table of contents of the whole server.</li>
+<li><code>serve.rs</code> <code>Startup</code> and <code>run</code> show how one server is configured three ways (CLI, MCP, app).</li>
+<li><code>auth.rs</code> is worth a read before changing anything that faces a network; <a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede/blob/main/docs/security.md">docs/security.md</a> is its user-facing side.</li>
+</ul></aside>
+
+  <nav class="pager" aria-label="Chapter navigation"><a class="pg pg-prev" href="#ch4" rel="prev"><span class="pg-k">← Previous</span><span class="pg-t">4. API and contents: the server's logic without HTTP</span></a><a class="pg pg-next" href="#ch6" rel="next"><span class="pg-k">Next →</span><span class="pg-t">6. Rooms: one live notebook for everyone</span></a></nav>
+</section>
+
+<section class="chapter" id="ch6" aria-labelledby="ch6-h">
+  <header class="chapter-head">
+    <p class="chapter-num">Chapter 6<span class="of"> of 14</span></p>
+    <h2 id="ch6-h">Rooms: one live notebook for everyone</h2>
+  </header>
+  <p>A room is a notebook held live in the server as a Yjs document (the Rust port, <code>yrs</code>), which every client edits at once: JupyterLab with its collaboration extension, ganymede-ui, an agent through MCP, and the server&#39;s own cell runner. The room, not any client, owns the file: it loads it, autosaves it and merges in changes other programs make. Rooms are what make priority 3, a person and an agent in one live notebook, possible, and the apps have opened notebooks through rooms since ganymede-ui 0.10.0.</p>
+<p>The protocol is <code>jupyter-collaboration</code>&#39;s, so JupyterLab&#39;s own collaboration extension works against Ganymede unchanged.</p>
+<h3 id="ch6-two-halves">Two halves</h3>
+<p><strong><code>ganymede-documents</code></strong> (about 2,900 lines, no I/O) is the pure part:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>What it holds</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>room.rs</code></td>
+<td><code>Room</code>: one document and its connections as a state machine. The host feeds it frames and connection events; it returns <code>Effects</code> (frames to send, saves to make). Speaks y-websocket: sync, awareness, and <code>jupyter-collaboration</code>&#39;s raw <code>save</code> message. Also keeps, in memory, who last changed each cell (<code>Author</code>), for the agent tools (chapter 8)</td>
+</tr>
+<tr>
+<td><code>schema.rs</code></td>
+<td>Maps a <code>ganymede_nbformat::Notebook</code> to and from the Y document shape <code>@jupyter/ydoc</code> expects</td>
+</tr>
+<tr>
+<td><code>merge.rs</code></td>
+<td>Three-way merge (base, room, disk), cell by cell by id, part by part (source, outputs, each metadata key). Where both changed the same part, the disk wins that part</td>
+</tr>
+<tr>
+<td><code>depth.rs</code></td>
+<td>Refuses an update nested deep enough to overflow the stack when <code>yrs</code> applies it. A defense against a hostile client</td>
+</tr>
+</tbody></table></div>
+<p><strong>The server side</strong> does the I/O:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>What it holds</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>collab.rs</code> (2,650 lines)</td>
+<td><code>/api/collaboration/session/{path}</code> (gives the file id) and <code>/api/collaboration/room/{format}:{type}:{fileId}</code> (the websocket). Each room is one tokio task, <code>run_room</code>, that owns the <code>Room</code> and the file</td>
+</tr>
+<tr>
+<td><code>watch.rs</code></td>
+<td>Watches the file&#39;s parent directory, not the file, since saves by rename leave a file watch on the old inode</td>
+</tr>
+<tr>
+<td><code>room_lock.rs</code></td>
+<td>One server per machine owns a notebook&#39;s room, by an OS file lock in the runtime directory. A second server&#39;s room is read-only until the owner closes</td>
+</tr>
+<tr>
+<td><code>execute.rs</code></td>
+<td><code>POST /api/kernels/{id}/execute</code>: run cells by id and write outputs into the room</td>
+</tr>
+</tbody></table></div>
+<h3 id="ch6-what-a-room-39-s-task-does">What a room&#39;s task does</h3>
+<ul>
+<li><strong>Load</strong> the notebook through <code>Contents</code>, and record the file&#39;s hash.</li>
+<li><strong>Apply</strong> client updates (after <code>depth.rs</code>) and broadcast them to the other connections.</li>
+<li><strong>Autosave</strong> one second after the last edit, with <code>If-Match</code> on the hash it last read or wrote, so it never overwrites a file that changed since.</li>
+<li><strong>Watch</strong> for outside changes: file events debounced by half a second, plus a poll every ten seconds (every second where there are no file events). A change whose hash is the room&#39;s own last save is ignored. Any other change is merged: a clean room just reloads; a room with unsaved edits keeps them, takes the disk&#39;s changes to other cells, and saves the merge.</li>
+<li><strong>Close</strong> a minute after its last client leaves, saving first.</li>
+<li><strong>Trust</strong>: the room signs the notebook when it saves, if every code cell&#39;s outputs came from a run on this server. Outputs read from an unsigned file stay untrusted until the cell runs again or someone trusts the notebook.</li>
+</ul>
+<figure class="diagram"><div class="diagram-scroll"><svg viewBox="0 0 760 324" role="img" aria-label="The room owns the file; every writer edits the room, never the file" font-size="13"><defs><marker id="room-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--d-edge);"></path></marker></defs><text x="24" y="32" font-size="15" font-weight="600" style="fill:var(--d-ink);">The room owns the file; every writer edits the room, never the file</text><g><rect x="24" y="64" width="180" height="48" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="36" y="84" font-weight="600" style="fill:var(--d-ink);">JupyterLab</text><text x="36" y="102" font-size="11" style="fill:var(--d-quiet);">collaboration extension</text></g><g><rect x="24" y="124" width="180" height="48" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="36" y="144" font-weight="600" style="fill:var(--d-ink);">ganymede-ui, apps</text><text x="36" y="162" font-size="11" style="fill:var(--d-quiet);">src/lib/room.ts</text></g><g><rect x="24" y="184" width="180" height="48" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="36" y="204" font-weight="600" style="fill:var(--d-ink);">Agent (MCP tools)</text><text x="36" y="222" font-size="11" style="fill:var(--d-quiet);">mcp.rs edits the room</text></g><g><rect x="24" y="244" width="180" height="48" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="36" y="264" font-weight="600" style="fill:var(--d-ink);">Execute worker</text><text x="36" y="282" font-size="11" style="fill:var(--d-quiet);">execute.rs writes outputs</text></g><g><rect x="268" y="64" width="224" height="228" rx="8" fill-opacity="0.12" stroke-width="2" style="fill:var(--d-accent);stroke:var(--d-accent);"></rect><text x="380" y="140" text-anchor="middle" font-weight="600" style="fill:var(--d-ink);">Room task (run_room)</text><text x="380" y="164" text-anchor="middle" font-size="11.5" style="fill:var(--d-ink);">yrs document + connections</text><text x="380" y="182" text-anchor="middle" font-size="11.5" style="fill:var(--d-ink);">autosave 1 s after last edit</text><text x="380" y="200" text-anchor="middle" font-size="11.5" style="fill:var(--d-ink);">merges outside changes</text><text x="380" y="276" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">Room, schema, merge: no I/O</text></g><g><rect x="556" y="64" width="180" height="48" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="568" y="84" font-weight="600" style="fill:var(--d-ink);">Notebook file</text><text x="568" y="102" font-size="11" style="fill:var(--d-quiet);">atomic save, If-Match</text></g><g><rect x="556" y="154" width="180" height="48" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="568" y="174" font-weight="600" style="fill:var(--d-ink);">Watcher + poll</text><text x="568" y="192" font-size="11" style="fill:var(--d-quiet);">watch.rs, other writers</text></g><g><rect x="556" y="244" width="180" height="48" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="568" y="264" font-weight="600" style="fill:var(--d-ink);">Room lock</text><text x="568" y="282" font-size="11" style="fill:var(--d-quiet);">room_lock.rs, one owner</text></g><g fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"><path d="M204 88H268" marker-start="url(#room-arrow)" marker-end="url(#room-arrow)"></path><path d="M204 148H268" marker-start="url(#room-arrow)" marker-end="url(#room-arrow)"></path><path d="M204 208H268" marker-start="url(#room-arrow)" marker-end="url(#room-arrow)"></path><path d="M204 268H268" marker-end="url(#room-arrow)"></path><path d="M492 88H556" marker-end="url(#room-arrow)"></path><path d="M556 178H492" marker-end="url(#room-arrow)"></path><path d="M492 268H556"></path></g><text x="524" y="80" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">saves</text><text x="524" y="170" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">change</text><text x="524" y="260" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">holds</text></svg></div><figcaption>A room and what touches it</figcaption></figure>
+
+<p>JupyterLab and ganymede-ui sync both ways over y-websocket. The MCP tools and the execute worker run inside the server and edit the room directly. Only the room&#39;s task touches the file, which is why two writers can&#39;t overwrite each other.</p>
+<h3 id="ch6-flow-an-edit-in-a-room"><span class="kicker">Flow</span>An edit in a room</h3>
+<ol>
+<li>ganymede-ui&#39;s notebook pane (<code>src/lib/room.ts</code>) sends <code>PUT /api/collaboration/session/{path}</code> and gets the file id.</li>
+<li>It opens the room websocket for <code>json:notebook:&lt;fileId&gt;</code> with <code>y-websocket</code>, and syncs.</li>
+<li>Typing in a cell produces a Yjs update. <code>collab.rs</code> hands the frame to <code>Room</code>, which applies it and returns effects: the update for every other connection.</li>
+<li>JupyterLab, or an agent following the room, gets the update and shows the edit.</li>
+<li>A second later the room task writes the notebook through <code>ganymede-contents</code>, atomically, with <code>If-Match</code>.</li>
+</ol>
+<h3 id="ch6-flow-running-cells-into-a-room"><span class="kicker">Flow</span>Running cells into a room</h3>
+<p>An agent or a Shortcut has no websocket, so it can&#39;t follow the room to see outputs. <code>execute.rs</code> solves that: the client posts cell ids and each cell&#39;s source hash (MurmurHash2, seed 0). The room checks every hash against the current source (409 <code>source_mismatch</code> if the cell changed since the client read it), clears the cells, marks them running and queues the batch, all in one step of its task. One worker per room runs the queue on the kernel through <code>ganymede-exec</code> and writes outputs into the room as they arrive, so they reach every client and the file even with no client connected. An optional <code>wait</code> returns the finished cells. A client can also leave out the hash and run whatever the room holds, name cells by tag, or send <code>&quot;cells&quot;: &quot;all&quot;</code>. The room resolves these in the same step as the checks, so a notebook with no cell ids on disk (nbformat 4.4) runs by the ids the room gave it, and an unknown id or tag refuses the whole batch.</p>
+<p>The hash check is the pattern to recognize across the code: a writer names the version it read, and loses if someone else changed it. The host API&#39;s <code>self.edit</code> and self.delete use it too.</p>
+<aside class="dive" aria-labelledby="ch6-dive-in"><h3 id="ch6-dive-in">Dive in</h3><ul>
+<li><code>ganymede-documents/src/lib.rs</code>, then <code>room.rs</code>&#39;s header for the wire protocol.</li>
+<li><code>collab.rs</code>&#39;s header (40 lines) is the clearest statement of a room&#39;s behavior; <code>run_room</code> is the loop.</li>
+<li><a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede/blob/main/docs/rooms.md">docs/rooms.md</a> has diagrams for merge, execute and two servers on one notebook.</li>
+</ul></aside>
+
+  <nav class="pager" aria-label="Chapter navigation"><a class="pg pg-prev" href="#ch5" rel="prev"><span class="pg-k">← Previous</span><span class="pg-t">5. The server</span></a><a class="pg pg-next" href="#ch7" rel="next"><span class="pg-k">Next →</span><span class="pg-t">7. The notebook as a program</span></a></nav>
+</section>
+
+<section class="chapter" id="ch7" aria-labelledby="ch7-h">
+  <header class="chapter-head">
+    <p class="chapter-num">Chapter 7<span class="of"> of 14</span></p>
+    <h2 id="ch7-h">The notebook as a program</h2>
+  </header>
+  <p>Priority 1 is a notebook that takes parameters, returns named results, and can be run from anywhere: the CLI, HTTP, an app link or Shortcut, or another notebook. In code this is three pieces: a headless executor (<code>ganymede-exec</code>), one run function shared by every entry point (<code>run.rs</code>), and the host API that lets a kernel call back into the server under grants (<code>ganymede-host</code> plus <code>host.rs</code>). User docs: <a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede/blob/main/docs/programs.md">programs.md</a> and <a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede/blob/main/docs/host-api.md">host-api.md</a>.</p>
+<h3 id="ch7-ganymede-exec-one-1-700-line-file">ganymede-exec (one 1,700-line file)</h3>
+<p>Ganymede&#39;s <code>nbclient</code>. It runs a notebook&#39;s code cells on a <code>KernelSession</code> and turns iopub messages into nbformat outputs, reproducing <code>nbclient</code>&#39;s defaults so a notebook executed here and by <code>jupyter execute</code> differ only in timestamps: <code>display_id</code> updates rewrite every matching output, <code>clear_output(wait)</code> clears on the next output, widget state lands in <code>metadata.widgets</code>, the <code>raises-exception</code> and <code>skip-execution</code> tags are honored. <code>NotebookRun</code> is used three ways: by <code>ganymede execute</code> (through <code>ganymede-engine</code>), by <code>run.rs</code>, and by the room&#39;s execute worker (chapter 6), which writes outputs into the room as they arrive.</p>
+<h3 id="ch7-the-run-contract">The run contract</h3>
+<ul>
+<li><strong>Parameters in</strong>: a JSON object in the <code>GANYMEDE_PARAMS</code> environment variable, recorded in <code>metadata.ganymede.params</code> (<code>ganymede-nbformat/params.rs</code>). The kernel exposes it; cdp-kernel as <code>jupyter.params</code>.</li>
+<li><strong>Results out</strong>: outputs of type <code>application/vnd.ganymede.result+json</code> holding <code>{name, value}</code> (<code>results.rs</code>). cdp-kernel writes them with <code>jupyter.result(name, value)</code>.</li>
+<li><strong>Fresh kernel</strong> from the notebook&#39;s own kernelspec, top to bottom, then shut down.</li>
+<li><strong>Read from the room</strong> when one is open, so unsaved edits run. Neither the notebook nor its room is written. <code>save: &quot;copy&quot;</code> keeps the executed notebook under <code>runs/&lt;path&gt;/&lt;UTC time&gt;.ipynb</code>.</li>
+</ul>
+<p><code>POST /api/notebooks/run</code> and the host API&#39;s <code>notebooks.run</code> share <code>run_notebook</code> in <code>run.rs</code>; app links and Shortcuts call that endpoint on the app&#39;s own server. <code>ganymede execute</code> takes the same contract through <code>ganymede-engine</code>, which also wraps <code>ganymede-exec</code>.</p>
+<figure class="diagram"><div class="diagram-scroll"><svg viewBox="0 0 760 352" role="img" aria-label="Every way to run a notebook ends in ganymede-exec on a fresh kernel" font-size="13"><defs><marker id="run-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--d-edge);"></path></marker></defs><text x="24" y="32" font-size="15" font-weight="600" style="fill:var(--d-ink);">Every way to run a notebook ends in ganymede-exec on a fresh kernel</text><g><rect x="24" y="60" width="200" height="52" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="36" y="82" font-weight="600" style="fill:var(--d-ink);">App link, Shortcut</text><text x="36" y="100" font-size="11" style="fill:var(--d-quiet);">ganymede://run?path=&amp;p.x=</text></g><g><rect x="24" y="128" width="200" height="52" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="36" y="150" font-weight="600" style="fill:var(--d-ink);">HTTP client</text><text x="36" y="168" font-size="11" style="fill:var(--d-quiet);">any API client with the token</text></g><g><rect x="24" y="196" width="200" height="52" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="36" y="218" font-weight="600" style="fill:var(--d-ink);">Another notebook</text><text x="36" y="236" font-size="11" style="fill:var(--d-quiet);">host.notebooks.run, under grants</text></g><g><rect x="24" y="276" width="200" height="52" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="36" y="298" font-weight="600" style="fill:var(--d-ink);">ganymede execute</text><text x="36" y="316" font-size="11" style="fill:var(--d-quiet);">-p key=value --results</text></g><g><rect x="276" y="84" width="200" height="52" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="288" y="106" font-weight="600" style="fill:var(--d-ink);">POST /api/notebooks/run</text><text x="288" y="124" font-size="11" style="fill:var(--d-quiet);">run.rs</text></g><g><rect x="276" y="196" width="200" height="52" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="288" y="218" font-weight="600" style="fill:var(--d-ink);">host.rs responder</text><text x="288" y="236" font-size="11" style="fill:var(--d-quiet);">grant: intersection up the chain</text></g><g><rect x="276" y="152" width="200" height="32" rx="8" fill-opacity="0.12" stroke-width="2" style="fill:var(--d-accent);stroke:var(--d-accent);"></rect><text x="376" y="173" text-anchor="middle" font-weight="600" style="fill:var(--d-ink);">run_notebook()</text></g><g><rect x="276" y="276" width="200" height="52" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="288" y="298" font-weight="600" style="fill:var(--d-ink);">ganymede-engine</text><text x="288" y="316" font-size="11" style="fill:var(--d-quiet);">Kernel::run_notebook_with</text></g><g><rect x="528" y="112" width="208" height="112" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="540" y="134" font-weight="600" style="fill:var(--d-ink);">ganymede-exec</text><text x="540" y="156" font-size="11.5" style="fill:var(--d-ink);">fresh kernel, own kernelspec</text><text x="540" y="174" font-size="11.5" style="fill:var(--d-ink);">GANYMEDE_PARAMS in</text><text x="540" y="192" font-size="11.5" style="fill:var(--d-ink);">named results out</text><text x="540" y="210" font-size="11" style="fill:var(--d-quiet);">save: copy to runs/</text></g><g fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"><path d="M224 86H250V110H276" marker-end="url(#run-arrow)"></path><path d="M224 154H250V110"></path><path d="M224 222H276" marker-end="url(#run-arrow)"></path><path d="M224 302H276" marker-end="url(#run-arrow)"></path><path d="M376 136V152" marker-end="url(#run-arrow)"></path><path d="M376 196V184" marker-end="url(#run-arrow)"></path><path d="M476 168H528" marker-end="url(#run-arrow)"></path><path d="M476 302H632V224" marker-end="url(#run-arrow)"></path></g></svg></div><figcaption>The entry points into a run</figcaption></figure>
+
+<p>Four doors, two code paths, one executor. Only the host API door checks the caller against a grant, because there the caller is a kernel; at the other doors it is a person or a token holder (and an app link asks the person the first time). Whatever the door, the run&#39;s own kernel gets the grant of the notebook it runs.</p>
+<h3 id="ch7-the-host-api">The host API</h3>
+<p>The problem it solves: code in a cell wants to read or run other notebooks, but giving a kernel the server&#39;s token would give it everything. Instead the server opens a comm (<code>ganymede.host.v1</code>) to each kernel and answers calls on it, checking what that kernel&#39;s notebook was granted. The kernel never holds a credential.</p>
+<p><strong><code>ganymede-host</code></strong> (about 440 lines) is the language-free transport. <code>attach</code> joins a <code>KernelSession</code> once the kernel answers, asks for a kernel subshell (protocol 5.5) so a cell that is awaiting a call still gets the reply, and opens the comm. Calls arrive as <code>comm_msg</code> on iopub (<code>{id, method, params}</code>); replies go back on the subshell. <code>HostLink::is_host_message</code> lets the bridge hide this traffic from other clients. The crate knows no method but <code>hello</code>; a <code>Responder</code> answers the rest. A kernel that doesn&#39;t support subshells gets no comm, because an awaited call could never be answered.</p>
+<p><strong><code>host.rs</code></strong> in the server is the <code>Responder</code>: <code>notebooks.list</code>, <code>read</code>, <code>search</code>, <code>results</code>, <code>run</code>, and <code>self.add</code>, <code>self.edit</code>, <code>self.delete</code> on the kernel&#39;s own notebook through its room. These share code with the MCP tools: the tools render answers as text for a model, the host API returns JSON.</p>
+<h3 id="ch7-grants">Grants</h3>
+<p>A grant says what a notebook&#39;s kernel may ask for: <code>read</code> paths, <code>run</code> paths, and <code>edit_self</code>. Defaults come from <code>[host]</code> in the config (read the whole root, edit itself, run nothing). Per-notebook grants are stored by file id in the file id database, so they follow a rename; they&#39;re set with <code>ganymede grant</code> or the apps&#39; Notebook Access sheet, never by the notebook itself. A file replaced outside Ganymede (git, Finder, sync) keeps its path&#39;s file id, so each grant also carries a stamp of its file (size, mtime and, on Unix, inode): a checked read drops the grant when the file no longer matches. The server&#39;s own saves restamp it through <code>stamping.rs</code>, which wraps <code>Contents</code>, and renaming or deleting a folder moves or drops the grants inside it. A notebook can list what it wants in <code>metadata.ganymede.host.wants</code>, which a client shows but which grants nothing.</p>
+<p>The security rule worth remembering: <strong>grants only narrow</strong>. A notebook run from another gets the intersection of its own grant and every caller&#39;s up the chain. Runs nest at most 3 deep and each kernel has at most 2 runs in flight. Paths are matched by whole segments after symlinks are resolved.</p>
+<h3 id="ch7-flow-a-notebook-running-another-notebook"><span class="kicker">Flow</span>A notebook running another notebook</h3>
+<ol>
+<li>A cell calls <code>await jupyter.host()</code> and then <code>host.notebooks.run({path, params})</code>. cdp-kernel (<code>runtime/host.mjs</code>) sends a <code>comm_msg</code> with <code>{id, method: &quot;notebooks.run&quot;, params}</code>.</li>
+<li>The kernel manager&#39;s fan-out spots it as host traffic (<code>ganymede-host</code>) and hands it to the responder instead of the clients.</li>
+<li><code>host.rs</code> finds the kernel&#39;s notebook (<code>SessionManager::notebook_of_kernel</code>, then its file id), loads that notebook&#39;s grant, and checks <code>run</code> against the target path.</li>
+<li>It calls <code>run_notebook</code> (<code>run.rs</code>), which starts a fresh kernel with <code>GANYMEDE_PARAMS</code> set and a launch variable naming the run, so the inner kernel&#39;s own grant is the intersection.</li>
+<li><code>ganymede-exec</code> runs the target top to bottom; <code>named_results</code> collects its results.</li>
+<li>The reply <code>{path, status, results}</code> goes back on the caller&#39;s subshell, and the awaiting cell resumes.</li>
+</ol>
+<aside class="dive" aria-labelledby="ch7-dive-in"><h3 id="ch7-dive-in">Dive in</h3><ul>
+<li><code>ganymede-host/src/lib.rs</code> (header and <code>attach</code>), then <code>ganymede-server/src/host.rs</code> and <code>run.rs</code>.</li>
+<li><code>ganymede-cli/src/grant.rs</code> for how grants are stored and shown.</li>
+<li>The design note <code>docs/host-api.md</code> has the decisions and what was left out, including why a comm and not a token.</li>
+</ul></aside>
+
+  <nav class="pager" aria-label="Chapter navigation"><a class="pg pg-prev" href="#ch6" rel="prev"><span class="pg-k">← Previous</span><span class="pg-t">6. Rooms: one live notebook for everyone</span></a><a class="pg pg-next" href="#ch8" rel="next"><span class="pg-k">Next →</span><span class="pg-t">8. Agent-native: an agent in the same live notebook</span></a></nav>
+</section>
+
+<section class="chapter" id="ch8" aria-labelledby="ch8-h">
+  <header class="chapter-head">
+    <p class="chapter-num">Chapter 8<span class="of"> of 14</span></p>
+    <h2 id="ch8-h">Agent-native: an agent in the same live notebook</h2>
+  </header>
+  <p>Priority 3 is a person and an agent working in one live notebook. The server makes this possible by exposing notebooks to agents over the Model Context Protocol (MCP), with tools that edit the same room (chapter 6) a person has open in the app or JupyterLab. Nothing is a separate copy: the agent&#39;s cells appear live, the person&#39;s edits are visible to the agent, and the room saves both.</p>
+<h3 id="ch8-the-pieces">The pieces</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Piece</th>
+<th>Where</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>MCP tools</td>
+<td><code>ganymede-server/src/mcp.rs</code> (3,100 lines)</td>
+<td>16 tools, served at <code>/mcp</code> (streamable HTTP) when the server runs with <code>--mcp</code>. Takes the server token, or <code>mcp_token</code>, a token that opens <code>/mcp</code> and no other route</td>
+</tr>
+<tr>
+<td>Read marks</td>
+<td><code>mcp/marks.rs</code></td>
+<td>Per connection, per notebook: the cells as the agent last saw them. <code>notebook_read(since)</code> lists what others changed or ran since, and who</td>
+</tr>
+<tr>
+<td>Room edits</td>
+<td><code>room_ops.rs</code></td>
+<td>Add, edit and delete cells in a room, with provenance and history. Shared by the MCP tools, the execute endpoint and the host API&#39;s <code>self.*</code> calls</td>
+</tr>
+<tr>
+<td>Search, snapshot</td>
+<td><code>mcp/search.rs</code>, <code>mcp/snapshot.rs</code></td>
+<td><code>notebooks_search</code> across notebooks; <code>cell_snapshot</code>, a cell as Markdown with images as files and tables as Markdown tables</td>
+</tr>
+<tr>
+<td>Tool reference</td>
+<td><code>mcp/reference.rs</code></td>
+<td>Generates <a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede/blob/main/docs/mcp-tools.md">docs/mcp-tools.md</a> from the tools&#39; own schemas; a test fails if the page drifts</td>
+</tr>
+<tr>
+<td>stdio bridge</td>
+<td><code>ganymede-cli/src/mcp.rs</code></td>
+<td><code>ganymede mcp</code>: forwards JSON-RPC to a running server&#39;s <code>/mcp</code>, or starts one in-process. <code>mcp call</code> runs one tool for scripts and hooks; <code>mcp watch</code> prints a line for each new request a person writes to the agent</td>
+</tr>
+<tr>
+<td>Journal plugin</td>
+<td><code>plugins/ganymede-journal/</code></td>
+<td>A Claude Code plugin: the <code>journal</code> skill, hooks, a monitor that runs <code>mcp watch</code>, and a reviewer agent</td>
+</tr>
+</tbody></table></div>
+<p>The tools: <code>notebook_open</code>, <code>notebook_read</code>, <code>notebook_requests</code>, <code>notebooks_list</code>, <code>notebooks_search</code>, <code>notebook_run_all</code>, <code>notebook_publish</code>, <code>cell_add</code>, <code>cell_edit</code>, <code>cell_move</code>, <code>cell_delete</code>, <code>cell_run</code>, <code>cell_clear_outputs</code>, <code>cell_snapshot</code>, <code>kernel_control</code>, <code>kernelspecs_list</code>.</p>
+<h3 id="ch8-design-choices-visible-in-the-code">Design choices visible in the code</h3>
+<ul>
+<li><strong>Output for a model, not a browser.</strong> Answers use nb-cli&#39;s format: an <code>@@cell</code> line with index, id and type, the source, then an <code>@@output</code> line per output as plain text. HTML is stripped, ANSI colors removed, tracebacks trimmed, and output over 4,000 characters goes to a file named by its sha256, whose path is returned instead.</li>
+<li><strong>Provenance.</strong> Cells an agent writes carry <code>metadata.ganymede.agent = {by, mode, at}</code>, where <code>mode</code> is <code>executed</code> (ran in the kernel), <code>recorded</code> (a step that ran elsewhere, such as a shell command) or <code>note</code>. <code>cell_edit</code> keeps the replaced source in a <code>history</code>.</li>
+<li><strong>Scratch runs.</strong> <code>cell_run</code> with <code>record: false</code> runs in the kernel, sharing its state, and leaves nothing in the notebook.</li>
+<li><strong>Cells by id</strong>, never by index, so concurrent edits don&#39;t shift the target.</li>
+<li><strong>One set of room edits.</strong> The tools, the execute endpoint and the host API&#39;s <code>self.*</code> calls (chapter 7) all edit cells through <code>room_ops.rs</code>, so they can&#39;t drift. The tools render text; the host API returns JSON.</li>
+</ul>
+<h3 id="ch8-how-the-agent-hears-about-a-person-39-s-edits">How the agent hears about a person&#39;s edits</h3>
+<p>The room records who last changed each cell (<code>Author</code> in <code>room.rs</code>, kept in memory, not in the file): the name a client sent in its awareness state (the Mac app sends the person&#39;s full name, JupyterLab its user name), a tailnet login (chapter 5), or a name the server&#39;s caller gives for its own edits. Four mechanisms build on that:</p>
+<ul>
+<li><strong>A pointer on every reply.</strong> When others changed or ran cells since the agent&#39;s read mark, the tool&#39;s reply ends with an <code>@@changed</code> line naming who. The agent calls <code>notebook_read(since)</code> for the detail.</li>
+<li><strong>The edit check.</strong> <code>cell_edit</code>, <code>cell_delete</code> and <code>cell_move</code> refuse a cell someone else changed since the agent last read it, so an agent can&#39;t overwrite text it never saw.</li>
+<li><strong>Request cells.</strong> A Markdown cell a person writes starting <code>@agent</code> (or <code>@claude</code> for Claude Code) is a request. <code>notebook_requests</code> lists the open ones; <code>cell_add</code> with <code>answers</code> puts the answer below the request and marks it done, in one room edit.</li>
+<li><strong>Waking an idle agent.</strong> <code>ganymede mcp watch</code> prints a line for each new request, and the journal plugin runs it as a Claude Code monitor, so a request reaches the agent between turns. A spike, <code>mcp watch --edits</code> (off unless <code>GANYMEDE_WATCH_EDITS</code> is set), wakes it on any edit once edits settle.</li>
+</ul>
+<h3 id="ch8-the-journal-plugin">The journal plugin</h3>
+<p>The plugin makes Claude Code keep its analysis as a notebook. Its hooks (<code>hooks/journal.mjs</code>) run at four points: <code>SessionStart</code> reports the server; <code>UserPromptSubmit</code> asks for cells others changed since the agent&#39;s read mark and hands them over with the person&#39;s message; <code>PostToolUse</code> follows the agent&#39;s notebook tools, passes on the changes an <code>@@changed</code> line points to (so the agent sees a person&#39;s edit mid-turn), and records marked Bash steps as <code>recorded</code> cells; <code>Stop</code> checks the journal re-runs cleanly before the agent stops. Its monitor (<code>monitors/monitors.json</code>) runs <code>ganymede mcp watch</code> once the <code>journal</code> skill is in use.</p>
+<h3 id="ch8-flow-an-agent-editing-the-notebook-a-person-has-open"><span class="kicker">Flow</span>An agent editing the notebook a person has open</h3>
+<ol>
+<li>The person has <code>journal/2026-11-13-x.ipynb</code> open in the Mac app, so its room exists and the app is synced to it.</li>
+<li>Claude Code calls <code>cell_run</code> through <code>ganymede mcp</code>, which forwards it to the app&#39;s server at <code>/mcp</code>. With MCP turned on in the app&#39;s settings (<code>AppMCP.swift</code>), the app writes the server info file that <code>ganymede mcp</code> looks for, holding an <code>mcp_token</code> that opens only <code>/mcp</code>. The setting can also limit agents to reading, or to editing without running.</li>
+<li><code>mcp.rs</code> adds a code cell to the room with agent metadata, then runs it through the room&#39;s execute queue (chapter 6). The new cell and its outputs reach the person&#39;s view as they arrive.</li>
+<li>The person edits a cell. The room broadcasts the update and credits it to the person, by the name the app sent in its awareness.</li>
+<li>The agent&#39;s next tool reply ends with an <code>@@changed</code> line naming the person. The plugin&#39;s <code>PostToolUse</code> hook calls <code>notebook_read(since=&lt;mark&gt;)</code>, <code>marks.rs</code> diffs the notebook against the mark, and the agent gets the change mid-turn. Had it tried <code>cell_edit</code> on that cell first, the edit would have been refused.</li>
+<li>When the agent is idle, the person writes an <code>@claude</code> cell instead. <code>mcp watch</code> reports it through the plugin&#39;s monitor, and the agent answers with <code>cell_add(answers=&lt;id&gt;)</code>.</li>
+</ol>
+<figure class="diagram"><div class="diagram-scroll"><svg viewBox="0 0 760 300" role="img" aria-label="Person and agent meet in the room; the room tells the agent who changed what" font-size="13"><defs><marker id="ag-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--d-edge);"></path></marker></defs><text x="24" y="32" font-size="15" font-weight="600" style="fill:var(--d-ink);">Person and agent meet in the room; the room tells the agent who changed what</text><g><rect x="24" y="64" width="168" height="56" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="36" y="86" font-weight="600" style="fill:var(--d-ink);">Person</text><text x="36" y="104" font-size="11" style="fill:var(--d-quiet);">Mac app or JupyterLab</text></g><g><rect x="296" y="64" width="168" height="56" rx="8" fill-opacity="0.12" stroke-width="2" style="fill:var(--d-accent);stroke:var(--d-accent);"></rect><text x="308" y="86" font-weight="600" style="fill:var(--d-ink);">Room</text><text x="308" y="104" font-size="11" style="fill:var(--d-quiet);">live notebook + authors</text></g><g><rect x="296" y="168" width="168" height="72" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="308" y="190" font-weight="600" style="fill:var(--d-ink);">MCP tools at /mcp</text><text x="308" y="208" font-size="11" style="fill:var(--d-quiet);">mcp.rs: edit check, requests</text><text x="308" y="224" font-size="11" style="fill:var(--d-quiet);">marks.rs: read marks</text></g><g><rect x="568" y="168" width="168" height="72" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="580" y="190" font-weight="600" style="fill:var(--d-ink);">ganymede mcp</text><text x="580" y="208" font-size="11" style="fill:var(--d-quiet);">stdio bridge, mcp watch</text><text x="580" y="224" font-size="11" style="fill:var(--d-quiet);">ganymede-cli/src/mcp.rs</text></g><g><rect x="568" y="64" width="168" height="56" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="580" y="86" font-weight="600" style="fill:var(--d-ink);">Claude Code</text><text x="580" y="104" font-size="11" style="fill:var(--d-quiet);">journal skill, hooks, monitor</text></g><g fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"><path d="M192 92H296" marker-start="url(#ag-arrow)" marker-end="url(#ag-arrow)"></path><path d="M380 168V120" marker-end="url(#ag-arrow)"></path><path d="M652 120V168" marker-end="url(#ag-arrow)"></path><path d="M568 204H464" marker-end="url(#ag-arrow)"></path><path d="M380 240V264H652V240" stroke-dasharray="5 4" marker-end="url(#ag-arrow)"></path></g><text x="244" y="84" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">y-websocket</text><text x="388" y="148" font-size="11" style="fill:var(--d-quiet);">edits, runs</text><text x="660" y="148" font-size="11" style="fill:var(--d-quiet);">tool calls</text><text x="516" y="196" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">HTTP</text><text x="516" y="284" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">a person's edits: @@changed on the next reply; @claude requests via mcp watch</text></svg></div><figcaption>An agent and a person in one notebook</figcaption></figure>
+
+<p>The agent&#39;s edits reach the person at once through the room. The person&#39;s edits reach the agent on the dashed path: as an <code>@@changed</code> pointer on its next tool reply while it works, or through <code>mcp watch</code> when a request arrives while it is idle.</p>
+<p>The design and the choices behind it are in <a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede/blob/main/docs/live-agent-edits.md">docs/live-agent-edits.md</a> (tracking issue #763). Still open there: whether waking on any edit stays (the spike, decided in #795), an &quot;Ask the agent&quot; button, and an agent cursor in the notebook.</p>
+<aside class="dive" aria-labelledby="ch8-dive-in"><h3 id="ch8-dive-in">Dive in</h3><ul>
+<li><code>mcp.rs</code>&#39;s header (35 lines) states the whole contract. The tool definitions follow; each tool&#39;s body is a short function over rooms and kernels.</li>
+<li><code>docs/mcp.md</code> for the user side, and <code>docs/agent-journals.md</code> for the journal workflow.</li>
+<li>ganymede-ui&#39;s <code>packages/agent</code> is a separate, optional agent inside the app, which talks to notebooks through the plain Jupyter API rather than MCP (chapter 11).</li>
+</ul></aside>
+
+  <nav class="pager" aria-label="Chapter navigation"><a class="pg pg-prev" href="#ch7" rel="prev"><span class="pg-k">← Previous</span><span class="pg-t">7. The notebook as a program</span></a><a class="pg pg-next" href="#ch9" rel="next"><span class="pg-k">Next →</span><span class="pg-t">9. CLI and embedding: three ways to use the core</span></a></nav>
+</section>
+
+<section class="chapter" id="ch9" aria-labelledby="ch9-h">
+  <header class="chapter-head">
+    <p class="chapter-num">Chapter 9<span class="of"> of 14</span></p>
+    <h2 id="ch9-h">CLI and embedding: three ways to use the core</h2>
+  </header>
+  <p>The core is packaged three ways: a command-line binary for people and scripts (<code>ganymede-cli</code>), a Rust library for programs that want kernels without a server (<code>ganymede-engine</code>), and a C library that runs the whole server inside an app (<code>ganymede-ffi</code>).</p>
+<h3 id="ch9-ganymede-cli-about-13-700-lines">ganymede-cli (about 13,700 lines)</h3>
+<p><code>main.rs</code> defines the <code>clap</code> subcommands and handles the small ones itself. The larger ones have their own files.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Command</th>
+<th>File</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>serve</code>, <code>lab</code></td>
+<td><code>ganymede-server::serve</code>, <code>lab.rs</code>, <code>lab_start.rs</code></td>
+<td>Run the server; <code>lab</code> also serves JupyterLab</td>
+</tr>
+<tr>
+<td><code>lab install</code></td>
+<td><code>lab/pypi.rs</code>, <code>lab/extension.rs</code></td>
+<td>Downloads JupyterLab&#39;s wheel and prebuilt extensions from PyPI and unpacks them, with no Python</td>
+</tr>
+<tr>
+<td><code>ui</code></td>
+<td><code>ui.rs</code></td>
+<td>Installs and serves a ganymede-ui release</td>
+</tr>
+<tr>
+<td><code>execute</code></td>
+<td><code>main.rs</code></td>
+<td>Runs a notebook headless (<code>jupyter execute</code>), with <code>-p</code> parameters and <code>--results</code>; answers host API calls through <code>serve::LocalHost</code></td>
+</tr>
+<tr>
+<td><code>run</code>, <code>console</code>, <code>kernel</code>, <code>attach</code>, <code>kernelspec</code></td>
+<td><code>main.rs</code>, <code>console.rs</code></td>
+<td>Run code or a REPL on a kernel; start a standalone kernel; manage kernelspecs</td>
+</tr>
+<tr>
+<td><code>nb clear</code>, <code>nb publish</code></td>
+<td><code>main.rs</code>, <code>render.rs</code></td>
+<td>Clear outputs; publish one HTML page (chapter 2&#39;s <code>html.rs</code>)</td>
+</tr>
+<tr>
+<td><code>mcp</code>, <code>mcp call</code>, <code>mcp watch</code></td>
+<td><code>mcp.rs</code></td>
+<td>The stdio MCP bridge; one tool call for scripts and hooks; a line per new request to the agent (chapter 8)</td>
+</tr>
+<tr>
+<td><code>grant</code>, <code>trust</code></td>
+<td><code>grant.rs</code>, <code>main.rs</code></td>
+<td>Host API grants (chapter 7); notebook trust</td>
+</tr>
+<tr>
+<td><code>update</code>, <code>info</code></td>
+<td><code>update.rs</code>, <code>info.rs</code></td>
+<td>Self-update from GitHub releases; versions and every directory Ganymede reads or writes</td>
+</tr>
+<tr>
+<td></td>
+<td><code>crash.rs</code></td>
+<td>Opt-in crash reports to Sentry, with no notebook content</td>
+</tr>
+</tbody></table></div>
+<h3 id="ch9-ganymede-engine-about-1-100-lines">ganymede-engine (about 1,100 lines)</h3>
+<p>A facade for Rust programs: <code>Engine::new()</code> finds kernelspecs and starts, attaches to or adopts kernels; <code>Kernel</code> executes with streaming output and stdin, completes, inspects, interrupts, restarts and runs notebooks with <code>nbclient</code>&#39;s semantics. It re-exports <code>protocol</code>, <code>nbformat</code>, <code>host</code> and <code>exec</code> for anything the facade doesn&#39;t cover. <code>ganymede execute</code> is built on it. <a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede/blob/main/docs/embedding.md">docs/embedding.md</a> is its guide.</p>
+<h3 id="ch9-ganymede-ffi-about-1-100-lines">ganymede-ffi (about 1,100 lines)</h3>
+<p>The C ABI the Apple apps link. The whole surface is in <code>include/ganymede.h</code>:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>ganymede_server_start(config_json, &amp;error)</code></td>
+<td>Start the server on loopback, with the config as JSON (the keys of <code>ganymede.toml</code>). Runs on its own thread with its own tokio runtime, so the app needs no Rust or async code</td>
+</tr>
+<tr>
+<td><code>ganymede_server_url</code>, <code>ganymede_server_stop</code></td>
+<td>Get the URL to load; stop on quit</td>
+</tr>
+<tr>
+<td><code>ganymede_kernel_register</code>, <code>_deliver</code>, <code>_ended</code></td>
+<td>Register a kernel the app runs itself (the hidden web view&#39;s cdp-kernel), push its messages to the server, and report its end. These drive <code>registered.rs</code> from chapter 3</td>
+</tr>
+<tr>
+<td><code>ganymede_set_panic_callback</code></td>
+<td>Lets the app&#39;s crash reporter see Rust panics</td>
+</tr>
+<tr>
+<td><code>ganymede_string_free</code></td>
+<td>Strings returned to the app are freed here</td>
+</tr>
+</tbody></table></div>
+<p><code>scripts/build-xcframework.sh</code> builds it for macOS and iOS. The iOS slices are built without the <code>zmq</code> and <code>subprocess</code> features, since iOS can&#39;t launch processes; there the server lists only registered kernels and gateway kernels.</p>
+<p>The apps were first planned around a message bridge in place of HTTP, which is why <code>ganymede-api</code> has no HTTP in it. Running the ordinary server on loopback turned out simpler: the web view connects to it as a browser would, so the web app has one code path everywhere.</p>
+<aside class="dive" aria-labelledby="ch9-dive-in"><h3 id="ch9-dive-in">Dive in</h3><ul>
+<li><code>ganymede-cli/src/main.rs</code> <code>enum Command</code> for the full command list.</li>
+<li><code>ganymede-ffi/include/ganymede.h</code> (under 100 lines), then <code>src/lib.rs</code>, and <code>tests/</code> for an embedding exercised end to end.</li>
+</ul></aside>
+
+  <nav class="pager" aria-label="Chapter navigation"><a class="pg pg-prev" href="#ch8" rel="prev"><span class="pg-k">← Previous</span><span class="pg-t">8. Agent-native: an agent in the same live notebook</span></a><a class="pg pg-next" href="#ch10" rel="next"><span class="pg-k">Next →</span><span class="pg-t">10. cdp-kernel: the TypeScript kernel</span></a></nav>
+</section>
+
+<section class="chapter" id="ch10" aria-labelledby="ch10-h">
+  <header class="chapter-head">
+    <p class="chapter-num">Chapter 10<span class="of"> of 14</span></p>
+    <h2 id="ch10-h">cdp-kernel: the TypeScript kernel</h2>
+  </header>
+  <p>cdp-kernel is a Jupyter kernel for TypeScript and JavaScript, about 14,000 lines of TypeScript. It started as an extraction of Deno&#39;s own Jupyter kernel, which is two halves joined by a handful of calls: the Jupyter protocol in plain JS, and a REPL isolate driven over the Chrome DevTools Protocol (CDP). cdp-kernel keeps that split and points the CDP half at other runtimes&#39; <code>--inspect</code> endpoint. That is the name: the kernel drives a runtime over CDP. It is a separate process from the Rust core and knows nothing about Ganymede beyond the standard protocol, plus two optional extras (<code>jupyter.host()</code> and <code>jupyter.params</code>).</p>
+<h3 id="ch10-the-two-halves">The two halves</h3>
+<p><strong>The kernel</strong> (the <code>cdp-kernel kernel</code> process, <code>src/kernel.ts</code>):</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>zmtp.ts</code>, <code>wire.ts</code>, <code>zmq-channels.ts</code></td>
+<td>Just enough ZMTP 3.0 over <code>node:net</code> to be a ZeroMQ peer with no libzmq, plus framing and HMAC. Ported from Deno</td>
+</tr>
+<tr>
+<td><code>kernel-core.ts</code> (1,100 lines)</td>
+<td>All Jupyter message handling: execute, complete, inspect, history, comms, interrupt. Imports nothing from Node, so it also runs in a web page</td>
+</tr>
+<tr>
+<td><code>target-api.ts</code></td>
+<td><code>KernelTarget</code>: what the core needs from a runtime. The seam between the halves</td>
+</tr>
+<tr>
+<td><code>language-service.ts</code></td>
+<td>Typed completion and hover from a TypeScript language service in a worker thread, started on first use, with a time budget per request</td>
+</tr>
+<tr>
+<td><code>debugger.ts</code></td>
+<td>JupyterLab&#39;s visual debugger: DAP requests arrive as <code>debug_request</code> and are translated to V8&#39;s Debugger domain on Node and Deno</td>
+</tr>
+</tbody></table></div>
+<p><strong>The target runtime</strong>, where cells actually run, is one of five:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Runtime</th>
+<th>How it is driven</th>
+<th>File</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Node, Deno</td>
+<td>Launched with <code>--inspect</code> running <code>runtime/bootstrap.mjs</code>; driven over CDP with <code>Runtime.evaluate</code> in <code>replMode</code></td>
+<td><code>target.ts</code>, <code>cdp.ts</code></td>
+</tr>
+<tr>
+<td>Bun</td>
+<td>Bun&#39;s inspector lacks <code>replMode</code>, so cells go over a private pipe to <code>runtime/bun-channel.mjs</code></td>
+<td><code>bun-target.ts</code></td>
+</tr>
+<tr>
+<td>workerd</td>
+<td>Cells run in a driver Worker over one WebSocket session, so I/O objects survive between cells</td>
+<td><code>workerd-target.ts</code>, <code>runtime/workerd-worker.mjs</code></td>
+</tr>
+<tr>
+<td>celld</td>
+<td>The same driver Worker, over a token-guarded loopback WebSocket</td>
+<td><code>celld-target.ts</code></td>
+</tr>
+<tr>
+<td>Browser</td>
+<td><code>kernel-core.ts</code> on the page, cells in a Web Worker. Published as <code>@tlockney/cdp-kernel/browser</code>; this is what ganymede-ui and the apps run. A page can map import specifiers to files it serves (the <code>modules</code> option), which is how the apps draw charts and run SQL offline</td>
+<td><code>src/browser/</code>, <code>runtime/browser-worker.mjs</code></td>
+</tr>
+</tbody></table></div>
+<figure class="diagram"><div class="diagram-scroll"><svg viewBox="0 0 760 388" role="img" aria-label="One kernel core, five runtimes behind one seam" font-size="13"><defs><marker id="cdp-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--d-edge);"></path></marker></defs><text x="24" y="32" font-size="15" font-weight="600" style="fill:var(--d-ink);">One kernel core; each runtime sits behind the same seam</text><g><rect x="24" y="84" width="120" height="56" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="36" y="106" font-weight="600" style="fill:var(--d-ink);">Ganymede</text><text x="36" y="124" font-size="11" style="fill:var(--d-quiet);">or any Jupyter host</text></g><g><rect x="176" y="56" width="248" height="212" rx="8" stroke-width="1" style="fill:var(--d-tint);stroke:var(--d-edge);"></rect><text x="192" y="78" font-weight="600" style="fill:var(--d-ink);">cdp-kernel kernel process</text><rect x="192" y="92" width="216" height="36" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="204" y="115" font-size="12" style="fill:var(--d-ink);">zmtp.ts, wire.ts: ZeroMQ, HMAC</text><rect x="192" y="140" width="216" height="36" rx="8" fill-opacity="0.12" stroke-width="2" style="fill:var(--d-accent);stroke:var(--d-accent);"></rect><text x="204" y="163" font-size="12" font-weight="600" style="fill:var(--d-ink);">kernel-core.ts: all messages</text><rect x="192" y="188" width="216" height="36" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="204" y="211" font-size="12" style="fill:var(--d-ink);">KernelTarget (target-api.ts)</text><text x="192" y="252" font-size="11" style="fill:var(--d-quiet);">plus language service, debugger</text></g><g><rect x="488" y="56" width="248" height="52" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="500" y="78" font-weight="600" style="fill:var(--d-ink);">Node, Deno</text><text x="500" y="96" font-size="11" style="fill:var(--d-quiet);">--inspect: CDP, Runtime.evaluate</text></g><g><rect x="488" y="124" width="248" height="52" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="500" y="146" font-weight="600" style="fill:var(--d-ink);">Bun</text><text x="500" y="164" font-size="11" style="fill:var(--d-quiet);">private pipe to bun-channel.mjs</text></g><g><rect x="488" y="192" width="248" height="52" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="500" y="214" font-weight="600" style="fill:var(--d-ink);">workerd, celld</text><text x="500" y="232" font-size="11" style="fill:var(--d-quiet);">WebSocket to a driver Worker</text></g><g><rect x="24" y="300" width="120" height="56" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="36" y="322" font-weight="600" style="fill:var(--d-ink);">ganymede-ui</text><text x="36" y="340" font-size="11" style="fill:var(--d-quiet);">and the apps</text></g><g><rect x="176" y="292" width="560" height="72" rx="8" stroke-width="1" style="fill:var(--d-tint);stroke:var(--d-edge);"></rect><text x="192" y="312" font-size="11.5" font-weight="600" style="fill:var(--d-ink);">Browser build: @tlockney/cdp-kernel/browser</text><rect x="192" y="320" width="216" height="32" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="204" y="341" font-size="12" style="fill:var(--d-ink);">kernel-core.ts on the page</text><rect x="488" y="320" width="232" height="32" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="500" y="341" font-size="12" style="fill:var(--d-ink);">cells run in a Web Worker</text></g><g fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"><path d="M144 110H192" marker-start="url(#cdp-arrow)" marker-end="url(#cdp-arrow)"></path><path d="M300 128V140"></path><path d="M300 176V188"></path><path d="M408 206H448V82H488" marker-end="url(#cdp-arrow)"></path><path d="M448 150H488" marker-end="url(#cdp-arrow)"></path><path d="M448 206V218H488" marker-end="url(#cdp-arrow)"></path><path d="M144 328H176" marker-end="url(#cdp-arrow)"></path><path d="M408 336H488" marker-end="url(#cdp-arrow)"></path></g><text x="168" y="98" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">ZeroMQ</text></svg></div><figcaption>cdp-kernel's two halves and its five runtimes</figcaption></figure>
+
+<p>The same <code>kernel-core.ts</code> serves every runtime; only the <code>KernelTarget</code> behind it changes. In the browser build there is no ZeroMQ at all: the page talks to the core directly.</p>
+<h3 id="ch10-the-cell-pipeline">The cell pipeline</h3>
+<p>A cell is written as a TypeScript module, but CDP evaluates scripts. <code>transform.ts</code> closes the gap, as Deno&#39;s REPL does with swc:</p>
+<ol>
+<li>A type stripper (esbuild by default, sucrase as an option) removes types and compiles JSX, keeping a source map.</li>
+<li>acorn finds module syntax a script can&#39;t hold and rewrites it: <code>import x from &quot;m&quot;</code> becomes <code>var x = await __cdpk.import(&quot;m&quot;)</code>, and <code>export</code> is dropped, without moving lines.</li>
+<li>Node and Deno run the result with <code>Runtime.evaluate</code> in <code>replMode</code>, so top-level <code>await</code> and redeclared <code>let</code> work. Bun, workerd and celld have no <code>replMode</code>, so the cell runs inside an async function with its top-level names hoisted to globals.</li>
+<li>Imports resolve when <code>__cdpk.import</code> runs, differently per runtime: on Node, a resolve hook (<code>runtime/node-hooks.mjs</code>) re-parents imports to the notebook&#39;s folder and installs <code>npm:</code> and <code>jsr:</code> packages on first use; Deno uses its own resolution; workerd and celld can&#39;t load modules at runtime, so the kernel bundles a cell&#39;s imports with esbuild and sends the bundle with the cell.</li>
+<li>The last expression&#39;s value comes back as <code>execute_result</code>; the source map lets tracebacks and the debugger point at the cell&#39;s own lines.</li>
+</ol>
+<h3 id="ch10-inside-the-runtime-jupyter">Inside the runtime: <code>jupyter.*</code></h3>
+<p>The <code>runtime/</code> modules are injected into the target and give cell code its API:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Module</th>
+<th>Gives cells</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>display.mjs</code></td>
+<td><code>jupyter.display</code>, rich output by MIME type, <code>jupyter.params</code>, <code>jupyter.result</code> (port of Deno&#39;s <code>Deno.jupyter</code>)</td>
+</tr>
+<tr>
+<td><code>comm.mjs</code>, <code>widget.mjs</code></td>
+<td>Comms and anywidget-style widgets</td>
+</tr>
+<tr>
+<td><code>host.mjs</code></td>
+<td><code>jupyter.host()</code>, the client for Ganymede&#39;s host API (chapter 7)</td>
+</tr>
+<tr>
+<td><code>table.mjs</code>, <code>sql.mjs</code>, <code>chart.mjs</code></td>
+<td><code>jupyter.table</code> (rows, Arrow, Polars or DuckDB results as a table output), <code>jupyter.sql</code> (a DuckDB tag) and <code>jupyter.chart</code> (Vega-Lite or Plot as one SVG), all standard MIME types</td>
+</tr>
+<tr>
+<td><code>table-paging.mjs</code></td>
+<td>Keeps the last 16 tables shown and answers page and sort requests past the embedded rows over the comm <code>ganymede.table.v1</code></td>
+</tr>
+<tr>
+<td><code>deno-compat.mjs</code></td>
+<td>A <code>Deno</code> namespace on Node, for notebooks written for Deno&#39;s kernel</td>
+</tr>
+</tbody></table></div>
+<h3 id="ch10-flow-a-typescript-cell-on-node"><span class="kicker">Flow</span>A TypeScript cell on Node</h3>
+<ol>
+<li>Ganymede launches <code>cdp-kernel kernel --runtime node --conn &lt;file&gt;</code> from the kernelspec <code>cdp-kernel install</code> wrote. That kernelspec points at a copy of the kernel in the Jupyter data directory and at the Node version manager&#39;s shim rather than one Node binary, so it survives a Node upgrade (<code>--pin</code> keeps the exact binary).</li>
+<li><code>kernel.ts</code> binds the five ports with <code>zmtp.ts</code>, starts <code>node --inspect=127.0.0.1:0 runtime/bootstrap.mjs</code>, and connects <code>cdp.ts</code> to its inspector WebSocket.</li>
+<li>An <code>execute_request</code> reaches <code>kernel-core.ts</code>, which hands the code to <code>transform.ts</code> and then <code>target.ts</code>.</li>
+<li><code>target.ts</code> calls <code>Runtime.evaluate</code>. Output from <code>console.log</code> and <code>jupyter.display</code> comes back over the runtime&#39;s stdout as records the kernel turns into iopub messages.</li>
+<li>The core sends <code>execute_result</code>, <code>execute_reply</code> and <code>status: idle</code>.</li>
+</ol>
+<aside class="dive" aria-labelledby="ch10-dive-in"><h3 id="ch10-dive-in">Dive in</h3><ul>
+<li>cdp-kernel&#39;s <a target="_blank" rel="noopener" href="https://github.com/tlockney/cdp-kernel/blob/main/docs/architecture.md">architecture</a> and <a target="_blank" rel="noopener" href="https://github.com/tlockney/cdp-kernel/blob/main/docs/integrations.md">integrations</a> pages have diagrams of the cell pipeline and each runtime.</li>
+<li><code>src/target-api.ts</code> first: it is the seam. Then <code>kernel-core.ts</code>.</li>
+<li><code>docs/feasibility-study.md</code> records the alternatives considered and <code>probes/</code> the experiments behind them.</li>
+</ul></aside>
+
+  <nav class="pager" aria-label="Chapter navigation"><a class="pg pg-prev" href="#ch9" rel="prev"><span class="pg-k">← Previous</span><span class="pg-t">9. CLI and embedding: three ways to use the core</span></a><a class="pg pg-next" href="#ch11" rel="next"><span class="pg-k">Next →</span><span class="pg-t">11. ganymede-ui: the web app</span></a></nav>
+</section>
+
+<section class="chapter" id="ch11" aria-labelledby="ch11-h">
+  <header class="chapter-head">
+    <p class="chapter-num">Chapter 11<span class="of"> of 14</span></p>
+    <h2 id="ch11-h">ganymede-ui: the web app</h2>
+  </header>
+  <p>The web app in ganymede-ui&#39;s <code>src/</code> is the notebook people see in a browser and inside every Apple app window. It is React around JupyterLab&#39;s notebook packages, used as plain libraries with no JupyterLab application. It reaches notebooks and kernels only through <code>@jupyterlab/services</code>, the client half of the Jupyter API, so it is an ordinary API client of Ganymede and works against <code>jupyter_server</code> too. ganymede-ui&#39;s <a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede-ui/blob/main/docs/architecture.md">architecture page</a> is long and current; this chapter is the map into it.</p>
+<h3 id="ch11-code-map">Code map</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Files</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Shell</td>
+<td><code>App.tsx</code> (1,000 lines), <code>components/</code></td>
+<td>Sidebar, toolbar, command palette, sheets (connect, settings, shortcuts, publish, notebook access, run with parameters). Decides which backend to connect to</td>
+</tr>
+<tr>
+<td>Notebook</td>
+<td><code>components/NotebookPane.tsx</code> (1,400), <code>lib/jupyterlab.ts</code>, <code>lib/widgets.ts</code></td>
+<td>One file: JupyterLab&#39;s <code>Notebook</code> widget, its model and a <code>SessionContext</code>. Rejoins a running kernel but starts none until the first run</td>
+</tr>
+<tr>
+<td>Backends</td>
+<td><code>lib/backends.ts</code>, <code>lib/lite.ts</code>, <code>lib/mixed.ts</code>, <code>lib/cdp-kernel.ts</code></td>
+<td>Build the one <code>ServiceManager</code> the UI talks to</td>
+</tr>
+<tr>
+<td>Saving</td>
+<td><code>lib/saver.ts</code>, <code>lib/room.ts</code></td>
+<td><code>NotebookSaver</code> for plain servers; <code>NotebookRoom</code> and <code>RoomSaver</code> on Ganymede. <code>room.ts</code> also sends the person&#39;s name in the room&#39;s awareness, so the server can credit their edits</td>
+</tr>
+<tr>
+<td>Service-worker relay</td>
+<td><code>lib/lite-sw.ts</code>, <code>public/lite-service-worker.js</code></td>
+<td>Lets an in-page kernel&#39;s Worker make synchronous requests (file reads, <code>input()</code>) answered by the page</td>
+</tr>
+<tr>
+<td>Apple bridges</td>
+<td><code>lib/native.ts</code>, <code>lib/kernel-relay.ts</code>, <code>kernel-host.ts</code>, <code>lib/device-remote.ts</code></td>
+<td>The page&#39;s side of the Swift app (chapter 12)</td>
+</tr>
+<tr>
+<td>Output</td>
+<td><code>lib/output-frames.ts</code>, <code>lib/table-output.ts</code>, <code>lib/anywidget.ts</code>, <code>lib/sanitizer</code> tests</td>
+<td>Sandboxed HTML outputs; the table renderer, which pages and sorts through the kernel past the embedded rows; widgets</td>
+</tr>
+<tr>
+<td>Kernel modules</td>
+<td><code>scripts/kernel-modules.ts</code>, <code>lib/kernel-modules.ts</code>, <code>lib/duckdb-files.ts</code></td>
+<td>Bundles the chart libraries and DuckDB&#39;s module for the in-page kernel, and fetches DuckDB&#39;s wasm once into Cache Storage, so charts and SQL work offline</td>
+</tr>
+<tr>
+<td>Small features</td>
+<td>about 40 more files in <code>lib/</code></td>
+<td>Shortcuts, palette, search, outline, recents, publish, export, theme, run status, problems, each with its test file</td>
+</tr>
+</tbody></table></div>
+<h3 id="ch11-backends">Backends</h3>
+<p>Everything above the backend sees one <code>ServiceManager</code>. <code>connect(config)</code> in <code>backends.ts</code> builds it three ways:</p>
+<ul>
+<li><strong><code>ganymede</code></strong>: the stock <code>ServiceManager</code> over REST and websockets to a server. The normal case, including inside the apps.</li>
+<li><strong><code>ganymede</code> with <code>kernels: &#39;page&#39;</code></strong>: notebooks on the server, kernels in this page. For a server with no kernels of its own.</li>
+<li><strong><code>browser</code></strong>: everything in the page through JupyterLite&#39;s <code>@jupyterlite/services</code>, wired by hand in <code>lite.ts</code>. Notebooks in IndexedDB, kernels in Web Workers: cdp-kernel&#39;s browser build by default, with a fake websocket (<code>mock-socket</code>).</li>
+</ul>
+<p>Which backend: <code>?token=</code> or <code>?kernels=</code> in the URL (how the apps launch it), then the saved connection, then the page&#39;s own server&#39;s login cookie, then the connect sheet.</p>
+<h3 id="ch11-saving-two-paths">Saving: two paths</h3>
+<p>Against a plain Jupyter server, <code>NotebookSaver</code> does what JupyterLab&#39;s document context does: one save at a time, <code>last_modified</code> checked before writing, autosave every 120 seconds, a check for outside changes every 5 seconds that locks the pane on conflict (or quietly pulls the new file when there are no local edits).</p>
+<p>Against Ganymede, the pane joins the notebook&#39;s room instead (<code>room.ts</code>, chapter 6). The notebook model is built on the room&#39;s <code>YNotebook</code>, edits flow both ways live, and the server saves. The pane skips its disk checks and autosave entirely. This switch is why the apps and an agent can share a notebook.</p>
+<h3 id="ch11-flow-opening-a-notebook-browser-ganymede-backend"><span class="kicker">Flow</span>Opening a notebook (browser, Ganymede backend)</h3>
+<ol>
+<li><code>App.tsx</code> reads <code>?open=&lt;path&gt;</code> (<code>lib/launch.ts</code>), connects the backend and shows the sidebar&#39;s folder.</li>
+<li><code>NotebookPane</code> mounts for the path. On Ganymede, <code>NotebookRoom.join</code> calls <code>PUT /api/collaboration/session/{path}</code>, opens the room websocket and waits for first sync.</li>
+<li>JupyterLab&#39;s notebook widget renders the room&#39;s model. Output renderers come from <code>jupyterlab.ts</code>; HTML outputs go into sandboxed frames.</li>
+<li><code>SessionContext</code> looks for a kernel already running for the file and rejoins it. If none, the toolbar says the kernel starts when you run a cell.</li>
+<li>The first run starts the kernel the file names (<code>POST /api/sessions</code>), and outputs arrive over the kernel websocket as in chapter 5.</li>
+</ol>
+<h3 id="ch11-packages-agent">packages/agent</h3>
+<p>An optional agent built on Pi Durable, off by default, turned on in Settings. <code>settings.ts</code> keeps provider, model and keys (keys in the Keychain in the apps); <code>models.ts</code> loads Anthropic, OpenAI, Google or a local OpenAI-compatible model on demand; <code>index.ts</code> and <code>tools.ts</code> drive notebooks through the Jupyter API. The panel that uses them is not built yet.</p>
+<aside class="dive" aria-labelledby="ch11-dive-in"><h3 id="ch11-dive-in">Dive in</h3><ul>
+<li><code>src/lib/backends.ts</code>, then <code>NotebookPane.tsx</code> around its load effect.</li>
+<li><code>src/lib/room.ts</code> (the room client) beside <code>ganymede-server/src/collab.rs</code> (the room server).</li>
+<li>Tests: Vitest beside each file (<code>npm test</code>), Playwright e2e in <code>e2e/</code> against a real Ganymede and cdp-kernel.</li>
+</ul></aside>
+
+  <nav class="pager" aria-label="Chapter navigation"><a class="pg pg-prev" href="#ch10" rel="prev"><span class="pg-k">← Previous</span><span class="pg-t">10. cdp-kernel: the TypeScript kernel</span></a><a class="pg pg-next" href="#ch12" rel="next"><span class="pg-k">Next →</span><span class="pg-t">12. The Apple apps</span></a></nav>
+</section>
+
+<section class="chapter" id="ch12" aria-labelledby="ch12-h">
+  <header class="chapter-head">
+    <p class="chapter-num">Chapter 12<span class="of"> of 14</span></p>
+    <h2 id="ch12-h">The Apple apps</h2>
+  </header>
+  <p>The Mac, iPad and iPhone apps are one SwiftUI codebase in ganymede-ui&#39;s <code>apple/</code> (about 19,000 lines of Swift, built with XcodeGen from <code>project.yml</code>). Each app runs the Rust server inside its own process through <code>ganymede-ffi</code>, loads the web app from it in a <code>WKWebView</code>, and draws its own native chrome around the notebook. The page shows only the notebook; Swift draws the sidebar, toolbar and menus. Priority 2, the apps as a full runtime, lives here.</p>
+<h3 id="ch12-code-map-apple-sources-ganymede">Code map (<code>apple/Sources/Ganymede/</code>)</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Files</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Server</td>
+<td><code>ServerHost.swift</code>, <code>AppModel.swift</code>, <code>LoginShell.swift</code></td>
+<td>Starts the server through the ffi on <code>127.0.0.1</code> with a random token, reusing the last port so the page keeps its origin. On the Mac it serves <code>/</code> and each window opens a path; on iOS it serves the chosen folder. Takes <code>PATH</code> from the login shell so <code>node</code>, <code>deno</code> and <code>python3</code> kernelspecs start</td>
+</tr>
+<tr>
+<td>Page</td>
+<td><code>WebView.swift</code>, <code>PageState.swift</code>, <code>DocumentWindow.swift</code>, <code>PersonName.swift</code></td>
+<td>Loads the web app with <code>?open=</code>, <code>?kernels=</code> and <code>chrome=native</code>, and gives it the person&#39;s name for the room. The page posts its state (open notebook, dirty, kernel) to script message handlers; Swift runs page commands back</td>
+</tr>
+<tr>
+<td>Native chrome</td>
+<td><code>NativeChrome.swift</code> (Mac), <code>IPadChrome.swift</code> (iPad, iPhone), <code>NavigatorSidebar.swift</code>, <code>Inspector.swift</code>, <code>BottomPanel.swift</code></td>
+<td>Sidebar, toolbar (including Share: download, export, publish), menus, key commands, inspector</td>
+</tr>
+<tr>
+<td>In-app kernels</td>
+<td><code>AppKernels.swift</code>, <code>KernelHost.swift</code></td>
+<td>cdp-kernel in one hidden web view (<code>kernel.html</code>), registered with the server as its kernels</td>
+</tr>
+<tr>
+<td>Remotes</td>
+<td><code>Remote.swift</code>, <code>RemotesView.swift</code>, <code>KernelLocationPicker.swift</code></td>
+<td>Other servers for kernels and terminals; tokens in the Keychain, or none for a server on the tailnet</td>
+</tr>
+<tr>
+<td>Tailnet</td>
+<td><code>AppTailnet.swift</code></td>
+<td>Mac, off by default: shares the app&#39;s server on the tailnet through <code>tailscale serve</code>, letting listed logins in without the token; lists tailnet devices for the remote picker</td>
+</tr>
+<tr>
+<td>Automation</td>
+<td><code>AppURL.swift</code>, <code>AppURLHandler.swift</code>, <code>NotebookActions.swift</code>, <code>NotebookIntents.swift</code>, <code>SpotlightIndex.swift</code>, <code>AppMCP.swift</code></td>
+<td><code>ganymede://</code> links (on iPad and iPhone only <code>open</code>, in folders the person granted; <code>LinkOpener.swift</code>), Shortcuts actions (Mac only so far), Spotlight, the MCP setting, which gives agents an <code>mcp_token</code></td>
+</tr>
+<tr>
+<td>Tools</td>
+<td><code>Terminal/</code>, <code>Editor/</code>, <code>Runner/</code></td>
+<td>Terminals (local process, Jupyter terminal, SSH, including Tailscale SSH sign-in on iPad and iPhone), movable between the bottom panel and a tab; a code editor for non-notebook files; Run Script on Device (experimental)</td>
+</tr>
+<tr>
+<td>Lifecycle</td>
+<td><code>AppUpdater.swift</code>, <code>CrashReports.swift</code>, <code>CrashScrub.swift</code></td>
+<td>Sparkle updates on the Mac; opt-in Sentry crash reports, scrubbed in the app</td>
+</tr>
+</tbody></table></div>
+<p>Other targets: <code>Sources/QuickLook</code> (notebook previews and thumbnails in Finder), <code>Sources/Share</code> (share extension, experimental, off by default), <code>Sources/Widgets</code> (home-screen notebook widgets, experimental).</p>
+<figure class="diagram"><div class="diagram-scroll"><svg viewBox="0 0 760 400" role="img" aria-label="The app is one process: Swift chrome, two kinds of web view, and the Rust server between them" font-size="13"><defs><marker id="app-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--d-edge);"></path></marker></defs><text x="24" y="32" font-size="15" font-weight="600" style="fill:var(--d-ink);">One app process: Swift chrome, two web views, the Rust server between</text><g><rect x="24" y="52" width="520" height="328" rx="8" stroke-width="1" style="fill:var(--d-tint);stroke:var(--d-edge);"></rect><text x="40" y="74" font-size="12" font-weight="600" style="fill:var(--d-ink);">Ganymede.app, one process</text></g><g><rect x="40" y="88" width="200" height="84" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="52" y="110" font-weight="600" style="fill:var(--d-ink);">SwiftUI shell</text><text x="52" y="130" font-size="11" style="fill:var(--d-quiet);">windows, sidebar, toolbar,</text><text x="52" y="146" font-size="11" style="fill:var(--d-quiet);">menus, links, Shortcuts</text><text x="52" y="162" font-size="11" style="fill:var(--d-quiet);">AppModel, AppKernels</text></g><g><rect x="304" y="88" width="224" height="84" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="316" y="110" font-weight="600" style="fill:var(--d-ink);">Notebook web view</text><text x="316" y="130" font-size="11" style="fill:var(--d-quiet);">ganymede-ui, chrome=native</text><text x="316" y="146" font-size="11" style="fill:var(--d-quiet);">one per window</text></g><g><rect x="40" y="200" width="200" height="84" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="52" y="222" font-weight="600" style="fill:var(--d-ink);">Hidden kernel web view</text><text x="52" y="242" font-size="11" style="fill:var(--d-quiet);">kernel.html: cdp-kernel</text><text x="52" y="258" font-size="11" style="fill:var(--d-quiet);">browser kernels in Workers</text></g><g><rect x="40" y="308" width="200" height="56" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="52" y="330" font-weight="600" style="fill:var(--d-ink);">DeviceBridge (Swift)</text><text x="52" y="348" font-size="11" style="fill:var(--d-quiet);">device API, permission ledger</text></g><g><rect x="304" y="200" width="224" height="164" rx="8" fill-opacity="0.12" stroke-width="2" style="fill:var(--d-accent);stroke:var(--d-accent);"></rect><text x="316" y="222" font-weight="600" style="fill:var(--d-ink);">Rust server (ganymede-ffi)</text><text x="316" y="244" font-size="11.5" style="fill:var(--d-ink);">own thread, 127.0.0.1 + token</text><text x="316" y="262" font-size="11.5" style="fill:var(--d-ink);">rooms, contents, kernels</text><text x="316" y="280" font-size="11.5" style="fill:var(--d-ink);">/mcp, host API, runs</text><text x="316" y="298" font-size="11.5" style="fill:var(--d-ink);">registered in-app kernels</text></g><g><rect x="576" y="84" width="160" height="56" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="588" y="106" font-weight="600" style="fill:var(--d-ink);">Notebook files</text><text x="588" y="124" font-size="11" style="fill:var(--d-quiet);">/ on Mac; a folder on iOS</text></g><g><rect x="576" y="200" width="160" height="56" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="588" y="222" font-weight="600" style="fill:var(--d-ink);">Kernel processes</text><text x="588" y="240" font-size="11" style="fill:var(--d-quiet);">node, python; Mac only</text></g><g><rect x="576" y="272" width="160" height="56" rx="8" fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"></rect><text x="588" y="294" font-weight="600" style="fill:var(--d-ink);">Remote server</text><text x="588" y="312" font-size="11" style="fill:var(--d-quiet);">kernels via gateway</text></g><g fill="none" stroke-width="1.25" style="stroke:var(--d-edge);"><path d="M240 130H304" marker-start="url(#app-arrow)" marker-end="url(#app-arrow)"></path><path d="M416 172V200" marker-start="url(#app-arrow)" marker-end="url(#app-arrow)"></path><path d="M140 172V200" marker-start="url(#app-arrow)" marker-end="url(#app-arrow)"></path><path d="M140 284V308" marker-start="url(#app-arrow)" marker-end="url(#app-arrow)"></path><path d="M240 160H272V240H304" marker-start="url(#app-arrow)" marker-end="url(#app-arrow)"></path><path d="M528 216H552V112H576" marker-end="url(#app-arrow)"></path><path d="M528 236H576" marker-end="url(#app-arrow)"></path><path d="M528 300H576" marker-end="url(#app-arrow)"></path></g><text x="272" y="122" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">state</text><text x="424" y="190" font-size="11" style="fill:var(--d-quiet);">HTTP, websockets</text><text x="148" y="190" font-size="11" style="fill:var(--d-quiet);">kernelHost relay</text><text x="266" y="206" text-anchor="end" font-size="11" style="fill:var(--d-quiet);">ffi</text><text x="552" y="228" text-anchor="middle" font-size="11" style="fill:var(--d-quiet);">ZMQ</text></svg></div><figcaption>Inside the Mac app</figcaption></figure>
+
+<p>The notebook page talks to the server exactly as a browser would. Swift sits between the hidden kernel web view and the server, carrying kernel messages through the ffi. On iPad and iPhone the kernel processes box is gone: only in-app and remote kernels remain.</p>
+<h3 id="ch12-in-app-kernels">In-app kernels</h3>
+<p>iOS won&#39;t let an app launch processes, and the Mac app wants a TypeScript kernel that needs no Node install. So the app runs cdp-kernel&#39;s browser build in one hidden web view (<code>kernel.html</code>, <code>src/kernel-host.ts</code>), one browser kernel per kernel the server starts. <code>AppKernels.swift</code> registers them through <code>ganymede_kernel_register</code> (chapter 9), so they show up in the server&#39;s kernel list and work with sessions, rooms and the execute endpoint like any other kernel. Messages travel server → Swift → kernel page, and back through the <code>kernelHost</code> message handler (<code>src/lib/kernel-relay.ts</code> has the diagram in its header). Because the kernel runs in its own web view, it survives a window reload, and only it gets the <code>device</code> bridge: no output rendered in the notebook page can reach native APIs.</p>
+<p>The open question on the roadmap is replacing this web view kernel with a native in-app V8 engine, unless size or performance on device rules it out.</p>
+<h3 id="ch12-packages-device-the-device-api">packages/device: the <code>device</code> API</h3>
+<p><code>packages/device</code> (until 2026-11-13 the ganymede-device repo) gives cells a <code>device</code> global: <code>await device.clipboard.readText()</code>, haptics, dialogs, share sheet, file and photo pickers, Quick Look, and more. The TypeScript side (<code>src/</code>) is a preload installed in the cells&#39; Worker; it sends calls over a comm or <code>webkit.messageHandlers.device</code> to the Swift <code>DeviceBridge</code> (<code>swift/Sources</code>), which checks a permission ledger and answers. Calls from a kernel on a remote server reach the app over a comm, answered by the page (<code>src/lib/device-remote.ts</code>). The contract is in <code>packages/device/docs/protocol.md</code>.</p>
+<h3 id="ch12-flow-the-mac-app-opening-a-notebook"><span class="kicker">Flow</span>The Mac app opening a notebook</h3>
+<ol>
+<li>You double-click <code>report.ipynb</code> in Finder. The app delegate records it; the first notebook window to see it takes it (<code>WindowTarget.swift</code>).</li>
+<li><code>AppModel</code> already has the server running: <code>ServerHost</code> called <code>ganymede_server_start</code> at launch with JSON config (root <code>/</code>, static dir = the bundled web app, a token) and got back the URL.</li>
+<li><code>AppKernels</code> has registered the in-app TypeScript kernel; kernelspecs on disk (Node, Python) are visible too.</li>
+<li>The window&#39;s <code>WebView</code> loads <code>&lt;url&gt;?open=/Users/…/report.ipynb&amp;kernels=server&amp;chrome=native</code>. The token in the URL becomes a login cookie, and the page drops it from the address bar.</li>
+<li>The web app (chapter 11) joins the notebook&#39;s room on the in-process server. The page posts <code>PageState</code> to Swift, which fills the native toolbar and window title.</li>
+<li>You press Run. The page starts the kernel over the server API. If it is the in-app kernel, the server&#39;s registered-kernel provisioner asks Swift to start it in the hidden web view; if it is a kernelspec, the server spawns a process and talks ZeroMQ, exactly as <code>ganymede serve</code> would.</li>
+</ol>
+<aside class="dive" aria-labelledby="ch12-dive-in"><h3 id="ch12-dive-in">Dive in</h3><ul>
+<li><code>apple/README.md</code> (how it works, how to build), then ganymede-ui&#39;s architecture page, section &quot;Mac and iPad app&quot;.</li>
+<li><code>ServerHost.swift</code> and <code>AppKernels.swift</code>: the two places Swift meets Rust.</li>
+<li>Swift only builds on GitHub&#39;s macOS runners or a Mac; by-hand checks are tracked in ganymede-ui #399 (Mac) and #273 (iPad, iPhone).</li>
+</ul></aside>
+
+  <nav class="pager" aria-label="Chapter navigation"><a class="pg pg-prev" href="#ch11" rel="prev"><span class="pg-k">← Previous</span><span class="pg-t">11. ganymede-ui: the web app</span></a><a class="pg pg-next" href="#ch13" rel="next"><span class="pg-k">Next →</span><span class="pg-t">13. Building, testing, shipping</span></a></nav>
+</section>
+
+<section class="chapter" id="ch13" aria-labelledby="ch13-h">
+  <header class="chapter-head">
+    <p class="chapter-num">Chapter 13<span class="of"> of 14</span></p>
+    <h2 id="ch13-h">Building, testing, shipping</h2>
+  </header>
+  <p>The project&#39;s confidence comes from machine checks rather than people reading code: the e2e suites compare Ganymede against the real Jupyter stack, and every PR gets green CI plus an independent Claude review. Knowing which suite checks what tells you where a claim in this primer is enforced.</p>
+<h3 id="ch13-build-profiles">Build profiles</h3>
+<p>Cargo features choose what the server can do. <code>ganymede-server</code> defaults to <code>zmq</code>, <code>subprocess</code>, <code>gateway</code> and <code>svg</code>. The iOS slices of the XCFramework drop <code>zmq</code> and <code>subprocess</code>. The bottom crates (<code>protocol</code>, <code>nbformat</code>, <code>documents</code>, and <code>kernel-host</code> without its features) build for wasm; <code>e2e/wasm-smoke/</code> proves it by running a notebook on the fake kernel under Node&#39;s WASI. Supported targets for the server are broad (Linux, macOS, Windows best effort, Intel and ARM); the apps target only macOS 26 and iOS 26 on ARM.</p>
+<h3 id="ch13-where-each-promise-is-tested-ganymede">Where each promise is tested (ganymede)</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Promise</th>
+<th>Test</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>The host knows no language</td>
+<td><code>tests/kernels.rs</code> runs the same scenarios on cdp-kernel and ipykernel</td>
+</tr>
+<tr>
+<td>Same notebook as <code>jupyter execute</code></td>
+<td><code>parity.rs</code> executes <code>e2e/notebooks/</code> with both and compares files</td>
+</tr>
+<tr>
+<td>Same REST and websocket API as <code>jupyter_server</code></td>
+<td><code>server.rs</code> runs one scenario against both servers and compares transcripts</td>
+</tr>
+<tr>
+<td>Rooms interoperate with <code>jupyter-collaboration</code></td>
+<td><code>collab.rs</code> syncs a Python <code>jupyter_ydoc</code> client while the file changes on disk</td>
+</tr>
+<tr>
+<td>No Python needed</td>
+<td>The <code>workstation</code> CI job installs and runs everything with Python hidden from <code>PATH</code>, and fails if any Python ran</td>
+</tr>
+<tr>
+<td>Real clients work</td>
+<td><code>validation/</code>: JupyterLab, widgets, trust, LSP, the VS Code extension&#39;s requests, nb-cli</td>
+</tr>
+<tr>
+<td>Byte-identical saves</td>
+<td><code>ganymede-nbformat/tests/roundtrip.rs</code></td>
+</tr>
+</tbody></table></div>
+<p>ganymede&#39;s CI has about 20 jobs, 13 of them required on <code>main</code>. A <code>changes</code> job (<code>scripts/ci-changes.sh</code>) skips jobs a PR can&#39;t affect, so a docs-only PR builds nothing. A weekly run tests against the latest upstream versions to catch drift. <code>audit</code> runs <code>cargo deny</code> for advisories and licenses.</p>
+<p>In ganymede-ui, Vitest unit tests sit beside each source file and Playwright e2e tests run the built app against a real Ganymede and cdp-kernel; <code>macos-app</code> and <code>ios-app</code> build and test the Swift app on GitHub&#39;s macOS runners, and <code>device</code> and <code>device-swift</code> test <code>packages/device</code>. cdp-kernel&#39;s CI tests each runtime, the container image, the browser build and JupyterLab.</p>
+<h3 id="ch13-how-a-change-lands">How a change lands</h3>
+<p>Every change is a GitHub issue, a PR that says <code>Closes #N</code>, green CI, and a dev-log entry in <code>docs/notes/YYYY-MM-DD-&lt;topic&gt;.md</code>. A scheduled reviewer session reviews each green PR and ends with <code>Review: pass</code> or <code>Review: changes needed</code>. Docs for features not yet released carry an <code>**Unreleased.**</code> note, which the release removes.</p>
+<h3 id="ch13-releases">Releases</h3>
+<ol>
+<li>cdp-kernel first, when it has changes: published to npm.</li>
+<li>Ganymede: <code>scripts/release.sh</code> opens a <code>release/vX.Y.Z</code> PR whose commit also moves the cdp-kernel pin and <code>ganymede ui install</code>&#39;s default. Merging tags it; <code>release.yml</code> builds binaries, the container image and the XCFramework.</li>
+<li>ganymede-ui: its release script moves <code>GANYMEDE_REF</code> and cdp-kernel to the latest releases, then builds the web app, the signed and notarized Mac app (with a Sparkle feed) and a TestFlight build.</li>
+</ol>
+<p>Ganymede and ganymede-ui share their minor version; patches ship separately. Releases need the maintainer&#39;s explicit yes. A rolling <code>main-build</code> of the Mac app exists for trying <code>main</code>.</p>
+<aside class="dive" aria-labelledby="ch13-dive-in"><h3 id="ch13-dive-in">Dive in</h3><ul>
+<li><a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede/blob/main/docs/development.md">docs/development.md</a> and <a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede/blob/main/docs/releasing.md">docs/releasing.md</a> in ganymede; <code>CONTRIBUTING.md</code> and <code>docs/releasing.md</code> in the other two repos.</li>
+<li><code>.github/workflows/ci.yml</code> in each repo, with <code>scripts/ci-changes.sh</code> beside it.</li>
+</ul></aside>
+
+  <nav class="pager" aria-label="Chapter navigation"><a class="pg pg-prev" href="#ch12" rel="prev"><span class="pg-k">← Previous</span><span class="pg-t">12. The Apple apps</span></a><a class="pg pg-next" href="#ch14" rel="next"><span class="pg-k">Next →</span><span class="pg-t">14. Where to dive next</span></a></nav>
+</section>
+
+<section class="chapter" id="ch14" aria-labelledby="ch14-h">
+  <header class="chapter-head">
+    <p class="chapter-num">Chapter 14<span class="of"> of 14</span></p>
+    <h2 id="ch14-h">Where to dive next</h2>
+  </header>
+  <p>Pick a path by what you want to be able to talk about. Each path is ordered: read the files in sequence, headers first.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>If you want to understand…</th>
+<th>Read, in order</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>How a kernel is driven</td>
+<td><code>ganymede-protocol/src/lib.rs</code>, <code>wire.rs</code> → <code>ganymede-kernel-host/src/lib.rs</code>, <code>transport.rs</code>, <code>session.rs</code> → <code>ganymede-api/src/bridge.rs</code></td>
+</tr>
+<tr>
+<td>The live notebook (person and agent together)</td>
+<td><code>ganymede-documents/src/lib.rs</code>, <code>room.rs</code>, <code>merge.rs</code> → <code>ganymede-server/src/collab.rs</code> (header, then <code>run_room</code>) → <code>execute.rs</code> → ganymede-ui <code>src/lib/room.ts</code></td>
+</tr>
+<tr>
+<td>Notebooks as programs</td>
+<td><code>ganymede-nbformat/src/params.rs</code>, <code>results.rs</code> → <code>ganymede-exec/src/lib.rs</code> header → <code>ganymede-server/src/run.rs</code> → <code>ganymede-host/src/lib.rs</code> → <code>ganymede-server/src/host.rs</code> → <code>docs/host-api.md</code></td>
+</tr>
+<tr>
+<td>Agents</td>
+<td><code>ganymede-server/src/mcp.rs</code> header → <code>mcp/marks.rs</code> → <code>ganymede-cli/src/mcp.rs</code> → <code>plugins/ganymede-journal/</code> → <code>docs/live-agent-edits.md</code></td>
+</tr>
+<tr>
+<td>The apps as a runtime</td>
+<td>ganymede-ui <code>apple/README.md</code> → <code>ServerHost.swift</code>, <code>AppModel.swift</code> → <code>AppKernels.swift</code> + <code>src/kernel-host.ts</code> + <code>src/lib/kernel-relay.ts</code> → <code>ganymede-kernel-host/src/registered.rs</code> → <code>ganymede-ffi/include/ganymede.h</code></td>
+</tr>
+<tr>
+<td>TypeScript notebooks</td>
+<td>cdp-kernel <code>docs/architecture.md</code> → <code>src/target-api.ts</code> → <code>src/kernel-core.ts</code> → <code>src/transform.ts</code> → <code>runtime/display.mjs</code></td>
+</tr>
+<tr>
+<td>Security boundaries</td>
+<td><code>ganymede-server/src/auth.rs</code> → <code>ganymede-contents/src/paths.rs</code> → grants in <code>host.rs</code> → <code>ganymede-documents/src/depth.rs</code> → <code>docs/security.md</code></td>
+</tr>
+<tr>
+<td>Compatibility claims</td>
+<td><code>docs/architecture.md</code> (tested versions) → <code>docs/known-gaps.md</code> → the e2e tests in chapter 13</td>
+</tr>
+</tbody></table></div>
+<h3 id="ch14-open-edges-worth-knowing-about">Open edges worth knowing about</h3>
+<p>These are the places where the code is moving, so a conversation about the project will likely land on them:</p>
+<ul>
+<li><strong>Native in-app engine.</strong> Replacing the hidden web view kernel with a native V8 engine in the apps (<code>spikes/v8-engine</code> in ganymede). Waiting on a device run and a decision.</li>
+<li><strong>Agents waking on any edit.</strong> Request cells, the edit check and <code>mcp watch</code> are built (chapter 8). Whether the agent should also wake on every settled edit is a spike waiting on a decision (#795).</li>
+<li><strong>Tailnet access.</strong> Tailnet identity in the server, sharing the Mac app&#39;s server on the tailnet, tokenless remotes and Tailscale SSH shipped in 0.12.0 but have not been tried on a real tailnet yet.</li>
+<li><strong>Several folders in one server.</strong> A design note (<a target="_blank" rel="noopener" href="https://github.com/tlockney/ganymede/blob/main/docs/multi-root.md">multi-root.md</a>) recommends named mounts under one contents tree, each with its own rooms, for a sidebar of several folders on iPad and iPhone. Nothing is built yet.</li>
+<li><strong>Secrets in the apps.</strong> A ganymede-ui design note proposes <code>device.secrets</code> as shared named secrets with per-notebook access, waiting on answers.</li>
+<li><strong>Automation on iPad and iPhone.</strong> Shortcuts actions are Mac-only, since iOS suspends the in-app kernel shortly after the app goes to the background. <code>ganymede://open</code> links do work there.</li>
+</ul>
+<h3 id="ch14-keeping-this-primer-current">Keeping this primer current</h3>
+<p>This primer describes <code>main</code> on 2026-11-13, and was checked against the changes merged through 2026-11-18. File names and line counts drift; the module headers it points to live next to the code and change with it, so when the two disagree, trust the header.</p>
+
+  <nav class="pager" aria-label="Chapter navigation"><a class="pg pg-prev" href="#ch13" rel="prev"><span class="pg-k">← Previous</span><span class="pg-t">13. Building, testing, shipping</span></a><span></span></nav>
+</section>
+    <p class="colophon">Part of the <a href="../docs/book">Ganymede docs</a>. Written from the code's module headers and the project docs, and rebuilt by hand, so it describes <code>main</code> as of 18 Nov 2026; when it and the code disagree, trust the code.</p>
+  </article>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  root.classList.add('js');
+  var toc = document.getElementById('toc');
+  var mq = window.matchMedia('(max-width: 900px)');
+  function sync() { if (mq.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync();
+  if (mq.addEventListener) mq.addEventListener('change', sync);
+  var chapters = Array.prototype.slice.call(document.querySelectorAll('section.chapter'));
+  var links = {}, items = {};
+  document.querySelectorAll('.rail a[data-target]').forEach(function (a) { links[a.dataset.target] = a; items[a.dataset.target] = a.parentNode; });
+  var current = null, io = null;
+  function chapterOf(el) { while (el && !(el.classList && el.classList.contains('chapter'))) el = el.parentNode; return el; }
+  function spy(ch) {
+    if (io) io.disconnect();
+    if (!('IntersectionObserver' in window)) return;
+    var subs = {};
+    items[ch.id].querySelectorAll('a[data-sub]').forEach(function (a) { subs[a.dataset.sub] = a; });
+    var on = null;
+    io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting && subs[e.target.id]) {
+          if (on) on.classList.remove('active');
+          on = subs[e.target.id]; on.classList.add('active');
+        }
+      });
+    }, { rootMargin: '0px 0px -75% 0px' });
+    ch.querySelectorAll('h3[id]').forEach(function (h) { io.observe(h); });
+  }
+  function route() {
+    var id = decodeURIComponent(location.hash.slice(1));
+    var target = id ? document.getElementById(id) : null;
+    var ch = target ? chapterOf(target) : null;
+    var same = ch && ch === current;
+    if (current) { current.classList.remove('current'); if (links[current.id]) { links[current.id].classList.remove('active'); items[current.id].classList.remove('open'); } }
+    current = ch;
+    if (!ch) {
+      document.body.classList.remove('reading');
+      document.title = 'Ganymede Code Primer';
+      if (io) io.disconnect();
+      window.scrollTo({ top: 0, behavior: 'instant' });
+      return;
+    }
+    document.body.classList.add('reading');
+    ch.classList.add('current');
+    links[ch.id].classList.add('active');
+    items[ch.id].classList.add('open');
+    document.title = ch.querySelector('h2').textContent + ' · Ganymede Code Primer';
+    if (mq.matches) toc.removeAttribute('open');
+    if (target === ch) window.scrollTo({ top: 0, behavior: 'instant' });
+    else target.scrollIntoView({ behavior: same ? 'smooth' : 'instant' });
+    spy(ch);
+  }
+  window.addEventListener('hashchange', route);
+  document.addEventListener('keydown', function (e) {
+    if (!current || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    var t = e.target.tagName; if (t === 'INPUT' || t === 'TEXTAREA') return;
+    var i = chapters.indexOf(current);
+    var go = e.key === 'ArrowRight' ? chapters[i + 1] : e.key === 'ArrowLeft' ? chapters[i - 1] : null;
+    if (go) { e.preventDefault(); location.hash = go.id; }
+  });
+  route();
+  // The browser's own jump to the URL's anchor runs after this script on load; redo ours.
+  window.addEventListener('load', function () {
+    if (current && decodeURIComponent(location.hash.slice(1)) === current.id) window.scrollTo({ top: 0, behavior: 'instant' });
+  });
+})();
+</script>
+
+</body>
+</html>
