@@ -253,10 +253,6 @@ another unit, several ranges, a malformed value or a request with
 `If-Range`, gets the whole file with `200`. Every file response (`200`,
 `206` and `416`) carries `Accept-Ranges: bytes`.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 A file whose name gives no type (`.jsonl`, `.ndjson` and `.arrow`, for
 example) is checked for UTF-8 from start to end before the first byte is
 sent, to choose `text/plain` or `application/octet-stream`, as
