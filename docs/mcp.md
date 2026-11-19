@@ -273,11 +273,6 @@ isn't reported to the agent as someone else's edit.
 | `notebooks_search` | Cells across notebooks that contain every word of a query (see [Search](#search)). |
 | `notebook_publish` | The notebook as one self-contained HTML page, saved under the root (see [Publishing a notebook](#publishing-a-notebook)). |
 
-> [!NOTE]
-> **Unreleased.** `collapse` on `cell_run` and `cell_add` is available
-> only from a build of `main` (HEAD), not in the latest release, which
-> ignores it.
-
 Each notebook is also a `notebook://<path>` resource, and the `journal`
 prompt gives the agent conventions for keeping the record.
 

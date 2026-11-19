@@ -109,11 +109,6 @@ anyway. Your own modules stay as they are.
 The agent saves helper cells collapsed, as JupyterLab's collapser does,
 so the notebook opens on the analysis; expand one to read it.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release, which ignores `collapse` and saves helper cells
-> expanded.
-
 The kernel a new journal starts is, in order: the one you ask for; the
 folder's default, `kernel = "python3"` in a
 [`.ganymede.toml`](mcp.md#kernel-for-a-new-notebook) in that folder or
