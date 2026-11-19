@@ -1402,7 +1402,7 @@ html:not(.js) .pager { display: none; }
 <tr>
 <td>Data files</td>
 <td><a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/components/DataPane.tsx" target="_blank" rel="noopener"><code>components/DataPane.tsx</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/data-files.ts" target="_blank" rel="noopener"><code>lib/data-files.ts</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/data-read.ts" target="_blank" rel="noopener"><code>lib/data-read.ts</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/parquet.ts" target="_blank" rel="noopener"><code>lib/parquet.ts</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/components/DuckdbConsole.tsx" target="_blank" rel="noopener"><code>components/DuckdbConsole.tsx</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/duckdb-console.ts" target="_blank" rel="noopener"><code>lib/duckdb-console.ts</code></a></td>
-<td>CSV and TSV open as a table (the table renderer), JSON as a tree, Parquet through DuckDB wasm, in the notebook&#39;s place. The DuckDB console is a SQL prompt in a tab on the same engine, reading files from the window&#39;s folder, with Export to Notebook</td>
+<td>CSV and TSV open as a table (the table renderer), JSON as a tree, Parquet through DuckDB wasm, in the notebook&#39;s place. The DuckDB console is a SQL prompt that opens in the same place, on the DuckDB wasm build a notebook&#39;s SQL uses, in a worker of its own; it reads the files a statement names and can export the session to a notebook</td>
 </tr>
 <tr>
 <td>Small features</td>
