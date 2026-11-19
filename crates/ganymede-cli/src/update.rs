@@ -255,6 +255,15 @@ fn managed(exe: &Path, profile: &str) -> Option<String> {
     if profile != "release" {
         return Some(format!("this is a {profile} build; {source}"));
     }
+    // The Mac app's copy (ganymede-ui#686), reached directly or through
+    // the link Settings installs: writing here would break the app's
+    // code signature.
+    if names
+        .windows(2)
+        .any(|w| w[0].ends_with(".app") && w[0].len() > 4 && w[1] == "contents")
+    {
+        return Some("this ganymede comes with the Ganymede app; it updates with the app".into());
+    }
     if names.iter().any(|n| n == "target") && matches!(parent, Some("release" | "debug")) {
         return Some(format!(
             "this binary is in a cargo target directory; {source}"
@@ -566,6 +575,14 @@ mod tests {
         assert!(release("/nix/store/abc-ganymede/bin/ganymede")
             .unwrap()
             .contains("Nix"));
+        assert!(
+            release("/Applications/Ganymede.app/Contents/Helpers/ganymede")
+                .unwrap()
+                .contains("Ganymede app")
+        );
+        assert!(release("/Users/u/Downloads/Ganymede 2.APP/Contents/MacOS/ganymede").is_some());
+        assert_eq!(release("/home/u/my.app/bin/ganymede"), None);
+        assert_eq!(release("/home/u/.app/Contents/ganymede"), None);
         assert!(managed(Path::new("/home/u/.local/bin/ganymede"), "debug")
             .unwrap()
             .contains("debug build"));
