@@ -40,8 +40,8 @@ and about 300 MB of disk, most of it for Node.
 CI runs the same commands on every pull request, on Linux and macOS, with
 Python hidden from `PATH`
 ([`scripts/test-workstation.sh`](../scripts/test-workstation.sh)).
-[Other ways to install](#other-ways-to-install) covers the script's
-options, the download by hand, a container, building from source, and
+[Other ways to install](#other-ways-to-install) covers the Mac app, the
+script's options, the download by hand, a container, building from source, and
 Windows.
 
 ## 1. Install Ganymede
@@ -374,15 +374,21 @@ case.
 
 The Mac app carries the same `ganymede` binary. In Ganymede's Settings,
 General, Command Line Tool, **Install** links it to
-`~/.local/bin/ganymede`; add `~/.local/bin` to your `PATH` if Settings
-says it isn't there. The link follows the app, so the command updates
-when the app does, and `ganymede update` leaves it alone. Settings never
-replaces a `ganymede` it didn't put there unless you choose **Replace…**,
-which moves the old one to the Trash.
+`~/.local/bin/ganymede`. If Settings says `~/.local/bin` isn't on your
+`PATH`, add the line it shows (in `~/.zprofile` with zsh). The link
+points into the app, so the command updates when the app does, and
+`ganymede update` refuses it and says to update the app instead. Moving
+or deleting the app breaks the link; after a move, **Update Link** in
+Settings repoints it. Rerunning `install.sh` replaces the link with its
+own copy, which then no longer follows the app. Settings never replaces
+a `ganymede` it didn't put there unless you choose **Replace…**, which
+moves the old one to the Trash.
 
 > [!NOTE]
 > **Unreleased in ganymede-ui.** Available only from a build of
-> ganymede-ui's `main`, not in its latest release.
+> ganymede-ui's `main` that bundles a ganymede release after 0.13.0
+> (its `GANYMEDE_REF`), not in its latest release. Builds on v0.13.0 or
+> earlier carry no command line tool and show no such section.
 
 ### Install script options
 
