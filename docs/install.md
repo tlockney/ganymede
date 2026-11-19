@@ -370,6 +370,20 @@ case.
 
 ## Other ways to install
 
+### From the Mac app
+
+The Mac app carries the same `ganymede` binary. In Ganymede's Settings,
+General, Command Line Tool, **Install** links it to
+`~/.local/bin/ganymede`; add `~/.local/bin` to your `PATH` if Settings
+says it isn't there. The link follows the app, so the command updates
+when the app does, and `ganymede update` leaves it alone. Settings never
+replaces a `ganymede` it didn't put there unless you choose **Replace…**,
+which moves the old one to the Trash.
+
+> [!NOTE]
+> **Unreleased in ganymede-ui.** Available only from a build of
+> ganymede-ui's `main`, not in its latest release.
+
 ### Install script options
 
 Options go after `sh -s --`:
