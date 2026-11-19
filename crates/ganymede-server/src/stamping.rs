@@ -361,6 +361,10 @@ impl Contents for Stamping {
         self.inner.get(path, options).await
     }
 
+    async fn open_file(&self, path: &str) -> Result<Option<ganymede_contents::OpenFile>> {
+        self.inner.open_file(path).await
+    }
+
     async fn save(&self, path: &str, request: SaveRequest) -> Result<ContentsModel> {
         let inner = self.inner.clone();
         let p = path.to_string();
@@ -839,6 +843,17 @@ mod tests {
         let (id, _) = collab.index(&format!("d/{name}")).await;
         collab.set_grant(id, Some(GRANT.into())).await.unwrap();
         (dir, collab, contents)
+    }
+
+    /// The production wrapper streams: it forwards `open_file` rather than
+    /// taking the default `None`.
+    #[tokio::test]
+    async fn open_file_is_forwarded_to_the_inner_contents() {
+        let (dir, _collab, contents) = granted_in_d("a.ipynb").await;
+        std::fs::write(dir.path().join("d/data.bin"), [7u8; 123]).unwrap();
+        let open = contents.open_file("d/data.bin").await.unwrap().unwrap();
+        assert_eq!(open.len, 123);
+        assert_eq!(open.name, "data.bin");
     }
 
     /// Waits until a write is registered, as `begin_write` does. Gives up

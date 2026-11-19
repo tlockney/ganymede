@@ -243,6 +243,33 @@ contents path, with the same root and hidden-file rules as
 `/api/contents`. Without `download`, there is no `Content-Disposition`. A
 directory gets `400`.
 
+The server streams the file from disk, a chunk at a time, so a large file
+costs no memory. It answers a single `bytes` `Range` (`bytes=0-1023`,
+`bytes=1024-` or the suffix `bytes=-8`) with `206 Partial Content` and a
+`Content-Range`, so a client can read the first N bytes, or a Parquet
+file's footer, without the rest. A range that can't be satisfied gets
+`416` with `Content-Range: bytes */<length>`. Anything else, such as
+another unit, several ranges, a malformed value or a request with
+`If-Range`, gets the whole file with `200`. Every file response (`200`,
+`206` and `416`) carries `Accept-Ranges: bytes`.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+A file whose name gives no type (`.jsonl`, `.ndjson` and `.arrow`, for
+example) is checked for UTF-8 from start to end before the first byte is
+sent, to choose `text/plain` or `application/octet-stream`, as
+`jupyter_server`'s `FilesHandler` does (its default `StaticFileHandler`
+sends `application/octet-stream` without checking). Memory stays flat,
+but a `HEAD` or `Range` request for such a file on a large file reads
+all of it first. Names
+with a known type (`.csv`, `.json`, `.tsv`, `.parquet`) don't.
+
+With its default file-backed contents manager, `jupyter_server` serves
+`/files` through tornado's `StaticFileHandler`, which answers a single
+byte range too. Streaming and `Range` bring `/files` in line with it.
+
 Every response carries `Content-Security-Policy: sandbox allow-scripts`,
 as jupyter_server's does. An HTML or SVG file opened from `/files` runs
 its scripts in an opaque origin, so it can't read the UI's token or

@@ -116,6 +116,17 @@ impl Error {
     }
 }
 
+/// A file opened for streaming by [`Contents::open_file`].
+#[derive(Debug)]
+pub struct OpenFile {
+    /// The file's name, as [`ContentsModel::name`] has it.
+    pub name: String,
+    /// The open file, positioned at its start.
+    pub file: std::fs::File,
+    /// Its length in bytes, from the open handle.
+    pub len: u64,
+}
+
 /// Result alias for this crate.
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -134,6 +145,14 @@ pub trait Contents: Send + Sync {
     /// content for directories. `options.type_hint` forces the kind, as the
     /// `?type=` query parameter does.
     async fn get(&self, path: &str, options: GetOptions) -> Result<ContentsModel>;
+
+    /// Open a file to stream its bytes; `GET /files/{path}`. Same root, path
+    /// and hidden rules as `get`. `Ok(None)` (the default) means this
+    /// implementation can't stream, and the caller reads it with `get`.
+    async fn open_file(&self, path: &str) -> Result<Option<OpenFile>> {
+        let _ = path;
+        Ok(None)
+    }
 
     /// Create or overwrite; `PUT /api/contents/{path}`.
     ///
