@@ -109,15 +109,17 @@ jobs:
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
-      # Fetch the deployed site from SITE_URL: the landing page, a docs page,
-      # the docs stylesheet that page links, and the install script. A base
-      # path that doesn't match the domain makes the stylesheet 404.
+      # Fetch the deployed site from SITE_URL: the landing page, the book,
+      # a docs page, the docs stylesheet that page links, and the install
+      # script. A base path that doesn't match the domain makes the
+      # stylesheet 404.
       - name: smoke test
         run: |
           check() { curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o /dev/null "$1" && echo "ok $1"; }
           check "$SITE_URL/"
           check "$SITE_URL/install.sh"
           check "$SITE_URL/llms.txt"
+          check "$SITE_URL/book/"
           check "$SITE_URL/docs/install.md"
           check "$SITE_URL/images/themed/architecture/ganymede.light.svg"
           page=$(curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors "$SITE_URL/docs/install")

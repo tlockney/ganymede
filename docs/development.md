@@ -201,7 +201,12 @@ do when a release fails partway.
 
 ## This site
 
-The landing page is plain HTML and CSS in `site/`. These docs are
+The landing page is plain HTML and CSS in `site/`. The book
+(`site/book/`, [The book](book.md)) is one generated HTML page, with its
+fonts in `site/book/fonts/`. It is generated outside this repository from
+the code architecture primer, which the maintainer keeps and rebuilds
+by hand. A small fix, such as a broken link, can go straight into
+`index.html`; tell the maintainer so the primer gets it too. These docs are
 Markdown in `docs/`, built by VitePress:
 
 ```sh
