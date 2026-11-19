@@ -151,9 +151,9 @@ In order of priority.
    ([ganymede-ui#663](https://github.com/tlockney/ganymede-ui/issues/663)).
    Type errors as you type, signature help, go to definition and rename
    in TypeScript cells (cdp-kernel 0.13.0 and 0.14.0), table and tree
-   views for data files, live Markdown preview and a DuckDB console are
-   on ganymede-ui's `main`. Next: the same TypeScript help in the in-app
-   kernel ([ganymede-ui#668](https://github.com/tlockney/ganymede-ui/issues/668)).
+   views for data files, live Markdown preview, a DuckDB console, and the
+   same TypeScript help in the in-app and browser kernels are on
+   ganymede-ui's `main`.
 
    > [!NOTE]
    > **Unreleased in ganymede-ui.** The apps' editing features are
