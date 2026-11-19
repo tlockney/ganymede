@@ -19,7 +19,7 @@ use crate::model::{
 };
 use crate::paths::{path_under, ApiPath};
 use crate::trust::{self, Notary};
-use crate::{Contents, Error, Result};
+use crate::{Contents, Error, OpenFile, Result};
 
 /// The one checkpoint id `jupyter_server`'s `FileCheckpoints` uses.
 pub const CHECKPOINT_ID: &str = "checkpoint";
@@ -133,6 +133,11 @@ impl Contents for FsContents {
     async fn get(&self, path: &str, options: GetOptions) -> Result<ContentsModel> {
         let path = path.to_owned();
         self.run(move |i| i.get(&path, options)).await
+    }
+
+    async fn open_file(&self, path: &str) -> Result<Option<OpenFile>> {
+        let path = path.to_owned();
+        self.run(move |i| i.open_file(&path).map(Some)).await
     }
 
     async fn save(&self, path: &str, request: SaveRequest) -> Result<ContentsModel> {
@@ -321,6 +326,29 @@ impl Inner {
             model.mimetype = guess_mime(&r.os);
             model
         }
+    }
+
+    /// Open a regular file for streaming, under the rules of [`Inner::get`]
+    /// with a file type hint. The length is the open handle's.
+    fn open_file(&self, path: &str) -> Result<OpenFile> {
+        let r = self.resolve_for_read(path)?;
+        let meta = self.stat(&r)?;
+        if meta.is_dir() {
+            return Err(Error::BadRequest(format!(
+                "{} is a directory, not a file",
+                r.api
+            )));
+        }
+        if !meta.is_file() {
+            return Err(Error::NotFound(r.api.to_string()));
+        }
+        let file = fs::File::open(&r.os).map_err(|e| io_to_error(e, &r.api))?;
+        let len = file.metadata().map_err(|e| io_to_error(e, &r.api))?.len();
+        Ok(OpenFile {
+            name: r.api.name().to_owned(),
+            file,
+            len,
+        })
     }
 
     fn get(&self, path: &str, options: GetOptions) -> Result<ContentsModel> {
@@ -1446,6 +1474,44 @@ fn splitext(name: &str) -> (&str, &str) {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn open_file_opens_a_file_with_its_length() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub/a b.txt"), "hello").unwrap();
+        let c = FsContents::new(dir.path(), FsOptions::default()).unwrap();
+        let open = c.open_file("sub/a b.txt").await.unwrap().unwrap();
+        assert_eq!(open.name, "a b.txt");
+        assert_eq!(open.len, 5);
+    }
+
+    #[tokio::test]
+    async fn open_file_refuses_a_directory_and_a_hidden_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join(".secret"), "no").unwrap();
+        let c = FsContents::new(dir.path(), FsOptions::default()).unwrap();
+        let e = c.open_file("sub").await.unwrap_err();
+        assert_eq!(e.status(), 400, "{e}");
+        let e = c.open_file(".secret").await.unwrap_err();
+        assert_eq!(e.status(), 404, "{e}");
+        let e = c.open_file("missing").await.unwrap_err();
+        assert_eq!(e.status(), 404, "{e}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_file_refuses_a_symlink_out_of_the_root() {
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("x.txt"), "secret").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path().join("x.txt"), dir.path().join("l.txt")).unwrap();
+        let c = FsContents::new(dir.path(), FsOptions::default()).unwrap();
+        let e = c.open_file("l.txt").await.unwrap_err();
+        assert!(matches!(e, Error::OutsideRoot(_)), "{e}");
+        assert_eq!(e.status(), 404);
+    }
 
     /// Two paths to one file share a save lock, a new file included.
     #[cfg(unix)]

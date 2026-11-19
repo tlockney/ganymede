@@ -3973,6 +3973,209 @@ async fn files_serves_raw_bytes() {
     );
 }
 
+#[tokio::test]
+async fn files_answers_range_requests() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("digits.txt"), "0123456789").unwrap();
+    let app = build_router(state(dir.path()));
+    let get = |path: &str, range: Option<&str>, if_range: bool| {
+        let mut req = Request::get(path).header(header::AUTHORIZATION, format!("token {TOKEN}"));
+        if let Some(r) = range {
+            req = req.header(header::RANGE, r);
+        }
+        if if_range {
+            req = req.header(header::IF_RANGE, "\"etag\"");
+        }
+        req.body(Body::empty()).unwrap()
+    };
+
+    // No Range: the whole file, and the server says it takes ranges.
+    let (st, h, body) = raw(&app, get("/files/digits.txt", None, false)).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(h[header::ACCEPT_RANGES], "bytes");
+    assert_eq!(h[header::CONTENT_LENGTH], "10");
+    assert!(h.get(header::CONTENT_RANGE).is_none());
+    assert_eq!(body, b"0123456789");
+
+    // HEAD: the headers of the GET, no body.
+    let head = Request::head("/files/digits.txt")
+        .header(header::AUTHORIZATION, format!("token {TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    let (st, h, body) = raw(&app, head).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(h[header::ACCEPT_RANGES], "bytes");
+    assert_eq!(h[header::CONTENT_LENGTH], "10");
+    assert!(body.is_empty());
+
+    // Satisfiable ranges: 206 with Content-Range and the slice.
+    for (range, content_range, want) in [
+        ("bytes=0-3", "bytes 0-3/10", "0123"),
+        ("bytes=5-", "bytes 5-9/10", "56789"),
+        ("bytes=-4", "bytes 6-9/10", "6789"),
+        ("bytes=-100", "bytes 0-9/10", "0123456789"),
+        ("bytes=7-100", "bytes 7-9/10", "789"),
+        (" Bytes = 2-3 ", "bytes 2-3/10", "23"),
+    ] {
+        let (st, h, body) = raw(&app, get("/files/digits.txt", Some(range), false)).await;
+        assert_eq!(st, StatusCode::PARTIAL_CONTENT, "{range}");
+        assert_eq!(h[header::CONTENT_RANGE], content_range, "{range}");
+        assert_eq!(h[header::CONTENT_LENGTH], want.len().to_string(), "{range}");
+        assert_eq!(h[header::ACCEPT_RANGES], "bytes", "{range}");
+        assert_eq!(
+            h[header::CONTENT_SECURITY_POLICY],
+            "sandbox allow-scripts; frame-ancestors 'self'"
+        );
+        assert_eq!(body, want.as_bytes(), "{range}");
+    }
+    // The download disposition stays on a 206.
+    let (st, h, _) = raw(
+        &app,
+        get("/files/digits.txt?download=1", Some("bytes=0-1"), false),
+    )
+    .await;
+    assert_eq!(st, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        h[header::CONTENT_DISPOSITION],
+        "attachment; filename*=utf-8''digits.txt"
+    );
+
+    // Unsatisfiable: 416 and the length, no body.
+    for range in ["bytes=100-", "bytes=10-", "bytes=-0"] {
+        let (st, h, body) = raw(&app, get("/files/digits.txt", Some(range), false)).await;
+        assert_eq!(st, StatusCode::RANGE_NOT_SATISFIABLE, "{range}");
+        assert_eq!(h[header::CONTENT_RANGE], "bytes */10", "{range}");
+        assert_eq!(h[header::ACCEPT_RANGES], "bytes", "{range}");
+        assert!(body.is_empty(), "{range}");
+    }
+
+    // Anything else is ignored: the whole file with 200.
+    for range in [
+        "bytes=abc",
+        "items=0-1",
+        "bytes=0-1,4-5",
+        "bytes=5-2",
+        "bytes=",
+        "bytes=99999999999999999999-",
+    ] {
+        let (st, h, body) = raw(&app, get("/files/digits.txt", Some(range), false)).await;
+        assert_eq!(st, StatusCode::OK, "{range}");
+        assert_eq!(h[header::ACCEPT_RANGES], "bytes", "{range}");
+        assert_eq!(body, b"0123456789", "{range}");
+    }
+    // With If-Range, and no validators sent, the range is ignored.
+    let (st, _, body) = raw(&app, get("/files/digits.txt", Some("bytes=0-3"), true)).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body, b"0123456789");
+
+    // An empty file has no satisfiable range.
+    std::fs::write(dir.path().join("empty.txt"), "").unwrap();
+    let (st, h, _) = raw(&app, get("/files/empty.txt", Some("bytes=0-"), false)).await;
+    assert_eq!(st, StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(h[header::CONTENT_RANGE], "bytes */0");
+    let (st, _, body) = raw(&app, get("/files/empty.txt", None, false)).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(body.is_empty());
+
+    // Errors keep their statuses on this path.
+    for (path, want) in [
+        ("/files/missing.txt", StatusCode::NOT_FOUND),
+        ("/files/..%2F..%2Fetc%2Fpasswd", StatusCode::NOT_FOUND),
+    ] {
+        let (st, _, _) = raw(&app, get(path, Some("bytes=0-1"), false)).await;
+        assert_eq!(st, want, "{path}");
+    }
+}
+
+/// A file with no extension is text when all of it is UTF-8, wherever a
+/// character falls against the 64 KiB chunks the check reads.
+#[tokio::test]
+async fn files_sniffs_utf8_across_chunk_boundaries() {
+    let dir = tempfile::tempdir().unwrap();
+    // 'é' is two bytes, cut between them by the first chunk's end.
+    let mut straddle = vec![b'a'; 65535];
+    straddle.extend("é and more text".as_bytes());
+    std::fs::write(dir.path().join("straddle"), &straddle).unwrap();
+    // A 3-byte character cut after one byte, then after two.
+    for (name, pad) in [("euro1", 65535), ("euro2", 65534)] {
+        let mut v = vec![b'a'; pad];
+        v.extend("€ tail".as_bytes());
+        std::fs::write(dir.path().join(name), v).unwrap();
+    }
+    // Invalid, well past the first chunk.
+    let mut bad = vec![b'a'; 200_000];
+    bad.push(0xff);
+    bad.extend(b"tail");
+    std::fs::write(dir.path().join("late_bad"), &bad).unwrap();
+    // A character cut by the end of the file.
+    let mut cut = vec![b'a'; 70_000];
+    cut.push(0xc3);
+    std::fs::write(dir.path().join("cut_at_eof"), &cut).unwrap();
+    let app = build_router(state(dir.path()));
+    let ctype = |name: &'static str| {
+        let req = Request::get(format!("/files/{name}"))
+            .header(header::AUTHORIZATION, format!("token {TOKEN}"))
+            .body(Body::empty())
+            .unwrap();
+        let app = app.clone();
+        async move {
+            let (st, h, _) = raw(&app, req).await;
+            assert_eq!(st, StatusCode::OK, "{name}");
+            h[header::CONTENT_TYPE].to_str().unwrap().to_owned()
+        }
+    };
+    for name in ["straddle", "euro1", "euro2"] {
+        assert_eq!(ctype(name).await, "text/plain; charset=UTF-8", "{name}");
+    }
+    assert_eq!(ctype("late_bad").await, "application/octet-stream");
+    assert_eq!(ctype("cut_at_eof").await, "application/octet-stream");
+}
+
+/// A file far larger than any cap is sent a chunk at a time, and a range
+/// at its end reads only that: the Parquet footer case.
+#[tokio::test]
+async fn files_streams_a_large_file_without_reading_it_whole() {
+    const LEN: u64 = 1 << 30;
+    let dir = tempfile::tempdir().unwrap();
+    let f = std::fs::File::create(dir.path().join("big.csv")).unwrap();
+    f.set_len(LEN).unwrap();
+    drop(f);
+    let app = build_router(state(dir.path()));
+    let get = |range: Option<&str>| {
+        let mut req =
+            Request::get("/files/big.csv").header(header::AUTHORIZATION, format!("token {TOKEN}"));
+        if let Some(r) = range {
+            req = req.header(header::RANGE, r);
+        }
+        req.body(Body::empty()).unwrap()
+    };
+
+    let resp = app.clone().oneshot(get(None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()[header::CONTENT_TYPE], "text/csv");
+    assert_eq!(resp.headers()[header::CONTENT_LENGTH], LEN.to_string());
+    let mut stream = resp.into_body().into_data_stream();
+    let (mut total, mut largest) = (0u64, 0usize);
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.unwrap();
+        largest = largest.max(chunk.len());
+        total += chunk.len() as u64;
+    }
+    assert_eq!(total, LEN);
+    assert!(largest <= 64 * 1024, "a {largest} byte chunk");
+
+    let (st, h, body) = raw(&app, get(Some("bytes=-8"))).await;
+    assert_eq!(st, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        h[header::CONTENT_RANGE],
+        format!("bytes {}-{}/{LEN}", LEN - 8, LEN - 1)
+    );
+    assert_eq!(body, [0u8; 8]);
+    let (st, _, body) = raw(&app, get(Some("bytes=1073741000-1073741003"))).await;
+    assert_eq!(st, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body.len(), 4);
+}
+
 async fn raw(app: &axum::Router, req: Request<Body>) -> (StatusCode, header::HeaderMap, Vec<u8>) {
     let resp = app.clone().oneshot(req).await.unwrap();
     let (parts, body) = resp.into_parts();

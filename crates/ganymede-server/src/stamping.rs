@@ -361,6 +361,10 @@ impl Contents for Stamping {
         self.inner.get(path, options).await
     }
 
+    async fn open_file(&self, path: &str) -> Result<Option<ganymede_contents::OpenFile>> {
+        self.inner.open_file(path).await
+    }
+
     async fn save(&self, path: &str, request: SaveRequest) -> Result<ContentsModel> {
         let inner = self.inner.clone();
         let p = path.to_string();
