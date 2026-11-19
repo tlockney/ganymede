@@ -14,10 +14,72 @@
     if (mode === "light" || mode === "dark") document.documentElement.dataset.theme = mode;
   } catch {}
 </script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap">
 <style>
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(fonts/jetbrains-mono-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url(fonts/jetbrains-mono-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Schibsted Grotesk';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url(fonts/schibsted-grotesk-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Schibsted Grotesk';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url(fonts/schibsted-grotesk-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Schibsted Grotesk';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(fonts/schibsted-grotesk-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Source Serif 4';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url(fonts/source-serif-4-italic.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Source Serif 4';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(fonts/source-serif-4-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Source Serif 4';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url(fonts/source-serif-4-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 /* Layout: a book. Sticky chapter rail on the left, one reading column of ~68ch, diagrams break slightly wider. */
 :root {
   --bg: #f5f6f8;
@@ -263,17 +325,17 @@ html:not(.js) .pager { display: none; }
       <ol>
 <li data-ch="how-to-read-this"><a href="#how-to-read-this" data-target="how-to-read-this"><span class="n">·</span><span>How to read this</span></a></li>
 <li data-ch="ch1"><a href="#ch1" data-target="ch1"><span class="n">1</span><span>The map</span></a><ol class="subs"><li><a href="#ch1-three-layers" data-sub="ch1-three-layers">Three layers</a></li><li><a href="#ch1-four-repositories" data-sub="ch1-four-repositories">Four repositories</a></li><li><a href="#ch1-where-it-runs" data-sub="ch1-where-it-runs">Where it runs</a></li><li><a href="#ch1-vocabulary" data-sub="ch1-vocabulary">Vocabulary</a></li><li><a href="#ch1-rules-that-shape-the-code" data-sub="ch1-rules-that-shape-the-code">Rules that shape the code</a></li></ol></li>
-<li data-ch="ch2"><a href="#ch2" data-target="ch2"><span class="n">2</span><span>Pure foundations: protocol and nbformat</span></a><ol class="subs"><li><a href="#ch2-ganymede-protocol-about-1-350-lines" data-sub="ch2-ganymede-protocol-about-1-350-lines">Ganymede-protocol (about 1,350 lines)</a></li><li><a href="#ch2-ganymede-nbformat-about-6-700-lines" data-sub="ch2-ganymede-nbformat-about-6-700-lines">Ganymede-nbformat (about 6,700 lines)</a></li></ol></li>
+<li data-ch="ch2"><a href="#ch2" data-target="ch2"><span class="n">2</span><span>Pure foundations: protocol and nbformat</span></a><ol class="subs"><li><a href="#ch2-ganymede-protocol-about-1-350-lines" data-sub="ch2-ganymede-protocol-about-1-350-lines">ganymede-protocol (about 1,350 lines)</a></li><li><a href="#ch2-ganymede-nbformat-about-6-700-lines" data-sub="ch2-ganymede-nbformat-about-6-700-lines">ganymede-nbformat (about 6,700 lines)</a></li></ol></li>
 <li data-ch="ch3"><a href="#ch3" data-target="ch3"><span class="n">3</span><span>Kernel host: getting a kernel and talking to it</span></a><ol class="subs"><li><a href="#ch3-the-seams" data-sub="ch3-the-seams">The seams</a></li><li><a href="#ch3-kernelsession-the-state-machine" data-sub="ch3-kernelsession-the-state-machine">KernelSession: the state machine</a></li><li><a href="#ch3-flow-starting-a-kernel" data-sub="ch3-flow-starting-a-kernel">Starting a kernel</a></li></ol></li>
-<li data-ch="ch4"><a href="#ch4" data-target="ch4"><span class="n">4</span><span>API and contents: the server's logic without HTTP</span></a><ol class="subs"><li><a href="#ch4-ganymede-api-about-3-800-lines" data-sub="ch4-ganymede-api-about-3-800-lines">Ganymede-api (about 3,800 lines)</a></li><li><a href="#ch4-ganymede-contents-about-5-900-lines" data-sub="ch4-ganymede-contents-about-5-900-lines">Ganymede-contents (about 5,900 lines)</a></li><li><a href="#ch4-flow-saving-a-notebook" data-sub="ch4-flow-saving-a-notebook">Saving a notebook</a></li></ol></li>
+<li data-ch="ch4"><a href="#ch4" data-target="ch4"><span class="n">4</span><span>API and contents: the server's logic without HTTP</span></a><ol class="subs"><li><a href="#ch4-ganymede-api-about-3-800-lines" data-sub="ch4-ganymede-api-about-3-800-lines">ganymede-api (about 3,800 lines)</a></li><li><a href="#ch4-ganymede-contents-about-5-900-lines" data-sub="ch4-ganymede-contents-about-5-900-lines">ganymede-contents (about 5,900 lines)</a></li><li><a href="#ch4-flow-saving-a-notebook" data-sub="ch4-flow-saving-a-notebook">Saving a notebook</a></li></ol></li>
 <li data-ch="ch5"><a href="#ch5" data-target="ch5"><span class="n">5</span><span>The server</span></a><ol class="subs"><li><a href="#ch5-code-map" data-sub="ch5-code-map">Code map</a></li><li><a href="#ch5-who-gets-in" data-sub="ch5-who-gets-in">Who gets in</a></li><li><a href="#ch5-how-a-request-is-served" data-sub="ch5-how-a-request-is-served">How a request is served</a></li><li><a href="#ch5-flow-running-a-cell" data-sub="ch5-flow-running-a-cell">Running a cell</a></li></ol></li>
 <li data-ch="ch6"><a href="#ch6" data-target="ch6"><span class="n">6</span><span>Rooms: one live notebook for everyone</span></a><ol class="subs"><li><a href="#ch6-two-halves" data-sub="ch6-two-halves">Two halves</a></li><li><a href="#ch6-what-a-room-39-s-task-does" data-sub="ch6-what-a-room-39-s-task-does">What a room&#39;s task does</a></li><li><a href="#ch6-flow-an-edit-in-a-room" data-sub="ch6-flow-an-edit-in-a-room">An edit in a room</a></li><li><a href="#ch6-flow-running-cells-into-a-room" data-sub="ch6-flow-running-cells-into-a-room">Running cells into a room</a></li></ol></li>
-<li data-ch="ch7"><a href="#ch7" data-target="ch7"><span class="n">7</span><span>The notebook as a program</span></a><ol class="subs"><li><a href="#ch7-ganymede-exec-one-1-700-line-file" data-sub="ch7-ganymede-exec-one-1-700-line-file">Ganymede-exec (one 1,700-line file)</a></li><li><a href="#ch7-the-run-contract" data-sub="ch7-the-run-contract">The run contract</a></li><li><a href="#ch7-the-host-api" data-sub="ch7-the-host-api">The host API</a></li><li><a href="#ch7-grants" data-sub="ch7-grants">Grants</a></li><li><a href="#ch7-flow-a-notebook-running-another-notebook" data-sub="ch7-flow-a-notebook-running-another-notebook">A notebook running another notebook</a></li></ol></li>
+<li data-ch="ch7"><a href="#ch7" data-target="ch7"><span class="n">7</span><span>The notebook as a program</span></a><ol class="subs"><li><a href="#ch7-ganymede-exec-one-1-700-line-file" data-sub="ch7-ganymede-exec-one-1-700-line-file">ganymede-exec (one 1,700-line file)</a></li><li><a href="#ch7-the-run-contract" data-sub="ch7-the-run-contract">The run contract</a></li><li><a href="#ch7-the-host-api" data-sub="ch7-the-host-api">The host API</a></li><li><a href="#ch7-grants" data-sub="ch7-grants">Grants</a></li><li><a href="#ch7-flow-a-notebook-running-another-notebook" data-sub="ch7-flow-a-notebook-running-another-notebook">A notebook running another notebook</a></li></ol></li>
 <li data-ch="ch8"><a href="#ch8" data-target="ch8"><span class="n">8</span><span>Agent-native: an agent in the same live notebook</span></a><ol class="subs"><li><a href="#ch8-the-pieces" data-sub="ch8-the-pieces">The pieces</a></li><li><a href="#ch8-design-choices-visible-in-the-code" data-sub="ch8-design-choices-visible-in-the-code">Design choices visible in the code</a></li><li><a href="#ch8-how-the-agent-hears-about-a-person-39-s-edits" data-sub="ch8-how-the-agent-hears-about-a-person-39-s-edits">How the agent hears about a person&#39;s edits</a></li><li><a href="#ch8-the-journal-plugin" data-sub="ch8-the-journal-plugin">The journal plugin</a></li><li><a href="#ch8-flow-an-agent-editing-the-notebook-a-person-has-open" data-sub="ch8-flow-an-agent-editing-the-notebook-a-person-has-open">An agent editing the notebook a person has open</a></li></ol></li>
-<li data-ch="ch9"><a href="#ch9" data-target="ch9"><span class="n">9</span><span>CLI and embedding: three ways to use the core</span></a><ol class="subs"><li><a href="#ch9-ganymede-cli-about-13-700-lines" data-sub="ch9-ganymede-cli-about-13-700-lines">Ganymede-cli (about 13,700 lines)</a></li><li><a href="#ch9-ganymede-engine-about-1-100-lines" data-sub="ch9-ganymede-engine-about-1-100-lines">Ganymede-engine (about 1,100 lines)</a></li><li><a href="#ch9-ganymede-ffi-about-1-100-lines" data-sub="ch9-ganymede-ffi-about-1-100-lines">Ganymede-ffi (about 1,100 lines)</a></li></ol></li>
+<li data-ch="ch9"><a href="#ch9" data-target="ch9"><span class="n">9</span><span>CLI and embedding: three ways to use the core</span></a><ol class="subs"><li><a href="#ch9-ganymede-cli-about-13-700-lines" data-sub="ch9-ganymede-cli-about-13-700-lines">ganymede-cli (about 13,700 lines)</a></li><li><a href="#ch9-ganymede-engine-about-1-100-lines" data-sub="ch9-ganymede-engine-about-1-100-lines">ganymede-engine (about 1,100 lines)</a></li><li><a href="#ch9-ganymede-ffi-about-1-100-lines" data-sub="ch9-ganymede-ffi-about-1-100-lines">ganymede-ffi (about 1,100 lines)</a></li></ol></li>
 <li data-ch="ch10"><a href="#ch10" data-target="ch10"><span class="n">10</span><span>cdp-kernel: the TypeScript kernel</span></a><ol class="subs"><li><a href="#ch10-the-two-halves" data-sub="ch10-the-two-halves">The two halves</a></li><li><a href="#ch10-the-cell-pipeline" data-sub="ch10-the-cell-pipeline">The cell pipeline</a></li><li><a href="#ch10-inside-the-runtime-jupyter" data-sub="ch10-inside-the-runtime-jupyter">Inside the runtime: jupyter.*</a></li><li><a href="#ch10-flow-a-typescript-cell-on-node" data-sub="ch10-flow-a-typescript-cell-on-node">A TypeScript cell on Node</a></li></ol></li>
-<li data-ch="ch11"><a href="#ch11" data-target="ch11"><span class="n">11</span><span>ganymede-ui: the web app</span></a><ol class="subs"><li><a href="#ch11-code-map" data-sub="ch11-code-map">Code map</a></li><li><a href="#ch11-backends" data-sub="ch11-backends">Backends</a></li><li><a href="#ch11-saving-two-paths" data-sub="ch11-saving-two-paths">Saving: two paths</a></li><li><a href="#ch11-flow-opening-a-notebook-browser-ganymede-backend" data-sub="ch11-flow-opening-a-notebook-browser-ganymede-backend">Opening a notebook (browser, Ganymede backend)</a></li><li><a href="#ch11-packages-agent" data-sub="ch11-packages-agent">Packages/agent</a></li></ol></li>
-<li data-ch="ch12"><a href="#ch12" data-target="ch12"><span class="n">12</span><span>The Apple apps</span></a><ol class="subs"><li><a href="#ch12-code-map-apple-sources-ganymede" data-sub="ch12-code-map-apple-sources-ganymede">Code map (apple/Sources/Ganymede/)</a></li><li><a href="#ch12-in-app-kernels" data-sub="ch12-in-app-kernels">In-app kernels</a></li><li><a href="#ch12-packages-device-the-device-api" data-sub="ch12-packages-device-the-device-api">Packages/device: the device API</a></li><li><a href="#ch12-flow-the-mac-app-opening-a-notebook" data-sub="ch12-flow-the-mac-app-opening-a-notebook">The Mac app opening a notebook</a></li></ol></li>
+<li data-ch="ch11"><a href="#ch11" data-target="ch11"><span class="n">11</span><span>ganymede-ui: the web app</span></a><ol class="subs"><li><a href="#ch11-code-map" data-sub="ch11-code-map">Code map</a></li><li><a href="#ch11-backends" data-sub="ch11-backends">Backends</a></li><li><a href="#ch11-saving-two-paths" data-sub="ch11-saving-two-paths">Saving: two paths</a></li><li><a href="#ch11-flow-opening-a-notebook-browser-ganymede-backend" data-sub="ch11-flow-opening-a-notebook-browser-ganymede-backend">Opening a notebook (browser, Ganymede backend)</a></li><li><a href="#ch11-packages-agent" data-sub="ch11-packages-agent">packages/agent</a></li></ol></li>
+<li data-ch="ch12"><a href="#ch12" data-target="ch12"><span class="n">12</span><span>The Apple apps</span></a><ol class="subs"><li><a href="#ch12-code-map-apple-sources-ganymede" data-sub="ch12-code-map-apple-sources-ganymede">Code map (apple/Sources/Ganymede/)</a></li><li><a href="#ch12-in-app-kernels" data-sub="ch12-in-app-kernels">In-app kernels</a></li><li><a href="#ch12-packages-device-the-device-api" data-sub="ch12-packages-device-the-device-api">packages/device: the device API</a></li><li><a href="#ch12-flow-the-mac-app-opening-a-notebook" data-sub="ch12-flow-the-mac-app-opening-a-notebook">The Mac app opening a notebook</a></li></ol></li>
 <li data-ch="ch13"><a href="#ch13" data-target="ch13"><span class="n">13</span><span>Building, testing, shipping</span></a><ol class="subs"><li><a href="#ch13-build-profiles" data-sub="ch13-build-profiles">Build profiles</a></li><li><a href="#ch13-where-each-promise-is-tested-ganymede" data-sub="ch13-where-each-promise-is-tested-ganymede">Where each promise is tested (ganymede)</a></li><li><a href="#ch13-how-a-change-lands" data-sub="ch13-how-a-change-lands">How a change lands</a></li><li><a href="#ch13-releases" data-sub="ch13-releases">Releases</a></li></ol></li>
 <li data-ch="ch14"><a href="#ch14" data-target="ch14"><span class="n">14</span><span>Where to dive next</span></a><ol class="subs"><li><a href="#ch14-open-edges-worth-knowing-about" data-sub="ch14-open-edges-worth-knowing-about">Open edges worth knowing about</a></li><li><a href="#ch14-keeping-this-primer-current" data-sub="ch14-keeping-this-primer-current">Keeping this primer current</a></li></ol></li>
       </ol>
@@ -287,17 +349,17 @@ html:not(.js) .pager { display: none; }
       <ol class="cards">
 <li><a class="card" href="#how-to-read-this"><span class="card-n">·</span><span class="card-b"><span class="card-t">How to read this</span><span class="card-s"></span></span></a></li>
 <li><a class="card" href="#ch1"><span class="card-n">1</span><span class="card-b"><span class="card-t">The map</span><span class="card-s">Three layers · Four repositories · Where it runs · Vocabulary</span></span></a></li>
-<li><a class="card" href="#ch2"><span class="card-n">2</span><span class="card-b"><span class="card-t">Pure foundations: protocol and nbformat</span><span class="card-s">Ganymede-protocol (about 1,350 lines) · Ganymede-nbformat (about 6,700 lines)</span></span></a></li>
+<li><a class="card" href="#ch2"><span class="card-n">2</span><span class="card-b"><span class="card-t">Pure foundations: protocol and nbformat</span><span class="card-s">ganymede-protocol (about 1,350 lines) · ganymede-nbformat (about 6,700 lines)</span></span></a></li>
 <li><a class="card" href="#ch3"><span class="card-n">3</span><span class="card-b"><span class="card-t">Kernel host: getting a kernel and talking to it</span><span class="card-s">The seams · KernelSession: the state machine · Starting a kernel</span></span></a></li>
-<li><a class="card" href="#ch4"><span class="card-n">4</span><span class="card-b"><span class="card-t">API and contents: the server's logic without HTTP</span><span class="card-s">Ganymede-api (about 3,800 lines) · Ganymede-contents (about 5,900 lines) · Saving a notebook</span></span></a></li>
+<li><a class="card" href="#ch4"><span class="card-n">4</span><span class="card-b"><span class="card-t">API and contents: the server's logic without HTTP</span><span class="card-s">ganymede-api (about 3,800 lines) · ganymede-contents (about 5,900 lines) · Saving a notebook</span></span></a></li>
 <li><a class="card" href="#ch5"><span class="card-n">5</span><span class="card-b"><span class="card-t">The server</span><span class="card-s">Code map · Who gets in · How a request is served · Running a cell</span></span></a></li>
 <li><a class="card" href="#ch6"><span class="card-n">6</span><span class="card-b"><span class="card-t">Rooms: one live notebook for everyone</span><span class="card-s">Two halves · What a room&amp;#39;s task does · An edit in a room · Running cells into a room</span></span></a></li>
-<li><a class="card" href="#ch7"><span class="card-n">7</span><span class="card-b"><span class="card-t">The notebook as a program</span><span class="card-s">Ganymede-exec (one 1,700-line file) · The run contract · The host API · Grants</span></span></a></li>
+<li><a class="card" href="#ch7"><span class="card-n">7</span><span class="card-b"><span class="card-t">The notebook as a program</span><span class="card-s">ganymede-exec (one 1,700-line file) · The run contract · The host API · Grants</span></span></a></li>
 <li><a class="card" href="#ch8"><span class="card-n">8</span><span class="card-b"><span class="card-t">Agent-native: an agent in the same live notebook</span><span class="card-s">The pieces · Design choices visible in the code · How the agent hears about a person&amp;#39;s edits · The journal plugin</span></span></a></li>
-<li><a class="card" href="#ch9"><span class="card-n">9</span><span class="card-b"><span class="card-t">CLI and embedding: three ways to use the core</span><span class="card-s">Ganymede-cli (about 13,700 lines) · Ganymede-engine (about 1,100 lines) · Ganymede-ffi (about 1,100 lines)</span></span></a></li>
+<li><a class="card" href="#ch9"><span class="card-n">9</span><span class="card-b"><span class="card-t">CLI and embedding: three ways to use the core</span><span class="card-s">ganymede-cli (about 13,700 lines) · ganymede-engine (about 1,100 lines) · ganymede-ffi (about 1,100 lines)</span></span></a></li>
 <li><a class="card" href="#ch10"><span class="card-n">10</span><span class="card-b"><span class="card-t">cdp-kernel: the TypeScript kernel</span><span class="card-s">The two halves · The cell pipeline · Inside the runtime: jupyter.* · A TypeScript cell on Node</span></span></a></li>
 <li><a class="card" href="#ch11"><span class="card-n">11</span><span class="card-b"><span class="card-t">ganymede-ui: the web app</span><span class="card-s">Code map · Backends · Saving: two paths · Opening a notebook (browser, Ganymede backend)</span></span></a></li>
-<li><a class="card" href="#ch12"><span class="card-n">12</span><span class="card-b"><span class="card-t">The Apple apps</span><span class="card-s">Code map (apple/Sources/Ganymede/) · In-app kernels · Packages/device: the device API · The Mac app opening a notebook</span></span></a></li>
+<li><a class="card" href="#ch12"><span class="card-n">12</span><span class="card-b"><span class="card-t">The Apple apps</span><span class="card-s">Code map (apple/Sources/Ganymede/) · In-app kernels · packages/device: the device API · The Mac app opening a notebook</span></span></a></li>
 <li><a class="card" href="#ch13"><span class="card-n">13</span><span class="card-b"><span class="card-t">Building, testing, shipping</span><span class="card-s">Build profiles · Where each promise is tested (ganymede) · How a change lands · Releases</span></span></a></li>
 <li><a class="card" href="#ch14"><span class="card-n">14</span><span class="card-b"><span class="card-t">Where to dive next</span><span class="card-s">Open edges worth knowing about · Keeping this primer current</span></span></a></li>
       </ol>
@@ -1576,7 +1638,7 @@ html:not(.js) .pager { display: none; }
 
   <nav class="pager" aria-label="Chapter navigation"><a class="pg pg-prev" href="#ch13" rel="prev"><span class="pg-k">← Previous</span><span class="pg-t">13. Building, testing, shipping</span></a><span></span></nav>
 </section>
-    <p class="colophon">Part of the <a href="../docs/book">Ganymede docs</a>. Written from the code's module headers and the project docs, and rebuilt by hand, so it describes <code>main</code> as of 18 Nov 2026; when it and the code disagree, trust the code.</p>
+    <p class="colophon">Part of the <a href="../docs/book">Ganymede docs</a>. Written from the code's module headers and the project docs, and rebuilt by hand, so it describes <code>main</code> as of 18 Nov 2026; where it and a module's header comment disagree, trust the header.</p>
   </article>
 </div>
 
