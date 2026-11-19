@@ -583,6 +583,7 @@ mod tests {
         assert!(release("/Users/u/Downloads/Ganymede 2.APP/Contents/MacOS/ganymede").is_some());
         assert_eq!(release("/home/u/my.app/bin/ganymede"), None);
         assert_eq!(release("/home/u/.app/Contents/ganymede"), None);
+        assert_eq!(release("/home/u/Projects/Contents/ganymede"), None);
         assert!(managed(Path::new("/home/u/.local/bin/ganymede"), "debug")
             .unwrap()
             .contains("debug build"));
