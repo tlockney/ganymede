@@ -1500,6 +1500,27 @@ mod tests {
         assert_eq!(e.status(), 404, "{e}");
     }
 
+    /// Opening a FIFO for reading blocks until a writer comes, which would
+    /// hold a blocking-pool thread: it is refused before `open`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_file_refuses_a_fifo_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(dir.path().join("pipe"))
+            .status();
+        if !made.is_ok_and(|s| s.success()) {
+            eprintln!("skipped: mkfifo is not available");
+            return;
+        }
+        let c = FsContents::new(dir.path(), FsOptions::default()).unwrap();
+        let e = tokio::time::timeout(Duration::from_secs(5), c.open_file("pipe"))
+            .await
+            .expect("open_file blocked on a FIFO")
+            .unwrap_err();
+        assert_eq!(e.status(), 404, "{e}");
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn open_file_refuses_a_symlink_out_of_the_root() {

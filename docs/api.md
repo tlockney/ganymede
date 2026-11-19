@@ -250,16 +250,23 @@ costs no memory. It answers a single `bytes` `Range` (`bytes=0-1023`,
 file's footer, without the rest. A range that can't be satisfied gets
 `416` with `Content-Range: bytes */<length>`. Anything else, such as
 another unit, several ranges, a malformed value or a request with
-`If-Range`, gets the whole file with `200`. Every response carries
-`Accept-Ranges: bytes`.
+`If-Range`, gets the whole file with `200`. Every file response (`200`,
+`206` and `416`) carries `Accept-Ranges: bytes`.
 
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
 > the latest release.
 
-jupyter_server's `FilesHandler` doesn't answer `Range`; it sends the
-whole file. Range support is an addition that a client can't count on
-from jupyter_server.
+A file whose name gives no type (`.jsonl`, `.ndjson` and `.arrow`, for
+example) is checked for UTF-8 from start to end before the first byte is
+sent, to choose `text/plain` or `application/octet-stream`, as
+`jupyter_server` does. Memory stays flat, but a `HEAD` or `Range`
+request for such a file on a large file reads all of it first. Names
+with a known type (`.csv`, `.json`, `.tsv`, `.parquet`) don't.
+
+With its default file-backed contents manager, `jupyter_server` serves
+`/files` through tornado's `StaticFileHandler`, which answers a single
+byte range too. Streaming and `Range` bring `/files` in line with it.
 
 Every response carries `Content-Security-Policy: sandbox allow-scripts`,
 as jupyter_server's does. An HTML or SVG file opened from `/files` runs

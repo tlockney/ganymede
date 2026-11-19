@@ -214,7 +214,8 @@ pub async fn frame_ancestors(
 /// CORS for `allow_origins`, as `jupyter_server` sends it: the allowed
 /// origin echoed in `Access-Control-Allow-Origin`, and preflight requests
 /// answered before auth with the methods and headers its API handlers
-/// accept. With `allow_credentials`, also
+/// accept (`Range` and `If-Range` among them, and `Content-Range` and
+/// `Accept-Ranges` exposed, for `/files`). With `allow_credentials`, also
 /// `Access-Control-Allow-Credentials: true`, except when `*` is listed:
 /// `jupyter_server` then sends `Access-Control-Allow-Origin: *`, which
 /// browsers never pair with credentials, so no page gets the cookie that
@@ -246,7 +247,9 @@ fn cors(allow_origins: Vec<String>, allow_credentials: bool) -> tower_http::cors
             header::CONTENT_TYPE,
             header::AUTHORIZATION,
             header::IF_MATCH,
+            header::RANGE,
+            header::IF_RANGE,
             HeaderName::from_static("x-xsrftoken"),
         ])
-        .expose_headers([header::ETAG])
+        .expose_headers([header::ETAG, header::CONTENT_RANGE, header::ACCEPT_RANGES])
 }

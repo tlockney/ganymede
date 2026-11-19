@@ -733,10 +733,12 @@ fn classify(file: &mut std::fs::File, name: &str) -> std::io::Result<(String, &'
 }
 
 /// Whether the whole file is UTF-8, read in [`FILE_CHUNK`]s so memory stays
-/// flat. A character cut by the end of a chunk (`error_len` is `None`) is
+/// flat. It reads all of the file before the first byte is sent, even for a
+/// `HEAD` or a `Range` request, so it runs only for a name that gives no
+/// type. A character cut by the end of a chunk (`error_len` is `None`) is
 /// carried into the next one; cut by the end of the file, it is invalid.
-fn is_utf8(file: &mut std::fs::File) -> std::io::Result<bool> {
-    use std::io::{Read, Seek, SeekFrom};
+fn is_utf8<R: std::io::Read + std::io::Seek>(file: &mut R) -> std::io::Result<bool> {
+    use std::io::SeekFrom;
     file.seek(SeekFrom::Start(0))?;
     let mut buf = vec![0u8; FILE_CHUNK];
     let mut carried = 0;
@@ -1532,5 +1534,61 @@ mod tests {
         assert_eq!(requested_range(&h, 10), Partial(0, 1));
         h.insert(header::IF_RANGE, "\"x\"".parse().unwrap());
         assert_eq!(requested_range(&h, 10), Whole);
+    }
+
+    /// A file that ends before `count` bytes fails the stream, so the
+    /// connection drops instead of a short body passing for a whole one.
+    #[tokio::test]
+    async fn a_file_cut_short_fails_the_stream() {
+        use futures::StreamExt;
+        let mut f = tempfile::tempfile().unwrap();
+        std::io::Write::write_all(&mut f, b"0123456789").unwrap();
+        let mut items = stream_file(f, 4, 100).into_data_stream();
+        let mut got = Vec::new();
+        let mut last = None;
+        while let Some(item) = items.next().await {
+            if let Ok(b) = &item {
+                got.extend_from_slice(b);
+            }
+            last = Some(item);
+        }
+        assert_eq!(got, b"456789");
+        assert!(
+            last.unwrap().is_err(),
+            "a short file ended the body quietly"
+        );
+    }
+
+    /// Reads that record the largest buffer they are given.
+    struct Spy {
+        inner: std::io::Cursor<Vec<u8>>,
+        largest: usize,
+    }
+
+    impl std::io::Read for Spy {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.largest = self.largest.max(buf.len());
+            self.inner.read(buf)
+        }
+    }
+
+    impl std::io::Seek for Spy {
+        fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+
+    #[test]
+    fn the_utf8_check_reads_in_bounded_chunks() {
+        let mut spy = Spy {
+            inner: std::io::Cursor::new(vec![b'a'; 1 << 20]),
+            largest: 0,
+        };
+        assert!(is_utf8(&mut spy).unwrap());
+        assert!(
+            spy.largest > 0 && spy.largest <= FILE_CHUNK,
+            "{}",
+            spy.largest
+        );
     }
 }

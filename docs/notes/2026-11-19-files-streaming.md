@@ -30,5 +30,17 @@ of at most 64 KiB, and a single `bytes` `Range` is answered.
 - A file that is cut short while it streams fails the stream, so the
   connection drops rather than end a body shorter than its
   `Content-Length`.
-- jupyter_server doesn't answer `Range`. This is an addition, noted as
-  unreleased in `docs/api.md`.
+- jupyter_server's default, file-backed contents manager serves `/files`
+  through tornado's `StaticFileHandler`, which answers single byte ranges
+  with 206 and 416. Only a non-file contents manager uses `FilesHandler`,
+  which sends the whole file. So this brings `/files` in line with
+  jupyter_server's default for ranges. It is noted as unreleased in
+  `docs/api.md`.
+- The UTF-8 check runs before the first byte, for `HEAD` and `Range`
+  too, so a Range request on a large file whose name gives no type
+  (`.jsonl`, `.ndjson`, `.arrow`) reads the whole file first. Memory
+  stays flat. Names with a known type (`.csv`, `.json`, `.tsv`,
+  `.parquet`) skip it. Accepted to keep `FilesHandler`'s Content-Type rule.
+- CORS allows the `Range` and `If-Range` request headers and exposes
+  `Content-Range` and `Accept-Ranges`, so the apps' data view and other
+  clients on an allowed origin can make and read range requests.

@@ -2337,6 +2337,31 @@ async fn allowed_origins_get_cors_headers_and_preflight() {
     let (_, h, _) = send(&app, preflight("https://evil.example")).await;
     assert!(h.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
 
+    // A cross-origin client can ask for a range of a file and read the
+    // answer's range headers.
+    let mut range_preflight = preflight("https://app.example");
+    range_preflight.headers_mut().insert(
+        header::ACCESS_CONTROL_REQUEST_HEADERS,
+        "range, if-range".parse().unwrap(),
+    );
+    let (s, h, _) = send(&app, range_preflight).await;
+    assert!(s.is_success(), "{s}");
+    let allowed = h[header::ACCESS_CONTROL_ALLOW_HEADERS].to_str().unwrap();
+    assert!(
+        allowed.contains("range") && allowed.contains("if-range"),
+        "{allowed}"
+    );
+    std::fs::write(dir.path().join("f.txt"), "hello").unwrap();
+    let mut req = api_req("GET", "/files/f.txt", None);
+    req.headers_mut()
+        .insert(header::ORIGIN, "https://app.example".parse().unwrap());
+    let (_, h, _) = send(&app, req).await;
+    let exposed = h[header::ACCESS_CONTROL_EXPOSE_HEADERS].to_str().unwrap();
+    assert!(
+        exposed.contains("content-range") && exposed.contains("accept-ranges"),
+        "{exposed}"
+    );
+
     let mut req = api_req("GET", "/api/status", None);
     req.headers_mut()
         .insert(header::ORIGIN, "https://app.example".parse().unwrap());

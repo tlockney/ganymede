@@ -845,6 +845,17 @@ mod tests {
         (dir, collab, contents)
     }
 
+    /// The production wrapper streams: it forwards `open_file` rather than
+    /// taking the default `None`.
+    #[tokio::test]
+    async fn open_file_is_forwarded_to_the_inner_contents() {
+        let (dir, _collab, contents) = granted_in_d("a.ipynb").await;
+        std::fs::write(dir.path().join("d/data.bin"), [7u8; 123]).unwrap();
+        let open = contents.open_file("d/data.bin").await.unwrap().unwrap();
+        assert_eq!(open.len, 123);
+        assert_eq!(open.name, "data.bin");
+    }
+
     /// Waits until a write is registered, as `begin_write` does. Gives up
     /// after a second, and the caller's assertions then fail.
     async fn until_a_write_begins(collab: &Collab) {
