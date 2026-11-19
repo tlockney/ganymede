@@ -710,8 +710,11 @@ fn file_headers(content_type: &str, csp: &'static str, name: &str, download: boo
 /// from its start: the whole file, in chunks, when its name gives no type
 /// (text or binary), and the first 512 bytes of an HTML file (is it a
 /// published page).
-fn classify(file: &mut std::fs::File, name: &str) -> std::io::Result<(String, &'static str)> {
-    use std::io::{Read, Seek, SeekFrom};
+fn classify<R: std::io::Read + std::io::Seek>(
+    file: &mut R,
+    name: &str,
+) -> std::io::Result<(String, &'static str)> {
+    use std::io::{Read, SeekFrom};
     let content_type = match name_content_type(name) {
         Some(t) => t,
         None if is_utf8(file)? => "text/plain; charset=UTF-8".into(),
@@ -765,14 +768,23 @@ fn is_utf8<R: std::io::Read + std::io::Seek>(file: &mut R) -> std::io::Result<bo
 /// the stream, which drops the connection rather than send a short body
 /// as if it were whole.
 fn stream_file(file: std::fs::File, start: u64, count: u64) -> Body {
+    stream_from(tokio::fs::File::from_std(file), start, count)
+}
+
+/// [`stream_file`] over any seekable reader, so a test can count what it
+/// reads.
+fn stream_from<R>(file: R, start: u64, count: u64) -> Body
+where
+    R: tokio::io::AsyncRead + tokio::io::AsyncSeek + Unpin + Send + 'static,
+{
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
-    struct State {
-        file: tokio::fs::File,
+    struct State<R> {
+        file: R,
         seek: Option<u64>,
         remaining: u64,
     }
     let state = State {
-        file: tokio::fs::File::from_std(file),
+        file,
         seek: Some(start),
         remaining: count,
     };
@@ -1559,16 +1571,30 @@ mod tests {
         );
     }
 
-    /// Reads that record the largest buffer they are given.
+    /// Reads that record the largest buffer they are given and the bytes
+    /// they return.
     struct Spy {
         inner: std::io::Cursor<Vec<u8>>,
         largest: usize,
+        read: usize,
+    }
+
+    impl Spy {
+        fn new(data: Vec<u8>) -> Self {
+            Spy {
+                inner: std::io::Cursor::new(data),
+                largest: 0,
+                read: 0,
+            }
+        }
     }
 
     impl std::io::Read for Spy {
         fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
             self.largest = self.largest.max(buf.len());
-            self.inner.read(buf)
+            let n = self.inner.read(buf)?;
+            self.read += n;
+            Ok(n)
         }
     }
 
@@ -1580,15 +1606,80 @@ mod tests {
 
     #[test]
     fn the_utf8_check_reads_in_bounded_chunks() {
-        let mut spy = Spy {
-            inner: std::io::Cursor::new(vec![b'a'; 1 << 20]),
-            largest: 0,
-        };
+        let mut spy = Spy::new(vec![b'a'; 1 << 20]);
         assert!(is_utf8(&mut spy).unwrap());
         assert!(
             spy.largest > 0 && spy.largest <= FILE_CHUNK,
             "{}",
             spy.largest
         );
+    }
+    /// An HTML file is read only as far as its first [`PAGE_HEAD`] bytes to
+    /// tell a published page, however large it is.
+    #[test]
+    fn an_html_file_is_classified_from_its_head_only() {
+        let mut page = b"<!doctype html><html><body>".to_vec();
+        page.resize(1 << 20, b'x');
+        let mut spy = Spy::new(page);
+        let (content_type, _) = classify(&mut spy, "big.html").unwrap();
+        assert!(content_type.starts_with("text/html"), "{content_type}");
+        assert!(spy.read <= PAGE_HEAD, "read {} bytes", spy.read);
+    }
+
+    /// An in-memory reader that counts the bytes it returns.
+    struct Counting {
+        inner: std::io::Cursor<Vec<u8>>,
+        read: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl tokio::io::AsyncRead for Counting {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            let n = std::io::Read::read(&mut self.inner, buf.initialize_unfilled())?;
+            buf.advance(n);
+            self.read.fetch_add(n, std::sync::atomic::Ordering::SeqCst);
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    impl tokio::io::AsyncSeek for Counting {
+        fn start_seek(
+            mut self: std::pin::Pin<&mut Self>,
+            pos: std::io::SeekFrom,
+        ) -> std::io::Result<()> {
+            std::io::Seek::seek(&mut self.inner, pos).map(|_| ())
+        }
+
+        fn poll_complete(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<u64>> {
+            std::task::Poll::Ready(Ok(self.inner.position()))
+        }
+    }
+
+    /// A range at the end of a large file reads only that range, not the
+    /// bytes before it (reading a Parquet footer, say).
+    #[tokio::test]
+    async fn a_range_at_the_end_reads_only_that_range() {
+        use futures::StreamExt;
+        let read = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut data = vec![0u8; 1 << 20];
+        let len = data.len() as u64;
+        data[(len - 8) as usize..].copy_from_slice(b"PAR1tail");
+        let reader = Counting {
+            inner: std::io::Cursor::new(data),
+            read: read.clone(),
+        };
+        let mut items = stream_from(reader, len - 8, 8).into_data_stream();
+        let mut got = Vec::new();
+        while let Some(item) = items.next().await {
+            got.extend_from_slice(&item.unwrap());
+        }
+        assert_eq!(got, b"PAR1tail");
+        assert_eq!(read.load(std::sync::atomic::Ordering::SeqCst), 8);
     }
 }

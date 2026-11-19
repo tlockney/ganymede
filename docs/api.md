@@ -260,8 +260,10 @@ another unit, several ranges, a malformed value or a request with
 A file whose name gives no type (`.jsonl`, `.ndjson` and `.arrow`, for
 example) is checked for UTF-8 from start to end before the first byte is
 sent, to choose `text/plain` or `application/octet-stream`, as
-`jupyter_server` does. Memory stays flat, but a `HEAD` or `Range`
-request for such a file on a large file reads all of it first. Names
+`jupyter_server`'s `FilesHandler` does (its default `StaticFileHandler`
+sends `application/octet-stream` without checking). Memory stays flat,
+but a `HEAD` or `Range` request for such a file on a large file reads
+all of it first. Names
 with a known type (`.csv`, `.json`, `.tsv`, `.parquet`) don't.
 
 With its default file-backed contents manager, `jupyter_server` serves
