@@ -252,11 +252,16 @@ and only then renames it over the old one, so a failed download or a
 binary that won't run leaves the old one in place. A
 [main build](#latest-main-build) updates to the latest main build;
 `--main` switches a release to main, and `--version` switches back. It
-refuses a binary that `cargo install`, Homebrew or Nix put there, or one
-in a cargo `target` directory, and says how to update that instead. On
+refuses a binary that `cargo install`, Homebrew or Nix put there, one
+in a cargo `target` directory, or one inside a Mac app bundle such as
+`Ganymede.app`, and says how to update that instead. On
 Windows the old binary is left as `ganymede.exe.<pid>.old` until a
 later update removes it. It doesn't update cdp-kernel, JupyterLab or
 ganymede-ui, and prints how to update the ones you have.
+
+> [!NOTE]
+> **Unreleased.** Refusing a binary inside an app bundle is available
+> only from a build of `main` (HEAD), not in the latest release.
 
 To update cdp-kernel, rerun step 2's `npm install -g`
 and `cdp-kernel install` lines. A new Ganymede release can default to a
