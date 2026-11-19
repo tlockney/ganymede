@@ -3973,6 +3973,65 @@ async fn files_serves_raw_bytes() {
     );
 }
 
+/// Contents that can't stream (the default `open_file`) are read whole
+/// with `get`, and answer `Range` the same way.
+#[tokio::test]
+async fn files_without_streaming_reads_whole_and_answers_range() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("digits.txt"), "0123456789").unwrap();
+    std::fs::write(dir.path().join("blob"), [b'a', 0xff, b'b']).unwrap();
+    let mut st = state(dir.path());
+    st.contents = Arc::new(SaveLog {
+        inner: st.contents.clone(),
+        room_saved: Default::default(),
+        fail_room_saves: Default::default(),
+    });
+    let app = build_router(st);
+    let get = |path: &str, range: Option<&str>| {
+        let mut req = Request::get(path).header(header::AUTHORIZATION, format!("token {TOKEN}"));
+        if let Some(r) = range {
+            req = req.header(header::RANGE, r);
+        }
+        req.body(Body::empty()).unwrap()
+    };
+
+    let (st, h, body) = raw(&app, get("/files/digits.txt", None)).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(h[header::ACCEPT_RANGES], "bytes");
+    assert_eq!(h[header::CONTENT_LENGTH], "10");
+    assert_eq!(h[header::CONTENT_TYPE], "text/plain; charset=UTF-8");
+    assert_eq!(body, b"0123456789");
+
+    let (st, h, body) = raw(&app, get("/files/digits.txt", Some("bytes=2-4"))).await;
+    assert_eq!(st, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(h[header::CONTENT_RANGE], "bytes 2-4/10");
+    assert_eq!(h[header::CONTENT_LENGTH], "3");
+    assert_eq!(body, b"234");
+
+    let (st, h, body) = raw(&app, get("/files/digits.txt", Some("bytes=-3"))).await;
+    assert_eq!(st, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(h[header::CONTENT_RANGE], "bytes 7-9/10");
+    assert_eq!(body, b"789");
+
+    let (st, h, body) = raw(&app, get("/files/digits.txt", Some("bytes=10-"))).await;
+    assert_eq!(st, StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(h[header::CONTENT_RANGE], "bytes */10");
+    assert!(body.is_empty());
+
+    // Binary content decodes from base64 before the range is cut.
+    let (st, h, body) = raw(&app, get("/files/blob", Some("bytes=1-1"))).await;
+    assert_eq!(st, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(h[header::CONTENT_TYPE], "application/octet-stream");
+    assert_eq!(body, [0xff]);
+
+    assert_eq!(
+        raw(&app, get("/files/sub-missing", Some("bytes=0-1")))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+}
+
 #[tokio::test]
 async fn files_answers_range_requests() {
     let dir = tempfile::tempdir().unwrap();
