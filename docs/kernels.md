@@ -138,13 +138,6 @@ moved, renamed, or deleted, the kernel is still listed but won't start:
 ganymede: starting kernel python3: io: kernelspec python3 (/home/you/.local/share/jupyter/kernels/python3/kernel.json) runs /home/you/.local/share/venvs/python3/bin/python, which doesn't exist; reinstall the kernel or fix argv in kernel.json
 ```
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release, which prints `io: spawning
-> "/home/you/.local/share/venvs/python3/bin/python": No such file or
-> directory (os error 2)` and doesn't name the kernelspec or its
-> `kernel.json`.
-
 A virtual environment also links to the Python it was made from, so
 removing or upgrading that Python (say, Homebrew moving from 3.13 to
 3.14) breaks it the same way. Either way, make the environment again
