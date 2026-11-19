@@ -1234,7 +1234,7 @@ html:not(.js) .pager { display: none; }
 </tr>
 <tr>
 <td><a class="code-link" href="https://github.com/tlockney/cdp-kernel/blob/main/src/language-service.ts" target="_blank" rel="noopener"><code>language-service.ts</code></a></td>
-<td>Typed completion and hover from a TypeScript language service in a worker thread, started on first use, with a time budget per request. The same service answers two comms for frontends: type errors as you type (cdp-kernel.diagnostics.v1) and signature help, go to definition and rename (cdp-kernel.language.v1). TypeScript itself is found or installed into the npm cache on first use, not shipped in the package. The worker&#39;s request handling (language-client.ts, language-server.ts) has no Node imports, so the browser build runs it too</td>
+<td>Typed completion and hover from a TypeScript language service in a worker thread, started on first use, with a time budget per request. The same service answers two comms for frontends: type errors as you type (<code>cdp-kernel.diagnostics.v1</code>) and signature help, go to definition and rename (<code>cdp-kernel.language.v1</code>). TypeScript itself is found or installed on first use, not shipped in the package. The request handling on both sides (<a class="code-link" href="https://github.com/tlockney/cdp-kernel/blob/main/src/language-client.ts" target="_blank" rel="noopener"><code>language-client.ts</code></a>, the kernel&#39;s; <a class="code-link" href="https://github.com/tlockney/cdp-kernel/blob/main/src/language-server.ts" target="_blank" rel="noopener"><code>language-server.ts</code></a>, the worker&#39;s) has no Node imports, so the browser build runs it too</td>
 </tr>
 <tr>
 <td><a class="code-link" href="https://github.com/tlockney/cdp-kernel/blob/main/src/debugger.ts" target="_blank" rel="noopener"><code>debugger.ts</code></a></td>
@@ -1272,7 +1272,7 @@ html:not(.js) .pager { display: none; }
 </tr>
 <tr>
 <td>Browser</td>
-<td><a class="code-link" href="https://github.com/tlockney/cdp-kernel/blob/main/src/kernel-core.ts" target="_blank" rel="noopener"><code>kernel-core.ts</code></a> on the page, cells in a Web Worker. Published as <code>@tlockney/cdp-kernel/browser</code>; this is what ganymede-ui and the apps run. A page can map import specifiers to files it serves (the <code>modules</code> option), which is how the apps draw charts and run SQL offline. With the typescript option, the language service runs in a Web Worker of its own (browser/language-worker.ts), loading TypeScript and its lib files from URLs the page serves</td>
+<td><a class="code-link" href="https://github.com/tlockney/cdp-kernel/blob/main/src/kernel-core.ts" target="_blank" rel="noopener"><code>kernel-core.ts</code></a> on the page, cells in a Web Worker. Published as <code>@tlockney/cdp-kernel/browser</code>; this is what ganymede-ui and the apps run. A page can map import specifiers to files it serves (the <code>modules</code> option), which is how the apps draw charts and run SQL offline. With the typescript option, the language service runs in a Web Worker of its own (<a class="code-link" href="https://github.com/tlockney/cdp-kernel/blob/main/src/browser/language-worker.ts" target="_blank" rel="noopener"><code>browser/language-worker.ts</code></a>), loading TypeScript and its lib files from URLs the page serves</td>
 <td><code>src/browser/</code>, <a class="code-link" href="https://github.com/tlockney/cdp-kernel/blob/main/runtime/browser-worker.mjs" target="_blank" rel="noopener"><code>runtime/browser-worker.mjs</code></a></td>
 </tr>
 </tbody></table></div>
@@ -1397,7 +1397,7 @@ html:not(.js) .pager { display: none; }
 <tr>
 <td>Editing</td>
 <td><a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/kernel-comm.ts" target="_blank" rel="noopener"><code>lib/kernel-comm.ts</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/type-errors.ts" target="_blank" rel="noopener"><code>lib/type-errors.ts</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/language-service.ts" target="_blank" rel="noopener"><code>lib/language-service.ts</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/language-editor.ts" target="_blank" rel="noopener"><code>lib/language-editor.ts</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/markdown-preview.ts" target="_blank" rel="noopener"><code>lib/markdown-preview.ts</code></a></td>
-<td>Type errors as you type, signature help, go to definition and rename in TypeScript cells, each over a comm cdp-kernel&#39;s language service answers (chapter 10), opened once per kernel and again after a restart. Live Markdown preview: CodeMirror decorations over a Markdown cell, so the text itself never changes (off by default)</td>
+<td>Type errors as you type, signature help, go to definition and rename in TypeScript cells, each over a comm cdp-kernel&#39;s language service answers (chapter 10), opened once per kernel and again after a restart; a kernel that doesn&#39;t answer, such as the in-app kernel, closes them and nothing shows. Live Markdown preview: CodeMirror decorations over a Markdown cell, so the text itself never changes (off by default)</td>
 </tr>
 <tr>
 <td>Data files</td>
