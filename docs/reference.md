@@ -259,7 +259,7 @@ And the [server flags](#server-flags).
 
 | Flag | Effect |
 | --- | --- |
-| `--version <VERSION>` | ganymede-ui version, exactly. Default `0.13.0`. |
+| `--version <VERSION>` | ganymede-ui version, exactly. Default `0.13.1`. |
 | `--force` | Reinstall if this version is already installed. |
 
 ### `ui list`
@@ -630,7 +630,7 @@ given them.
 ```json
 {
   "base_url": "/",
-  "ganymede_version": "0.13.1",
+  "ganymede_version": "0.14.0",
   "hostname": "127.0.0.1",
   "password": false,
   "pid": 41237,

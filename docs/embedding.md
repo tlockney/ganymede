@@ -17,7 +17,7 @@ design is on [The iPad use case](ipados.md).
 ![Three ways to embed Ganymede: a Rust app calling the engine in-process; an app whose web view talks HTTP to the server that ganymede-ffi runs on loopback; and a wasm or iOS build with zmq and subprocess off, where the kernel sits behind an in-process transport.](images/architecture/embedding.svg)
 
 The crates are not on crates.io, so depend on them from git:
-`ganymede-engine = { git = "https://github.com/tlockney/ganymede", tag = "v0.13.1" }`.
+`ganymede-engine = { git = "https://github.com/tlockney/ganymede", tag = "v0.14.0" }`.
 
 ## The engine in a Rust app
 
@@ -224,10 +224,6 @@ than failing to start, unless `gateway_url` is
 set. An app's own kernels go through the C functions instead
 ([Kernels the app runs](#kernels-the-app-runs)).
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 ## The server in an app, from C
 
 `ganymede-ffi` is a static library with these C functions, declared in
@@ -248,10 +244,6 @@ code.
 | `int ganymede_v8_bench_available(void)` | 1 when the library was built with the `v8-bench` feature (the XCFramework is), else 0. |
 | `char *ganymede_v8_bench_run(const char *config_json)` | Runs the engine benchmark ([#892](https://github.com/tlockney/ganymede/issues/892)) on V8 and returns its report as JSON. The config is `{"jitless": bool, "repeats": n, "workloads": [{"name", "sources": [js, ...]}]}`. NULL or invalid input, a panic, or a library without V8 gives `{"error": "..."}`. Blocks for seconds, so call it off the main thread; it runs on a thread of its own, one call at a time. The first call in a process initializes V8 and sets `jitless`; later calls keep it. The iOS device slice has no JIT and always reports `jitless: true`; `jitless: false` in a Mac app under the hardened runtime without the allow-jit entitlement aborts. At most 1000 `repeats`. A workload that never returns holds the call and the lock for good, and V8 running out of heap aborts the process. |
 | `void ganymede_v8_bench_free(char *s)` | Frees the string `ganymede_v8_bench_run` returned. NULL is ignored. |
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 `config_json` is a JSON object with the keys of
 [`ganymede.toml`](reference.md#config-file), or NULL. `port` defaults to
@@ -375,10 +367,6 @@ signed. Interrupts go over the control channel as `interrupt_request`,
 whatever the kernelspec says.
 
 ### Connected machines
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 An app can show another computer running `ganymede serve` (a connected
 machine) in the same windows as its own notebooks. The page in a window

@@ -97,10 +97,6 @@ reconnects and resyncs as after any drop.
 
 ## Listing open rooms
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 `GET /api/collaboration/rooms` lists the notebook rooms open now, so a
 client can show which notebooks someone is in and when one last changed:
 
