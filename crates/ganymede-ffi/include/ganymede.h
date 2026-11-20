@@ -28,9 +28,9 @@ void ganymede_server_stop(GanymedeServer *server);
 /* Mounts the Ganymede server at url (http(s)://host[:port][/base]) as
  * machine id (1 to 64 of A-Z a-z 0-9 _ -): the app's own pages' requests to
  * /machines/{id}/... go to it, HTTP and websocket, an allowlist of routes
- * only (#894). token (may be NULL) is added to each request; with NULL a
- * Ganymede-Client header is sent, which a machine that lets this device in
- * by tailnet identity accepts. The page's own cookie, token and Origin are
+ * only (#894). token (may be NULL) is added to each request. Every request
+ * also sends a Ganymede-Client header, which a machine that lets this
+ * device in by tailnet identity accepts, so a NULL token can work there. The page's own cookie, token and Origin are
  * never forwarded, and the machine's token is never given to the page.
  * Nothing is mounted until this is called. No request is made now. An id
  * already mounted is replaced, and its open websockets closed. Any thread.

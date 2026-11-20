@@ -25,8 +25,9 @@ Where things are:
 Decisions:
 
 - **Who.** `auth::mount` refuses (403) unless auth is on and the request
-  is this server's token from a loopback peer (`ConnectInfo`; none known
-  counts as not loopback) or its login cookie, then hands over to
+  a loopback peer (`ConnectInfo`; none known counts as not loopback; a
+  login cookie is no exception, since any token request is given one)
+  holds this server's token or its login cookie, then hands over to
   `api_with(.., tailnet: false)`, so cookie requests get the REST API's
   `Origin` and XSRF checks and `identify` never returns `Via::Tailnet`.
   The MCP token is not `state.token`, so it identifies as nothing.
@@ -125,5 +126,5 @@ down (HTTP and websocket); two machines; removal closing sockets; either
 side closing; contents GET/PUT/POST/PATCH/DELETE, `files` with a range;
 the rooms socket; kernel channels with the subprotocol; the terminal
 socket. Unit tests in `mount.rs` for paths and headers;
-`the_mount_takes_the_token_only_from_loopback` in `ganymede-server`;
+`the_mount_takes_the_token_and_cookie_only_from_loopback` in `ganymede-server`;
 `mounts_and_unmounts_a_machine` and `tests/smoke.c` for the C ABI.

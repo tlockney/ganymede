@@ -322,8 +322,9 @@ An app that embeds the server can mount other Ganymede servers under
 mount adds the machine's token to what it forwards, so it serves only the
 app's own pages:
 
-- A request must carry this server's own login cookie, or this server's
-  token from a loopback peer. A tailnet identity (`[tailscale] allow`)
+- A request must carry this server's own login cookie or its token, and
+  come from a loopback peer: a cookie is not enough from anywhere else,
+  since any request with the token is given one. A tailnet identity (`[tailscale] allow`)
   gets 403, so a login the tailnet lets into this server gets nothing on a
   machine behind it. The MCP token gets 403 too, so an agent can't reach a
   machine through this server; agents use the machine's own server. With

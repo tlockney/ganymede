@@ -780,8 +780,8 @@ pub(crate) async fn api_with(
 }
 
 /// For `/machines/{id}/`: the mount attaches a machine's credential, so
-/// it serves only this server's own page session ([`Via::Token`] from a
-/// loopback peer, or [`Via::Cookie`]), checked as [`api`] checks them.
+/// it serves only this server's own page session ([`Via::Token`] or
+/// [`Via::Cookie`], from a loopback peer only), checked as [`api`] checks them.
 /// Never a tailnet identity, and never the MCP token, which is not this
 /// server's token. With auth off nobody is the page's own session, so
 /// the mount is refused.
@@ -791,20 +791,20 @@ pub(crate) async fn mount(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let Some(expected) = state.token.as_deref() else {
+    if state.token.is_none() {
         return HttpError(403, "Forbidden".into()).into_response();
-    };
-    // No tailnet identity is considered, so `identify` is `Token`,
-    // `Cookie` or nothing.
-    let by_token = sends_token(expected, req.headers(), req.uri().query());
-    if by_token {
-        let loopback = req
-            .extensions()
-            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-            .is_some_and(|axum::extract::ConnectInfo(peer)| peer.ip().is_loopback());
-        if !loopback {
-            return HttpError(403, "Forbidden".into()).into_response();
-        }
+    }
+    // Only from a loopback peer, whichever credential it holds: a login
+    // cookie is easy to get with the token (any token request is given
+    // one), so it can't be allowed from where the token is not. A peer
+    // that isn't known counts as not loopback. No tailnet identity is
+    // considered, so `identify` is `Token`, `Cookie` or nothing.
+    let loopback = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .is_some_and(|axum::extract::ConnectInfo(peer)| peer.ip().to_canonical().is_loopback());
+    if !loopback {
+        return HttpError(403, "Forbidden".into()).into_response();
     }
     api_with(state, req, next, false).await
 }

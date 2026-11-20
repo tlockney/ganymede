@@ -811,6 +811,53 @@ async fn other_methods_are_not_forwarded() {
     assert!(seen(&log).is_empty(), "{:?}", seen(&log));
 }
 
+/// Each direction of a proxied socket is forwarded on its own: a machine
+/// that floods a page that isn't reading doesn't keep the page's own
+/// frames from reaching the machine.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_flood_to_a_page_that_does_not_read_does_not_block_the_other_direction() {
+    use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+    let (got_tx, mut got_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    async fn flood(
+        ws: WebSocketUpgrade,
+        State(tx): State<tokio::sync::mpsc::UnboundedSender<String>>,
+    ) -> Response {
+        ws.on_upgrade(move |socket: WebSocket| async move {
+            let (mut sink, mut stream) = socket.split();
+            // Sends until the socket is gone.
+            tokio::spawn(async move {
+                let chunk = vec![7u8; 256 * 1024];
+                while sink
+                    .send(Message::Binary(chunk.clone().into()))
+                    .await
+                    .is_ok()
+                {}
+            });
+            while let Some(Ok(msg)) = stream.next().await {
+                if let Message::Text(t) = msg {
+                    let _ = tx.send(t.as_str().to_string());
+                }
+            }
+        })
+    }
+    let app = axum::Router::new().fallback(flood).with_state(got_tx);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let local = start(|_| {}).await;
+    local
+        .machines
+        .add("m", &format!("http://{addr}/"), None)
+        .unwrap();
+
+    // The page connects and reads nothing while the machine floods it.
+    let (mut ws, _) = ws_to(&local, "/machines/m/api/events/subscribe", None).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    ws.send(WsMsg::Text("from the page".into())).await.unwrap();
+    let heard = tokio::time::timeout(Duration::from_secs(5), got_rx.recv()).await;
+    assert_eq!(heard.ok().flatten().as_deref(), Some("from the page"));
+}
+
 // ----- lifecycle ---------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
