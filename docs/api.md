@@ -86,7 +86,9 @@ and logos, the same value `ganymede kernelspec list --json` prints. The
 key is left out when the kernelspec has no directory, as for one that a
 gateway server or an app's in-app kernel supplies. Clients that don't
 know the key, JupyterLab's among them, ignore it. It names a path on the
-server's machine, so only a caller with the token sees it.
+server's machine, so it goes only to callers the API lets in: the token,
+its login cookie, or an allowed tailnet login, and anyone when auth is
+off. Those callers can already start kernels.
 `GET /api/kernelspecs/{name}` returns the same model for one kernelspec.
 
 ## Start a kernel

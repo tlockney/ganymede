@@ -13,8 +13,14 @@ kernelspec's directory as `resource_dir`, so a client can open its
 - JupyterLab's `@jupyterlab/services` 7.6.6 (`kernelspec/validate.js`)
   checks only `name`, `resources` and `spec` fields and copies named
   properties, so the extra key is ignored.
-- It exposes a server path, but only behind the token like the rest of
-  `/api`.
+- It exposes a server path to the callers the API lets in (the token, its
+  login cookie, an allowed tailnet login, anyone when auth is off), who can
+  already start kernels.
+- `validation/jupyterlab.mjs` has no kernelspec assertion to extend, so
+  only the read of `validate.js` above covers JupyterLab.
+- `crates/ganymede-cli/tests/server.rs` (the jupyter_server comparison)
+  records each kernelspec entry's keys without `resource_dir`, and checks
+  Ganymede's `resource_dir` is the spec's directory (it holds `kernel.json`).
 - Tests: `kernelspecs_kernels_and_sessions_rest` (list and get),
   `embedded.rs` and `gateway.rs` (key absent).
 - `docs/api.md` documents it, with an Unreleased note.
