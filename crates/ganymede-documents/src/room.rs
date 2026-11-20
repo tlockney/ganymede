@@ -299,7 +299,7 @@ impl Room {
         self.conns.len()
     }
 
-    /// The connections and the names they go by (see [`Room::client_name`]),
+    /// The connections and the names they go by (see `Room::client_name`),
     /// in connection order, for listing who is in the room.
     pub fn client_names(&self) -> Vec<(ConnId, String)> {
         let mut conns: Vec<ConnId> = self.conns.keys().copied().collect();
