@@ -313,10 +313,6 @@ page you visit could then act with your session.
 
 ## Connected machines
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 An app that embeds the server can mount other Ganymede servers under
 `/machines/{id}/` ([Embedding](embedding.md#connected-machines)). The
 mount adds the machine's token to what it forwards, so it serves only the
