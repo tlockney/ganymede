@@ -1,0 +1,104 @@
+
+================================================================================
+
+V8 and the code bundled in rusty_v8's prebuilt library
+
+GanymedeFFI.xcframework is built with ganymede-ffi's `v8-bench` feature,
+which links the static library the `v8` crate (rusty_v8, MIT) downloads:
+V8 and the C++ code it is built with. The `v8` crate's own license is above;
+the rest is below. The crate's source package carries no license files for
+this code, so these are the licenses its components are distributed under
+upstream. Each license's full text is in this file or above (cargo-about
+lists the Rust crates').
+
+V8 (https://v8.dev), BSD-3-Clause:
+
+  Copyright 2006-2011, the V8 project authors. All rights reserved.
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions are
+  met:
+
+      * Redistributions of source code must retain the above copyright
+        notice, this list of conditions and the following disclaimer.
+      * Redistributions in binary form must reproduce the above
+        copyright notice, this list of conditions and the following
+        disclaimer in the documentation and/or other materials provided
+        with the distribution.
+      * Neither the name of Google Inc. nor the names of its
+        contributors may be used to endorse or promote products derived
+        from this software without specific prior written permission.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+  A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+  OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+  LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+  DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Components bundled with V8 in the library, with the licenses they are
+distributed under (the texts of Apache-2.0, MIT, BSD-3-Clause and
+Unicode-3.0 are in the list above; Apache-2.0 WITH LLVM-exception and the
+Boost license follow):
+
+  - ICU (third_party/icu): Unicode-3.0, and for some data files the licenses
+    named in ICU's LICENSE (BSD-3-Clause, MIT, Zlib among them).
+  - Abseil (third_party/abseil-cpp): Apache-2.0.
+  - Highway (third_party/highway): Apache-2.0 or BSD-3-Clause.
+  - simdutf (third_party/simdutf): Apache-2.0 or MIT.
+  - fast_float (third_party/fast_float): Apache-2.0, MIT or BSL-1.0.
+  - Dragonbox (third_party/dragonbox): Apache-2.0 WITH LLVM-exception or
+    BSL-1.0.
+  - FP16 (third_party/fp16): MIT.
+  - libc++, libc++abi, libunwind and LLVM libc (third_party/libc++,
+    libc++abi, libunwind, llvm-libc): Apache-2.0 WITH LLVM-exception.
+  - PartitionAlloc (third_party/partition_alloc) and Chromium's base
+    code: BSD-3-Clause, Copyright The Chromium Authors.
+  - V8's own third_party directory (inspector_protocol, jsoncpp, fadec and
+    others): BSD-3-Clause or MIT.
+  - temporal_rs, ICU4X and their dependencies are Rust crates, listed above.
+
+LLVM Exceptions to the Apache 2.0 License:
+
+  As an exception, if, as a result of your compiling your source code,
+  portions of this Software are embedded into an Object form of such source
+  code, you may redistribute such embedded portions in such Object form
+  without complying with the conditions of Sections 4(a), 4(b) and 4(d) of
+  the License.
+
+  In addition, if you combine or link compiled forms of this Software with
+  software that is licensed under the GPLv2 ("Combined Software") and if a
+  court of competent jurisdiction determines that the patent provision
+  (Section 3), the indemnity provision (Section 9) or other Section of the
+  License conflicts with the conditions of the GPLv2, you may retroactively
+  and prospectively choose to deem waived or otherwise exclude such Section(s)
+  of the License, but only in their entirety and only with respect to the
+  Combined Software.
+
+Boost Software License, Version 1.0:
+
+  Permission is hereby granted, free of charge, to any person or
+  organization obtaining a copy of the software and accompanying
+  documentation covered by this license (the "Software") to use, reproduce,
+  display, distribute, execute, and transmit the Software, and to prepare
+  derivative works of the Software, and to permit third-parties to whom the
+  Software is furnished to do so, all subject to the following:
+
+  The copyright notices in the Software and this entire statement,
+  including the above license grant, this restriction and the following
+  disclaimer, must be included in all copies of the Software, in whole or in
+  part, and all derivative works of the Software, unless such copies or
+  derivative works are solely in the form of machine-executable object code
+  generated by a source language processor.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. IN NO EVENT
+  SHALL THE COPYRIGHT HOLDERS OR ANYONE DISTRIBUTING THE SOFTWARE BE LIABLE
+  FOR ANY DAMAGES OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT OR
+  OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+  USE OR OTHER DEALINGS IN THE SOFTWARE.

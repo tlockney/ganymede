@@ -19,6 +19,11 @@ ignore = [
     # (and schemars, through rmcp). Drop this when rmcp moves off chrono;
     # #855 stays open for that. Revisit by 2027-02-17.
     { id = "RUSTSEC-2026-0543", reason = "unmaintained, via rmcp and schemars" },
+    # paste is unmaintained (no vulnerability; a build-time proc macro). It
+    # comes in only through v8 (rusty_v8), behind ganymede-ffi's off-by-
+    # default `v8-bench` feature (#892). Drop this when v8 moves off paste,
+    # or when V8 leaves the apps after the engine decision (#646).
+    { id = "RUSTSEC-2024-0436", reason = "unmaintained, via v8 (v8-bench only)" },
 ]
 
 [bans]

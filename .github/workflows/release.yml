@@ -255,10 +255,14 @@ jobs:
           tool: cargo-about
       # The zip redistributes ganymede-ffi's dependencies, so their
       # notices and this repo's LICENSE travel with it, as in the CLI
-      # archives.
+      # archives. The XCFramework is built with `v8-bench`, so the Rust
+      # crates it adds count, and the prebuilt V8 library they download
+      # carries code the crates' metadata doesn't name: its licenses are in
+      # crates/ganymede-ffi/V8-NOTICES.txt, appended here (#892).
       - name: Third-party notices
         run: |
-          cargo about generate --locked --fail --target aarch64-apple-darwin --target aarch64-apple-ios --target aarch64-apple-ios-sim -m crates/ganymede-ffi/Cargo.toml about.hbs -o target/xcframework/THIRD-PARTY-NOTICES
+          cargo about generate --locked --fail --features v8-bench --target aarch64-apple-darwin --target aarch64-apple-ios --target aarch64-apple-ios-sim -m crates/ganymede-ffi/Cargo.toml about.hbs -o target/xcframework/THIRD-PARTY-NOTICES
+          cat crates/ganymede-ffi/V8-NOTICES.txt >> target/xcframework/THIRD-PARTY-NOTICES
           cp LICENSE target/xcframework/
           cd target/xcframework
           zip -q GanymedeFFI.xcframework.zip THIRD-PARTY-NOTICES LICENSE
