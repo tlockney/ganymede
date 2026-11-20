@@ -128,3 +128,7 @@ the rooms socket; kernel channels with the subprotocol; the terminal
 socket. Unit tests in `mount.rs` for paths and headers;
 `the_mount_takes_the_token_and_cookie_only_from_loopback` in `ganymede-server`;
 `mounts_and_unmounts_a_machine` and `tests/smoke.c` for the C ABI.
+
+Follow-up (after #900 and ganymede-ui#703 merged): the roadmap says the
+journal view is on ganymede-ui's `main` and connected machines are still
+being built, as the review of #900 asked.

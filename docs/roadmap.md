@@ -139,9 +139,8 @@ In order of priority.
    notebooks through rooms (done, above). The app's journal view, which
    shows the agent's journal as it is written
    ([ganymede-ui#184](https://github.com/tlockney/ganymede-ui/issues/184)),
-   is in review in ganymede-ui
-   ([#703](https://github.com/tlockney/ganymede-ui/pull/703)), and so are connected machines, other
-   computers' files, rooms and kernels in the same windows
+   is on ganymede-ui's `main`. Connected machines, other computers'
+   files, rooms and kernels in the same windows, are being built
    ([ganymede-ui#697](https://github.com/tlockney/ganymede-ui/issues/697);
    the server's side is `/machines/{id}/`, [Embedding](embedding.md#connected-machines)).
    Journal sessions get evals
@@ -151,9 +150,9 @@ In order of priority.
    goes is [#795](https://github.com/tlockney/ganymede/issues/795).
 
    > [!NOTE]
-   > **Unreleased in ganymede-ui.** The journal view and connected
-   > machines are not in a ganymede-ui release, and the journal view is
-   > not yet on its `main`.
+   > **Unreleased in ganymede-ui.** The journal view is not in a
+   > ganymede-ui release, and connected machines are not yet on its
+   > `main`.
 4. **TypeScript notebooks for TypeScript developers.**
    [cdp-kernel](https://github.com/tlockney/cdp-kernel) is the
    first-class kernel, on Node and Deno first. Tables, charts and SQL
