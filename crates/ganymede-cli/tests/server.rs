@@ -419,6 +419,13 @@ fn keys(v: &Value) -> Value {
     json!(k)
 }
 
+/// `keys` without one the other server isn't expected to send.
+fn keys_without(v: &Value, skip: &str) -> Value {
+    let mut k = keys(v);
+    k.as_array_mut().unwrap().retain(|n| n != skip);
+    k
+}
+
 fn pick(v: &Value, fields: &[&str]) -> Value {
     let mut out = serde_json::Map::new();
     for f in fields {
@@ -777,8 +784,10 @@ async fn scenario(base: &str, c: &Code) -> Vec<(String, Value)> {
     }
     cl.record(
         "kernelspecs",
-        json!({"status": s, "keys": keys(&v), "spec": spec_json, "name": spec["name"], "resources": keys(&spec["resources"])}),
+        json!({"status": s, "keys": keys(&v), "entry_keys": keys_without(spec, "resource_dir"), "spec": spec_json, "name": spec["name"], "resources": keys(&spec["resources"])}),
     );
+    // Ganymede's extra key: compared on its own in `run_both`, not here.
+    cl.record("resource_dir", spec["resource_dir"].clone());
     let login = browser_login(&mut cl).await;
 
     let nb = json!({"nbformat": 4, "nbformat_minor": 5, "metadata": {"kernelspec": {"name": c.kernel, "display_name": c.kernel}}, "cells": [
@@ -1071,8 +1080,27 @@ fn run_both(c: &Code) {
         rt.block_on(scenario(&s.base, c))
     };
     assert_eq!(reference.len(), ours.len());
+    // `resource_dir` is Ganymede's extra key (#890): jupyter_server sends
+    // none, and ours is the directory of the kernelspec's kernel.json.
+    let dir_of = |t: &[(String, Value)]| {
+        t.iter()
+            .find(|(s, _)| s == "resource_dir")
+            .unwrap()
+            .1
+            .clone()
+    };
+    assert!(
+        dir_of(&reference).is_null(),
+        "jupyter_server sends resource_dir now?"
+    );
+    let dir = std::path::PathBuf::from(dir_of(&ours).as_str().expect("resource_dir missing"));
+    assert!(dir.join("kernel.json").is_file(), "{}", dir.display());
+    assert_eq!(dir.file_name().unwrap(), c.kernel);
     let mut diffs = Vec::new();
     for ((step, a), (_, b)) in reference.iter().zip(&ours) {
+        if step == "resource_dir" {
+            continue;
+        }
         let a = normalize(&serde_json::to_string_pretty(&sort_keys(a)).unwrap());
         let b = normalize(&serde_json::to_string_pretty(&sort_keys(b)).unwrap());
         if a != b {

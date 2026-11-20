@@ -185,6 +185,12 @@ async fn kernelspecs_kernels_and_sessions_rest() {
     assert_eq!(st, StatusCode::OK);
     assert_eq!(specs["default"], "fake");
     assert_eq!(specs["kernelspecs"]["fake"]["spec"]["display_name"], "Fake");
+    // The directory the spec lives in, listed and fetched alike.
+    let want = dir.path().to_str().unwrap();
+    assert_eq!(specs["kernelspecs"]["fake"]["resource_dir"], want);
+    let (st, one) = call(&app, "GET", "/api/kernelspecs/fake", None, t).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(one["resource_dir"], want);
     assert_eq!(
         call(&app, "GET", "/api/kernelspecs/nope", None, t).await.0,
         StatusCode::NOT_FOUND

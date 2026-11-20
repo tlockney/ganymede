@@ -33,6 +33,12 @@ pub struct KernelspecModel {
     pub spec: KernelspecSpec,
     /// Logo and other resource URLs, as `jupyter_server` reports them.
     pub resources: Map<String, Value>,
+    /// Absolute path of the directory holding the kernelspec's
+    /// `kernel.json` and resource files. An extra key, not in
+    /// `jupyter_server`'s model. Left out when the spec has no directory:
+    /// a gateway spec or a kernel an app registered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

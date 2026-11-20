@@ -99,6 +99,12 @@ async fn serves_the_apps_kernels() {
     let (code, specs) = call(addr, "GET", "/api/kernelspecs", None).await;
     assert_eq!(code, 200);
     assert_eq!(specs["default"], "local", "{specs}");
+    // A registered kernel has no directory, so the key is left out.
+    let local = specs["kernelspecs"]["local"].as_object().unwrap();
+    assert!(!local.contains_key("resource_dir"), "{specs}");
+    let (code, one) = call(addr, "GET", "/api/kernelspecs/local", None).await;
+    assert_eq!(code, 200);
+    assert!(one.get("resource_dir").is_none(), "{one}");
     let (code, kernel) = call(addr, "POST", "/api/kernels", Some(json!({"name": "local"}))).await;
     assert_eq!(code, 201, "{kernel}");
     let path = format!("/api/kernels/{}/restart", kernel["id"].as_str().unwrap());

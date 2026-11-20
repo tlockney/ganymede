@@ -1295,6 +1295,8 @@ fn spec_model(s: &Kernelspec, base_url: &str) -> KernelspecModel {
                 .to_string(),
         },
         resources: spec_resources(s, base_url),
+        resource_dir: (!s.resource_dir.as_os_str().is_empty())
+            .then(|| s.resource_dir.to_string_lossy().into_owned()),
     }
 }
 
