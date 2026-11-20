@@ -5127,6 +5127,218 @@ async fn execute_clear_wait_updates_live() {
     }
 }
 
+/// A websocket client of a notebook's room, kept in sync with it, to see
+/// what the room says about a cell while it runs.
+struct RoomWatch {
+    ws: tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    doc: ganymede_documents::yrs::Doc,
+}
+
+impl RoomWatch {
+    async fn open(app: &axum::Router, path: &str) -> RoomWatch {
+        use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
+        use ganymede_documents::yrs::updates::encoder::Encode;
+        use ganymede_documents::yrs::{Doc, ReadTxn, Transact};
+        use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+
+        let (_, session) = call(
+            app,
+            "PUT",
+            &format!("/api/collaboration/session/{path}"),
+            Some(json!({"format": "json", "type": "notebook"})),
+            Some(TOKEN),
+        )
+        .await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let served = app.clone();
+        tokio::spawn(async move { axum::serve(listener, served).await.unwrap() });
+        let mut req = format!(
+            "ws://{addr}/api/collaboration/room/json:notebook:{}?sessionId={}",
+            session["fileId"].as_str().unwrap(),
+            session["sessionId"].as_str().unwrap()
+        )
+        .into_client_request()
+        .unwrap();
+        req.headers_mut()
+            .insert("Authorization", format!("token {TOKEN}").parse().unwrap());
+        let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        let doc = Doc::new();
+        let sv = doc.transact().state_vector();
+        ws.send(TMsg::Binary(
+            YMsg::Sync(SyncMessage::SyncStep1(sv)).encode_v1().into(),
+        ))
+        .await
+        .unwrap();
+        RoomWatch { ws, doc }
+    }
+
+    /// The cell's `(execution_state, execution_by)` in the synced room.
+    fn shown(&self, id: &str) -> (Option<String>, Option<String>) {
+        use ganymede_documents::schema::Roots;
+        use ganymede_documents::yrs::{Any, Array, Map, Out, Transact};
+        let roots = Roots::get(&self.doc);
+        let txn = self.doc.transact();
+        for i in 0..roots.cells.len(&txn) {
+            let Some(Out::YMap(cell)) = roots.cells.get(&txn, i) else {
+                continue;
+            };
+            if !matches!(cell.get(&txn, "id"), Some(Out::Any(Any::String(s))) if &*s == id) {
+                continue;
+            }
+            let text = |key: &str| match cell.get(&txn, key) {
+                Some(Out::Any(Any::String(s))) => Some(s.to_string()),
+                _ => None,
+            };
+            return (text("execution_state"), text("execution_by"));
+        }
+        (None, None)
+    }
+
+    /// Follow the room until the cell shows `(state, by)`; the sequence of
+    /// distinct values seen is not asserted, only that this one arrives.
+    async fn until(&mut self, id: &str, state: &str, by: Option<&str>) {
+        use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
+        use ganymede_documents::yrs::updates::decoder::Decode;
+        use ganymede_documents::yrs::updates::encoder::Encode;
+        use ganymede_documents::yrs::{ReadTxn, Transact, Update};
+        use tokio_tungstenite::tungstenite::Message as TMsg;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let seen = self.shown(id);
+            if seen.0.as_deref() == Some(state) && seen.1.as_deref() == by {
+                return;
+            }
+            let msg = tokio::time::timeout_at(deadline, self.ws.next())
+                .await
+                .unwrap_or_else(|_| panic!("wanted ({state}, {by:?}), room has {seen:?}"))
+                .unwrap()
+                .unwrap();
+            let TMsg::Binary(b) = msg else { continue };
+            match YMsg::decode_v1(&b) {
+                Ok(YMsg::Sync(SyncMessage::SyncStep1(sv))) => {
+                    let u = self.doc.transact().encode_state_as_update_v1(&sv);
+                    self.ws
+                        .send(TMsg::Binary(
+                            YMsg::Sync(SyncMessage::SyncStep2(u)).encode_v1().into(),
+                        ))
+                        .await
+                        .unwrap();
+                }
+                Ok(YMsg::Sync(SyncMessage::SyncStep2(u) | SyncMessage::Update(u))) => {
+                    self.doc
+                        .transact_mut()
+                        .apply_update(Update::decode_v1(&u).unwrap())
+                        .unwrap();
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// A cell run through the execute endpoint shows `running` and who runs it
+/// in the room, and `idle` with no name once it ends (#896). The name is
+/// the tailnet login, else the body's `by`, else "an API client".
+#[tokio::test]
+async fn execute_shows_who_runs_the_cell_in_the_room() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(state(dir.path()));
+    let (kid, doc) = room_source_setup(
+        &app,
+        dir.path(),
+        "w.ipynb",
+        5,
+        json!([code_cell(Some("a"), "sleep 300", &[])]),
+    )
+    .await;
+    let mut watch = RoomWatch::open(&app, "w.ipynb").await;
+    watch.until("a", "idle", None).await;
+    let url = format!("/api/kernels/{kid}/execute");
+    let run = |app: axum::Router, extra: Value| {
+        let (url, doc) = (url.clone(), doc.clone());
+        async move {
+            let mut body = json!({"document_id": doc, "cells": [{"cell_id": "a"}]});
+            body.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            call(&app, "POST", &url, Some(body), Some(TOKEN)).await
+        }
+    };
+
+    // The body names the runner.
+    let (s, v) = run(app.clone(), json!({"by": " Ann\u{7}  Lee "})).await;
+    assert_eq!((s, v), (StatusCode::OK, Value::Null));
+    watch.until("a", "running", Some("Ann Lee")).await;
+    watch.until("a", "idle", None).await;
+
+    // No name: an API client. `client_id` is accepted and not a name.
+    let (s, v) = run(app.clone(), json!({"client_id": "x"})).await;
+    assert_eq!((s, v), (StatusCode::OK, Value::Null));
+    watch.until("a", "running", Some("an API client")).await;
+    watch.until("a", "idle", None).await;
+
+    // A name that is empty once cleaned counts as none.
+    let (s, _) = run(app.clone(), json!({"by": " \u{7} "})).await;
+    assert_eq!(s, StatusCode::OK);
+    watch.until("a", "running", Some("an API client")).await;
+    watch.until("a", "idle", None).await;
+
+    // A tailnet login wins over the body.
+    let tailnet = app
+        .clone()
+        .layer(axum::Extension(ganymede_server::auth::TailnetUser(
+            "ann@example.com".into(),
+        )));
+    let (s, _) = run(tailnet, json!({"by": "bot"})).await;
+    assert_eq!(s, StatusCode::OK);
+    watch.until("a", "running", Some("ann@example.com")).await;
+    watch.until("a", "idle", None).await;
+
+    // Not a string: refused, and nothing runs.
+    let (s, v) = run(app.clone(), json!({"by": 5})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v:#}");
+    let m = v["message"].as_str().unwrap_or_default();
+    assert!(m.contains("string"), "{v:#}");
+    assert_eq!(watch.shown("a"), (Some("idle".into()), None));
+}
+
+/// A cell run by an MCP tool shows the client's name in the room while it
+/// runs, through `notebook_run_all` and through running a single cell (#896).
+#[tokio::test]
+async fn mcp_runs_show_the_client_in_the_room() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = mcp_app(dir.path());
+    let nb = json!({"cells": [code_cell(Some("a"), "sleep 300", &[])],
+        "metadata": {"kernelspec": {"name": "fake", "display_name": "Fake"}},
+        "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.path().join("m.ipynb"), nb.to_string()).unwrap();
+    let mut watch = RoomWatch::open(&app, "m.ipynb").await;
+    watch.until("a", "idle", None).await;
+    let sid = mcp_connect(&app, "Claude Test").await;
+    mcp_tool(&app, &sid, "notebook_open", json!({"path": "m.ipynb"})).await;
+
+    for (tool, args) in [
+        ("notebook_run_all", json!({"restart": false})),
+        (
+            "cell_edit",
+            json!({"id": "a", "source": "sleep 300", "run": true}),
+        ),
+    ] {
+        let running = {
+            let (app, sid) = (app.clone(), sid.clone());
+            tokio::spawn(async move { mcp_tool(&app, &sid, tool, args).await })
+        };
+        watch.until("a", "running", Some("Claude Test")).await;
+        let out = mcp_text(&running.await.unwrap());
+        assert!(!out.is_empty(), "{tool}");
+        watch.until("a", "idle", None).await;
+    }
+}
+
 /// A cell that prints many lines, one message each, ends with one stream
 /// holding all of them, live updates and the final outputs agreeing.
 #[tokio::test]

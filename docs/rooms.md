@@ -187,6 +187,48 @@ ten seconds. A cell that fails stops the rest of its batch.
 
 ![Running cells into a room. A client such as nb-cli or ganymede mcp sends POST /api/kernels/{id}/execute with the document id and each cell's id and source hash (MurmurHash2, seed 0). Ganymede checks each cell's source in the room against its hash: if one changed it answers 409 source_mismatch, and if the previous request wasn't queued within ten seconds it answers 408, and nothing runs. Otherwise it clears the cells, queues them as one batch and answers 200 null. It sends the cells to the kernel one after another; a cell that fails stops the rest of the batch. As outputs arrive on iopub, Ganymede writes them and the execution count into the room, so every client sees them and autosave writes them to the file even with no client connected.](images/rooms/execute.svg)
 
+### Who runs a cell
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+A cell a run has queued shows `execution_state: running` in the room, and
+`idle` once its last queued run ends (a cell that was skipped after an
+earlier cell failed, or was deleted, ends its run too). Ganymede adds
+`execution_by`, the name of who runs the cell now through the execute
+endpoint or `ganymede mcp`. It is in the room only: it is never saved to
+the notebook file or returned by `GET /api/contents`, and Ganymede
+removes it when the last of those runs ends.
+
+A client that runs a cell itself, such as JupyterLab sending an execute
+request on the kernel's websocket, writes `execution_state` on its own
+and sets no name; the server doesn't see that run. When the two overlap,
+the cell can name a queued agent's run while the person's run is still
+on the kernel, or show `idle` with a name until the queued run ends. So
+read `execution_by` only while the cell is `running`, as the name of the
+earliest of Ganymede's queued runs of that cell not yet ended.
+
+The name comes from the entry point:
+
+- The execute endpoint takes, in order: the caller's tailnet login (see
+  [Security](security.md#tailnet-identity)), then an optional string `by` in the request
+  body, then "an API client". A `by` that isn't a string is a `400`.
+  `client_id` is still accepted and ignored.
+- An MCP tool that runs cells in the room (`cell_run` when it records a
+  cell, `cell_edit` with `run`, `notebook_run_all`) uses the name the MCP client gave when it connected.
+
+Only a tailnet login is vouched for: `by` and an MCP client's name are
+whatever the caller sends, so any client with the token can give any
+name. Every name is cleaned like a [client's name in the list of rooms](#listing-open-rooms):
+control characters dropped, whitespace collapsed, at most 64 characters.
+One with nothing left yields to the next source.
+
+A cell queued behind another run of itself keeps showing the run in
+progress. When that run ends, the cell shows whoever queued next, and
+goes idle after the last. `by` is one of Ganymede's extensions to the
+execute body, with `wait` and the cell selectors.
+
 ### Waiting for the cells
 
 Ganymede adds an optional `wait` field, in seconds (at most 3600), for

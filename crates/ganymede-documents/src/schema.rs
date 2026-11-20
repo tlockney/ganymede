@@ -8,6 +8,7 @@
 //! cells: Array of Map
 //!          id, cell_type, source: Text, metadata: Map,
 //!          code:  execution_count, execution_state, outputs: Array of Map
+//!                 (execution_by, a room-only name, is never saved)
 //!                 (a stream output's text is a Text)
 //!          markdown/raw: attachments (only when not empty)
 //! ```
@@ -546,6 +547,7 @@ fn read<T: ReadTxn>(
 fn strip_runtime(mut cell: Value) -> Value {
     if let Value::Object(m) = &mut cell {
         m.remove("execution_state");
+        m.remove("execution_by");
         let empty_attachments = m
             .get("attachments")
             .is_some_and(|a| a.as_object().is_some_and(JsonMap::is_empty));

@@ -13,14 +13,17 @@
 //! `{"tag": "x"}` names every code cell tagged `x`; `"cells": "all"` is
 //! every code cell with source. The room resolves them in its task, in the
 //! same step as the checks, so a notebook with no cell ids on disk
-//! (nbformat 4.4) runs by the ids its room gave.
+//! (nbformat 4.4) runs by the ids its room gave. `"by": "<name>"` (#896)
+//! says who runs them: the caller's tailnet login if there is one, else
+//! `by`, else "an API client", each cleaned like a room client's name.
 //!
 //! The room checks every given hash against its cell's current source,
-//! then clears the cells' outputs, marks them running, and queues the
-//! batch, all in one step of its task, so no other request interleaves
-//! with it. The answer is `200 null` once queued; `409 {"error":
-//! "source_mismatch", "cell_id"}` when a cell's source changed since the
-//! client hashed it; `408` when `previous_request_id` was not queued within
+//! then clears the cells' outputs, marks them running (`execution_state`,
+//! and `execution_by` with the runner's name, both room-only: never
+//! saved), and queues the batch, all in one step of its task, so no other
+//! request interleaves with it. The answer is `200 null` once queued;
+//! `409 {"error": "source_mismatch", "cell_id"}` when a cell's source
+//! changed since the client hashed it; `408` when `previous_request_id` was not queued within
 //! ten seconds; `400` for the rest, `"error": "cell_not_found"` among them
 //! for an id or tag the room doesn't have. A room that isn't open is
 //! opened, so an agent with no websocket can run cells.
@@ -28,9 +31,12 @@
 //! One worker per room runs the queue in order on the named kernel,
 //! through `ganymede-exec`'s [`NotebookRun`] (display updates, clears,
 //! counts), and writes outputs into the room as they arrive, so they land
-//! with no client connected and are saved with the notebook. A cell that
-//! fails stops the rest of its batch, as a kernel's `stop_on_error` does for
-//! JupyterLab's Run All. Input requests are refused (`allow_stdin` off).
+//! with no client connected and are saved with the notebook. A cell goes
+//! back to idle, with no `execution_by`, when its last queued run ends
+//! (a cell queued behind another run of itself shows the run in progress). A
+//! cell that fails stops the rest of its batch, as a kernel's
+//! `stop_on_error` does for JupyterLab's Run All. Input requests are
+//! refused (`allow_stdin` off).
 
 use crate::collab::{send_to_notebook_room, Cmd};
 use crate::room_ops;
@@ -47,7 +53,7 @@ use ganymede_exec::{CellStatus, Event, NotebookRun, Options};
 use ganymede_nbformat::Cell;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -61,6 +67,8 @@ const MAX_REMEMBERED_CELLS: usize = 256;
 const MAX_QUEUED_IDS: usize = 10_000;
 /// The longest `wait` a request may ask for.
 const MAX_WAIT: Duration = Duration::from_secs(3600);
+/// Who a run is credited to when a REST request names no one.
+pub(crate) const API_CLIENT: &str = "an API client";
 
 #[derive(Deserialize, Default)]
 pub struct ExecuteBody {
@@ -73,6 +81,22 @@ pub struct ExecuteBody {
     /// Ganymede's extension (#566): wait up to this many seconds for the
     /// batch to run, and answer with its cells.
     wait: Option<f64>,
+    /// Ganymede's extension (#896): who runs the cells, shown in the room
+    /// as `execution_by` while they run. A caller the server vouches for
+    /// (a tailnet login) is shown by that name instead.
+    by: Option<String>,
+}
+
+/// The name shown as running a REST request's cells: the caller's tailnet
+/// login, else the body's `by`, else `API_CLIENT`. Each is cleaned like
+/// a room client's name; one with nothing left yields to the next.
+pub(crate) fn runner_name(login: Option<&str>, by: Option<&str>) -> String {
+    [login, by]
+        .into_iter()
+        .flatten()
+        .map(ganymede_documents::clean_name)
+        .find(|n| !n.is_empty())
+        .unwrap_or_else(|| API_CLIENT.to_string())
 }
 
 /// Which cells a request names.
@@ -106,6 +130,8 @@ pub(crate) enum RoomCmd {
         kernels: Arc<KernelManager>,
         kernel_id: String,
         cells: Vec<Selector>,
+        /// Who runs them, shown in the room as `execution_by`.
+        by: String,
         /// The ids the selectors resolved to, in the order they run.
         reply: oneshot::Sender<Result<Vec<String>, Refused>>,
         /// Told when the whole batch has run.
@@ -178,6 +204,9 @@ pub(crate) struct RoomExec {
     me: mpsc::UnboundedSender<Cmd>,
     worker: Option<mpsc::UnboundedSender<Batch>>,
     pending: usize,
+    /// Per cell id, who runs each queued or running run of it, in order:
+    /// the front is the run in progress. Entries are dropped when empty.
+    queued: HashMap<String, VecDeque<String>>,
 }
 
 impl RoomExec {
@@ -186,7 +215,77 @@ impl RoomExec {
             me,
             worker: None,
             pending: 0,
+            queued: HashMap::new(),
         }
+    }
+
+    /// Check and queue `selectors` for `by`: [`enqueue`], then remember
+    /// who runs each cell, in the same step of the room's task.
+    fn queue(
+        &mut self,
+        room: &mut Room,
+        selectors: &[Selector],
+        by: &str,
+    ) -> (Result<Vec<String>, Refused>, Effects) {
+        let (checked, fx) = enqueue(room, selectors, by, &self.queued);
+        if let Ok(ids) = &checked {
+            for id in ids {
+                self.queued
+                    .entry(id.clone())
+                    .or_default()
+                    .push_back(by.to_string());
+            }
+        }
+        (checked, fx)
+    }
+
+    /// A run of `cell_id` ended (or was skipped): its outputs, if it ran.
+    /// The cell stays running, now by whoever queued next, while it has
+    /// runs queued; otherwise it is idle and has no `execution_by`.
+    fn finish(
+        &mut self,
+        room: &mut Room,
+        cell_id: &str,
+        outputs: Option<Vec<Value>>,
+        execution_count: Option<i64>,
+    ) -> Effects {
+        self.pending = self.pending.saturating_sub(1);
+        // Also when the cell is gone, so a later cell of that id starts
+        // with no stale name.
+        let next = match self.queued.get_mut(cell_id) {
+            Some(runs) => {
+                runs.pop_front();
+                let next = runs.front().cloned();
+                if next.is_none() {
+                    self.queued.remove(cell_id);
+                }
+                next
+            }
+            None => None,
+        };
+        room.edit(|txn, roots| {
+            let Some(cell) = schema::find_cell(txn, roots, cell_id) else {
+                return;
+            };
+            if let Some(outputs) = outputs {
+                schema::set_outputs(txn, &cell, outputs);
+            }
+            if let Some(n) = execution_count {
+                cell.insert(txn, "execution_count", schema::json_to_any(&json!(n)));
+            }
+            match next {
+                Some(by) => {
+                    // A client's own run may have marked the cell idle meanwhile.
+                    cell.insert(txn, "execution_state", "running");
+                    cell.insert(txn, "execution_by", by);
+                }
+                None => {
+                    cell.insert(txn, "execution_state", "idle");
+                    cell.remove(txn, "execution_by");
+                }
+            }
+        })
+        .1
     }
 
     /// No cell queued or running, so the room may close.
@@ -200,10 +299,11 @@ impl RoomExec {
                 kernels,
                 kernel_id,
                 cells,
+                by,
                 reply,
                 finished,
             } => {
-                let (checked, fx) = enqueue(room, &cells);
+                let (checked, fx) = self.queue(room, &cells, &by);
                 if let Ok(ids) = &checked {
                     if ids.is_empty() {
                         if let Some(f) = finished {
@@ -276,29 +376,22 @@ impl RoomExec {
                 cell_id,
                 outputs,
                 execution_count,
-            } => {
-                self.pending = self.pending.saturating_sub(1);
-                room.edit(|txn, roots| {
-                    let Some(cell) = schema::find_cell(txn, roots, &cell_id) else {
-                        return;
-                    };
-                    if let Some(outputs) = outputs {
-                        schema::set_outputs(txn, &cell, outputs);
-                    }
-                    if let Some(n) = execution_count {
-                        cell.insert(txn, "execution_count", schema::json_to_any(&json!(n)));
-                    }
-                    cell.insert(txn, "execution_state", "idle");
-                })
-                .1
-            }
+            } => self.finish(room, &cell_id, outputs, execution_count),
         }
     }
 }
 
 /// Resolve the selectors against the room's cells, check them, then clear
 /// and mark every cell, or none. The ids come back in run order, each once.
-fn enqueue(room: &mut Room, selectors: &[Selector]) -> (Result<Vec<String>, Refused>, Effects) {
+///
+/// A cell with no run queued gets `execution_by` = `by`; one already
+/// queued (`queued`) keeps the name of the run in progress.
+fn enqueue(
+    room: &mut Room,
+    selectors: &[Selector],
+    by: &str,
+    queued: &HashMap<String, VecDeque<String>>,
+) -> (Result<Vec<String>, Refused>, Effects) {
     if room.notebook().is_none() {
         return (
             Err(Refused::Bad("not a notebook room".into())),
@@ -401,9 +494,12 @@ fn enqueue(room: &mut Room, selectors: &[Selector]) -> (Result<Vec<String>, Refu
                 }
             }
         }
-        for (_, cell) in &found {
+        for (id, cell) in &found {
             schema::set_outputs(txn, cell, Vec::new());
             cell.insert(txn, "execution_state", "running");
+            if queued.get(id).is_none_or(VecDeque::is_empty) {
+                cell.insert(txn, "execution_by", by);
+            }
         }
         Ok(found.into_iter().map(|(id, _)| id).collect())
     })
@@ -755,8 +851,13 @@ fn parse_cells(cells: Option<Value>) -> Result<Vec<Selector>, HttpError> {
 pub async fn execute(
     State(state): State<AppState>,
     Path(kernel_id): Path<String>,
+    user: Option<axum::Extension<crate::auth::TailnetUser>>,
     LenientJson(body): LenientJson<ExecuteBody>,
 ) -> Result<Response, HttpError> {
+    let by = runner_name(
+        user.as_ref().map(|axum::Extension(u)| u.0.as_str()),
+        body.by.as_deref(),
+    );
     let document_id = body
         .document_id
         .filter(|d| !d.is_empty())
@@ -807,6 +908,7 @@ pub async fn execute(
         kernels: state.kernels.clone(),
         kernel_id,
         cells,
+        by,
         reply,
         finished,
     });
@@ -883,6 +985,7 @@ pub(crate) async fn run_and_wait(
     path: &str,
     kernel_id: &str,
     cells: Vec<String>,
+    by: String,
     timeout: Duration,
     late: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<bool, String> {
@@ -892,6 +995,7 @@ pub(crate) async fn run_and_wait(
         kernels: state.kernels.clone(),
         kernel_id: kernel_id.to_string(),
         cells: cells.into_iter().map(|c| Selector::Id(c, None)).collect(),
+        by,
         reply,
         finished: Some(finished),
     });
@@ -941,6 +1045,10 @@ mod request_tests {
         Room::notebook_room(&nb, "a.ipynb")
     }
 
+    fn enq(room: &mut Room, sels: &[Selector]) -> (Result<Vec<String>, Refused>, Effects) {
+        enqueue(room, sels, "tester", &HashMap::new())
+    }
+
     fn id(s: &str) -> Selector {
         Selector::Id(s.into(), None)
     }
@@ -948,10 +1056,10 @@ mod request_tests {
     #[test]
     fn a_read_only_room_queues_nothing() {
         let mut room = room_of(5);
-        assert!(enqueue(&mut room, &[id("a")]).0.is_ok());
+        assert!(enq(&mut room, &[id("a")]).0.is_ok());
         room.set_read_only(true);
         for sel in [id("a"), Selector::Tag("t".into()), Selector::All] {
-            let (r, fx) = enqueue(&mut room, &[sel]);
+            let (r, fx) = enq(&mut room, &[sel]);
             assert!(
                 matches!(&r, Err(Refused::Bad(m)) if m.contains("read-only")),
                 "{:?}",
@@ -964,7 +1072,7 @@ mod request_tests {
     #[test]
     fn selectors_resolve_in_room_order() {
         let mut room = room_of(5);
-        let mut ids = |sels: &[Selector]| enqueue(&mut room, sels).0.unwrap();
+        let mut ids = |sels: &[Selector]| enq(&mut room, sels).0.unwrap();
         // Tags: code cells only, a non-list `tags` ignored.
         assert_eq!(ids(&[Selector::Tag("t".into())]), ["a", "c"]);
         // A tag skips a cell already queued; an id given again runs again.
@@ -981,27 +1089,27 @@ mod request_tests {
     #[test]
     fn a_refused_batch_changes_nothing() {
         let mut room = room_of(5);
-        let (r, fx) = enqueue(&mut room, &[id("a"), id("zz")]);
+        let (r, fx) = enq(&mut room, &[id("a"), id("zz")]);
         assert!(
             matches!(&r, Err(Refused::NotFound { cell_id: Some(c), message, .. })
             if c == "zz" && !message.contains("4.4"))
         );
         assert!(!fx.changed);
-        let (r, fx) = enqueue(&mut room, &[id("a"), Selector::Tag("none".into())]);
+        let (r, fx) = enq(&mut room, &[id("a"), Selector::Tag("none".into())]);
         assert!(matches!(&r, Err(Refused::NotFound { tag: Some(t), .. }) if t == "none"));
         assert!(!fx.changed);
-        let (r, fx) = enqueue(
+        let (r, fx) = enq(
             &mut room,
             &[id("a"), Selector::Id("c".into(), Some("0".into()))],
         );
         assert!(matches!(&r, Err(Refused::SourceMismatch(c)) if c == "c"));
         assert!(!fx.changed);
-        let (r, fx) = enqueue(&mut room, &[id("m")]);
+        let (r, fx) = enq(&mut room, &[id("m")]);
         assert!(matches!(&r, Err(Refused::Bad(m)) if m.contains("not a code cell")));
         assert!(!fx.changed);
         // The 4.4 hint.
         let mut old = room_of(4);
-        let (r, _) = enqueue(&mut old, &[id("zz")]);
+        let (r, _) = enq(&mut old, &[id("zz")]);
         assert!(
             matches!(&r, Err(Refused::NotFound { message, .. }) if message.contains("nbformat 4.4"))
         );
@@ -1088,5 +1196,167 @@ mod request_tests {
         assert!(!r.queued.lock().unwrap().contains_key("never-queued"));
         r.consumed("queued");
         assert!(r.queued.lock().unwrap().is_empty());
+    }
+
+    fn exec() -> RoomExec {
+        RoomExec::new(mpsc::unbounded_channel().0)
+    }
+
+    /// A cell's `(execution_state, execution_by)` as the room has them.
+    fn shown(room: &mut Room, id: &str) -> (Option<String>, Option<String>) {
+        let mut out = (None, None);
+        room.edit(|txn, roots| {
+            let cell = schema::find_cell(txn, roots, id).unwrap();
+            let text = |key: &str| match cell.get(txn, key) {
+                Some(Out::Any(Any::String(s))) => Some(s.to_string()),
+                _ => None,
+            };
+            out = (text("execution_state"), text("execution_by"));
+        });
+        out
+    }
+
+    fn state(room: &mut Room, id: &str) -> (&'static str, Option<String>) {
+        let (s, by) = shown(room, id);
+        let s = match s.as_deref() {
+            Some("running") => "running",
+            Some("idle") => "idle",
+            other => panic!("state {other:?}"),
+        };
+        (s, by)
+    }
+
+    fn run(x: &mut RoomExec, room: &mut Room, sels: &[Selector], by: &str) {
+        assert!(x.queue(room, sels, by).0.is_ok());
+    }
+
+    #[test]
+    fn a_queued_cell_shows_who_runs_it_until_it_is_done() {
+        let (mut room, mut x) = (room_of(5), exec());
+        assert_eq!(state(&mut room, "a"), ("idle", None));
+        run(&mut x, &mut room, &[id("a")], "Claude");
+        assert_eq!(state(&mut room, "a"), ("running", Some("Claude".into())));
+        // Another cell is not named.
+        assert_eq!(state(&mut room, "c"), ("idle", None));
+        x.finish(&mut room, "a", Some(Vec::new()), Some(1));
+        assert_eq!(state(&mut room, "a"), ("idle", None));
+        assert!(x.queued.is_empty());
+    }
+
+    #[test]
+    fn a_cell_queued_twice_shows_the_run_in_progress() {
+        let (mut room, mut x) = (room_of(5), exec());
+        run(&mut x, &mut room, &[id("a")], "A");
+        run(&mut x, &mut room, &[id("a")], "B");
+        // B waits behind A: the name is still A's.
+        assert_eq!(state(&mut room, "a"), ("running", Some("A".into())));
+        x.finish(&mut room, "a", Some(Vec::new()), Some(1));
+        assert_eq!(state(&mut room, "a"), ("running", Some("B".into())));
+        x.finish(&mut room, "a", Some(Vec::new()), Some(2));
+        assert_eq!(state(&mut room, "a"), ("idle", None));
+        assert!(x.queued.is_empty());
+    }
+
+    #[test]
+    fn the_next_run_marks_the_cell_running_again() {
+        let (mut room, mut x) = (room_of(5), exec());
+        run(&mut x, &mut room, &[id("a")], "A");
+        run(&mut x, &mut room, &[id("a")], "B");
+        // A client's own run of the cell marked it idle meanwhile.
+        room.edit(|txn, roots| {
+            let cell = schema::find_cell(txn, roots, "a").unwrap();
+            cell.insert(txn, "execution_state", "idle");
+        });
+        x.finish(&mut room, "a", Some(Vec::new()), Some(1));
+        assert_eq!(state(&mut room, "a"), ("running", Some("B".into())));
+    }
+
+    #[test]
+    fn a_cell_given_twice_in_a_batch_runs_twice_before_it_is_idle() {
+        let (mut room, mut x) = (room_of(5), exec());
+        run(&mut x, &mut room, &[id("a"), id("a")], "A");
+        x.finish(&mut room, "a", Some(Vec::new()), Some(1));
+        assert_eq!(state(&mut room, "a"), ("running", Some("A".into())));
+        x.finish(&mut room, "a", Some(Vec::new()), Some(2));
+        assert_eq!(state(&mut room, "a"), ("idle", None));
+    }
+
+    #[test]
+    fn a_skipped_cell_ends_its_run_too() {
+        let (mut room, mut x) = (room_of(5), exec());
+        run(&mut x, &mut room, &[id("a")], "A");
+        // Skipped after an earlier cell failed: no outputs, no count.
+        x.finish(&mut room, "a", None, None);
+        assert_eq!(state(&mut room, "a"), ("idle", None));
+        // A later run is credited to its own runner, not the skipped one's.
+        run(&mut x, &mut room, &[id("a")], "B");
+        assert_eq!(state(&mut room, "a"), ("running", Some("B".into())));
+    }
+
+    #[test]
+    fn a_deleted_cell_still_ends_its_run() {
+        let (mut room, mut x) = (room_of(5), exec());
+        run(&mut x, &mut room, &[id("a")], "A");
+        x.finish(&mut room, "zz", None, None);
+        assert!(x.queued.contains_key("a"));
+        // Done for an id the room no longer has pops its queue.
+        run(&mut x, &mut room, &[id("c")], "A");
+        room.edit(|txn, roots| {
+            let n = roots.cells.len(txn);
+            for i in (0..n).rev() {
+                if let Some(Out::YMap(m)) = roots.cells.get(txn, i) {
+                    if matches!(m.get(txn, "id"), Some(Out::Any(Any::String(s))) if &*s == "c") {
+                        roots.cells.remove(txn, i);
+                    }
+                }
+            }
+        });
+        x.finish(&mut room, "c", Some(Vec::new()), None);
+        assert!(!x.queued.contains_key("c"));
+    }
+
+    #[test]
+    fn a_refused_batch_names_no_one_and_queues_nothing() {
+        let (mut room, mut x) = (room_of(5), exec());
+        assert!(x.queue(&mut room, &[id("a"), id("zz")], "A").0.is_err());
+        assert!(x
+            .queue(
+                &mut room,
+                &[id("a"), Selector::Id("c".into(), Some("0".into()))],
+                "A"
+            )
+            .0
+            .is_err());
+        assert_eq!(state(&mut room, "a"), ("idle", None));
+        assert!(x.queued.is_empty());
+    }
+
+    #[test]
+    fn the_runner_is_not_saved_or_listed() {
+        let (mut room, mut x) = (room_of(5), exec());
+        run(&mut x, &mut room, &[id("a")], "Claude");
+        assert_eq!(state(&mut room, "a"), ("running", Some("Claude".into())));
+        let nb = room.notebook_with_ids().unwrap().unwrap();
+        let text = serde_json::to_string(&nb).unwrap();
+        assert!(
+            !text.contains("execution_by") && !text.contains("Claude"),
+            "{text}"
+        );
+        assert!(!text.contains("execution_state"), "{text}");
+    }
+
+    #[test]
+    fn the_name_of_a_rest_runner() {
+        // A vouched login wins over the body's name.
+        assert_eq!(runner_name(Some("ann@x.com"), Some("bot")), "ann@x.com");
+        assert_eq!(runner_name(None, Some("bot")), "bot");
+        assert_eq!(runner_name(None, None), API_CLIENT);
+        // Cleaned like a room client's name.
+        assert_eq!(runner_name(None, Some("  a\u{7}b \n  c ")), "ab c");
+        assert_eq!(runner_name(None, Some(&"x".repeat(100))).len(), 64);
+        // Nothing left: the next source.
+        assert_eq!(runner_name(None, Some(" \t\u{7} ")), API_CLIENT);
+        assert_eq!(runner_name(Some(" "), Some("bot")), "bot");
+        assert_eq!(runner_name(Some(" "), Some("")), API_CLIENT);
     }
 }
