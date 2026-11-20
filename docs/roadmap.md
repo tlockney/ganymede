@@ -156,8 +156,8 @@ In order of priority.
    Type errors as you type, signature help, go to definition and rename
    in TypeScript cells (cdp-kernel 0.13.0 and 0.14.0), table and tree
    views for data files, live Markdown preview, a DuckDB console, and the
-   same TypeScript help in the in-app and browser kernels are in
-   ganymede-ui 0.14.0.
+   same TypeScript help in the in-app and browser kernels shipped in
+   ganymede-ui 0.13.0.
 
 ## Not now
 
