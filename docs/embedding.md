@@ -214,10 +214,8 @@ embedding the server passes its own `kernelspecs`, `provisioner` and
 none, `run_with` fails at startup.
 
 `ganymede-ffi` has the same three features, on by default, and a fourth,
-`v8-bench`, off by default: the engine benchmark on V8, for a benchmark
-button in the apps' Developer settings (`ganymede_v8_bench_run`, below;
-ganymede-ui#698).
-<!-- **Unreleased in ganymede-ui.** The Developer settings button lands with ganymede-ui#698. --> Every slice of the XCFramework
+`v8-bench`, off by default: the engine benchmark on V8, for the apps to
+run on a device (`ganymede_v8_bench_run`, below; ganymede-ui#698). Every slice of the XCFramework
 is built with it, so V8 is in all three; the macOS slice keeps the default
 features, and the iOS slices are built with `--no-default-features
 --features gateway,v8-bench`. Built without `zmq` or `subprocess`, the
