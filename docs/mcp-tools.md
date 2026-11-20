@@ -155,7 +155,7 @@ List the requests to you that are still open: Markdown cells starting `@agent` (
 
 ## `notebook_run_all`
 
-Run every code cell in order, after restarting the kernel unless `restart: false`, and return the notebook. A run that restarted, finished and ran every cell with no error stamps the notebook `metadata.ganymede.clean_run` (when, by whom, on which kernel); any other run removes the stamp, and so does a later edit of a cell or a run that changes a cell's execution_count (a run does, except re-running the cells from the top after a restart, which gives the same counts).
+Run every code cell in order, after restarting the kernel unless `restart: false`, and return the notebook. A run that restarted, finished and ran every cell with no error stamps the notebook `metadata.ganymede.clean_run` (when, by whom, on which kernel); any other run removes the stamp, and so does a later edit of a cell or a run that changes a cell's execution_count (a run in JupyterLab or the apps does, as they blank the count when a cell starts; only re-running the cells from the top after a restart through the server's execute endpoint or these tools gives the same counts and leaves it).
 
 | Parameter | Type | Description |
 | --- | --- | --- |

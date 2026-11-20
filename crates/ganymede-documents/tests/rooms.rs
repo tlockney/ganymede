@@ -2327,3 +2327,41 @@ fn the_stamp_goes_into_metadata_that_is_not_a_shared_map() {
     room.edit(|txn, roots| schema::set_clean_run(txn, roots, Some(stamp())));
     assert_eq!(stamp_of(&room), Some(stamp()));
 }
+
+/// A read-only room, whose file another server owns, leaves the stamp as
+/// the file has it: its owner decides, and the room must not become dirty
+/// (#898).
+#[test]
+fn a_read_only_room_keeps_the_stamp_of_a_changed_file() {
+    let base = stamped_file(|_| {});
+    let mut room = Room::notebook_room(&base, "n.ipynb");
+    room.set_read_only(true);
+    let fx = room.reload(&stamped_file(STALE[0].1), "h1");
+    assert_eq!(stamp_of(&room), Some(stamp()));
+    assert!(!room.is_dirty() && !fx.changed);
+}
+
+/// The cell's id is part of what a run was of: a cell replaced by one with
+/// the same type, source and count under a new id clears the stamp (#898).
+#[test]
+fn replacing_a_cell_with_a_copy_under_a_new_id_clears_the_clean_run_stamp() {
+    let (mut room, client) = stamped();
+    client_change(&mut room, &client, |txn, roots| {
+        let mut cell = schema::out_to_json(txn, &Out::YMap(cell_map(txn, roots, 1)));
+        cell["id"] = "a2".into();
+        roots.cells.remove(txn, 1);
+        schema::insert_cell(txn, &roots.cells, 1, cell);
+    });
+    assert_eq!(stamp_of(&room), None);
+}
+
+/// Removing a stamp that isn't there changes nothing: no edit, no update
+/// to the clients, not dirty (#898).
+#[test]
+fn removing_a_stamp_that_is_not_there_changes_nothing() {
+    let nb = Notebook::from_str(CLEAN_RUN_NB).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    let (_, fx) = room.edit(|txn, roots| schema::set_clean_run(txn, roots, None));
+    assert!(!fx.changed && !room.is_dirty());
+    assert!(fx.send.is_empty());
+}

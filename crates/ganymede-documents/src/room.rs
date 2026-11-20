@@ -696,10 +696,13 @@ impl Room {
     /// way that makes a run stale, and the file kept the stamp the room had
     /// (so whoever wrote it didn't stamp it): remove the stamp, as a server
     /// edit that leaves the room unsaved. A file with another stamp, or
-    /// none, is as its writer meant it.
+    /// none, is as its writer meant it, and so is any file in a read-only
+    /// room, whose owner decides.
     fn clear_clean_run_for_file(&mut self, run: Option<u64>, stamp: Option<Value>) -> Effects {
         match run {
-            Some(run) if self.clean_run() == stamp => self.clear_stale_clean_run(run),
+            Some(run) if !self.read_only && self.clean_run() == stamp => {
+                self.clear_stale_clean_run(run)
+            }
             _ => Effects::default(),
         }
     }

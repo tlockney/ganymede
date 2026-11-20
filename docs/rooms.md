@@ -262,19 +262,23 @@ Only the MCP tool `notebook_run_all` sets it, and only when the run
   before the first cell, a restart or another run of a cell during the run
   leaves no stamp.
 
-Any other `notebook_run_all` that runs cells removes the stamp the
-notebook had; one that fails before running any, such as a kernel that
-won't restart, leaves it as it was. A client's own Run All, in JupyterLab
+Any other `notebook_run_all` removes the stamp the notebook had, even one
+that runs no cells (`restart: false` on a notebook with no code); one that
+fails before it gets to run, such as a kernel that won't restart, leaves
+it as it was. A client's own Run All, in JupyterLab
 or the apps, goes through the kernel's websocket, which the server
 doesn't see as a run of the notebook, so it never sets the stamp. It
-removes it as any run that changes a cell's `execution_count` does.
+removes it, though: those clients blank a cell's count when it starts
+(JupyterLab's `clearExecution`), so any run from them changes it.
 
 The room removes the stamp when what a run depends on or leaves behind
 changes, whoever changes it: a cell's source or type edited (Markdown
 cells too), a cell added, deleted or moved, or a code cell's
-`execution_count` changed. A run from any client changes it, except
-re-running the cells from the top after a restart, which gives the same
-counts. Outputs, `execution_state`, cell metadata and other notebook
+`execution_count` changed. A run from JupyterLab or the apps changes it,
+since they blank the count when a cell starts. A run the server executes
+(the execute endpoint, the MCP tools) writes the count only when the cell
+finishes, so re-running the cells from the top after a restart gives the
+same counts and leaves the stamp. Outputs, `execution_state`, cell metadata and other notebook
 metadata change without clearing it. The removal is an edit by the
 server like any other: every client sees it and the notebook is unsaved
 until it is saved.
