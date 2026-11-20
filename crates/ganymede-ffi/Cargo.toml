@@ -20,8 +20,8 @@ zmq = ["ganymede-server/zmq"]
 subprocess = ["ganymede-server/subprocess"]
 # `gateway_url`: kernels on another Jupyter server.
 gateway = ["ganymede-server/gateway"]
-# `ganymede_v8_bench_run`: the engine benchmark on V8 (#892), for the apps'
-# Settings. Off by default: it downloads rusty_v8's prebuilt static library
+# `ganymede_v8_bench_run`: the engine benchmark on V8 (#892), for the apps
+# to run on a device. Off by default: it downloads rusty_v8's prebuilt static library
 # for the target and links it in (tens of MB), which only the XCFramework
 # wants (scripts/build-xcframework.sh). Without it the same functions are
 # exported and report that V8 isn't built in.
