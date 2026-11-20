@@ -1048,7 +1048,7 @@ impl Notebooks {
     }
 
     #[tool(
-        description = "Run every code cell in order, after restarting the kernel unless `restart: false`, and return the notebook. A run that restarted, finished and ran every cell with no error stamps the notebook `metadata.ganymede.clean_run` (when, by whom, on which kernel); any other run removes the stamp, and so does a later edit or run of a cell."
+        description = "Run every code cell in order, after restarting the kernel unless `restart: false`, and return the notebook. A run that restarted, finished and ran every cell with no error stamps the notebook `metadata.ganymede.clean_run` (when, by whom, on which kernel); any other run removes the stamp, and so does a later edit of a cell or a run that changes a cell's execution_count (a run does, except re-running the cells from the top after a restart, which gives the same counts)."
     )]
     async fn notebook_run_all(
         &self,
@@ -1674,23 +1674,21 @@ fn clean_run_edit(
 /// Whether every code cell with code in it has run, in order, on one
 /// fresh run of the kernel, and none ended with an error. A restart leaves
 /// the old counts, and a cell that was skipped keeps its old one, so the
-/// counts must follow each other by exactly one: another run in between,
-/// or a restart during the run, breaks the sequence.
+/// counts must start at 1, as a restarted kernel's do, and follow each
+/// other by exactly one: work on the kernel before the first cell, another
+/// run in between, or a restart during the run, breaks the sequence.
 fn ran_clean(nb: &Notebook) -> bool {
-    let mut last: Option<u64> = None;
+    let mut last = 0u64;
     for c in &nb.cells {
         let Cell::Code(code) = c else { continue };
         if code.source.as_str().trim().is_empty() {
             continue;
         }
         let failed = code.outputs.iter().any(|o| matches!(o, Output::Error(_)));
-        let Some(count) = code.execution_count else {
-            return false;
-        };
-        if failed || last.is_some_and(|l| l.checked_add(1) != Some(count)) {
+        if failed || code.execution_count != last.checked_add(1) {
             return false;
         }
-        last = Some(count);
+        last += 1;
     }
     true
 }
@@ -3179,6 +3177,62 @@ fn svg_source(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run is clean when the code cells with code have counts 1, 2, 3 in
+    /// order and none has an error output (#898).
+    #[test]
+    fn a_run_is_clean_only_with_counts_from_one_in_order() {
+        let nb = |cells: &[(&str, Option<u64>, bool)]| {
+            let cells: Vec<Value> = cells
+                .iter()
+                .map(|(src, count, error)| {
+                    let outputs = if *error {
+                        json!([{"output_type": "error", "ename": "E", "evalue": "", "traceback": []}])
+                    } else {
+                        json!([])
+                    };
+                    json!({"cell_type": "code", "id": src, "execution_count": count,
+                           "metadata": {}, "outputs": outputs, "source": src})
+                })
+                .collect();
+            let mut v = json!({"cells": cells, "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+            // A Markdown cell and an empty cell are no part of the run.
+            v["cells"].as_array_mut().unwrap().insert(
+                0,
+                json!({"cell_type": "markdown", "id": "m", "metadata": {}, "source": "x"}),
+            );
+            Notebook::from_value(v).unwrap()
+        };
+        assert!(ran_clean(&nb(&[
+            ("a", Some(1), false),
+            ("b", Some(2), false)
+        ])));
+        assert!(ran_clean(&nb(&[])), "nothing to run");
+        assert!(ran_clean(&nb(&[("a", Some(1), false), ("", None, false)])));
+        // Work on the fresh kernel before the first cell.
+        assert!(!ran_clean(&nb(&[
+            ("a", Some(2), false),
+            ("b", Some(3), false)
+        ])));
+        // A restart, an extra run, a skipped cell with an old count.
+        assert!(!ran_clean(&nb(&[
+            ("a", Some(1), false),
+            ("b", Some(1), false)
+        ])));
+        assert!(!ran_clean(&nb(&[
+            ("a", Some(1), false),
+            ("b", Some(3), false)
+        ])));
+        assert!(!ran_clean(&nb(&[
+            ("a", Some(1), false),
+            ("b", None, false)
+        ])));
+        // An error output, whatever the counts.
+        assert!(!ran_clean(&nb(&[
+            ("a", Some(1), false),
+            ("b", Some(2), true)
+        ])));
+    }
 
     /// A clean run stamps the notebook only while it is as the run left it:
     /// an edit between the judgment and the stamp leaves none, and takes an

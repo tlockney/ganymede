@@ -4,7 +4,7 @@
 //!
 //! Cells: `sleep <ms>` (interruptible), `quiet <ms>` (`sleep` without
 //! `execute_input`), `raise`, `abort` (replies `aborted`, with no error
-//! output), `input`, `die` (the
+//! output), `raise_ok` (an `error` output, then a reply of `ok`), `input`, `die` (the
 //! process vanishes, nothing replies), `exit` (prints, then vanishes
 //! mid-cell), `display` (display, update, clear, stream), `lines <n>`
 //! (prints n lines, one stream message each), `progress` (clear with wait
@@ -578,6 +578,18 @@ impl FakeKernel {
                     ename: "FakeError".into(),
                     evalue: "raised".into(),
                     traceback: vec!["\u{1b}[31mFakeError\u{1b}[0m: raised".into()],
+                    extra: Default::default(),
+                },
+            )
+            .await;
+        } else if code == "raise_ok" {
+            self.iopub(
+                msg,
+                "error",
+                &ErrorContent {
+                    ename: "FakeError".into(),
+                    evalue: "shown".into(),
+                    traceback: vec![],
                     extra: Default::default(),
                 },
             )

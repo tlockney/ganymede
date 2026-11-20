@@ -257,28 +257,39 @@ Only the MCP tool `notebook_run_all` sets it, and only when the run
   a kernel that went all stop the run short,
 - left the notebook as it began (no cell edited, added, deleted or moved
   while it ran), and
-- gave the code cells that have code an `execution_count` each, in order,
-  each one more than the one before, so a restart or another run of a
-  cell during the run leaves no stamp.
+- gave the code cells that have code an `execution_count` each, from 1 and
+  in order, each one more than the one before, so work on the kernel
+  before the first cell, a restart or another run of a cell during the run
+  leaves no stamp.
 
 Any other `notebook_run_all` that runs cells removes the stamp the
 notebook had; one that fails before running any, such as a kernel that
 won't restart, leaves it as it was. A client's own Run All, in JupyterLab
 or the apps, goes through the kernel's websocket, which the server
-doesn't see as a run of the notebook, so it never sets the stamp; it clears it as any run of a cell does.
+doesn't see as a run of the notebook, so it never sets the stamp. It
+removes it as any run that changes a cell's `execution_count` does.
 
 The room removes the stamp when what a run depends on or leaves behind
 changes, whoever changes it: a cell's source or type edited (Markdown
 cells too), a cell added, deleted or moved, or a code cell's
-`execution_count` changed, which is any later run of a cell from any
-client. Outputs, `execution_state`, cell metadata and other notebook
+`execution_count` changed. A run from any client changes it, except
+re-running the cells from the top after a restart, which gives the same
+counts. Outputs, `execution_state`, cell metadata and other notebook
 metadata change without clearing it. The removal is an edit by the
 server like any other: every client sees it and the notebook is unsaved
 until it is saved.
 
+The same holds for a change that comes in through the file while a room
+is open, such as a `PUT /api/contents` from an editor or `nb-cli`: if it
+changes those things and the file still has the stamp the room had, the
+room drops the stamp and saves the file without it. A file that carries
+a different stamp, or a change that leaves the run standing, leaves the
+stamp as the file has it.
+
 The stamp is saved with the notebook, unlike `execution_by`. A file that
 holds one opens with it, and it stays until a change above removes it.
-Nothing checks it against the cells in a file edited outside Ganymede.
+Nothing checks it against the cells of a file when a room opens: one
+edited while no room was open for it keeps a stamp that no longer holds.
 
 ### Waiting for the cells
 

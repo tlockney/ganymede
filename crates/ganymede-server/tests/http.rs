@@ -5477,6 +5477,19 @@ async fn mcp_run_all_that_is_not_clean_leaves_no_stamp() {
             ],
         ),
         (
+            // The reply is `ok`, so nothing stops the run: only the error
+            // output says it failed.
+            "with an error output and a reply of ok",
+            json!({}),
+            vec![ran("a", "hello", 1), ran("b", "raise_ok", 2)],
+        ),
+        (
+            // Judged before the outputs marked to stay out are dropped.
+            "with an error output and a reply of ok, outputs left out",
+            json!({}),
+            vec![ran("a", "hello", 1), ran("b", "raise_ok", 2)],
+        ),
+        (
             // Nothing says it ran: no `execute_input`, so no count. The
             // first cell's count is as it was, so nothing in the room
             // changes and only the tool's check can refuse the stamp.
@@ -5517,6 +5530,25 @@ async fn mcp_run_all_that_is_not_clean_leaves_no_stamp() {
         );
         assert_eq!(saved["metadata"]["ganymede"]["other"], 1, "{name}");
     }
+}
+
+/// A notebook with no code has nothing to run, and a restart run of it is
+/// clean (#898).
+#[tokio::test]
+async fn mcp_run_all_of_a_notebook_without_code_stamps() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = mcp_app(dir.path());
+    let note = json!({"cell_type": "markdown", "id": "m", "metadata": {}, "source": "x"});
+    let file = dir.path().join("n.ipynb");
+    std::fs::write(&file, clean_run_notebook(vec![note], None).to_string()).unwrap();
+    let sid = mcp_connect(&app, "Claude Test").await;
+    mcp_tool(&app, &sid, "notebook_open", json!({"path": "n.ipynb"})).await;
+    mcp_text(&mcp_tool(&app, &sid, "notebook_run_all", json!({})).await);
+    let saved = saved_clean_run(&file, |s| s.is_some()).await;
+    assert_eq!(
+        saved["metadata"]["ganymede"]["clean_run"]["by"],
+        "Claude Test"
+    );
 }
 
 /// A restart from another connection while the run is on its way, or a

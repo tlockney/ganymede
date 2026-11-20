@@ -686,13 +686,35 @@ impl Room {
         self.broadcast_own()
     }
 
+    /// The room's `clean_run` stamp, if the notebook has one.
+    fn clean_run(&self) -> Option<Value> {
+        let roots = self.roots.as_ref()?;
+        schema::clean_run(&self.doc().transact(), roots)
+    }
+
+    /// After the file's content went into the room: its cells changed in a
+    /// way that makes a run stale, and the file kept the stamp the room had
+    /// (so whoever wrote it didn't stamp it): remove the stamp, as a server
+    /// edit that leaves the room unsaved. A file with another stamp, or
+    /// none, is as its writer meant it.
+    fn clear_clean_run_for_file(&mut self, run: Option<u64>, stamp: Option<Value>) -> Effects {
+        match run {
+            Some(run) if self.clean_run() == stamp => self.clear_stale_clean_run(run),
+            _ => Effects::default(),
+        }
+    }
+
     /// The file changed on disk: make the document match it, granularly
-    /// (see [`schema::set`]), and mark it clean at `hash`.
+    /// (see [`schema::set`]), and mark it clean at `hash`. A change to the
+    /// cells that makes a run stale removes the notebook's `clean_run`
+    /// stamp, unless the file has a stamp of its own; the room is unsaved
+    /// then, so the file is rewritten without it.
     pub fn reload(&mut self, notebook: &Notebook, hash: &str) -> Effects {
         let Some(roots) = self.roots.clone() else {
             return Effects::default();
         };
         let before = self.prints();
+        let (run, stamp) = (self.run_print_if_stamped(), self.clean_run());
         {
             let mut txn = self.awareness.doc().transact_mut();
             schema::set(&mut txn, &roots, notebook);
@@ -703,6 +725,8 @@ impl Room {
         self.saved_generation = self.generation;
         self.baseline = Some(schema::notebook_value(notebook));
         let mut fx = self.broadcast_own();
+        // Before the state goes out, so it says the room is unsaved.
+        fx.merge(self.clear_clean_run_for_file(run, stamp));
         fx.merge(self.set_state(hash));
         fx
     }
@@ -741,6 +765,7 @@ impl Room {
             return (Effects::default(), Vec::new());
         };
         let before = self.prints();
+        let (run, stamp) = (self.run_print_if_stamped(), self.clean_run());
         {
             let mut txn = self.awareness.doc().transact_mut();
             schema::set(&mut txn, &roots, &notebook);
@@ -750,6 +775,7 @@ impl Room {
         self.generation += 1;
         self.baseline = Some(theirs);
         let mut fx = self.broadcast_own();
+        fx.merge(self.clear_clean_run_for_file(run, stamp));
         fx.merge(self.set_state(hash));
         fx.changed = true;
         (fx, merged.conflicts)
