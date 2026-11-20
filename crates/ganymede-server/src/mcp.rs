@@ -1074,7 +1074,7 @@ impl Notebooks {
             .filter_map(|c| c.id().map(str::to_string))
             .collect();
         let timeout = Duration::from_secs(a.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS));
-        let finished = crate::execute::run_and_wait(
+        let end = crate::execute::run_and_wait(
             &self.state,
             &path,
             &kernel_id,
@@ -1085,6 +1085,7 @@ impl Notebooks {
         )
         .await
         .map_err(err)?;
+        let finished = end.finished;
         self.own_runs(&path, ids).await;
         // The reply shows what ran, outputs and all; the notebook keeps
         // them all but those of the cells marked to leave them out.
@@ -1099,7 +1100,7 @@ impl Notebooks {
         // on the notebook as the run left it, before outputs are dropped.
         // The stamp goes in after the drop, and only if nothing but outputs
         // changed since.
-        let clean = (restart && finished && run_layout(&nb, false) == layout && ran_clean(&nb))
+        let clean = (restart && end.all_ok && run_layout(&nb, false) == layout && ran_clean(&nb))
             .then(|| run_layout(&nb, true));
         if !dropped.is_empty() {
             out.push_str(&format!(
@@ -1630,7 +1631,6 @@ impl ServerHandler for Notebooks {
     }
 }
 
-/// Client name for provenance.
 /// The cells of `nb` in order, each as its id and its type and source
 /// joined, and with `counts` a code cell's execution count too: what a
 /// run of the whole notebook was of, and left behind.
@@ -1655,22 +1655,47 @@ fn run_layout(nb: &Notebook, counts: bool) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Whether every code cell with code in it has run and none ended with an
-/// error: a cell after a failed one never runs, so it counts as not run.
-fn ran_clean(nb: &Notebook) -> bool {
-    nb.cells.iter().all(|c| match c {
-        Cell::Code(code) => {
-            code.source.as_str().trim().is_empty()
-                || (code.execution_count.is_some()
-                    && !code
-                        .outputs
-                        .iter()
-                        .any(|o| matches!(o, ganymede_nbformat::Output::Error(_))))
-        }
-        _ => true,
-    })
+/// The room edit that ends a `notebook_run_all`: write the stamp when `run`
+/// is a clean run (its layout, with counts, and the kernel) and `room` is
+/// still as that layout has it, or else remove any stamp.
+fn clean_run_edit(
+    room: &mut Room,
+    run: Option<(Vec<(String, String)>, String)>,
+    by: &str,
+) -> ((), Effects) {
+    let stamp = run.and_then(|(layout, kernel)| {
+        let nb = room.notebook_with_ids()?.ok()?;
+        (run_layout(&nb, true) == layout)
+            .then(|| json!({"at": room_ops::now(), "by": by, "kernel": kernel}))
+    });
+    room.edit(|txn, roots| schema::set_clean_run(txn, roots, stamp))
 }
 
+/// Whether every code cell with code in it has run, in order, on one
+/// fresh run of the kernel, and none ended with an error. A restart leaves
+/// the old counts, and a cell that was skipped keeps its old one, so the
+/// counts must follow each other by exactly one: another run in between,
+/// or a restart during the run, breaks the sequence.
+fn ran_clean(nb: &Notebook) -> bool {
+    let mut last: Option<u64> = None;
+    for c in &nb.cells {
+        let Cell::Code(code) = c else { continue };
+        if code.source.as_str().trim().is_empty() {
+            continue;
+        }
+        let failed = code.outputs.iter().any(|o| matches!(o, Output::Error(_)));
+        let Some(count) = code.execution_count else {
+            return false;
+        };
+        if failed || last.is_some_and(|l| l.checked_add(1) != Some(count)) {
+            return false;
+        }
+        last = Some(count);
+    }
+    true
+}
+
+/// Client name for provenance.
 fn client_name(peer: &Peer<RoleServer>) -> String {
     peer.peer_info()
         .map(|i| ganymede_documents::clean_name(&i.client_info.name))
@@ -2425,13 +2450,10 @@ impl Notebooks {
         r.map_err(err)
     }
 
-    /// Clear the outputs of code cells `ids` and mark them to stay out of
-    /// the notebook (`drop`), or take the mark off. False when no code
-    /// cell has one of the ids.
     /// Stamp notebook `path` as run from a clean kernel
     /// (`metadata.ganymede.clean_run`), or remove the stamp for `None`.
     /// `Some((layout, kernel))` is a clean `notebook_run_all`: `layout` is
-    /// the notebook as that run left it ([`run_layout`] with counts) and
+    /// the notebook as that run left it (`run_layout` with counts) and
     /// `kernel` the kernel it ran on. The stamp is written only if the
     /// notebook is still as `layout` has it, so an edit or a run since
     /// leaves none; otherwise any old stamp goes.
@@ -2442,16 +2464,14 @@ impl Notebooks {
     ) -> Result<(), McpError> {
         let by = self.client_name();
         self.own_edit(path, Vec::new(), marks::Aspect::Source, None, move |room| {
-            let stamp = run.and_then(|(layout, kernel)| {
-                let nb = room.notebook_with_ids()?.ok()?;
-                (run_layout(&nb, true) == layout)
-                    .then(|| json!({"at": room_ops::now(), "by": by, "kernel": kernel}))
-            });
-            room.edit(|txn, roots| schema::set_clean_run(txn, roots, stamp))
+            clean_run_edit(room, run, &by)
         })
         .await
     }
 
+    /// Clear the outputs of code cells `ids` and mark them to stay out of
+    /// the notebook (`drop`), or take the mark off. False when no code
+    /// cell has one of the ids.
     async fn drop_outputs(
         &self,
         path: &str,
@@ -2587,7 +2607,8 @@ impl Notebooks {
             self.own_runs_late(path, ids.clone()),
         )
         .await
-        .map_err(err)?;
+        .map_err(err)?
+        .finished;
         self.own_runs(path, ids.clone()).await;
         let nb = self.notebook(path).await?;
         let mut shown = Vec::new();
@@ -3158,6 +3179,70 @@ fn svg_source(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A clean run stamps the notebook only while it is as the run left it:
+    /// an edit between the judgment and the stamp leaves none, and takes an
+    /// older stamp off (#898).
+    #[test]
+    fn the_stamp_is_written_only_if_nothing_changed_since_the_run() {
+        let nb = Notebook::from_str(
+            r#"{"cells":[
+              {"cell_type":"code","id":"a","execution_count":1,"metadata":{},"outputs":[],"source":"x"},
+              {"cell_type":"code","id":"b","execution_count":2,"metadata":{},"outputs":[],"source":"y"}],
+              "metadata":{},"nbformat":4,"nbformat_minor":5}"#,
+        )
+        .unwrap();
+        let judged = || {
+            let nb = Notebook::from_str(&nb.to_file_string()).unwrap();
+            (run_layout(&nb, true), "fake".to_string())
+        };
+        let stamp_of = |room: &Room| {
+            let roots = Roots::get(room.doc());
+            let txn = ganymede_documents::yrs::Transact::transact(room.doc());
+            schema::clean_run(&txn, &roots)
+        };
+
+        // Unchanged: stamped.
+        let mut room = Room::notebook_room(&nb, "n.ipynb");
+        clean_run_edit(&mut room, Some(judged()), "agent");
+        let s = stamp_of(&room).expect("stamped");
+        assert_eq!(
+            (s["by"].as_str(), s["kernel"].as_str()),
+            (Some("agent"), Some("fake"))
+        );
+
+        // Each change since the judgment: no stamp, and the old one goes.
+        type Change = fn(&mut ganymede_documents::yrs::TransactionMut, &Roots);
+        let changes: [(&str, Change); 3] = [
+            ("source", |txn, roots| {
+                let cell = schema::find_cell(txn, roots, "a").unwrap();
+                let Some(Out::YText(t)) = cell.get(txn, "source") else {
+                    panic!()
+                };
+                ganymede_documents::yrs::Text::insert(&t, txn, 0, "# ");
+            }),
+            ("count", |txn, roots| {
+                let cell = schema::find_cell(txn, roots, "b").unwrap();
+                cell.insert(txn, "execution_count", 9);
+            }),
+            ("delete", |txn, roots| {
+                roots.cells.remove(txn, 0);
+            }),
+        ];
+        for (name, change) in changes {
+            let mut room = Room::notebook_room(&nb, "n.ipynb");
+            room.edit(|txn, roots| schema::set_clean_run(txn, roots, Some(json!({"at": "old"}))));
+            // The judgment, then the change, then the stamp.
+            let run = judged();
+            room.edit(change);
+            // The room cleared the old stamp for the change already for
+            // `source`, `count` and `delete`; put it back to see the
+            // re-check remove it.
+            room.edit(|txn, roots| schema::set_clean_run(txn, roots, Some(json!({"at": "old"}))));
+            clean_run_edit(&mut room, Some(run), "agent");
+            assert_eq!(stamp_of(&room), None, "{name}");
+        }
+    }
 
     /// The byline's format, as chrono wrote it before the port to jiff,
     /// and in the zone's own day, not UTC's.

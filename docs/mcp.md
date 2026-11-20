@@ -290,9 +290,10 @@ reply says the code runs when the kernel is free.
 > available only from a build of `main` (HEAD), not in the latest release.
 
 `notebook_run_all` writes `metadata.ganymede.clean_run` when the whole
-notebook ran from a fresh kernel, and removes it after any run that
-didn't: `restart: false`, a timeout, or a cell that failed. Editing or
-running a cell afterwards removes it too. [Run from a clean
+notebook ran from a fresh kernel, and removes it after any run of cells
+that didn't: `restart: false`, a timeout, or a cell that failed. A call
+that fails before running a cell leaves it as it was. Editing or running
+a cell afterwards removes it too. [Run from a clean
 kernel](rooms.md#run-from-a-clean-kernel) has the fields.
 
 Cells run through the server, as the

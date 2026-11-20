@@ -3,7 +3,8 @@
 //! profile uses. It speaks the protocol, not any language.
 //!
 //! Cells: `sleep <ms>` (interruptible), `quiet <ms>` (`sleep` without
-//! `execute_input`), `raise`, `input`, `die` (the
+//! `execute_input`), `raise`, `abort` (replies `aborted`, with no error
+//! output), `input`, `die` (the
 //! process vanishes, nothing replies), `exit` (prints, then vanishes
 //! mid-cell), `display` (display, update, clear, stream), `lines <n>`
 //! (prints n lines, one stream message each), `progress` (clear with wait
@@ -581,6 +582,8 @@ impl FakeKernel {
                 },
             )
             .await;
+        } else if code == "abort" {
+            status = ReplyStatus::Aborted;
         } else if code == "input" {
             self.stdin(
                 msg,

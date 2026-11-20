@@ -2072,3 +2072,63 @@ fn the_clean_run_stamp_is_saved_with_the_notebook_and_kept_when_the_file_loads()
     client_change(&mut reopened, &client, type_into(1));
     assert_eq!(stamp_of(&reopened), None);
 }
+
+/// A client can write `metadata.ganymede` as a shared map, not a plain
+/// value: the stamp goes in and out of it in place, keeps its other keys,
+/// and takes the `ganymede` key with it when it was the only one (#898).
+#[test]
+fn the_stamp_goes_in_and_out_of_a_ganymede_shared_map() {
+    use ganymede_documents::yrs::MapPrelim;
+    let ganymede = |room: &Room| {
+        room.notebook()
+            .unwrap()
+            .unwrap()
+            .metadata
+            .get("ganymede")
+            .cloned()
+    };
+    for keys in [vec!["other"], vec![]] {
+        let nb = Notebook::from_str(CLEAN_RUN_NB).unwrap();
+        let mut room = Room::notebook_room(&nb, "n.ipynb");
+        let client = Doc::new();
+        sync(&mut room, 1, &client);
+        // The client replaces `ganymede` with a shared map.
+        let k = keys.clone();
+        client_change(&mut room, &client, move |txn, roots| {
+            let Some(Out::YMap(meta)) = roots.meta.get(txn, "metadata") else {
+                panic!()
+            };
+            let g = meta.insert(txn, "ganymede", MapPrelim::default());
+            for key in k {
+                g.insert(txn, key, true);
+            }
+        });
+        let Some(Out::YMap(_)) = ({
+            let roots = Roots::get(room.doc());
+            let txn = room.doc().transact();
+            let Some(Out::YMap(m)) = roots.meta.get(&txn, "metadata") else {
+                panic!()
+            };
+            m.get(&txn, "ganymede")
+        }) else {
+            panic!("ganymede is a shared map in the room")
+        };
+
+        room.edit(|txn, roots| schema::set_clean_run(txn, roots, Some(stamp())));
+        assert_eq!(stamp_of(&room), Some(stamp()), "{keys:?}");
+        let mut with = serde_json::Map::new();
+        for key in &keys {
+            with.insert((*key).into(), true.into());
+        }
+        with.insert("clean_run".into(), stamp());
+        assert_eq!(ganymede(&room), Some(serde_json::Value::Object(with)));
+
+        room.edit(|txn, roots| schema::set_clean_run(txn, roots, None));
+        assert_eq!(stamp_of(&room), None);
+        if keys.is_empty() {
+            assert_eq!(ganymede(&room), None, "the emptied key goes");
+        } else {
+            assert_eq!(ganymede(&room), Some(serde_json::json!({"other": true})));
+        }
+    }
+}

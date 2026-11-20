@@ -253,14 +253,19 @@ Only the MCP tool `notebook_run_all` sets it, and only when the run
 
 - restarted the kernel (`restart` is true, the default),
 - finished before its `timeout`,
-- ran every code cell that has code, as the notebook was when the run
-  started (no cell edited, added, deleted or moved while it ran), and
-- ended no cell in an error (the cells after a failed one don't run).
+- ended every cell without a failure: an error, a reply of `aborted`, or
+  a kernel that went all stop the run short,
+- left the notebook as it began (no cell edited, added, deleted or moved
+  while it ran), and
+- gave the code cells that have code an `execution_count` each, in order,
+  each one more than the one before, so a restart or another run of a
+  cell during the run leaves no stamp.
 
-Any other `notebook_run_all` removes the stamp the notebook had. A
-client's own Run All, in JupyterLab or the apps, goes through the kernel's
-websocket, which the server doesn't see as a run of the notebook, so it
-never sets the stamp; it clears it as any run of a cell does.
+Any other `notebook_run_all` that runs cells removes the stamp the
+notebook had; one that fails before running any, such as a kernel that
+won't restart, leaves it as it was. A client's own Run All, in JupyterLab
+or the apps, goes through the kernel's websocket, which the server
+doesn't see as a run of the notebook, so it never sets the stamp; it clears it as any run of a cell does.
 
 The room removes the stamp when what a run depends on or leaves behind
 changes, whoever changes it: a cell's source or type edited (Markdown

@@ -459,7 +459,6 @@ fn stream_growth<T: ReadTxn>(txn: &T, old: &MapRef, new: &Value) -> Option<Strin
     (strip(&old) == through_yjs(&strip(new))).then(|| added.to_string())
 }
 
-/// Fill a map whose values are plain JSON.
 /// The notebook's `metadata.ganymede.clean_run` stamp, if it has one.
 pub fn clean_run<T: ReadTxn>(txn: &T, roots: &Roots) -> Option<Value> {
     let metadata = out_to_json(txn, &roots.meta.get(txn, "metadata")?);
@@ -518,6 +517,7 @@ pub fn set_clean_run(txn: &mut TransactionMut, roots: &Roots, stamp: Option<Valu
     }
 }
 
+/// Fill a map whose values are plain JSON.
 fn fill_shallow(txn: &mut TransactionMut, map: &MapRef, m: JsonMap<String, Value>) {
     for (key, value) in sorted(m) {
         map.insert(txn, key, json_to_any(&value));
