@@ -207,7 +207,7 @@ and sets no name; the server doesn't see that run. When the two overlap,
 the cell can name a queued agent's run while the person's run is still
 on the kernel, or show `idle` with a name until the queued run ends. So
 read `execution_by` only while the cell is `running`, as the name of the
-last run Ganymede queued.
+earliest of Ganymede's queued runs of that cell not yet ended.
 
 The name comes from the entry point:
 
