@@ -243,19 +243,28 @@ mod engine {
     static INIT: OnceLock<Result<(bool, f64), String>> = OnceLock::new();
 
     fn init(jitless: bool) -> Result<(bool, f64), String> {
-        INIT.get_or_init(|| {
-            std::panic::catch_unwind(|| {
-                let jitless = jitless || NO_JIT_BUILD;
-                let t = Instant::now();
-                if jitless {
-                    v8::V8::set_flags_from_string("--jitless");
-                }
-                let platform = v8::new_default_platform(0, false).make_shared();
-                v8::V8::initialize_platform(platform);
-                v8::V8::initialize();
-                (jitless, ms(t))
-            })
-            .map_err(|_| "V8 failed to initialize earlier in this process".to_string())
+        init_once(&INIT, || {
+            let jitless = jitless || NO_JIT_BUILD;
+            let t = Instant::now();
+            if jitless {
+                v8::V8::set_flags_from_string("--jitless");
+            }
+            let platform = v8::new_default_platform(0, false).make_shared();
+            v8::V8::initialize_platform(platform);
+            v8::V8::initialize();
+            (jitless, ms(t))
+        })
+    }
+
+    /// Runs `f` once for `cell`; a panic in it is kept as an error, so later
+    /// calls report it instead of running `f` again.
+    fn init_once(
+        cell: &OnceLock<Result<(bool, f64), String>>,
+        f: impl FnOnce() -> (bool, f64),
+    ) -> Result<(bool, f64), String> {
+        cell.get_or_init(|| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+                .map_err(|_| "V8 failed to initialize earlier in this process".to_string())
         })
         .clone()
     }
@@ -372,7 +381,25 @@ mod engine {
 
     #[cfg(test)]
     mod tests {
-        use super::median;
+        use super::{init_once, median};
+        use std::sync::OnceLock;
+
+        #[test]
+        fn a_failed_init_is_remembered() {
+            let cell = OnceLock::new();
+            let first = init_once(&cell, || panic!("init failed"));
+            assert_eq!(
+                first,
+                Err("V8 failed to initialize earlier in this process".to_string())
+            );
+            let mut ran = false;
+            let second = init_once(&cell, || {
+                ran = true;
+                (true, 0.0)
+            });
+            assert_eq!(second, first);
+            assert!(!ran, "a second call must not initialize again");
+        }
 
         #[test]
         fn median_odd_even_empty() {
