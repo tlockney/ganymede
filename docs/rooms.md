@@ -196,10 +196,18 @@ ten seconds. A cell that fails stops the rest of its batch.
 A cell a run has queued shows `execution_state: running` in the room, and
 `idle` once its last queued run ends (a cell that was skipped after an
 earlier cell failed, or was deleted, ends its run too). Ganymede adds
-`execution_by`, the name of who runs the cell now, so a person
-watching can tell their own run from an agent's. It is in the room only:
-it is never saved to the notebook file or returned by
-`GET /api/contents`, and it is gone when the cell is idle.
+`execution_by`, the name of who runs the cell now through the execute
+endpoint or `ganymede mcp`. It is in the room only: it is never saved to
+the notebook file or returned by `GET /api/contents`, and Ganymede
+removes it when the last of those runs ends.
+
+A client that runs a cell itself, such as JupyterLab sending an execute
+request on the kernel's websocket, writes `execution_state` on its own
+and sets no name; the server doesn't see that run. When the two overlap,
+the cell can name a queued agent's run while the person's run is still
+on the kernel, or show `idle` with a name until the queued run ends. So
+read `execution_by` only while the cell is `running`, as the name of the
+last run Ganymede queued.
 
 The name comes from the entry point:
 
