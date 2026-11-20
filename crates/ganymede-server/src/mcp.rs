@@ -1785,7 +1785,9 @@ impl Notebooks {
             .get(&room_id)
             .is_some_and(Hold::is_live);
         if !held {
-            if let Some(h) = hold_notebook(&self.state.collab, &self.state.contents, &room_id).await
+            let agent = Some(self.client_name());
+            if let Some(h) =
+                hold_notebook(&self.state.collab, &self.state.contents, &room_id, agent).await
             {
                 // A hold made meanwhile by another call is replaced; it
                 // leaves the room as this one joins it.

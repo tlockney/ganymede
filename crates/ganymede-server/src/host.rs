@@ -745,7 +745,9 @@ impl HostApi {
             .get(kernel_id)
             .ok()
             .map(|k| k.watch_alive());
-        if let Some(h) = hold_notebook(&self.state.collab, &self.state.contents, room_id).await {
+        if let Some(h) =
+            hold_notebook(&self.state.collab, &self.state.contents, room_id, None).await
+        {
             // One made meanwhile by another call is replaced; it leaves the
             // room as this one joins it.
             let first = self

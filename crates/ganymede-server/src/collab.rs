@@ -210,6 +210,55 @@ impl Collab {
             .collect()
     }
 
+    /// The notebook rooms open now, by path. Rooms for awareness only are
+    /// left out. A room that doesn't answer within two seconds (busy with
+    /// a slow save) is left out too, rather than holding up the list.
+    pub(crate) async fn list_rooms(&self) -> Vec<ListedRoom> {
+        let open: Vec<(String, mpsc::UnboundedSender<Cmd>)> = self
+            .rooms
+            .lock()
+            .expect("rooms")
+            .iter()
+            .filter(|(id, tx)| id.starts_with("json:notebook:") && !tx.is_closed())
+            .map(|(id, tx)| (id.clone(), tx.clone()))
+            .collect();
+        let asked = open.into_iter().map(|(id, tx)| async move {
+            let (reply, rx) = tokio::sync::oneshot::channel();
+            tx.send(Cmd::Info(reply)).ok()?;
+            let info = tokio::time::timeout(Duration::from_secs(2), rx)
+                .await
+                .ok()?
+                .ok()?;
+            let file_id = id.strip_prefix("json:notebook:")?.to_string();
+            Some(ListedRoom {
+                path: info.path,
+                file_id,
+                clients: info
+                    .clients
+                    .into_iter()
+                    .map(|c| RoomClient {
+                        name: c.name,
+                        agent: c.agent,
+                    })
+                    .collect(),
+                last_change: info.last_change.map(|(at, by, person)| RoomChange {
+                    at: jiff::Timestamp::try_from(at)
+                        .map(|t| t.strftime("%Y-%m-%dT%H:%M:%S.%3fZ").to_string())
+                        .unwrap_or_default(),
+                    by,
+                    person,
+                }),
+            })
+        });
+        let mut rooms: Vec<ListedRoom> = futures::future::join_all(asked)
+            .await
+            .into_iter()
+            .flatten()
+            .collect();
+        rooms.sort_by(|a, b| (&a.path, &a.file_id).cmp(&(&b.path, &b.file_id)));
+        rooms
+    }
+
     /// How many rooms are open.
     pub fn open_rooms(&self) -> usize {
         self.rooms.lock().expect("rooms").len()
@@ -651,8 +700,12 @@ impl Collab {
 }
 
 pub(crate) enum Cmd {
-    /// A client joins, with the name the server knows it by, if any.
-    Join(ConnId, ClientTx, Option<String>),
+    /// A client joins, with the name the server knows it by, if any, and
+    /// the MCP client's name when it is a [`Hold`] made for an agent.
+    Join(ConnId, ClientTx, Option<String>, Option<String>),
+    /// Who is in the room and what last changed; see [`Collab::list_rooms`].
+    /// Not answered by a room with no file (awareness only).
+    Info(tokio::sync::oneshot::Sender<RoomInfo>),
     Frame(ConnId, Vec<u8>),
     Leave(ConnId),
     /// A rename through the contents API: old and new path.
@@ -666,6 +719,42 @@ pub(crate) enum Cmd {
     With(Box<dyn FnOnce(&mut Room) -> ganymede_documents::Effects + Send>),
     /// Save now if there are unsaved edits; answered when done.
     Flush(tokio::sync::oneshot::Sender<()>),
+}
+
+/// What [`Collab::list_rooms`] asks a notebook room for.
+pub(crate) struct RoomInfo {
+    path: String,
+    clients: Vec<ListedClient>,
+    last_change: Option<(std::time::SystemTime, String, bool)>,
+}
+
+struct ListedClient {
+    name: String,
+    agent: bool,
+}
+
+/// A notebook room open now, as `GET /api/collaboration/rooms` lists it.
+pub(crate) struct ListedRoom {
+    pub(crate) path: String,
+    pub(crate) file_id: String,
+    pub(crate) clients: Vec<RoomClient>,
+    /// When and by whom a cell's source or type, or the set of cells,
+    /// last changed while the room was open.
+    pub(crate) last_change: Option<RoomChange>,
+}
+
+/// Someone in a room: a person's name (from the room's awareness, or the
+/// tailnet login), or an agent's (the MCP client's name).
+pub(crate) struct RoomClient {
+    pub(crate) name: String,
+    pub(crate) agent: bool,
+}
+
+pub(crate) struct RoomChange {
+    /// RFC 3339, UTC.
+    pub(crate) at: String,
+    pub(crate) by: String,
+    pub(crate) person: bool,
 }
 
 pub(crate) enum Out {
@@ -877,6 +966,36 @@ pub struct RoomQuery {
     session_id: Option<String>,
 }
 
+/// `GET /api/collaboration/rooms`: the notebook rooms open now, with who
+/// is in each and what last changed.
+pub async fn rooms(State(state): State<AppState>) -> Json<Value> {
+    let rooms: Vec<Value> = state
+        .collab
+        .list_rooms()
+        .await
+        .into_iter()
+        .map(|r| {
+            let clients: Vec<Value> = r
+                .clients
+                .into_iter()
+                .map(|c| json!({"name": c.name, "kind": if c.agent { "agent" } else { "person" }}))
+                .collect();
+            let last_change = r
+                .last_change
+                .map(|c| json!({"at": c.at, "by": c.by, "person": c.person}));
+            json!({
+                "path": r.path,
+                "file_id": r.file_id,
+                "format": "json",
+                "type": "notebook",
+                "clients": clients,
+                "last_change": last_change,
+            })
+        })
+        .collect();
+    Json(json!({ "rooms": rooms }))
+}
+
 pub async fn room(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -938,7 +1057,7 @@ async fn serve_socket(
     let (out_tx, mut out_rx, full) = ClientTx::new(state.max_body_size);
     // An open room takes the join with no path lookup, so a client
     // joining one whose file was just deleted hears "File deleted".
-    let join = Cmd::Join(conn, out_tx, user);
+    let join = Cmd::Join(conn, out_tx, user, None);
     let Some(room) = send_to_room(&collab, &state.contents, &room_id, file_id, join).await else {
         let id = file_id.unwrap_or_default();
         close(&mut socket, 4404, format!("Unknown file id {id}")).await;
@@ -1195,16 +1314,20 @@ impl Drop for Hold {
 }
 
 /// Join notebook room `room_id` (from [`notebook_room_id`]) as a client
-/// that never reads its frames. `None` when the room can't be opened.
+/// that never reads its frames. `agent` is the MCP client's name when the
+/// hold is an agent's, which lists it in the room's clients; `None` for
+/// a hold that isn't (a kernel's). `None` when the room can't be opened.
 pub(crate) async fn hold_notebook(
     collab: &Arc<Collab>,
     contents: &Arc<dyn Contents>,
     room_id: &str,
+    agent: Option<String>,
 ) -> Option<Hold> {
     let conn = collab.next_conn.fetch_add(1, Ordering::Relaxed);
     // The receiver is dropped: frames sent to this client go nowhere.
     let (out, _, _) = ClientTx::new(usize::MAX);
-    let room = send_to_notebook_room(collab, contents, room_id, Cmd::Join(conn, out, None)).await?;
+    let room =
+        send_to_notebook_room(collab, contents, room_id, Cmd::Join(conn, out, None, agent)).await?;
     Some(Hold { room, conn })
 }
 
@@ -1478,6 +1601,8 @@ async fn run_room(
     mut rx: mpsc::UnboundedReceiver<Cmd>,
 ) {
     let mut clients: HashMap<ConnId, ClientTx> = HashMap::new();
+    // The MCP client names of the connections that are agents' holds.
+    let mut agents: HashMap<ConnId, String> = HashMap::new();
     let (mut room, mut disk) = match &path {
         None => (Room::transient(), None),
         Some(path) => match load(contents.as_ref(), path).await {
@@ -1540,8 +1665,9 @@ async fn run_room(
             cmd = async { match next.take() { Some(c) => Some(c), None => rx.recv().await } } => {
                 let Some(cmd) = cmd else { break };
                 match cmd {
-                    Cmd::Join(conn, out, user) => {
+                    Cmd::Join(conn, out, user, agent) => {
                         clients.insert(conn, out);
+                        if let Some(name) = agent { agents.insert(conn, name); }
                         empty_since = None;
                         let fx = match &user {
                             Some(name) => room.connect_as(conn, name),
@@ -1567,8 +1693,27 @@ async fn run_room(
                         }
                         Err(e) => tracing::debug!(room = %room_id, conn, "bad frame: {e}"),
                     },
+                    Cmd::Info(reply) => {
+                        if let Some(d) = disk.as_ref() {
+                            let mut listed: Vec<ListedClient> = room
+                                .client_names()
+                                .into_iter()
+                                .map(|(conn, name)| match agents.get(&conn) {
+                                    Some(agent) => ListedClient { name: agent.clone(), agent: true },
+                                    None => ListedClient { name, agent: false },
+                                })
+                                .collect();
+                            // People first; each group stays in join order.
+                            listed.sort_by_key(|c| c.agent);
+                            let last_change = room
+                                .last_change()
+                                .map(|(at, by)| (at, by.name.clone(), by.person));
+                            let _ = reply.send(RoomInfo { path: d.path.clone(), clients: listed, last_change });
+                        }
+                    }
                     Cmd::Leave(conn) => {
                         clients.remove(&conn);
+                        agents.remove(&conn);
                         let fx = room.disconnect(conn);
                         dispatch(&clients, fx.send);
                         if clients.is_empty() { empty_since = Some(Instant::now()) }
@@ -1865,7 +2010,7 @@ fn close_room(
     rx.close();
     while let Ok(cmd) = rx.try_recv() {
         match cmd {
-            Cmd::Join(_, out, _) => {
+            Cmd::Join(_, out, _, _) => {
                 out.send(Out::Close(code, reason.to_string()));
             }
             Cmd::Exec(cmd) => cmd.unavailable(exec_reason),
@@ -2368,6 +2513,206 @@ mod join_tests {
             .unwrap_or_else(|_| panic!("{what}"));
     }
 
+    /// Join `room_id` as a person the server knows as `name`.
+    async fn join_as(
+        collab: &Arc<Collab>,
+        contents: &Arc<dyn Contents>,
+        room_id: &str,
+        conn: ConnId,
+        name: &str,
+    ) -> (mpsc::UnboundedSender<Cmd>, mpsc::Receiver<Out>) {
+        let (out, rx, _) = ClientTx::new(usize::MAX);
+        let tx = send_to_notebook_room(
+            collab,
+            contents,
+            room_id,
+            Cmd::Join(conn, out, Some(name.to_string()), None),
+        )
+        .await
+        .unwrap();
+        (tx, rx)
+    }
+
+    /// Poll until `f` holds of the listing, or fail after five seconds.
+    async fn listed_until(
+        collab: &Collab,
+        what: &str,
+        f: impl Fn(&[ListedRoom]) -> bool,
+    ) -> Vec<ListedRoom> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let rooms = collab.list_rooms().await;
+            if f(&rooms) {
+                return rooms;
+            }
+            assert!(Instant::now() < deadline, "timed out: {what}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// No rooms, no list; awareness-only rooms are left out (#893).
+    #[tokio::test]
+    async fn listing_rooms_leaves_out_none_and_transient_ones() {
+        let (_dir, contents) = notebook_dir();
+        let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
+        assert!(collab.list_rooms().await.is_empty());
+
+        let (cmd, rx) = report_loaded();
+        send_to_room(&collab, &contents, "Test:live", None, cmd)
+            .await
+            .unwrap();
+        loads(rx, "the transient room opened").await;
+        assert_eq!(collab.open_rooms(), 1);
+        assert!(collab.list_rooms().await.is_empty());
+    }
+
+    /// A room with a person and an agent lists both, the person first, with
+    /// the path and file id; a second person is a second client; a hold
+    /// releasing, and the clients leaving, empty it; and it disappears once
+    /// its cleanup delay passes (#893).
+    #[tokio::test]
+    async fn listing_rooms_follows_clients_and_closing() {
+        let (_dir, contents) = notebook_dir();
+        let collab = Arc::new(
+            Collab::new(FileIds::in_memory(), None).with_cleanup_delay(Duration::from_millis(50)),
+        );
+        let room_id = notebook_room_id(&collab, &contents, "a.ipynb")
+            .await
+            .unwrap();
+        let hold = hold_notebook(&collab, &contents, &room_id, Some("claude-code".into()))
+            .await
+            .unwrap();
+        let (one, _rx1) = join_as(&collab, &contents, &room_id, 9001, "Ana").await;
+        let (two, _rx2) = join_as(&collab, &contents, &room_id, 9002, "Ben").await;
+
+        let rooms = collab.list_rooms().await;
+        assert_eq!(rooms.len(), 1);
+        let room = &rooms[0];
+        assert_eq!(room.path, "a.ipynb");
+        assert_eq!(format!("json:notebook:{}", room.file_id), room_id);
+        let who: Vec<(&str, bool)> = room
+            .clients
+            .iter()
+            .map(|c| (c.name.as_str(), c.agent))
+            .collect();
+        assert_eq!(who, [("Ana", false), ("Ben", false), ("claude-code", true)]);
+        assert!(room.last_change.is_none());
+
+        // The agent's hold releases: it is gone from the clients.
+        drop(hold);
+        listed_until(&collab, "the hold to leave", |r| r[0].clients.len() == 2).await;
+        // One person leaves.
+        one.send(Cmd::Leave(9001)).unwrap();
+        let rooms = listed_until(&collab, "Ana to leave", |r| r[0].clients.len() == 1).await;
+        assert_eq!(rooms[0].clients[0].name, "Ben");
+
+        // The last leaves: the room stays listed, empty, until the cleanup
+        // delay passes, then it is gone.
+        two.send(Cmd::Leave(9002)).unwrap();
+        listed_until(&collab, "the room to retire", |r| r.is_empty()).await;
+        assert_eq!(collab.open_rooms(), 0);
+    }
+
+    /// A rename moves the listed path, and the file id stays (#893).
+    #[tokio::test]
+    async fn listing_rooms_follows_a_rename() {
+        let (dir, contents) = notebook_dir();
+        let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
+        let room_id = notebook_room_id(&collab, &contents, "a.ipynb")
+            .await
+            .unwrap();
+        let _hold = hold_notebook(&collab, &contents, &room_id, Some("agent".into()))
+            .await
+            .unwrap();
+        let before = collab.list_rooms().await;
+        assert_eq!(before[0].path, "a.ipynb");
+
+        std::fs::rename(dir.path().join("a.ipynb"), dir.path().join("b.ipynb")).unwrap();
+        collab.moved("a.ipynb", "b.ipynb").await;
+        let after = listed_until(&collab, "the path to move", |r| {
+            r.first().is_some_and(|r| r.path == "b.ipynb")
+        })
+        .await;
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].file_id, before[0].file_id);
+    }
+
+    /// A room's last change is the edit made through it, by whoever the
+    /// edit was credited to (#893).
+    #[tokio::test]
+    async fn listing_rooms_reports_the_last_change() {
+        let (_dir, contents) = notebook_dir();
+        let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
+        let room_id = notebook_room_id(&collab, &contents, "a.ipynb")
+            .await
+            .unwrap();
+        let _hold = hold_notebook(&collab, &contents, &room_id, Some("claude-code".into()))
+            .await
+            .unwrap();
+        assert!(collab.list_rooms().await[0].last_change.is_none());
+
+        with_notebook(&collab, &contents, &room_id, |room| {
+            let ((), fx) = room.edit(|txn, roots| {
+                ganymede_documents::schema::insert_cell(
+                    txn,
+                    &roots.cells,
+                    0,
+                    json!({"cell_type": "markdown", "id": "n", "metadata": {}, "source": "hi"}),
+                );
+            });
+            room.set_author(
+                &["n".to_string()],
+                &ganymede_documents::Author {
+                    name: "claude-code".into(),
+                    person: false,
+                },
+            );
+            ((), fx)
+        })
+        .await
+        .unwrap();
+
+        let change = collab.list_rooms().await[0]
+            .last_change
+            .take()
+            .expect("a change");
+        assert_eq!(change.by, "claude-code");
+        assert!(!change.person);
+        let at: jiff::Timestamp = change.at.parse().unwrap();
+        let age = jiff::Timestamp::now().duration_since(at);
+        assert!(age.as_secs() < 30, "{} is {age:?} old", change.at);
+    }
+
+    /// A name the server vouches for is cleaned as the attribution code
+    /// cleans it: control characters dropped, at most 64 characters
+    /// (#893).
+    #[tokio::test]
+    async fn listing_rooms_cleans_client_names() {
+        let (_dir, contents) = notebook_dir();
+        let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
+        let room_id = notebook_room_id(&collab, &contents, "a.ipynb")
+            .await
+            .unwrap();
+        let long = "x".repeat(500);
+        let (_a, _rxa) = join_as(
+            &collab,
+            &contents,
+            &room_id,
+            9101,
+            "Mal\u{1b}[31mlory\n\u{7}",
+        )
+        .await;
+        let (_b, _rxb) = join_as(&collab, &contents, &room_id, 9102, &long).await;
+        let rooms = collab.list_rooms().await;
+        let names: Vec<&str> = rooms[0].clients.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"Mal[31mlory"), "{names:?}");
+        assert!(names.iter().all(|n| n.chars().count() <= 64), "{names:?}");
+        assert!(
+            names.iter().all(|n| !n.chars().any(char::is_control)),
+            "{names:?}"
+        );
+    }
+
     /// A file made at a path whose id a room is open on closes the room,
     /// as a delete does: for a new untitled file and a copy.
     #[tokio::test]
@@ -2466,7 +2811,9 @@ mod join_tests {
         let room_id = notebook_room_id(&collab, &contents, "a.ipynb")
             .await
             .unwrap();
-        let hold = hold_notebook(&collab, &contents, &room_id).await.unwrap();
+        let hold = hold_notebook(&collab, &contents, &room_id, None)
+            .await
+            .unwrap();
         let read = |collab: Arc<Collab>, contents: Arc<dyn Contents>, room_id: String| async move {
             with_notebook(&collab, &contents, &room_id, |room| {
                 (room.notebook_with_ids(), Default::default())
