@@ -380,12 +380,6 @@ own copy, which then no longer follows the app. Settings never replaces
 a `ganymede` it didn't put there unless you choose **Replace…**, which
 moves the old one to the Trash.
 
-> [!NOTE]
-> **Unreleased in ganymede-ui.** Available only from a build of
-> ganymede-ui's `main` that bundles a ganymede release after 0.13.0
-> (its `GANYMEDE_REF`), not in its latest release. Builds on v0.13.0 or
-> earlier carry no command line tool and show no such section.
-
 ### Install script options
 
 Options go after `sh -s --`:

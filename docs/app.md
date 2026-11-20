@@ -98,11 +98,8 @@ server URL is a machine; the sidebar's place switcher (Places on the
 iPhone) opens it. The server's side is
 [`/machines/{id}/`](embedding.md#connected-machines); the
 [apps guide](https://github.com/tlockney/ganymede-ui/blob/main/docs/apps.md#connected-machines)
-has the details.
-
-> [!NOTE]
-> **Unreleased in ganymede-ui.** Available only from a build of
-> ganymede-ui's `main`, not in its latest release.
+has the details. It needs the apps 0.14.0 or later, and the other
+computer's Ganymede 0.14.0 or later for its journals.
 
 ## With no server
 

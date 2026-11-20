@@ -139,7 +139,7 @@ In order of priority.
    notebooks through rooms (done, above). The app's journal view, which
    shows the agent's journal as it is written
    ([ganymede-ui#184](https://github.com/tlockney/ganymede-ui/issues/184)),
-   is on ganymede-ui's `main`, and so are connected machines: other
+   shipped in ganymede-ui 0.14.0, and so did connected machines: other
    computers' files, rooms and kernels in the same windows
    ([ganymede-ui#697](https://github.com/tlockney/ganymede-ui/issues/697);
    the server's side is `/machines/{id}/`, [Embedding](embedding.md#connected-machines)).
@@ -148,10 +148,6 @@ In order of priority.
    learns of a person's edits and requests (done, above); whether
    `ganymede mcp watch --edits` stays a spike, becomes the default or
    goes is [#795](https://github.com/tlockney/ganymede/issues/795).
-
-   > [!NOTE]
-   > **Unreleased in ganymede-ui.** The journal view and connected
-   > machines are not in a ganymede-ui release.
 4. **TypeScript notebooks for TypeScript developers.**
    [cdp-kernel](https://github.com/tlockney/cdp-kernel) is the
    first-class kernel, on Node and Deno first. Tables, charts and SQL
@@ -160,13 +156,8 @@ In order of priority.
    Type errors as you type, signature help, go to definition and rename
    in TypeScript cells (cdp-kernel 0.13.0 and 0.14.0), table and tree
    views for data files, live Markdown preview, a DuckDB console, and the
-   same TypeScript help in the in-app and browser kernels are on
-   ganymede-ui's `main`.
-
-   > [!NOTE]
-   > **Unreleased in ganymede-ui.** The apps' editing features are
-   > available only from a build of ganymede-ui's `main`, not in its
-   > latest release.
+   same TypeScript help in the in-app and browser kernels shipped in
+   ganymede-ui 0.13.0.
 
 ## Not now
 
