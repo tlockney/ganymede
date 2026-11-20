@@ -25,6 +25,25 @@ const char *ganymede_server_url(const GanymedeServer *server);
  * shutdown grace period before it is stopped. */
 void ganymede_server_stop(GanymedeServer *server);
 
+/* Mounts the Ganymede server at url (http(s)://host[:port][/base]) as
+ * machine id (1 to 64 of A-Z a-z 0-9 _ -): the app's own pages' requests to
+ * /machines/{id}/... go to it, HTTP and websocket, an allowlist of routes
+ * only (#894). token (may be NULL) is added to each request. Every request
+ * also sends a Ganymede-Client header, which a machine that lets this
+ * device in by tailnet identity accepts, so a NULL token can work there. The page's own cookie, token and Origin are
+ * never forwarded, and the machine's token is never given to the page.
+ * Nothing is mounted until this is called. No request is made now. An id
+ * already mounted is replaced, and its open websockets closed. Any thread.
+ * Returns 0, or nonzero on failure (a bad id or URL): then *error_out (if
+ * error_out is not NULL) is a message to free with ganymede_string_free. */
+int ganymede_server_add_machine(GanymedeServer *server, const char *id,
+                                const char *url, const char *token,
+                                char **error_out);
+
+/* Unmounts machine id and closes its open websockets. Returns 1 if it was
+ * mounted, 0 if not. Any thread. */
+int ganymede_server_remove_machine(GanymedeServer *server, const char *id);
+
 /* Frees a string returned by this library. NULL is ignored. */
 void ganymede_string_free(char *s);
 

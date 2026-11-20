@@ -13,6 +13,11 @@
 //! ([`ganymede_kernel_register`]), as the iPad app will with its in-app
 //! kernel (#266, `docs/in-app-kernel.md`).
 //!
+//! An app can mount other Ganymede servers, its connected machines, under
+//! `/machines/{id}/` ([`ganymede_server_add_machine`],
+//! [`ganymede_server_remove_machine`]); the server forwards an allowlist of
+//! routes to them for the app's own pages (#894, `docs/embedding.md`).
+//!
 //! Built without the `zmq` or `subprocess` feature, as the iOS slices
 //! of the XCFramework are, the server can't run kernelspecs itself. It
 //! then lists no kernels and refuses to start one, unless the config
@@ -31,6 +36,7 @@ use ganymede_kernel_host::{
     TransportFactory,
 };
 use ganymede_server::config::Config;
+use ganymede_server::mount::Machines;
 use ganymede_server::serve::{gateway_configured, run_with, Startup};
 
 /// A running server. Opaque to C.
@@ -38,6 +44,8 @@ pub struct GanymedeServer {
     url: CString,
     /// The kernels the app registers, which the server lists after its own.
     registered: Arc<RegisteredKernels>,
+    /// The machines mounted under `/machines/{id}/`.
+    machines: Arc<Machines>,
     stop: tokio::sync::mpsc::Sender<()>,
     thread: Option<JoinHandle<()>>,
 }
@@ -98,6 +106,73 @@ pub unsafe extern "C" fn ganymede_server_start(
 pub unsafe extern "C" fn ganymede_server_url(server: *const GanymedeServer) -> *const c_char {
     // SAFETY: the caller passes a live server.
     unsafe { &*server }.url.as_ptr()
+}
+
+/// Mounts the Ganymede server at `url` as machine `id`: requests from
+/// the app's own pages to `/machines/{id}/...` on this server go to it
+/// (HTTP and websocket, an allowlist of routes), with `token` added, or,
+/// when `token` is NULL, with only a `Ganymede-Client` header, which a
+/// machine that lets this device in by tailnet identity accepts. The
+/// page's own cookie, token and `Origin` are never forwarded. Nothing is
+/// mounted until this is called; the token is never given to the page.
+///
+/// `id` is 1 to 64 of `A-Z a-z 0-9 _ -`; `url` is `http(s)://host[:port]
+/// [/base]`. No request is made now. Adding an `id` that is mounted
+/// replaces it (a changed URL or token) and closes its open websockets.
+/// Takes any thread.
+///
+/// Returns 0 on success. On failure (a bad id or URL) returns nonzero and,
+/// if `error_out` is not NULL, sets `*error_out` to a message to free with
+/// [`ganymede_string_free`].
+///
+/// # Safety
+///
+/// `server` is live; `id` and `url` are NUL-terminated strings; `token` is
+/// NULL or one; `error_out` is NULL or valid for a write.
+#[no_mangle]
+pub unsafe extern "C" fn ganymede_server_add_machine(
+    server: *mut GanymedeServer,
+    id: *const c_char,
+    url: *const c_char,
+    token: *const c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    // SAFETY: the caller passes a live server and strings or NULL.
+    let (server, id, url, token) = unsafe { (&*server, from_c(id), from_c(url), from_c(token)) };
+    let result = match (id, url) {
+        (Some(id), Some(url)) => server.machines.add(&id, &url, token.as_deref()),
+        _ => Err("id and url must not be NULL".to_string()),
+    };
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            if !error_out.is_null() {
+                // SAFETY: the caller passes a pointer valid for a write.
+                unsafe { *error_out = into_c(e) };
+            }
+            1
+        }
+    }
+}
+
+/// Unmounts machine `id` and closes its open websockets; requests to
+/// `/machines/{id}/...` then get 404. Returns 1 if it was mounted, 0 if
+/// not (or `id` is NULL). Takes any thread.
+///
+/// # Safety
+///
+/// `server` is live; `id` is NULL or a NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn ganymede_server_remove_machine(
+    server: *mut GanymedeServer,
+    id: *const c_char,
+) -> c_int {
+    // SAFETY: the caller passes a live server and a string or NULL.
+    let (server, id) = unsafe { (&*server, from_c(id)) };
+    match id {
+        Some(id) => c_int::from(server.machines.remove(&id)),
+        None => 0,
+    }
 }
 
 /// Stops the server: open requests get a moment to finish, every kernel
@@ -591,6 +666,8 @@ fn start(json: Option<&str>) -> anyhow::Result<GanymedeServer> {
     let kernels = startup(&cfg);
     let registered = Arc::new(RegisteredKernels::new());
     let for_server = registered.clone();
+    let machines = Arc::new(Machines::new());
+    let machines_for_server = machines.clone();
     let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(4);
     let (url_tx, url_rx) = mpsc::channel::<anyhow::Result<String>>();
     let thread = std::thread::Builder::new()
@@ -614,6 +691,7 @@ fn start(json: Option<&str>) -> anyhow::Result<GanymedeServer> {
                 })),
                 stop: Some(stop_rx),
                 registered: Some(for_server),
+                machines: Some(machines_for_server),
                 ..kernels
             };
             if let Err(e) = rt.block_on(run_with(cfg, startup)) {
@@ -626,6 +704,7 @@ fn start(json: Option<&str>) -> anyhow::Result<GanymedeServer> {
         Ok(Ok(url)) => Ok(GanymedeServer {
             url: CString::new(url)?,
             registered,
+            machines,
             stop: stop_tx,
             thread: Some(thread),
         }),

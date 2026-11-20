@@ -108,6 +108,7 @@ fn state_with(
         mcp: None,
         metrics: Default::default(),
         host: Default::default(),
+        machines: Default::default(),
     }
 }
 
@@ -9653,4 +9654,90 @@ async fn room_edits_are_credited_to_the_tailnet_login() {
     };
     assert!(out.contains(r#""by":"me@example.com""#), "{out}");
     assert!(!out.contains("Impostor"), "{out}");
+}
+
+/// `/machines/{id}/` takes the server's token only from a loopback peer: a
+/// peer elsewhere, or none known, is refused before the machine is looked
+/// up (#894).
+#[cfg(feature = "gateway")]
+#[tokio::test]
+async fn the_mount_takes_the_token_and_cookie_only_from_loopback() {
+    use axum::extract::ConnectInfo;
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(state(dir.path()));
+    let status = |peer: Option<&str>| {
+        let app = app.clone();
+        let peer = peer.map(|p| p.parse::<std::net::SocketAddr>().unwrap());
+        async move {
+            let mut req = Request::builder()
+                .uri("/machines/m/api/status")
+                .header(header::AUTHORIZATION, format!("token {TOKEN}"))
+                .body(Body::empty())
+                .unwrap();
+            if let Some(p) = peer {
+                req.extensions_mut().insert(ConnectInfo(p));
+            }
+            app.oneshot(req).await.unwrap().status()
+        }
+    };
+    // Loopback gets as far as the machine, which isn't mounted.
+    assert_eq!(status(Some("127.0.0.1:5000")).await, StatusCode::NOT_FOUND);
+    assert_eq!(status(Some("[::1]:5000")).await, StatusCode::NOT_FOUND);
+    assert_eq!(
+        status(Some("192.168.1.9:5000")).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(status(Some("100.64.1.2:5000")).await, StatusCode::FORBIDDEN);
+    assert_eq!(status(None).await, StatusCode::FORBIDDEN);
+
+    // A login cookie, got with the token, is no way around it.
+    let first = app
+        .clone()
+        .oneshot({
+            let mut req = Request::builder()
+                .uri("/api/status")
+                .header(header::HOST, "127.0.0.1:1")
+                .header(header::AUTHORIZATION, format!("token {TOKEN}"))
+                .body(Body::empty())
+                .unwrap();
+            req.extensions_mut().insert(ConnectInfo(
+                "127.0.0.1:5000".parse::<std::net::SocketAddr>().unwrap(),
+            ));
+            req
+        })
+        .await
+        .unwrap();
+    let cookie = first.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let with_cookie = |peer: Option<&str>| {
+        let app = app.clone();
+        let cookie = cookie.clone();
+        let peer = peer.map(|p| p.parse::<std::net::SocketAddr>().unwrap());
+        async move {
+            let mut req = Request::builder()
+                .uri("/machines/m/api/status")
+                .header(header::HOST, "127.0.0.1:1")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap();
+            if let Some(p) = peer {
+                req.extensions_mut().insert(ConnectInfo(p));
+            }
+            app.oneshot(req).await.unwrap().status()
+        }
+    };
+    assert_eq!(
+        with_cookie(Some("127.0.0.1:5000")).await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        with_cookie(Some("192.168.1.9:5000")).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(with_cookie(None).await, StatusCode::FORBIDDEN);
 }

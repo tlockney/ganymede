@@ -311,6 +311,46 @@ on the same site, such as `app.example.org` calling
 `notebooks.example.org`. It is ignored while `*` is allowed, since every
 page you visit could then act with your session.
 
+## Connected machines
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+An app that embeds the server can mount other Ganymede servers under
+`/machines/{id}/` ([Embedding](embedding.md#connected-machines)). The
+mount adds the machine's token to what it forwards, so it serves only the
+app's own pages:
+
+- A request must carry this server's own login cookie or its token, and
+  come from a loopback peer: a cookie is not enough from anywhere else,
+  since any request with the token is given one. A tailnet identity (`[tailscale] allow`)
+  gets 403, so a login the tailnet lets into this server gets nothing on a
+  machine behind it. The MCP token gets 403 too, so an agent can't reach a
+  machine through this server; agents use the machine's own server. With
+  auth off, nobody is the app's own session, and the mount answers 403.
+- A request with the cookie is checked as the REST API checks it: the
+  `Origin` must be this server's or listed, and a request that changes
+  state needs the `_xsrf` token.
+- Only an allowlist of routes is forwarded, and a path is refused if it
+  has `..`, an encoded or raw slash or backslash, an empty segment or a
+  NUL, so a page can't name `mcp` or `api/host` on the machine by
+  climbing out of an allowed path.
+- The page's `Cookie`, token, `Origin`, `Referer` and `_xsrf` are removed
+  before forwarding, so no local credential reaches the machine (and its
+  tailnet `same_origin` check passes).
+- Only a short list of the machine's response headers is passed on, so its
+  `Set-Cookie` (its login cookie, on a request with its token) never
+  reaches the page.
+- A machine's HTML lands on the app's origin, so every forwarded response
+  carries this server's sandbox policy, whatever the route, not the
+  machine's.
+
+The machine's token is held by the server and is never given to the page.
+A page the machine serves can run only in the sandbox; it can't act as the
+app's UI. A machine you mount is trusted with what the mount sends it: the
+page's requests to its allowlisted routes, with your token.
+
 ## JupyterLab extensions are code
 
 A JupyterLab extension is JavaScript that JupyterLab loads into its page.

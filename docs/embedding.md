@@ -233,6 +233,8 @@ code.
 | `GanymedeServer *ganymede_server_start(const char *config_json, char **error_out)` | Starts a server on loopback and blocks until it listens, or for at most 30 seconds, then fails. On failure returns NULL and, if `error_out` isn't NULL, sets `*error_out` to a message. |
 | `const char *ganymede_server_url(const GanymedeServer *server)` | The URL with its token. The server owns it: don't free it or use it after stop. |
 | `void ganymede_server_stop(GanymedeServer *server)` | Gives open requests a moment, shuts down every kernel, stops the server and frees it. Blocks until done. NULL is ignored. With registered kernels whose callbacks need the main thread (Swift's hop to the main actor), call it off the main thread, or each such kernel waits out the shutdown grace period. |
+| `int ganymede_server_add_machine(GanymedeServer *server, const char *id, const char *url, const char *token, char **error_out)` | Mounts the Ganymede server at `url` as machine `id` (see [Connected machines](#connected-machines)). `token` may be NULL. Returns 0, or nonzero for a bad `id` or `url`, and then `*error_out` holds a message. Any thread. |
+| `int ganymede_server_remove_machine(GanymedeServer *server, const char *id)` | Unmounts machine `id` and closes its open websockets. Returns 1 if it was mounted, 0 if not. Any thread. |
 | `void ganymede_string_free(char *s)` | Frees a string the library returned, such as the error. NULL is ignored. |
 | `void ganymede_set_panic_callback(GanymedePanicCallback cb)` | Calls `cb(message)` on the panicking thread after any panic in the library, with `panicked at <file>:<line>:<col>: <message>`, valid during the call. For the app's crash reporter: a panic in a server task doesn't end the app, so this is how it hears of one. NULL removes it. The library sends nothing itself. |
 | `void ganymede_debug_panic(void)` | Panics on the calling thread, which aborts the process. For testing crash reports. |
@@ -357,6 +359,79 @@ websocket's shape (`header`, `parent_header`, `metadata`, `content`),
 with binary buffers as base64 strings in `buffers`, and nothing is
 signed. Interrupts go over the control channel as `interrupt_request`,
 whatever the kernelspec says.
+
+### Connected machines
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+An app can show another computer running `ganymede serve` (a connected
+machine) in the same windows as its own notebooks. The page in a window
+only talks to its own origin, the embedded server, which forwards to the
+machine, so the page makes no cross-origin requests and the machine's
+credential never reaches it.
+
+`ganymede_server_add_machine(server, "mini", "http://mini.example:8888/", token, &err)`
+mounts the machine at `/machines/mini/`: a request to
+`/machines/mini/api/contents/a.ipynb` is `GET /api/contents/a.ipynb` on
+the machine, and a websocket to `/machines/mini/api/kernels/{id}/channels`
+(with the `v1.kernel.websocket.jupyter.org` subprotocol, if the page
+offers it) is the machine's. The `id` is 1 to 64 of `A-Z a-z 0-9 _ -`.
+`ganymede_server_remove_machine` unmounts it again, and closes its open
+websockets, which the page sees as a close with code 1001. Adding an `id`
+that is mounted replaces it, so a changed URL or token takes effect and the
+old sockets close. Nothing is mounted until the app adds a machine, and
+none survives the server: the app adds its machines again at each start.
+
+Only these paths below `/machines/{id}/` are forwarded; anything else is a
+404, and a method other than GET, HEAD, PUT, POST, PATCH or DELETE is a
+405 and is not forwarded; a path with `..`, an encoded slash or backslash, an empty segment
+or a NUL is a 400:
+
+- `api/status`, `api/me`, `api/contents`, `files`, `api/nbconvert` and
+  `nbconvert`
+- `api/collaboration` and `api/fileid` (rooms)
+- `api/kernels` with its `channels` websocket, `api/sessions`,
+  `api/kernelspecs`
+- `api/terminals`, and `terminals/websocket/{name}`, the terminal's socket
+- `api/notebooks/run`, `api/metrics/v1/kernel_usage`, `api/events/subscribe`
+
+`mcp`, `api/host/*` and everything else on the machine are never reachable
+this way.
+
+What the machine gets:
+
+- `Authorization: token <token>` when the app gave one, and always
+  `Ganymede-Client: ganymede-mount`, so a machine that lets this device in
+  by [tailnet identity](security.md#tailnet-identity) (`[tailscale]
+  allow`) accepts it as a program, with no token.
+- Nothing of the page's. The `Cookie`, `Authorization`, `Origin`,
+  `Referer`, `X-XSRFToken`, `Sec-Fetch-*` and proxy headers, a
+  `Ganymede-Client` the page sent, and the `token` and `_xsrf` query
+  parameters are removed first. Bodies pass unchanged, in both directions.
+
+What the page gets back: the machine's status and body, and only the
+headers that describe the body and its caching (`Content-Type`,
+`Content-Length`, `Content-Disposition`, `Content-Encoding`,
+`Content-Range`, `Accept-Ranges`, `Cache-Control`, `ETag`,
+`Last-Modified`, `Expires`, `Vary`, `X-Content-Type-Options`). The
+machine's cookies never reach the page. A `Location` that is a path on the
+machine gets the `/machines/{id}` prefix (after any base URL), but only
+when the path is one the mount would forward itself; a whole URL, a path
+that climbs out of the mount (`/../..`, in any encoding) and a path off the
+allowlist are dropped.
+Every response that is not a websocket upgrade carries this server's own
+`Content-Security-Policy`, whatever the route and whatever the machine
+sent, since the machine's HTML lands on the app's origin: `sandbox
+allow-scripts`, as its `/files` sends, and with `allow-downloads` for
+`nbconvert/html/...`.
+
+A machine that cannot be reached is a 502 with a `{"message": ...}` body (a
+websocket is refused with it at the handshake), and one that accepts the
+request but does not start answering within 30 seconds is a 504, and an `id` that is not
+mounted is a 404. [Security](security.md#connected-machines) says who may
+use the mount.
 
 ## Remote kernels with ganymede-gateway
 

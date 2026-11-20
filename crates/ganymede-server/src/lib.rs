@@ -16,6 +16,7 @@ pub mod host;
 pub mod lab;
 pub mod mcp;
 pub mod metrics;
+pub mod mount;
 mod path_locks;
 pub(crate) mod room_lock;
 mod room_ops;
@@ -105,6 +106,9 @@ pub struct AppState {
     /// `[host]` from the config: the host API's default grants, shown by
     /// `/api/host/grants`.
     pub host: Arc<host::HostConfig>,
+    /// Machines mounted under `/machines/{id}/`; none until an embedding
+    /// app adds one. See [`mount`].
+    pub machines: Arc<mount::Machines>,
 }
 
 /// The API router, login pages, and JupyterLab or generic static assets
@@ -113,6 +117,10 @@ pub fn build_router(state: AppState) -> axum::Router {
     let mut app = routes::router(state.clone()).merge(auth::router(state.clone()));
     if let Some(m) = &state.mcp {
         app = app.merge(mcp::router(state.clone(), m));
+    }
+    #[cfg(feature = "gateway")]
+    {
+        app = app.merge(mount::router(state.clone()));
     }
     match (state.lab.clone(), &state.static_dir) {
         (Some(lab), _) => app = app.merge(lab::router(state.clone(), &lab)),

@@ -54,6 +54,22 @@ int main(void) {
         return 1;
     }
     ganymede_kernel_ended(server, "no-such-kernel", "lost");
+    /* A machine mounts and unmounts; a bad id is refused with a message. */
+    if (ganymede_server_add_machine(server, "mini", "http://127.0.0.1:1/", NULL, &err) != 0) {
+        fprintf(stderr, "add_machine failed: %s\n", err);
+        ganymede_string_free(err);
+        return 1;
+    }
+    if (ganymede_server_add_machine(server, "a/b", "http://127.0.0.1:1/", "t", &err) == 0) {
+        fprintf(stderr, "added a machine with a bad id\n");
+        return 1;
+    }
+    ganymede_string_free(err);
+    if (ganymede_server_remove_machine(server, "mini") != 1
+        || ganymede_server_remove_machine(server, "mini") != 0) {
+        fprintf(stderr, "remove_machine did not say whether it was mounted\n");
+        return 1;
+    }
     ganymede_server_stop(server);
     if (released != 1) {
         fprintf(stderr, "release ran %d times\n", released);

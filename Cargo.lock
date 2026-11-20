@@ -1208,6 +1208,8 @@ name = "ganymede-gateway"
 version = "0.13.1"
 dependencies = [
  "async-trait",
+ "axum",
+ "bytes",
  "futures",
  "ganymede-engine",
  "ganymede-kernel-host",

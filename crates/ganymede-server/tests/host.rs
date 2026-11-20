@@ -118,6 +118,7 @@ fn state_with(
         mcp: None,
         metrics: Default::default(),
         host: Default::default(),
+        machines: Default::default(),
     }
 }
 
