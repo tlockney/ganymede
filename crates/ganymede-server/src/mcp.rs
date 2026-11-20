@@ -37,7 +37,7 @@ mod reference;
 pub(crate) mod search;
 mod snapshot;
 
-use crate::collab::{hold_notebook, notebook_room_id, with_notebook, Hold};
+use crate::collab::{hold_notebook, notebook_room_id, with_notebook, Hold, Listing};
 use crate::folder;
 use crate::room_ops;
 use crate::AppState;
@@ -1785,7 +1785,7 @@ impl Notebooks {
             .get(&room_id)
             .is_some_and(Hold::is_live);
         if !held {
-            let agent = Some(self.client_name());
+            let agent = Listing::Agent(self.client_name());
             if let Some(h) =
                 hold_notebook(&self.state.collab, &self.state.contents, &room_id, agent).await
             {

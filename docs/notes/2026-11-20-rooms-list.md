@@ -20,14 +20,18 @@ already uses (`Room::client_name`: the tailnet login, else the awareness
 name, else "a person"), so the same `clean_name` applies: control
 characters dropped, at most 64 characters. An agent is a `Hold` made for
 an MCP connection, which now carries the MCP client name into the room
-(`hold_notebook`'s new `agent` argument); the host API's holds for
-kernels pass none and are not listed, since no one is in the room. A
+(`hold_notebook`'s new `Listing` argument: `Person`, `Agent(name)` or
+`Unlisted`); the host API's holds for kernels are `Unlisted` and not
+listed, since no one is in the room. A
 name is listed per connection, so one person with two tabs shows twice.
 
 `last_change` is new state in the room: a time next to the cell authors
-`Room` already kept, set when a cell's source or type, or the set of
-cells, changes, and again by `set_author`, so an agent's edit is the
-agent's and not "the server". It doesn't count outputs, and it is
+`Room` already kept, set when attribution records that a cell's source
+or type, or the set of cells, changed. `set_author` then names who made
+the change in it, so an agent's edit is the agent's and not "the
+server", but only when the server's edit just before it changed cells:
+an MCP edit that wrote the same source leaves `last_change` as it was.
+It doesn't count outputs, and it is
 in-memory like the authors, so it is `null` for a room that no one has
 edited since it opened. A room left open after its last client goes (the
 one-minute cleanup) stays listed with no clients.

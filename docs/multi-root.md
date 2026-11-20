@@ -229,7 +229,8 @@ one per server, dispatching by absolute path. Mounts may not
 overlap. `AppState` holds the mount table; `contents` becomes a
 `Contents` that strips the first segment and calls the mount's, adding
 it back to the paths it returns; `/api/collaboration` finds the mount by
-path or by file id; and the other users of the root look the mount up
+path or by file id (`/api/collaboration/rooms` lists the rooms of every
+mount, with each path carrying its mount's prefix); and the other users of the root look the mount up
 by path or file id: the host API, kernels' working directories,
 `.ganymede.toml`, MCP, `/api/fileid/{index,id,path}` (an id resolves to
 a mount, and a returned path carries its prefix), `/files/{*path}`,

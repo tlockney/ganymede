@@ -1486,6 +1486,127 @@ fn edits_are_credited_to_who_made_them() {
     assert_eq!(room.author(&ids[0]).unwrap().name, "Thomas", "unchanged");
 }
 
+/// `last_change` follows what attribution records: a client's edit to a
+/// cell's source, a client deleting a cell, and a change from the file;
+/// nothing else moves it, and `set_author` names who made the server's
+/// edit only when that edit changed cells (#893).
+#[test]
+fn last_change_follows_attributed_changes() {
+    use ganymede_documents::room::{FROM_FILE, UNNAMED};
+    use ganymede_documents::Author;
+    let nb = Notebook::from_str(&fixture("code_outputs.ipynb")).unwrap();
+    let ids: Vec<String> = nb
+        .cells
+        .iter()
+        .filter_map(|c| c.id().map(String::from))
+        .collect();
+    let mut room = Room::notebook_room(&nb, "x.ipynb");
+    let (a, b) = (Doc::new(), Doc::new());
+    sync(&mut room, 1, &a);
+    sync(&mut room, 2, &b);
+    assert!(room.last_change().is_none(), "loaded, not edited");
+    let mut peer = Awareness::new(Doc::new());
+    peer.set_local_state_raw(r#"{"user":{"display_name":"Thomas"}}"#);
+    room.receive(1, &Message::Awareness(peer.update().unwrap()).encode_v1())
+        .unwrap();
+    let change = |room: &Room| {
+        let (at, by) = room.last_change().unwrap();
+        (at, by.name.clone(), by.person)
+    };
+    let update = |d: &Doc, f: &dyn Fn(&mut ganymede_documents::yrs::TransactionMut, &Roots)| {
+        let before = d.transact().state_vector();
+        {
+            let roots = Roots::get(d);
+            let mut txn = d.transact_mut();
+            f(&mut txn, &roots);
+        }
+        Message::Sync(SyncMessage::Update(
+            d.transact().encode_state_as_update_v1(&before),
+        ))
+        .encode_v1()
+    };
+
+    // A client types into a cell's source.
+    let typed = update(&a, &|txn, roots| {
+        let Some(Out::YMap(cell)) = roots.cells.get(txn, 0) else {
+            panic!()
+        };
+        let Some(Out::YText(src)) = cell.get(txn, "source") else {
+            panic!()
+        };
+        src.insert(txn, 0, "# a\n");
+    });
+    room.receive(1, &typed).unwrap();
+    let (t1, who, person) = change(&room);
+    assert_eq!((who.as_str(), person), ("Thomas", true));
+
+    // Something that changes no cell's source or type leaves it alone.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let (_, fx) = room.edit(|txn, roots| {
+        let cell = schema::find_cell(txn, roots, &ids[1]).unwrap();
+        cell.insert(txn, "execution_count", 3);
+    });
+    drop(fx);
+    room.set_author(
+        &[ids[1].clone()],
+        &Author {
+            name: "agent".into(),
+            person: false,
+        },
+    );
+    assert_eq!(change(&room).0, t1, "an output-only edit is not a change");
+    assert_eq!(change(&room).1, "Thomas");
+
+    // An edit that changes nothing, named by its caller, changes nothing.
+    let (_, fx) = room.edit(|_, _| ());
+    drop(fx);
+    room.set_author(
+        &[ids[0].clone()],
+        &Author {
+            name: "agent".into(),
+            person: false,
+        },
+    );
+    assert_eq!(change(&room), (t1, "Thomas".to_string(), true));
+
+    // A client deletes a cell and changes nothing else.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let gone = update(&b, &|txn, roots| roots.cells.remove(txn, 1));
+    room.receive(2, &gone).unwrap();
+    let (t2, who, person) = change(&room);
+    assert!(t2 > t1);
+    assert_eq!((who.as_str(), person), (UNNAMED, true));
+
+    // An edit that changes a cell, then named by its caller: the agent's.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let (_, fx) = room.edit(|txn, roots| {
+        let cell = schema::find_cell(txn, roots, &ids[0]).unwrap();
+        if let Some(Out::YText(src)) = cell.get(txn, "source") {
+            src.insert(txn, 0, "by agent ");
+        }
+    });
+    drop(fx);
+    room.set_author(
+        &[ids[0].clone()],
+        &Author {
+            name: "agent".into(),
+            person: false,
+        },
+    );
+    let (t3, who, person) = change(&room);
+    assert!(t3 > t2);
+    assert_eq!((who.as_str(), person), ("agent", false));
+
+    // The file changes a cell.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let mut v = schema::notebook_value(&room.notebook().unwrap().unwrap());
+    v["cells"][0]["source"] = serde_json::json!("from disk");
+    room.reload(&Notebook::from_value(v).unwrap(), "h");
+    let (t4, who, person) = change(&room);
+    assert!(t4 > t3);
+    assert_eq!((who.as_str(), person), (FROM_FILE, false));
+}
+
 /// A client the server knows by name (a tailnet login, #816) is credited
 /// by that name, whatever its awareness state says.
 #[test]

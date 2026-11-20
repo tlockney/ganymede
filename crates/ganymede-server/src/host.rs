@@ -29,7 +29,7 @@
 //! once symlinks are resolved; a notebook may always read itself. A
 //! kernel's notebook is the one of the session the server started it for.
 
-use crate::collab::{hold_notebook, notebook_room_id, with_notebook, Hold};
+use crate::collab::{hold_notebook, notebook_room_id, with_notebook, Hold, Listing};
 use crate::mcp::{notebook_for_search, search, search_notebooks};
 use crate::room_ops;
 use crate::routes::{HttpError, LenientJson};
@@ -745,8 +745,13 @@ impl HostApi {
             .get(kernel_id)
             .ok()
             .map(|k| k.watch_alive());
-        if let Some(h) =
-            hold_notebook(&self.state.collab, &self.state.contents, room_id, None).await
+        if let Some(h) = hold_notebook(
+            &self.state.collab,
+            &self.state.contents,
+            room_id,
+            Listing::Unlisted,
+        )
+        .await
         {
             // One made meanwhile by another call is replaced; it leaves the
             // room as this one joins it.

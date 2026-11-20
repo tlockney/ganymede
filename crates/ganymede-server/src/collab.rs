@@ -701,8 +701,8 @@ impl Collab {
 
 pub(crate) enum Cmd {
     /// A client joins, with the name the server knows it by, if any, and
-    /// the MCP client's name when it is a [`Hold`] made for an agent.
-    Join(ConnId, ClientTx, Option<String>, Option<String>),
+    /// how the room lists it.
+    Join(ConnId, ClientTx, Option<String>, Listing),
     /// Who is in the room and what last changed; see [`Collab::list_rooms`].
     /// Not answered by a room with no file (awareness only).
     Info(tokio::sync::oneshot::Sender<RoomInfo>),
@@ -719,6 +719,17 @@ pub(crate) enum Cmd {
     With(Box<dyn FnOnce(&mut Room) -> ganymede_documents::Effects + Send>),
     /// Save now if there are unsaved edits; answered when done.
     Flush(tokio::sync::oneshot::Sender<()>),
+}
+
+/// How a connection to a room is listed by [`Collab::list_rooms`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Listing {
+    /// A room client, named as its edits are credited.
+    Person,
+    /// An MCP connection's [`Hold`], named by its client.
+    Agent(String),
+    /// Not listed: a hold made for a kernel, with no one behind it.
+    Unlisted,
 }
 
 /// What [`Collab::list_rooms`] asks a notebook room for.
@@ -1057,7 +1068,7 @@ async fn serve_socket(
     let (out_tx, mut out_rx, full) = ClientTx::new(state.max_body_size);
     // An open room takes the join with no path lookup, so a client
     // joining one whose file was just deleted hears "File deleted".
-    let join = Cmd::Join(conn, out_tx, user, None);
+    let join = Cmd::Join(conn, out_tx, user, Listing::Person);
     let Some(room) = send_to_room(&collab, &state.contents, &room_id, file_id, join).await else {
         let id = file_id.unwrap_or_default();
         close(&mut socket, 4404, format!("Unknown file id {id}")).await;
@@ -1314,20 +1325,25 @@ impl Drop for Hold {
 }
 
 /// Join notebook room `room_id` (from [`notebook_room_id`]) as a client
-/// that never reads its frames. `agent` is the MCP client's name when the
-/// hold is an agent's, which lists it in the room's clients; `None` for
-/// a hold that isn't (a kernel's). `None` when the room can't be opened.
+/// that never reads its frames. `listing` says how the room lists it in
+/// its clients: an agent by its MCP client name, or not at all (a
+/// kernel's). `None` when the room can't be opened.
 pub(crate) async fn hold_notebook(
     collab: &Arc<Collab>,
     contents: &Arc<dyn Contents>,
     room_id: &str,
-    agent: Option<String>,
+    listing: Listing,
 ) -> Option<Hold> {
     let conn = collab.next_conn.fetch_add(1, Ordering::Relaxed);
     // The receiver is dropped: frames sent to this client go nowhere.
     let (out, _, _) = ClientTx::new(usize::MAX);
-    let room =
-        send_to_notebook_room(collab, contents, room_id, Cmd::Join(conn, out, None, agent)).await?;
+    let room = send_to_notebook_room(
+        collab,
+        contents,
+        room_id,
+        Cmd::Join(conn, out, None, listing),
+    )
+    .await?;
     Some(Hold { room, conn })
 }
 
@@ -1603,6 +1619,8 @@ async fn run_room(
     let mut clients: HashMap<ConnId, ClientTx> = HashMap::new();
     // The MCP client names of the connections that are agents' holds.
     let mut agents: HashMap<ConnId, String> = HashMap::new();
+    // The connections that are not listed at all.
+    let mut unlisted: HashSet<ConnId> = HashSet::new();
     let (mut room, mut disk) = match &path {
         None => (Room::transient(), None),
         Some(path) => match load(contents.as_ref(), path).await {
@@ -1665,9 +1683,13 @@ async fn run_room(
             cmd = async { match next.take() { Some(c) => Some(c), None => rx.recv().await } } => {
                 let Some(cmd) = cmd else { break };
                 match cmd {
-                    Cmd::Join(conn, out, user, agent) => {
+                    Cmd::Join(conn, out, user, listing) => {
                         clients.insert(conn, out);
-                        if let Some(name) = agent { agents.insert(conn, name); }
+                        match listing {
+                            Listing::Person => {}
+                            Listing::Agent(name) => { agents.insert(conn, name); }
+                            Listing::Unlisted => { unlisted.insert(conn); }
+                        }
                         empty_since = None;
                         let fx = match &user {
                             Some(name) => room.connect_as(conn, name),
@@ -1698,6 +1720,7 @@ async fn run_room(
                             let mut listed: Vec<ListedClient> = room
                                 .client_names()
                                 .into_iter()
+                                .filter(|(conn, _)| !unlisted.contains(conn))
                                 .map(|(conn, name)| match agents.get(&conn) {
                                     Some(agent) => ListedClient { name: agent.clone(), agent: true },
                                     None => ListedClient { name, agent: false },
@@ -1714,6 +1737,7 @@ async fn run_room(
                     Cmd::Leave(conn) => {
                         clients.remove(&conn);
                         agents.remove(&conn);
+                        unlisted.remove(&conn);
                         let fx = room.disconnect(conn);
                         dispatch(&clients, fx.send);
                         if clients.is_empty() { empty_since = Some(Instant::now()) }
@@ -2526,7 +2550,7 @@ mod join_tests {
             collab,
             contents,
             room_id,
-            Cmd::Join(conn, out, Some(name.to_string()), None),
+            Cmd::Join(conn, out, Some(name.to_string()), Listing::Person),
         )
         .await
         .unwrap();
@@ -2579,9 +2603,14 @@ mod join_tests {
         let room_id = notebook_room_id(&collab, &contents, "a.ipynb")
             .await
             .unwrap();
-        let hold = hold_notebook(&collab, &contents, &room_id, Some("claude-code".into()))
-            .await
-            .unwrap();
+        let hold = hold_notebook(
+            &collab,
+            &contents,
+            &room_id,
+            Listing::Agent("claude-code".into()),
+        )
+        .await
+        .unwrap();
         let (one, _rx1) = join_as(&collab, &contents, &room_id, 9001, "Ana").await;
         let (two, _rx2) = join_as(&collab, &contents, &room_id, 9002, "Ben").await;
 
@@ -2613,6 +2642,76 @@ mod join_tests {
         assert_eq!(collab.open_rooms(), 0);
     }
 
+    /// A hold made for a kernel has no one behind it: the room is listed
+    /// with no clients (#893).
+    #[tokio::test]
+    async fn listing_rooms_leaves_out_unlisted_holds() {
+        let (_dir, contents) = notebook_dir();
+        let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
+        let room_id = notebook_room_id(&collab, &contents, "a.ipynb")
+            .await
+            .unwrap();
+        let _kernel = hold_notebook(&collab, &contents, &room_id, Listing::Unlisted)
+            .await
+            .unwrap();
+        let rooms = collab.list_rooms().await;
+        assert_eq!(rooms.len(), 1);
+        assert!(rooms[0].clients.is_empty());
+        // Beside a person and an agent, it is still not there.
+        let _agent = hold_notebook(&collab, &contents, &room_id, Listing::Agent("a".into()))
+            .await
+            .unwrap();
+        let (_p, _rx) = join_as(&collab, &contents, &room_id, 9201, "Ana").await;
+        let names: Vec<String> = collab.list_rooms().await[0]
+            .clients
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        assert_eq!(names, ["Ana", "a"]);
+    }
+
+    /// A room that doesn't answer is left out after two seconds, and the
+    /// others are listed with it, not after it (#893).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn listing_rooms_leaves_out_a_room_that_does_not_answer() {
+        let (dir, contents) = notebook_dir();
+        let nb = r#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
+        std::fs::write(dir.path().join("b.ipynb"), nb).unwrap();
+        let collab = Arc::new(Collab::new(FileIds::in_memory(), None));
+        let a = notebook_room_id(&collab, &contents, "a.ipynb")
+            .await
+            .unwrap();
+        let b = notebook_room_id(&collab, &contents, "b.ipynb")
+            .await
+            .unwrap();
+        let _ha = hold_notebook(&collab, &contents, &a, Listing::Agent("x".into()))
+            .await
+            .unwrap();
+        let _hb = hold_notebook(&collab, &contents, &b, Listing::Agent("x".into()))
+            .await
+            .unwrap();
+        assert_eq!(collab.list_rooms().await.len(), 2);
+
+        // Room b is busy in a command that outlasts the wait.
+        send_to_notebook_room(
+            &collab,
+            &contents,
+            &b,
+            Cmd::With(Box::new(|_: &mut Room| {
+                std::thread::sleep(Duration::from_secs(4));
+                Default::default()
+            })),
+        )
+        .await
+        .unwrap();
+        let started = Instant::now();
+        let rooms = collab.list_rooms().await;
+        let took = started.elapsed();
+        assert_eq!(rooms.len(), 1, "only the room that answered");
+        assert_eq!(rooms[0].path, "a.ipynb");
+        assert!(took < Duration::from_secs(3), "{took:?}");
+    }
+
     /// A rename moves the listed path, and the file id stays (#893).
     #[tokio::test]
     async fn listing_rooms_follows_a_rename() {
@@ -2621,7 +2720,7 @@ mod join_tests {
         let room_id = notebook_room_id(&collab, &contents, "a.ipynb")
             .await
             .unwrap();
-        let _hold = hold_notebook(&collab, &contents, &room_id, Some("agent".into()))
+        let _hold = hold_notebook(&collab, &contents, &room_id, Listing::Agent("agent".into()))
             .await
             .unwrap();
         let before = collab.list_rooms().await;
@@ -2646,9 +2745,14 @@ mod join_tests {
         let room_id = notebook_room_id(&collab, &contents, "a.ipynb")
             .await
             .unwrap();
-        let _hold = hold_notebook(&collab, &contents, &room_id, Some("claude-code".into()))
-            .await
-            .unwrap();
+        let _hold = hold_notebook(
+            &collab,
+            &contents,
+            &room_id,
+            Listing::Agent("claude-code".into()),
+        )
+        .await
+        .unwrap();
         assert!(collab.list_rooms().await[0].last_change.is_none());
 
         with_notebook(&collab, &contents, &room_id, |room| {
@@ -2811,7 +2915,7 @@ mod join_tests {
         let room_id = notebook_room_id(&collab, &contents, "a.ipynb")
             .await
             .unwrap();
-        let hold = hold_notebook(&collab, &contents, &room_id, None)
+        let hold = hold_notebook(&collab, &contents, &room_id, Listing::Unlisted)
             .await
             .unwrap();
         let read = |collab: Arc<Collab>, contents: Arc<dyn Contents>, room_id: String| async move {
