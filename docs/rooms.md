@@ -229,6 +229,52 @@ progress. When that run ends, the cell shows whoever queued next, and
 goes idle after the last. `by` is one of Ganymede's extensions to the
 execute body, with `wait` and the cell selectors.
 
+### Run from a clean kernel
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+A notebook that was last run top to bottom on a fresh kernel carries
+`metadata.ganymede.clean_run` in its notebook metadata, so a reader (the
+journal view's "reproduced from a clean kernel" stamp) can tell:
+
+```json
+{"metadata": {"ganymede": {"clean_run": {
+  "at": "2026-11-20T18:04:12.331Z", "by": "Claude Code", "kernel": "python3"}}}}
+```
+
+`at` is when the run ended, in UTC. `by` is the name the MCP client gave
+when it connected (cleaned like the [names in the room](#who-runs-a-cell)).
+`kernel` is the name of the kernelspec the kernel ran. Other keys under
+`metadata.ganymede` are left alone.
+
+Only the MCP tool `notebook_run_all` sets it, and only when the run
+
+- restarted the kernel (`restart` is true, the default),
+- finished before its `timeout`,
+- ran every code cell that has code, as the notebook was when the run
+  started (no cell edited, added, deleted or moved while it ran), and
+- ended no cell in an error (the cells after a failed one don't run).
+
+Any other `notebook_run_all` removes the stamp the notebook had. A
+client's own Run All, in JupyterLab or the apps, goes through the kernel's
+websocket, which the server doesn't see as a run of the notebook, so it
+never sets the stamp; it clears it as any run of a cell does.
+
+The room removes the stamp when what a run depends on or leaves behind
+changes, whoever changes it: a cell's source or type edited (Markdown
+cells too), a cell added, deleted or moved, or a code cell's
+`execution_count` changed, which is any later run of a cell from any
+client. Outputs, `execution_state`, cell metadata and other notebook
+metadata change without clearing it. The removal is an edit by the
+server like any other: every client sees it and the notebook is unsaved
+until it is saved.
+
+The stamp is saved with the notebook, unlike `execution_by`. A file that
+holds one opens with it, and it stays until a change above removes it.
+Nothing checks it against the cells in a file edited outside Ganymede.
+
 ### Waiting for the cells
 
 Ganymede adds an optional `wait` field, in seconds (at most 3600), for

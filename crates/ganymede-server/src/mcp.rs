@@ -1048,7 +1048,7 @@ impl Notebooks {
     }
 
     #[tool(
-        description = "Run every code cell in order, after restarting the kernel unless `restart: false`, and return the notebook."
+        description = "Run every code cell in order, after restarting the kernel unless `restart: false`, and return the notebook. A run that restarted, finished and ran every cell with no error stamps the notebook `metadata.ganymede.clean_run` (when, by whom, on which kernel); any other run removes the stamp, and so does a later edit or run of a cell."
     )]
     async fn notebook_run_all(
         &self,
@@ -1056,8 +1056,9 @@ impl Notebooks {
     ) -> Result<CallToolResult, McpError> {
         self.can_execute()?;
         let path = self.path(a.path)?;
-        let (kernel_id, _) = self.kernel_for(&path, None).await?;
-        if a.restart.unwrap_or(true) {
+        let (kernel_id, kernel_name) = self.kernel_for(&path, None).await?;
+        let restart = a.restart.unwrap_or(true);
+        if restart {
             self.state
                 .kernels
                 .restart(&kernel_id)
@@ -1065,6 +1066,7 @@ impl Notebooks {
                 .map_err(|e| err(e.message))?;
         }
         let nb = self.notebook(&path).await?;
+        let layout = run_layout(&nb, false);
         let ids: Vec<String> = nb
             .cells
             .iter()
@@ -1092,6 +1094,13 @@ impl Notebooks {
         if !finished {
             out.push_str("Timed out; cells are still running.\n\n");
         }
+        // A clean run: after a restart, finished, with the cells as they
+        // were before it and every one with code run, none in error. Judged
+        // on the notebook as the run left it, before outputs are dropped.
+        // The stamp goes in after the drop, and only if nothing but outputs
+        // changed since.
+        let clean = (restart && finished && run_layout(&nb, false) == layout && ran_clean(&nb))
+            .then(|| run_layout(&nb, true));
         if !dropped.is_empty() {
             out.push_str(&format!(
                 "Outputs of {} left out of the notebook, as marked.",
@@ -1103,6 +1112,8 @@ impl Notebooks {
             out.push_str("\n\n");
             self.drop_outputs(&path, dropped, true).await?;
         }
+        self.record_clean_run(&path, clean.map(|c| (c, kernel_name)))
+            .await?;
         out.push_str(&self.render(&nb, true));
         text(out)
     }
@@ -1620,6 +1631,46 @@ impl ServerHandler for Notebooks {
 }
 
 /// Client name for provenance.
+/// The cells of `nb` in order, each as its id and its type and source
+/// joined, and with `counts` a code cell's execution count too: what a
+/// run of the whole notebook was of, and left behind.
+fn run_layout(nb: &Notebook, counts: bool) -> Vec<(String, String)> {
+    nb.cells
+        .iter()
+        .map(|c| {
+            let source = match c {
+                Cell::Code(c) if counts => {
+                    format!("{:?}\n{}", c.execution_count, c.source.as_str())
+                }
+                Cell::Code(c) => c.source.as_str().to_string(),
+                Cell::Markdown(c) => c.source.as_str().to_string(),
+                Cell::Raw(c) => c.source.as_str().to_string(),
+                Cell::Unknown(v) => v.to_string(),
+            };
+            (
+                c.id().unwrap_or_default().to_string(),
+                format!("{}\n{source}", c.cell_type().unwrap_or_default()),
+            )
+        })
+        .collect()
+}
+
+/// Whether every code cell with code in it has run and none ended with an
+/// error: a cell after a failed one never runs, so it counts as not run.
+fn ran_clean(nb: &Notebook) -> bool {
+    nb.cells.iter().all(|c| match c {
+        Cell::Code(code) => {
+            code.source.as_str().trim().is_empty()
+                || (code.execution_count.is_some()
+                    && !code
+                        .outputs
+                        .iter()
+                        .any(|o| matches!(o, ganymede_nbformat::Output::Error(_))))
+        }
+        _ => true,
+    })
+}
+
 fn client_name(peer: &Peer<RoleServer>) -> String {
     peer.peer_info()
         .map(|i| ganymede_documents::clean_name(&i.client_info.name))
@@ -2377,6 +2428,30 @@ impl Notebooks {
     /// Clear the outputs of code cells `ids` and mark them to stay out of
     /// the notebook (`drop`), or take the mark off. False when no code
     /// cell has one of the ids.
+    /// Stamp notebook `path` as run from a clean kernel
+    /// (`metadata.ganymede.clean_run`), or remove the stamp for `None`.
+    /// `Some((layout, kernel))` is a clean `notebook_run_all`: `layout` is
+    /// the notebook as that run left it ([`run_layout`] with counts) and
+    /// `kernel` the kernel it ran on. The stamp is written only if the
+    /// notebook is still as `layout` has it, so an edit or a run since
+    /// leaves none; otherwise any old stamp goes.
+    async fn record_clean_run(
+        &self,
+        path: &str,
+        run: Option<(Vec<(String, String)>, String)>,
+    ) -> Result<(), McpError> {
+        let by = self.client_name();
+        self.own_edit(path, Vec::new(), marks::Aspect::Source, None, move |room| {
+            let stamp = run.and_then(|(layout, kernel)| {
+                let nb = room.notebook_with_ids()?.ok()?;
+                (run_layout(&nb, true) == layout)
+                    .then(|| json!({"at": room_ops::now(), "by": by, "kernel": kernel}))
+            });
+            room.edit(|txn, roots| schema::set_clean_run(txn, roots, stamp))
+        })
+        .await
+    }
+
     async fn drop_outputs(
         &self,
         path: &str,

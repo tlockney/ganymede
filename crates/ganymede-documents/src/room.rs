@@ -30,6 +30,33 @@ use yrs::{ClientID, Doc, Map, ReadTxn, StateVector, Transact, Update};
 /// A connection, numbered by the host.
 pub type ConnId = u64;
 
+/// Hash a cell's type and source into `h`; whether it is a code cell.
+fn hash_type_and_source<T: ReadTxn>(
+    txn: &T,
+    m: &yrs::MapRef,
+    h: &mut std::collections::hash_map::DefaultHasher,
+) -> bool {
+    use std::hash::Hash;
+    use yrs::{GetString, Out};
+    let code = match m.get(txn, "cell_type") {
+        Some(Out::Any(yrs::Any::String(t))) => {
+            t.hash(h);
+            &*t == "code"
+        }
+        _ => {
+            "".hash(h);
+            false
+        }
+    };
+    match m.get(txn, "source") {
+        Some(Out::YText(t)) => t.get_string(txn).hash(h),
+        Some(Out::Any(yrs::Any::String(t))) => t.hash(h),
+        Some(other) => schema::out_to_json(txn, &other).to_string().hash(h),
+        None => {}
+    }
+    code
+}
+
 /// `jupyter-collaboration`'s raw message type.
 pub const MSG_RAW: u32 = 2;
 
@@ -460,6 +487,7 @@ impl Room {
                 // Each cell's source and type before, to tell which the
                 // update changed.
                 let before = (refused.is_none() && !self.read_only).then(|| self.prints());
+                let run_before = before.as_ref().and_then(|_| self.run_print_if_stamped());
                 let applied = match refused {
                     Some(e) => Err(e),
                     None => Update::decode_v1(&bytes).map_err(|e| e.to_string()),
@@ -529,6 +557,9 @@ impl Room {
                             Message::Sync(SyncMessage::Update(u)).encode_v1(),
                         ));
                     }
+                }
+                if let Some(run) = run_before {
+                    fx.merge(self.clear_stale_clean_run(run));
                 }
             }
             Message::Awareness(update) => {
@@ -765,8 +796,8 @@ impl Room {
 
     /// Each cell's id and a hash of its type and source.
     fn prints(&self) -> HashMap<String, u64> {
-        use std::hash::{Hash, Hasher};
-        use yrs::{Array, GetString, Out};
+        use std::hash::Hasher;
+        use yrs::{Array, Out};
         let Some(roots) = &self.roots else {
             return HashMap::new();
         };
@@ -778,19 +809,75 @@ impl Room {
                 continue;
             };
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            match m.get(&txn, "cell_type") {
-                Some(Out::Any(yrs::Any::String(t))) => t.hash(&mut h),
-                _ => "".hash(&mut h),
-            }
-            match m.get(&txn, "source") {
-                Some(Out::YText(t)) => t.get_string(&txn).hash(&mut h),
-                Some(Out::Any(yrs::Any::String(t))) => t.hash(&mut h),
-                Some(other) => schema::out_to_json(&txn, &other).to_string().hash(&mut h),
-                None => {}
-            }
+            hash_type_and_source(&txn, &m, &mut h);
             out.insert(id.to_string(), h.finish());
         }
         out
+    }
+
+    /// A hash of what a full run of the notebook depends on and leaves
+    /// behind: the cells in order, each with its type and source, and for
+    /// a code cell its `execution_count`. Outputs, `execution_state`,
+    /// cell metadata and notebook metadata are left out: they change as
+    /// cells run or are annotated, without making a run stale.
+    fn run_print(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        use yrs::{Array, Out};
+        let Some(roots) = &self.roots else {
+            return 0;
+        };
+        let txn = self.doc().transact();
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for cell in roots.cells.iter(&txn) {
+            let Out::YMap(m) = cell else {
+                // Not a cell: mark the place all the same.
+                1u8.hash(&mut h);
+                continue;
+            };
+            match m.get(&txn, "id") {
+                Some(Out::Any(yrs::Any::String(id))) => id.hash(&mut h),
+                _ => "".hash(&mut h),
+            }
+            let code = hash_type_and_source(&txn, &m, &mut h);
+            if code {
+                match m.get(&txn, "execution_count") {
+                    Some(o) => schema::out_to_json(&txn, &o).to_string().hash(&mut h),
+                    None => "".hash(&mut h),
+                }
+            }
+        }
+        h.finish()
+    }
+
+    /// [`Room::run_print`] when the notebook carries a `clean_run` stamp,
+    /// the only time a change to it matters.
+    fn run_print_if_stamped(&self) -> Option<u64> {
+        let roots = self.roots.as_ref()?;
+        schema::clean_run(&self.doc().transact(), roots)?;
+        Some(self.run_print())
+    }
+
+    /// After a change to the document: remove the `clean_run` stamp when
+    /// [`Room::run_print`] is no longer `before`, a run's fingerprint taken
+    /// before the change. The removal is a server edit, sent to every
+    /// client; it changes only metadata, so it doesn't change the print
+    /// itself.
+    fn clear_stale_clean_run(&mut self, before: u64) -> Effects {
+        let Some(roots) = self.roots.clone() else {
+            return Effects::default();
+        };
+        if self.run_print() == before {
+            return Effects::default();
+        }
+        {
+            let mut txn = self.awareness.doc().transact_mut();
+            schema::set_clean_run(&mut txn, &roots, None);
+        }
+        self.content_changed.store(false, Ordering::Relaxed);
+        self.generation += 1;
+        let mut fx = self.broadcast_own();
+        fx.changed = true;
+        fx
     }
 
     /// Credit `author` with each cell whose type or source differs from
@@ -881,6 +968,7 @@ impl Room {
         let roots = self.roots.clone().unwrap_or_else(|| Roots::get(self.doc()));
         self.edit_unclaimed = false;
         let before = self.prints();
+        let run_before = self.run_print_if_stamped();
         let r = {
             let mut txn = self.awareness.doc().transact_mut();
             f(&mut txn, &roots)
@@ -897,6 +985,9 @@ impl Room {
                 person: false,
             };
             self.edit_unclaimed = self.attribute(&before, &server);
+            if let Some(run) = run_before {
+                fx.merge(self.clear_stale_clean_run(run));
+            }
         }
         (r, fx)
     }
