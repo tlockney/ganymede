@@ -8,7 +8,7 @@
 //! Nothing is mounted until then.
 //!
 //! Only this server's own page session may use the mount
-//! ([`crate::auth::mount`]): its login cookie, or its token from loopback.
+//! (`crate::auth::mount`): its login cookie, or its token from loopback.
 //! A tailnet identity and the MCP token get 403. The page's cookie, token,
 //! `Origin` and the rest are stripped before forwarding, and a `files` or
 //! `nbconvert` response gets this server's own sandbox policy, since the

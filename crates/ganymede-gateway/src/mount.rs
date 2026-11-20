@@ -165,7 +165,7 @@ fn strip_request_header(name: &str) -> bool {
 }
 
 /// `headers` as the machine should get them: without the page's credentials
-/// and the rest of [`strip_request_header`], and without any header the
+/// and the rest of `strip_request_header`, and without any header the
 /// `Connection` header names.
 pub fn sanitize_request(headers: &HeaderMap) -> HeaderMap {
     let named: Vec<String> = headers
@@ -224,7 +224,7 @@ fn pass_response_header(name: &str) -> bool {
 }
 
 /// The machine's response headers as the page gets them: only those
-/// [`pass_response_header`] lists. A `Location` that is a path on the
+/// `pass_response_header` lists. A `Location` that is a path on the
 /// machine gets the mount's prefix (`mount_prefix`, such as
 /// `/machines/mini`) so the page stays under it, but only when the path
 /// (before any `?` or `#`) is one [`route`] allows. Anything else is
