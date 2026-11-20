@@ -36,7 +36,9 @@ out=target/xcframework
 # Each slice has V8 in it: a build that dropped the feature would still
 # assemble and fail only when the app links the benchmark.
 for t in aarch64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim; do
-  if ! nm -g "target/$t/release/$lib" 2> /dev/null | grep -q 'v8__V8__Initialize'; then
+  # grep reads all of nm's output: with -q it exits at the first match, nm
+  # gets SIGPIPE, and pipefail fails the pipeline although V8 is there.
+  if ! nm -g "target/$t/release/$lib" 2> /dev/null | grep 'v8__V8__Initialize' > /dev/null; then
     echo "$t: $lib has no V8 symbols (v8__V8__Initialize)" >&2
     exit 1
   fi
