@@ -385,7 +385,8 @@ old sockets close. Nothing is mounted until the app adds a machine, and
 none survives the server: the app adds its machines again at each start.
 
 Only these paths below `/machines/{id}/` are forwarded; anything else is a
-404, and a path with `..`, an encoded slash or backslash, an empty segment
+404, and a method other than GET, HEAD, PUT, POST, PATCH or DELETE is a
+405 and is not forwarded; a path with `..`, an encoded slash or backslash, an empty segment
 or a NUL is a 400:
 
 - `api/status`, `api/me`, `api/contents`, `files`, `api/nbconvert` and
@@ -416,15 +417,19 @@ headers that describe the body and its caching (`Content-Type`,
 `Content-Range`, `Accept-Ranges`, `Cache-Control`, `ETag`,
 `Last-Modified`, `Expires`, `Vary`, `X-Content-Type-Options`). The
 machine's cookies never reach the page. A `Location` that is a path on the
-machine gets the `/machines/{id}` prefix; one with a whole URL is dropped.
+machine gets the `/machines/{id}` prefix (after any base URL), but only
+when the path is one the mount would forward itself; a whole URL, a path
+that climbs out of the mount (`/../..`, in any encoding) and a path off the
+allowlist are dropped.
 Every response that is not a websocket upgrade carries this server's own
 `Content-Security-Policy`, whatever the route and whatever the machine
 sent, since the machine's HTML lands on the app's origin: `sandbox
 allow-scripts`, as its `/files` sends, and with `allow-downloads` for
 `nbconvert/html/...`.
 
-A machine that does not answer is a 502 with a `{"message": ...}` body (a
-websocket is refused with it at the handshake), and an `id` that is not
+A machine that cannot be reached is a 502 with a `{"message": ...}` body (a
+websocket is refused with it at the handshake), and one that accepts the
+request but does not start answering within 30 seconds is a 504, and an `id` that is not
 mounted is a 404. [Security](security.md#connected-machines) says who may
 use the mount.
 

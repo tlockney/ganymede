@@ -136,14 +136,23 @@ In order of priority.
    - automation: Shortcuts, links, MCP from the Mac app, Spotlight
      ([ganymede-ui#301](https://github.com/tlockney/ganymede-ui/issues/301)).
 3. **A person and an agent in one live notebook.** The apps open
-   notebooks through rooms (done, above). Next: the app shows the
-   agent's journal as it is written
-   ([ganymede-ui#184](https://github.com/tlockney/ganymede-ui/issues/184)), and journal
-   sessions get evals
+   notebooks through rooms (done, above). The app's journal view, which
+   shows the agent's journal as it is written
+   ([ganymede-ui#184](https://github.com/tlockney/ganymede-ui/issues/184)),
+   is being built in ganymede-ui, and so are connected machines, other
+   computers' files, rooms and kernels in the same windows
+   ([ganymede-ui#697](https://github.com/tlockney/ganymede-ui/issues/697);
+   the server's side is `/machines/{id}/`, [Embedding](embedding.md#connected-machines)).
+   Journal sessions get evals
    ([#316](https://github.com/tlockney/ganymede/issues/316)). The agent
    learns of a person's edits and requests (done, above); whether
    `ganymede mcp watch --edits` stays a spike, becomes the default or
    goes is [#795](https://github.com/tlockney/ganymede/issues/795).
+
+   > [!NOTE]
+   > **Unreleased in ganymede-ui.** The journal view is available only
+   > from a build of ganymede-ui's `main`, not in its latest release.
+   > Connected machines are not in `main` yet either.
 4. **TypeScript notebooks for TypeScript developers.**
    [cdp-kernel](https://github.com/tlockney/cdp-kernel) is the
    first-class kernel, on Node and Deno first. Tables, charts and SQL

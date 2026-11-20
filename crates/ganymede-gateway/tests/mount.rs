@@ -83,6 +83,10 @@ fn config(root: &std::path::Path, token: Option<&str>) -> Config {
 }
 
 async fn start(adjust: impl FnOnce(&mut Config)) -> Server {
+    start_with(adjust, Machines::new()).await
+}
+
+async fn start_with(adjust: impl FnOnce(&mut Config), machines: Machines) -> Server {
     let root = tempfile::tempdir().unwrap();
     let work = root.path().join("work");
     std::fs::create_dir(&work).unwrap();
@@ -94,7 +98,7 @@ async fn start(adjust: impl FnOnce(&mut Config)) -> Server {
     let token = cfg.token.clone();
     let (url_tx, url_rx) = tokio::sync::oneshot::channel();
     let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(1);
-    let machines = Arc::new(Machines::new());
+    let machines = Arc::new(machines);
     let fakes = Arc::new(Fakes);
     tokio::spawn(run_with(
         cfg,
@@ -222,6 +226,24 @@ async fn record(State(log): State<Log>, req: Request) -> Response {
         ("set-cookie", "machine_session=1; Path=/"),
         ("set-cookie", "_xsrf=2; Path=/"),
     ];
+    // Redirects out of the mount, and one within it.
+    let redirect = |location: &'static str| {
+        (
+            axum::http::StatusCode::TEMPORARY_REDIRECT,
+            [("location", location)],
+        )
+            .into_response()
+    };
+    match path.as_str() {
+        "/api/contents/redir-evil" => return redirect("/../../api/contents/x"),
+        "/api/contents/redir-enc" => return redirect("/%2e%2e/%2e%2e/api/contents/x"),
+        "/api/contents/redir-ok" => return redirect("/api/contents/y?x=1"),
+        // Accepts the request and never answers.
+        "/api/contents/hang" => {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        }
+        _ => {}
+    }
     if path == "/nbconvert/html/bare.ipynb" {
         // No policy of its own, and a login cookie.
         return (
@@ -658,6 +680,135 @@ async fn every_response_gets_the_sandbox_policy_and_no_cookie() {
         assert_eq!(csp, [want], "{path}: {h:?}");
         assert!(h.get("set-cookie").is_none(), "{path}: {h:?}");
     }
+}
+
+/// A client that follows redirects, as a page's `fetch` does for a 307.
+fn following_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .tls_backend_preconfigured(
+            rustls::ClientConfig::builder_with_provider(Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth(),
+        )
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .unwrap()
+}
+
+/// A machine's redirect can't send the page's PUT or DELETE (a 307 repeats
+/// the method, body and credentials) to this server's own API, on a
+/// server at the root or under a base URL, and one within the mount keeps
+/// the mount's prefix, base URL included.
+async fn redirects_stay_in_the_mount(base: &str) {
+    let (addr, log) = stand_in().await;
+    let base_url = format!("{base}/");
+    let local = start(|cfg| cfg.base_url = base_url.clone()).await;
+    local
+        .machines
+        .add("m", &format!("http://{addr}/"), None)
+        .unwrap();
+    let url = |p: &str| format!("http://{}{base}/machines/m/api/contents/{p}", local.addr);
+    let auth = format!("token {}", local.token);
+    for method in [reqwest::Method::PUT, reqwest::Method::DELETE] {
+        for name in ["redir-evil", "redir-enc"] {
+            let resp = following_client()
+                .request(method.clone(), url(name))
+                .header("Authorization", &auth)
+                .body(r#"{"type":"file","format":"text","content":"pwned"}"#)
+                .send()
+                .await
+                .unwrap();
+            // The redirect is the final answer, with nowhere to go.
+            assert_eq!(resp.status(), 307, "{method} {name}");
+            assert!(resp.headers().get("location").is_none(), "{method} {name}");
+        }
+    }
+    // Only the four requests to the machine; none reached this server's API.
+    assert_eq!(seen(&log).len(), 4);
+    assert!(!local.work().join("x").exists());
+    assert!(local.work().read_dir().unwrap().next().is_none());
+    // Within the mount: rewritten under the prefix, base URL included.
+    let resp = request(
+        &local,
+        reqwest::Method::PUT,
+        &format!("{base}/machines/m/api/contents/redir-ok"),
+    )
+    .body("{}")
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), 307);
+    assert_eq!(
+        resp.headers()["location"],
+        format!("{base}/machines/m/api/contents/y?x=1").as_str()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_redirect_cannot_leave_the_mount() {
+    redirects_stay_in_the_mount("").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_redirect_cannot_leave_the_mount_under_a_base_url() {
+    redirects_stay_in_the_mount("/base").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_machine_that_never_answers_is_a_504() {
+    let (addr, _log) = stand_in().await;
+    let local = start_with(
+        |_| {},
+        Machines::with_response_timeout(Duration::from_millis(300)),
+    )
+    .await;
+    local
+        .machines
+        .add("m", &format!("http://{addr}/"), None)
+        .unwrap();
+    let started = std::time::Instant::now();
+    let resp = get(&local, "/machines/m/api/contents/hang")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 504);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["message"].as_str().unwrap().contains("did not answer"),
+        "{body}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(10));
+    // The machine still answers other requests.
+    assert_eq!(
+        get(&local, "/machines/m/api/status")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn other_methods_are_not_forwarded() {
+    let (addr, log) = stand_in().await;
+    let local = start(|_| {}).await;
+    local
+        .machines
+        .add("m", &format!("http://{addr}/"), None)
+        .unwrap();
+    for method in [reqwest::Method::OPTIONS, reqwest::Method::TRACE] {
+        let resp = request(&local, method.clone(), "/machines/m/api/status")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 405, "{method}");
+    }
+    assert!(seen(&log).is_empty(), "{:?}", seen(&log));
 }
 
 // ----- lifecycle ---------------------------------------------------------------------

@@ -11,7 +11,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
 use futures::SinkExt;
-use ganymede_gateway::mount::{route, Frame, Kind, Refused, Upstream};
+use futures::StreamExt;
+use ganymede_gateway::mount::{route, ForwardError, Frame, Kind, Refused, Upstream};
 
 pub(crate) fn router(state: AppState) -> Router {
     Router::new()
@@ -78,7 +79,8 @@ async fn forward(State(state): State<AppState>, req: Request) -> Response {
         .await
     {
         Ok(f) => f,
-        Err(e) => return HttpError(502, e).into_response(),
+        Err(ForwardError::Unreachable(e)) => return HttpError(502, e).into_response(),
+        Err(ForwardError::TimedOut(e)) => return HttpError(504, e).into_response(),
     };
     let (status, mut headers) = (forwarded.status, forwarded.headers.clone());
     // A machine's HTML lands on this origin: whatever the route, run it in
@@ -166,45 +168,46 @@ fn from_frame(frame: Frame) -> Message {
 }
 
 /// Frames both ways until either side ends or the machine is removed; then
-/// both are closed.
-async fn pump(mut socket: WebSocket, mut upstream: Upstream) {
-    let mut removed = upstream.removal();
-    let mut close_page: Option<Message> = None;
-    let mut close_machine: Option<Frame> = None;
-    loop {
-        tokio::select! {
-            msg = socket.recv() => {
-                let Some(Ok(msg)) = msg else { break };
-                let Some(frame) = to_frame(msg) else { continue };
-                let closing = matches!(frame, Frame::Close(_));
-                if upstream.send(frame).await.is_err() || closing {
-                    break;
-                }
-            }
-            frame = upstream.recv() => {
-                let Some(frame) = frame else { break };
-                let closing = matches!(frame, Frame::Close(_));
-                if socket.send(from_frame(frame)).await.is_err() || closing {
-                    break;
-                }
-            }
-            () = removed.wait() => {
-                close_page = Some(Message::Close(Some(CloseFrame {
-                    code: 1001,
-                    reason: "machine removed".into(),
-                })));
-                close_machine = Some(Frame::Close(Some((1001, "machine removed".into()))));
+/// both are closed. Each direction runs on its own, so one that is blocked
+/// sending (its peer not reading) never stops the other from being read.
+async fn pump(socket: WebSocket, upstream: Upstream) {
+    let (mut page_tx, mut page_rx) = socket.split();
+    let (mut machine_tx, mut machine_rx, mut removed) = upstream.split();
+    let to_machine = async {
+        while let Some(Ok(msg)) = page_rx.next().await {
+            let Some(frame) = to_frame(msg) else { continue };
+            let closing = matches!(frame, Frame::Close(_));
+            if machine_tx.send(frame).await.is_err() || closing {
                 break;
             }
         }
-    }
+    };
+    let to_page = async {
+        while let Some(frame) = machine_rx.recv().await {
+            let closing = matches!(frame, Frame::Close(_));
+            if page_tx.send(from_frame(frame)).await.is_err() || closing {
+                break;
+            }
+        }
+    };
+    let gone = tokio::select! {
+        () = to_machine => false,
+        () = to_page => false,
+        () = removed.wait() => true,
+    };
     // Best effort: either side may be gone already.
-    if let Some(m) = close_page {
-        let _ = socket.send(m).await;
+    if gone {
+        let reason = "machine removed";
+        let _ = page_tx
+            .send(Message::Close(Some(CloseFrame {
+                code: 1001,
+                reason: reason.into(),
+            })))
+            .await;
+        let _ = machine_tx
+            .send(Frame::Close(Some((1001, reason.into()))))
+            .await;
     }
-    if let Some(f) = close_machine {
-        let _ = upstream.send(f).await;
-    }
-    upstream.close().await;
-    let _ = socket.close().await;
+    machine_tx.close().await;
+    let _ = page_tx.close().await;
 }

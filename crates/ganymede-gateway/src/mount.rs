@@ -224,11 +224,13 @@ fn pass_response_header(name: &str) -> bool {
 }
 
 /// The machine's response headers as the page gets them: only those
-/// [`pass_response_header`] lists. A `Location` that
-/// is a path on the machine gets the mount's prefix (`mount_prefix`, such
-/// as `/machines/mini`) so the page stays under it; one that names a
-/// whole URL is dropped, since it would send the page to the machine
-/// itself.
+/// [`pass_response_header`] lists. A `Location` that is a path on the
+/// machine gets the mount's prefix (`mount_prefix`, such as
+/// `/machines/mini`) so the page stays under it, but only when the path
+/// (before any `?` or `#`) is one [`route`] allows. Anything else is
+/// dropped: a whole URL would send the page to the machine itself, and
+/// `/../..` in any encoding would climb out of the mount onto this
+/// server, where a followed 307 repeats the method, body and credentials.
 pub fn sanitize_response(headers: &HeaderMap, base_path: &str, mount_prefix: &str) -> HeaderMap {
     let mut out = HeaderMap::new();
     for (name, value) in headers {
@@ -243,9 +245,14 @@ pub fn sanitize_response(headers: &HeaderMap, base_path: &str, mount_prefix: &st
                 loc.strip_prefix(base)
                     .filter(|t| t.is_empty() || t.starts_with(['/', '?', '#']))
             };
-            let Some(tail) = tail.filter(|t| !t.starts_with("//")) else {
+            let Some(tail) = tail else { continue };
+            // The page follows it below the mount, so it must be a path
+            // the mount would forward itself: not one that climbs out
+            // (`/../..`, in any encoding) onto this server.
+            let path = tail.split(['?', '#']).next().unwrap_or("");
+            if route(path.strip_prefix('/').unwrap_or("")).is_err() || !path.starts_with('/') {
                 continue;
-            };
+            }
             if let Ok(v) = HeaderValue::from_str(&format!("{mount_prefix}{tail}")) {
                 out.append(name.clone(), v);
             }
@@ -263,11 +270,25 @@ pub fn sanitize_response(headers: &HeaderMap, base_path: &str, mount_prefix: &st
 #[derive(Default)]
 pub struct Machines {
     map: RwLock<HashMap<String, Arc<Machine>>>,
+    /// Given to machines added from now on; `None`: [`RESPONSE_TIMEOUT`].
+    response_timeout: Option<Duration>,
 }
+
+/// How long a machine has to start answering a forwarded request.
+pub const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl Machines {
     pub fn new() -> Machines {
         Machines::default()
+    }
+
+    /// [`Machines::new`], with machines given `timeout` instead of
+    /// [`RESPONSE_TIMEOUT`] to start answering.
+    pub fn with_response_timeout(timeout: Duration) -> Machines {
+        Machines {
+            response_timeout: Some(timeout),
+            ..Machines::default()
+        }
     }
 
     /// Mounts the server at `url` (`http(s)://host[:port][/base]`) as
@@ -276,7 +297,11 @@ impl Machines {
     /// mounted is replaced, and the replaced machine's open websockets
     /// are closed. No request is made yet.
     pub fn add(&self, id: &str, url: &str, token: Option<&str>) -> Result<(), String> {
-        let machine = Arc::new(Machine::new(id, url, token)?);
+        let mut machine = Machine::new(id, url, token)?;
+        if let Some(t) = self.response_timeout {
+            machine.response_timeout = t;
+        }
+        let machine = Arc::new(machine);
         let old = self
             .map
             .write()
@@ -330,6 +355,8 @@ pub struct Machine {
     tls: Arc<rustls::ClientConfig>,
     /// True once removed or replaced.
     closed: watch::Sender<bool>,
+    /// How long the machine has to start its answer.
+    response_timeout: Duration,
 }
 
 impl Machine {
@@ -375,6 +402,7 @@ impl Machine {
             http,
             tls,
             closed: watch::channel(false).0,
+            response_timeout: RESPONSE_TIMEOUT,
         })
     }
 
@@ -423,18 +451,31 @@ impl Machine {
         headers: &HeaderMap,
         body: Bytes,
         mount_prefix: &str,
-    ) -> Result<Forwarded, String> {
-        let url = self.url(rest, query)?;
+    ) -> Result<Forwarded, ForwardError> {
+        let url = self.url(rest, query).map_err(ForwardError::Unreachable)?;
         let mut out = sanitize_request(headers);
-        self.credentials(&mut out)?;
+        self.credentials(&mut out)
+            .map_err(ForwardError::Unreachable)?;
         let mut req = self.http.request(method, url).headers(out);
         if !body.is_empty() {
             req = req.body(body);
         }
-        let resp = req
-            .send()
+        let resp = tokio::time::timeout(self.response_timeout, req.send())
             .await
-            .map_err(|e| format!("machine {} is unreachable: {}", self.id, describe(e)))?;
+            .map_err(|_| {
+                ForwardError::TimedOut(format!(
+                    "machine {} did not answer within {} seconds",
+                    self.id,
+                    self.response_timeout.as_secs().max(1)
+                ))
+            })?
+            .map_err(|e| {
+                ForwardError::Unreachable(format!(
+                    "machine {} is unreachable: {}",
+                    self.id,
+                    describe(e)
+                ))
+            })?;
         Ok(Forwarded {
             status: resp.status(),
             headers: sanitize_response(resp.headers(), self.base.path(), mount_prefix),
@@ -498,6 +539,15 @@ fn describe(e: reqwest::Error) -> String {
     }
 }
 
+/// Why a request did not get an answer from the machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForwardError {
+    /// Not reached, or the request could not be made: a 502.
+    Unreachable(String),
+    /// Reached, but silent too long: a 504.
+    TimedOut(String),
+}
+
 /// The machine's answer: its status, the headers the page may have, and
 /// a body to stream.
 pub struct Forwarded {
@@ -531,14 +581,21 @@ pub enum Frame {
     Close(Option<(u16, String)>),
 }
 
+type Socket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
 /// An open websocket to a machine.
 pub struct Upstream {
-    ws: tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
+    ws: Socket,
     protocol: Option<String>,
     closed: watch::Receiver<bool>,
 }
+
+/// The sending half of an [`Upstream`].
+pub struct UpstreamTx(futures::stream::SplitSink<Socket, WsMessage>);
+
+/// The receiving half of an [`Upstream`].
+pub struct UpstreamRx(futures::stream::SplitStream<Socket>);
 
 impl Upstream {
     /// The subprotocol the machine chose, if any.
@@ -546,11 +603,20 @@ impl Upstream {
         self.protocol.as_deref()
     }
 
+    /// The two halves, so each direction can be driven on its own, and
+    /// the handle to wait for the machine's removal with.
+    pub fn split(self) -> (UpstreamTx, UpstreamRx, Removal) {
+        let (tx, rx) = self.ws.split();
+        (UpstreamTx(tx), UpstreamRx(rx), Removal(self.closed))
+    }
+}
+
+impl UpstreamRx {
     /// The next frame from the machine; `None` when it ended the socket.
     /// Pings and pongs are answered by the socket itself and skipped.
     pub async fn recv(&mut self) -> Option<Frame> {
         loop {
-            let frame = match self.ws.next().await? {
+            let frame = match self.0.next().await? {
                 Ok(f) => f,
                 Err(_) => return None,
             };
@@ -566,7 +632,9 @@ impl Upstream {
             }
         }
     }
+}
 
+impl UpstreamTx {
     /// Sends `frame` to the machine; an error means the socket is gone.
     pub async fn send(&mut self, frame: Frame) -> Result<(), String> {
         let msg = match frame {
@@ -580,18 +648,12 @@ impl Upstream {
                 })
             })),
         };
-        self.ws.send(msg).await.map_err(|e| e.to_string())
-    }
-
-    /// A handle to wait for the machine's removal with, apart from the
-    /// socket.
-    pub fn removal(&self) -> Removal {
-        Removal(self.closed.clone())
+        self.0.send(msg).await.map_err(|e| e.to_string())
     }
 
     /// Closes the socket, giving up on a machine that does not answer.
-    pub async fn close(mut self) {
-        let _ = tokio::time::timeout(Duration::from_secs(2), self.ws.close(None)).await;
+    pub async fn close(&mut self) {
+        let _ = tokio::time::timeout(Duration::from_secs(2), self.0.close()).await;
     }
 }
 
@@ -809,6 +871,35 @@ mod tests {
         assert_eq!(loc("//evil.example/x", "/"), None);
         assert_eq!(loc("http://machine:8888/x", "/"), None);
         assert_eq!(loc("x/y", "/"), None);
+        // Nothing that climbs out of the mount, however spelled, and nothing
+        // off the allowlist, with or without a base path.
+        for base in ["/", "/b/"] {
+            let at = |p: &str| format!("{}{p}", base.trim_end_matches('/'));
+            for bad in [
+                "/../../api/contents/x",
+                "/api/contents/../../../api/contents/x",
+                "/%2e%2e/%2e%2e/api/host/grants/x",
+                "/%2E%2E/api/contents/x",
+                "/.%2e/api/contents/x",
+                "/api/contents/%2e%2e/%2e%2e/x",
+                "/api/contents/a%2fb",
+                "/api/contents/a%5cb",
+                "/api\\contents/x",
+                "/api/contents//x",
+                "/mcp",
+                "/api/host/grants/x",
+                "/lab",
+                "/",
+                "/?x=/api/status",
+                "/#/api/status",
+            ] {
+                assert_eq!(loc(&at(bad), base), None, "{base} {bad}");
+            }
+        }
+        assert_eq!(
+            loc("/api/contents/a%20b?x=/../y#f", "/"),
+            Some("/machines/m/api/contents/a%20b?x=/../y#f".into())
+        );
     }
 
     #[test]

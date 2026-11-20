@@ -76,14 +76,40 @@ Deviations from the brief, and why:
   (coordinator's review): `PAGE_CSP` for `nbconvert/html`, `FILES_CSP`
   otherwise.
 - Response headers are an allowlist, not a denylist (same review).
-- `Location` headers are rewritten: a path on the machine gets the
+- `Location` headers are rewritten: an allowlisted path on the machine gets the
   `/machines/{id}` prefix, a whole URL is dropped. Redirects are not
   followed by the mount, since the page follows them below the prefix.
 - `X-Content-Type-Options` is passed from the machine, not forced.
 - With auth off the mount is refused, since there is no page session to
   tell from anyone else.
 
-Not covered, for follow-ups: a published page (`nb publish`) served by
+Dependencies and unsafe (for the review):
+
+- `bytes` is a normal dependency of `ganymede-gateway`: already a
+  workspace dependency (and in the lockfile), needed for the streamed body
+  type reqwest's `chunk()` returns and `Machine::forward` takes.
+- `axum` is a dev-dependency of `ganymede-gateway` only, for the stand-in
+  machine in `tests/mount.rs` that records what it is sent.
+- tokio's `time` feature is added to `ganymede-gateway` for the response
+  and connect timeouts.
+- Two new `unsafe extern "C"` functions, `ganymede_server_add_machine` and
+  `ganymede_server_remove_machine`, follow the crate's C ABI pattern
+  (a `# Safety` section on each; the server, `id`, `url` and `token`
+  pointers are the caller's, read once and copied). No other `unsafe`.
+- No new network surface beyond the mount itself: outbound requests to
+  machines the app adds, and the `/machines/{id}/` route (auth above).
+
+Review fixes (second round): a forwarded `Location` is kept only when its
+path passes `route` (a machine could otherwise send `/../..` or its
+`%2e` forms out of the mount, onto this server's API, and a followed 307
+repeats the method, body and credentials); the base-URL prefix is covered
+end to end; a machine that accepts but never answers is a 504 after 30
+seconds (`RESPONSE_TIMEOUT`, `Machines::with_response_timeout` for tests);
+the frame pump runs each direction as its own future so a blocked send
+can't stop the other direction being read; OPTIONS and TRACE are 405.
+
+Not covered, for follow-ups (tracked in
+[#899](https://github.com/tlockney/ganymede/issues/899)): a published page (`nb publish`) served by
 `files` loses its `allow-downloads` (the sandbox is the plain one);
 `kernelspecs/{name}/{file}` (logos) isn't on the allowlist; a request in
 flight is not cancelled when its machine is removed (websockets are);
