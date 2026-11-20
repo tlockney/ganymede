@@ -129,6 +129,11 @@ async fn kernels_run_on_the_gateway() {
         specs["kernelspecs"]["local"]["spec"]["display_name"], "In-app",
         "{specs}"
     );
+    // The remote's own directory (it has none here) is not passed on.
+    assert!(
+        specs["kernelspecs"]["local"].get("resource_dir").is_none(),
+        "{specs}"
+    );
 
     let (code, kernel) = call(
         &local,

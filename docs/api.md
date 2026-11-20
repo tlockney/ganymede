@@ -65,7 +65,8 @@ GET /api/kernelspecs
         "logo-32x32": "/kernelspecs/python3/logo-32x32.png",
         "logo-64x64": "/kernelspecs/python3/logo-64x64.png",
         "logo-svg": "/kernelspecs/python3/logo-svg.svg"
-      }
+      },
+      "resource_dir": "/usr/local/share/jupyter/kernels/python3"
     }
   }
 }
@@ -74,6 +75,19 @@ GET /api/kernelspecs
 `spec` is the kernelspec's `kernel.json`, with `metadata` passed through
 untouched. `default` is `--default-kernel`, or else the first kernelspec
 found.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`resource_dir` is an extra key that `jupyter_server` doesn't send: the
+absolute path of the directory holding the kernelspec's `kernel.json`
+and logos, the same value `ganymede kernelspec list --json` prints. The
+key is left out when the kernelspec has no directory, as for one that a
+gateway server or an app's in-app kernel supplies. Clients that don't
+know the key, JupyterLab's among them, ignore it. It names a path on the
+server's machine, so only a caller with the token sees it.
+`GET /api/kernelspecs/{name}` returns the same model for one kernelspec.
 
 ## Start a kernel
 
