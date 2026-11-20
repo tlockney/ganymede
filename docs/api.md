@@ -459,12 +459,18 @@ What `ganymede serve` answers, beyond the examples above:
 - Ganymede's own: `/api/kernels/{id}/log`, `/api/notebooks/run`
   ([Run a notebook](#run-a-notebook),
   [Parameters and named results](reference.md#parameters-and-named-results)),
+  `/api/collaboration/rooms`, which lists the open rooms ([Listing open
+  rooms](rooms.md#listing-open-rooms)),
   `/api/host/grants/{path}` ([Grant a notebook access](#grant-a-notebook-access),
   [The host API](reference.md#the-host-api)),
   and `/mcp` with `--mcp` ([Agents over MCP](mcp.md)).
 - With JupyterLab (`ganymede lab`): the page, `/static/lab`,
   `/lab/extensions/{name}`, and `/lab/api/` `settings`, `workspaces`,
   `translations`, `themes`, `listings`, `plugins`, `licenses`.
+
+> [!NOTE]
+> **Unreleased.** `/api/collaboration/rooms` is available only from a
+> build of `main` (HEAD), not in the latest release.
 
 The kernel websocket speaks `v1.kernel.websocket.jupyter.org` when the
 client offers it, and the legacy JSON framing otherwise. JSON bodies are

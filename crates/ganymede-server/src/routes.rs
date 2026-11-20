@@ -135,6 +135,7 @@ pub fn router(state: AppState) -> Router {
             "/api/collaboration/session/{*path}",
             axum::routing::put(crate::collab::session),
         )
+        .route("/api/collaboration/rooms", get(crate::collab::rooms))
         .route("/api/collaboration/room/{room}", get(crate::collab::room))
         .route("/api/fileid/index", post(crate::collab::fileid_index))
         .route("/api/fileid/id", get(crate::collab::fileid_id))
@@ -929,12 +930,12 @@ fn range_headers(
 
 /// The `Content-Security-Policy` on every `/files` response, as
 /// jupyter_server's `FilesHandler` appends to its policy.
-const FILES_CSP: &str = "sandbox allow-scripts";
+pub(crate) const FILES_CSP: &str = "sandbox allow-scripts";
 
 /// The published page's policy from `/nbconvert/html`, and from `/files`
 /// for a page `nb publish` wrote: [`FILES_CSP`], and downloads for its
 /// Download notebook button.
-const PAGE_CSP: &str = "sandbox allow-scripts allow-downloads";
+pub(crate) const PAGE_CSP: &str = "sandbox allow-scripts allow-downloads";
 
 /// How much of an HTML file's start holds a published page's generator tag.
 const PAGE_HEAD: usize = 512;

@@ -779,6 +779,36 @@ pub(crate) async fn api_with(
     }
 }
 
+/// For `/machines/{id}/`: the mount attaches a machine's credential, so
+/// it serves only this server's own page session ([`Via::Token`] or
+/// [`Via::Cookie`], from a loopback peer only), checked as [`api`] checks them.
+/// Never a tailnet identity, and never the MCP token, which is not this
+/// server's token. With auth off nobody is the page's own session, so
+/// the mount is refused.
+#[cfg(feature = "gateway")]
+pub(crate) async fn mount(
+    State(state): State<AppState>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    if state.token.is_none() {
+        return HttpError(403, "Forbidden".into()).into_response();
+    }
+    // Only from a loopback peer, whichever credential it holds: a login
+    // cookie is easy to get with the token (any token request is given
+    // one), so it can't be allowed from where the token is not. A peer
+    // that isn't known counts as not loopback. No tailnet identity is
+    // considered, so `identify` is `Token`, `Cookie` or nothing.
+    let loopback = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .is_some_and(|axum::extract::ConnectInfo(peer)| peer.ip().to_canonical().is_loopback());
+    if !loopback {
+        return HttpError(403, "Forbidden".into()).into_response();
+    }
+    api_with(state, req, next, false).await
+}
+
 /// For every route: 403 when `Host` is not a loopback address or a name in
 /// `local_hostnames`, unless remote access is allowed. This is
 /// `jupyter_server`'s `check_host`, which stops DNS rebinding: a page whose
@@ -892,7 +922,8 @@ pub(crate) async fn strip_token(
         || path.starts_with("/api/")
         || path.starts_with("/lab/api/")
         || path.starts_with("/files/")
-        || path.starts_with("/nbconvert/");
+        || path.starts_with("/nbconvert/")
+        || path.starts_with("/machines/");
     if api
         || !matches!(*req.method(), Method::GET | Method::HEAD)
         || req.headers().contains_key(header::UPGRADE)

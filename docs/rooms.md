@@ -95,6 +95,62 @@ socket. A write to a client may take 30 seconds plus one more for every
 large notebook's first sync gets through a slow link. A client
 reconnects and resyncs as after any drop.
 
+## Listing open rooms
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`GET /api/collaboration/rooms` lists the notebook rooms open now, so a
+client can show which notebooks someone is in and when one last changed:
+
+```json
+{"rooms": [{
+  "path": "analysis/trends.ipynb",
+  "file_id": "6f0c...",
+  "format": "json",
+  "type": "notebook",
+  "clients": [
+    {"name": "Thomas", "kind": "person"},
+    {"name": "claude-code", "kind": "agent"}
+  ],
+  "last_change": {"at": "2026-11-20T09:41:07.512Z", "by": "claude-code", "person": false}
+}]}
+```
+
+- `path` is the notebook's API path, the one the contents API takes, and
+  follows a rename. `file_id` is the id in the room's name
+  (`json:notebook:<file id>`).
+- `clients` has one entry for each connection. A `person` is a room
+  client, named as its edits are credited (see
+  [Who changed what](live-agent-edits.md#1-who-changed-what)): the
+  tailnet login the server knows it by, else the name in its awareness
+  state, else `a person`. An `agent` is an [MCP](mcp.md) connection
+  holding the room open, named by the client name it gave when it
+  connected. A name is client-supplied text, cleaned before it is sent:
+  control characters dropped, whitespace collapsed, at most 64
+  characters. People come before agents.
+- `last_change` is when, as UTC with milliseconds, and by whom, a cell's
+  source or type, or the set of cells, last changed while the room was
+  open; `by` is the same kind of name, and `person` is true when the
+  change came from a room client rather than the server, an agent, or the
+  file (`another program (the file)`). It is `null` before the first
+  change, and a run's outputs don't count. It isn't kept across the
+  room closing.
+- A room with no clients stays listed, with `clients` empty, until it
+  closes (a minute after its last client leaves, as above). Rooms that
+  carry awareness only, such as JupyterLab's global awareness room,
+  aren't listed. Rooms come ordered by `path`.
+
+The route takes the same credentials as the other `/api/collaboration`
+routes (the token, its login cookie, or an allowed tailnet login) and
+only `GET`. It lists paths and the names of people connected, so it goes
+only to callers the API lets in.
+
+Servers from before this route answer `404` (and a server whose
+authentication refuses the caller, `403`). A client treats `404` as "this
+server can't list rooms", not as "no rooms open".
+
 ## File ids
 
 A room is named for its file's id, not its path. Ids are kept in

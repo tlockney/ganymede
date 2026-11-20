@@ -426,6 +426,9 @@ pub struct Startup {
     /// the others (the gateway's, or those the fields above give) and in
     /// place of one of the same name.
     pub registered: Option<Arc<RegisteredKernels>>,
+    /// The machines mounted under `/machines/{id}/`, kept by the app so
+    /// it can add and remove them while the server runs (#894).
+    pub machines: Option<Arc<crate::mount::Machines>>,
 }
 
 #[cfg(feature = "subprocess")]
@@ -593,6 +596,7 @@ impl LocalHost {
             mcp: None,
             metrics: Default::default(),
             host: Arc::new(cfg.host.clone()),
+            machines: Default::default(),
         };
         let api = Arc::new(crate::host::HostApi::new(state.clone(), &cfg.host));
         let responder: Arc<dyn ganymede_host::Responder> = api.clone();
@@ -893,6 +897,7 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
         }),
         metrics: Default::default(),
         host: Arc::new(cfg.host.clone()),
+        machines: startup.machines.clone().unwrap_or_default(),
     };
 
     // Kept here for as long as the server runs: the manager holds it

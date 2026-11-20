@@ -13,6 +13,8 @@
 //!   speaking `v1.kernel.websocket.jupyter.org` when the remote offers it
 //!   and the legacy JSON framing otherwise.
 
+pub mod mount;
+
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use ganymede_kernel_host::{
