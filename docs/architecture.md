@@ -103,7 +103,7 @@ bottom do no I/O, so they build for any target.
 | `ganymede-server` | The HTTP and websocket server. |
 | `ganymede-engine` | The library to embed: find kernelspecs, start or attach to kernels, execute with streaming output, run notebooks. See [Embedding](embedding.md). |
 | `ganymede-api` | Kernel and session managers, response models, the per-client bridge, idle culling. No HTTP. Contents path validation confines kernel working directories to the root. |
-| `ganymede-gateway` | Kernels on another Jupyter server, as `jupyter_server`'s gateway client: kernelspecs and lifecycle over its REST API, channels over its websocket. The server uses it for `gateway_url`. Its `mount` module forwards an allowlist of routes to another Ganymede server, for connected machines (unreleased; see [Connected machines](embedding.md#connected-machines)). |
+| `ganymede-gateway` | Kernels on another Jupyter server, as `jupyter_server`'s gateway client: kernelspecs and lifecycle over its REST API, channels over its websocket. The server uses it for `gateway_url`. Its `mount` module forwards an allowlist of routes to another Ganymede server, for connected machines (see [Connected machines](embedding.md#connected-machines)). |
 | `ganymede-terminals` | Terminals for `/api/terminals`: the user's shell in a pseudo-terminal (`portable-pty`), shared by any number of clients. None on iOS or wasm. |
 | `ganymede-lsp` | Language servers for `/lsp/*`: the servers listed in the config file, one process each, started for the first client and shared by every client: notifications go to all, each response to the client that asked. None on iOS or wasm. |
 | `ganymede-exec` | Runs a notebook with nbclient's semantics. |
