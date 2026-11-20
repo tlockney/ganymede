@@ -168,6 +168,14 @@ pub struct Room {
     /// Deleted cells' authors, with their hash, so a cell that comes back
     /// as it was (an undo) keeps its author.
     gone: HashMap<String, (u64, Author)>,
+    /// When a cell's source or type, or the set of cells, last changed
+    /// while the room was open, and who made the change. Kept in memory
+    /// only.
+    last_change: Option<(std::time::SystemTime, Author)>,
+    /// Whether the last [`Room::edit`] changed cells and is credited to
+    /// the server stand-in, so [`Room::set_author`] may name who it was
+    /// for in `last_change` too.
+    edit_unclaimed: bool,
 }
 
 impl Room {
@@ -233,6 +241,8 @@ impl Room {
             depths: HashMap::new(),
             shared_depth: 0,
             authors: HashMap::new(),
+            last_change: None,
+            edit_unclaimed: false,
             gone: HashMap::new(),
         }
     }
@@ -287,6 +297,23 @@ impl Room {
     /// Number of connected clients.
     pub fn connections(&self) -> usize {
         self.conns.len()
+    }
+
+    /// The connections and the names they go by (see `Room::client_name`),
+    /// in connection order, for listing who is in the room.
+    pub fn client_names(&self) -> Vec<(ConnId, String)> {
+        let mut conns: Vec<ConnId> = self.conns.keys().copied().collect();
+        conns.sort_unstable();
+        conns
+            .into_iter()
+            .map(|conn| (conn, self.client_name(conn)))
+            .collect()
+    }
+
+    /// When a cell's source or type, or the set of cells, last changed
+    /// while the room was open, and who by; `None` if nothing has.
+    pub fn last_change(&self) -> Option<(std::time::SystemTime, &Author)> {
+        self.last_change.as_ref().map(|(at, by)| (*at, by))
     }
 
     /// A counter that moves on every content change. A host that saves in
@@ -717,6 +744,14 @@ impl Room {
                 .cloned()
                 .collect()
         };
+        // The edit just made changed cells (a deleted one too, which
+        // `held` leaves out): its change is this author's. An edit that
+        // changed none leaves `last_change` as it was.
+        if std::mem::take(&mut self.edit_unclaimed) {
+            if let Some((_, by)) = self.last_change.as_mut() {
+                *by = author.clone();
+            }
+        }
         for id in held {
             self.authors.insert(id, author.clone());
         }
@@ -761,13 +796,16 @@ impl Room {
     /// Credit `author` with each cell whose type or source differs from
     /// `before`, or that `before` lacks; forget cells that went.
     /// A cell that comes back with the hash it had when it went (an undo
-    /// of its deletion) gets its old author back, not `author`.
-    fn attribute(&mut self, before: &HashMap<String, u64>, author: &Author) {
+    /// of its deletion) gets its old author back, not `author`. Returns
+    /// whether a cell was added, removed or changed.
+    fn attribute(&mut self, before: &HashMap<String, u64>, author: &Author) -> bool {
         let now = self.prints();
+        let mut changed = before.keys().any(|id| !now.contains_key(id));
         for (id, fp) in &now {
             if before.get(id) == Some(fp) {
                 continue;
             }
+            changed = true;
             // Only a client's update restores: a cell coming back from the
             // file, or from the server, is theirs.
             let back = (!before.contains_key(id))
@@ -795,6 +833,10 @@ impl Room {
             self.gone.insert(id.clone(), (*fp, a));
         }
         self.authors.retain(|id, _| now.contains_key(id));
+        if changed {
+            self.last_change = Some((std::time::SystemTime::now(), author.clone()));
+        }
+        changed
     }
 
     /// The name the server vouches for on connection `conn`, else the one
@@ -837,6 +879,7 @@ impl Room {
         f: impl FnOnce(&mut yrs::TransactionMut, &Roots) -> R,
     ) -> (R, Effects) {
         let roots = self.roots.clone().unwrap_or_else(|| Roots::get(self.doc()));
+        self.edit_unclaimed = false;
         let before = self.prints();
         let r = {
             let mut txn = self.awareness.doc().transact_mut();
@@ -853,7 +896,7 @@ impl Room {
                 name: SERVER.to_string(),
                 person: false,
             };
-            self.attribute(&before, &server);
+            self.edit_unclaimed = self.attribute(&before, &server);
         }
         (r, fx)
     }

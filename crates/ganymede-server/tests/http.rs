@@ -8698,6 +8698,218 @@ async fn notebooks_run_answers_with_named_results() {
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
 
+// ----- listing open rooms (#893) ---------------------------------------------
+
+/// Open the notebook room for `path` over a websocket, announce `awareness`
+/// (the raw JSON of the client's state), and return the socket once the
+/// server has the state: a person's JupyterLab tab, as far as the list goes.
+async fn join_room_as(
+    app: &axum::Router,
+    path: &str,
+    awareness: &str,
+) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
+    use ganymede_documents::yrs::sync::{Awareness, Message as YMsg};
+    use ganymede_documents::yrs::updates::encoder::Encode;
+    use ganymede_documents::yrs::Doc;
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+
+    let (_, session) = call(
+        app,
+        "PUT",
+        &format!("/api/collaboration/session/{path}"),
+        Some(json!({"format": "json", "type": "notebook"})),
+        Some(TOKEN),
+    )
+    .await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = app.clone();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut req = format!(
+        "ws://{addr}/api/collaboration/room/json:notebook:{}?sessionId={}",
+        session["fileId"].as_str().unwrap(),
+        session["sessionId"].as_str().unwrap()
+    )
+    .into_client_request()
+    .unwrap();
+    req.headers_mut()
+        .insert("Authorization", format!("token {TOKEN}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let mut aw = Awareness::new(Doc::new());
+    aw.set_local_state_raw(awareness);
+    ws.send(TMsg::Binary(
+        YMsg::Awareness(aw.update().unwrap()).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+    ws
+}
+
+async fn list_rooms(app: &axum::Router) -> Value {
+    let (s, v) = call(app, "GET", "/api/collaboration/rooms", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    v
+}
+
+/// `GET /api/collaboration/rooms` lists the notebook rooms open now: a
+/// person by their awareness name (cleaned), an MCP connection holding
+/// the room as an agent by its client name, and the last change by
+/// whoever made it. A room closed after its last client leaves is gone.
+#[tokio::test]
+async fn collaboration_rooms_lists_people_agents_and_changes() {
+    use tokio_tungstenite::tungstenite::Message as TMsg;
+    let dir = tempfile::tempdir().unwrap();
+    let nb = json!({"cells": [
+        {"cell_type": "markdown", "id": "a", "metadata": {}, "source": "A"}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.path().join("j.ipynb"), nb.to_string()).unwrap();
+    let mut st = state(dir.path());
+    st.collab = quick_cleanup_collab(dir.path());
+    st.mcp = Some(Arc::new(ganymede_server::mcp::McpState::new(
+        ganymede_server::mcp::McpOptions {
+            read_only: false,
+            no_execute: false,
+            images: false,
+            outputs_dir: Some(dir.path().join("spill")),
+        },
+    )));
+    let app = build_router(st);
+
+    // Nothing open yet.
+    assert_eq!(list_rooms(&app).await, json!({"rooms": []}));
+
+    // A person, whose awareness name is long and has control characters.
+    let hostile = format!("Thomas\u{1b}[2J\n{}", "x".repeat(300));
+    let awareness = json!({"user": {"name": "tl", "display_name": hostile}}).to_string();
+    let mut ws = join_room_as(&app, "j.ipynb", &awareness).await;
+    // An agent: an MCP connection that reads the notebook holds its room.
+    let agent = mcp_connect(&app, "claude-code").await;
+    mcp_tool(&app, &agent, "notebook_read", json!({"path": "j.ipynb"})).await;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let room = loop {
+        let v = list_rooms(&app).await;
+        let rooms = v["rooms"].as_array().unwrap();
+        // The awareness frame is handled after the join: wait for the name.
+        if let [room] = rooms.as_slice() {
+            let clients = room["clients"].as_array().unwrap();
+            if clients.len() == 2 && clients[0]["name"] != "a person" {
+                break room.clone();
+            }
+        }
+        assert!(std::time::Instant::now() < deadline, "{v}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(room["path"], "j.ipynb");
+    assert_eq!(room["format"], "json");
+    assert_eq!(room["type"], "notebook");
+    let (_, session) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/j.ipynb",
+        Some(json!({"format": "json", "type": "notebook"})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(room["file_id"], session["fileId"]);
+    let person = room["clients"][0]["name"].as_str().unwrap();
+    assert_eq!(room["clients"][0]["kind"], "person");
+    assert!(person.starts_with("Thomas[2J x"), "{person:?}");
+    assert!(person.chars().count() <= 64, "{}", person.chars().count());
+    assert!(!person.chars().any(char::is_control), "{person:?}");
+    assert_eq!(
+        room["clients"][1],
+        json!({"name": "claude-code", "kind": "agent"})
+    );
+    assert!(room["last_change"].is_null(), "{room}");
+
+    // The agent writes: the room's last change is its.
+    mcp_tool(
+        &app,
+        &agent,
+        "cell_add",
+        json!({"path": "j.ipynb", "source": "A note."}),
+    )
+    .await;
+    let v = list_rooms(&app).await;
+    let change = &v["rooms"][0]["last_change"];
+    assert_eq!(change["by"], "claude-code", "{v}");
+    assert_eq!(change["person"], false);
+    let at: jiff::Timestamp = change["at"].as_str().unwrap().parse().unwrap();
+    assert!((jiff::Timestamp::now().duration_since(at)).as_secs() < 30);
+
+    // The person leaves: the agent's hold keeps the room, and it lists
+    // only the agent.
+    ws.send(TMsg::Close(None)).await.unwrap();
+    drop(ws);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let v = list_rooms(&app).await;
+        let clients = v["rooms"][0]["clients"].as_array().unwrap();
+        if clients.len() == 1 {
+            assert_eq!(clients[0]["kind"], "agent");
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "{v}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // Another agent adds a cell, then the first deletes one: the delete
+    // is the first agent's, though its cell is gone.
+    let other = mcp_connect(&app, "other-agent").await;
+    mcp_tool(&app, &other, "notebook_read", json!({"path": "j.ipynb"})).await;
+    mcp_tool(
+        &app,
+        &other,
+        "cell_add",
+        json!({"path": "j.ipynb", "source": "Another note."}),
+    )
+    .await;
+    let v = list_rooms(&app).await;
+    assert_eq!(v["rooms"][0]["last_change"]["by"], "other-agent", "{v}");
+    let deleted = mcp_tool(
+        &app,
+        &agent,
+        "cell_delete",
+        json!({"path": "j.ipynb", "id": "a"}),
+    )
+    .await;
+    assert!(deleted.get("error").is_none(), "{deleted}");
+    assert_ne!(deleted["result"]["isError"], true, "{deleted}");
+    let v = list_rooms(&app).await;
+    assert_eq!(v["rooms"][0]["last_change"]["by"], "claude-code", "{v}");
+}
+
+/// The list takes the token, a tailnet login the server allows, and
+/// nothing else, as the rest of `/api/collaboration` does; the room
+/// routes next to it are unchanged (#893).
+#[tokio::test]
+async fn collaboration_rooms_needs_the_same_auth_as_the_other_routes() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = tailnet_app(dir.path(), &["me@example.com"]);
+    let (s, _) = call(&app, "GET", "/api/collaboration/rooms", None, None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = call(&app, "GET", "/api/collaboration/rooms", None, Some("wrong")).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, v) = call(&app, "GET", "/api/collaboration/rooms", None, Some(TOKEN)).await;
+    assert_eq!((s, v), (StatusCode::OK, json!({"rooms": []})));
+
+    let get = |login, peer| tailnet_req("GET", "/api/collaboration/rooms", login, peer);
+    let (s, _, body) = send(&app, get(Some("me@example.com"), "127.0.0.1:50000")).await;
+    assert_eq!((s, body.as_str()), (StatusCode::OK, "{\"rooms\":[]}"));
+    for (login, peer) in [
+        (Some("you@example.com"), "127.0.0.1:50000"),
+        (None, "127.0.0.1:50000"),
+        (Some("me@example.com"), "100.64.0.7:50000"),
+    ] {
+        let (s, _, _) = send(&app, get(login, peer)).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{login:?} from {peer}");
+    }
+    // Only a GET: the list takes no writes.
+    let (s, _) = call(&app, "PUT", "/api/collaboration/rooms", None, Some(TOKEN)).await;
+    assert_eq!(s, StatusCode::METHOD_NOT_ALLOWED);
+}
+
 // ----- tailnet identity (#816) ------------------------------------------------
 
 /// A request as `tailscale serve` forwards it: from a loopback peer, with
