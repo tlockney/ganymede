@@ -91,6 +91,19 @@ kernels from a Mac on your network, see [Security](security.md) for
 reaching it safely; `ganymede serve --ip 0.0.0.0` alone sends the token
 in clear.
 
+A connected machine goes further: another computer running
+`ganymede serve` opens in its own window, with its files, journals and
+live notebooks on its kernels. Each remote in Settings › Remotes with a
+server URL is a machine; the sidebar's place switcher (Places on the
+iPhone) opens it. The server's side is
+[`/machines/{id}/`](embedding.md#connected-machines); the
+[apps guide](https://github.com/tlockney/ganymede-ui/blob/main/docs/apps.md#connected-machines)
+has the details.
+
+> [!NOTE]
+> **Unreleased in ganymede-ui.** Available only from a build of
+> ganymede-ui's `main`, not in its latest release.
+
 ## With no server
 
 In the connect sheet, **This browser** keeps notebooks in the browser's
