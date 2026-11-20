@@ -8,6 +8,7 @@
 //! cells: Array of Map
 //!          id, cell_type, source: Text, metadata: Map,
 //!          code:  execution_count, execution_state, outputs: Array of Map
+//!                 (execution_by, a room-only name, is never saved)
 //!                 (a stream output's text is a Text)
 //!          markdown/raw: attachments (only when not empty)
 //! ```

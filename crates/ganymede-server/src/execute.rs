@@ -14,14 +14,15 @@
 //! every code cell with source. The room resolves them in its task, in the
 //! same step as the checks, so a notebook with no cell ids on disk
 //! (nbformat 4.4) runs by the ids its room gave. `"by": "<name>"` (#896)
-//! says who runs them; see [`runner_name`].
+//! says who runs them: the caller's tailnet login if there is one, else
+//! `by`, else "an API client", each cleaned like a room client's name.
 //!
 //! The room checks every given hash against its cell's current source,
 //! then clears the cells' outputs, marks them running (`execution_state`,
 //! and `execution_by` with the runner's name, both room-only: never
 //! saved), and queues the batch, all in one step of its task, so no other
-//! request interleaves with it. The answer is `200 null` once queued; `409 {"error":
-//! "source_mismatch", "cell_id"}` when a cell's source changed since the
+//! request interleaves with it. The answer is `200 null` once queued;
+//! `409 {"error": "source_mismatch", "cell_id"}` when a cell's source changed since the
 //! client hashed it; `408` when `previous_request_id` was not queued within
 //! ten seconds; `400` for the rest, `"error": "cell_not_found"` among them
 //! for an id or tag the room doesn't have. A room that isn't open is
@@ -31,7 +32,8 @@
 //! through `ganymede-exec`'s [`NotebookRun`] (display updates, clears,
 //! counts), and writes outputs into the room as they arrive, so they land
 //! with no client connected and are saved with the notebook. A cell goes
-//! back to idle, with no `execution_by`, when its last queued run ends. A
+//! back to idle, with no `execution_by`, when its last queued run ends
+//! (a cell queued behind another run of itself shows the run in progress). A
 //! cell that fails stops the rest of its batch, as a kernel's
 //! `stop_on_error` does for JupyterLab's Run All. Input requests are
 //! refused (`allow_stdin` off).
@@ -86,7 +88,7 @@ pub struct ExecuteBody {
 }
 
 /// The name shown as running a REST request's cells: the caller's tailnet
-/// login, else the body's `by`, else [`API_CLIENT`]. Each is cleaned like
+/// login, else the body's `by`, else `API_CLIENT`. Each is cleaned like
 /// a room client's name; one with nothing left yields to the next.
 pub(crate) fn runner_name(login: Option<&str>, by: Option<&str>) -> String {
     [login, by]
