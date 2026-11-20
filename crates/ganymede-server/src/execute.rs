@@ -134,8 +134,10 @@ pub(crate) enum RoomCmd {
         by: String,
         /// The ids the selectors resolved to, in the order they run.
         reply: oneshot::Sender<Result<Vec<String>, Refused>>,
-        /// Told when the whole batch has run.
-        finished: Option<oneshot::Sender<()>>,
+        /// Told when the whole batch has run: whether every cell ended
+        /// without a failure (a cell that went before it ran doesn't fail
+        /// it).
+        finished: Option<oneshot::Sender<bool>>,
     },
     /// The worker wants a cell as it is now, to run it.
     Get(String, oneshot::Sender<Option<Cell>>),
@@ -196,7 +198,7 @@ struct Batch {
     kernels: Arc<KernelManager>,
     kernel_id: String,
     cells: Vec<String>,
-    finished: Option<oneshot::Sender<()>>,
+    finished: Option<oneshot::Sender<bool>>,
 }
 
 /// A room's side of execution: its queue and how many cells are pending.
@@ -307,7 +309,7 @@ impl RoomExec {
                 if let Ok(ids) = &checked {
                     if ids.is_empty() {
                         if let Some(f) = finished {
-                            let _ = f.send(());
+                            let _ = f.send(true);
                         }
                         let _ = reply.send(checked);
                         return fx;
@@ -521,7 +523,7 @@ async fn run_worker(room: mpsc::UnboundedSender<Cmd>, mut rx: mpsc::UnboundedRec
                 .await;
         }
         if let Some(f) = batch.finished {
-            let _ = f.send(());
+            let _ = f.send(!stopped);
         }
     }
 }
@@ -976,10 +978,19 @@ async fn room_cells(room: &mpsc::UnboundedSender<Cmd>, ids: Vec<String>) -> Vec<
     cells
 }
 
+/// How [`run_and_wait`] ended.
+pub(crate) struct RunEnd {
+    /// The cells all ran before the timeout.
+    pub finished: bool,
+    /// Finished, and no cell failed or was cut short: an error, a reply
+    /// of `aborted`, a kernel that went, or one that couldn't be reached.
+    pub all_ok: bool,
+}
+
 /// Queue cells of the notebook at `path` on `kernel_id`, unchecked, and
-/// wait until they have run or `timeout` passes. False on a timeout; then
-/// `late` runs once they have all run (or the room stops), in a task of
-/// its own.
+/// wait until they have run or `timeout` passes. `finished` is false on a
+/// timeout; then `late` runs once they have all run (or the room stops),
+/// in a task of its own.
 pub(crate) async fn run_and_wait(
     state: &AppState,
     path: &str,
@@ -988,7 +999,7 @@ pub(crate) async fn run_and_wait(
     by: String,
     timeout: Duration,
     late: impl std::future::Future<Output = ()> + Send + 'static,
-) -> Result<bool, String> {
+) -> Result<RunEnd, String> {
     let (reply, answer) = oneshot::channel();
     let (finished, done) = oneshot::channel();
     let cmd = Cmd::Exec(RoomCmd::Enqueue {
@@ -1015,14 +1026,20 @@ pub(crate) async fn run_and_wait(
         Err(_) => return Err(format!("{path}: room closed")),
     }
     let mut done = done;
-    if tokio::time::timeout(timeout, &mut done).await.is_ok() {
-        return Ok(true);
+    if let Ok(ended) = tokio::time::timeout(timeout, &mut done).await {
+        return Ok(RunEnd {
+            finished: true,
+            all_ok: ended.unwrap_or(false),
+        });
     }
     tokio::spawn(async move {
         let _ = done.await;
         late.await;
     });
-    Ok(false)
+    Ok(RunEnd {
+        finished: false,
+        all_ok: false,
+    })
 }
 
 #[cfg(test)]

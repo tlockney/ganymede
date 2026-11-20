@@ -5339,6 +5339,287 @@ async fn mcp_runs_show_the_client_in_the_room() {
     }
 }
 
+/// The `metadata.ganymede.clean_run` stamp the saved file `path` holds,
+/// once `ready` accepts it (`None` for no stamp).
+async fn saved_clean_run(path: &std::path::Path, ready: impl Fn(&Option<Value>) -> bool) -> Value {
+    saved_notebook(path, |nb| {
+        ready(&nb.pointer("/metadata/ganymede/clean_run").cloned())
+    })
+    .await
+}
+
+/// The saved notebook `path`, once `ready` accepts it.
+async fn saved_notebook(path: &std::path::Path, ready: impl Fn(&Value) -> bool) -> Value {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            let nb: Value = serde_json::from_str(&text).unwrap();
+            if ready(&nb) {
+                return nb;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the saved notebook never reached the state waited for"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+fn clean_run_notebook(cells: Vec<Value>, stamp: Option<Value>) -> Value {
+    let mut metadata = json!({"kernelspec": {"name": "fake", "display_name": "Fake"}});
+    if let Some(stamp) = stamp {
+        metadata["ganymede"] = json!({"clean_run": stamp, "other": 1});
+    }
+    json!({"cells": cells, "metadata": metadata, "nbformat": 4, "nbformat_minor": 5})
+}
+
+fn old_stamp() -> Value {
+    json!({"at": "2020-01-01T00:00:00.000Z", "by": "old", "kernel": "fake"})
+}
+
+/// `notebook_run_all` after a restart that runs every cell without an error
+/// stamps the notebook with who, when and on which kernel, and the stamp is
+/// saved with it. A later edit of a cell clears it (#898).
+#[tokio::test]
+async fn mcp_run_all_stamps_a_clean_run_and_an_edit_clears_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = mcp_app(dir.path());
+    let nb = clean_run_notebook(
+        vec![
+            code_cell(Some("a"), "hello", &[]),
+            code_cell(Some("b"), "", &[]),
+            code_cell(Some("c"), "world", &[]),
+        ],
+        None,
+    );
+    let file = dir.path().join("c.ipynb");
+    std::fs::write(&file, nb.to_string()).unwrap();
+    let sid = mcp_connect(&app, "Claude Test").await;
+    mcp_tool(&app, &sid, "notebook_open", json!({"path": "c.ipynb"})).await;
+    let out = mcp_text(&mcp_tool(&app, &sid, "notebook_run_all", json!({})).await);
+    assert!(out.contains("hello"), "{out}");
+
+    let saved = saved_clean_run(&file, |s| s.is_some()).await;
+    let stamp = &saved["metadata"]["ganymede"]["clean_run"];
+    assert_eq!(stamp["by"], "Claude Test");
+    assert_eq!(stamp["kernel"], "fake");
+    let at = stamp["at"].as_str().unwrap();
+    assert!(
+        at.len() == 24 && at.ends_with('Z') && at.as_bytes()[10] == b'T',
+        "RFC 3339 UTC: {at}"
+    );
+    assert_eq!(saved["metadata"]["kernelspec"]["name"], "fake", "kept");
+
+    // An edit to a cell's source clears it.
+    mcp_text(
+        &mcp_tool(
+            &app,
+            &sid,
+            "cell_edit",
+            json!({"id": "a", "source": "hello again"}),
+        )
+        .await,
+    );
+    let saved = saved_clean_run(&file, |s| s.is_none()).await;
+    assert_eq!(saved["metadata"]["kernelspec"]["name"], "fake");
+}
+
+/// Run all without a restart, with a failing cell, or in a notebook that
+/// holds a stamp already, leaves none: the old one goes (#898).
+#[tokio::test]
+async fn mcp_run_all_that_is_not_clean_leaves_no_stamp() {
+    // Cells with counts from an earlier run, as a restart leaves them.
+    let ran = |id: &str, src: &str, count: u64| {
+        let mut c = code_cell(Some(id), src, &[]);
+        c["execution_count"] = json!(count);
+        c
+    };
+    let cases: Vec<(&str, Value, Vec<Value>)> = vec![
+        (
+            "without a restart",
+            json!({"restart": false}),
+            vec![code_cell(Some("a"), "hello", &[])],
+        ),
+        (
+            "with a failing cell",
+            json!({}),
+            vec![
+                code_cell(Some("a"), "hello", &[]),
+                code_cell(Some("b"), "raise", &[]),
+                code_cell(Some("c"), "never", &[]),
+            ],
+        ),
+        (
+            // No cell runs, so no run changes a cell: only the tool
+            // removes the stamp.
+            "of a notebook with no code, without a restart",
+            json!({"restart": false}),
+            vec![json!({"cell_type": "markdown", "id": "m", "metadata": {}, "source": "x"})],
+        ),
+        (
+            "with a failing cell whose outputs are left out",
+            json!({}),
+            vec![
+                code_cell(Some("a"), "hello", &[]),
+                code_cell(Some("b"), "raise", &[]),
+            ],
+        ),
+        (
+            // Replies `aborted` with no error output, so the cell after
+            // it never runs and keeps the count it had: 1, 2, 3 as before.
+            "with a cell that is aborted",
+            json!({}),
+            vec![
+                ran("a", "hello", 1),
+                ran("b", "abort", 2),
+                ran("c", "world", 3),
+            ],
+        ),
+        (
+            // The reply is `ok`, so nothing stops the run: only the error
+            // output says it failed.
+            "with an error output and a reply of ok",
+            json!({}),
+            vec![ran("a", "hello", 1), ran("b", "raise_ok", 2)],
+        ),
+        (
+            // Judged before the outputs marked to stay out are dropped.
+            "with an error output and a reply of ok, outputs left out",
+            json!({}),
+            vec![ran("a", "hello", 1), ran("b", "raise_ok", 2)],
+        ),
+        (
+            // Nothing says it ran: no `execute_input`, so no count. The
+            // first cell's count is as it was, so nothing in the room
+            // changes and only the tool's check can refuse the stamp.
+            "with a cell that has no execution count after the run",
+            json!({}),
+            vec![ran("a", "hello", 1), {
+                let mut c = code_cell(Some("b"), "quiet 50", &[]);
+                c["execution_count"] = Value::Null;
+                c
+            }],
+        ),
+        (
+            "that times out",
+            json!({"timeout": 1}),
+            vec![ran("a", "hello", 1), ran("b", "sleep 1500", 2)],
+        ),
+    ];
+    for (name, args, cells) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let app = mcp_app(dir.path());
+        let file = dir.path().join("n.ipynb");
+        std::fs::write(
+            &file,
+            clean_run_notebook(cells, Some(old_stamp())).to_string(),
+        )
+        .unwrap();
+        let sid = mcp_connect(&app, "Claude Test").await;
+        mcp_tool(&app, &sid, "notebook_open", json!({"path": "n.ipynb"})).await;
+        if name.contains("left out") {
+            mcp_tool(&app, &sid, "cell_clear_outputs", json!({"id": "b"})).await;
+        }
+        mcp_text(&mcp_tool(&app, &sid, "notebook_run_all", args).await);
+        // The old stamp is gone and no new one came, with the run saved.
+        let saved = saved_clean_run(&file, |s| s != &Some(old_stamp())).await;
+        assert!(
+            saved["metadata"]["ganymede"].get("clean_run").is_none(),
+            "{name}: {saved}"
+        );
+        assert_eq!(saved["metadata"]["ganymede"]["other"], 1, "{name}");
+    }
+}
+
+/// A notebook with no code has nothing to run, and a restart run of it is
+/// clean (#898).
+#[tokio::test]
+async fn mcp_run_all_of_a_notebook_without_code_stamps() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = mcp_app(dir.path());
+    let note = json!({"cell_type": "markdown", "id": "m", "metadata": {}, "source": "x"});
+    let file = dir.path().join("n.ipynb");
+    std::fs::write(&file, clean_run_notebook(vec![note], None).to_string()).unwrap();
+    let sid = mcp_connect(&app, "Claude Test").await;
+    mcp_tool(&app, &sid, "notebook_open", json!({"path": "n.ipynb"})).await;
+    mcp_text(&mcp_tool(&app, &sid, "notebook_run_all", json!({})).await);
+    let saved = saved_clean_run(&file, |s| s.is_some()).await;
+    assert_eq!(
+        saved["metadata"]["ganymede"]["clean_run"]["by"],
+        "Claude Test"
+    );
+}
+
+/// A restart from another connection while the run is on its way, or a
+/// cell edited, added, deleted or moved meanwhile, leaves the run with no
+/// stamp (#898).
+#[tokio::test]
+async fn mcp_run_all_disturbed_while_running_leaves_no_stamp() {
+    let ran = |id: &str, src: &str, count: u64| {
+        let mut c = code_cell(Some(id), src, &[]);
+        c["execution_count"] = json!(count);
+        c
+    };
+    let note = json!({"cell_type": "markdown", "id": "m", "metadata": {}, "source": "x"});
+    let cells = || {
+        vec![
+            note.clone(),
+            ran("a", "hello", 1),
+            ran("b", "sleep 800", 2),
+            ran("c", "world", 3),
+        ]
+    };
+    let disturbances: Vec<(&str, &str, Value)> = vec![
+        // The restart is the second connection's.
+        ("restart", "kernel_control", json!({"action": "restart"})),
+        ("edit", "cell_edit", json!({"id": "m", "source": "y"})),
+        ("add", "cell_add", json!({"source": "new", "after": "a"})),
+        ("delete", "cell_delete", json!({"id": "m"})),
+        ("move", "cell_move", json!({"id": "m", "after": "c"})),
+    ];
+    for (name, tool, args) in disturbances {
+        let dir = tempfile::tempdir().unwrap();
+        let app = mcp_app(dir.path());
+        let file = dir.path().join("n.ipynb");
+        // The old stamp is there to be removed, and counts as before.
+        std::fs::write(
+            &file,
+            clean_run_notebook(cells(), Some(old_stamp())).to_string(),
+        )
+        .unwrap();
+        let mut watch = RoomWatch::open(&app, "n.ipynb").await;
+        let sid = mcp_connect(&app, "Claude Test").await;
+        mcp_tool(&app, &sid, "notebook_open", json!({"path": "n.ipynb"})).await;
+        let running = {
+            let (app, sid) = (app.clone(), sid.clone());
+            tokio::spawn(async move { mcp_tool(&app, &sid, "notebook_run_all", json!({})).await })
+        };
+        watch.until("b", "running", Some("Claude Test")).await;
+        let other = mcp_connect(&app, "Someone Else").await;
+        let mut args = args;
+        args["path"] = json!("n.ipynb");
+        mcp_tool(&app, &other, tool, args).await;
+        running.await.unwrap();
+        // Saved after the whole run: the last cell's outputs are in, and
+        // the old stamp is gone (the room clears it for an edit already).
+        // The stamp is the run's last edit, so a save with the outputs of
+        // the last cell has it too.
+        let saved = saved_notebook(&file, |nb| {
+            let last = nb["cells"]
+                .as_array()
+                .and_then(|c| c.iter().find(|c| c["id"] == "c"));
+            last.is_some_and(|c| c["outputs"].as_array().is_some_and(|o| !o.is_empty()))
+                && nb.pointer("/metadata/ganymede/clean_run") != Some(&old_stamp())
+        })
+        .await;
+        assert!(
+            saved["metadata"]["ganymede"].get("clean_run").is_none(),
+            "{name}: {saved}"
+        );
+    }
+}
+
 /// A cell that prints many lines, one message each, ends with one stream
 /// holding all of them, live updates and the final outputs agreeing.
 #[tokio::test]

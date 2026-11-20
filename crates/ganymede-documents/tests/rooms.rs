@@ -1803,3 +1803,565 @@ fn server_edits_and_undos_keep_credit_honest() {
     assert_eq!((who.name.as_str(), who.person), (FROM_FILE, false));
     assert_eq!(clean_name("  a\u{7}b  c \n"), "ab c");
 }
+
+// The `metadata.ganymede.clean_run` stamp (#898).
+
+const CLEAN_RUN_NB: &str = r##"{"cells":[
+  {"cell_type":"markdown","id":"m","metadata":{},"source":["# title"]},
+  {"cell_type":"code","id":"a","execution_count":1,"metadata":{},"outputs":[],"source":["x = 1"]},
+  {"cell_type":"code","id":"b","execution_count":2,"metadata":{},"outputs":[],"source":["x + 1"]}],
+  "metadata":{"ganymede":{"other":true}},"nbformat":4,"nbformat_minor":5}"##;
+
+fn stamp() -> serde_json::Value {
+    serde_json::json!({"at": "2026-11-20T10:00:00Z", "by": "claude-code", "kernel": "python3"})
+}
+
+fn stamp_in(doc: &Doc) -> Option<serde_json::Value> {
+    let roots = Roots::get(doc);
+    let stamp = schema::clean_run(&doc.transact(), &roots);
+    stamp
+}
+
+fn stamp_of(room: &Room) -> Option<serde_json::Value> {
+    stamp_in(room.doc())
+}
+
+/// A room holding the notebook with a stamp, and a client synced to it.
+fn stamped() -> (Room, Doc) {
+    let nb = Notebook::from_str(CLEAN_RUN_NB).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    let client = Doc::new();
+    sync(&mut room, 1, &client);
+    let (_, fx) = room.edit(|txn, roots| schema::set_clean_run(txn, roots, Some(stamp())));
+    for (_, frame) in fx.send {
+        apply_frame(&client, &frame);
+    }
+    assert_eq!(stamp_of(&room), Some(stamp()));
+    (room, client)
+}
+
+/// Client `client` (connection 1) makes `f` to its document and sends it
+/// to `room`. The room's frames go back to the client.
+fn client_change(
+    room: &mut Room,
+    client: &Doc,
+    f: impl FnOnce(&mut ganymede_documents::yrs::TransactionMut, &Roots),
+) -> ganymede_documents::Effects {
+    let before = client.transact().state_vector();
+    {
+        let roots = Roots::get(client);
+        let mut txn = client.transact_mut();
+        f(&mut txn, &roots);
+    }
+    let update = client.transact().encode_state_as_update_v1(&before);
+    let fx = room
+        .receive(1, &Message::Sync(SyncMessage::Update(update)).encode_v1())
+        .unwrap();
+    for (to, frame) in &fx.send {
+        if *to == Target::All {
+            apply_frame(client, frame);
+        }
+    }
+    fx
+}
+
+fn cell_map(txn: &impl ReadTxn, roots: &Roots, index: u32) -> ganymede_documents::yrs::MapRef {
+    let Some(Out::YMap(cell)) = roots.cells.get(txn, index) else {
+        panic!("cell {index}")
+    };
+    cell
+}
+
+fn type_into(index: u32) -> impl FnOnce(&mut ganymede_documents::yrs::TransactionMut, &Roots) {
+    move |txn, roots| {
+        let cell = cell_map(txn, roots, index);
+        let Some(Out::YText(src)) = cell.get(txn, "source") else {
+            panic!()
+        };
+        src.insert(txn, 0, "# ");
+    }
+}
+
+#[test]
+fn a_client_editing_a_cell_clears_the_clean_run_stamp() {
+    // A code cell, and a Markdown one: any cell edit.
+    for index in [1, 0] {
+        let (mut room, client) = stamped();
+        let fx = client_change(&mut room, &client, type_into(index));
+        assert_eq!(stamp_of(&room), None, "cell {index}");
+        assert!(fx.changed && room.is_dirty());
+        // The removal reaches every client, the sender too.
+        assert!(fx.send.iter().any(|(to, _)| *to == Target::All));
+        assert_eq!(stamp_in(&client), None);
+        // The rest of `ganymede` stays.
+        let nb = room.notebook().unwrap().unwrap();
+        assert_eq!(
+            nb.metadata.get("ganymede"),
+            Some(&serde_json::json!({"other": true}))
+        );
+    }
+}
+
+#[test]
+fn a_client_running_a_cell_clears_the_clean_run_stamp() {
+    let (mut room, client) = stamped();
+    client_change(&mut room, &client, |txn, roots| {
+        let cell = cell_map(txn, roots, 1);
+        cell.insert(txn, "execution_count", 7);
+    });
+    assert_eq!(stamp_of(&room), None);
+}
+
+type CellChange = Box<dyn Fn(&mut ganymede_documents::yrs::TransactionMut, &Roots)>;
+
+#[test]
+fn adding_deleting_and_moving_a_cell_clear_the_clean_run_stamp() {
+    let new_cell =
+        serde_json::json!({"cell_type": "markdown", "id": "n", "metadata": {}, "source": "x"});
+    let cases: Vec<(&str, CellChange)> = vec![
+        (
+            "add",
+            Box::new(move |txn, roots| schema::insert_cell(txn, &roots.cells, 3, new_cell.clone())),
+        ),
+        ("delete", Box::new(|txn, roots| roots.cells.remove(txn, 0))),
+        (
+            "move",
+            Box::new(|txn, roots| {
+                // yjs has no move: re-insert cell b before a.
+                let b = schema::out_to_json(txn, &Out::YMap(cell_map(txn, roots, 2)));
+                roots.cells.remove(txn, 2);
+                schema::insert_cell(txn, &roots.cells, 1, b);
+            }),
+        ),
+    ];
+    for (name, change) in cases {
+        // From the client, and as a server edit.
+        let (mut room, client) = stamped();
+        client_change(&mut room, &client, |txn, roots| change(txn, roots));
+        assert_eq!(stamp_of(&room), None, "{name} by a client");
+
+        let (mut room, _client) = stamped();
+        let (_, fx) = room.edit(|txn, roots| change(txn, roots));
+        assert_eq!(stamp_of(&room), None, "{name} by the server");
+        assert!(fx.changed);
+    }
+}
+
+#[test]
+fn a_server_edit_of_a_cell_clears_the_clean_run_stamp_for_every_client() {
+    let (mut room, client) = stamped();
+    let (_, fx) = room.edit(|txn, roots| {
+        let cell = cell_map(txn, roots, 1);
+        let Some(Out::YText(src)) = cell.get(txn, "source") else {
+            panic!()
+        };
+        src.insert(txn, 0, "# ");
+    });
+    assert_eq!(stamp_of(&room), None);
+    for (to, frame) in fx.send {
+        assert_eq!(to, Target::All);
+        apply_frame(&client, &frame);
+    }
+    assert_eq!(stamp_in(&client), None, "the clearing reached the client");
+    assert!(room.is_dirty());
+}
+
+#[test]
+fn changes_that_leave_the_run_standing_keep_the_clean_run_stamp() {
+    // By the server.
+    let (mut room, _client) = stamped();
+    room.edit(|txn, roots| {
+        let cell = cell_map(txn, roots, 1);
+        schema::set_outputs(
+            txn,
+            &cell,
+            vec![serde_json::json!({"output_type": "stream", "name": "stdout", "text": "hi\n"})],
+        );
+        cell.insert(txn, "execution_state", "running");
+        let Some(Out::YMap(meta)) = cell.get(txn, "metadata") else {
+            panic!()
+        };
+        meta.insert(txn, "tags", ganymede_documents::yrs::Any::from("x"));
+        let Some(Out::YMap(nbmeta)) = roots.meta.get(txn, "metadata") else {
+            panic!()
+        };
+        nbmeta.insert(txn, "title", "hello");
+    });
+    assert_eq!(stamp_of(&room), Some(stamp()), "server edits");
+
+    // By a client.
+    let (mut room, client) = stamped();
+    let fx = client_change(&mut room, &client, |txn, roots| {
+        let cell = cell_map(txn, roots, 2);
+        cell.insert(txn, "execution_state", "running");
+        let Some(Out::YMap(meta)) = cell.get(txn, "metadata") else {
+            panic!()
+        };
+        meta.insert(txn, "collapsed", true);
+        let Some(Out::YArray(outputs)) = cell.get(txn, "outputs") else {
+            panic!()
+        };
+        schema::insert_output(
+            txn,
+            &outputs,
+            0,
+            serde_json::json!({"output_type": "stream", "name": "stdout", "text": "2\n"}),
+        );
+        let Some(Out::YMap(nbmeta)) = roots.meta.get(txn, "metadata") else {
+            panic!()
+        };
+        nbmeta.insert(txn, "title", "hello");
+    });
+    assert!(fx.changed);
+    assert_eq!(stamp_of(&room), Some(stamp()), "client edits");
+    assert!(fx.send.iter().all(|(to, _)| *to == Target::Others(1)));
+}
+
+#[test]
+fn writing_or_removing_the_stamp_does_not_clear_it_or_the_rest_of_the_metadata() {
+    let nb = Notebook::from_str(CLEAN_RUN_NB).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    assert_eq!(stamp_of(&room), None);
+    // Stamping twice, with another stamp, never clears.
+    for s in [
+        stamp(),
+        serde_json::json!({"at": "2026-11-21T00:00:00Z", "by": "x", "kernel": "k"}),
+    ] {
+        let (_, fx) = room.edit(|txn, roots| schema::set_clean_run(txn, roots, Some(s.clone())));
+        assert!(fx.changed && room.is_dirty());
+        assert_eq!(stamp_of(&room), Some(s));
+    }
+    let saved = room.notebook().unwrap().unwrap();
+    assert_eq!(saved.metadata["ganymede"]["other"], true);
+    assert!(saved.metadata["ganymede"]["clean_run"]["kernel"].is_string());
+
+    room.edit(|txn, roots| schema::set_clean_run(txn, roots, None));
+    assert_eq!(stamp_of(&room), None);
+    assert_eq!(
+        room.notebook().unwrap().unwrap().metadata["ganymede"],
+        serde_json::json!({"other": true}),
+        "other keys stay"
+    );
+
+    // A notebook with only the stamp loses the `ganymede` key with it.
+    let nb = Notebook::from_str(&CLEAN_RUN_NB.replace(r#"{"other":true}"#, "{}")).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.edit(|txn, roots| schema::set_clean_run(txn, roots, Some(stamp())));
+    room.edit(|txn, roots| schema::set_clean_run(txn, roots, None));
+    assert!(!room
+        .notebook()
+        .unwrap()
+        .unwrap()
+        .metadata
+        .contains_key("ganymede"));
+}
+
+#[test]
+fn the_clean_run_stamp_is_saved_with_the_notebook_and_kept_when_the_file_loads() {
+    let (room, _client) = stamped();
+    let text = room.notebook().unwrap().unwrap().to_file_string();
+    assert!(text.contains(r#""clean_run""#), "{text}");
+    // A file that holds a stamp opens with it, and nothing clears it
+    // until a cell changes.
+    let nb = Notebook::from_str(&text).unwrap();
+    let mut reopened = Room::notebook_room(&nb, "n.ipynb");
+    assert_eq!(stamp_of(&reopened), Some(stamp()));
+    let client = Doc::new();
+    sync(&mut reopened, 1, &client);
+    assert_eq!(stamp_of(&reopened), Some(stamp()));
+    client_change(&mut reopened, &client, type_into(1));
+    assert_eq!(stamp_of(&reopened), None);
+}
+
+/// A client can write `metadata.ganymede` as a shared map, not a plain
+/// value: the stamp goes in and out of it in place, keeps its other keys,
+/// and takes the `ganymede` key with it when it was the only one (#898).
+#[test]
+fn the_stamp_goes_in_and_out_of_a_ganymede_shared_map() {
+    use ganymede_documents::yrs::MapPrelim;
+    let ganymede = |room: &Room| {
+        room.notebook()
+            .unwrap()
+            .unwrap()
+            .metadata
+            .get("ganymede")
+            .cloned()
+    };
+    for keys in [vec!["other"], vec![]] {
+        let nb = Notebook::from_str(CLEAN_RUN_NB).unwrap();
+        let mut room = Room::notebook_room(&nb, "n.ipynb");
+        let client = Doc::new();
+        sync(&mut room, 1, &client);
+        // The client replaces `ganymede` with a shared map.
+        let k = keys.clone();
+        client_change(&mut room, &client, move |txn, roots| {
+            let Some(Out::YMap(meta)) = roots.meta.get(txn, "metadata") else {
+                panic!()
+            };
+            let g = meta.insert(txn, "ganymede", MapPrelim::default());
+            for key in k {
+                g.insert(txn, key, true);
+            }
+        });
+        let Some(Out::YMap(_)) = ({
+            let roots = Roots::get(room.doc());
+            let txn = room.doc().transact();
+            let Some(Out::YMap(m)) = roots.meta.get(&txn, "metadata") else {
+                panic!()
+            };
+            m.get(&txn, "ganymede")
+        }) else {
+            panic!("ganymede is a shared map in the room")
+        };
+
+        room.edit(|txn, roots| schema::set_clean_run(txn, roots, Some(stamp())));
+        assert_eq!(stamp_of(&room), Some(stamp()), "{keys:?}");
+        let mut with = serde_json::Map::new();
+        for key in &keys {
+            with.insert((*key).into(), true.into());
+        }
+        with.insert("clean_run".into(), stamp());
+        assert_eq!(ganymede(&room), Some(serde_json::Value::Object(with)));
+
+        room.edit(|txn, roots| schema::set_clean_run(txn, roots, None));
+        assert_eq!(stamp_of(&room), None);
+        if keys.is_empty() {
+            assert_eq!(ganymede(&room), None, "the emptied key goes");
+        } else {
+            assert_eq!(ganymede(&room), Some(serde_json::json!({"other": true})));
+        }
+    }
+}
+
+/// `CLEAN_RUN_NB` as a file that holds the stamp, with `change` applied to
+/// its JSON.
+fn stamped_file(change: impl FnOnce(&mut serde_json::Value)) -> Notebook {
+    let mut v: serde_json::Value = serde_json::from_str(CLEAN_RUN_NB).unwrap();
+    v["metadata"]["ganymede"]["clean_run"] = stamp();
+    change(&mut v);
+    Notebook::from_value(v).unwrap()
+}
+
+/// A change that makes the run stale, and ones that don't.
+type FileChange = fn(&mut serde_json::Value);
+const STALE: [(&str, FileChange); 3] = [
+    ("source", |v| v["cells"][1]["source"] = "x = 2".into()),
+    ("count", |v| v["cells"][2]["execution_count"] = 9.into()),
+    ("delete", |v| {
+        v["cells"].as_array_mut().unwrap().remove(0);
+    }),
+];
+const STANDING: [(&str, FileChange); 3] = [
+    ("outputs", |v| {
+        v["cells"][1]["outputs"] = serde_json::json!([
+            {"output_type": "stream", "name": "stdout", "text": "hi\n"}])
+    }),
+    ("cell metadata", |v| {
+        v["cells"][1]["metadata"]["tags"] = serde_json::json!(["t"])
+    }),
+    ("notebook metadata", |v| v["metadata"]["title"] = "t".into()),
+];
+
+/// A file written by another program (a REST `PUT`, an editor) that
+/// changes the cells but keeps the stamp it read clears the stamp, as a
+/// change in the room would; a stamp of its own, or a change that leaves
+/// the run standing, keeps it. Through `reload` for a room with no unsaved
+/// edits (#898).
+#[test]
+fn a_file_changed_under_the_room_clears_the_clean_run_stamp_on_reload() {
+    for (name, change) in STALE {
+        let base = stamped_file(|_| {});
+        let mut room = Room::notebook_room(&base, "n.ipynb");
+        let client = Doc::new();
+        sync(&mut room, 1, &client);
+        let fx = room.reload(&stamped_file(change), "h1");
+        assert_eq!(stamp_of(&room), None, "{name}");
+        assert!(
+            fx.changed && room.is_dirty(),
+            "{name}: unsaved, to be saved"
+        );
+        // The clients are told, and told the room is unsaved.
+        for (to, frame) in fx.send {
+            assert_eq!(to, Target::All);
+            apply_frame(&client, &frame);
+        }
+        assert_eq!(stamp_in(&client), None, "{name}: reached the client");
+        let roots = Roots::get(&client);
+        let txn = client.transact();
+        assert_eq!(
+            roots.state.get(&txn, "dirty").unwrap().to_string(&txn),
+            "true",
+            "{name}"
+        );
+        // Other keys of `ganymede` stay.
+        assert_eq!(
+            room.notebook().unwrap().unwrap().metadata["ganymede"],
+            serde_json::json!({"other": true})
+        );
+    }
+    // The file brought a new stamp along with its changes: its writer's.
+    let base = stamped_file(|_| {});
+    let mut room = Room::notebook_room(&base, "n.ipynb");
+    let new = serde_json::json!({"at": "2026-12-01T00:00:00Z", "by": "x", "kernel": "k"});
+    let n = new.clone();
+    room.reload(
+        &stamped_file(move |v| {
+            v["cells"][1]["source"] = "x = 2".into();
+            v["metadata"]["ganymede"]["clean_run"] = n;
+        }),
+        "h1",
+    );
+    assert_eq!(stamp_of(&room), Some(new));
+    assert!(!room.is_dirty());
+    // Changes that leave the run standing.
+    for (name, change) in STANDING {
+        let mut room = Room::notebook_room(&base, "n.ipynb");
+        let fx = room.reload(&stamped_file(change), "h1");
+        assert_eq!(stamp_of(&room), Some(stamp()), "{name}");
+        assert!(!room.is_dirty() && !fx.changed, "{name}");
+    }
+    // A file without the stamp has none to clear, and the room has none
+    // to keep: it is as the file says.
+    let mut room = Room::notebook_room(&base, "n.ipynb");
+    room.reload(
+        &stamped_file(|v| {
+            v["metadata"]["ganymede"]
+                .as_object_mut()
+                .unwrap()
+                .remove("clean_run");
+        }),
+        "h1",
+    );
+    assert_eq!(stamp_of(&room), None);
+    assert!(!room.is_dirty());
+}
+
+/// The same through `merge_disk`, for a room with unsaved edits (#898).
+#[test]
+fn a_file_changed_under_a_dirty_room_clears_the_clean_run_stamp_on_merge() {
+    let base = stamped_file(|_| {});
+    // A room with an unsaved edit that leaves the run standing.
+    let dirty_room = || {
+        let mut room = Room::notebook_room(&base, "n.ipynb");
+        room.edit(|txn, roots| {
+            let Some(Out::YMap(meta)) = roots.meta.get(txn, "metadata") else {
+                panic!()
+            };
+            meta.insert(txn, "mine", true);
+        });
+        assert!(room.is_dirty() && stamp_of(&room).is_some());
+        room
+    };
+    for (name, change) in STALE {
+        let mut room = dirty_room();
+        let (fx, conflicts) = room.merge_disk(&base, &stamped_file(change), "h1");
+        assert!(conflicts.is_empty(), "{name}");
+        assert_eq!(stamp_of(&room), None, "{name}");
+        assert!(fx.changed && room.is_dirty(), "{name}");
+        assert_eq!(
+            room.notebook().unwrap().unwrap().metadata["mine"],
+            true,
+            "{name}: the room's own edit stays"
+        );
+    }
+    // The file's own new stamp stays.
+    let mut room = dirty_room();
+    let new = serde_json::json!({"at": "2026-12-01T00:00:00Z", "by": "x", "kernel": "k"});
+    let n = new.clone();
+    room.merge_disk(
+        &base,
+        &stamped_file(move |v| {
+            v["cells"][1]["source"] = "x = 2".into();
+            v["metadata"]["ganymede"]["clean_run"] = n;
+        }),
+        "h1",
+    );
+    assert_eq!(stamp_of(&room), Some(new));
+    for (name, change) in STANDING {
+        let mut room = dirty_room();
+        room.merge_disk(&base, &stamped_file(change), "h1");
+        assert_eq!(stamp_of(&room), Some(stamp()), "{name}");
+    }
+}
+
+/// `metadata` held as a plain value, or not at all, takes the stamp too,
+/// keeping what it held (#898).
+#[test]
+fn the_stamp_goes_into_metadata_that_is_not_a_shared_map() {
+    use ganymede_documents::yrs::Any;
+    // As a plain value a client wrote.
+    let nb = Notebook::from_str(CLEAN_RUN_NB).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    let client = Doc::new();
+    sync(&mut room, 1, &client);
+    client_change(&mut room, &client, |txn, roots| {
+        let plain =
+            schema::json_to_any(&serde_json::json!({"title": "t", "ganymede": {"other": true}}));
+        roots.meta.insert(txn, "metadata", plain);
+    });
+    let Some(Out::Any(Any::Map(_))) = ({
+        let roots = Roots::get(room.doc());
+        let txn = room.doc().transact();
+        roots.meta.get(&txn, "metadata")
+    }) else {
+        panic!("metadata is a plain value in the room")
+    };
+    room.edit(|txn, roots| schema::set_clean_run(txn, roots, Some(stamp())));
+    assert_eq!(stamp_of(&room), Some(stamp()));
+    let meta = room.notebook().unwrap().unwrap().metadata;
+    assert_eq!(meta["title"], "t");
+    assert_eq!(meta["ganymede"]["other"], true);
+    room.edit(|txn, roots| schema::set_clean_run(txn, roots, None));
+    assert_eq!(stamp_of(&room), None);
+    assert_eq!(
+        room.notebook().unwrap().unwrap().metadata["ganymede"],
+        serde_json::json!({"other": true})
+    );
+
+    // Not there at all.
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.edit(|txn, roots| {
+        roots.meta.remove(txn, "metadata");
+    });
+    assert_eq!(stamp_of(&room), None);
+    room.edit(|txn, roots| schema::set_clean_run(txn, roots, Some(stamp())));
+    assert_eq!(stamp_of(&room), Some(stamp()));
+}
+
+/// A read-only room, whose file another server owns, leaves the stamp as
+/// the file has it: its owner decides, and the room must not become dirty
+/// (#898).
+#[test]
+fn a_read_only_room_keeps_the_stamp_of_a_changed_file() {
+    let base = stamped_file(|_| {});
+    let mut room = Room::notebook_room(&base, "n.ipynb");
+    room.set_read_only(true);
+    let fx = room.reload(&stamped_file(STALE[0].1), "h1");
+    assert_eq!(stamp_of(&room), Some(stamp()));
+    assert!(!room.is_dirty() && !fx.changed);
+}
+
+/// The cell's id is part of what a run was of: a cell replaced by one with
+/// the same type, source and count under a new id clears the stamp (#898).
+#[test]
+fn replacing_a_cell_with_a_copy_under_a_new_id_clears_the_clean_run_stamp() {
+    let (mut room, client) = stamped();
+    client_change(&mut room, &client, |txn, roots| {
+        let mut cell = schema::out_to_json(txn, &Out::YMap(cell_map(txn, roots, 1)));
+        cell["id"] = "a2".into();
+        roots.cells.remove(txn, 1);
+        schema::insert_cell(txn, &roots.cells, 1, cell);
+    });
+    assert_eq!(stamp_of(&room), None);
+}
+
+/// Removing a stamp that isn't there changes nothing: no edit, no update
+/// to the clients, not dirty (#898).
+#[test]
+fn removing_a_stamp_that_is_not_there_changes_nothing() {
+    let nb = Notebook::from_str(CLEAN_RUN_NB).unwrap();
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    let (_, fx) = room.edit(|txn, roots| schema::set_clean_run(txn, roots, None));
+    assert!(!fx.changed && !room.is_dirty());
+    assert!(fx.send.is_empty());
+}

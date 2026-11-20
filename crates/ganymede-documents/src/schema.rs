@@ -459,6 +459,64 @@ fn stream_growth<T: ReadTxn>(txn: &T, old: &MapRef, new: &Value) -> Option<Strin
     (strip(&old) == through_yjs(&strip(new))).then(|| added.to_string())
 }
 
+/// The notebook's `metadata.ganymede.clean_run` stamp, if it has one.
+pub fn clean_run<T: ReadTxn>(txn: &T, roots: &Roots) -> Option<Value> {
+    let metadata = out_to_json(txn, &roots.meta.get(txn, "metadata")?);
+    metadata.pointer("/ganymede/clean_run").cloned()
+}
+
+/// Write `metadata.ganymede.clean_run` as `stamp`, or remove it for
+/// `None`, leaving the rest of the notebook's metadata and of its
+/// `ganymede` key alone. The `ganymede` key goes when removing the stamp
+/// empties it. Works whether the room holds `metadata` and `ganymede` as
+/// shared maps (what a client writes) or as plain values.
+pub fn set_clean_run(txn: &mut TransactionMut, roots: &Roots, stamp: Option<Value>) {
+    if stamp.is_none() && clean_run(txn, roots).is_none() {
+        return;
+    }
+    let ymeta = match roots.meta.get(txn, "metadata") {
+        Some(Out::YMap(m)) => m,
+        other => {
+            let old = other.map(|o| out_to_json(txn, &o));
+            let ymeta = roots.meta.insert(txn, "metadata", MapPrelim::default());
+            if let Some(Value::Object(o)) = old {
+                fill_shallow(txn, &ymeta, o);
+            }
+            ymeta
+        }
+    };
+    match (ymeta.get(txn, "ganymede"), stamp) {
+        (Some(Out::YMap(g)), Some(s)) => {
+            g.insert(txn, "clean_run", json_to_any(&s));
+        }
+        (Some(Out::YMap(g)), None) => {
+            g.remove(txn, "clean_run");
+            if g.len(txn) == 0 {
+                ymeta.remove(txn, "ganymede");
+            }
+        }
+        (other, stamp) => {
+            let mut obj = match other.as_ref().map(|o| out_to_json(txn, o)) {
+                Some(Value::Object(o)) => o,
+                _ => JsonMap::new(),
+            };
+            match stamp {
+                Some(s) => {
+                    obj.insert("clean_run".into(), s);
+                }
+                None => {
+                    obj.remove("clean_run");
+                }
+            }
+            if obj.is_empty() {
+                ymeta.remove(txn, "ganymede");
+            } else {
+                ymeta.insert(txn, "ganymede", json_to_any(&Value::Object(obj)));
+            }
+        }
+    }
+}
+
 /// Fill a map whose values are plain JSON.
 fn fill_shallow(txn: &mut TransactionMut, map: &MapRef, m: JsonMap<String, Value>) {
     for (key, value) in sorted(m) {

@@ -267,7 +267,7 @@ isn't reported to the agent as someone else's edit.
 | `cell_clear_outputs` | Clear a code cell's outputs and keep them out of the notebook when it runs again; `keep: true` undoes it (see [Outputs](#outputs)). |
 | `cell_delete`, `cell_move` | Delete a cell, or move it after another. |
 | `kernel_control` | Interrupt, restart, or shut down the kernel. |
-| `notebook_run_all` | Restart the kernel and run every code cell in order. |
+| `notebook_run_all` | Restart the kernel and run every code cell in order. A run that restarted, finished and ran every cell with no error stamps the notebook as run from a clean kernel (see [Run from a clean kernel](rooms.md#run-from-a-clean-kernel)). |
 | `kernelspecs_list`, `notebooks_list` | The kernels available, and the notebooks in a directory. |
 | `cell_snapshot` | Cells as Markdown to show a person: code, images saved as files, tables, text (see [Snapshots](#snapshots)). |
 | `notebooks_search` | Cells across notebooks that contain every word of a query (see [Search](#search)). |
@@ -284,6 +284,18 @@ behind it. A scratch run that times out before the kernel started it
 (queued behind a recorded cell still running, or a cell run from
 JupyterLab) interrupts nothing, so that other run isn't stopped; the
 reply says the code runs when the kernel is free.
+
+> [!NOTE]
+> **Unreleased.** The clean-run stamp `notebook_run_all` writes is
+> available only from a build of `main` (HEAD), not in the latest release.
+
+`notebook_run_all` writes `metadata.ganymede.clean_run` when the whole
+notebook ran from a fresh kernel, and removes it after any run of cells
+that didn't: `restart: false`, a timeout, or a cell that failed. A call
+that fails before running a cell leaves it as it was. Editing a cell
+afterwards, or a run that changes a cell's `execution_count`, removes it
+too. [Run from a clean kernel](rooms.md#run-from-a-clean-kernel) has the
+fields.
 
 Cells run through the server, as the
 [execute endpoint](rooms.md#running-cells-into-a-room) runs
