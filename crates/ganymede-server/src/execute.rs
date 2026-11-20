@@ -22,8 +22,8 @@
 //! and `execution_by` with the runner's name, both room-only: never
 //! saved), and queues the batch, all in one step of its task, so no other
 //! request interleaves with it. The answer is `200 null` once queued;
-//! `409 {"error": "source_mismatch", "cell_id"}` when a cell's source changed since the
-//! client hashed it; `408` when `previous_request_id` was not queued within
+//! `409 {"error": "source_mismatch", "cell_id"}` when a cell's source
+//! changed since the client hashed it; `408` when `previous_request_id` was not queued within
 //! ten seconds; `400` for the rest, `"error": "cell_not_found"` among them
 //! for an id or tag the room doesn't have. A room that isn't open is
 //! opened, so an agent with no websocket can run cells.
@@ -275,6 +275,8 @@ impl RoomExec {
             }
             match next {
                 Some(by) => {
+                    // A client's own run may have marked the cell idle meanwhile.
+                    cell.insert(txn, "execution_state", "running");
                     cell.insert(txn, "execution_by", by);
                 }
                 None => {
@@ -1253,6 +1255,20 @@ mod request_tests {
         x.finish(&mut room, "a", Some(Vec::new()), Some(2));
         assert_eq!(state(&mut room, "a"), ("idle", None));
         assert!(x.queued.is_empty());
+    }
+
+    #[test]
+    fn the_next_run_marks_the_cell_running_again() {
+        let (mut room, mut x) = (room_of(5), exec());
+        run(&mut x, &mut room, &[id("a")], "A");
+        run(&mut x, &mut room, &[id("a")], "B");
+        // A client's own run of the cell marked it idle meanwhile.
+        room.edit(|txn, roots| {
+            let cell = schema::find_cell(txn, roots, "a").unwrap();
+            cell.insert(txn, "execution_state", "idle");
+        });
+        x.finish(&mut room, "a", Some(Vec::new()), Some(1));
+        assert_eq!(state(&mut room, "a"), ("running", Some("B".into())));
     }
 
     #[test]

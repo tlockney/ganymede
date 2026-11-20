@@ -7,6 +7,14 @@ ended. Now it also says who runs it: a code cell's room-only key
 idle. `strip_runtime` in `ganymede-documents` drops it, as it drops
 `execution_state`, so it is never in a saved or returned notebook.
 
+Why extend the room and the execute body, both compatibility targets:
+`jupyter-server-documents` has no field for who runs a cell, and the
+journal view (ganymede-ui #697) needs one to say who is running it. On
+#896 the choice was to add it here or close the issue; Thomas chose to add
+it (2026-11-20). Older clients are unaffected: JupyterLab and jupyter-ydoc
+ignore an unknown cell key, their `toJSON` and copy leave it out, and a
+request without `by` is answered as before.
+
 The name comes from the entry point. `RoomCmd::Enqueue` carries `by`. The
 MCP tools pass the client's name (`run_all` and `run_cells` in `mcp.rs`).
 The execute endpoint uses the tailnet login, else a new body field `by`,

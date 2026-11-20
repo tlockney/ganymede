@@ -210,7 +210,9 @@ The name comes from the entry point:
 - An MCP tool that runs cells in the room (`cell_run` when it records a
   cell, `cell_edit` with `run`, `notebook_run_all`) uses the name the MCP client gave when it connected.
 
-Every name is cleaned like a [client's name in the list of rooms](#listing-open-rooms):
+Only a tailnet login is vouched for: `by` and an MCP client's name are
+whatever the caller sends, so any client with the token can give any
+name. Every name is cleaned like a [client's name in the list of rooms](#listing-open-rooms):
 control characters dropped, whitespace collapsed, at most 64 characters.
 One with nothing left yields to the next source.
 
