@@ -35,13 +35,20 @@ lib=libganymede_ffi.a
 out=target/xcframework
 # Each slice has V8 in it: a build that dropped the feature would still
 # assemble and fail only when the app links the benchmark.
+# nm's output goes to a file and its exit status is not the test: Xcode's
+# nm can exit non-zero on members it can't read (and grep -q would give
+# it SIGPIPE), while still listing V8's symbols.
+syms=$(mktemp)
+trap 'rm -f "$syms"' EXIT
 for t in aarch64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim; do
-  # grep reads all of nm's output: with -q it exits at the first match, nm
-  # gets SIGPIPE, and pipefail fails the pipeline although V8 is there.
-  if ! nm -g "target/$t/release/$lib" 2> /dev/null | grep 'v8__V8__Initialize' > /dev/null; then
-    echo "$t: $lib has no V8 symbols (v8__V8__Initialize)" >&2
+  status=0
+  nm -g "target/$t/release/$lib" > "$syms" 2> "$syms.err" || status=$?
+  if ! grep 'v8__V8__Initialize' "$syms" > /dev/null; then
+    echo "$t: $lib has no V8 symbols (v8__V8__Initialize); nm exited $status" >&2
+    head -5 "$syms.err" >&2
     exit 1
   fi
+  rm -f "$syms.err"
 done
 rm -rf "$out"
 mkdir -p "$out/macos" "$out/headers"
