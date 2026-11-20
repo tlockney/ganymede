@@ -259,10 +259,6 @@ Windows the old binary is left as `ganymede.exe.<pid>.old` until a
 later update removes it. It doesn't update cdp-kernel, JupyterLab or
 ganymede-ui, and prints how to update the ones you have.
 
-> [!NOTE]
-> **Unreleased.** Refusing a binary inside an app bundle is available
-> only from a build of `main` (HEAD), not in the latest release.
-
 To update cdp-kernel, rerun step 2's `npm install -g`
 and `cdp-kernel install` lines. A new Ganymede release can default to a
 newer JupyterLab; run `ganymede lab install` again to get it. Older
