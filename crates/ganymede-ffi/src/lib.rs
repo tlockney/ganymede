@@ -18,6 +18,8 @@
 //! then lists no kernels and refuses to start one, unless the config
 //! sets `gateway_url`, whose kernels it runs as usual.
 
+mod v8_bench;
+
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::sync::{mpsc, Arc, Once, RwLock};
 use std::thread::JoinHandle;
@@ -694,7 +696,15 @@ mod tests {
         let _ = std::thread::spawn(|| panic!("test panic {}", 42)).join();
         ganymede_set_panic_callback(None);
         let _ = std::thread::spawn(|| panic!("after removing")).join();
-        let panics = PANICS.lock().unwrap();
+        // Other tests' panics (v8_bench's) may land while the callback is
+        // installed: look only at this test's own.
+        let panics: Vec<String> = PANICS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|p| p.contains("test panic") || p.contains("after removing"))
+            .cloned()
+            .collect();
         assert_eq!(panics.len(), 1, "{panics:?}");
         assert!(
             panics[0].starts_with("panicked at crates/ganymede-ffi/src/lib.rs:"),
