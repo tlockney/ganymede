@@ -76,10 +76,6 @@ GET /api/kernelspecs
 untouched. `default` is `--default-kernel`, or else the first kernelspec
 found.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 `resource_dir` is an extra key that `jupyter_server` doesn't send: the
 absolute path of the directory holding the kernelspec's `kernel.json`
 and logos, the same value `ganymede kernelspec list --json` prints. The
@@ -467,10 +463,6 @@ What `ganymede serve` answers, beyond the examples above:
 - With JupyterLab (`ganymede lab`): the page, `/static/lab`,
   `/lab/extensions/{name}`, and `/lab/api/` `settings`, `workspaces`,
   `translations`, `themes`, `listings`, `plugins`, `licenses`.
-
-> [!NOTE]
-> **Unreleased.** `/api/collaboration/rooms` is available only from a
-> build of `main` (HEAD), not in the latest release.
 
 The kernel websocket speaks `v1.kernel.websocket.jupyter.org` when the
 client offers it, and the legacy JSON framing otherwise. JSON bodies are
