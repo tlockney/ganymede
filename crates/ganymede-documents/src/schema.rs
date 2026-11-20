@@ -546,6 +546,7 @@ fn read<T: ReadTxn>(
 fn strip_runtime(mut cell: Value) -> Value {
     if let Value::Object(m) = &mut cell {
         m.remove("execution_state");
+        m.remove("execution_by");
         let empty_attachments = m
             .get("attachments")
             .is_some_and(|a| a.as_object().is_some_and(JsonMap::is_empty));

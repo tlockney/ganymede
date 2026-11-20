@@ -1077,6 +1077,7 @@ impl Notebooks {
             &path,
             &kernel_id,
             ids.clone(),
+            self.client_name(),
             timeout,
             self.own_runs_late(&path, ids.clone()),
         )
@@ -2506,6 +2507,7 @@ impl Notebooks {
             path,
             kernel_id,
             ids.clone(),
+            self.client_name(),
             timeout,
             self.own_runs_late(path, ids.clone()),
         )
