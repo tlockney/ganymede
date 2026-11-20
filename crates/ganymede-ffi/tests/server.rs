@@ -9,8 +9,9 @@ use std::time::Duration;
 
 use ganymede_ffi::{
     ganymede_kernel_deliver, ganymede_kernel_ended, ganymede_kernel_register,
-    ganymede_server_start, ganymede_server_stop, ganymede_server_url, ganymede_string_free,
-    GanymedeKernelCallbacks, GanymedeServer,
+    ganymede_server_add_machine, ganymede_server_remove_machine, ganymede_server_start,
+    ganymede_server_stop, ganymede_server_url, ganymede_string_free, GanymedeKernelCallbacks,
+    GanymedeServer,
 };
 
 /// `GET path` with the token as a header; the status line and body.
@@ -389,4 +390,126 @@ fn a_kernel_the_platform_keeps_ending_is_left_dead() {
     assert_eq!(app.starts.lock().unwrap().len(), 4);
 
     unsafe { ganymede_server_stop(server) };
+}
+
+/// A server started through the C ABI, its URL and its token.
+fn start_server(root: &std::path::Path, name: &str) -> (*mut GanymedeServer, String) {
+    let cfg = CString::new(format!(
+        r#"{{"root_dir": {:?}, "cookie_secret_file": {:?}, "notary_dir": {:?}}}"#,
+        root,
+        root.join(format!("{name}-secret")),
+        root.join(format!("{name}-notary")),
+    ))
+    .unwrap();
+    let mut err: *mut c_char = std::ptr::null_mut();
+    let server = unsafe { ganymede_server_start(cfg.as_ptr(), &mut err) };
+    assert!(!server.is_null(), "{}", unsafe {
+        CStr::from_ptr(err).to_string_lossy()
+    });
+    let url = unsafe { CStr::from_ptr(ganymede_server_url(server)) }
+        .to_str()
+        .unwrap()
+        .to_string();
+    (server, url)
+}
+
+/// The status code in a raw reply.
+fn code(reply: &str) -> &str {
+    &reply[9..12]
+}
+
+#[test]
+fn mounts_and_unmounts_a_machine() {
+    let root = tempfile::tempdir().unwrap();
+    let mini_dir = root.path().join("mini");
+    std::fs::create_dir(&mini_dir).unwrap();
+    std::fs::write(mini_dir.join("hello.txt"), "from the mini").unwrap();
+    let local_dir = root.path().join("local");
+    std::fs::create_dir(&local_dir).unwrap();
+    let (mini, mini_url) = start_server(&mini_dir, "mini");
+    let (local, local_url) = start_server(&local_dir, "local");
+    let (mini_base, mini_token) = mini_url.split_once("?token=").unwrap();
+    let c = |s: &str| CString::new(s).unwrap();
+    let (id, base, token) = (c("mini"), c(mini_base), c(mini_token));
+    let mut err: *mut c_char = std::ptr::null_mut();
+
+    // Nothing is mounted until the app adds it.
+    let path = "/machines/mini/api/contents/hello.txt";
+    assert_eq!(code(&get(&local_url, path)), "404");
+
+    let added = unsafe {
+        ganymede_server_add_machine(local, id.as_ptr(), base.as_ptr(), token.as_ptr(), &mut err)
+    };
+    assert_eq!(added, 0);
+    let reply = get(&local_url, path);
+    assert_eq!(code(&reply), "200", "{reply}");
+    assert!(reply.contains("from the mini"), "{reply}");
+    // The machine's token isn't what the page sees, and the local server
+    // doesn't have the file.
+    assert!(!reply.contains(mini_token), "{reply}");
+    assert_eq!(code(&get(&local_url, "/api/contents/hello.txt")), "404");
+
+    // Without the token a machine that wants one refuses, and the answer
+    // is the machine's own 403.
+    let bare = c("bare");
+    let added = unsafe {
+        ganymede_server_add_machine(
+            local,
+            bare.as_ptr(),
+            base.as_ptr(),
+            std::ptr::null(),
+            &mut err,
+        )
+    };
+    assert_eq!(added, 0);
+    assert_eq!(code(&get(&local_url, "/machines/bare/api/status")), "403");
+
+    // A bad id or URL is refused with a message, and NULL is not a crash.
+    for (id, url) in [("a/b", "http://h/"), ("", "http://h/"), ("ok", "ftp://h/")] {
+        let (id, url) = (c(id), c(url));
+        let added = unsafe {
+            ganymede_server_add_machine(
+                local,
+                id.as_ptr(),
+                url.as_ptr(),
+                std::ptr::null(),
+                &mut err,
+            )
+        };
+        assert_ne!(added, 0);
+        let msg = unsafe { CStr::from_ptr(err) }.to_str().unwrap().to_string();
+        assert!(!msg.is_empty());
+        unsafe { ganymede_string_free(err) };
+        err = std::ptr::null_mut();
+    }
+    let added = unsafe {
+        ganymede_server_add_machine(
+            local,
+            std::ptr::null(),
+            base.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null_mut(),
+        )
+    };
+    assert_ne!(added, 0);
+    assert_eq!(
+        unsafe { ganymede_server_remove_machine(local, std::ptr::null()) },
+        0
+    );
+
+    // Removing says whether it was mounted, and unmounts it.
+    assert_eq!(
+        unsafe { ganymede_server_remove_machine(local, id.as_ptr()) },
+        1
+    );
+    assert_eq!(
+        unsafe { ganymede_server_remove_machine(local, id.as_ptr()) },
+        0
+    );
+    assert_eq!(code(&get(&local_url, path)), "404");
+    // The other machine is still mounted.
+    assert_eq!(code(&get(&local_url, "/machines/bare/api/status")), "403");
+
+    unsafe { ganymede_server_stop(local) };
+    unsafe { ganymede_server_stop(mini) };
 }
