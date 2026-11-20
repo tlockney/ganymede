@@ -1,4 +1,4 @@
-//! The engine benchmark on V8 (#892), for the apps' Settings: runs the
+//! The engine benchmark on V8 (#892), for the apps to run on a device: runs the
 //! workloads of `spikes/v8-engine/bench/workloads` through rusty_v8 and
 //! returns a JSON report. It is the spike's runner (`spikes/v8-engine/src`,
 //! #646) brought into the library the apps already link, since a second
