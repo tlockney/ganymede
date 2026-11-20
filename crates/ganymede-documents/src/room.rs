@@ -744,9 +744,10 @@ impl Room {
                 .cloned()
                 .collect()
         };
-        // The edit just made changed cells: its change is this author's.
-        // An edit that changed none leaves `last_change` as it was.
-        if !held.is_empty() && std::mem::take(&mut self.edit_unclaimed) {
+        // The edit just made changed cells (a deleted one too, which
+        // `held` leaves out): its change is this author's. An edit that
+        // changed none leaves `last_change` as it was.
+        if std::mem::take(&mut self.edit_unclaimed) {
             if let Some((_, by)) = self.last_change.as_mut() {
                 *by = author.clone();
             }

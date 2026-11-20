@@ -1597,13 +1597,54 @@ fn last_change_follows_attributed_changes() {
     assert!(t3 > t2);
     assert_eq!((who.as_str(), person), ("agent", false));
 
+    // An agent deletes a cell, then names itself with the deleted id: the
+    // change is still the agent's, though the room no longer holds it.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let (_, fx) = room.edit(|txn, roots| {
+        let at = schema::cell_index(txn, roots, &ids[2]).unwrap();
+        roots.cells.remove(txn, at);
+    });
+    drop(fx);
+    room.set_author(
+        &[ids[2].clone()],
+        &Author {
+            name: "deleter".into(),
+            person: false,
+        },
+    );
+    let (t4, who, person) = change(&room);
+    assert!(t4 > t3);
+    assert_eq!((who.as_str(), person), ("deleter", false));
+
+    // A server edit nobody claims, then an edit that changes nothing named
+    // by its caller: the earlier change stays the server's.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let (_, fx) = room.edit(|txn, roots| {
+        let at = schema::cell_index(txn, roots, &ids[3]).unwrap();
+        roots.cells.remove(txn, at);
+    });
+    drop(fx);
+    let (t5, who, _) = change(&room);
+    assert!(t5 > t4);
+    assert_eq!(who, ganymede_documents::room::SERVER);
+    let (_, fx) = room.edit(|_, _| ());
+    drop(fx);
+    room.set_author(
+        &[ids[0].clone()],
+        &Author {
+            name: "latecomer".into(),
+            person: false,
+        },
+    );
+    assert_eq!(change(&room).1, ganymede_documents::room::SERVER);
+
     // The file changes a cell.
     std::thread::sleep(std::time::Duration::from_millis(5));
     let mut v = schema::notebook_value(&room.notebook().unwrap().unwrap());
     v["cells"][0]["source"] = serde_json::json!("from disk");
     room.reload(&Notebook::from_value(v).unwrap(), "h");
-    let (t4, who, person) = change(&room);
-    assert!(t4 > t3);
+    let (t6, who, person) = change(&room);
+    assert!(t6 > t5);
     assert_eq!((who.as_str(), person), (FROM_FILE, false));
 }
 

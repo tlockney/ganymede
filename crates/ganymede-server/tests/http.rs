@@ -8853,6 +8853,31 @@ async fn collaboration_rooms_lists_people_agents_and_changes() {
         assert!(std::time::Instant::now() < deadline, "{v}");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+
+    // Another agent adds a cell, then the first deletes one: the delete
+    // is the first agent's, though its cell is gone.
+    let other = mcp_connect(&app, "other-agent").await;
+    mcp_tool(&app, &other, "notebook_read", json!({"path": "j.ipynb"})).await;
+    mcp_tool(
+        &app,
+        &other,
+        "cell_add",
+        json!({"path": "j.ipynb", "source": "Another note."}),
+    )
+    .await;
+    let v = list_rooms(&app).await;
+    assert_eq!(v["rooms"][0]["last_change"]["by"], "other-agent", "{v}");
+    let deleted = mcp_tool(
+        &app,
+        &agent,
+        "cell_delete",
+        json!({"path": "j.ipynb", "id": "a"}),
+    )
+    .await;
+    assert!(deleted.get("error").is_none(), "{deleted}");
+    assert_ne!(deleted["result"]["isError"], true, "{deleted}");
+    let v = list_rooms(&app).await;
+    assert_eq!(v["rooms"][0]["last_change"]["by"], "claude-code", "{v}");
 }
 
 /// The list takes the token, a tailnet login the server allows, and
