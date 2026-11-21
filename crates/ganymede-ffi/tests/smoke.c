@@ -96,6 +96,12 @@ int main(void) {
         ganymede_string_free(err);
         return 1;
     }
+    char *machines = ganymede_server_machines(server);
+    if (!machines || strcmp(machines, "[\"mini\"]") != 0) {
+        fprintf(stderr, "machines listed %s\n", machines ? machines : "NULL");
+        return 1;
+    }
+    ganymede_string_free(machines);
     if (ganymede_server_add_machine(server, "a/b", "http://127.0.0.1:1/", "t", &err) == 0) {
         fprintf(stderr, "added a machine with a bad id\n");
         return 1;
@@ -106,6 +112,12 @@ int main(void) {
         fprintf(stderr, "remove_machine did not say whether it was mounted\n");
         return 1;
     }
+    machines = ganymede_server_machines(server);
+    if (!machines || strcmp(machines, "[]") != 0) {
+        fprintf(stderr, "machines listed %s after the remove\n", machines ? machines : "NULL");
+        return 1;
+    }
+    ganymede_string_free(machines);
     /* The write observer is set, replaced and removed. */
     ganymede_server_set_write_observer(server, wrote, wrote_release, &wrote_released);
     ganymede_server_set_write_observer(server, wrote, wrote_release, &wrote_released);

@@ -33,16 +33,24 @@ void ganymede_server_stop(GanymedeServer *server);
  * device in by tailnet identity accepts, so a NULL token can work there. The page's own cookie, token and Origin are
  * never forwarded, and the machine's token is never given to the page.
  * Nothing is mounted until this is called. No request is made now. An id
- * already mounted is replaced, and its open websockets closed. Any thread.
+ * already mounted is replaced, and what the old one had open ends as
+ * ganymede_server_remove_machine has it. Any thread.
  * Returns 0, or nonzero on failure (a bad id or URL): then *error_out (if
  * error_out is not NULL) is a message to free with ganymede_string_free. */
 int ganymede_server_add_machine(GanymedeServer *server, const char *id,
                                 const char *url, const char *token,
                                 char **error_out);
 
-/* Unmounts machine id and closes its open websockets. Returns 1 if it was
- * mounted, 0 if not. Any thread. */
+/* Unmounts machine id and closes its open websockets. Its requests still
+ * waiting for an answer end with a 502, and its response bodies still
+ * streaming end with an error. Returns 1 if it was mounted, 0 if not. Any
+ * thread. */
 int ganymede_server_remove_machine(GanymedeServer *server, const char *id);
+
+/* The ids of the machines mounted now, sorted, as a JSON array of strings
+ * (["laptop","mini"], or [] when there are none). Free it with
+ * ganymede_string_free. NULL when server is NULL. Any thread. */
+char *ganymede_server_machines(const GanymedeServer *server);
 
 /* Called after the server writes a file. path is the file's canonical
  * absolute path (links resolved; \\?\C:\... on Windows). before and after
