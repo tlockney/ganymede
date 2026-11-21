@@ -203,6 +203,7 @@ pub type GanymedeWriteCallback = extern "C" fn(
 struct CWriteObserver {
     ctx: *mut c_void,
     callback: GanymedeWriteCallback,
+    release: Option<extern "C" fn(*mut c_void)>,
 }
 
 // SAFETY: the C contract (`ganymede_server_set_write_observer`) has the
@@ -213,12 +214,23 @@ unsafe impl Send for CWriteObserver {}
 // SAFETY: as above; concurrent calls are part of the same contract.
 unsafe impl Sync for CWriteObserver {}
 
+impl Drop for CWriteObserver {
+    /// The last clone of the observer is gone, and no call is under way
+    /// or follows: the app may free `ctx`.
+    fn drop(&mut self) {
+        if let Some(release) = self.release {
+            release(self.ctx);
+        }
+    }
+}
+
 impl CWriteObserver {
     fn call(&self, path: &std::path::Path, before: Option<&str>, after: Option<&str>) {
-        // A path or stamp with a NUL can't be passed as a C string; no
-        // file name has one on the platforms the apps run on, so the call
-        // is skipped rather than given a different path.
-        let Ok(path) = CString::new(path.to_string_lossy().into_owned()) else {
+        // A path that isn't UTF-8, or has a NUL, can't be passed as a C
+        // string without changing it; no file name on the platforms the
+        // apps run on is either, so the call is skipped rather than given
+        // a different path.
+        let Some(Ok(path)) = path.to_str().map(CString::new) else {
             return;
         };
         let stamp = |s: Option<&str>| s.and_then(|s| CString::new(s).ok());
@@ -231,7 +243,8 @@ impl CWriteObserver {
 /// Calls `callback` with `ctx` after each write the server makes of a
 /// file under its root: a save from the REST API, a room's autosave, a
 /// run saving its outputs, MCP: any successful save of a regular file (a
-/// new one's included) and a copy to a named destination path. Not
+/// new one's included), a checkpoint restore, and a copy to a named
+/// destination path. Not
 /// reported: a write that failed, a copy into a directory, a new untitled
 /// file, a rename, a delete, a directory save, and any write when the root
 /// is not a local directory. The path is the file's canonical absolute
@@ -245,9 +258,18 @@ impl CWriteObserver {
 /// maybe at once for different files; it must not block. `ctx` must be
 /// usable from any thread until the observer is replaced or the server
 /// stopped: a call already under way may still use the old `ctx` when
-/// this returns. A path with a NUL byte is not reported. NULL `callback`
-/// removes the observer. Takes any thread, and replaces the one set before;
-/// it takes effect for writes that begin after the call.
+/// this returns. A path with a NUL byte, or that is not UTF-8, is not
+/// reported. NULL `callback` removes the observer. Takes any thread, and
+/// replaces the one set before: a write is reported to whatever is set when
+/// it ends, and one that began while none was set is not reported.
+///
+/// `release` (may be NULL) is called with `ctx` once, after the last call
+/// of `callback` that uses that `ctx` has returned and none follows: when
+/// the observer is replaced or removed (after any call under way ends), or
+/// when the server stops. The app frees `ctx` there, and not before. It
+/// runs on a server thread or on the thread of this call or of
+/// `ganymede_server_stop`, and must not block. With a NULL `callback`,
+/// `release` is ignored.
 ///
 /// # Safety
 ///
@@ -257,12 +279,17 @@ impl CWriteObserver {
 pub unsafe extern "C" fn ganymede_server_set_write_observer(
     server: *mut GanymedeServer,
     callback: Option<GanymedeWriteCallback>,
+    release: Option<extern "C" fn(ctx: *mut c_void)>,
     ctx: *mut c_void,
 ) {
     // SAFETY: the caller passes a live server.
     let server = unsafe { &*server };
     server.write_observer.set(callback.map(|callback| {
-        let observer = CWriteObserver { ctx, callback };
+        let observer = CWriteObserver {
+            ctx,
+            callback,
+            release,
+        };
         Arc::new(
             move |path: &std::path::Path, before: Option<&str>, after: Option<&str>| {
                 observer.call(path, before, after)

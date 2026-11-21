@@ -19,8 +19,8 @@ in ganymede-ffi is the C side, with the callback's context passed back as
 a raw pointer the app guarantees usable from any thread. Not a REST
 endpoint: that API is a Jupyter compatibility target.
 
-Reported: any successful save of a regular file (a new one's included)
-and a copy to a named destination path, with the canonical absolute path
+Reported: any successful save of a regular file (a new one's included),
+a checkpoint restore, and a copy to a named destination path, with the canonical absolute path
 (links resolved, so a root under `/` and the app's `/private/...` agree).
 Not reported: a failed write, a copy into a directory, a new untitled file,
 a rename, a delete, a directory save, and any write when the contents
@@ -32,3 +32,10 @@ observer's own lock, so it may call `set`. A write that began while no function 
 reported even if one is set before it ends, as its "before" was never
 taken. A path with a NUL byte is not passed to the callback. A new
 `ganymede_contents::api_file_path` gives the on-disk path the stamps use.
+
+The "after" stamp is taken as soon as the write succeeds, before the
+restamps. The C function takes a `release` callback, as the kernel
+callbacks do, which runs from a Drop on the wrapper of the app's
+function once the last clone is gone (after calls under way, when it is
+replaced, removed, or the server stops), so the app frees `ctx` there. A
+path that is not UTF-8 is skipped like one with a NUL.

@@ -46,13 +46,21 @@ pub(crate) struct Stamps {
 pub(crate) struct Observed {
     file: PathBuf,
     before: Option<String>,
+    /// The file's stamp right after the write ([`Observed::wrote`]).
+    after: Option<String>,
     observer: Arc<WriteObserver>,
 }
 
 impl Observed {
-    /// The write succeeded: reports it with the file's stamp as it is
-    /// now, and its canonical path (links resolved). Called once the file
-    /// is restamped, inside the turn. Nothing is reported when the path is
+    /// The write has just succeeded: takes the file's stamp as it is
+    /// now, before the restamps, which do not change the file.
+    pub(crate) fn wrote(&mut self) {
+        self.after = ganymede_contents::file_stamp(&self.file);
+    }
+
+    /// Reports the write with the stamp [`Observed::wrote`] took, and the
+    /// file's canonical path (links resolved). Called once the file is
+    /// restamped, inside the turn. Nothing is reported when the path is
     /// not a regular file now (a directory save), or cannot be resolved.
     pub(crate) fn done(self) {
         if !self.file.is_file() {
@@ -61,9 +69,8 @@ impl Observed {
         let Ok(file) = std::fs::canonicalize(&self.file) else {
             return;
         };
-        let after = ganymede_contents::file_stamp(&file);
         self.observer
-            .notify(&file, self.before.as_deref(), after.as_deref());
+            .notify(&file, self.before.as_deref(), self.after.as_deref());
     }
 }
 
@@ -202,6 +209,7 @@ impl Stamps {
         let file = ganymede_contents::api_file_path(root, path)?;
         Some(Observed {
             before: ganymede_contents::file_stamp(&file),
+            after: None,
             file,
             observer: observer.clone(),
         })
@@ -398,6 +406,10 @@ impl Stamping {
             // change must not bless it. The grant is then dropped on its
             // next read if the file did change, which fails safe.
             let out = write.await?;
+            let mut watched = watched;
+            if let Some(w) = watched.as_mut() {
+                w.wrote();
+            }
             if let Err(e) = collab.restamp(&path, &seen).await {
                 tracing::warn!("{e}");
             }
@@ -500,6 +512,10 @@ impl Contents for Stamping {
                 let watched = collab.stamps.observe(&dest);
                 let _saving = collab.stamps.begin(&dest);
                 let model = inner.copy(&from_path, to_dir.as_deref()).await?;
+                let mut watched = watched;
+                if let Some(w) = watched.as_mut() {
+                    w.wrote();
+                }
                 if let Err(e) = collab.restamp(&dest, &seen).await {
                     tracing::warn!("{e}");
                 }
@@ -1211,6 +1227,17 @@ mod tests {
         wrote: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Notify>,
         fail: bool,
+        /// Says a save or copy has begun, then waits to be told to write.
+        pre: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
+    }
+
+    impl Gated {
+        async fn hold(&self) {
+            if let Some((entered, go)) = &self.pre {
+                entered.notify_one();
+                go.notified().await;
+            }
+        }
     }
 
     #[async_trait]
@@ -1219,6 +1246,7 @@ mod tests {
             self.inner.get(path, options).await
         }
         async fn save(&self, path: &str, request: SaveRequest) -> Result<ContentsModel> {
+            self.hold().await;
             let model = self.inner.save(path, request).await?;
             self.wrote.notify_one();
             self.release.notified().await;
@@ -1245,6 +1273,7 @@ mod tests {
             Ok(model)
         }
         async fn copy(&self, from_path: &str, to_dir: Option<&str>) -> Result<ContentsModel> {
+            self.hold().await;
             let model = self.inner.copy(from_path, to_dir).await?;
             self.wrote.notify_one();
             self.release.notified().await;
@@ -1288,6 +1317,7 @@ mod tests {
             wrote: Arc::clone(&wrote),
             release: Arc::clone(&release),
             fail,
+            pre: None,
         }));
         let (id, _) = collab.index("a.ipynb").await;
         collab.set_grant(id, Some(GRANT.into())).await.unwrap();
@@ -2497,6 +2527,7 @@ mod tests {
             wrote: Arc::clone(&wrote),
             release: Arc::clone(&release),
             fail: false,
+            pre: None,
         }));
         let save = tokio::spawn(async move {
             contents
@@ -2554,21 +2585,12 @@ mod tests {
     #[tokio::test]
     async fn the_reported_path_has_its_links_resolved() {
         let dir = tempfile::tempdir().unwrap();
-        let real = dir.path().canonicalize().unwrap();
-        std::fs::create_dir(real.join("real")).unwrap();
+        let top = dir.path().canonicalize().unwrap();
+        let real = top.join("root");
+        std::fs::create_dir_all(real.join("real")).unwrap();
         std::os::unix::fs::symlink(real.join("real"), real.join("link")).unwrap();
-        std::os::unix::fs::symlink(
-            &real,
-            real.join("..").join(format!(
-                "{}-root-link",
-                real.file_name().unwrap().to_string_lossy()
-            )),
-        )
-        .unwrap();
-        let linked_root = real.parent().unwrap().join(format!(
-            "{}-root-link",
-            real.file_name().unwrap().to_string_lossy()
-        ));
+        let linked_root = top.join("root-link");
+        std::os::unix::fs::symlink(&real, &linked_root).unwrap();
         let observer = Arc::new(crate::write_observer::WriteObserver::new());
         let (f, calls) = recorder();
         observer.set(Some(f));
@@ -2589,6 +2611,84 @@ mod tests {
         let calls = calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, real.join("real").join("x.ipynb"));
-        let _ = std::fs::remove_file(&linked_root);
+    }
+
+    /// Two writes of one path, the second started while the first is
+    /// held before it writes: the second's stamp before is the first's
+    /// after, as it is taken inside the path's turn.
+    async fn second_write_starts_from_the_first(
+        write: impl Fn(Arc<dyn Contents>, &'static str) -> tokio::task::JoinHandle<()>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.ipynb"), "{}").unwrap();
+        std::fs::write(root.join("b.ipynb"), "{\"b\": \"copied\"}").unwrap();
+        let observer = Arc::new(crate::write_observer::WriteObserver::new());
+        let (f, calls) = recorder();
+        observer.set(Some(f));
+        let collab = Arc::new(
+            Collab::new(ganymede_contents::FileIds::in_memory(), Some(root.clone()))
+                .with_write_observer(observer),
+        );
+        let (wrote, release): (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) =
+            (Arc::default(), Arc::default());
+        let (entered, go): (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) =
+            (Arc::default(), Arc::default());
+        let contents = collab.stamping(Arc::new(Gated {
+            inner: Arc::new(ganymede_contents::FsContents::new(&root, Default::default()).unwrap()),
+            wrote,
+            release: release.clone(),
+            fail: false,
+            pre: Some((entered.clone(), go.clone())),
+        }));
+        let first = write(contents.clone(), "{\"first\": 1111}");
+        entered.notified().await;
+        let second = write(contents, "{\"second\": 2}");
+        // Time for the second to reach the path's turn, or past it.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        go.notify_one();
+        release.notify_one();
+        first.await.unwrap();
+        entered.notified().await;
+        go.notify_one();
+        release.notify_one();
+        second.await.unwrap();
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert_ne!(calls[0].1, calls[0].2);
+        assert_eq!(calls[1].1, calls[0].2, "taken inside the turn");
+    }
+
+    #[tokio::test]
+    async fn a_second_save_is_reported_from_where_the_first_left_the_file() {
+        second_write_starts_from_the_first(|c, text| {
+            tokio::spawn(async move {
+                c.save("a.ipynb", SaveRequest::text(text)).await.unwrap();
+            })
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_second_copy_is_reported_from_where_the_first_left_the_file() {
+        second_write_starts_from_the_first(|c, _| {
+            tokio::spawn(async move {
+                c.copy("b.ipynb", Some("a.ipynb")).await.unwrap();
+            })
+        })
+        .await;
+    }
+
+    /// A checkpoint restore is a write of the file, and is reported.
+    #[tokio::test]
+    async fn a_checkpoint_restore_is_reported() {
+        let (_dir, root, _collab, contents, _observer, calls) = observed();
+        let cp = contents.create_checkpoint("a.ipynb").await.unwrap();
+        std::fs::write(root.join("a.ipynb"), "{\"changed\": \"outside\"}").unwrap();
+        contents
+            .restore_checkpoint("a.ipynb", &cp.id)
+            .await
+            .unwrap();
+        assert_eq!(calls.lock().unwrap().len(), 1);
     }
 }

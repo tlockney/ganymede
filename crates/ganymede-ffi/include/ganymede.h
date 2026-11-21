@@ -44,8 +44,8 @@ int ganymede_server_add_machine(GanymedeServer *server, const char *id,
  * mounted, 0 if not. Any thread. */
 int ganymede_server_remove_machine(GanymedeServer *server, const char *id);
 
-/* Called after the server writes a file: path is the file's canonical absolute path (links resolved),
- * before and after its stamp (size, modification time in ns and, on Unix,
+/* Called after the server writes a file: path is the file's canonical
+ * absolute path (links resolved; \\?\C:\... on Windows), before and after its stamp (size, modification time in ns and, on Unix,
  * inode: the same as file_stamp in crates/ganymede-contents/src/fileid.rs)
  * just before and just after the write, or NULL when it can't be read (before,
  * for a new file). Strings are valid during the call. */
@@ -55,7 +55,8 @@ typedef void (*GanymedeWriteCallback)(void *ctx, const char *path,
 /* Calls callback(ctx, ...) once after each write the server makes of a file
  * under its root (#916): a REST save, a room's autosave, a run saving its
  * outputs, MCP, any successful save of a regular file (a new one's
- * included, before NULL) and a copy to a named destination path. Not for a
+ * included, before NULL), a checkpoint restore, and a copy to a named
+ * destination path. Not for a
  * write that failed, a copy into a directory, a new untitled file, a
  * rename, a delete, a directory save, or when the root isn't a local
  * directory. Lets the app tell its
@@ -64,11 +65,18 @@ typedef void (*GanymedeWriteCallback)(void *ctx, const char *path,
  * thread, maybe at once for different files; it must not block. ctx must be
  * usable from any thread until the observer is replaced or the server
  * stopped (a call already under way may still use the old ctx when this
- * returns). A path with a NUL byte is not reported. Replaces the observer
- * set before, for writes that begin after the call; NULL callback removes
- * it. Any thread. */
+ * returns). A path with a NUL byte, or that is not UTF-8, is not reported.
+ * Replaces the observer set before: a write is reported to whatever is set
+ * when it ends, and one that began while none was set is not reported.
+ * NULL callback removes it (and release is then ignored). release (may be
+ * NULL) is called with ctx once, after the last call that uses that ctx has
+ * returned and none follows: when the observer is replaced or removed, or
+ * the server stops. The app frees ctx there, and not before. It runs on a
+ * server thread or on the thread of this call or of ganymede_server_stop,
+ * and must not block. Any thread. */
 void ganymede_server_set_write_observer(GanymedeServer *server,
                                         GanymedeWriteCallback callback,
+                                        void (*release)(void *ctx),
                                         void *ctx);
 
 /* Frees a string returned by this library. NULL is ignored. */

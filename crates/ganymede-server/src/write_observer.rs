@@ -11,8 +11,8 @@
 //! from one stamp to the other.
 //!
 //! Reported, once each and after it succeeded, when the contents are a
-//! local directory: any save of a regular file, a new file's included, and
-//! a copy to a named destination path. Not reported: a write that fails; a
+//! local directory: any save of a regular file, a new file's included, a
+//! checkpoint restore, and a copy to a named destination path. Not reported: a write that fails; a
 //! copy into a directory, a new untitled file, a rename and a delete; a
 //! directory save. Renames are not reported, so an app that keys its
 //! answers by path loses them on a rename it did not make itself, which
@@ -24,7 +24,8 @@ use std::sync::{Arc, RwLock};
 /// What the app is called with after a write: the file's canonical
 /// absolute path (links resolved), its stamp just before the write and just
 /// after (`None` when it could not be read, such as a file that did not
-/// exist before). Called on a thread of the server, after the write and its
+/// exist before). On Windows the canonical path has the `\\?\` prefix.
+/// Called on a thread of the server, after the write and its
 /// restamp, with the path's turn held: the next write or a rename of that
 /// path waits for it, so it should return quickly. The observer's own lock
 /// is not held, so it may call [`WriteObserver::set`].

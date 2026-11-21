@@ -22,6 +22,10 @@ static void wrote(void *ctx, const char *path, const char *before,
                   const char *after) {
     (void)ctx; (void)path; (void)before; (void)after;
 }
+static int wrote_released = 0;
+static void wrote_release(void *ctx) {
+    (*(int *)ctx)++;
+}
 static void release(void *ctx) {
     (*(int *)ctx)++;
 }
@@ -103,8 +107,17 @@ int main(void) {
         return 1;
     }
     /* The write observer is set, replaced and removed. */
-    ganymede_server_set_write_observer(server, wrote, NULL);
-    ganymede_server_set_write_observer(server, NULL, NULL);
+    ganymede_server_set_write_observer(server, wrote, wrote_release, &wrote_released);
+    ganymede_server_set_write_observer(server, wrote, wrote_release, &wrote_released);
+    if (wrote_released != 1) {
+        fprintf(stderr, "write observer released %d times after a replace\n", wrote_released);
+        return 1;
+    }
+    ganymede_server_set_write_observer(server, NULL, NULL, NULL);
+    if (wrote_released != 2) {
+        fprintf(stderr, "write observer released %d times after a remove\n", wrote_released);
+        return 1;
+    }
     ganymede_server_stop(server);
     if (released != 1) {
         fprintf(stderr, "release ran %d times\n", released);
