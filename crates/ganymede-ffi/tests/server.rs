@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use ganymede_ffi::{
     ganymede_kernel_deliver, ganymede_kernel_ended, ganymede_kernel_register,
-    ganymede_server_add_machine, ganymede_server_remove_machine,
+    ganymede_server_add_machine, ganymede_server_machines, ganymede_server_remove_machine,
     ganymede_server_set_write_observer, ganymede_server_start, ganymede_server_stop,
     ganymede_server_url, ganymede_string_free, GanymedeKernelCallbacks, GanymedeServer,
 };
@@ -418,6 +418,18 @@ fn code(reply: &str) -> &str {
     &reply[9..12]
 }
 
+/// The ids `ganymede_server_machines` lists, freeing its string.
+fn machines(server: *mut GanymedeServer) -> Vec<String> {
+    let list = unsafe { ganymede_server_machines(server) };
+    assert!(!list.is_null());
+    let json = unsafe { CStr::from_ptr(list) }
+        .to_str()
+        .unwrap()
+        .to_string();
+    unsafe { ganymede_string_free(list) };
+    serde_json::from_str(&json).unwrap()
+}
+
 #[test]
 fn mounts_and_unmounts_a_machine() {
     let root = tempfile::tempdir().unwrap();
@@ -436,6 +448,8 @@ fn mounts_and_unmounts_a_machine() {
     // Nothing is mounted until the app adds it.
     let path = "/machines/mini/api/contents/hello.txt";
     assert_eq!(code(&get(&local_url, path)), "404");
+    assert!(machines(local).is_empty());
+    assert!(unsafe { ganymede_server_machines(std::ptr::null()) }.is_null());
 
     let added = unsafe {
         ganymede_server_add_machine(local, id.as_ptr(), base.as_ptr(), token.as_ptr(), &mut err)
@@ -463,7 +477,6 @@ fn mounts_and_unmounts_a_machine() {
     };
     assert_eq!(added, 0);
     assert_eq!(code(&get(&local_url, "/machines/bare/api/status")), "403");
-
     // A bad id or URL is refused with a message, and NULL is not a crash.
     for (id, url) in [("a/b", "http://h/"), ("", "http://h/"), ("ok", "ftp://h/")] {
         let (id, url) = (c(id), c(url));
@@ -497,6 +510,25 @@ fn mounts_and_unmounts_a_machine() {
         0
     );
 
+    // The mounted ones are listed, sorted, and the refused adds are not.
+    // `a` is added last and sorts first, so the order is the sort's.
+    let a = c("a");
+    let added = unsafe {
+        ganymede_server_add_machine(
+            local,
+            a.as_ptr(),
+            base.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(added, 0);
+    assert_eq!(machines(local), ["a", "bare", "mini"]);
+    assert_eq!(
+        unsafe { ganymede_server_remove_machine(local, a.as_ptr()) },
+        1
+    );
+
     // Removing says whether it was mounted, and unmounts it.
     assert_eq!(
         unsafe { ganymede_server_remove_machine(local, id.as_ptr()) },
@@ -509,6 +541,7 @@ fn mounts_and_unmounts_a_machine() {
     assert_eq!(code(&get(&local_url, path)), "404");
     // The other machine is still mounted.
     assert_eq!(code(&get(&local_url, "/machines/bare/api/status")), "403");
+    assert_eq!(machines(local), ["bare"]);
 
     unsafe { ganymede_server_stop(local) };
     unsafe { ganymede_server_stop(mini) };

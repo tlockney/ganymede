@@ -15,8 +15,9 @@
 //!
 //! An app can mount other Ganymede servers, its connected machines, under
 //! `/machines/{id}/` ([`ganymede_server_add_machine`],
-//! [`ganymede_server_remove_machine`]); the server forwards an allowlist of
-//! routes to them for the app's own pages (#894, `docs/embedding.md`).
+//! [`ganymede_server_remove_machine`], [`ganymede_server_machines`]); the
+//! server forwards an allowlist of routes to them for the app's own pages
+//! (#894, `docs/embedding.md`).
 //!
 //! An app that keeps answers per notebook file can watch the server's own
 //! writes of them ([`ganymede_server_set_write_observer`]): the callback
@@ -129,8 +130,8 @@ pub unsafe extern "C" fn ganymede_server_url(server: *const GanymedeServer) -> *
 ///
 /// `id` is 1 to 64 of `A-Z a-z 0-9 _ -`; `url` is `http(s)://host[:port]
 /// [/base]`. No request is made now. Adding an `id` that is mounted
-/// replaces it (a changed URL or token) and closes its open websockets.
-/// Takes any thread.
+/// replaces it (a changed URL or token) and ends what the old one had
+/// open, as [`ganymede_server_remove_machine`] does. Takes any thread.
 ///
 /// Returns 0 on success. On failure (a bad id or URL) returns nonzero and,
 /// if `error_out` is not NULL, sets `*error_out` to a message to free with
@@ -167,8 +168,10 @@ pub unsafe extern "C" fn ganymede_server_add_machine(
 }
 
 /// Unmounts machine `id` and closes its open websockets; requests to
-/// `/machines/{id}/...` then get 404. Returns 1 if it was mounted, 0 if
-/// not (or `id` is NULL). Takes any thread.
+/// `/machines/{id}/...` then get 404. Its requests still waiting for an
+/// answer end with a 502, and its response bodies still streaming end with
+/// an error. Returns 1 if it was mounted, 0 if not (or `id` is NULL).
+/// Takes any thread.
 ///
 /// # Safety
 ///
@@ -184,6 +187,25 @@ pub unsafe extern "C" fn ganymede_server_remove_machine(
         Some(id) => c_int::from(server.machines.remove(&id)),
         None => 0,
     }
+}
+
+/// The ids of the machines mounted now, sorted, as a JSON array of
+/// strings (`["laptop","mini"]`; `[]` when none is, or the build has no
+/// `gateway` feature). The string is owned by the caller: free it with
+/// [`ganymede_string_free`]. Returns NULL when `server` is NULL. Takes any
+/// thread.
+///
+/// # Safety
+///
+/// `server` is NULL or live.
+#[no_mangle]
+pub unsafe extern "C" fn ganymede_server_machines(server: *const GanymedeServer) -> *mut c_char {
+    // SAFETY: the caller passes a live server or NULL.
+    let Some(server) = (unsafe { server.as_ref() }) else {
+        return std::ptr::null_mut();
+    };
+    let ids = serde_json::to_string(&server.machines.ids()).unwrap_or_else(|_| "[]".to_string());
+    into_c(ids)
 }
 
 /// Called after the server writes a file: `path` is the file's absolute

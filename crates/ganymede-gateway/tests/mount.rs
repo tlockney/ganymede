@@ -242,6 +242,14 @@ async fn record(State(log): State<Log>, req: Request) -> Response {
         "/api/contents/hang" => {
             tokio::time::sleep(Duration::from_secs(3600)).await;
         }
+        // Answers, sends one chunk and then goes silent.
+        "/api/contents/slow" => {
+            let first = futures::stream::once(async {
+                Ok::<_, std::convert::Infallible>(bytes::Bytes::from_static(b"first"))
+            });
+            return axum::body::Body::from_stream(first.chain(futures::stream::pending()))
+                .into_response();
+        }
         _ => {}
     }
     if path == "/nbconvert/html/bare.ipynb" {
@@ -461,6 +469,7 @@ async fn only_the_allowlist_is_forwarded() {
         "api/metrics/v1/kernel_usage/get_usage/k",
         "api/events/subscribe",
         "nbconvert/html/a.ipynb",
+        "kernelspecs/python3/logo-64x64.png",
     ] {
         let resp = get(&local, &format!("/machines/m/{path}"))
             .send()
@@ -469,7 +478,7 @@ async fn only_the_allowlist_is_forwarded() {
         assert_eq!(resp.status(), 200, "{path}");
     }
     let n = seen(&log).len();
-    assert_eq!(n, 13);
+    assert_eq!(n, 14);
     // None of these does.
     for path in [
         "mcp",
@@ -481,6 +490,9 @@ async fn only_the_allowlist_is_forwarded() {
         "login",
         "lsp/status",
         "api/status/extra",
+        "kernelspecs",
+        "kernelspecs/python3",
+        "kernelspecs/python3/a/b",
     ] {
         let resp = get(&local, &format!("/machines/m/{path}"))
             .send()
@@ -663,6 +675,7 @@ async fn every_response_gets_the_sandbox_policy_and_no_cookie() {
         ("api/contents/a.ipynb", own),
         ("api/kernelspecs", own),
         ("files/page.html", own),
+        ("kernelspecs/python3/logo-64x64.png", own),
         ("nbconvert/script/a.ipynb", own),
         ("nbconvert/html/a.ipynb", page),
         // The machine sent no policy at all, and a login cookie.
@@ -791,6 +804,158 @@ async fn a_machine_that_never_answers_is_a_504() {
             .status(),
         200
     );
+}
+
+/// Waits until the stand-in has been sent a request for `path`.
+async fn until_seen(log: &Log, path: &str) {
+    for _ in 0..500 {
+        if seen(log).iter().any(|s| s.uri == path) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the machine was never sent {path}");
+}
+
+/// A local server with `m` mounted from a stand-in, whose machines wait an
+/// hour for an answer, so only a removal can end a request in a test.
+async fn patient_local() -> (Server, Log) {
+    let (addr, log) = stand_in().await;
+    let local = start_with(
+        |_| {},
+        Machines::with_response_timeout(Duration::from_secs(3600)),
+    )
+    .await;
+    local
+        .machines
+        .add("m", &format!("http://{addr}/"), None)
+        .unwrap();
+    (local, log)
+}
+
+/// A request the machine has but never answers, ended by `end`: the
+/// status and message the page gets, and how long it took after `end`.
+async fn hung_request_ended_by(
+    local: &Server,
+    log: &Log,
+    end: impl FnOnce(&Server),
+) -> (u16, String) {
+    let request = tokio::spawn(get(local, "/machines/m/api/contents/hang").send());
+    until_seen(log, "/api/contents/hang").await;
+    assert!(!request.is_finished());
+    end(local);
+    let resp = tokio::time::timeout(Duration::from_secs(10), request)
+        .await
+        .expect("the request outlived the machine's removal")
+        .unwrap()
+        .unwrap();
+    let status = resp.status().as_u16();
+    let body: Value = resp.json().await.unwrap();
+    (status, body["message"].as_str().unwrap().to_string())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_machine_ends_a_request_it_has_not_answered() {
+    let (local, log) = patient_local().await;
+    let (status, message) = hung_request_ended_by(&local, &log, |l| {
+        assert!(l.machines.remove("m"));
+    })
+    .await;
+    assert_eq!(status, 502);
+    assert!(message.contains("machine m was removed"), "{message}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replacing_a_machine_ends_a_request_it_has_not_answered() {
+    let (local, log) = patient_local().await;
+    let (other, _) = stand_in().await;
+    let (status, message) = hung_request_ended_by(&local, &log, |l| {
+        l.machines
+            .add("m", &format!("http://{other}/"), None)
+            .unwrap();
+    })
+    .await;
+    assert_eq!(status, 502);
+    assert!(message.contains("machine m was removed"), "{message}");
+    // The replacement answers.
+    assert_eq!(
+        get(&local, "/machines/m/api/status")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_that_arrives_at_a_removed_machine_is_not_sent() {
+    let (local, log) = patient_local().await;
+    // A handle taken before the removal, as a request in flight has.
+    let machine = local.machines.get("m").unwrap();
+    assert!(local.machines.remove("m"));
+    let result = machine
+        .forward(
+            reqwest::Method::GET,
+            "api/status",
+            None,
+            &reqwest::header::HeaderMap::new(),
+            bytes::Bytes::new(),
+            "/machines/m",
+        )
+        .await;
+    assert_eq!(
+        result.err(),
+        Some(ganymede_gateway::mount::ForwardError::Unreachable(
+            "machine m was removed".into()
+        ))
+    );
+    assert!(seen(&log).is_empty(), "{:?}", seen(&log));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_machine_ends_a_response_that_is_streaming() {
+    let (local, log) = patient_local().await;
+    let mut resp = get(&local, "/machines/m/api/contents/slow")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    until_seen(&log, "/api/contents/slow").await;
+    assert_eq!(resp.chunk().await.unwrap().unwrap(), "first");
+    assert!(local.machines.remove("m"));
+    // The body never finishes on its own, so an error here is the
+    // removal's.
+    let next = tokio::time::timeout(Duration::from_secs(10), resp.chunk())
+        .await
+        .expect("the body outlived the machine's removal");
+    assert!(next.is_err(), "{next:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_body_of_a_removed_machine_ends_at_once() {
+    let (local, _log) = patient_local().await;
+    let machine = local.machines.get("m").unwrap();
+    let forwarded = machine
+        .forward(
+            reqwest::Method::GET,
+            "api/contents/slow",
+            None,
+            &reqwest::header::HeaderMap::new(),
+            bytes::Bytes::new(),
+            "/machines/m",
+        )
+        .await
+        .ok()
+        .unwrap();
+    assert!(local.machines.remove("m"));
+    let mut body = Box::pin(forwarded.into_stream());
+    let first = tokio::time::timeout(Duration::from_secs(10), body.next())
+        .await
+        .expect("the body outlived the machine's removal");
+    let err = first.unwrap().unwrap_err();
+    assert!(err.to_string().contains("machine m was removed"), "{err}");
+    assert!(body.next().await.is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]

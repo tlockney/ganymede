@@ -231,14 +231,20 @@ set. An app's own kernels go through the C functions instead
 thread with its own tokio runtime, so the app needs no Rust or async
 code.
 
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. This covers `ganymede_server_machines`, and the
+> end of a removed machine's waiting requests and streaming bodies.
+
 | Function | Contract |
 |---|---|
 | `GanymedeServer *ganymede_server_start(const char *config_json, char **error_out)` | Starts a server on loopback and blocks until it listens, or for at most 30 seconds, then fails. On failure returns NULL and, if `error_out` isn't NULL, sets `*error_out` to a message. |
 | `const char *ganymede_server_url(const GanymedeServer *server)` | The URL with its token. The server owns it: don't free it or use it after stop. |
 | `void ganymede_server_stop(GanymedeServer *server)` | Gives open requests a moment, shuts down every kernel, stops the server and frees it. Blocks until done. NULL is ignored. With registered kernels whose callbacks need the main thread (Swift's hop to the main actor), call it off the main thread, or each such kernel waits out the shutdown grace period. |
 | `int ganymede_server_add_machine(GanymedeServer *server, const char *id, const char *url, const char *token, char **error_out)` | Mounts the Ganymede server at `url` as machine `id` (see [Connected machines](#connected-machines)). `token` may be NULL. Returns 0, or nonzero for a bad `id` or `url`, and then `*error_out` holds a message. Any thread. |
-| `int ganymede_server_remove_machine(GanymedeServer *server, const char *id)` | Unmounts machine `id` and closes its open websockets. Returns 1 if it was mounted, 0 if not. Any thread. |
-| `void ganymede_string_free(char *s)` | Frees a string the library returned, such as the error. NULL is ignored. |
+| `int ganymede_server_remove_machine(GanymedeServer *server, const char *id)` | Unmounts machine `id` and closes its open websockets. Its requests still waiting for an answer end with a 502, and its response bodies still streaming end with an error. Returns 1 if it was mounted, 0 if not. Any thread. |
+| `char *ganymede_server_machines(const GanymedeServer *server)` | The ids of the machines mounted now, sorted, as a JSON array of strings (`["laptop","mini"]`, or `[]`). Free it with `ganymede_string_free`. NULL when `server` is NULL. Any thread. |
+| `void ganymede_string_free(char *s)` | Frees a string the library returned, such as the error or the list of machines. NULL is ignored. |
 | `void ganymede_set_panic_callback(GanymedePanicCallback cb)` | Calls `cb(message)` on the panicking thread after any panic in the library, with `panicked at <file>:<line>:<col>: <message>`, valid during the call. For the app's crash reporter: a panic in a server task doesn't end the app, so this is how it hears of one. NULL removes it. The library sends nothing itself. |
 | `void ganymede_debug_panic(void)` | Panics on the calling thread, which aborts the process. For testing crash reports. |
 | `int ganymede_v8_bench_available(void)` | 1 when the library was built with the `v8-bench` feature (the XCFramework is), else 0. |
@@ -385,6 +391,21 @@ websockets, which the page sees as a close with code 1001. Adding an `id`
 that is mounted replaces it, so a changed URL or token takes effect and the
 old sockets close. Nothing is mounted until the app adds a machine, and
 none survives the server: the app adds its machines again at each start.
+`ganymede_server_machines` lists the ids mounted now, so the app need not
+keep its own list.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. This covers `ganymede_server_machines`, the
+> `kernelspecs/{name}/{file}` route, and the end of a removed machine's
+> waiting requests and streaming bodies.
+
+Removing or replacing a machine also ends its requests in flight: one
+still waiting for the machine's answer is a 502 (`machine {id} was
+removed`) at once, and a response body still streaming ends with an error
+partway through (a download stops), as the machine's connection is
+dropped. A request already sent may have reached the machine: a save or
+other write that ends this way may or may not have been applied.
 
 Only these paths below `/machines/{id}/` are forwarded; anything else is a
 404, and a method other than GET, HEAD, PUT, POST, PATCH or DELETE is a
@@ -395,12 +416,20 @@ or a NUL is a 400:
   `nbconvert`
 - `api/collaboration` and `api/fileid` (rooms)
 - `api/kernels` with its `channels` websocket, `api/sessions`,
-  `api/kernelspecs`
+  `api/kernelspecs`, and `kernelspecs/{name}/{file}` (a kernel's logo; one
+  file name, nothing deeper)
 - `api/terminals`, and `terminals/websocket/{name}`, the terminal's socket
 - `api/notebooks/run`, `api/metrics/v1/kernel_usage`, `api/events/subscribe`
 
 `mcp`, `api/host/*` and everything else on the machine are never reachable
 this way.
+
+A forwarded `api/kernelspecs` answer is the machine's own: its
+`resources` are paths on the machine (`/kernelspecs/{name}/logo-64x64.png`
+under the machine's base URL), not below the mount. To show a machine's
+kernel logo, a page takes the part from `kernelspecs/` on and joins it
+below `/machines/{id}/`; used as is, the path reaches this server's own
+kernelspecs instead.
 
 What the machine gets:
 
