@@ -91,7 +91,7 @@ while IFS= read -r f; do
     e2e/* | validation/*) code=true macos=true ;;
     # Run by Linux jobs only (the plugin and image jobs).
     evals/* | plugins/* | container/*) code=true ;;
-    scripts/build-xcframework.sh | scripts/ffi-smoke.sh | scripts/v8-archive-sha256.sh) code=true ffi=true ;;
+    scripts/build-xcframework.sh | scripts/ffi-smoke.sh) code=true ffi=true ;;
     .github/workflows/ci.yml) code=true ffi=true macos=true ;;
     # What the macOS e2e and workstation cells run.
     scripts/test-workstation.sh | scripts/test-install.sh) code=true macos=true ;;

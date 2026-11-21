@@ -4539,6 +4539,83 @@ async fn execute_endpoint_runs_cells_into_the_document() {
     );
 }
 
+/// A run's save of the notebook is reported to the write observer (#916),
+/// as a room's autosave is: the execute endpoint saves through the same
+/// stamped contents.
+#[tokio::test]
+async fn execute_saves_are_reported_to_the_write_observer() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let file = root.join("run.ipynb");
+    let nb = json!({
+        "cells": [{"cell_type": "code", "execution_count": null, "id": "a", "metadata": {}, "outputs": [], "source": "hello"}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5
+    });
+    std::fs::write(&file, serde_json::to_string_pretty(&nb).unwrap()).unwrap();
+    let observer = Arc::new(ganymede_server::write_observer::WriteObserver::new());
+    type Reported = Vec<(std::path::PathBuf, Option<String>, Option<String>)>;
+    let calls: Arc<std::sync::Mutex<Reported>> = Default::default();
+    let into = calls.clone();
+    observer.set(Some(Arc::new(move |p, b, a| {
+        into.lock()
+            .unwrap()
+            .push((p.to_path_buf(), b.map(String::from), a.map(String::from)));
+    })));
+    let mut st = state(&root);
+    let collab = Arc::new(
+        ganymede_server::collab::Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            Some(root.clone()),
+        )
+        .with_write_observer(observer),
+    );
+    st.contents = collab.stamping(Arc::new(
+        FsContents::new(&root, FsOptions::default()).unwrap(),
+    ));
+    st.collab = collab;
+    let app = build_router(st);
+    let (_, kernel) = call(&app, "POST", "/api/kernels", Some(json!({})), Some(TOKEN)).await;
+    let kid = kernel["id"].as_str().unwrap().to_string();
+    let (_, session) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/run.ipynb",
+        Some(json!({"format": "json", "type": "notebook"})),
+        Some(TOKEN),
+    )
+    .await;
+    let doc = format!("json:notebook:{}", session["fileId"].as_str().unwrap());
+    let hash = ganymede_documents::murmur2(b"hello", 0).to_string();
+    let (s, _) = call(
+        &app,
+        "POST",
+        &format!("/api/kernels/{kid}/execute"),
+        Some(json!({"document_id": doc, "cells": [{"cell_id": "a", "source_hash": hash}]})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        {
+            let calls = calls.lock().unwrap();
+            if let Some((path, _, after)) = calls.last() {
+                assert_eq!(path, &file);
+                let text = std::fs::read_to_string(&file).unwrap();
+                if text.contains("hello") && text.contains("execution_count\": 1") {
+                    assert_eq!(after, &ganymede_contents::file_stamp(&file));
+                    break;
+                }
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no report of the run's save"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// The execute endpoint's `wait` (#566): the reply comes once the batch
 /// has run, with its cells as the room has them, before any save.
 #[tokio::test]

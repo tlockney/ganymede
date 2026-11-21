@@ -20,12 +20,6 @@ zmq = ["ganymede-server/zmq"]
 subprocess = ["ganymede-server/subprocess"]
 # `gateway_url`: kernels on another Jupyter server.
 gateway = ["ganymede-server/gateway"]
-# `ganymede_v8_bench_run`: the engine benchmark on V8 (#892), for the apps
-# to run on a device. Off by default: it downloads rusty_v8's prebuilt static library
-# for the target and links it in (tens of MB), which only the XCFramework
-# wants (scripts/build-xcframework.sh). Without it the same functions are
-# exported and report that V8 isn't built in.
-v8-bench = ["dep:v8", "dep:serde", "dep:libc"]
 
 [dependencies]
 ganymede-server = { path = "../ganymede-server", default-features = false }
@@ -37,11 +31,6 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 anyhow.workspace = true
 tracing.workspace = true
-# Only with `v8-bench`. V8 is pinned exactly: a rusty_v8 release is a V8
-# release, and the spike (spikes/v8-engine) measured this one.
-v8 = { version = "=152.2.0", optional = true }
-serde = { workspace = true, optional = true }
-libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

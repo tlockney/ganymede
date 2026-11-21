@@ -43,9 +43,11 @@ The first step keeps today's kernel. The kernel page, the Worker and
 cdp-kernel's browser build stay as they are. What changes is what they
 talk to: Swift connects the kernel page to the Rust server instead of to
 the notebook page, and the notebook page uses the ordinary HTTP and
-websocket API, as it does against `ganymede serve`. The engine (a native
-V8 or QuickJS kernel) is a later, separate decision that this
-registration does not depend on.
+websocket API, as it does against `ganymede serve`. The engine stays
+the WebKit Worker (decided 2026-11-20 from the device runs in
+[#646](https://github.com/tlockney/ganymede/issues/646);
+[ganymede-ui#765](https://github.com/tlockney/ganymede-ui/issues/765)),
+and the registration does not depend on that choice.
 
 ### The C ABI
 
@@ -209,8 +211,8 @@ subprocess kernel has, so the picker and errors should say so.
 
 ### Where the kernel core runs with a native engine
 
-The first step keeps the Worker. When a native engine replaces it, the
-kernel's own code (message handling, TypeScript stripping, completion,
+The in-app kernel stays on the Worker (see below). If a native engine
+ever replaces it, the kernel's own code (message handling, TypeScript stripping, completion,
 later a bundler) can run in one of two places. Both use the same
 registration, so this choice doesn't change the C ABI.
 
@@ -232,8 +234,14 @@ registration, so this choice doesn't change the C ABI.
 I would start in the web view and move the core beside the engine when
 the debugger or runs without a web view are wanted. Either way, a run
 with no web view needs scripts stripped and bundled when they are saved.
-Which engine (rusty_v8 without JIT, or QuickJS) stays open, to be
-decided by measuring a build.
+The engine question is decided: the in-app kernel stays on the WebKit
+Worker. The device runs in
+[#646](https://github.com/tlockney/ganymede/issues/646) measured jitless
+V8 2 to 8x slower on both the Mac and the iPhone, with a larger download
+and footprint and an extra entitlement
+([ganymede-ui#765](https://github.com/tlockney/ganymede-ui/issues/765)).
+The V8 spike stays in `spikes/v8-engine/`, and the two options above
+describe what a native engine would take if the question returns.
 
 ## Why the C ABI
 
@@ -277,6 +285,6 @@ today's relay already pays.
 
 ## What this leaves out
 
-The engine choice, Pyodide's order, Shortcuts and widgets on the kernel,
+A native engine, Pyodide's order, Shortcuts and widgets on the kernel,
 pairing with a Mac, and the kernel picker's design. Each can build on the
 registration once it exists.

@@ -17,7 +17,7 @@ design is on [The iPad use case](ipados.md).
 ![Three ways to embed Ganymede: a Rust app calling the engine in-process; an app whose web view talks HTTP to the server that ganymede-ffi runs on loopback; and a wasm or iOS build with zmq and subprocess off, where the kernel sits behind an in-process transport.](images/architecture/embedding.svg)
 
 The crates are not on crates.io, so depend on them from git:
-`ganymede-engine = { git = "https://github.com/tlockney/ganymede", tag = "v0.14.0" }`.
+`ganymede-engine = { git = "https://github.com/tlockney/ganymede", tag = "v0.15.0" }`.
 
 ## The engine in a Rust app
 
@@ -213,15 +213,12 @@ embedding the server passes its own `kernelspecs`, `provisioner` and
 `transports` in `serve::Startup`; built without a feature and given
 none, `run_with` fails at startup.
 
-`ganymede-ffi` has the same three features, on by default, and a fourth,
-`v8-bench`, off by default: the engine benchmark on V8, for the apps to
-run on a device (`ganymede_v8_bench_run`, below; ganymede-ui#698). Every slice of the XCFramework
-is built with it, so V8 is in all three; the macOS slice keeps the default
-features, and the iOS slices are built with `--no-default-features
---features gateway,v8-bench`. Built without `zmq` or `subprocess`, the
-server in `ganymede-ffi` lists no kernels and refuses to start one, rather
-than failing to start, unless `gateway_url` is
-set. An app's own kernels go through the C functions instead
+`ganymede-ffi` has the same three features, on by default. The macOS slice
+of the XCFramework keeps them, and the iOS slices are built with
+`--no-default-features --features gateway`. Built without `zmq` or
+`subprocess`, the server in `ganymede-ffi` lists no kernels and refuses to
+start one, rather than failing to start, unless `gateway_url` is set. An
+app's own kernels go through the C functions instead
 ([Kernels the app runs](#kernels-the-app-runs)).
 
 ## The server in an app, from C
@@ -231,19 +228,26 @@ set. An app's own kernels go through the C functions instead
 thread with its own tokio runtime, so the app needs no Rust or async
 code.
 
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. This covers `ganymede_server_machines`, and the
+> end of a removed machine's waiting requests and streaming bodies. The
+> latest release also has the engine benchmark, `ganymede_v8_bench_available`,
+> `ganymede_v8_bench_run` and `ganymede_v8_bench_free`, and its `v8-bench`
+> feature; `main` has dropped them, since the in-app kernel stays on the
+> web view's worker (ganymede-ui#765).
+
 | Function | Contract |
 |---|---|
 | `GanymedeServer *ganymede_server_start(const char *config_json, char **error_out)` | Starts a server on loopback and blocks until it listens, or for at most 30 seconds, then fails. On failure returns NULL and, if `error_out` isn't NULL, sets `*error_out` to a message. |
 | `const char *ganymede_server_url(const GanymedeServer *server)` | The URL with its token. The server owns it: don't free it or use it after stop. |
 | `void ganymede_server_stop(GanymedeServer *server)` | Gives open requests a moment, shuts down every kernel, stops the server and frees it. Blocks until done. NULL is ignored. With registered kernels whose callbacks need the main thread (Swift's hop to the main actor), call it off the main thread, or each such kernel waits out the shutdown grace period. |
 | `int ganymede_server_add_machine(GanymedeServer *server, const char *id, const char *url, const char *token, char **error_out)` | Mounts the Ganymede server at `url` as machine `id` (see [Connected machines](#connected-machines)). `token` may be NULL. Returns 0, or nonzero for a bad `id` or `url`, and then `*error_out` holds a message. Any thread. |
-| `int ganymede_server_remove_machine(GanymedeServer *server, const char *id)` | Unmounts machine `id` and closes its open websockets. Returns 1 if it was mounted, 0 if not. Any thread. |
-| `void ganymede_string_free(char *s)` | Frees a string the library returned, such as the error. NULL is ignored. |
+| `int ganymede_server_remove_machine(GanymedeServer *server, const char *id)` | Unmounts machine `id` and closes its open websockets. Its requests still waiting for an answer end with a 502, and its response bodies still streaming end with an error. Returns 1 if it was mounted, 0 if not. Any thread. |
+| `char *ganymede_server_machines(const GanymedeServer *server)` | The ids of the machines mounted now, sorted, as a JSON array of strings (`["laptop","mini"]`, or `[]`). Free it with `ganymede_string_free`. NULL when `server` is NULL. Any thread. |
+| `void ganymede_string_free(char *s)` | Frees a string the library returned, such as the error or the list of machines. NULL is ignored. |
 | `void ganymede_set_panic_callback(GanymedePanicCallback cb)` | Calls `cb(message)` on the panicking thread after any panic in the library, with `panicked at <file>:<line>:<col>: <message>`, valid during the call. For the app's crash reporter: a panic in a server task doesn't end the app, so this is how it hears of one. NULL removes it. The library sends nothing itself. |
 | `void ganymede_debug_panic(void)` | Panics on the calling thread, which aborts the process. For testing crash reports. |
-| `int ganymede_v8_bench_available(void)` | 1 when the library was built with the `v8-bench` feature (the XCFramework is), else 0. |
-| `char *ganymede_v8_bench_run(const char *config_json)` | Runs the engine benchmark ([#892](https://github.com/tlockney/ganymede/issues/892)) on V8 and returns its report as JSON. The config is `{"jitless": bool, "repeats": n, "workloads": [{"name", "sources": [js, ...]}]}`. NULL or invalid input, a panic, or a library without V8 gives `{"error": "..."}`. Blocks for seconds, so call it off the main thread; it runs on a thread of its own, one call at a time. The first call in a process initializes V8 and sets `jitless`; later calls keep it. The iOS device slice has no JIT and always reports `jitless: true`; `jitless: false` in a Mac app under the hardened runtime without the allow-jit entitlement aborts. At most 1000 `repeats`. A workload that never returns holds the call and the lock for good, and V8 running out of heap aborts the process. |
-| `void ganymede_v8_bench_free(char *s)` | Frees the string `ganymede_v8_bench_run` returned. NULL is ignored. |
 
 `config_json` is a JSON object with the keys of
 [`ganymede.toml`](reference.md#config-file), or NULL. `port` defaults to
@@ -385,6 +389,21 @@ websockets, which the page sees as a close with code 1001. Adding an `id`
 that is mounted replaces it, so a changed URL or token takes effect and the
 old sockets close. Nothing is mounted until the app adds a machine, and
 none survives the server: the app adds its machines again at each start.
+`ganymede_server_machines` lists the ids mounted now, so the app need not
+keep its own list.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. This covers `ganymede_server_machines`, the
+> `kernelspecs/{name}/{file}` route, and the end of a removed machine's
+> waiting requests and streaming bodies.
+
+Removing or replacing a machine also ends its requests in flight: one
+still waiting for the machine's answer is a 502 (`machine {id} was
+removed`) at once, and a response body still streaming ends with an error
+partway through (a download stops), as the machine's connection is
+dropped. A request already sent may have reached the machine: a save or
+other write that ends this way may or may not have been applied.
 
 Only these paths below `/machines/{id}/` are forwarded; anything else is a
 404, and a method other than GET, HEAD, PUT, POST, PATCH or DELETE is a
@@ -395,12 +414,20 @@ or a NUL is a 400:
   `nbconvert`
 - `api/collaboration` and `api/fileid` (rooms)
 - `api/kernels` with its `channels` websocket, `api/sessions`,
-  `api/kernelspecs`
+  `api/kernelspecs`, and `kernelspecs/{name}/{file}` (a kernel's logo; one
+  file name, nothing deeper)
 - `api/terminals`, and `terminals/websocket/{name}`, the terminal's socket
 - `api/notebooks/run`, `api/metrics/v1/kernel_usage`, `api/events/subscribe`
 
 `mcp`, `api/host/*` and everything else on the machine are never reachable
 this way.
+
+A forwarded `api/kernelspecs` answer is the machine's own: its
+`resources` are paths on the machine (`/kernelspecs/{name}/logo-64x64.png`
+under the machine's base URL), not below the mount. To show a machine's
+kernel logo, a page takes the part from `kernelspecs/` on and joins it
+below `/machines/{id}/`; used as is, the path reaches this server's own
+kernelspecs instead.
 
 What the machine gets:
 
@@ -434,6 +461,70 @@ websocket is refused with it at the handshake), and one that accepts the
 request but does not start answering within 30 seconds is a 504, and an `id` that is not
 mounted is a 404. [Security](security.md#connected-machines) says who may
 use the mount.
+
+### Seeing the server's own writes
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+An app that keeps answers per notebook file (a link allowed "always", a
+device permission) forgets them when the file is replaced outside
+Ganymede, and keeps them when Ganymede writes it. It can stamp a file
+itself, but most writes on its server come from the server, with no window
+involved: a room's autosave, a run saving its outputs, MCP. So the app can
+ask to be told of them:
+
+```c
+static void wrote(void *ctx, const char *path, const char *before, const char *after) {
+    /* Move the answers kept for the file at path from the stamp before to the stamp after. */
+}
+static void done_with(void *ctx) { /* free ctx */ }
+ganymede_server_set_write_observer(server, wrote, done_with, ctx);
+```
+
+After each write the server makes of a file under its root that succeeds,
+the callback is called once with the file's canonical absolute path (links
+resolved; on Windows it has the `\\?\` prefix) and its stamp just before
+the write and just after it. A stamp is
+`<size>:<modification time in ns>:<inode>` (no inode on Windows), the
+same as `file_stamp` in `ganymede-contents` makes from the file's metadata,
+so an app can stamp a file itself and compare. A stamp that can't be read
+is NULL: `before` is NULL for a file the write made.
+
+Reported: any successful save of a regular file, however it came (REST, a
+room's autosave, a run that saves its outputs, MCP), a new file's included
+(`before` is then NULL), a checkpoint restore, and a copy to a named
+destination path, for the destination. Not reported: a write that failed; a
+copy into a directory, a new untitled file, a rename, a delete, and a
+directory save; a file changed by anyone but the server; and every write
+when the root is not a local directory. Renames are not reported, so an app
+that keys its answers by path loses them on a rename it did not make itself,
+which fails safe. It is a function of the embedding, not a REST endpoint.
+
+The callback runs on a thread of the server, never the main thread, and
+maybe at once for different files, with the server's turn for that path
+held: the next write of the same path, or a rename of it, waits for it, so
+it should return quickly. The strings are valid only during the call. A
+path with a NUL byte, or that is not UTF-8, is not reported. `ctx` is the
+app's: it must be usable from any thread until `release`.
+
+`release` (may be NULL) is called with `ctx` once, after the last call that
+uses that `ctx` has returned and none follows: when the observer is
+replaced or removed, or the server stopped. The app frees `ctx` there, and
+not before. It runs on a server thread, or on the thread of the call that
+replaced the observer or stopped the server, and must not block.
+
+Calling the function again replaces the observer, and a NULL callback
+removes it (`release` is then ignored). A write is reported to whatever is
+set when it ends, so one that began before a replacement goes to the new
+callback; one that began while none was set is not reported at all, as its
+`before` was never taken. Nothing is reported until one is set, and none
+survives the server.
+
+From Rust, `ganymede_server::write_observer::WriteObserver` is the same
+thing: keep one, pass it as `Startup::write_observer`, and call `set` with
+a closure taking the path and the two stamps.
 
 ## Remote kernels with ganymede-gateway
 

@@ -143,8 +143,15 @@ pub fn file_stamp(path: &Path) -> Option<String> {
 /// [`file_stamp`] of the file at API path `api` under the contents root
 /// `root`; `None` for a path that is not a valid API path.
 pub fn api_file_stamp(root: &Path, api: &str) -> Option<String> {
+    file_stamp(&api_file_path(root, api)?)
+}
+
+/// The path on disk of API path `api` under the contents root `root`, as
+/// [`api_file_stamp`] stamps it; `None` for a path that is not a valid API
+/// path.
+pub fn api_file_path(root: &Path, api: &str) -> Option<std::path::PathBuf> {
     let api = crate::paths::ApiPath::parse(&crate::normalize_api_path(api)).ok()?;
-    file_stamp(&api.os_path(root))
+    Some(api.os_path(root))
 }
 
 impl Memory {

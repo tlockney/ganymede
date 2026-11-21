@@ -18,38 +18,19 @@ static void send_msg(void *ctx, const char *kernel_id, const char *channel,
 static void stop(void *ctx, const char *kernel_id) {
     (void)ctx; (void)kernel_id;
 }
+static void wrote(void *ctx, const char *path, const char *before,
+                  const char *after) {
+    (void)ctx; (void)path; (void)before; (void)after;
+}
+static int wrote_released = 0;
+static void wrote_release(void *ctx) {
+    (*(int *)ctx)++;
+}
 static void release(void *ctx) {
     (*(int *)ctx)++;
 }
 
-/* The engine benchmark's entry points (#892) link whether or not the
- * library has V8: a config that isn't JSON is an error report either way. */
-static int check_v8_bench(void) {
-#ifdef EXPECT_V8_BENCH
-    if (ganymede_v8_bench_available() != 1) {
-        fprintf(stderr, "built with v8-bench, but it isn't available\n");
-        return 1;
-    }
-#endif
-    int available = ganymede_v8_bench_available();
-    if (available != 0 && available != 1) {
-        fprintf(stderr, "v8 bench available: %d\n", available);
-        return 1;
-    }
-    char *report = ganymede_v8_bench_run("not json");
-    if (!report || strstr(report, "\"error\"") == NULL) {
-        fprintf(stderr, "v8 bench gave no error report\n");
-        return 1;
-    }
-    ganymede_v8_bench_free(report);
-    ganymede_v8_bench_free(NULL);
-    return 0;
-}
-
 int main(void) {
-    if (check_v8_bench() != 0) {
-        return 1;
-    }
     char *err = NULL;
     GanymedeServer *server = ganymede_server_start("{\"root_dir\": \".\"}", &err);
     if (!server) {
@@ -88,6 +69,12 @@ int main(void) {
         ganymede_string_free(err);
         return 1;
     }
+    char *machines = ganymede_server_machines(server);
+    if (!machines || strcmp(machines, "[\"mini\"]") != 0) {
+        fprintf(stderr, "machines listed %s\n", machines ? machines : "NULL");
+        return 1;
+    }
+    ganymede_string_free(machines);
     if (ganymede_server_add_machine(server, "a/b", "http://127.0.0.1:1/", "t", &err) == 0) {
         fprintf(stderr, "added a machine with a bad id\n");
         return 1;
@@ -96,6 +83,24 @@ int main(void) {
     if (ganymede_server_remove_machine(server, "mini") != 1
         || ganymede_server_remove_machine(server, "mini") != 0) {
         fprintf(stderr, "remove_machine did not say whether it was mounted\n");
+        return 1;
+    }
+    machines = ganymede_server_machines(server);
+    if (!machines || strcmp(machines, "[]") != 0) {
+        fprintf(stderr, "machines listed %s after the remove\n", machines ? machines : "NULL");
+        return 1;
+    }
+    ganymede_string_free(machines);
+    /* The write observer is set, replaced and removed. */
+    ganymede_server_set_write_observer(server, wrote, wrote_release, &wrote_released);
+    ganymede_server_set_write_observer(server, wrote, wrote_release, &wrote_released);
+    if (wrote_released != 1) {
+        fprintf(stderr, "write observer released %d times after a replace\n", wrote_released);
+        return 1;
+    }
+    ganymede_server_set_write_observer(server, NULL, NULL, NULL);
+    if (wrote_released != 2) {
+        fprintf(stderr, "write observer released %d times after a remove\n", wrote_released);
         return 1;
     }
     ganymede_server_stop(server);

@@ -183,6 +183,18 @@ impl Collab {
         self
     }
 
+    /// Reports each write the server makes of a file under the root to
+    /// `observer` ([`crate::write_observer`]). Call before the contents
+    /// are wrapped by [`Collab::stamping`].
+    pub fn with_write_observer(
+        mut self,
+        observer: Arc<crate::write_observer::WriteObserver>,
+    ) -> Self {
+        self.stamps =
+            Arc::new(crate::stamping::Stamps::new(self.root.clone()).with_observer(observer));
+        self
+    }
+
     /// Try to own the notebook at `path` (relative to the root).
     fn acquire(&self, path: &str) -> crate::room_lock::Acquire {
         match &self.root {
@@ -2386,6 +2398,63 @@ mod lock_tests {
         assert!(!room.is_dirty(), "the edit was saved first");
         let saved = std::fs::read_to_string(dir.path().join("a.ipynb")).unwrap();
         assert!(saved.contains("hello again"), "{saved}");
+    }
+
+    /// A room's save goes through the server's contents, so the write
+    /// observer hears of it once (#916). A room runs a notebook's outputs
+    /// through the same save.
+    #[tokio::test]
+    async fn a_room_save_is_reported_to_the_write_observer() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let nb = r#"{"cells":[{"cell_type":"markdown","id":"a","metadata":{},"source":["hello"]}],"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
+        std::fs::write(root.join("a.ipynb"), nb).unwrap();
+        let observer = Arc::new(crate::write_observer::WriteObserver::new());
+        type Calls = Vec<(PathBuf, Option<String>, Option<String>)>;
+        let calls: Arc<Mutex<Calls>> = Arc::default();
+        let into = calls.clone();
+        observer.set(Some(Arc::new(move |p, b, a| {
+            into.lock().unwrap().push((
+                p.to_path_buf(),
+                b.map(str::to_string),
+                a.map(str::to_string),
+            ));
+        })));
+        let collab = Arc::new(
+            Collab::new(FileIds::in_memory(), Some(root.clone())).with_write_observer(observer),
+        );
+        let contents = collab.stamping(Arc::new(
+            ganymede_contents::FsContents::new(&root, Default::default()).unwrap(),
+        ));
+        let (loaded, mut disk) = load(contents.as_ref(), "a.ipynb").await.ok().unwrap();
+        let mut room = Room::notebook_room(&loaded, "a.ipynb");
+        room.saved(0, &disk.hash);
+        room.edit(|txn, roots| {
+            use ganymede_documents::yrs::{Array, Map, Out, Text};
+            let Some(Out::YMap(cell)) = roots.cells.get(txn, 0) else {
+                panic!("no first cell")
+            };
+            let Some(Out::YText(t)) = cell.get(txn, "source") else {
+                panic!("no source")
+            };
+            t.insert(txn, 0, "x");
+        });
+        let before = ganymede_contents::file_stamp(&root.join("a.ipynb"));
+        let status = save_room(
+            contents.as_ref(),
+            &mut room,
+            &mut disk,
+            &HashMap::new(),
+            false,
+        )
+        .await;
+        assert_eq!(status, SaveStatus::Success);
+        let after = ganymede_contents::file_stamp(&root.join("a.ipynb"));
+        assert!(before.is_some() && after.is_some() && before != after);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [(root.join("a.ipynb"), before, after)]
+        );
     }
 
     /// A retiring room releases its lock before another room on the file

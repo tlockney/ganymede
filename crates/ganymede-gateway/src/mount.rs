@@ -92,8 +92,9 @@ fn percent_decode(s: &str) -> Option<String> {
 /// `api/sessions`, `api/kernelspecs`, `api/terminals`, `terminals/websocket`
 /// (the terminal's socket), `api/notebooks/run`,
 /// `api/metrics/v1/kernel_usage`, `api/events/subscribe`, `api/nbconvert`
-/// and `nbconvert`; subpaths of those that take them. Nothing else, `mcp`
-/// and `api/host` included.
+/// and `nbconvert`; subpaths of those that take them. Also
+/// `kernelspecs/{name}/{file}`, exactly that deep, for a kernel's logo.
+/// Nothing else, `mcp` and `api/host` included.
 pub fn route(rest: &str) -> Result<Kind, Refused> {
     let mut segments = Vec::new();
     let raw: Vec<&str> = rest.split('/').collect();
@@ -121,7 +122,8 @@ pub fn route(rest: &str) -> Result<Kind, Refused> {
         ["api", "contents" | "collaboration" | "fileid" | "kernels", ..]
         | ["api", "sessions" | "kernelspecs" | "terminals", ..]
         | ["api", "metrics", "v1", "kernel_usage", ..]
-        | ["terminals", "websocket", _] => Kind::Other,
+        | ["terminals", "websocket", _]
+        | ["kernelspecs", _, _] => Kind::Other,
         _ => return Err(Refused::NotAllowed),
     };
     Ok(kind)
@@ -294,8 +296,9 @@ impl Machines {
     /// Mounts the server at `url` (`http(s)://host[:port][/base]`) as
     /// `id`, authenticating with `token` when given (otherwise the
     /// machine may let it in by tailnet identity). An `id` already
-    /// mounted is replaced, and the replaced machine's open websockets
-    /// are closed. No request is made yet.
+    /// mounted is replaced, and the replaced machine's open websockets,
+    /// requests waiting for an answer and response bodies still streaming
+    /// are ended. No request is made yet.
     pub fn add(&self, id: &str, url: &str, token: Option<&str>) -> Result<(), String> {
         let mut machine = Machine::new(id, url, token)?;
         if let Some(t) = self.response_timeout {
@@ -313,7 +316,9 @@ impl Machines {
         Ok(())
     }
 
-    /// Unmounts `id`, closing its open websockets. Whether it was mounted.
+    /// Unmounts `id`, closing its open websockets and ending its requests
+    /// waiting for an answer and its response bodies still streaming.
+    /// Whether it was mounted.
     pub fn remove(&self, id: &str) -> bool {
         let old = self
             .map
@@ -411,7 +416,13 @@ impl Machine {
     }
 
     fn close(&self) {
-        let _ = self.closed.send(true);
+        // Not `send`, which keeps the old value when no one is subscribed:
+        // a request that arrives after the removal must still see it.
+        self.closed.send_replace(true);
+    }
+
+    fn removed(&self) -> ForwardError {
+        ForwardError::Unreachable(removed_message(&self.id))
     }
 
     fn url(&self, rest: &str, query: Option<&str>) -> Result<reqwest::Url, String> {
@@ -442,7 +453,10 @@ impl Machine {
     /// ([`sanitize_request`], [`sanitize_query`]); this machine's are.
     /// `mount_prefix` is where the machine is mounted, for a redirect.
     /// Fails, with a message for the page, when the machine can't be
-    /// reached.
+    /// reached, or is removed or replaced before it answers
+    /// ([`ForwardError::Unreachable`]). The body of the [`Forwarded`] ends
+    /// with an error when the machine is removed or replaced while it
+    /// streams.
     pub async fn forward(
         &self,
         method: Method,
@@ -460,8 +474,14 @@ impl Machine {
         if !body.is_empty() {
             req = req.body(body);
         }
-        let resp = tokio::time::timeout(self.response_timeout, req.send())
-            .await
+        let mut closed = self.closed.subscribe();
+        // Closed first: a machine already removed sends nothing.
+        let sent = tokio::select! {
+            biased;
+            () = wait_closed(&mut closed) => return Err(self.removed()),
+            sent = tokio::time::timeout(self.response_timeout, req.send()) => sent,
+        };
+        let resp = sent
             .map_err(|_| {
                 ForwardError::TimedOut(format!(
                     "machine {} did not answer within {} seconds",
@@ -480,6 +500,8 @@ impl Machine {
             status: resp.status(),
             headers: sanitize_response(resp.headers(), self.base.path(), mount_prefix),
             body: resp,
+            id: self.id.clone(),
+            closed,
         })
     }
 
@@ -528,6 +550,16 @@ impl Machine {
     }
 }
 
+fn removed_message(id: &str) -> String {
+    format!("machine {id} was removed")
+}
+
+/// Completes when the machine is removed or replaced: at once if it
+/// already was.
+async fn wait_closed(closed: &mut watch::Receiver<bool>) {
+    let _ = closed.wait_for(|c| *c).await;
+}
+
 /// A transport failure in words, without the URL (the page has it).
 fn describe(e: reqwest::Error) -> String {
     if e.is_timeout() {
@@ -554,15 +586,28 @@ pub struct Forwarded {
     pub status: reqwest::StatusCode,
     pub headers: HeaderMap,
     body: reqwest::Response,
+    id: String,
+    closed: watch::Receiver<bool>,
 }
 
 impl Forwarded {
-    /// The body as it arrives. An error ends it.
+    /// The body as it arrives. An error ends it, and so does the machine's
+    /// removal or replacement, even while it is silent: the stream then
+    /// ends with an error and the connection to the machine is dropped.
     pub fn into_stream(self) -> impl futures::Stream<Item = io::Result<Bytes>> + Send + 'static {
-        futures::stream::unfold(Some(self.body), |resp| async move {
-            let mut resp = resp?;
-            match resp.chunk().await {
-                Ok(Some(chunk)) => Some((Ok(chunk), Some(resp))),
+        let state = Some((self.body, self.closed, self.id));
+        futures::stream::unfold(state, |state| async move {
+            let (mut resp, mut closed, id) = state?;
+            let chunk = tokio::select! {
+                // First, so a machine that was already removed ends it at once.
+                biased;
+                () = wait_closed(&mut closed) => {
+                    return Some((Err(io::Error::other(removed_message(&id))), None));
+                }
+                chunk = resp.chunk() => chunk,
+            };
+            match chunk {
+                Ok(Some(chunk)) => Some((Ok(chunk), Some((resp, closed, id)))),
                 Ok(None) => None,
                 Err(e) => Some((Err(io::Error::other(e.without_url().to_string())), None)),
             }
@@ -704,6 +749,9 @@ mod tests {
             "api/events/subscribe",
             "api/nbconvert",
             "nbconvert/html/a.ipynb",
+            "kernelspecs/python3/logo-64x64.png",
+            "kernelspecs/a/b%20c.svg",
+            "kernelspecs/a/b/",
         ] {
             assert!(route(ok).is_ok(), "{ok}");
         }
@@ -730,7 +778,13 @@ mod tests {
             "File",
             "Files/x",
             "API/status",
-            "kernelspecs/a/logo.png",
+            "kernelspecs",
+            "kernelspecs/",
+            "kernelspecs/a",
+            "kernelspecs/a/",
+            "kernelspecs/a/b/c",
+            "kernelspecs/a/b/c/d.png",
+            "Kernelspecs/a/b",
         ] {
             assert_eq!(route(no), Err(Refused::NotAllowed), "{no}");
         }
@@ -739,6 +793,8 @@ mod tests {
         assert_eq!(route("nbconvert/%68tml/a"), Ok(Kind::Page));
         assert_eq!(route("nbconvert/script/a"), Ok(Kind::Other));
         assert_eq!(route("api/contents/a"), Ok(Kind::Other));
+        assert_eq!(route("kernelspecs/a/logo.png"), Ok(Kind::Other));
+        assert_eq!(route("kernelspecs/%61/logo.png"), Ok(Kind::Other));
     }
 
     #[test]

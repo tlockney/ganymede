@@ -33,16 +33,60 @@ void ganymede_server_stop(GanymedeServer *server);
  * device in by tailnet identity accepts, so a NULL token can work there. The page's own cookie, token and Origin are
  * never forwarded, and the machine's token is never given to the page.
  * Nothing is mounted until this is called. No request is made now. An id
- * already mounted is replaced, and its open websockets closed. Any thread.
+ * already mounted is replaced, and what the old one had open ends as
+ * ganymede_server_remove_machine has it. Any thread.
  * Returns 0, or nonzero on failure (a bad id or URL): then *error_out (if
  * error_out is not NULL) is a message to free with ganymede_string_free. */
 int ganymede_server_add_machine(GanymedeServer *server, const char *id,
                                 const char *url, const char *token,
                                 char **error_out);
 
-/* Unmounts machine id and closes its open websockets. Returns 1 if it was
- * mounted, 0 if not. Any thread. */
+/* Unmounts machine id and closes its open websockets. Its requests still
+ * waiting for an answer end with a 502, and its response bodies still
+ * streaming end with an error. Returns 1 if it was mounted, 0 if not. Any
+ * thread. */
 int ganymede_server_remove_machine(GanymedeServer *server, const char *id);
+
+/* The ids of the machines mounted now, sorted, as a JSON array of strings
+ * (["laptop","mini"], or [] when there are none). Free it with
+ * ganymede_string_free. NULL when server is NULL. Any thread. */
+char *ganymede_server_machines(const GanymedeServer *server);
+
+/* Called after the server writes a file. path is the file's canonical
+ * absolute path (links resolved; \\?\C:\... on Windows). before and after
+ * are its stamp (size, modification time in ns and, on Unix, inode: the same
+ * as file_stamp in crates/ganymede-contents/src/fileid.rs) just before and
+ * just after the write, or NULL when it can't be read (before, for a new
+ * file). Strings are valid during the call. */
+typedef void (*GanymedeWriteCallback)(void *ctx, const char *path,
+                                      const char *before, const char *after);
+
+/* Calls callback(ctx, ...) once after each write the server makes of a file
+ * under its root (#916): a REST save, a room's autosave, a run saving its
+ * outputs, MCP, any successful save of a regular file (a new one's
+ * included, before NULL), a checkpoint restore, and a copy to a named
+ * destination path. Not for a
+ * write that failed, a copy into a directory, a new untitled file, a
+ * rename, a delete, a directory save, or when the root isn't a local
+ * directory. Lets the app tell its
+ * server's writes from a file replaced outside, to keep or forget what it
+ * keeps per file. The callback runs on a server thread, never the main
+ * thread, maybe at once for different files; it must not block. ctx must be
+ * usable from any thread until the observer is replaced or the server
+ * stopped (a call already under way may still use the old ctx when this
+ * returns). A path with a NUL byte, or that is not UTF-8, is not reported.
+ * Replaces the observer set before: a write is reported to whatever is set
+ * when it ends, and one that began while none was set is not reported.
+ * NULL callback removes it (and release is then ignored). release (may be
+ * NULL) is called with ctx once, after the last call that uses that ctx has
+ * returned and none follows: when the observer is replaced or removed, or
+ * the server stops. The app frees ctx there, and not before. It runs on a
+ * server thread or on the thread of this call or of ganymede_server_stop,
+ * and must not block. Any thread. */
+void ganymede_server_set_write_observer(GanymedeServer *server,
+                                        GanymedeWriteCallback callback,
+                                        void (*release)(void *ctx),
+                                        void *ctx);
 
 /* Frees a string returned by this library. NULL is ignored. */
 void ganymede_string_free(char *s);
@@ -107,31 +151,6 @@ void ganymede_set_panic_callback(GanymedePanicCallback callback);
 /* Panics on the calling thread; the process aborts. For testing crash
  * reports. */
 void ganymede_debug_panic(void);
-
-/* 1 when the library was built with the v8-bench feature, which the
- * XCFramework is; 0 otherwise. */
-int ganymede_v8_bench_available(void);
-
-/* Runs the engine benchmark (#892) on V8 and returns the report as JSON, to
- * free with ganymede_v8_bench_free. config_json: {"jitless": bool,
- * "repeats": n, "workloads": [{"name": "...", "sources": ["js", ...]}]};
- * jitless defaults to true and repeats to 5. Each workload runs in a fresh
- * isolate; the report has per-workload start, load, first, steady and cold
- * times, the heap and the process's peak memory. A NULL or invalid config,
- * a panic, or a library without V8 gives {"error": "..."}; a workload whose
- * script throws has its own "error". Blocks until done (seconds), so call
- * it off the main thread; it runs on a thread of its own with a big stack,
- * one call at a time (a workload that never returns holds the lock for good,
- * and V8 running out of heap aborts the process). repeats is at most 1000.
- * V8's flags are set by the first call in a process: later calls keep its
- * "jitless", which the report shows. The iOS device library has no JIT and
- * always reports jitless true; the simulator's keeps it. In a Mac app under
- * the hardened runtime without the allow-jit entitlement, "jitless": false
- * aborts the process. Always exported. */
-char *ganymede_v8_bench_run(const char *config_json);
-
-/* Frees a string ganymede_v8_bench_run returned. NULL is ignored. */
-void ganymede_v8_bench_free(char *s);
 
 #ifdef __cplusplus
 }

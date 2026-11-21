@@ -7,15 +7,11 @@ iPhone ([#266](https://github.com/tlockney/ganymede/issues/266))? Nothing
 here ships, and nothing in Ganymede depends on it: it is its own Cargo
 workspace and its own workflow (`.github/workflows/v8-spike.yml`).
 
-The apps run the same benchmark from Settings (#892) through a copy of
-this runner in `crates/ganymede-ffi/src/v8_bench.rs`, behind its
-`v8-bench` feature (`ganymede_v8_bench_run`, same config and report as
-`v8_spike_run`): a second Rust static library in an app would clash with
-ganymede-ffi's runtime symbols, so the library the apps link carries it.
-This crate stays for what that one doesn't have, the size scripts, the host
-runner and the bench app. When the config, the report or the way a
-workload runs changes, change both. Its rusty_v8 pin (`=152.2.0`) matches
-ganymede-ffi's.
+The apps once ran this benchmark through a copy in ganymede-ffi (#895). It
+was removed when the in-app kernel stayed on the WebKit Worker
+([ganymede-ui#765](https://github.com/tlockney/ganymede-ui/issues/765),
+[#646](https://github.com/tlockney/ganymede/issues/646)); the spike is
+standalone.
 
 It measures two things:
 
