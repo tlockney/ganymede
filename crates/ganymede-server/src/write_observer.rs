@@ -69,3 +69,46 @@ impl WriteObserver {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// Calls `set` on its observer when dropped, as an app's `release`
+    /// may when its function is replaced.
+    struct SetsOnDrop(Arc<WriteObserver>);
+
+    impl Drop for SetsOnDrop {
+        fn drop(&mut self) {
+            self.0.set(None);
+        }
+    }
+
+    /// Dropping the replaced function runs outside the lock (#918): a
+    /// drop that calls `set` would otherwise deadlock on it.
+    #[test]
+    fn a_replaced_function_may_set_the_observer_when_dropped() {
+        let observer = Arc::new(WriteObserver::new());
+        let guard = SetsOnDrop(observer.clone());
+        observer.set(Some(Arc::new(
+            move |_: &Path, _: Option<&str>, _: Option<&str>| {
+                let _ = &guard;
+            },
+        )));
+        let (done, finished) = mpsc::channel();
+        let replacing = observer.clone();
+        std::thread::spawn(move || {
+            replacing.set(Some(Arc::new(
+                |_: &Path, _: Option<&str>, _: Option<&str>| {},
+            )));
+            let _ = done.send(());
+        });
+        finished
+            .recv_timeout(Duration::from_secs(10))
+            .expect("set deadlocked dropping the old function");
+        // The old function's drop cleared what the call had just set.
+        assert!(!observer.is_set());
+    }
+}
