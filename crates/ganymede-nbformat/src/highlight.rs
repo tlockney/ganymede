@@ -967,6 +967,24 @@ mod tests {
                 span("hl-n", "1"),
             ]
         );
+        // A template inside the interpolation is skipped whole, so its
+        // `}` and quote end nothing.
+        let code = "jupyter.sql`select ${ x ? `}` : `it's` } from t`; const z = 1;";
+        let html = highlight(code, "ts");
+        assert_eq!(text(&html), code);
+        assert_eq!(
+            spans(&html),
+            [
+                span("hl-s", "`"),
+                span("hl-k", "select"),
+                span("hl-s", "`}`"),
+                span("hl-s", "`it's`"),
+                span("hl-k", "from"),
+                span("hl-s", "`"),
+                span("hl-k", "const"),
+                span("hl-n", "1"),
+            ]
+        );
     }
 
     #[test]
