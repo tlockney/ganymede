@@ -107,7 +107,7 @@ mod tests {
         });
         finished
             .recv_timeout(Duration::from_secs(10))
-            .expect("set deadlocked dropping the old function");
+            .expect("set deadlocked or panicked dropping the old function");
         // The old function's drop cleared what the call had just set.
         assert!(!observer.is_set());
     }

@@ -894,6 +894,38 @@ mod tests {
         PANICS.lock().unwrap().push(message);
     }
 
+    static WRITES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    extern "C" fn count_write(
+        _ctx: *mut std::ffi::c_void,
+        _path: *const c_char,
+        _before: *const c_char,
+        _after: *const c_char,
+    ) {
+        WRITES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// A path that can't be passed as a C string unchanged (not UTF-8, or
+    /// with a NUL) is skipped, as the docs say (#918); others are passed.
+    #[test]
+    fn the_write_callback_skips_paths_it_cannot_pass() {
+        let observer = super::CWriteObserver {
+            ctx: std::ptr::null_mut(),
+            callback: count_write,
+            release: None,
+        };
+        observer.call(std::path::Path::new("/a\0b.ipynb"), None, None);
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let bytes = std::ffi::OsStr::from_bytes(b"/\xff.ipynb");
+            observer.call(std::path::Path::new(bytes), None, None);
+        }
+        assert_eq!(WRITES.load(std::sync::atomic::Ordering::SeqCst), 0);
+        observer.call(std::path::Path::new("/a.ipynb"), None, Some("1:2:3"));
+        assert_eq!(WRITES.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn panic_callback_gets_the_message() {
         ganymede_set_panic_callback(Some(record));
