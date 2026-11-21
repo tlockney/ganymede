@@ -131,6 +131,13 @@ struct Lexer<'a> {
     lang: &'static Lang,
     at: usize,
     out: String,
+    /// The byte range of the last comment emitted, so a `jupyter.sql` inside
+    /// one doesn't tag the template after it.
+    comment: (usize, usize),
+    /// Set when a SQL template's end couldn't be found: the rest of the
+    /// cell takes the plain-string path, so a hostile cell can't make every
+    /// tagged backtick rescan it to the end.
+    no_sql: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -140,6 +147,8 @@ impl<'a> Lexer<'a> {
             lang,
             at: 0,
             out: String::with_capacity(src.len() * 2),
+            comment: (0, 0),
+            no_sql: false,
         }
     }
 
@@ -162,16 +171,21 @@ impl<'a> Lexer<'a> {
     fn run(mut self) -> String {
         while let Some(c) = self.rest().chars().next() {
             let rest = self.rest();
-            if c == '`' && self.sql_tagged() {
-                let close = template_end(&rest[1..]);
-                let body = &rest[1..close.map_or(rest.len(), |i| 1 + i)];
+            // A template whose end can't be found (a quote or regex in a
+            // `${...}` the scan misreads, or nesting too deep) is a plain
+            // string, as it was before SQL: up to its backtick, or the line.
+            let mut sql_close = None;
+            if c == '`' && !self.no_sql && self.sql_tagged() {
+                sql_close = template_end(&rest[1..], 0);
+                self.no_sql = sql_close.is_none();
+            }
+            if let Some(close) = sql_close {
                 push_span(&mut self.out, Some("hl-s"), "`");
-                sql_template_body(&mut self.out, body);
-                if close.is_some() {
-                    push_span(&mut self.out, Some("hl-s"), "`");
-                }
-                self.at += close.map_or(rest.len(), |i| i + 2);
+                sql_template_body(&mut self.out, &rest[1..1 + close]);
+                push_span(&mut self.out, Some("hl-s"), "`");
+                self.at += close + 2;
             } else if let Some(end) = self.comment(rest) {
+                self.comment = (self.at, self.at + end);
                 self.emit(Some("hl-c"), self.at + end);
             } else if let Some(end) = self.string(rest) {
                 self.emit(Some("hl-s"), self.at + end);
@@ -228,6 +242,11 @@ impl<'a> Lexer<'a> {
             },
             None => before,
         };
+        // Not a tag named in a comment (`// see jupyter.sql`).
+        let (from, to) = self.comment;
+        if from < before.len() && before.len() <= to {
+            return false;
+        }
         before
             .strip_suffix("jupyter.sql")
             .is_some_and(|head| !head.ends_with(|c: char| self.ident_char(c) || c == '.'))
@@ -354,7 +373,7 @@ fn sql_template_body(out: &mut String, body: &str) {
         }
         let expr = &rest[cut + 2..];
         out.push_str("${");
-        match interpolation_end(expr) {
+        match interpolation_end(expr, 0) {
             Some(end) => {
                 out.push_str(&Lexer::new(&expr[..end], &TS).run());
                 out.push('}');
@@ -376,7 +395,7 @@ fn sql_text(out: &mut String, text: &str, mut state: Sql) -> Sql {
         let rest = &text[at..];
         let (class, len, next) = match state {
             Sql::Quoted(q) => match sql_closing(rest, q) {
-                Some(i) => (quoted_class(q), i + 1, Sql::Code),
+                Some(i) => (quoted_class(q), i, Sql::Code),
                 None => (quoted_class(q), rest.len(), state),
             },
             Sql::LineComment => match rest.find('\n') {
@@ -413,16 +432,14 @@ fn sql_token(rest: &str, before: &str) -> (Option<&'static str>, usize, Sql) {
             Some(i) => (Some("hl-c"), 2 + i + 2, Sql::Code),
             None => (Some("hl-c"), rest.len(), Sql::BlockComment),
         }
-    } else if c == '\'' || c == '"' {
-        let q = c as u8;
-        match sql_closing(&rest[1..], q) {
-            Some(i) => (quoted_class(q), 1 + i + 1, Sql::Code),
+    } else if let (q @ (b'\'' | b'"'), width) = sql_char(rest.as_bytes(), 0) {
+        match sql_closing(&rest[width..], q) {
+            Some(i) => (quoted_class(q), width + i, Sql::Code),
             None => (quoted_class(q), rest.len(), Sql::Quoted(q)),
         }
-    } else if c == '\\' {
-        // A template escape such as `` \` ``: the backslash and what it escapes.
-        let next = rest[1..].chars().next().map_or(0, char::len_utf8);
-        (None, 1 + next, Sql::Code)
+    } else if c == '\\' && rest.len() > 1 && sql_char(rest.as_bytes(), 0).1 == 2 {
+        // A template escape that is no quote: `\\`, `` \` `` and `\$`.
+        (None, 2, Sql::Code)
     } else if c.is_ascii_digit() || (c == '.' && next_is_digit(rest)) {
         (Some("hl-n"), number_end(rest), Sql::Code)
     } else if c.is_alphabetic() || c == '_' {
@@ -457,25 +474,35 @@ fn quoted_class(q: u8) -> Option<&'static str> {
     (q == b'\'').then_some("hl-s")
 }
 
-/// Where the quote `q` closes in `s`: a doubled quote is SQL's escape,
-/// and a backslash is the template's.
+/// Where the quote `q` closes in `s`, as the offset after it: a doubled
+/// quote is SQL's escape.
 fn sql_closing(s: &str, q: u8) -> Option<usize> {
     let b = s.as_bytes();
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'\\' {
-            i += 2;
-        } else if b[i] == q {
-            if b.get(i + 1) == Some(&q) {
-                i += 2;
-            } else {
-                return Some(i);
+        let (c, width) = sql_char(b, i);
+        i += width;
+        if c == q {
+            match sql_char(b, i) {
+                (c, width) if c == q && i < b.len() => i += width,
+                _ => return Some(i),
             }
-        } else {
-            i += 1;
         }
     }
     None
+}
+
+/// The SQL character at `i` in template text and its width. The kernel
+/// joins the template's cooked strings, so `\'` and `\"` reach DuckDB as
+/// the quote itself (DuckDB strings have no backslash escape), while
+/// `\\`, `` \` `` and `\$` stand for a character that is none.
+fn sql_char(b: &[u8], i: usize) -> (u8, usize) {
+    match (b.get(i), b.get(i + 1)) {
+        (Some(b'\\'), Some(&n @ (b'\'' | b'"'))) => (n, 2),
+        (Some(b'\\'), Some(b'\\' | b'`' | b'$')) => (b'\\', 2),
+        (Some(&c), _) => (c, 1),
+        (None, _) => (0, 1),
+    }
 }
 
 /// Where the first `${` not escaped by a `\` stands in template text.
@@ -492,16 +519,26 @@ fn next_interpolation(s: &str) -> Option<usize> {
     None
 }
 
+/// How deep templates and interpolations may nest before the scan gives
+/// up, so the two functions below can't overflow the stack.
+const MAX_NESTING: usize = 64;
+
 /// Where the closing backtick of a template stands, `s` starting just
 /// after the opening one; `` ` ``s inside its `${...}`s don't count.
-fn template_end(s: &str) -> Option<usize> {
+/// `None` when it never closes, or nests past `MAX_NESTING`.
+fn template_end(s: &str, depth: usize) -> Option<usize> {
+    if depth > MAX_NESTING {
+        return None;
+    }
     let b = s.as_bytes();
     let mut i = 0;
     while i < b.len() {
         match b[i] {
             b'\\' => i += 2,
             b'`' => return Some(i),
-            b'$' if b.get(i + 1) == Some(&b'{') => i += 2 + interpolation_end(&s[i + 2..])? + 1,
+            b'$' if b.get(i + 1) == Some(&b'{') => {
+                i += 2 + interpolation_end(&s[i + 2..], depth + 1)? + 1
+            }
             _ => i += 1,
         }
     }
@@ -511,20 +548,23 @@ fn template_end(s: &str) -> Option<usize> {
 /// Where the `}` closing an interpolation stands, `s` starting just
 /// after its `${`: braces nest, and strings, templates and comments in
 /// it are skipped.
-fn interpolation_end(s: &str) -> Option<usize> {
+fn interpolation_end(s: &str, depth: usize) -> Option<usize> {
+    if depth > MAX_NESTING {
+        return None;
+    }
     let b = s.as_bytes();
-    let mut depth = 0;
+    let mut braces = 0;
     let mut i = 0;
     while i < b.len() {
         match b[i] {
-            b'{' => depth += 1,
-            b'}' if depth == 0 => return Some(i),
-            b'}' => depth -= 1,
+            b'{' => braces += 1,
+            b'}' if braces == 0 => return Some(i),
+            b'}' => braces -= 1,
             q @ (b'\'' | b'"') => {
                 let quote = if q == b'"' { "\"" } else { "'" };
                 i += 1 + closing(&s[i + 1..], quote, true)?;
             }
-            b'`' => i += 1 + template_end(&s[i + 1..])?,
+            b'`' => i += 1 + template_end(&s[i + 1..], depth + 1)?,
             b'/' if b.get(i + 1) == Some(&b'/') => i += s[i..].find('\n')?,
             b'/' if b.get(i + 1) == Some(&b'*') => i += 2 + s[i + 2..].find("*/")? + 1,
             _ => {}
@@ -863,6 +903,293 @@ mod tests {
             html.contains("<span class=\"hl-s\">&#39;\\${x}&#39;</span>"),
             "{html}"
         );
+    }
+
+    #[test]
+    fn sql_names_and_literals() {
+        // A qualified name (`t.date`) is a name, though `date` is a keyword.
+        let html = highlight("jupyter.sql`select t.date, t.from from t`", "ts");
+        assert_eq!(
+            spans(&html),
+            [
+                span("hl-s", "`"),
+                span("hl-k", "select"),
+                span("hl-k", "from"),
+                span("hl-s", "`"),
+            ]
+        );
+        let html = highlight("jupyter.sql`select true, FALSE, Null`", "ts");
+        assert_eq!(
+            spans(&html),
+            [
+                span("hl-s", "`"),
+                span("hl-k", "select"),
+                span("hl-n", "true"),
+                span("hl-n", "FALSE"),
+                span("hl-n", "Null"),
+                span("hl-s", "`"),
+            ]
+        );
+    }
+
+    #[test]
+    fn sql_template_end_skips_what_is_in_an_interpolation() {
+        // A `//` comment holds a `}` and a backtick; neither ends anything.
+        let code = "jupyter.sql`select ${a // }`\n} from t`; const x = 1;";
+        let html = highlight(code, "ts");
+        assert_eq!(text(&html), code);
+        assert_eq!(
+            spans(&html),
+            [
+                span("hl-s", "`"),
+                span("hl-k", "select"),
+                span("hl-c", "// }`"),
+                span("hl-k", "from"),
+                span("hl-s", "`"),
+                span("hl-k", "const"),
+                span("hl-n", "1"),
+            ]
+        );
+        // An object literal's braces nest, so its `}` isn't the end.
+        let code = "jupyter.sql`select ${ {k:1}.k + `a` } from t`; const x = 1;";
+        let html = highlight(code, "ts");
+        assert_eq!(text(&html), code);
+        assert_eq!(
+            spans(&html),
+            [
+                span("hl-s", "`"),
+                span("hl-k", "select"),
+                span("hl-n", "1"),
+                span("hl-s", "`a`"),
+                span("hl-k", "from"),
+                span("hl-s", "`"),
+                span("hl-k", "const"),
+                span("hl-n", "1"),
+            ]
+        );
+    }
+
+    #[test]
+    fn sql_comments_carry_across_interpolations() {
+        let html = highlight("jupyter.sql`-- c ${y} from\nselect 1`", "ts");
+        assert_eq!(
+            spans(&html),
+            [
+                span("hl-s", "`"),
+                span("hl-c", "-- c "),
+                span("hl-c", " from"),
+                span("hl-k", "select"),
+                span("hl-n", "1"),
+                span("hl-s", "`"),
+            ]
+        );
+        let html = highlight("jupyter.sql`/* ${z} from */ select 1`", "ts");
+        assert_eq!(
+            spans(&html),
+            [
+                span("hl-s", "`"),
+                span("hl-c", "/* "),
+                span("hl-c", " from */"),
+                span("hl-k", "select"),
+                span("hl-n", "1"),
+                span("hl-s", "`"),
+            ]
+        );
+    }
+
+    #[test]
+    fn sql_template_backslash_is_not_an_sql_escape() {
+        // `\'` reaches DuckDB as `'`: it closes the string after `x`, and
+        // the last `'` opens another.
+        let html = highlight("jupyter.sql`select 'x\\'${q} from'`; const y = 1;", "ts");
+        assert_eq!(
+            spans(&html),
+            [
+                span("hl-s", "`"),
+                span("hl-k", "select"),
+                span("hl-s", "'x\\'"),
+                span("hl-k", "from"),
+                span("hl-s", "'"),
+                span("hl-s", "`"),
+                span("hl-k", "const"),
+                span("hl-n", "1"),
+            ]
+        );
+        // `\'` opens and closes a string too.
+        let html = highlight("jupyter.sql`select \\'from\\' from t`", "ts");
+        assert_eq!(
+            spans(&html),
+            [
+                span("hl-s", "`"),
+                span("hl-k", "select"),
+                span("hl-s", "\\'from\\'"),
+                span("hl-k", "from"),
+                span("hl-s", "`"),
+            ]
+        );
+        // `\\` is one character and no quote: the string opens at `'a'`,
+        // and in a string `\\` leaves the closing quote alone.
+        let html = highlight("jupyter.sql`select \\\\'a\\\\' from t`", "ts");
+        assert_eq!(
+            spans(&html),
+            [
+                span("hl-s", "`"),
+                span("hl-k", "select"),
+                span("hl-s", "'a\\\\'"),
+                span("hl-k", "from"),
+                span("hl-s", "`"),
+            ]
+        );
+    }
+
+    #[test]
+    fn sql_quoted_name_is_plain() {
+        let html = highlight("jupyter.sql`select \"from\"`", "ts");
+        assert_eq!(
+            spans(&html),
+            [span("hl-s", "`"), span("hl-k", "select"), span("hl-s", "`"),]
+        );
+    }
+
+    #[test]
+    fn sql_template_ends_at_the_real_backtick() {
+        // An escaped backtick, even in a string, isn't the end.
+        let html = highlight("jupyter.sql`select '\\`' from t`; const x = 1;", "ts");
+        assert_eq!(
+            spans(&html),
+            [
+                span("hl-s", "`"),
+                span("hl-k", "select"),
+                span("hl-s", "'\\`'"),
+                span("hl-k", "from"),
+                span("hl-s", "`"),
+                span("hl-k", "const"),
+                span("hl-n", "1"),
+            ]
+        );
+        // A block comment in an interpolation can hold a `}`.
+        let html = highlight("jupyter.sql`select ${a /* } */} from t`", "ts");
+        assert_eq!(
+            spans(&html),
+            [
+                span("hl-s", "`"),
+                span("hl-k", "select"),
+                span("hl-c", "/* } */"),
+                span("hl-k", "from"),
+                span("hl-s", "`"),
+            ]
+        );
+    }
+
+    #[test]
+    fn failed_scans_do_not_repeat() {
+        // Each tag's interpolation has an unclosed comment, so its scan
+        // reaches the end of the cell. If every tag rescanned it, this
+        // would take minutes.
+        let s = "jupyter.sql`${/*`;".repeat(20_000);
+        assert_eq!(text(&highlight(&s, "ts")), s);
+    }
+
+    #[test]
+    fn failed_scan_turns_sql_off_for_the_cell() {
+        // After a template whose end can't be found, a later well-formed
+        // `jupyter.sql` template in the same cell stays a plain string.
+        let code = "jupyter.sql`${/*`;\njupyter.sql`select 1`";
+        let html = highlight(code, "ts");
+        assert_eq!(text(&html), code);
+        assert!(
+            html.contains("<span class=\"hl-s\">`select 1`</span>"),
+            "{html}"
+        );
+        // The same template on its own is SQL.
+        let alone = highlight("jupyter.sql`select 1`", "ts");
+        assert!(alone.contains("hl-k\">select"), "{alone}");
+    }
+
+    #[test]
+    fn sql_tag_must_stand_alone() {
+        let code = "x.jupyter.sql`select 1`; this.jupyter.sql.query(`select 1`);";
+        let html = highlight(code, "ts");
+        assert_eq!(text(&html), code);
+        assert!(!html.contains("hl-k\">select"), "{html}");
+        assert_eq!(
+            html.matches("<span class=\"hl-s\">`select 1`</span>")
+                .count(),
+            2,
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn sql_tag_in_a_comment_tags_nothing() {
+        let code = "// see jupyter.sql\n`select 1`;\n// jupyter.sql.query(\n`select 2`; jupyter.sql`select 3`";
+        let html = highlight(code, "ts");
+        assert_eq!(text(&html), code);
+        assert_eq!(
+            spans(&html),
+            [
+                span("hl-c", "// see jupyter.sql"),
+                span("hl-s", "`select 1`"),
+                span("hl-c", "// jupyter.sql.query("),
+                span("hl-s", "`select 2`"),
+                span("hl-s", "`"),
+                span("hl-k", "select"),
+                span("hl-n", "3"),
+                span("hl-s", "`"),
+            ]
+        );
+    }
+
+    #[test]
+    fn sql_template_with_unreadable_interpolation_is_a_string() {
+        // The `'` in the regex starts a string the scan can't end, so the
+        // template's end isn't found: it renders as before SQL, one string
+        // up to its backtick, and the lines after it are untouched.
+        let first = "const r = await jupyter.sql`select * from t where name = '${name.replace(/'/g, \"''\")}'`;";
+        let rest = "const x = `select from where`;\nfor (const r of rows) console.log(r);";
+        let code = format!("{first}\n{rest}");
+        let html = highlight(&code, "ts");
+        assert_eq!(text(&html), code);
+        assert_eq!(
+            html,
+            format!("{}\n{}", highlight(first, "ts"), highlight(rest, "ts"))
+        );
+        assert_eq!(
+            spans(&highlight(first, "ts"))[..3],
+            [
+                span("hl-k", "const"),
+                span("hl-k", "await"),
+                span(
+                    "hl-s",
+                    "`select * from t where name = '${name.replace(/'/g, \"''\")}'`"
+                ),
+            ]
+        );
+        assert!(!html.contains("hl-k\">select"), "{html}");
+        // An unclosed template is a string to the line's end, as on main.
+        let html = highlight("jupyter.sql`select ${x\nconst y = 1;", "ts");
+        assert_eq!(
+            spans(&html),
+            [
+                span("hl-s", "`select ${x"),
+                span("hl-k", "const"),
+                span("hl-n", "1")
+            ]
+        );
+    }
+
+    #[test]
+    fn deep_nesting_is_cut_off() {
+        for s in [
+            format!("jupyter.sql`{}", "${`".repeat(100_000)),
+            format!("jupyter.sql`{}", "${jupyter.sql`".repeat(100_000)),
+            format!("jupyter.sql`{}", "${(".repeat(100_000)),
+        ] {
+            assert_eq!(text(&highlight(&s, "ts")), s);
+        }
+        // Nesting within the cut-off still highlights.
+        let code = "jupyter.sql`select ${`a${`b`}`}`; const x = 1;";
+        assert!(highlight(code, "ts").contains("hl-k\">const"));
     }
 
     #[test]
