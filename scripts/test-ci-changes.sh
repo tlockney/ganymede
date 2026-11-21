@@ -66,7 +66,6 @@ run_case "release workflow only"              $PR true,false,false,false .github
 run_case "dependabot config"                   $PR true,false,false,false .github/dependabot.yml
 run_case "script no macOS job calls"          $PR true,false,false,false scripts/release.sh
 run_case "ffi scripts"                        $PR true,true,false,false scripts/ffi-smoke.sh scripts/build-xcframework.sh
-run_case "v8 archive pins alone"               $PR true,true,false,false scripts/v8-archive-sha256.sh
 run_case "cli crate"                          $PR true,false,false,true crates/ganymede-cli/src/x.rs
 run_case "engine crate"                       $PR true,false,false,true crates/ganymede-engine/src/x.rs
 run_case "other crate"                        $PR true,true,false,true crates/ganymede-core/src/x.rs

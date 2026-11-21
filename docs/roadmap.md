@@ -129,9 +129,10 @@ In order of priority.
    per notebook and only narrow. Next: what's left of the host API
    ([#647](https://github.com/tlockney/ganymede/issues/647)).
 2. **The apps as a full runtime.** The apps run notebooks in-process,
-   with no external server. Next:
-   - a native in-app engine, jitless V8, unless its size or speed on a
-     device rules it out (measured in `spikes/v8-engine/`);
+   with no external server. The in-app kernel stays on the web view's
+   Worker: jitless V8 was measured in `spikes/v8-engine/` and not adopted
+   ([ganymede-ui#765](https://github.com/tlockney/ganymede-ui/issues/765)).
+   Next:
    - device APIs (ganymede-ui's [`packages/device`](https://github.com/tlockney/ganymede-ui/tree/main/packages/device));
    - automation: Shortcuts, links, MCP from the Mac app, Spotlight
      ([ganymede-ui#301](https://github.com/tlockney/ganymede-ui/issues/301)).

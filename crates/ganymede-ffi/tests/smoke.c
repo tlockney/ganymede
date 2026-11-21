@@ -30,34 +30,7 @@ static void release(void *ctx) {
     (*(int *)ctx)++;
 }
 
-/* The engine benchmark's entry points (#892) link whether or not the
- * library has V8: a config that isn't JSON is an error report either way. */
-static int check_v8_bench(void) {
-#ifdef EXPECT_V8_BENCH
-    if (ganymede_v8_bench_available() != 1) {
-        fprintf(stderr, "built with v8-bench, but it isn't available\n");
-        return 1;
-    }
-#endif
-    int available = ganymede_v8_bench_available();
-    if (available != 0 && available != 1) {
-        fprintf(stderr, "v8 bench available: %d\n", available);
-        return 1;
-    }
-    char *report = ganymede_v8_bench_run("not json");
-    if (!report || strstr(report, "\"error\"") == NULL) {
-        fprintf(stderr, "v8 bench gave no error report\n");
-        return 1;
-    }
-    ganymede_v8_bench_free(report);
-    ganymede_v8_bench_free(NULL);
-    return 0;
-}
-
 int main(void) {
-    if (check_v8_bench() != 0) {
-        return 1;
-    }
     char *err = NULL;
     GanymedeServer *server = ganymede_server_start("{\"root_dir\": \".\"}", &err);
     if (!server) {

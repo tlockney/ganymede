@@ -152,31 +152,6 @@ void ganymede_set_panic_callback(GanymedePanicCallback callback);
  * reports. */
 void ganymede_debug_panic(void);
 
-/* 1 when the library was built with the v8-bench feature, which the
- * XCFramework is; 0 otherwise. */
-int ganymede_v8_bench_available(void);
-
-/* Runs the engine benchmark (#892) on V8 and returns the report as JSON, to
- * free with ganymede_v8_bench_free. config_json: {"jitless": bool,
- * "repeats": n, "workloads": [{"name": "...", "sources": ["js", ...]}]};
- * jitless defaults to true and repeats to 5. Each workload runs in a fresh
- * isolate; the report has per-workload start, load, first, steady and cold
- * times, the heap and the process's peak memory. A NULL or invalid config,
- * a panic, or a library without V8 gives {"error": "..."}; a workload whose
- * script throws has its own "error". Blocks until done (seconds), so call
- * it off the main thread; it runs on a thread of its own with a big stack,
- * one call at a time (a workload that never returns holds the lock for good,
- * and V8 running out of heap aborts the process). repeats is at most 1000.
- * V8's flags are set by the first call in a process: later calls keep its
- * "jitless", which the report shows. The iOS device library has no JIT and
- * always reports jitless true; the simulator's keeps it. In a Mac app under
- * the hardened runtime without the allow-jit entitlement, "jitless": false
- * aborts the process. Always exported. */
-char *ganymede_v8_bench_run(const char *config_json);
-
-/* Frees a string ganymede_v8_bench_run returned. NULL is ignored. */
-void ganymede_v8_bench_free(char *s);
-
 #ifdef __cplusplus
 }
 #endif
