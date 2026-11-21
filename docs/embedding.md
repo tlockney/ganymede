@@ -424,6 +424,13 @@ or a NUL is a 400:
 `mcp`, `api/host/*` and everything else on the machine are never reachable
 this way.
 
+A forwarded `api/kernelspecs` answer is the machine's own: its
+`resources` are paths on the machine (`/kernelspecs/{name}/logo-64x64.png`
+under the machine's base URL), not below the mount. To show a machine's
+kernel logo, a page takes the part from `kernelspecs/` on and joins it
+below `/machines/{id}/`; used as is, the path reaches this server's own
+kernelspecs instead.
+
 What the machine gets:
 
 - `Authorization: token <token>` when the app gave one, and always

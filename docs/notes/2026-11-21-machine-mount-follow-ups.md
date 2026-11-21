@@ -6,8 +6,11 @@ files policy, without `allow-downloads`) is not done here and stays open
 on the issue.
 
 - **Kernel logos.** `route` now allows `kernelspecs/{name}/{file}`, exactly
-  that deep, as `Kind::Other`, so a machine's kernels show their logos and
-  the response gets the same sandbox policy as `files`. `kernelspecs`,
+  that deep, as `Kind::Other`, with the same sandbox policy as `files`.
+  The forwarded `api/kernelspecs` still lists the machine's own paths in
+  `resources`, so a page shows a machine's logos only if it rebases them
+  below `/machines/{id}/` (docs/embedding.md says how). The apps don't show
+  kernel logos yet; that is a ganymede-ui issue. `kernelspecs`,
   `kernelspecs/a` and `kernelspecs/a/b/c` are still refused. The machine's
   own `/kernelspecs/{name}/{*file}` takes any depth; logos are flat, so the
   mount does not forward more.
