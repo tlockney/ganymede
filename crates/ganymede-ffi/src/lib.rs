@@ -18,6 +18,12 @@
 //! [`ganymede_server_remove_machine`]); the server forwards an allowlist of
 //! routes to them for the app's own pages (#894, `docs/embedding.md`).
 //!
+//! An app that keeps answers per notebook file can watch the server's own
+//! writes of them ([`ganymede_server_set_write_observer`]): the callback
+//! gets each written file's path and its stamp before and after, so the
+//! app can tell the server's writes from a file replaced outside (#916,
+//! `docs/embedding.md`).
+//!
 //! Built without the `zmq` or `subprocess` feature, as the iOS slices
 //! of the XCFramework are, the server can't run kernelspecs itself. It
 //! then lists no kernels and refuses to start one, unless the config
@@ -40,6 +46,7 @@ use ganymede_kernel_host::{
 use ganymede_server::config::Config;
 use ganymede_server::mount::Machines;
 use ganymede_server::serve::{gateway_configured, run_with, Startup};
+use ganymede_server::write_observer::WriteObserver;
 
 /// A running server. Opaque to C.
 pub struct GanymedeServer {
@@ -48,6 +55,8 @@ pub struct GanymedeServer {
     registered: Arc<RegisteredKernels>,
     /// The machines mounted under `/machines/{id}/`.
     machines: Arc<Machines>,
+    /// Told of the server's writes of files.
+    write_observer: Arc<WriteObserver>,
     stop: tokio::sync::mpsc::Sender<()>,
     thread: Option<JoinHandle<()>>,
 }
@@ -175,6 +184,89 @@ pub unsafe extern "C" fn ganymede_server_remove_machine(
         Some(id) => c_int::from(server.machines.remove(&id)),
         None => 0,
     }
+}
+
+/// Called after the server writes a file: `path` is the file's absolute
+/// path, `before` and `after` its stamp (size, modification time in
+/// nanoseconds and, on Unix, inode, as `ganymede_contents::file_stamp`
+/// makes it) just before and just after the write, or NULL when it could
+/// not be read, as `before` for a file that is new. All three strings are
+/// valid only during the call.
+pub type GanymedeWriteCallback = extern "C" fn(
+    ctx: *mut c_void,
+    path: *const c_char,
+    before: *const c_char,
+    after: *const c_char,
+);
+
+/// An app's write callback and its context, as the server calls them.
+struct CWriteObserver {
+    ctx: *mut c_void,
+    callback: GanymedeWriteCallback,
+}
+
+// SAFETY: the C contract (`ganymede_server_set_write_observer`) has the
+// app accept calls with `ctx` on any of the server's threads, until the
+// observer is replaced or the server stopped; the server never touches
+// what `ctx` points to.
+unsafe impl Send for CWriteObserver {}
+// SAFETY: as above; concurrent calls are part of the same contract.
+unsafe impl Sync for CWriteObserver {}
+
+impl CWriteObserver {
+    fn call(&self, path: &std::path::Path, before: Option<&str>, after: Option<&str>) {
+        // A path or stamp with a NUL can't be passed as a C string; no
+        // file name has one on the platforms the apps run on, so the call
+        // is skipped rather than given a different path.
+        let Ok(path) = CString::new(path.to_string_lossy().into_owned()) else {
+            return;
+        };
+        let stamp = |s: Option<&str>| s.and_then(|s| CString::new(s).ok());
+        let (before, after) = (stamp(before), stamp(after));
+        let ptr = |s: &Option<CString>| s.as_ref().map_or(std::ptr::null(), |s| s.as_ptr());
+        (self.callback)(self.ctx, path.as_ptr(), ptr(&before), ptr(&after));
+    }
+}
+
+/// Calls `callback` with `ctx` after each write the server makes of a
+/// file under its root: a save from the REST API, a room's autosave, a
+/// run saving its outputs, MCP, and a copy over an existing file. Not
+/// reported: a write that failed, a rename, a delete, a new file (a copy
+/// into a directory, a new untitled file), and any write when the root is
+/// not a local directory. Reported once per write, after it, with the
+/// file's stamp just before it was written and just after, so the app can
+/// move what it keeps for the file from the one stamp to the other, and
+/// still tell a file replaced outside from a write of the server's. A
+/// stamp that can't be read, such as `before` for a new file, is NULL.
+///
+/// The callback runs on a thread of the server, never the main thread,
+/// maybe at once for different files; it must not block. `ctx` must be
+/// usable from any thread until the observer is replaced or the server
+/// stopped: a call already under way may still use the old `ctx` when
+/// this returns. A path with a NUL byte is not reported. NULL `callback`
+/// removes the observer. Takes any thread, and replaces the one set before;
+/// it takes effect for writes that begin after the call.
+///
+/// # Safety
+///
+/// `server` is live; `callback` is NULL or a function the app accepts calls
+/// of on any thread, with `ctx`, as above.
+#[no_mangle]
+pub unsafe extern "C" fn ganymede_server_set_write_observer(
+    server: *mut GanymedeServer,
+    callback: Option<GanymedeWriteCallback>,
+    ctx: *mut c_void,
+) {
+    // SAFETY: the caller passes a live server.
+    let server = unsafe { &*server };
+    server.write_observer.set(callback.map(|callback| {
+        let observer = CWriteObserver { ctx, callback };
+        Arc::new(
+            move |path: &std::path::Path, before: Option<&str>, after: Option<&str>| {
+                observer.call(path, before, after)
+            },
+        ) as Arc<ganymede_server::write_observer::WriteObserverFn>
+    }));
 }
 
 /// Stops the server: open requests get a moment to finish, every kernel
@@ -670,6 +762,8 @@ fn start(json: Option<&str>) -> anyhow::Result<GanymedeServer> {
     let for_server = registered.clone();
     let machines = Arc::new(Machines::new());
     let machines_for_server = machines.clone();
+    let write_observer = Arc::new(WriteObserver::new());
+    let write_observer_for_server = write_observer.clone();
     let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(4);
     let (url_tx, url_rx) = mpsc::channel::<anyhow::Result<String>>();
     let thread = std::thread::Builder::new()
@@ -694,6 +788,7 @@ fn start(json: Option<&str>) -> anyhow::Result<GanymedeServer> {
                 stop: Some(stop_rx),
                 registered: Some(for_server),
                 machines: Some(machines_for_server),
+                write_observer: Some(write_observer_for_server),
                 ..kernels
             };
             if let Err(e) = rt.block_on(run_with(cfg, startup)) {
@@ -707,6 +802,7 @@ fn start(json: Option<&str>) -> anyhow::Result<GanymedeServer> {
             url: CString::new(url)?,
             registered,
             machines,
+            write_observer,
             stop: stop_tx,
             thread: Some(thread),
         }),

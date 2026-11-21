@@ -14,6 +14,7 @@
 
 use crate::collab::{detached, Collab};
 use crate::path_locks::{Claimed, PathLocks, Registered, Scope};
+use crate::write_observer::WriteObserver;
 use async_trait::async_trait;
 use ganymede_contents::{
     normalize_api_path, Checkpoint, ContentType, Contents, ContentsModel, GetOptions, Result,
@@ -36,6 +37,26 @@ pub(crate) struct Stamps {
     /// paths of renames in progress. A rename waits only for the writes
     /// under its two paths, and holds back only new writes under them.
     writes: Arc<PathLocks>,
+    /// Told of each write of a file under `root` (#916), when one is set.
+    observer: Option<Arc<WriteObserver>>,
+}
+
+/// A write of a local file being watched: its path and its stamp before
+/// the write ([`Stamps::observe`]).
+pub(crate) struct Observed {
+    file: PathBuf,
+    before: Option<String>,
+    observer: Arc<WriteObserver>,
+}
+
+impl Observed {
+    /// The write succeeded: reports it with the file's stamp as it is
+    /// now. Called once the file is restamped, inside the turn.
+    pub(crate) fn done(self) {
+        let after = ganymede_contents::file_stamp(&self.file);
+        self.observer
+            .notify(&self.file, self.before.as_deref(), after.as_deref());
+    }
 }
 
 /// A write registered under some paths, until dropped.
@@ -153,7 +174,29 @@ impl Stamps {
             saving: Mutex::default(),
             turns: Mutex::default(),
             writes: Arc::default(),
+            observer: None,
         }
+    }
+
+    /// Reports the server's writes to `observer` ([`Stamps::observe`]).
+    pub(crate) fn with_observer(mut self, observer: Arc<WriteObserver>) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
+    /// Starts watching the write of the file at `path`, inside its turn
+    /// and before it is written: takes its stamp as it is. `None` when no
+    /// function is set, or the contents are not a local directory, and
+    /// then the write is not reported and no stamp is read.
+    pub(crate) fn observe(&self, path: &str) -> Option<Observed> {
+        let observer = self.observer.as_ref().filter(|o| o.is_set())?;
+        let root = self.root.as_deref()?;
+        let file = ganymede_contents::api_file_path(root, path)?;
+        Some(Observed {
+            before: ganymede_contents::file_stamp(&file),
+            file,
+            observer: observer.clone(),
+        })
     }
 
     /// A write under `paths` (a file's, or the directory a new file is
@@ -322,7 +365,8 @@ impl Stamping {
     /// Rewrite the file at `path` with `write`, and keep its grant: one
     /// that its file already outgrew is dropped first, so this write
     /// doesn't bless what came from outside. Runs to the end if the
-    /// caller goes away, so a write is never left unstamped.
+    /// caller goes away, so a write is never left unstamped, or
+    /// unreported to the write observer (#916) once it succeeded.
     async fn rewrite<T: Send + 'static>(
         &self,
         path: &str,
@@ -339,6 +383,7 @@ impl Stamping {
             // The same file's grants under other roots in the shared
             // database get the same check and restamp.
             let others = collab.check_others(&path).await;
+            let watched = collab.stamps.observe(&path);
             let _saving = collab.stamps.begin(&path);
             // A write that fails isn't restamped: whether it wrote the file
             // can't be known, and an If-Match failure over an outside
@@ -349,6 +394,9 @@ impl Stamping {
                 tracing::warn!("{e}");
             }
             collab.restamp_others(others).await;
+            if let Some(watched) = watched {
+                watched.done();
+            }
             Ok(out)
         })
         .await
@@ -415,7 +463,9 @@ impl Contents for Stamping {
     /// A copy named by its full path overwrites a file that may have a
     /// grant, which then keeps it, unless the file was replaced outside.
     /// Runs to the end if the caller goes away, as [`Stamping::rewrite`]
-    /// does, so a copy is never left unstamped.
+    /// does, so a copy is never left unstamped. A copy over a file is
+    /// reported to the write observer as a save is, for the destination;
+    /// a copy into a directory makes a new file and is not.
     async fn copy(&self, from_path: &str, to_dir: Option<&str>) -> Result<ContentsModel> {
         let (collab, inner) = (self.collab.clone(), self.inner.clone());
         let (from_path, to_dir) = (from_path.to_string(), to_dir.map(str::to_string));
@@ -439,12 +489,16 @@ impl Contents for Stamping {
                 let _turn = collab.stamps.turn(&dest).await;
                 let seen = collab.check_for_write(&dest).await;
                 let others = collab.check_others(&dest).await;
+                let watched = collab.stamps.observe(&dest);
                 let _saving = collab.stamps.begin(&dest);
                 let model = inner.copy(&from_path, to_dir.as_deref()).await?;
                 if let Err(e) = collab.restamp(&dest, &seen).await {
                     tracing::warn!("{e}");
                 }
                 collab.restamp_others(others).await;
+                if let Some(watched) = watched {
+                    watched.done();
+                }
                 return Ok(model);
             }
             // A new file is made in the directory: the move lock for
@@ -2215,5 +2269,199 @@ mod tests {
         let (_, new) = again.index("a.ipynb").await;
         assert!(new, "a stale row is left");
         assert_eq!(again.grant("a.ipynb").await, None);
+    }
+
+    type Calls = Arc<Mutex<Vec<(PathBuf, Option<String>, Option<String>)>>>;
+
+    /// A function for the observer that records its calls.
+    fn recorder() -> (Arc<crate::write_observer::WriteObserverFn>, Calls) {
+        let calls = Calls::default();
+        let into = calls.clone();
+        let f: Arc<crate::write_observer::WriteObserverFn> = Arc::new(move |p, b, a| {
+            into.lock().unwrap().push((
+                p.to_path_buf(),
+                b.map(str::to_string),
+                a.map(str::to_string),
+            ));
+        });
+        (f, calls)
+    }
+
+    /// A root with `a.ipynb` and `b.ipynb`, and its contents with an
+    /// observer that has a recorder set.
+    fn observed() -> (
+        tempfile::TempDir,
+        PathBuf,
+        Arc<Collab>,
+        Arc<dyn Contents>,
+        Arc<crate::write_observer::WriteObserver>,
+        Calls,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.ipynb"), "{}").unwrap();
+        std::fs::write(root.join("b.ipynb"), "{\"b\": \"a longer file\"}").unwrap();
+        let observer = Arc::new(crate::write_observer::WriteObserver::new());
+        let collab = Arc::new(
+            Collab::new(ganymede_contents::FileIds::in_memory(), Some(root.clone()))
+                .with_write_observer(observer.clone()),
+        );
+        let contents = collab.stamping(Arc::new(
+            ganymede_contents::FsContents::new(&root, Default::default()).unwrap(),
+        ));
+        let (f, calls) = recorder();
+        observer.set(Some(f));
+        (dir, root, collab, contents, observer, calls)
+    }
+
+    /// A save is reported once, after it, with the file's absolute path
+    /// and its stamp before and after; a new file has none before.
+    #[tokio::test]
+    async fn a_save_is_reported_with_the_stamps_around_it() {
+        let (_dir, root, _collab, contents, _observer, calls) = observed();
+        let before = ganymede_contents::file_stamp(&root.join("a.ipynb")).unwrap();
+        contents
+            .save(
+                "a.ipynb",
+                SaveRequest::text("{\"saved\": \"by the server\"}"),
+            )
+            .await
+            .unwrap();
+        let after = ganymede_contents::file_stamp(&root.join("a.ipynb")).unwrap();
+        assert_ne!(before, after);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [(root.join("a.ipynb"), Some(before), Some(after))]
+        );
+
+        calls.lock().unwrap().clear();
+        contents
+            .save("new.ipynb", SaveRequest::text("{}"))
+            .await
+            .unwrap();
+        let made = ganymede_contents::file_stamp(&root.join("new.ipynb")).unwrap();
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [(root.join("new.ipynb"), None, Some(made))]
+        );
+    }
+
+    /// A copy over a file is reported for the destination. A copy into a
+    /// directory, which makes a new file, and a rename are not.
+    #[tokio::test]
+    async fn a_copy_over_a_file_is_reported_and_other_writes_are_not() {
+        let (_dir, root, _collab, contents, _observer, calls) = observed();
+        let before = ganymede_contents::file_stamp(&root.join("b.ipynb")).unwrap();
+        contents.copy("a.ipynb", Some("b.ipynb")).await.unwrap();
+        let after = ganymede_contents::file_stamp(&root.join("b.ipynb")).unwrap();
+        assert_ne!(before, after);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [(root.join("b.ipynb"), Some(before), Some(after))]
+        );
+
+        calls.lock().unwrap().clear();
+        std::fs::create_dir(root.join("d")).unwrap();
+        contents.copy("a.ipynb", Some("d")).await.unwrap();
+        contents.copy("a.ipynb", None).await.unwrap();
+        contents.rename("b.ipynb", "c.ipynb").await.unwrap();
+        contents
+            .new_untitled("", ContentType::Notebook, Some(".ipynb"))
+            .await
+            .unwrap();
+        contents.delete("c.ipynb").await.unwrap();
+        assert_eq!(*calls.lock().unwrap(), []);
+    }
+
+    /// A save that fails, and one on contents that are not a local
+    /// directory, call nothing.
+    #[tokio::test]
+    async fn a_failed_write_and_non_local_contents_are_not_reported() {
+        let (dir, root, _collab, contents, observer, calls) = observed();
+        let bad = SaveRequest::text("x")
+            .with_if_match(ganymede_contents::IfMatch::Hashes(vec!["nope".into()]));
+        assert!(contents.save("a.ipynb", bad).await.is_err());
+        assert!(contents
+            .copy("missing.ipynb", Some("b.ipynb"))
+            .await
+            .is_err());
+        assert_eq!(*calls.lock().unwrap(), []);
+
+        let remote = Arc::new(
+            Collab::new(ganymede_contents::FileIds::in_memory(), None)
+                .with_write_observer(observer.clone()),
+        );
+        let contents = remote.stamping(Arc::new(
+            ganymede_contents::FsContents::new(&root, Default::default()).unwrap(),
+        ));
+        contents
+            .save("a.ipynb", SaveRequest::text("{\"saved\": 1}"))
+            .await
+            .unwrap();
+        contents.copy("b.ipynb", Some("a.ipynb")).await.unwrap();
+        assert_eq!(*calls.lock().unwrap(), []);
+        drop(dir);
+    }
+
+    /// With no observer, or none set, writes go on; setting, replacing
+    /// and clearing one takes effect for the writes after it.
+    #[tokio::test]
+    async fn the_observer_can_be_set_replaced_and_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.ipynb"), "{}").unwrap();
+        let fs =
+            || Arc::new(ganymede_contents::FsContents::new(&root, Default::default()).unwrap());
+        let none = Arc::new(Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            Some(root.clone()),
+        ));
+        none.stamping(fs())
+            .save("a.ipynb", SaveRequest::text("{\"no\": \"observer\"}"))
+            .await
+            .unwrap();
+
+        let (_dir, _root, _collab, contents, observer, first) = observed();
+        let save = |text: &'static str| {
+            let contents = contents.clone();
+            async move {
+                contents
+                    .save("a.ipynb", SaveRequest::text(text))
+                    .await
+                    .unwrap();
+            }
+        };
+        save("{\"n\": 1}").await;
+        assert_eq!(first.lock().unwrap().len(), 1);
+
+        let (f, second) = recorder();
+        observer.set(Some(f));
+        save("{\"n\": 22}").await;
+        assert_eq!(first.lock().unwrap().len(), 1, "replaced");
+        assert_eq!(second.lock().unwrap().len(), 1);
+
+        observer.set(None);
+        save("{\"n\": 333}").await;
+        assert_eq!(first.lock().unwrap().len(), 1);
+        assert_eq!(second.lock().unwrap().len(), 1, "cleared");
+
+        let (f, third) = recorder();
+        observer.set(Some(f));
+        save("{\"n\": 4444}").await;
+        assert_eq!(third.lock().unwrap().len(), 1, "set again");
+    }
+
+    /// The function is called with no lock held, so it can replace the
+    /// observer.
+    #[tokio::test]
+    async fn the_observer_may_replace_itself_when_called() {
+        let (_dir, _root, _collab, contents, observer, _calls) = observed();
+        let again = observer.clone();
+        observer.set(Some(Arc::new(move |_, _, _| again.set(None))));
+        contents
+            .save("a.ipynb", SaveRequest::text("{\"n\": 1}"))
+            .await
+            .unwrap();
+        assert!(!observer.is_set());
     }
 }

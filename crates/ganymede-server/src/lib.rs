@@ -29,6 +29,7 @@ pub mod static_headers;
 mod svg;
 pub mod tailscale;
 pub mod watch;
+pub mod write_observer;
 pub mod ws;
 
 use ganymede_api::{KernelManager, SessionManager};

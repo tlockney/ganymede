@@ -18,6 +18,10 @@ static void send_msg(void *ctx, const char *kernel_id, const char *channel,
 static void stop(void *ctx, const char *kernel_id) {
     (void)ctx; (void)kernel_id;
 }
+static void wrote(void *ctx, const char *path, const char *before,
+                  const char *after) {
+    (void)ctx; (void)path; (void)before; (void)after;
+}
 static void release(void *ctx) {
     (*(int *)ctx)++;
 }
@@ -98,6 +102,9 @@ int main(void) {
         fprintf(stderr, "remove_machine did not say whether it was mounted\n");
         return 1;
     }
+    /* The write observer is set, replaced and removed. */
+    ganymede_server_set_write_observer(server, wrote, NULL);
+    ganymede_server_set_write_observer(server, NULL, NULL);
     ganymede_server_stop(server);
     if (released != 1) {
         fprintf(stderr, "release ran %d times\n", released);
