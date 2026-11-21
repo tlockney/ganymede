@@ -48,7 +48,10 @@ impl WriteObserver {
     /// reported; one that began while one was set is reported to whatever
     /// is set when it ends.
     pub fn set(&self, f: Option<Arc<WriteObserverFn>>) {
-        *self.0.write().unwrap_or_else(|e| e.into_inner()) = f;
+        // The old function is dropped after the lock is let go: an app's
+        // `release` may run then, and may call `set` itself.
+        let old = std::mem::replace(&mut *self.0.write().unwrap_or_else(|e| e.into_inner()), f);
+        drop(old);
     }
 
     /// Whether a function is set, so a write is worth stamping before.

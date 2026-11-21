@@ -44,11 +44,12 @@ int ganymede_server_add_machine(GanymedeServer *server, const char *id,
  * mounted, 0 if not. Any thread. */
 int ganymede_server_remove_machine(GanymedeServer *server, const char *id);
 
-/* Called after the server writes a file: path is the file's canonical
- * absolute path (links resolved; \\?\C:\... on Windows), before and after its stamp (size, modification time in ns and, on Unix,
- * inode: the same as file_stamp in crates/ganymede-contents/src/fileid.rs)
- * just before and just after the write, or NULL when it can't be read (before,
- * for a new file). Strings are valid during the call. */
+/* Called after the server writes a file. path is the file's canonical
+ * absolute path (links resolved; \\?\C:\... on Windows). before and after
+ * are its stamp (size, modification time in ns and, on Unix, inode: the same
+ * as file_stamp in crates/ganymede-contents/src/fileid.rs) just before and
+ * just after the write, or NULL when it can't be read (before, for a new
+ * file). Strings are valid during the call. */
 typedef void (*GanymedeWriteCallback)(void *ctx, const char *path,
                                       const char *before, const char *after);
 

@@ -4603,7 +4603,7 @@ async fn execute_saves_are_reported_to_the_write_observer() {
                 assert_eq!(path, &file);
                 let text = std::fs::read_to_string(&file).unwrap();
                 if text.contains("hello") && text.contains("execution_count\": 1") {
-                    assert!(after.is_some());
+                    assert_eq!(after, &ganymede_contents::file_stamp(&file));
                     break;
                 }
             }
