@@ -8,5 +8,8 @@ and set aside, with the #646 device numbers, and that the spike stays in
 `spikes/v8-engine`; the chapter 14 bullet is gone, since it is no longer
 an edge where the code moves.
 
-The book has no generator: `site/book/index.html` is its source, so a
-change to a decision recorded in `docs/` needs a grep of the book too.
+The book is generated outside this repository from the maintainer's
+code architecture primer (`docs/development.md`, "This site"), so the
+same two edits went into the primer too; otherwise its next rebuild would
+bring the old text back. A decision recorded in `docs/` needs a grep of
+the book and the same change in the primer.
