@@ -44,7 +44,7 @@ int ganymede_server_add_machine(GanymedeServer *server, const char *id,
  * mounted, 0 if not. Any thread. */
 int ganymede_server_remove_machine(GanymedeServer *server, const char *id);
 
-/* Called after the server writes a file: path is the file's absolute path,
+/* Called after the server writes a file: path is the file's canonical absolute path (links resolved),
  * before and after its stamp (size, modification time in ns and, on Unix,
  * inode: the same as file_stamp in crates/ganymede-contents/src/fileid.rs)
  * just before and just after the write, or NULL when it can't be read (before,
@@ -54,9 +54,11 @@ typedef void (*GanymedeWriteCallback)(void *ctx, const char *path,
 
 /* Calls callback(ctx, ...) once after each write the server makes of a file
  * under its root (#916): a REST save, a room's autosave, a run saving its
- * outputs, MCP, a copy over an existing file. Not for a write that failed,
- * a rename, a delete, a new file (a copy into a directory, a new untitled
- * file), or when the root isn't a local directory. Lets the app tell its
+ * outputs, MCP, any successful save of a regular file (a new one's
+ * included, before NULL) and a copy to a named destination path. Not for a
+ * write that failed, a copy into a directory, a new untitled file, a
+ * rename, a delete, a directory save, or when the root isn't a local
+ * directory. Lets the app tell its
  * server's writes from a file replaced outside, to keep or forget what it
  * keeps per file. The callback runs on a server thread, never the main
  * thread, maybe at once for different files; it must not block. ctx must be

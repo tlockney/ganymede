@@ -10,20 +10,24 @@
 //! just before the write and just after it, and the app moves its answers
 //! from one stamp to the other.
 //!
-//! Reported: a save of a file and a copy over an existing file, once each
-//! and after it succeeded, when the contents are a local directory. Not
-//! reported: a write that fails; a rename, which keeps the file's inode
-//! (the app moves its own answers); a new file made by a copy or a new
-//! untitled file, which nothing kept could name; a delete.
+//! Reported, once each and after it succeeded, when the contents are a
+//! local directory: any save of a regular file, a new file's included, and
+//! a copy to a named destination path. Not reported: a write that fails; a
+//! copy into a directory, a new untitled file, a rename and a delete; a
+//! directory save. Renames are not reported, so an app that keys its
+//! answers by path loses them on a rename it did not make itself, which
+//! fails safe.
 
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
-/// What the app is called with after a write: the file's absolute path,
-/// its stamp just before the write and just after (`None` when it could
-/// not be read, such as a file that did not exist before). Called on a
-/// thread of the server, after the write and its restamp, with no server
-/// lock held; it should return quickly.
+/// What the app is called with after a write: the file's canonical
+/// absolute path (links resolved), its stamp just before the write and just
+/// after (`None` when it could not be read, such as a file that did not
+/// exist before). Called on a thread of the server, after the write and its
+/// restamp, with the path's turn held: the next write or a rename of that
+/// path waits for it, so it should return quickly. The observer's own lock
+/// is not held, so it may call [`WriteObserver::set`].
 pub type WriteObserverFn = dyn Fn(&Path, Option<&str>, Option<&str>) + Send + Sync;
 
 /// The function called after each write of a local file, which an app can
@@ -52,8 +56,8 @@ impl WriteObserver {
     }
 
     /// Calls the function with the write, if one is set. It is cloned
-    /// out of the lock first, so a function that sets the observer, or a
-    /// slow one, never blocks the other writes or `set`.
+    /// out of the lock first, so the function may set the observer. The
+    /// caller's path turn is still held while it runs.
     pub(crate) fn notify(&self, path: &Path, before: Option<&str>, after: Option<&str>) {
         let f = self.0.read().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(f) = f {

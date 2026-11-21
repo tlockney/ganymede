@@ -456,20 +456,22 @@ ganymede_server_set_write_observer(server, wrote, ctx);
 ```
 
 After each write the server makes of a file under its root that succeeds,
-the callback is called once with the file's absolute path and its stamp
+the callback is called once with the file's canonical absolute path and its stamp
 just before the write and just after it. A stamp is
 `<size>:<modification time in ns>:<inode>` (no inode on Windows), the
 same as `file_stamp` in `ganymede-contents` makes from the file's metadata,
 so an app can stamp a file itself and compare. A stamp that can't be read
 is NULL: `before` is NULL for a file the write made.
 
-Reported: a save of a file, however it came (REST, a room's autosave, a run
-that saves its outputs, MCP), and a copy over a file that exists, for the
-destination. Not reported: a write that failed; a rename, which keeps the
-file's inode, so the app moves its own answers with it; a delete; a new file
-made by a copy into a directory or a new untitled file, which nothing kept
-could name yet; a file changed by anyone but the server; and every write
-when the root is not a local directory. It is a function of the embedding,
+Reported: any successful save of a regular file, however it came (REST, a
+room's autosave, a run that saves its outputs, MCP), a new file's included
+(`before` is then NULL), and a copy to a named destination path, for the
+destination. Not reported: a write that failed; a copy into a directory, a
+new untitled file, a rename, a delete, and a directory save; a file changed
+by anyone but the server; and every write when the root is not a local
+directory. Renames are not reported, so an app that keys its answers by
+path loses them on a rename it did not make itself, which fails safe.
+The path is the file's canonical absolute path (links resolved). It is a function of the embedding,
 not a REST endpoint.
 
 The callback runs on a thread of the server, never the main thread, and

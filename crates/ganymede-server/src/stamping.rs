@@ -51,11 +51,19 @@ pub(crate) struct Observed {
 
 impl Observed {
     /// The write succeeded: reports it with the file's stamp as it is
-    /// now. Called once the file is restamped, inside the turn.
+    /// now, and its canonical path (links resolved). Called once the file
+    /// is restamped, inside the turn. Nothing is reported when the path is
+    /// not a regular file now (a directory save), or cannot be resolved.
     pub(crate) fn done(self) {
-        let after = ganymede_contents::file_stamp(&self.file);
+        if !self.file.is_file() {
+            return;
+        }
+        let Ok(file) = std::fs::canonicalize(&self.file) else {
+            return;
+        };
+        let after = ganymede_contents::file_stamp(&file);
         self.observer
-            .notify(&self.file, self.before.as_deref(), after.as_deref());
+            .notify(&file, self.before.as_deref(), after.as_deref());
     }
 }
 
@@ -463,9 +471,9 @@ impl Contents for Stamping {
     /// A copy named by its full path overwrites a file that may have a
     /// grant, which then keeps it, unless the file was replaced outside.
     /// Runs to the end if the caller goes away, as [`Stamping::rewrite`]
-    /// does, so a copy is never left unstamped. A copy over a file is
-    /// reported to the write observer as a save is, for the destination;
-    /// a copy into a directory makes a new file and is not.
+    /// does, so a copy is never left unstamped. A copy to a named
+    /// destination path is reported to the write observer as a save is,
+    /// for the destination; a copy into a directory is not.
     async fn copy(&self, from_path: &str, to_dir: Option<&str>) -> Result<ContentsModel> {
         let (collab, inner) = (self.collab.clone(), self.inner.clone());
         let (from_path, to_dir) = (from_path.to_string(), to_dir.map(str::to_string));
@@ -2346,8 +2354,8 @@ mod tests {
         );
     }
 
-    /// A copy over a file is reported for the destination. A copy into a
-    /// directory, which makes a new file, and a rename are not.
+    /// A copy to a named destination path is reported for the destination.
+    /// A copy into a directory, which makes a new file, and a rename are not.
     #[tokio::test]
     async fn a_copy_over_a_file_is_reported_and_other_writes_are_not() {
         let (_dir, root, _collab, contents, _observer, calls) = observed();
@@ -2463,5 +2471,124 @@ mod tests {
             .await
             .unwrap();
         assert!(!observer.is_set());
+    }
+
+    /// Starts a save of `a.ipynb` that is held open after it writes, and
+    /// returns what lets it go on.
+    async fn gated_save(
+        observer: &Arc<crate::write_observer::WriteObserver>,
+    ) -> (
+        tempfile::TempDir,
+        Arc<Collab>,
+        tokio::task::JoinHandle<()>,
+        Arc<tokio::sync::Notify>,
+        Arc<tokio::sync::Notify>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.ipynb"), "{}").unwrap();
+        let collab = Arc::new(
+            Collab::new(ganymede_contents::FileIds::in_memory(), Some(root.clone()))
+                .with_write_observer(observer.clone()),
+        );
+        let (wrote, release) = (Arc::default(), Arc::default());
+        let contents = collab.stamping(Arc::new(Gated {
+            inner: Arc::new(ganymede_contents::FsContents::new(&root, Default::default()).unwrap()),
+            wrote: Arc::clone(&wrote),
+            release: Arc::clone(&release),
+            fail: false,
+        }));
+        let save = tokio::spawn(async move {
+            contents
+                .save("a.ipynb", SaveRequest::text("{\"saved\": 1}"))
+                .await
+                .unwrap();
+        });
+        (dir, collab, save, wrote, release)
+    }
+
+    /// A save that began while no function was set is not reported, even
+    /// if one is set before it ends: its stamp before was never taken.
+    #[tokio::test]
+    async fn a_save_begun_with_no_function_is_not_reported() {
+        let observer = Arc::new(crate::write_observer::WriteObserver::new());
+        let (_dir, _collab, save, wrote, release) = gated_save(&observer).await;
+        wrote.notified().await;
+        let (f, calls) = recorder();
+        observer.set(Some(f));
+        release.notify_one();
+        save.await.unwrap();
+        assert_eq!(*calls.lock().unwrap(), []);
+    }
+
+    /// A save that began with a function set, which is cleared before it
+    /// ends, is not reported (it is reported to whatever is set at its end).
+    #[tokio::test]
+    async fn a_save_is_not_reported_to_a_function_cleared_before_it_ends() {
+        let observer = Arc::new(crate::write_observer::WriteObserver::new());
+        let (f, calls) = recorder();
+        observer.set(Some(f));
+        let (_dir, _collab, save, wrote, release) = gated_save(&observer).await;
+        wrote.notified().await;
+        observer.set(None);
+        release.notify_one();
+        save.await.unwrap();
+        assert_eq!(*calls.lock().unwrap(), []);
+    }
+
+    /// Saving a directory reports nothing.
+    #[tokio::test]
+    async fn a_directory_save_is_not_reported() {
+        let (_dir, root, _collab, contents, _observer, calls) = observed();
+        contents
+            .save("sub", SaveRequest::directory())
+            .await
+            .unwrap();
+        assert!(root.join("sub").is_dir());
+        assert_eq!(*calls.lock().unwrap(), []);
+    }
+
+    /// The path reported is the canonical one, links resolved: a save
+    /// through a symlinked directory, and under a symlinked root.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_reported_path_has_its_links_resolved() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().canonicalize().unwrap();
+        std::fs::create_dir(real.join("real")).unwrap();
+        std::os::unix::fs::symlink(real.join("real"), real.join("link")).unwrap();
+        std::os::unix::fs::symlink(
+            &real,
+            real.join("..").join(format!(
+                "{}-root-link",
+                real.file_name().unwrap().to_string_lossy()
+            )),
+        )
+        .unwrap();
+        let linked_root = real.parent().unwrap().join(format!(
+            "{}-root-link",
+            real.file_name().unwrap().to_string_lossy()
+        ));
+        let observer = Arc::new(crate::write_observer::WriteObserver::new());
+        let (f, calls) = recorder();
+        observer.set(Some(f));
+        let collab = Arc::new(
+            Collab::new(
+                ganymede_contents::FileIds::in_memory(),
+                Some(linked_root.clone()),
+            )
+            .with_write_observer(observer),
+        );
+        let contents = collab.stamping(Arc::new(
+            ganymede_contents::FsContents::new(&linked_root, Default::default()).unwrap(),
+        ));
+        contents
+            .save("link/x.ipynb", SaveRequest::text("{}"))
+            .await
+            .unwrap();
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, real.join("real").join("x.ipynb"));
+        let _ = std::fs::remove_file(&linked_root);
     }
 }

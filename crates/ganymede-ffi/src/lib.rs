@@ -230,10 +230,12 @@ impl CWriteObserver {
 
 /// Calls `callback` with `ctx` after each write the server makes of a
 /// file under its root: a save from the REST API, a room's autosave, a
-/// run saving its outputs, MCP, and a copy over an existing file. Not
-/// reported: a write that failed, a rename, a delete, a new file (a copy
-/// into a directory, a new untitled file), and any write when the root is
-/// not a local directory. Reported once per write, after it, with the
+/// run saving its outputs, MCP: any successful save of a regular file (a
+/// new one's included) and a copy to a named destination path. Not
+/// reported: a write that failed, a copy into a directory, a new untitled
+/// file, a rename, a delete, a directory save, and any write when the root
+/// is not a local directory. The path is the file's canonical absolute
+/// path (links resolved). Reported once per write, after it, with the
 /// file's stamp just before it was written and just after, so the app can
 /// move what it keeps for the file from the one stamp to the other, and
 /// still tell a file replaced outside from a write of the server's. A
