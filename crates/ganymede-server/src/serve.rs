@@ -429,6 +429,11 @@ pub struct Startup {
     /// The machines mounted under `/machines/{id}/`, kept by the app so
     /// it can add and remove them while the server runs (#894).
     pub machines: Option<Arc<crate::mount::Machines>>,
+    /// Told of each write the server makes of a file, with the file's
+    /// stamp before and after (#916), kept by the app so it can set and
+    /// replace its function while the server runs. Nothing is reported
+    /// unless the contents are a local directory.
+    pub write_observer: Option<Arc<crate::write_observer::WriteObserver>>,
 }
 
 #[cfg(feature = "subprocess")]
@@ -852,6 +857,9 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
     }
     // An embedding app has no runtime dir on iOS, so its rooms don't lock.
     let mut collab = crate::collab::Collab::new(file_ids(&root_dir), Some(root_dir.clone()));
+    if let Some(observer) = &startup.write_observer {
+        collab = collab.with_write_observer(observer.clone());
+    }
     if startup.stop.is_none() {
         collab = collab.with_room_locks(
             ganymede_kernel_host::kernelspec::jupyter_runtime_dir().join("ganymede-rooms"),

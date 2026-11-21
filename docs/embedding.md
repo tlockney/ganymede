@@ -435,6 +435,70 @@ request but does not start answering within 30 seconds is a 504, and an `id` tha
 mounted is a 404. [Security](security.md#connected-machines) says who may
 use the mount.
 
+### Seeing the server's own writes
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+An app that keeps answers per notebook file (a link allowed "always", a
+device permission) forgets them when the file is replaced outside
+Ganymede, and keeps them when Ganymede writes it. It can stamp a file
+itself, but most writes on its server come from the server, with no window
+involved: a room's autosave, a run saving its outputs, MCP. So the app can
+ask to be told of them:
+
+```c
+static void wrote(void *ctx, const char *path, const char *before, const char *after) {
+    /* Move the answers kept for the file at path from the stamp before to the stamp after. */
+}
+static void done_with(void *ctx) { /* free ctx */ }
+ganymede_server_set_write_observer(server, wrote, done_with, ctx);
+```
+
+After each write the server makes of a file under its root that succeeds,
+the callback is called once with the file's canonical absolute path (links
+resolved; on Windows it has the `\\?\` prefix) and its stamp just before
+the write and just after it. A stamp is
+`<size>:<modification time in ns>:<inode>` (no inode on Windows), the
+same as `file_stamp` in `ganymede-contents` makes from the file's metadata,
+so an app can stamp a file itself and compare. A stamp that can't be read
+is NULL: `before` is NULL for a file the write made.
+
+Reported: any successful save of a regular file, however it came (REST, a
+room's autosave, a run that saves its outputs, MCP), a new file's included
+(`before` is then NULL), a checkpoint restore, and a copy to a named
+destination path, for the destination. Not reported: a write that failed; a
+copy into a directory, a new untitled file, a rename, a delete, and a
+directory save; a file changed by anyone but the server; and every write
+when the root is not a local directory. Renames are not reported, so an app
+that keys its answers by path loses them on a rename it did not make itself,
+which fails safe. It is a function of the embedding, not a REST endpoint.
+
+The callback runs on a thread of the server, never the main thread, and
+maybe at once for different files, with the server's turn for that path
+held: the next write of the same path, or a rename of it, waits for it, so
+it should return quickly. The strings are valid only during the call. A
+path with a NUL byte, or that is not UTF-8, is not reported. `ctx` is the
+app's: it must be usable from any thread until `release`.
+
+`release` (may be NULL) is called with `ctx` once, after the last call that
+uses that `ctx` has returned and none follows: when the observer is
+replaced or removed, or the server stopped. The app frees `ctx` there, and
+not before. It runs on a server thread, or on the thread of the call that
+replaced the observer or stopped the server, and must not block.
+
+Calling the function again replaces the observer, and a NULL callback
+removes it (`release` is then ignored). A write is reported to whatever is
+set when it ends, so one that began before a replacement goes to the new
+callback; one that began while none was set is not reported at all, as its
+`before` was never taken. Nothing is reported until one is set, and none
+survives the server.
+
+From Rust, `ganymede_server::write_observer::WriteObserver` is the same
+thing: keep one, pass it as `Startup::write_observer`, and call `set` with
+a closure taking the path and the two stamps.
+
 ## Remote kernels with ganymede-gateway
 
 `Gateway` is a kernelspec source, provisioner and transport factory in

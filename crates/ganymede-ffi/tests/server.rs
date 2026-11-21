@@ -9,9 +9,9 @@ use std::time::Duration;
 
 use ganymede_ffi::{
     ganymede_kernel_deliver, ganymede_kernel_ended, ganymede_kernel_register,
-    ganymede_server_add_machine, ganymede_server_remove_machine, ganymede_server_start,
-    ganymede_server_stop, ganymede_server_url, ganymede_string_free, GanymedeKernelCallbacks,
-    GanymedeServer,
+    ganymede_server_add_machine, ganymede_server_remove_machine,
+    ganymede_server_set_write_observer, ganymede_server_start, ganymede_server_stop,
+    ganymede_server_url, ganymede_string_free, GanymedeKernelCallbacks, GanymedeServer,
 };
 
 /// `GET path` with the token as a header; the status line and body.
@@ -512,4 +512,117 @@ fn mounts_and_unmounts_a_machine() {
 
     unsafe { ganymede_server_stop(local) };
     unsafe { ganymede_server_stop(mini) };
+}
+
+/// What the write callback was given.
+type Wrote = Vec<(String, Option<String>, Option<String>)>;
+
+extern "C" fn record_write(
+    ctx: *mut c_void,
+    path: *const c_char,
+    before: *const c_char,
+    after: *const c_char,
+) {
+    let opt = |s: *const c_char| {
+        (!s.is_null()).then(|| unsafe { CStr::from_ptr(s) }.to_str().unwrap().to_string())
+    };
+    // SAFETY: the test passes a `WriteCtx` that outlives the server.
+    let wrote = &unsafe { &*(ctx as *const WriteCtx) }.wrote;
+    let path = opt(path).expect("a path");
+    wrote.lock().unwrap().push((path, opt(before), opt(after)));
+}
+
+/// The test's context for the write callback: what it was given, and how
+/// many times it was released.
+#[derive(Default)]
+struct WriteCtx {
+    wrote: Mutex<Wrote>,
+    released: std::sync::atomic::AtomicUsize,
+}
+
+extern "C" fn release_write_ctx(ctx: *mut c_void) {
+    // SAFETY: the test passes a `WriteCtx` that outlives the server.
+    let ctx = unsafe { &*(ctx as *const WriteCtx) };
+    ctx.released
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// `PUT` of text to a file through REST: a write the server makes.
+fn put_text(url: &str, name: &str, text: &str) {
+    let body = format!(r#"{{"type": "file", "format": "text", "content": {text:?}}}"#);
+    let reply = request(url, "PUT", &format!("/api/contents/{name}"), &body);
+    assert!(code(&reply) == "200" || code(&reply) == "201", "{reply}");
+}
+
+#[test]
+fn reports_the_servers_writes_to_the_app() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().canonicalize().unwrap();
+    let (server, url) = start_server(&dir, "observed");
+    let (first, second) = (WriteCtx::default(), WriteCtx::default());
+    let ctx = |m: &WriteCtx| m as *const WriteCtx as *mut c_void;
+    let released = |m: &WriteCtx| m.released.load(std::sync::atomic::Ordering::SeqCst);
+    let set = |server, c: &WriteCtx| unsafe {
+        ganymede_server_set_write_observer(
+            server,
+            Some(record_write),
+            Some(release_write_ctx),
+            ctx(c),
+        )
+    };
+
+    // Nothing is set: a write is not reported, and goes on.
+    put_text(&url, "a.txt", "none");
+
+    set(server, &first);
+    put_text(&url, "a.txt", "one");
+    put_text(&url, "new.txt", "made");
+    {
+        let calls = first.wrote.lock().unwrap();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        let path = dir.join("a.txt").to_str().unwrap().to_string();
+        assert_eq!(calls[0].0, path);
+        let before = calls[0].1.as_deref().expect("the file was there");
+        // size:mtime ns:inode, the stamp of a four-byte file, then three.
+        assert!(before.starts_with("4:"), "{before}");
+        let after = calls[0].2.as_deref().expect("a stamp after");
+        assert!(after.starts_with("3:") && after != before, "{after}");
+        assert_eq!(calls[1].0, dir.join("new.txt").to_str().unwrap());
+        assert_eq!(calls[1].1, None, "a new file has no stamp before");
+        assert!(calls[1].2.is_some());
+    }
+    // The next write starts from the stamp the last one left.
+    put_text(&url, "a.txt", "three");
+    let after_one = first.wrote.lock().unwrap()[0].2.clone();
+    assert_eq!(first.wrote.lock().unwrap()[2].1, after_one);
+
+    // Replaced: the later writes go to the new callback and context.
+    set(server, &second);
+    put_text(&url, "a.txt", "four");
+    assert_eq!(first.wrote.lock().unwrap().len(), 3);
+    assert_eq!(second.wrote.lock().unwrap().len(), 1);
+    assert_eq!((released(&first), released(&second)), (1, 0), "replaced");
+
+    // Removed.
+    unsafe { ganymede_server_set_write_observer(server, None, None, std::ptr::null_mut()) };
+    put_text(&url, "a.txt", "five");
+    assert_eq!(first.wrote.lock().unwrap().len(), 3);
+    assert_eq!(second.wrote.lock().unwrap().len(), 1);
+    assert_eq!((released(&first), released(&second)), (1, 1), "removed");
+
+    // A write that fails is not reported.
+    set(server, &second);
+    let bad = request(
+        &url,
+        "PUT",
+        "/api/contents/no-such-dir/x.txt",
+        r#"{"type": "file", "format": "text", "content": "x"}"#,
+    );
+    assert!(!code(&bad).starts_with('2'), "{bad}");
+    assert_eq!(second.wrote.lock().unwrap().len(), 1);
+
+    // Stopping the server releases the one still set, once.
+    assert_eq!(released(&second), 1);
+    unsafe { ganymede_server_stop(server) };
+    assert_eq!((released(&first), released(&second)), (1, 2), "stopped");
 }
