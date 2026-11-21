@@ -4,6 +4,11 @@
 //! languages by hand rather than pulling in a grammar library. Anything it
 //! doesn't know, or can't follow (a JavaScript regex literal, say), comes
 //! out as plain text: it never drops or reorders a character.
+//!
+//! In TypeScript, the template literal of a `jupyter.sql` tag or of a
+//! `jupyter.sql.query(...)` call is DuckDB SQL, and is highlighted as
+//! SQL, with each `${...}` in it as TypeScript, the way an editor's
+//! language injection treats a `sql` tag.
 
 use crate::html::esc;
 
@@ -150,24 +155,23 @@ impl<'a> Lexer<'a> {
         } else {
             self.at + self.rest().chars().next().map_or(0, char::len_utf8)
         };
-        let text = &self.src[self.at..end];
-        match class {
-            Some(c) => {
-                self.out.push_str("<span class=\"");
-                self.out.push_str(c);
-                self.out.push_str("\">");
-                self.out.push_str(&esc(text));
-                self.out.push_str("</span>");
-            }
-            None => self.out.push_str(&esc(text)),
-        }
+        push_span(&mut self.out, class, &self.src[self.at..end]);
         self.at = end;
     }
 
     fn run(mut self) -> String {
         while let Some(c) = self.rest().chars().next() {
             let rest = self.rest();
-            if let Some(end) = self.comment(rest) {
+            if c == '`' && self.sql_tagged() {
+                let close = template_end(&rest[1..]);
+                let body = &rest[1..close.map_or(rest.len(), |i| 1 + i)];
+                push_span(&mut self.out, Some("hl-s"), "`");
+                sql_template_body(&mut self.out, body);
+                if close.is_some() {
+                    push_span(&mut self.out, Some("hl-s"), "`");
+                }
+                self.at += close.map_or(rest.len(), |i| i + 2);
+            } else if let Some(end) = self.comment(rest) {
                 self.emit(Some("hl-c"), self.at + end);
             } else if let Some(end) = self.string(rest) {
                 self.emit(Some("hl-s"), self.at + end);
@@ -208,6 +212,25 @@ impl<'a> Lexer<'a> {
             }
         }
         self.out
+    }
+
+    /// Whether a backtick here opens a SQL template: `` jupyter.sql`...` ``,
+    /// or the first argument of `` jupyter.sql.query(`...`) ``.
+    fn sql_tagged(&self) -> bool {
+        if !std::ptr::eq(self.lang, &TS) {
+            return false;
+        }
+        let before = self.src[..self.at].trim_end();
+        let before = match before.strip_suffix('(') {
+            Some(call) => match call.trim_end().strip_suffix(".query") {
+                Some(tag) => tag,
+                None => return false,
+            },
+            None => before,
+        };
+        before
+            .strip_suffix("jupyter.sql")
+            .is_some_and(|head| !head.ends_with(|c: char| self.ident_char(c) || c == '.'))
     }
 
     fn ident_char(&self, c: char) -> bool {
@@ -286,6 +309,241 @@ impl<'a> Lexer<'a> {
             _ => body.find('\n').unwrap_or(body.len()),
         };
         Some(prefix + end)
+    }
+}
+
+#[rustfmt::skip]
+const SQL_KEYWORDS: &[&str] = &[
+    "add", "all", "alter", "and", "anti", "any", "array", "as", "asc", "asof", "attach", "between",
+    "bigint", "blob", "bool", "boolean", "by", "case", "cast", "column", "copy", "create",
+    "cross", "cube", "current", "date", "decimal", "default", "delete", "desc", "describe",
+    "detach", "distinct", "double", "drop", "else", "end", "except", "exclude", "exists",
+    "explain", "filter", "first", "float", "following", "for", "from", "full", "group",
+    "having", "hugeint", "if", "ilike", "in", "inner", "insert", "install", "int", "integer",
+    "intersect", "interval", "into", "is", "join", "last", "lateral", "left", "like", "limit",
+    "load", "macro", "natural", "not", "nulls", "numeric", "offset", "on", "or", "order",
+    "outer", "over", "partition", "pivot", "positional", "pragma", "preceding", "primary",
+    "qualify", "range", "real", "recursive", "replace", "returning", "right", "rollup", "rows",
+    "sample", "select", "semi", "set", "show", "smallint", "summarize", "table", "temp",
+    "temporary", "then", "time", "timestamp", "timestamptz", "to", "try_cast", "unbounded",
+    "union", "unpivot", "update", "using", "values", "varchar", "view", "when", "where",
+    "window", "with", "within",
+];
+
+/// The SQL lexer's state between the pieces of a template that its
+/// `${...}`s cut apart: `'${FROM}'` is one string in two pieces.
+#[derive(Clone, Copy)]
+enum Sql {
+    Code,
+    /// In a `'` string or a `"` quoted name.
+    Quoted(u8),
+    LineComment,
+    BlockComment,
+}
+
+/// The body of a SQL template (between its backticks) as HTML: SQL, with
+/// each `${...}` highlighted as TypeScript.
+fn sql_template_body(out: &mut String, body: &str) {
+    let mut state = Sql::Code;
+    let mut rest = body;
+    loop {
+        let cut = next_interpolation(rest).unwrap_or(rest.len());
+        state = sql_text(out, &rest[..cut], state);
+        if cut == rest.len() {
+            return;
+        }
+        let expr = &rest[cut + 2..];
+        out.push_str("${");
+        match interpolation_end(expr) {
+            Some(end) => {
+                out.push_str(&Lexer::new(&expr[..end], &TS).run());
+                out.push('}');
+                rest = &expr[end + 1..];
+            }
+            None => {
+                out.push_str(&Lexer::new(expr, &TS).run());
+                return;
+            }
+        }
+    }
+}
+
+/// One piece of SQL between interpolations, starting in `state`; returns
+/// the state at its end.
+fn sql_text(out: &mut String, text: &str, mut state: Sql) -> Sql {
+    let mut at = 0;
+    while at < text.len() {
+        let rest = &text[at..];
+        let (class, len, next) = match state {
+            Sql::Quoted(q) => match sql_closing(rest, q) {
+                Some(i) => (quoted_class(q), i + 1, Sql::Code),
+                None => (quoted_class(q), rest.len(), state),
+            },
+            Sql::LineComment => match rest.find('\n') {
+                Some(i) => (Some("hl-c"), i, Sql::Code),
+                None => (Some("hl-c"), rest.len(), state),
+            },
+            Sql::BlockComment => match rest.find("*/") {
+                Some(i) => (Some("hl-c"), i + 2, Sql::Code),
+                None => (Some("hl-c"), rest.len(), state),
+            },
+            Sql::Code => sql_token(rest, &text[..at]),
+        };
+        // A token that ends at the piece's end leaves its state open, but
+        // an empty run never happens: every token holds a character.
+        let end = at + len.max(rest.chars().next().map_or(0, char::len_utf8));
+        push_span(out, class, &text[at..end]);
+        at = end;
+        state = next;
+    }
+    state
+}
+
+/// The SQL token at the start of `rest`, after `before`: its class, its
+/// length, and the state after it.
+fn sql_token(rest: &str, before: &str) -> (Option<&'static str>, usize, Sql) {
+    let c = rest.chars().next().unwrap_or(' ');
+    if rest.starts_with("--") {
+        match rest.find('\n') {
+            Some(i) => (Some("hl-c"), i, Sql::Code),
+            None => (Some("hl-c"), rest.len(), Sql::LineComment),
+        }
+    } else if let Some(body) = rest.strip_prefix("/*") {
+        match body.find("*/") {
+            Some(i) => (Some("hl-c"), 2 + i + 2, Sql::Code),
+            None => (Some("hl-c"), rest.len(), Sql::BlockComment),
+        }
+    } else if c == '\'' || c == '"' {
+        let q = c as u8;
+        match sql_closing(&rest[1..], q) {
+            Some(i) => (quoted_class(q), 1 + i + 1, Sql::Code),
+            None => (quoted_class(q), rest.len(), Sql::Quoted(q)),
+        }
+    } else if c == '\\' {
+        // A template escape such as `` \` ``: the backslash and what it escapes.
+        let next = rest[1..].chars().next().map_or(0, char::len_utf8);
+        (None, 1 + next, Sql::Code)
+    } else if c.is_ascii_digit() || (c == '.' && next_is_digit(rest)) {
+        (Some("hl-n"), number_end(rest), Sql::Code)
+    } else if c.is_alphabetic() || c == '_' {
+        let end = rest
+            .char_indices()
+            .find(|&(_, c)| !(c.is_alphanumeric() || c == '_' || c == '$'))
+            .map_or(rest.len(), |(i, _)| i);
+        let word = rest[..end].to_ascii_lowercase();
+        // A qualified name (`t.date`) is a name, whatever it's called.
+        let class = if before.ends_with('.') {
+            None
+        } else if SQL_KEYWORDS.contains(&word.as_str()) {
+            Some("hl-k")
+        } else if ["true", "false", "null"].contains(&word.as_str()) {
+            Some("hl-n")
+        } else {
+            None
+        };
+        (class, end, Sql::Code)
+    } else {
+        let end = rest
+            .char_indices()
+            .skip(1)
+            .find(|&(_, c)| c.is_alphanumeric() || "_'\"-/\\.".contains(c))
+            .map_or(rest.len(), |(i, _)| i);
+        (None, end, Sql::Code)
+    }
+}
+
+/// A SQL string is a string; a `"quoted name"` is a name.
+fn quoted_class(q: u8) -> Option<&'static str> {
+    (q == b'\'').then_some("hl-s")
+}
+
+/// Where the quote `q` closes in `s`: a doubled quote is SQL's escape,
+/// and a backslash is the template's.
+fn sql_closing(s: &str, q: u8) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\' {
+            i += 2;
+        } else if b[i] == q {
+            if b.get(i + 1) == Some(&q) {
+                i += 2;
+            } else {
+                return Some(i);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// Where the first `${` not escaped by a `\` stands in template text.
+fn next_interpolation(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 2,
+            b'$' if b.get(i + 1) == Some(&b'{') => return Some(i),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Where the closing backtick of a template stands, `s` starting just
+/// after the opening one; `` ` ``s inside its `${...}`s don't count.
+fn template_end(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 2,
+            b'`' => return Some(i),
+            b'$' if b.get(i + 1) == Some(&b'{') => i += 2 + interpolation_end(&s[i + 2..])? + 1,
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Where the `}` closing an interpolation stands, `s` starting just
+/// after its `${`: braces nest, and strings, templates and comments in
+/// it are skipped.
+fn interpolation_end(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut depth = 0;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'{' => depth += 1,
+            b'}' if depth == 0 => return Some(i),
+            b'}' => depth -= 1,
+            q @ (b'\'' | b'"') => {
+                let quote = if q == b'"' { "\"" } else { "'" };
+                i += 1 + closing(&s[i + 1..], quote, true)?;
+            }
+            b'`' => i += 1 + template_end(&s[i + 1..])?,
+            b'/' if b.get(i + 1) == Some(&b'/') => i += s[i..].find('\n')?,
+            b'/' if b.get(i + 1) == Some(&b'*') => i += 2 + s[i + 2..].find("*/")? + 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn push_span(out: &mut String, class: Option<&str>, text: &str) {
+    match class {
+        Some(c) => {
+            out.push_str("<span class=\"");
+            out.push_str(c);
+            out.push_str("\">");
+            out.push_str(&esc(text));
+            out.push_str("</span>");
+        }
+        None => out.push_str(&esc(text)),
     }
 }
 
@@ -440,6 +698,171 @@ mod tests {
         assert_eq!(highlight("fn <main>()", "rust"), "fn &lt;main&gt;()");
         assert_eq!(highlight("x = 1", ""), "x = 1");
         assert!(highlight("x = 1", "python {.class}").contains("hl-n"));
+    }
+
+    /// The `<span>`s of `html` in order, each as (class, text).
+    fn spans(html: &str) -> Vec<(String, String)> {
+        html.split("<span class=\"")
+            .skip(1)
+            .map(|s| {
+                let (class, rest) = s.split_once("\">").unwrap();
+                let body = rest.split_once("</span>").unwrap().0;
+                (class.to_owned(), text(body))
+            })
+            .collect()
+    }
+
+    fn span(class: &str, text: &str) -> (String, String) {
+        (class.to_owned(), text.to_owned())
+    }
+
+    #[test]
+    fn sql_tag() {
+        let code = "await jupyter.sql`\n  select class, count(*) as points\n  from meter_points where class <> 'TOTAL' group by class`;";
+        let html = highlight(code, "typescript");
+        assert_eq!(text(&html), code);
+        assert_eq!(
+            spans(&html),
+            [
+                span("hl-k", "await"),
+                span("hl-s", "`"),
+                span("hl-k", "select"),
+                span("hl-k", "as"),
+                span("hl-k", "from"),
+                span("hl-k", "where"),
+                span("hl-s", "'TOTAL'"),
+                span("hl-k", "group"),
+                span("hl-k", "by"),
+                span("hl-s", "`"),
+            ]
+        );
+        // `class` and `count` are names in SQL, though `class` is a
+        // TypeScript keyword.
+        assert!(
+            html.contains("<span class=\"hl-k\">select</span> class, count(*)"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn sql_query_call() {
+        let code = "await jupyter.sql.query(`\n  create or replace table meter_rows as\n  select start, rate::double as rate -- per hour\n  from read_parquet('s3://${BUCKET}/x/s=${SENSOR}/*.parquet')\n  where d between date '${FROM}' - 2 and date '${TO}' + 1`);";
+        let html = highlight(code, "typescript");
+        assert_eq!(text(&html), code);
+        assert_eq!(
+            spans(&html),
+            [
+                span("hl-k", "await"),
+                span("hl-s", "`"),
+                span("hl-k", "create"),
+                span("hl-k", "or"),
+                span("hl-k", "replace"),
+                span("hl-k", "table"),
+                span("hl-k", "as"),
+                span("hl-k", "select"),
+                span("hl-k", "double"),
+                span("hl-k", "as"),
+                span("hl-c", "-- per hour"),
+                span("hl-k", "from"),
+                span("hl-s", "'s3://"),
+                span("hl-s", "/x/s="),
+                span("hl-s", "/*.parquet'"),
+                span("hl-k", "where"),
+                span("hl-k", "between"),
+                span("hl-k", "date"),
+                span("hl-s", "'"),
+                span("hl-s", "'"),
+                span("hl-n", "2"),
+                span("hl-k", "and"),
+                span("hl-k", "date"),
+                span("hl-s", "'"),
+                span("hl-s", "'"),
+                span("hl-n", "1"),
+                span("hl-s", "`"),
+            ]
+        );
+        // The interpolations sit between the string's pieces, outside
+        // any span, and the string closes after them.
+        assert!(html.contains("<span class=\"hl-s\">&#39;s3://</span>${BUCKET}<span class=\"hl-s\">/x/s=</span>${SENSOR}<span"), "{html}");
+        assert!(html.contains("<span class=\"hl-k\">date</span> <span class=\"hl-s\">&#39;</span>${FROM}<span class=\"hl-s\">&#39;</span> - <span class=\"hl-n\">2</span>"), "{html}");
+        // The comment ends at the line, and the SQL goes on.
+        assert!(
+            html.contains(
+                "<span class=\"hl-c\">-- per hour</span>\n  <span class=\"hl-k\">from</span>"
+            ),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn sql_interpolation_is_typescript() {
+        let code = "jupyter.sql`select * from t where n > ${await count(\"}\", `a${b}`)} and s = 'it''s' limit ${new Date().getDay()}`; const x = 1;";
+        let html = highlight(code, "ts");
+        assert_eq!(text(&html), code);
+        assert!(html.contains("${<span class=\"hl-k\">await</span> count(<span class=\"hl-s\">&quot;}&quot;</span>, <span class=\"hl-s\">`a${b}`</span>)}"), "{html}");
+        assert!(
+            html.contains("<span class=\"hl-s\">&#39;it&#39;&#39;s&#39;</span>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("${<span class=\"hl-k\">new</span> Date().getDay()}"),
+            "{html}"
+        );
+        // After the template, TypeScript again.
+        assert!(
+            html.contains(
+                "`</span>; <span class=\"hl-k\">const</span> x = <span class=\"hl-n\">1</span>;"
+            ),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn other_templates_stay_strings() {
+        let code = "const q = `select * from t where d = '${FROM}'`;\nsql`select 1`; db.sql`select 1`; myjupyter.sql`select 1`; jupyter.sql.run(`select 1`); jupyter.sql.query(x, `select 1`);";
+        let html = highlight(code, "ts");
+        assert_eq!(text(&html), code);
+        assert!(
+            html.contains(
+                "<span class=\"hl-s\">`select * from t where d = &#39;${FROM}&#39;`</span>"
+            ),
+            "{html}"
+        );
+        assert_eq!(
+            html.matches("<span class=\"hl-s\">`select 1`</span>")
+                .count(),
+            5,
+            "{html}"
+        );
+        assert!(!html.contains("hl-k\">select"), "{html}");
+        // In another language, no SQL either.
+        assert!(!highlight("jupyter.sql`select 1`", "python").contains("hl-k"));
+    }
+
+    #[test]
+    fn sql_templates_keep_every_character() {
+        let samples = [
+            "jupyter.sql`",
+            "jupyter.sql`select '",
+            "jupyter.sql`select ${",
+            "jupyter.sql`select ${x",
+            "jupyter.sql`-- a ${x} b\nselect /* c ${y} */ 1`",
+            "jupyter.sql`select \"from\" from t where a = 'é''${x}\\`'`",
+            "jupyter.sql.query(  `select 1`)",
+            "jupyter.sql\n`select 1` + `x`",
+            "jupyter.sql`\\${x} ${'`'} ${`${`}`}`}`",
+        ];
+        for s in samples {
+            let html = highlight(s, "ts");
+            assert_eq!(text(&html), s, "{s:?}: {html}");
+        }
+        // A quoted name is no keyword, and an escaped `${` no interpolation.
+        let html = highlight("jupyter.sql`select \"from\", '\\${x}'`", "ts");
+        assert!(!html.contains("hl-k\">from"), "{html}");
+        assert!(
+            html.contains("<span class=\"hl-s\">&#39;\\${x}&#39;</span>"),
+            "{html}"
+        );
     }
 
     #[test]
