@@ -189,10 +189,6 @@ ten seconds. A cell that fails stops the rest of its batch.
 
 ### Who runs a cell
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 A cell a run has queued shows `execution_state: running` in the room, and
 `idle` once its last queued run ends (a cell that was skipped after an
 earlier cell failed, or was deleted, ends its run too). Ganymede adds
@@ -230,10 +226,6 @@ goes idle after the last. `by` is one of Ganymede's extensions to the
 execute body, with `wait` and the cell selectors.
 
 ### Run from a clean kernel
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 A notebook that was last run top to bottom on a fresh kernel carries
 `metadata.ganymede.clean_run` in its notebook metadata, so a reader (the

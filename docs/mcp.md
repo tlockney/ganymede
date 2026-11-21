@@ -285,10 +285,6 @@ behind it. A scratch run that times out before the kernel started it
 JupyterLab) interrupts nothing, so that other run isn't stopped; the
 reply says the code runs when the kernel is free.
 
-> [!NOTE]
-> **Unreleased.** The clean-run stamp `notebook_run_all` writes is
-> available only from a build of `main` (HEAD), not in the latest release.
-
 `notebook_run_all` writes `metadata.ganymede.clean_run` when the whole
 notebook ran from a fresh kernel, and removes it after any run of cells
 that didn't: `restart: false`, a timeout, or a cell that failed. A call
