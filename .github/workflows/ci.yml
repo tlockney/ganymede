@@ -119,7 +119,7 @@ jobs:
             grep -o 'skipping: .*' "$RUNNER_TEMP/test.log" | sort | uniq -c | sed 's/^/    /'
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::notice title=Skipped tests::$n tests skipped in this job; the e2e job runs them with nothing skipped"
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cargo-about
       - name: Dependency licenses are all accepted in about.toml
@@ -164,7 +164,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cargo-deny
       - run: cargo deny --locked check bans sources
@@ -270,7 +270,7 @@ jobs:
           toolchain: stable
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cargo-llvm-cov
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
