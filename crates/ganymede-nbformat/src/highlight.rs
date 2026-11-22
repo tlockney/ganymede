@@ -985,6 +985,23 @@ mod tests {
                 span("hl-n", "1"),
             ]
         );
+        // A string in the interpolation honours its escapes, so `\'`
+        // doesn't close it and the `}` after it ends nothing.
+        let code = r"jupyter.sql`select ${ x ? 'a\'}' : y } from t`; const z = 1;";
+        let html = highlight(code, "ts");
+        assert_eq!(text(&html), code);
+        assert_eq!(
+            spans(&html),
+            [
+                span("hl-s", "`"),
+                span("hl-k", "select"),
+                span("hl-s", r"'a\'}'"),
+                span("hl-k", "from"),
+                span("hl-s", "`"),
+                span("hl-k", "const"),
+                span("hl-n", "1"),
+            ]
+        );
     }
 
     #[test]
