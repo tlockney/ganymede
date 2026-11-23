@@ -6497,6 +6497,75 @@ async fn mcp_collapse_saves_the_cell_collapsed() {
     assert_eq!(hidden("plain"), Value::Null);
 }
 
+/// A recorded step written bare is saved inside a ```text fence, so its
+/// `# comment` lines don't render as headings; one with its own fenced
+/// block, and a note, are saved as written (#930).
+#[tokio::test]
+async fn mcp_recorded_step_without_a_fence_is_fenced() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = mcp_app(dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    let call = |args: Value| {
+        let (app, sid) = (app.clone(), sid.clone());
+        async move { mcp_text(&mcp_tool(&app, &sid, "cell_add", args).await) }
+    };
+    mcp_text(&mcp_tool(&app, &sid, "notebook_open", json!({"path": "r.ipynb"})).await);
+    let fenced = "Ran in the shell.\n\n```sh\n$ npm install p5\n```\n";
+    call(json!({"source": "# try p5 in Node\nnpm install p5", "mode": "recorded"})).await;
+    call(json!({"source": fenced, "mode": "recorded"})).await;
+    // Code and raw cells are no Markdown: kept as written.
+    call(json!({"source": "# code\nls", "cell_type": "code", "mode": "recorded"})).await;
+    call(json!({"source": "# raw\nls", "cell_type": "raw", "mode": "recorded"})).await;
+    // A recorded step revised bare is fenced again.
+    let out = call(json!({"source": "first", "mode": "recorded"})).await;
+    let id = out.trim().rsplit(' ').next().unwrap().to_string();
+    mcp_text(
+        &mcp_tool(
+            &app,
+            &sid,
+            "cell_edit",
+            json!({"id": id, "source": "# revised\nnpm ci"}),
+        )
+        .await,
+    );
+    call(json!({"source": "# A heading on purpose"})).await;
+    let file = dir.path().join("r.ipynb");
+    let sources = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(s) = std::fs::read_to_string(&file) {
+                let nb: Value = serde_json::from_str(&s).unwrap();
+                let sources: Vec<String> = nb["cells"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|c| match &c["source"] {
+                        Value::Array(lines) => lines.iter().filter_map(Value::as_str).collect(),
+                        v => v.as_str().unwrap_or_default().to_string(),
+                    })
+                    .collect();
+                if sources.iter().any(|s| s == "# A heading on purpose") {
+                    return sources;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("saved");
+    assert!(
+        sources.contains(&"```text\n# try p5 in Node\nnpm install p5\n```\n".to_string()),
+        "{sources:?}"
+    );
+    assert!(sources.contains(&fenced.to_string()), "{sources:?}");
+    for kept in ["# code\nls", "# raw\nls"] {
+        assert!(sources.contains(&kept.to_string()), "{sources:?}");
+    }
+    assert!(
+        sources.contains(&"```text\n# revised\nnpm ci\n```\n".to_string()),
+        "{sources:?}"
+    );
+}
+
 /// A scratch run that times out interrupts the kernel, so the next run
 /// doesn't queue behind it (#323).
 #[tokio::test]
