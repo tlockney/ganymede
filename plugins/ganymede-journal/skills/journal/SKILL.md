@@ -99,9 +99,12 @@ Edit.
 
 10. A shell command or a file you wrote is part of the story but didn't
    run in the kernel. Add it with `cell_add(mode: "recorded")`, never as
-   kernel output. With this plugin's hooks, a Bash command that ends in
-   the comment `# journal` is recorded for you; the hook says so, so
-   don't add it twice. Keep credentials out of recorded cells.
+   kernel output. Put the command in a ```` ```sh ```` block and its
+   output in a ```` ```text ```` block, as the hook does: a bare
+   `# comment` line renders as a heading. With this plugin's hooks, a
+   Bash command that ends in the comment `# journal` is recorded for
+   you; the hook says so, so don't add it twice. Keep credentials out
+   of recorded cells.
 
 ## Revise, don't append
 

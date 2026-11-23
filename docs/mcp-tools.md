@@ -10,13 +10,13 @@ listed and refuse ([Options](mcp.md#options)).
 
 ## `cell_add`
 
-Add a cell without running it: Markdown narration (the default), or with `mode: recorded` a step that ran outside the kernel. With `answers` set to a request cell's id, it goes below that request and marks it done. Returns the new cell's id.
+Add a cell without running it: Markdown narration (the default), or with `mode: recorded` a step that ran outside the kernel, its commands and output in fenced code blocks (`sh` for commands, `text` for output). A recorded Markdown source with no fenced block is saved inside a `text` fence. With `answers` set to a request cell's id, it goes below that request and marks it done. Returns the new cell's id.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| `source` (required) | string | The cell's source: Markdown, or the command or step it records. |
+| `source` (required) | string | The cell's source: Markdown, or the command or step it records (commands and output in fenced code blocks). |
 | `cell_type` | `markdown`, `code`, `raw` | Default markdown. |
-| `mode` | `note` (Narration), `recorded` (A step that ran outside the kernel (a shell command, a file the agent wrote), recorded so the notebook tells the whole story) | Default note. |
+| `mode` | `note` (Narration), `recorded` (A step that ran outside the kernel (a shell command, a file the agent wrote), recorded so the notebook tells the whole story. Put its commands and output in fenced code blocks (`sh` for commands, `text` for output); a Markdown source with no fenced block is saved inside a `text` fence, so a `# comment` line can't render as a heading) | Default note. |
 | `after` | string | Insert after this cell id (default: at the end). |
 | `collapse` | boolean | Code cells only: save the cell with its code collapsed (default false), as JupyterLab's collapser does (`metadata.jupyter.source_hidden`): for helper code (types, utility functions) a reader can skip. A person can expand it. |
 | `path` | string | Notebook path; the one last opened when left out. |
@@ -44,7 +44,7 @@ Delete a cell. Refused when someone else changed the cell since your last read; 
 
 ## `cell_edit`
 
-Replace a cell's source; with `run: true`, run it after. The replaced source is kept in the cell's metadata.ganymede.agent.history; to remove a secret, delete the cell instead. Refused when someone else changed the cell since your last read; read their change in with notebook_read(since), then redo it.
+Replace a cell's source; with `run: true`, run it after. A recorded step (Markdown, `mode: recorded`) is fenced as `cell_add` fences it. The replaced source is kept in the cell's metadata.ganymede.agent.history; to remove a secret, delete the cell instead. Refused when someone else changed the cell since your last read; read their change in with notebook_read(since), then redo it.
 
 | Parameter | Type | Description |
 | --- | --- | --- |

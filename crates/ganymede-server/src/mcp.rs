@@ -46,7 +46,7 @@ use ganymede_api::sessions::KernelRef;
 use ganymede_api::SessionCreate;
 use ganymede_contents::{ContentType, GetOptions, SaveRequest};
 use ganymede_documents::schema::{self, Roots};
-use ganymede_documents::yrs::{Array, Map, Out, TransactionMut};
+use ganymede_documents::yrs::{Array, Map, MapRef, Out, ReadTxn, TransactionMut};
 use ganymede_documents::{Effects, Room};
 use ganymede_nbformat::{Cell, Notebook, Output};
 use rmcp::handler::server::router::prompt::PromptRouter;
@@ -59,6 +59,7 @@ use rmcp::{ErrorData as McpError, Peer, RoleServer, ServerHandler};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::Digest;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -332,13 +333,18 @@ pub enum AddMode {
     /// Narration.
     Note,
     /// A step that ran outside the kernel (a shell command, a file the
-    /// agent wrote), recorded so the notebook tells the whole story.
+    /// agent wrote), recorded so the notebook tells the whole story. Put
+    /// its commands and output in fenced code blocks (`sh` for commands,
+    /// `text` for output); a Markdown source with no fenced block is saved
+    /// inside a `text` fence, so a `# comment` line can't render as a
+    /// heading.
     Recorded,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AddArgs {
-    /// The cell's source: Markdown, or the command or step it records.
+    /// The cell's source: Markdown, or the command or step it records
+    /// (commands and output in fenced code blocks).
     pub source: String,
     /// Default markdown.
     pub cell_type: Option<CellKind>,
@@ -689,7 +695,7 @@ impl Notebooks {
     }
 
     #[tool(
-        description = "Add a cell without running it: Markdown narration (the default), or with `mode: recorded` a step that ran outside the kernel. With `answers` set to a request cell's id, it goes below that request and marks it done. Returns the new cell's id."
+        description = "Add a cell without running it: Markdown narration (the default), or with `mode: recorded` a step that ran outside the kernel, its commands and output in fenced code blocks (`sh` for commands, `text` for output). A recorded Markdown source with no fenced block is saved inside a `text` fence. With `answers` set to a request cell's id, it goes below that request and marks it done. Returns the new cell's id."
     )]
     async fn cell_add(
         &self,
@@ -717,8 +723,13 @@ impl Notebooks {
             }
             collapse(&mut metadata);
         }
+        let source = if mode == "recorded" && cell_type == "markdown" {
+            fence_recorded(&a.source)
+        } else {
+            Cow::Borrowed(a.source.as_str())
+        };
         let cell =
-            room_ops::new_cell(cell_type, &id, &a.source, metadata).expect("a known cell type");
+            room_ops::new_cell(cell_type, &id, &source, metadata).expect("a known cell type");
         if let Some(request) = a.answers {
             self.insert_answer(&path, cell, a.after, a.mark, request)
                 .await?;
@@ -857,7 +868,7 @@ impl Notebooks {
     }
 
     #[tool(
-        description = "Replace a cell's source; with `run: true`, run it after. The replaced source is kept in the cell's metadata.ganymede.agent.history; to remove a secret, delete the cell instead. Refused when someone else changed the cell since your last read; read their change in with notebook_read(since), then redo it."
+        description = "Replace a cell's source; with `run: true`, run it after. A recorded step (Markdown, `mode: recorded`) is fenced as `cell_add` fences it. The replaced source is kept in the cell's metadata.ganymede.agent.history; to remove a secret, delete the cell instead. Refused when someone else changed the cell since your last read; read their change in with notebook_read(since), then redo it."
     )]
     async fn cell_edit(
         &self,
@@ -880,7 +891,14 @@ impl Notebooks {
                 marks::Aspect::Source,
                 None,
                 move |room| {
-                    room.edit(|txn, roots| room_ops::set_source(txn, roots, &id, &source, &by))
+                    room.edit(|txn, roots| {
+                        // A recorded step stays fenced when it's revised (#930).
+                        let source = match schema::find_cell(txn, roots, &id) {
+                            Some(cell) if recorded_markdown(txn, &cell) => fence_recorded(&source),
+                            _ => Cow::Borrowed(source.as_str()),
+                        };
+                        room_ops::set_source(txn, roots, &id, &source, &by)
+                    })
                 },
             )
             .await?;
@@ -1504,7 +1522,7 @@ Keep a notebook as the record of this analysis while you work, not as a write-up
 - Run the code that produces results with `cell_run`, so the notebook keeps both the code and its output. The outputs are the record of the run: keep them.
 - When an output is too large or too private to keep, pass `keep_outputs: false` (or call `cell_clear_outputs`): the code stays, the outputs stay out of the notebook. Don't print credentials at all.
 - Use `cell_run` with `record: false` for checks that don't belong in the record (peeking at a value, trying a call).
-- When a step happens outside the kernel (a shell command, a file you wrote), add it with `cell_add` and `mode: recorded`.
+- When a step happens outside the kernel (a shell command, a file you wrote), add it with `cell_add` and `mode: recorded`. Put its commands in a ```sh block and its output in a ```text block, never bare: a bare `# comment` line is a Markdown heading.
 - After a result, add a Markdown note with what it shows. Fix a wrong cell with `cell_edit` rather than adding another.
 - Look at a chart before writing what it shows: if `cell_run` returned no image, `cell_snapshot` with the cell's id returns it.
 - To show the user a result, paste what `cell_snapshot` returns for the cells behind it: charts as image files, tables as Markdown, code as a fenced block.
@@ -1740,6 +1758,39 @@ use crate::room_ops::now;
 
 pub(crate) fn new_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..12].to_string()
+}
+
+/// A recorded step's Markdown `source`, inside a ```text fence when it has
+/// no fenced block of its own (#930). An agent that writes a shell session
+/// bare gets its `# comment` lines rendered as headings; fenced, it reads
+/// as the session it was. The fence is longer than any backtick run in the
+/// source, so nothing in it can close it early.
+fn fence_recorded(source: &str) -> Cow<'_, str> {
+    // CommonMark: a fence opens with up to three spaces of indent.
+    let fenced = source.lines().any(|l| {
+        let t = l.trim_start_matches(' ');
+        l.len() - t.len() <= 3 && (t.starts_with("```") || t.starts_with("~~~"))
+    });
+    if fenced || source.trim().is_empty() {
+        return Cow::Borrowed(source);
+    }
+    let longest = source.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat(longest.max(2) + 1);
+    Cow::Owned(format!(
+        "{fence}text\n{}\n{fence}\n",
+        source.trim_end_matches('\n')
+    ))
+}
+
+/// Whether `cell` is a Markdown cell an agent recorded as a step
+/// (`metadata.ganymede.agent.mode` is `recorded`).
+fn recorded_markdown<T: ReadTxn>(txn: &T, cell: &MapRef) -> bool {
+    let field = |k: &str| {
+        cell.get(txn, k)
+            .map(|o| schema::out_to_json(txn, &o))
+            .unwrap_or(Value::Null)
+    };
+    field("cell_type") == "markdown" && field("metadata")["ganymede"]["agent"]["mode"] == "recorded"
 }
 
 fn provenance(peer: &Peer<RoleServer>, mode: &str) -> Value {
@@ -3177,6 +3228,41 @@ fn svg_source(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A recorded step written bare goes in a ```text fence, so its
+    /// `# comment` lines can't render as headings (#930).
+    #[test]
+    fn a_bare_recorded_step_is_fenced() {
+        let src = "# install the packages\nnpm install jsdom canvas\n# -> no prebuilt binary\n";
+        assert_eq!(
+            fence_recorded(src),
+            "```text\n# install the packages\nnpm install jsdom canvas\n# -> no prebuilt binary\n```\n"
+        );
+        // The fence outlasts any backtick run inside.
+        assert_eq!(
+            fence_recorded("echo ````x````"),
+            "`````text\necho ````x````\n`````\n"
+        );
+    }
+
+    /// A recorded step with a fenced block of its own, and an empty one,
+    /// are kept as they are.
+    #[test]
+    fn a_fenced_recorded_step_is_kept() {
+        for src in [
+            "Ran in the shell.\n\n```sh\n$ ls\n```\n",
+            "Wrote a file:\n\n   ~~~text\n# not a heading\n   ~~~\n",
+            "",
+            "  \n",
+        ] {
+            assert!(
+                matches!(fence_recorded(src), Cow::Borrowed(s) if s == src),
+                "{src:?}"
+            );
+        }
+        // Indented four spaces, it's an indented code block, not a fence.
+        assert!(matches!(fence_recorded("    ```\n# x\n"), Cow::Owned(_)));
+    }
 
     /// A run is clean when the code cells with code have counts 1, 2, 3 in
     /// order and none has an error output (#898).
