@@ -311,7 +311,7 @@ html:not(.js) .pager { display: none; }
     <h1>A primer on how Ganymede's code fits together</h1>
     <p class="lede">A guided tour of the three repositories, the Rust crates, the TypeScript kernel and the apps: what each part is for, how its code is laid out, and which files to open first.</p>
     <ul class="meta">
-      <li>Describes <code>main</code> as of 19 Nov 2026</li>
+      <li>Describes <code>main</code> as of 23 Nov 2026</li>
       <li>14 chapters</li>
       <li>ganymede · cdp-kernel · ganymede-ui</li>
       <li><a href="../docs/">Ganymede docs</a></li>
@@ -816,6 +816,11 @@ html:not(.js) .pager { display: none; }
 <td>Cell edits on a room, shared by MCP, the execute endpoint and the host API&#39;s <code>self.*</code> calls</td>
 </tr>
 <tr>
+<td><a class="code-link" href="https://github.com/tlockney/ganymede/blob/main/crates/ganymede-server/src/mount.rs" target="_blank" rel="noopener"><code>mount.rs</code></a></td>
+<td>50</td>
+<td>Connected machines: another Ganymede server mounted under <code>/machines/{id}/</code> once the embedding app adds it (chapter 9). Only this server&#39;s own page session may use the mount; a tailnet identity or <code>mcp_token</code> gets 403. The forwarding, the route allowlist and what is stripped from each request and response are in <a class="code-link" href="https://github.com/tlockney/ganymede/tree/main/crates/ganymede-gateway" target="_blank" rel="noopener"><code>ganymede-gateway</code></a>&#39;s <a class="code-link" href="https://github.com/tlockney/ganymede/blob/main/crates/ganymede-gateway/src/mount.rs" target="_blank" rel="noopener"><code>mount.rs</code></a>, beside the kernel gateway</td>
+</tr>
+<tr>
 <td><a class="code-link" href="https://github.com/tlockney/ganymede/blob/main/crates/ganymede-server/src/run.rs" target="_blank" rel="noopener"><code>run.rs</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede/blob/main/crates/ganymede-server/src/host.rs" target="_blank" rel="noopener"><code>host.rs</code></a></td>
 <td>1,500</td>
 <td>Runs and the host API (chapter 7)</td>
@@ -913,7 +918,7 @@ html:not(.js) .pager { display: none; }
 </thead>
 <tbody><tr>
 <td><a class="code-link" href="https://github.com/tlockney/ganymede/blob/main/crates/ganymede-server/src/collab.rs" target="_blank" rel="noopener"><code>collab.rs</code></a> (2,650 lines)</td>
-<td><code>/api/collaboration/session/{path}</code> (gives the file id) and <code>/api/collaboration/room/{format}:{type}:{fileId}</code> (the websocket). Each room is one tokio task, <code>run_room</code>, that owns the <code>Room</code> and the file</td>
+<td><code>/api/collaboration/session/{path}</code> (gives the file id) and <code>/api/collaboration/room/{format}:{type}:{fileId}</code> (the websocket). Each room is one tokio task, <code>run_room</code>, that owns the <code>Room</code> and the file. <code>GET /api/collaboration/rooms</code> lists the open rooms, with who is in each (a person or an agent) and what last changed; the apps&#39; Journals list reads it</td>
 </tr>
 <tr>
 <td><a class="code-link" href="https://github.com/tlockney/ganymede/blob/main/crates/ganymede-server/src/watch.rs" target="_blank" rel="noopener"><code>watch.rs</code></a></td>
@@ -925,7 +930,7 @@ html:not(.js) .pager { display: none; }
 </tr>
 <tr>
 <td><a class="code-link" href="https://github.com/tlockney/ganymede/blob/main/crates/ganymede-server/src/execute.rs" target="_blank" rel="noopener"><code>execute.rs</code></a></td>
-<td><code>POST /api/kernels/{id}/execute</code>: run cells by id and write outputs into the room</td>
+<td><code>POST /api/kernels/{id}/execute</code>: run cells by id and write outputs into the room, with who runs them (<code>execution_by</code>)</td>
 </tr>
 </tbody></table></div>
 <h3 id="ch6-what-a-room-39-s-task-does">What a room&#39;s task does</h3>
@@ -950,6 +955,7 @@ html:not(.js) .pager { display: none; }
 </ol>
 <h3 id="ch6-flow-running-cells-into-a-room"><span class="kicker">Flow</span>Running cells into a room</h3>
 <p>An agent or a Shortcut has no websocket, so it can&#39;t follow the room to see outputs. <a class="code-link" href="https://github.com/tlockney/ganymede/blob/main/crates/ganymede-server/src/execute.rs" target="_blank" rel="noopener"><code>execute.rs</code></a> solves that: the client posts cell ids and each cell&#39;s source hash (MurmurHash2, seed 0). The room checks every hash against the current source (409 <code>source_mismatch</code> if the cell changed since the client read it), clears the cells, marks them running and queues the batch, all in one step of its task. One worker per room runs the queue on the kernel through <a class="code-link" href="https://github.com/tlockney/ganymede/tree/main/crates/ganymede-exec" target="_blank" rel="noopener"><code>ganymede-exec</code></a> and writes outputs into the room as they arrive, so they reach every client and the file even with no client connected. An optional <code>wait</code> returns the finished cells. A client can also leave out the hash and run whatever the room holds, name cells by tag, or send <code>&quot;cells&quot;: &quot;all&quot;</code>. The room resolves these in the same step as the checks, so a notebook with no cell ids on disk (nbformat 4.4) runs by the ids the room gave it, and an unknown id or tag refuses the whole batch.</p>
+<p>While a cell runs, the room shows who runs it as <code>execution_by</code>: the caller&#39;s tailnet login, else the <code>by</code> name it sent, else &quot;an API client&quot;. Like <code>execution_state</code>, it lives only in the room and is never saved. A notebook that MCP&#39;s <code>notebook_run_all</code> ran top to bottom on a restarted kernel, with every cell succeeding and no edit while it ran, gets a <code>metadata.ganymede.clean_run</code> stamp (<code>at</code>, <code>by</code>, <code>kernel</code>) that is saved; the room removes it when a later change to the cells makes the run stale (<a class="code-link" href="https://github.com/tlockney/ganymede/blob/main/crates/ganymede-documents/src/room.rs" target="_blank" rel="noopener"><code>room.rs</code></a>).</p>
 <p>The hash check is the pattern to recognize across the code: a writer names the version it read, and loses if someone else changed it. The host API&#39;s <code>self.edit</code> and self.delete use it too.</p>
 <aside class="dive" aria-labelledby="ch6-dive-in"><h3 id="ch6-dive-in">Dive in</h3><ul>
 <li><a class="code-link" href="https://github.com/tlockney/ganymede/blob/main/crates/ganymede-documents/src/lib.rs" target="_blank" rel="noopener"><code>ganymede-documents/src/lib.rs</code></a>, then <a class="code-link" href="https://github.com/tlockney/ganymede/blob/main/crates/ganymede-documents/src/room.rs" target="_blank" rel="noopener"><code>room.rs</code></a>&#39;s header for the wire protocol.</li>
@@ -1183,6 +1189,14 @@ html:not(.js) .pager { display: none; }
 <td>Get the URL to load; stop on quit</td>
 </tr>
 <tr>
+<td><code>ganymede_server_add_machine</code>, <code>_remove_machine</code>, <code>_machines</code></td>
+<td>Mount another Ganymede server under <code>/machines/{id}/</code> with its URL and token, unmount it (its waiting requests end with a 502), and list what is mounted. The apps&#39; connected machines (chapter 12) use these; chapter 5&#39;s <code>mount.rs</code> serves them</td>
+</tr>
+<tr>
+<td><code>ganymede_server_set_write_observer</code></td>
+<td>Calls the app back after each write the server makes of a file (a save, a room&#39;s autosave, a run, MCP), with the file&#39;s stamp before and after, so the app can tell its server&#39;s writes from a file replaced outside and keep or forget what it remembers per file</td>
+</tr>
+<tr>
 <td><code>ganymede_kernel_register</code>, <code>_deliver</code>, <code>_ended</code></td>
 <td>Register a kernel the app runs itself (the hidden web view&#39;s cdp-kernel), push its messages to the server, and report its end. These drive <a class="code-link" href="https://github.com/tlockney/ganymede/blob/main/crates/ganymede-kernel-host/src/registered.rs" target="_blank" rel="noopener"><code>registered.rs</code></a> from chapter 3</td>
 </tr>
@@ -1199,7 +1213,7 @@ html:not(.js) .pager { display: none; }
 <p>The apps were first planned around a message bridge in place of HTTP, which is why <a class="code-link" href="https://github.com/tlockney/ganymede/tree/main/crates/ganymede-api" target="_blank" rel="noopener"><code>ganymede-api</code></a> has no HTTP in it. Running the ordinary server on loopback turned out simpler: the web view connects to it as a browser would, so the web app has one code path everywhere.</p>
 <aside class="dive" aria-labelledby="ch9-dive-in"><h3 id="ch9-dive-in">Dive in</h3><ul>
 <li><a class="code-link" href="https://github.com/tlockney/ganymede/blob/main/crates/ganymede-cli/src/main.rs" target="_blank" rel="noopener"><code>ganymede-cli/src/main.rs</code></a> <code>enum Command</code> for the full command list.</li>
-<li><a class="code-link" href="https://github.com/tlockney/ganymede/blob/main/crates/ganymede-ffi/include/ganymede.h" target="_blank" rel="noopener"><code>ganymede-ffi/include/ganymede.h</code></a> (under 100 lines), then <a class="code-link" href="https://github.com/tlockney/ganymede/blob/main/crates/ganymede-ffi/src/lib.rs" target="_blank" rel="noopener"><code>src/lib.rs</code></a>, and <code>tests/</code> for an embedding exercised end to end.</li>
+<li><a class="code-link" href="https://github.com/tlockney/ganymede/blob/main/crates/ganymede-ffi/include/ganymede.h" target="_blank" rel="noopener"><code>ganymede-ffi/include/ganymede.h</code></a> (about 160 lines), then <a class="code-link" href="https://github.com/tlockney/ganymede/blob/main/crates/ganymede-ffi/src/lib.rs" target="_blank" rel="noopener"><code>src/lib.rs</code></a>, and <code>tests/</code> for an embedding exercised end to end.</li>
 </ul></aside>
 
   <nav class="pager" aria-label="Chapter navigation"><a class="pg pg-prev" href="#ch8" rel="prev"><span class="pg-k">← Previous</span><span class="pg-t">8. Agent-native: an agent in the same live notebook</span></a><a class="pg pg-next" href="#ch10" rel="next"><span class="pg-k">Next →</span><span class="pg-t">10. cdp-kernel: the TypeScript kernel</span></a></nav>
@@ -1299,7 +1313,7 @@ html:not(.js) .pager { display: none; }
 </thead>
 <tbody><tr>
 <td><a class="code-link" href="https://github.com/tlockney/cdp-kernel/blob/main/runtime/display.mjs" target="_blank" rel="noopener"><code>display.mjs</code></a></td>
-<td><code>jupyter.display</code>, rich output by MIME type, <code>jupyter.params</code>, <code>jupyter.result</code> (port of Deno&#39;s <code>Deno.jupyter</code>)</td>
+<td><code>jupyter.display</code>, rich output by MIME type, <code>jupyter.params</code>, <code>jupyter.result</code> (port of Deno&#39;s <code>Deno.jupyter</code>), <code>jupyter.version</code> and <code>jupyter.runtime</code> (the cdp-kernel version and the runtime running the cell)</td>
 </tr>
 <tr>
 <td><a class="code-link" href="https://github.com/tlockney/cdp-kernel/blob/main/runtime/comm.mjs" target="_blank" rel="noopener"><code>comm.mjs</code></a>, <a class="code-link" href="https://github.com/tlockney/cdp-kernel/blob/main/runtime/widget.mjs" target="_blank" rel="noopener"><code>widget.mjs</code></a></td>
@@ -1405,6 +1419,16 @@ html:not(.js) .pager { display: none; }
 <td>CSV and TSV open as a table (the table renderer), JSON as a tree, Parquet through DuckDB wasm, in the notebook&#39;s place. The DuckDB console is a SQL prompt that opens in the same place, on the DuckDB wasm build a notebook&#39;s SQL uses, in a worker of its own; it reads the files a statement names and can export the session to a notebook</td>
 </tr>
 <tr>
+<td>Journal view</td>
+<td><a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/components/JournalView.tsx" target="_blank" rel="noopener"><code>components/JournalView.tsx</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/journal.ts" target="_blank" rel="noopener"><code>lib/journal.ts</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/journals.ts" target="_blank" rel="noopener"><code>lib/journals.ts</code></a></td>
+<td>A notebook an agent keeps, read as a lab notebook and followed live from the open notebook&#39;s own room model: cells are read-only, provenance comes from <code>metadata.ganymede.agent</code> (chapter 8), and a composer at the bottom writes a note or an <code>@agent</code> request. <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/journals.ts" target="_blank" rel="noopener"><code>journals.ts</code></a> lists a place&#39;s journals from <code>GET /api/collaboration/rooms</code></td>
+</tr>
+<tr>
+<td>Places</td>
+<td><a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/src/lib/places.ts" target="_blank" rel="noopener"><code>lib/places.ts</code></a></td>
+<td>This device or a connected machine, reached through the app&#39;s server mount (<code>/machines/{id}/</code>). The page only checks whether a machine answers; the app&#39;s native menus switch places</td>
+</tr>
+<tr>
 <td>Small features</td>
 <td>about 40 more files in <code>lib/</code></td>
 <td>Shortcuts, palette, search, outline, recents, publish, export, theme, run status, problems, each with its test file</td>
@@ -1479,6 +1503,16 @@ html:not(.js) .pager { display: none; }
 <td>Remotes</td>
 <td><a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/apple/Sources/Ganymede/Remote.swift" target="_blank" rel="noopener"><code>Remote.swift</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/apple/Sources/Ganymede/RemotesView.swift" target="_blank" rel="noopener"><code>RemotesView.swift</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/apple/Sources/Ganymede/KernelLocationPicker.swift" target="_blank" rel="noopener"><code>KernelLocationPicker.swift</code></a></td>
 <td>Other servers for kernels and terminals; tokens in the Keychain, or none for a server on the tailnet</td>
+</tr>
+<tr>
+<td>Connected machines</td>
+<td><a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/apple/Sources/Ganymede/Place.swift" target="_blank" rel="noopener"><code>Place.swift</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/apple/Sources/Ganymede/PlaceReachability.swift" target="_blank" rel="noopener"><code>PlaceReachability.swift</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/apple/Sources/Ganymede/MachineWindow.swift" target="_blank" rel="noopener"><code>MachineWindow.swift</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/apple/Sources/Ganymede/FileSource.swift" target="_blank" rel="noopener"><code>FileSource.swift</code></a>, <a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/apple/Sources/Ganymede/Journals.swift" target="_blank" rel="noopener"><code>Journals.swift</code></a></td>
+<td>A window&#39;s place: this device, or a machine (a Remote with a server URL) that the app&#39;s server mounts with <code>ganymede_server_add_machine</code> (chapter 9). The place switcher shows a dot for reachable or offline. The native sidebar lists files through a <code>FileSource</code>, the disk or the machine&#39;s contents API through the mount, and the Journals tab lists from the machine&#39;s open rooms. A machine&#39;s window has the same native chrome as this device&#39;s</td>
+</tr>
+<tr>
+<td>Command line tool</td>
+<td><a class="code-link" href="https://github.com/tlockney/ganymede-ui/blob/main/apple/Sources/Ganymede/CommandLineTool.swift" target="_blank" rel="noopener"><code>CommandLineTool.swift</code></a></td>
+<td>Mac: the <code>ganymede</code> CLI bundled in <code>Contents/Helpers</code>, and the link Settings makes to it at <code>~/.local/bin/ganymede</code></td>
 </tr>
 <tr>
 <td>Tailnet</td>
@@ -1648,11 +1682,11 @@ html:not(.js) .pager { display: none; }
 <li><strong>Automation on iPad and iPhone.</strong> Shortcuts actions are Mac-only, since iOS suspends the in-app kernel shortly after the app goes to the background. <code>ganymede://open</code> links do work there.</li>
 </ul>
 <h3 id="ch14-keeping-this-primer-current">Keeping this primer current</h3>
-<p>This primer describes <code>main</code> on 2026-11-13, and was checked against the changes merged through 2026-11-19. File names and line counts drift; the module headers it points to live next to the code and change with it, so when the two disagree, trust the header.</p>
+<p>This primer describes <code>main</code> on 2026-11-13, and was checked against the changes merged through 2026-11-22. File names and line counts drift; the module headers it points to live next to the code and change with it, so when the two disagree, trust the header.</p>
 
   <nav class="pager" aria-label="Chapter navigation"><a class="pg pg-prev" href="#ch13" rel="prev"><span class="pg-k">← Previous</span><span class="pg-t">13. Building, testing, shipping</span></a><span></span></nav>
 </section>
-    <p class="colophon">Part of the <a href="../docs/book">Ganymede docs</a>. Written from the code's module headers and the project docs, and rebuilt by hand, so it describes <code>main</code> as of 19 Nov 2026; where it and a module's header comment disagree, trust the header.</p>
+    <p class="colophon">Part of the <a href="../docs/book">Ganymede docs</a>. Written from the code's module headers and the project docs, and rebuilt by hand, so it describes <code>main</code> as of 23 Nov 2026; where it and a module's header comment disagree, trust the header.</p>
   </article>
 </div>
 
