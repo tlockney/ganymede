@@ -6513,21 +6513,24 @@ async fn mcp_recorded_step_without_a_fence_is_fenced() {
     let fenced = "Ran in the shell.\n\n```sh\n$ npm install p5\n```\n";
     call(json!({"source": "# try p5 in Node\nnpm install p5", "mode": "recorded"})).await;
     call(json!({"source": fenced, "mode": "recorded"})).await;
-    // Code and raw cells are no Markdown: kept as written.
+    // Code and raw cells are no Markdown: kept as written, added or edited.
+    let edit = |id: String, source: &'static str| {
+        let (app, sid) = (app.clone(), sid.clone());
+        async move {
+            mcp_text(&mcp_tool(&app, &sid, "cell_edit", json!({"id": id, "source": source})).await)
+        }
+    };
+    let added_id = |out: String| out.trim().rsplit(' ').next().unwrap().to_string();
     call(json!({"source": "# code\nls", "cell_type": "code", "mode": "recorded"})).await;
     call(json!({"source": "# raw\nls", "cell_type": "raw", "mode": "recorded"})).await;
+    let code =
+        added_id(call(json!({"source": "x", "cell_type": "code", "mode": "recorded"})).await);
+    edit(code, "# edited code\nls").await;
+    let raw = added_id(call(json!({"source": "x", "cell_type": "raw", "mode": "recorded"})).await);
+    edit(raw, "# edited raw\nls").await;
     // A recorded step revised bare is fenced again.
-    let out = call(json!({"source": "first", "mode": "recorded"})).await;
-    let id = out.trim().rsplit(' ').next().unwrap().to_string();
-    mcp_text(
-        &mcp_tool(
-            &app,
-            &sid,
-            "cell_edit",
-            json!({"id": id, "source": "# revised\nnpm ci"}),
-        )
-        .await,
-    );
+    let id = added_id(call(json!({"source": "first", "mode": "recorded"})).await);
+    edit(id, "# revised\nnpm ci").await;
     call(json!({"source": "# A heading on purpose"})).await;
     let file = dir.path().join("r.ipynb");
     let sources = tokio::time::timeout(Duration::from_secs(10), async {
@@ -6557,7 +6560,12 @@ async fn mcp_recorded_step_without_a_fence_is_fenced() {
         "{sources:?}"
     );
     assert!(sources.contains(&fenced.to_string()), "{sources:?}");
-    for kept in ["# code\nls", "# raw\nls"] {
+    for kept in [
+        "# code\nls",
+        "# raw\nls",
+        "# edited code\nls",
+        "# edited raw\nls",
+    ] {
         assert!(sources.contains(&kept.to_string()), "{sources:?}");
     }
     assert!(
