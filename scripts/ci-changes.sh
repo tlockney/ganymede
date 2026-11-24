@@ -34,10 +34,11 @@
 # test the workspace (crates/, Cargo files, the toolchain), read e2e/,
 # validation/, docs/reference.md and docs/mcp-tools.md, and run
 # site/install.sh through scripts/test-install.sh, scripts/test-workstation.sh
-# and validation/nb-cli.sh, and ci.yml defines them. evals/, plugins/,
-# container/, the other workflows and scripts, and the rest of .github/
-# and plugins/ are only used by Linux jobs (plugins/ganymede-journal/skills
-# is compiled into ganymede-server, so it counts as code everywhere). Only pull requests filter on it: a push
+# and validation/nb-cli.sh, and ci.yml defines them. evals/, plugins/
+# (except plugins/ganymede-journal/skills, which is compiled into
+# ganymede-server and counts as code everywhere), container/, the other
+# workflows and scripts, and the rest of .github/ are only used by Linux
+# jobs. Only pull requests filter on it: a push
 # to main gives true whenever it gives code=true, so main still runs the
 # macOS cells for every code change. Like the others it fails open:
 # unknown paths, non-PR events and a failed diff give true.

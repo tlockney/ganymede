@@ -1601,8 +1601,8 @@ impl ServerHandler for Notebooks {
         .with_instructions(
             "Jupyter notebooks on a Ganymede server. Open one with notebook_open, \
              then journal your work into it: cell_run records code with its output, \
-             cell_add adds Markdown notes. The `journal` prompt and the `journal` skill \
-             have the conventions.",
+             cell_add adds Markdown notes. The `journal` prompt (or the `journal` skill, \
+             for clients that load MCP skills) has the conventions.",
         )
     }
 
