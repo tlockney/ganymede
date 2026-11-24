@@ -35,6 +35,7 @@ mod marks;
 #[cfg(test)]
 mod reference;
 pub(crate) mod search;
+mod skills;
 mod snapshot;
 
 use crate::collab::{hold_notebook, notebook_room_id, with_notebook, Hold, Listing};
@@ -1593,14 +1594,34 @@ impl ServerHandler for Notebooks {
                 .enable_tools()
                 .enable_prompts()
                 .enable_resources()
+                .enable_skills()
                 .build(),
         )
         .with_server_info(Implementation::new("ganymede", env!("CARGO_PKG_VERSION")))
         .with_instructions(
             "Jupyter notebooks on a Ganymede server. Open one with notebook_open, \
              then journal your work into it: cell_run records code with its output, \
-             cell_add adds Markdown notes. The `journal` prompt has the conventions.",
+             cell_add adds Markdown notes. The `journal` prompt and the `journal` skill \
+             have the conventions.",
         )
+    }
+
+    async fn list_skills(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListSkillsResult, McpError> {
+        Ok(ListSkillsResult::with_all_items(skills::list()))
+    }
+
+    async fn get_skill(
+        &self,
+        request: GetSkillRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetSkillResult, McpError> {
+        skills::get(&request.uri)
+            .map(GetSkillResult::new)
+            .ok_or_else(|| McpError::invalid_params(format!("no skill at {}", request.uri), None))
     }
 
     async fn list_resources(
@@ -1625,9 +1646,20 @@ impl ServerHandler for Notebooks {
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
+        if request.uri.starts_with(skills::SCHEME) {
+            let (mime, text) = skills::file(&request.uri).ok_or_else(|| {
+                McpError::resource_not_found(format!("no such skill file: {}", request.uri), None)
+            })?;
+            return Ok(ReadResourceResult::new(vec![ResourceContents::text(
+                text,
+                request.uri.clone(),
+            )
+            .with_mime_type(mime)])
+            .into());
+        }
         let Some(path) = request.uri.strip_prefix("notebook://") else {
             return Err(McpError::resource_not_found(
-                format!("not a notebook:// URI: {}", request.uri),
+                format!("not a notebook:// or skill:// URI: {}", request.uri),
                 None,
             ));
         };

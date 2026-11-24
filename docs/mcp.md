@@ -177,6 +177,42 @@ plugin may be newer than the `ganymede` on your `PATH`; parts that need
 a newer `ganymede`, such as the `requests` monitor, stay off until you
 [update it](install.md#8-update-and-uninstall).
 
+## Skills over MCP
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`ganymede mcp` also serves the `journal` and `page-style` skills from the
+plugin, to clients that support the [MCP Skills
+extension](https://code.claude.com/docs/en/mcp#use-skills-from-mcp-servers).
+Claude Code lists them under the server's name, so after
+
+```sh
+claude mcp add ganymede -- ganymede mcp
+```
+
+the conventions load as `ganymede:journal` and the page style as
+`ganymede:page-style`, with no plugin installed. They are the plugin's own
+files, built into `ganymede`, so the two never differ. `ganymede serve
+--mcp` serves them the same way to a client that connects to `/mcp`
+itself.
+
+Claude Code opens a server with `server/discover` and no `initialize`,
+and asks for skills only on such a connection. `ganymede mcp` answers
+`server/discover` and starts the server's session for the messages that
+follow, so the notebook the agent opened stays open, and relative paths
+and the agent's name work as for any client.
+
+The plugin turns the skills off with `GANYMEDE_MCP_SKILLS=off` (`off`,
+`0`, `false` or `no`) in its server's settings, because it ships them
+itself and Claude Code would list them twice. With it set, `ganymede mcp`
+refuses `server/discover` (as "method not found"), so Claude Code falls
+back to `initialize`; the answer doesn't declare the extension, and
+`skills/list`, `skills/get` and reads of `skill://` files are refused. Older `ganymede` releases ignore the variable. The
+plugin's hooks, `requests` monitor and reviewer agent need the plugin
+either way: the MCP server serves skills only.
+
 ## Calling a tool from a script
 
 `ganymede mcp call TOOL [ARGS]` calls one tool and prints its text, for

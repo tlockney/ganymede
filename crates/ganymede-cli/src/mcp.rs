@@ -382,7 +382,7 @@ fn call_with(
     let init = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
         "protocolVersion": "2025-06-18", "capabilities": {},
         "clientInfo": {"name": client, "version": env!("CARGO_PKG_VERSION")}}});
-    let id = start(agent, ep, &init, None)?;
+    let (id, _) = start(agent, ep, &init, None)?;
     let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                      "params": {"name": tool, "arguments": args}});
     let answer = (|| -> Result<Value> {
@@ -906,6 +906,8 @@ fn proxy(ep: Endpoint) -> Result<()> {
     let session = Arc::new(Mutex::new(Session::default()));
     let stdin = std::io::stdin();
     let order = Arc::new(Order::default());
+    let skills_off = skills_off();
+    FORGET_SKILLS.store(skills_off, std::sync::atomic::Ordering::Relaxed);
     let mut next = 0u64;
     let mut workers = Vec::new();
     for line in stdin.lock().lines() {
@@ -924,18 +926,34 @@ fn proxy(ep: Endpoint) -> Result<()> {
                 continue;
             }
         };
+        // The plugin ships the skills itself and turns them off: a client
+        // that finds no `server/discover` falls back to `initialize`,
+        // whose answer (see `post`) doesn't declare the Skills extension,
+        // and what it asks of the skills is refused here.
+        if let Some((code, message)) = skills_off.then(|| refused_skills(&msg)).flatten() {
+            if let Some(id) = msg.get("id") {
+                write_line(
+                    &out,
+                    &json!({"jsonrpc": "2.0", "id": id,
+                            "error": {"code": code, "message": message}}),
+                );
+            }
+            continue;
+        }
         // Messages reach the server in the order they came (each waits for
         // the one before to be accepted), but their answers stream back
         // alongside, so a long cell doesn't hold up a cancellation.
         // `initialize` sets the session the rest need, so it is answered
-        // before the next line is read.
+        // before the next line is read; so is `server/discover`, which
+        // starts the 2026-07-28 handshake the session that follows is
+        // made for.
         let ticket = Ticket {
             order: order.clone(),
             n: next,
             done: false,
         };
         next += 1;
-        if msg["method"] == "initialize" {
+        if msg["method"] == "initialize" || msg["method"] == "server/discover" {
             forward(&agent, &ep, &session, &out, msg, ticket);
         } else {
             let (agent, ep, session, out) =
@@ -1041,10 +1059,37 @@ fn post(
     mut ticket: Ticket,
 ) -> Result<()> {
     ticket.wait();
+    let inline = inline_version(msg).is_some() && msg["method"] != "server/discover";
     if msg["method"] == "initialize" {
         session.lock().expect("session").init = Some(msg.clone());
+    } else if inline {
+        // A client that skips `initialize` (Claude Code on 2026-07-28)
+        // gets the session its messages need from one made up of what
+        // they say about it. It is kept as the client's `initialize`, so
+        // a session the server ends is replaced the same way. The server
+        // serves a message that names its own protocol version without
+        // any session (what a notebook is open, the client's folder and
+        // name stay with the session), so it goes on in the session
+        // without those keys, in the session's version.
+        let has_session = {
+            let mut s = session.lock().expect("session");
+            if s.id.is_none() {
+                s.init.get_or_insert_with(|| synthesized_init(msg));
+            }
+            s.id.is_some()
+        };
+        if !has_session {
+            reinitialize(agent, ep, session, None)?;
+        }
     }
-    let (resp, sent) = send(agent, ep, session, msg);
+    let stripped;
+    let wire = if inline {
+        stripped = without_inline_meta(msg);
+        &stripped
+    } else {
+        msg
+    };
+    let (resp, sent) = send(agent, ep, session, wire);
     // Accepted (its headers are back), or failed: the next may go.
     ticket.release();
     let mut resp = resp?;
@@ -1052,10 +1097,14 @@ fn post(
     // restarted server knows none): start a new one and try once more.
     if resp.status().as_u16() == 404 && sent.is_some() && msg["method"] != "initialize" {
         reinitialize(agent, ep, session, sent.as_deref())?;
-        resp = send(agent, ep, session, msg).0?;
+        resp = send(agent, ep, session, wire).0?;
     }
     let status = resp.status();
-    if let Some(id) = resp.headers().get("mcp-session-id") {
+    // `server/discover` is answered without a session.
+    if let (Some(id), false) = (
+        resp.headers().get("mcp-session-id"),
+        msg["method"] == "server/discover",
+    ) {
         session.lock().expect("session").id = id.to_str().ok().map(String::from);
     }
     let is_sse = resp
@@ -1068,7 +1117,7 @@ fn post(
         let want = msg.get("id").filter(|_| msg.get("method").is_some());
         return relay_events(reader, want, |v| {
             note_version(session, v);
-            write_line(out, v);
+            write_line(out, &forget_skills(v));
         });
     }
     let mut body = String::new();
@@ -1082,7 +1131,7 @@ fn post(
     match serde_json::from_str::<Value>(&body) {
         Ok(v) if v.get("jsonrpc").is_some() => {
             note_version(session, &v);
-            write_line(out, &v);
+            write_line(out, &forget_skills(&v));
             Ok(())
         }
         _ => bail!("{status}: {}", body.trim()),
@@ -1100,7 +1149,7 @@ fn send(
     Result<ureq::http::Response<ureq::Body>, ureq::Error>,
     Option<String>,
 ) {
-    let (id, version) = if msg["method"] == "initialize" {
+    let (id, version) = if msg["method"] == "initialize" || msg["method"] == "server/discover" {
         (None, None)
     } else {
         let s = session.lock().expect("session");
@@ -1128,7 +1177,14 @@ fn send_with(
     if let Some(id) = id {
         req = req.header("Mcp-Session-Id", id);
     }
-    if let Some(v) = version {
+    // `server/discover` names its protocol version in its headers too.
+    if let (Some(v), "server/discover") =
+        (inline_version(msg), msg["method"].as_str().unwrap_or(""))
+    {
+        req = req
+            .header("MCP-Protocol-Version", v)
+            .header("Mcp-Method", "server/discover");
+    } else if let Some(v) = version {
         req = req.header("MCP-Protocol-Version", v);
     }
     if let (Some(dir), Some("initialize")) = (&ep.dir, msg["method"].as_str()) {
@@ -1147,8 +1203,8 @@ fn send_with(
     req.send(msg.to_string())
 }
 
-/// Starts a new session in place of `stale` with the client's own
-/// `initialize`, unless another message already did. The answers stay
+/// Starts a new session in place of `stale` (none: the first) with the
+/// client's own `initialize`, unless another message already did. The answers stay
 /// here: the client still has the first ones.
 ///
 /// The stale id stays in place until the new session is ready (its
@@ -1178,12 +1234,18 @@ fn reinitialize(
             .context("the server ended the session before it began")?;
         (init, s.version.clone())
     };
-    tracing::info!("the server ended the MCP session; starting a new one");
+    if stale.is_some() {
+        tracing::info!("the server ended the MCP session; starting a new one");
+    }
     let r = start(agent, ep, &init, version.as_deref());
     let mut s = session.lock().expect("session");
     match r {
-        Ok(id) => {
+        Ok((id, negotiated)) => {
             s.id = Some(id);
+            // A session made for an inline client has no version yet.
+            if s.version.is_none() {
+                s.version = negotiated;
+            }
             Ok(())
         }
         Err(e) => {
@@ -1194,13 +1256,13 @@ fn reinitialize(
 }
 
 /// Sends `init` and `notifications/initialized`; returns the new session
-/// id.
+/// id and the protocol version the server settled on.
 fn start(
     agent: &ureq::Agent,
     ep: &Endpoint,
     init: &Value,
     version: Option<&str>,
-) -> Result<String> {
+) -> Result<(String, Option<String>)> {
     let mut resp = send_with(agent, ep, init, None, None)?;
     if !resp.status().is_success() {
         bail!("starting a new session: {}", resp.status());
@@ -1217,17 +1279,129 @@ fn start(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.starts_with("text/event-stream"));
     let reader = resp.body_mut().as_reader();
+    let mut negotiated = None;
     if is_sse {
-        relay_events(reader, init.get("id"), |_| {})?;
+        relay_events(reader, init.get("id"), |v| {
+            negotiated = v["result"]["protocolVersion"].as_str().map(String::from)
+        })?;
     } else {
-        std::io::copy(&mut reader.take(1 << 20), &mut std::io::sink())?;
+        let mut body = String::new();
+        reader.take(1 << 20).read_to_string(&mut body)?;
+        negotiated = serde_json::from_str::<Value>(&body)
+            .ok()
+            .and_then(|v| v["result"]["protocolVersion"].as_str().map(String::from));
     }
     let initialized = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
     let resp = send_with(agent, ep, &initialized, Some(&id), version)?;
     if !resp.status().is_success() {
         bail!("starting a new session: {}", resp.status());
     }
-    Ok(id)
+    Ok((id, negotiated))
+}
+
+/// `_meta` key of the protocol version a message is sent under.
+const VERSION_META: &str = "io.modelcontextprotocol/protocolVersion";
+
+/// The `_meta` keys a 2026-07-28 client sends on each request.
+const INLINE_META: [&str; 3] = [
+    VERSION_META,
+    "io.modelcontextprotocol/clientInfo",
+    "io.modelcontextprotocol/clientCapabilities",
+];
+
+/// The protocol version a message states in its own `_meta`: one from a
+/// client on 2026-07-28 or later, which has no `initialize` and puts what
+/// the handshake carried on each message.
+fn inline_version(msg: &Value) -> Option<&str> {
+    msg["params"]["_meta"][VERSION_META].as_str()
+}
+
+/// The `initialize` that stands for an inline client: its `_meta` says who
+/// it is and what it supports. The session runs on the protocol the
+/// server speaks for `initialize` clients; each message still names its
+/// own version in its headers.
+fn synthesized_init(msg: &Value) -> Value {
+    let meta = &msg["params"]["_meta"];
+    let object = |key: &str, default: Value| {
+        meta.get(format!("io.modelcontextprotocol/{key}"))
+            .filter(|v| v.is_object())
+            .cloned()
+            .unwrap_or(default)
+    };
+    json!({"jsonrpc": "2.0", "id": "ganymede-mcp-init", "method": "initialize", "params": {
+        "protocolVersion": "2025-11-25",
+        "capabilities": object("clientCapabilities", json!({})),
+        "clientInfo": object("clientInfo", json!({"name": "mcp-client", "version": "0"}))}})
+}
+
+/// `msg` without the `_meta` keys a 2026-07-28 client puts on every
+/// message in place of a handshake (its version, who it is, what it
+/// supports): the session started for it has them from `initialize`.
+fn without_inline_meta(msg: &Value) -> Value {
+    let mut msg = msg.clone();
+    if let Some(params) = msg.get_mut("params").and_then(Value::as_object_mut) {
+        if let Some(meta) = params.get_mut("_meta").and_then(Value::as_object_mut) {
+            meta.retain(|k, _| !INLINE_META.contains(&k.as_str()));
+            if meta.is_empty() {
+                params.remove("_meta");
+            }
+        }
+    }
+    msg
+}
+
+/// Set when the skills are off, for [`forget_skills`].
+static FORGET_SKILLS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The error (code and message) for a request about the skills while they
+/// are off: `server/discover`, `skills/list` and `skills/get` are not
+/// methods, and a skill's file is not a resource (-32002, as the server
+/// answers a resource it doesn't have).
+fn refused_skills(msg: &Value) -> Option<(i64, &'static str)> {
+    match msg["method"].as_str()? {
+        "server/discover" | "skills/list" | "skills/get" => Some((-32601, "Method not found")),
+        "resources/read"
+            if msg["params"]["uri"]
+                .as_str()
+                .is_some_and(|u| u.starts_with("skill://")) =>
+        {
+            Some((-32002, "Resource not found"))
+        }
+        _ => None,
+    }
+}
+
+/// `v` without the Skills extension in the capabilities of an
+/// `initialize` answer, when the skills are off.
+fn forget_skills(v: &Value) -> Value {
+    let mut v = v.clone();
+    if FORGET_SKILLS.load(std::sync::atomic::Ordering::Relaxed) {
+        if let Some(ext) = v["result"]["capabilities"]
+            .get_mut("extensions")
+            .and_then(Value::as_object_mut)
+        {
+            ext.remove("io.modelcontextprotocol/skills");
+            if ext.is_empty() {
+                v["result"]["capabilities"]
+                    .as_object_mut()
+                    .map(|c| c.remove("extensions"));
+            }
+        }
+    }
+    v
+}
+
+/// Whether `GANYMEDE_MCP_SKILLS` turns the skills off (`off`, `0`, `false`
+/// or `no`): `ganymede mcp` then refuses `server/discover`, so a client
+/// that would load the skills from the server falls back to `initialize`
+/// and finds none. For the journal plugin, which ships them itself.
+fn skills_off() -> bool {
+    std::env::var("GANYMEDE_MCP_SKILLS").is_ok_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "off" | "0" | "false" | "no"
+        )
+    })
 }
 
 /// Passes on each message of an event stream. A request (`want` is its
@@ -1275,6 +1449,53 @@ fn note_version(session: &Mutex<Session>, v: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The keys of the 2026-07-28 handshake come off a message that goes
+    /// in a session; others in `_meta` stay.
+    #[test]
+    fn inline_meta_is_taken_off_a_message() {
+        let msg = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {
+            "name": "x", "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientInfo": {"name": "c", "version": "1"},
+                "io.modelcontextprotocol/clientCapabilities": {},
+                "progressToken": "p"}}});
+        let out = without_inline_meta(&msg);
+        assert_eq!(
+            out["params"],
+            json!({"name": "x", "_meta": {"progressToken": "p"}})
+        );
+        let bare = json!({"method": "tools/list", "params": {"_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28"}}});
+        assert_eq!(without_inline_meta(&bare)["params"], json!({}));
+        assert_eq!(
+            without_inline_meta(&json!({"method": "ping"})),
+            json!({"method": "ping"})
+        );
+    }
+
+    /// The session an inline client gets is started as if it had sent
+    /// `initialize` with what its `_meta` says of it.
+    #[test]
+    fn an_inline_message_makes_an_initialize() {
+        let msg = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {"_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": {"name": "claude-code", "version": "2.1.331"},
+            "io.modelcontextprotocol/clientCapabilities": {"roots": {"listChanged": true}}}}});
+        assert_eq!(inline_version(&msg), Some("2026-07-28"));
+        let init = synthesized_init(&msg);
+        assert_eq!(init["method"], "initialize");
+        assert_eq!(init["params"]["clientInfo"]["name"], "claude-code");
+        assert_eq!(init["params"]["capabilities"]["roots"]["listChanged"], true);
+        assert_eq!(init["params"]["protocolVersion"], "2025-11-25");
+        // No client info: a name anyway, which `initialize` requires.
+        let bare = json!({"method": "tools/list", "params": {"_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28"}}});
+        let init = synthesized_init(&bare);
+        assert_eq!(init["params"]["clientInfo"]["name"], "mcp-client");
+        assert_eq!(init["params"]["capabilities"], json!({}));
+        assert_eq!(inline_version(&json!({"method": "tools/list"})), None);
+    }
 
     #[test]
     fn watch_prints_a_request_once_it_settles() {

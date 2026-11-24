@@ -6357,6 +6357,90 @@ fn mcp_app(dir: &std::path::Path) -> axum::Router {
     build_router(st)
 }
 
+/// The server declares the Skills extension and serves the journal
+/// plugin's skills: `skills/list`, `skills/get` (an unknown URI is
+/// -32602) and `resources/read` of each file, whose bytes match the
+/// manifest's digest and size (#936).
+#[tokio::test]
+async fn mcp_serves_the_journal_skills() {
+    use sha2::{Digest, Sha256};
+    let dir = tempfile::tempdir().unwrap();
+    let app = mcp_app(dir.path());
+    let (_, _, init) = mcp_call(
+        &app,
+        None,
+        json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "skills-test", "version": "1"}}}),
+    )
+    .await;
+    assert!(
+        init["result"]["capabilities"]["extensions"]["io.modelcontextprotocol/skills"].is_object(),
+        "{init}"
+    );
+    let sid = mcp_connect(&app, "skills-test").await;
+    let call = |id: u64, method: &'static str, params: Value| {
+        let (app, sid) = (app.clone(), sid.clone());
+        async move {
+            let (s, _, v) = mcp_call(
+                &app,
+                Some(&sid),
+                json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}),
+            )
+            .await;
+            assert_eq!(s, StatusCode::OK, "{v}");
+            v
+        }
+    };
+    let v = call(1, "skills/list", json!({})).await;
+    let skills = v["result"]["skills"].as_array().expect("skills").clone();
+    let names: Vec<_> = skills
+        .iter()
+        .map(|s| s["frontmatter"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["journal", "page-style"], "{v}");
+    let v = call(2, "skills/get", json!({"uri": "skill://journal/SKILL.md"})).await;
+    assert_eq!(v["result"]["skill"], skills[0], "{v}");
+    let v = call(
+        4,
+        "skills/get",
+        json!({"uri": "skill://page-style/SKILL.md"}),
+    )
+    .await;
+    assert_eq!(v["result"]["skill"], skills[1], "{v}");
+    let v = call(3, "skills/get", json!({"uri": "skill://nope/SKILL.md"})).await;
+    assert_eq!(v["error"]["code"], -32602, "{v}");
+    let mut id = 10;
+    for skill in &skills {
+        for f in skill["resources"].as_array().unwrap() {
+            id += 1;
+            let uri = f["uri"].as_str().unwrap();
+            let v = call(id, "resources/read", json!({"uri": uri})).await;
+            let c = &v["result"]["contents"][0];
+            let text = c["text"].as_str().unwrap_or_else(|| panic!("{v}"));
+            assert_eq!(c["uri"], uri);
+            assert_eq!(f["size"], text.len());
+            assert_eq!(
+                f["digest"],
+                format!("sha256:{}", hex::encode(Sha256::digest(text.as_bytes())))
+            );
+            let mime = if uri.ends_with(".css") {
+                "text/css"
+            } else {
+                "text/markdown"
+            };
+            assert_eq!(c["mimeType"], mime, "{v}");
+        }
+    }
+    let v = call(
+        99,
+        "resources/read",
+        json!({"uri": "skill://journal/nope.md"}),
+    )
+    .await;
+    assert!(v.get("error").is_some(), "{v}");
+}
+
 /// `keep_outputs: false` records the code but leaves its outputs out of
 /// the notebook, and they stay out when the cell runs again, until
 /// `cell_clear_outputs(keep: true)`.
