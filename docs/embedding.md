@@ -17,7 +17,7 @@ design is on [The iPad use case](ipados.md).
 ![Three ways to embed Ganymede: a Rust app calling the engine in-process; an app whose web view talks HTTP to the server that ganymede-ffi runs on loopback; and a wasm or iOS build with zmq and subprocess off, where the kernel sits behind an in-process transport.](images/architecture/embedding.svg)
 
 The crates are not on crates.io, so depend on them from git:
-`ganymede-engine = { git = "https://github.com/tlockney/ganymede", tag = "v0.15.0" }`.
+`ganymede-engine = { git = "https://github.com/tlockney/ganymede", tag = "v0.16.0" }`.
 
 ## The engine in a Rust app
 
@@ -228,15 +228,6 @@ app's own kernels go through the C functions instead
 thread with its own tokio runtime, so the app needs no Rust or async
 code.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. This covers `ganymede_server_machines`, and the
-> end of a removed machine's waiting requests and streaming bodies. The
-> latest release also has the engine benchmark, `ganymede_v8_bench_available`,
-> `ganymede_v8_bench_run` and `ganymede_v8_bench_free`, and its `v8-bench`
-> feature; `main` has dropped them, since the in-app kernel stays on the
-> web view's worker (ganymede-ui#765).
-
 | Function | Contract |
 |---|---|
 | `GanymedeServer *ganymede_server_start(const char *config_json, char **error_out)` | Starts a server on loopback and blocks until it listens, or for at most 30 seconds, then fails. On failure returns NULL and, if `error_out` isn't NULL, sets `*error_out` to a message. |
@@ -392,12 +383,6 @@ none survives the server: the app adds its machines again at each start.
 `ganymede_server_machines` lists the ids mounted now, so the app need not
 keep its own list.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. This covers `ganymede_server_machines`, the
-> `kernelspecs/{name}/{file}` route, and the end of a removed machine's
-> waiting requests and streaming bodies.
-
 Removing or replacing a machine also ends its requests in flight: one
 still waiting for the machine's answer is a 502 (`machine {id} was
 removed`) at once, and a response body still streaming ends with an error
@@ -463,10 +448,6 @@ mounted is a 404. [Security](security.md#connected-machines) says who may
 use the mount.
 
 ### Seeing the server's own writes
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 An app that keeps answers per notebook file (a link allowed "always", a
 device permission) forgets them when the file is replaced outside
