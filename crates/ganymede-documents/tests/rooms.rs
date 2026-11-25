@@ -2575,6 +2575,52 @@ fn an_edited_source_removes_the_skip_note_and_keeps_the_hash() {
     assert_eq!(run_notes(room.doc(), "a"), edited());
     assert_eq!(run_notes(room.doc(), "b"), kept());
     assert!(!room.is_dirty());
+    // By a change to the file while the room holds an unsaved edit, which
+    // merges (`merge_disk`) rather than reloading: the cell the file
+    // changed loses its skip note and keeps its hash, and the room's
+    // own edit keeps its cell's note.
+    let mut room = room_that_ran();
+    let client = Doc::new();
+    sync(&mut room, 1, &client);
+    let base = room.notebook().unwrap().unwrap();
+    room.saved(room.generation(), "g");
+    let fx = client_edit(&mut room, &client, |txn, roots| {
+        let cell = schema::find_cell(txn, roots, "b").unwrap();
+        let Some(Out::YMap(meta)) = cell.get(txn, "metadata") else {
+            panic!()
+        };
+        meta.insert(txn, "unsaved", 1);
+    });
+    assert!(fx.changed && room.is_dirty());
+    let mut file = serde_json::to_value(&base).unwrap();
+    file["cells"][0]["source"] = serde_json::json!("x1");
+    let (fx, conflicts) = room.merge_disk(&base, &Notebook::from_value(file).unwrap(), "h");
+    assert!(conflicts.is_empty());
+    assert_eq!(run_notes(room.doc(), "a"), edited());
+    assert_eq!(
+        run_notes(room.doc(), "b"),
+        (
+            serde_json::json!({"tags": ["t"], "unsaved": 1,
+                "ganymede": {"keep": 1, "ran_source_hash": "77"}}),
+            true
+        ),
+        "the room's own edit keeps its cell's note"
+    );
+    assert!(fx.changed && room.is_dirty());
+}
+
+/// Removing a skip note is the room's own edit, and the next no-op
+/// server edit must not count it as content to save.
+#[test]
+fn a_note_removed_by_the_room_is_not_content_to_save() {
+    let mut room = room_that_ran();
+    let mut file = serde_json::to_value(room.notebook().unwrap().unwrap()).unwrap();
+    file["cells"][0]["source"] = serde_json::json!("x1");
+    room.reload(&Notebook::from_value(file).unwrap(), "h");
+    assert_eq!(run_notes(room.doc(), "a"), (kept().0, false));
+    assert!(!room.is_dirty());
+    let (_, fx) = room.edit(|_, _| ());
+    assert!(!fx.changed && !room.is_dirty());
 }
 
 #[test]
