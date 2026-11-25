@@ -9,8 +9,9 @@ were fixed. The #941 entry describes the final design; this change:
   the lock, so a client joining in between kept the file but lost its
   kernel.
 - A notebook the call created is kept, not deleted, when the call joined
-  a session another client started on it meanwhile ("someone has a
-  session on it"). A client that uses contents and sessions but no room
+  a session on its path ("someone has a session on it"): one another
+  client started meanwhile, or one left from an earlier file at that
+  path, since deleting a file doesn't end its session. A client that uses contents and sessions but no room
   (a REST-only client) would otherwise keep a session on a file that is
   gone.
 

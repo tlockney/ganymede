@@ -7331,7 +7331,7 @@ async fn mcp_failed_read_leaves_a_session_another_client_started_meanwhile() {
 
 /// Another client starts a session for a new path while `notebook_open`,
 /// which made the file, waits for it: the open joins that session, so
-/// its failed read leaves the file and the session, and says why (#941).
+/// its failed read leaves the file and the session, and says why (#947).
 #[tokio::test]
 async fn mcp_failed_read_keeps_a_created_notebook_with_a_session_someone_started() {
     let dir = tempfile::tempdir().unwrap();
