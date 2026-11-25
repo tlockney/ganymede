@@ -677,13 +677,17 @@ access-denied page; `--no-redirect-file` opens the URL itself instead, as
 | `JUPYTER_PATH` | More data dirs to search for kernelspecs, first. |
 | `JUPYTER_RUNTIME_DIR` | Where connection files, the cookie secret and the [server info file](#server-info-file) go. Default: `runtime/` in the data dir. |
 | `JUPYTER_GATEWAY_URL`, `JUPYTER_GATEWAY_AUTH_TOKEN` | `--gateway-url` and `--gateway-token` when not given. |
-| `GANYMEDE_DATA_DIR` | Where `lab install` and `ui install` put what they download, and where rooms keep [recovery copies](rooms.md#saving-and-recovery) (unreleased). |
+| `GANYMEDE_DATA_DIR` | Where `lab install` and `ui install` put what they download, and where rooms keep [recovery copies](rooms.md#saving-and-recovery). |
 | `GANYMEDE_PYPI_URL`, `GANYMEDE_PYPI_HOSTS` | A PyPI mirror, and more hosts allowed to serve wheels; see [What a download trusts](frontends.md#what-a-download-trusts). |
 | `GANYMEDE_UI_URL` | A mirror of ganymede-ui's release downloads. |
 | `GANYMEDE_DOWNLOAD_BASE` | A mirror of Ganymede's release downloads, for `update` and install.sh. |
 | `GANYMEDE_CRASH_REPORTING` | `1` turns crash reporting on and `0` off, overriding `crash_reporting`; see [Privacy and crash reporting](privacy.md). |
 | `RUST_LOG` | The log filter, when `--log-level` isn't given. |
 | `HTTPS_PROXY` | Used for downloads. |
+
+> [!NOTE]
+> **Unreleased.** Rooms keep recovery copies under this directory only
+> in a build of `main` (HEAD), not in the latest release.
 
 `ganymede info` prints every directory in use.
 
