@@ -9,6 +9,9 @@
 //! - Cells whose source is blank, and cells tagged `skip-execution`, are
 //!   left untouched.
 //! - `execution_count` counts the cells this run executed.
+//! - Each executed code cell records `metadata.ganymede.ran_source_hash`,
+//!   the hash of the source this run sent, and loses any
+//!   `metadata.ganymede.execution_skipped` note.
 //! - `metadata.execution` records the busy, execute_input, reply, and idle
 //!   timestamps from the kernel's message headers.
 //! - `clear_output` with `wait` clears when the next output arrives.
@@ -486,6 +489,10 @@ impl NotebookRun {
         req.allow_stdin = self.opts.allow_stdin;
         req.store_history = self.opts.store_history;
         req.stop_on_error = !allows_errors;
+        // The run names the source it sends, as a run through a room does,
+        // and supersedes a skip note. Written before the run, so a failed
+        // one leaves the hash of the source it sent too.
+        set_ran_source_hash(cell, &ganymede_nbformat::source_hash(cell.source.as_str()));
         cell.outputs.clear();
         self.executed += 1;
         let execution_count = self.executed;
@@ -803,6 +810,37 @@ pub async fn execute_cell(
         *cell = c;
     }
     r
+}
+
+/// Write `metadata.ganymede.ran_source_hash` on a code cell a run is
+/// sending to the kernel, naming the source it sends, and remove the
+/// `execution_skipped` note the run supersedes. The cell's other
+/// metadata, and the other keys of its `ganymede` object, are kept; the
+/// object is created when missing, and one that isn't an object is
+/// replaced, as the room writes the key (`schema::set_ran_source_hash`
+/// in `ganymede-documents`).
+pub fn set_ran_source_hash(cell: &mut CodeCell, hash: &str) {
+    let ganymede = cell
+        .metadata
+        .entry("ganymede")
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !ganymede.is_object() {
+        *ganymede = Value::Object(Default::default());
+    }
+    if let Value::Object(g) = ganymede {
+        g.remove("execution_skipped");
+        g.insert("ran_source_hash".into(), Value::String(hash.to_string()));
+    }
+}
+
+/// Remove [`set_ran_source_hash`]'s key from a cell whose outputs are
+/// cleared without running, so what it shows claims no source. The rest
+/// of the cell's metadata stays; an emptied `ganymede` object stays too,
+/// as the room's `clear_ran_source_hash` leaves it.
+pub fn clear_ran_source_hash(cell: &mut CodeCell) {
+    if let Some(Value::Object(g)) = cell.metadata.get_mut("ganymede") {
+        g.remove("ran_source_hash");
+    }
 }
 
 /// The outputs one cell shows for these iopub messages, built by the same
@@ -1848,6 +1886,49 @@ mod tests {
         assert!(
             matches!(err, Error::CellTimeout { index: 0, timeout } if timeout == Duration::from_millis(200)),
             "{err:?}"
+        );
+    }
+
+    /// A cell that ran names the source it ran, replacing a stale hash and
+    /// a skip note an earlier run left, and keeping the rest.
+    #[tokio::test]
+    async fn a_cell_that_ran_records_the_hash_of_the_source_it_ran() {
+        let (host, side) = in_process_pair(64);
+        FakeKernel::spawn(side, ReplyOrder::IdleThenReply);
+        let s = KernelSession::start(host, None);
+        s.nudge(Duration::from_secs(5)).await.unwrap();
+
+        let stale = json!({"keep": 1, "execution_skipped": "Cell changed while queued",
+            "ran_source_hash": "stale"});
+        let mut nb: Notebook = Notebook::from_str(&json!({
+            "nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [
+                {"cell_type": "code", "id": "a", "source": "one",
+                 "metadata": {"tags": ["t"], "ganymede": stale}, "outputs": [],
+                 "execution_count": null},
+                // A cell the run never touches keeps what it has.
+                {"cell_type": "code", "id": "s", "source": "skipped",
+                 "metadata": {"tags": ["skip-execution"],
+                             "ganymede": {"keep": 2, "ran_source_hash": "old"}},
+                 "outputs": [], "execution_count": null}
+            ]
+        }).to_string()).unwrap();
+        execute_notebook(&s, &mut nb, &Options::default())
+            .await
+            .unwrap();
+        let Cell::Code(a) = &nb.cells[0] else {
+            panic!()
+        };
+        assert_eq!(
+            a.metadata["ganymede"],
+            json!({"keep": 1, "ran_source_hash": ganymede_nbformat::source_hash("one")})
+        );
+        let Cell::Code(skipped) = &nb.cells[1] else {
+            panic!()
+        };
+        assert_eq!(
+            skipped.metadata["ganymede"],
+            json!({"keep": 2, "ran_source_hash": "old"}),
+            "a cell that did not run keeps its hash"
         );
     }
 }

@@ -30,9 +30,16 @@ What changed, in `execute.rs` unless said:
   the hash of the current source. Other cell metadata and other
   `ganymede` keys are kept; cell metadata isn't in the room's run
   fingerprint, so the `clean_run` stamp stays.
-- Only runs the server executes through the room write that key, and
-  JupyterLab and the apps run cells themselves, so an old hash would call
-  their new outputs stale. The room (`room.rs`) now removes it when a
+- Runs the server executes through the room write that key, and so does
+  Ganymede's executor: `ganymede execute`, a notebooks run and the host
+  API set it for every cell they run (`ganymede-exec`'s
+  `set_ran_source_hash`, over a `source_hash` moved to
+  `ganymede-nbformat` and re-exported), and a run's saved copy removes it
+  from cells the run never started. Tools outside Ganymede (nbconvert,
+  papermill, VS Code, a plain `PUT`) keep whatever key they find, so the
+  key says which source ran only when Ganymede did the last run.
+  JupyterLab and the apps run cells themselves, so an old hash would
+  call their new outputs stale. The room (`room.rs`) now removes it when a
   client's update changes a code cell's `execution_count` or outputs:
   the observer of `cells` collects the ids (`rerun_cell`), and
   `Room::clear_run_notes` removes the key and `execution_skipped` in the
@@ -77,5 +84,12 @@ on a `sleep` cell that is interrupted to release the batch):
 - `the_servers_own_edit_of_outputs_keeps_the_ran_source_hash`,
   `a_file_change_keeps_the_ran_source_hash_the_file_has`.
 - `an_edited_source_removes_the_skip_note_and_keeps_the_hash`: by a
-  client, the server and the file (which leaves the room clean).
+  client, the server and the file (which leaves the room clean), and a
+  file change into a dirty room (a `merge_disk`, which leaves it dirty).
+- `a_note_removed_by_the_room_is_not_content_to_save`: the room's own
+  removal of a skip note doesn't count as a change to save.
+- In `ganymede-exec`, `a_cell_that_ran_records_the_hash_of_the_source_it_ran`
+  covers the executor's side, over `source_hash` moved to
+  `ganymede-nbformat` (with its `murmur2` test) and re-exported from
+  `ganymede-documents`.
 - `the_ran_source_hash_is_set_and_removed_in_plain_and_shared_metadata`.
