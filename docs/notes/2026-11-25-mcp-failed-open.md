@@ -7,20 +7,25 @@ saw an error and thought nothing was open, while its next path-less
 
 `notebook_open` now behaves as follows:
 
-- It sets the current notebook only after the notebook has been read and
-  its kernel has started. It reads before starting the kernel, so a failed
-  read leaves no session running (starting a kernel doesn't change the
-  cells the read mark covers).
-- Any failure after the path is validated clears the current notebook, so
-  an earlier notebook doesn't stay current and receive the next path-less
-  call. The agent passes `path`.
+- It sets the current notebook only after the kernel has started and the
+  notebook has been read, in that order (the kernel first, as before).
+- Any failure clears the current notebook, including a path that doesn't
+  end in `.ipynb`, so an earlier notebook doesn't stay current and receive
+  the next path-less call. The agent passes `path`.
 - When it would create a notebook and start a kernel, it resolves the kernel
   first (the one named, the folder default, the server default) and fails
   with "nothing was created" when there is none, or when the server default
   names a kernel that isn't installed. `--no-execute` still creates without
   one; read-only refuses to create.
-- If the kernel then fails to start for a notebook the call just created,
-  the call deletes that notebook (and any session) and the error says
-  nothing was kept; if the delete fails, the error says the file remains.
-- If the kernel fails to start for an existing notebook, it stays as it
-  was, and the error ends "no notebook is current, so pass path".
+- A failure leaves this connection holding no room and no read token that
+  it didn't have before the call.
+- If the kernel fails to start, or the read fails, for a notebook the call
+  just created, the call deletes it and the error says nothing was kept.
+  When the read failed after the kernel started, the session the call
+  started goes too. If someone else has the notebook's room open by then (a
+  person who found it during the kernel start), nothing is deleted and the
+  error says "kept <path>: someone else has it open". The check and the
+  delete aren't atomic: a person opening it in between loses it. If the
+  delete itself fails, the error says the file remains.
+- If it fails for an existing notebook, that stays as it was, and the error
+  ends "no notebook is current, so pass path".

@@ -547,9 +547,6 @@ impl Notebooks {
         Parameters(a): Parameters<OpenArgs>,
     ) -> Result<CallToolResult, McpError> {
         let path = self.resolve(&a.path);
-        if !path.ends_with(".ipynb") {
-            return Err(err("path must end in .ipynb"));
-        }
         let opened = self.open_checked(&path, &a).await;
         if opened.is_err() {
             // A failed open leaves no notebook current, not the one
@@ -559,9 +556,12 @@ impl Notebooks {
         opened
     }
 
-    /// [`Self::notebook_open`] once `path` is a valid notebook path. Sets
-    /// the current notebook only when it succeeds.
+    /// [`Self::notebook_open`] without clearing the current notebook on
+    /// failure. Sets the current notebook only when it succeeds.
     async fn open_checked(&self, path: &str, a: &OpenArgs) -> Result<CallToolResult, McpError> {
+        if !path.ends_with(".ipynb") {
+            return Err(err("path must end in .ipynb"));
+        }
         let path = path.to_string();
         // Create only what isn't there; another error (permissions, I/O)
         // must not lead to writing over the file.
@@ -618,36 +618,37 @@ impl Notebooks {
             self.create(&path, kernel.as_deref(), a.title.as_deref())
                 .await?;
         }
-        // Read before starting the kernel, so a read that fails leaves no
-        // session running. Starting a kernel doesn't change the cells.
-        let (nb, token) = match self.read_marked(&path).await {
-            Ok(r) => r,
-            Err(e) => return Err(self.discard_created(&path, exists, e).await),
-        };
+        // What this connection held before, so a failure leaves it so.
+        let had_hold = self.holds_room(&path).await;
+        let had_token = self.tokens.lock().expect("tokens").contains_key(&path);
         let kernel = if self.opts.read_only || self.opts.no_execute {
             None
         } else {
             match self.kernel_for(&path, a.kernel.as_deref()).await {
                 Ok(k) => Some(k),
-                Err(e) if !exists => {
-                    let shown = self.show(&path);
+                Err(e) => {
+                    let e = if exists {
+                        e
+                    } else {
+                        err(format!(
+                            "the kernel for {shown} didn't start: {}",
+                            e.message,
+                            shown = self.show(&path)
+                        ))
+                    };
                     return Err(self
-                        .discard_created(
-                            &path,
-                            exists,
-                            err(format!(
-                                "the kernel for {shown} didn't start: {}",
-                                e.message
-                            )),
-                        )
+                        .failed_open(&path, exists, (had_hold, had_token), false, e)
                         .await);
                 }
-                Err(e) => {
-                    return Err(err(format!(
-                        "{}; no notebook is current, so pass path",
-                        e.message
-                    )))
-                }
+            }
+        };
+        let (nb, token) = match self.read_marked(&path).await {
+            Ok(r) => r,
+            Err(e) => {
+                let started = kernel.is_some();
+                return Err(self
+                    .failed_open(&path, exists, (had_hold, had_token), started, e)
+                    .await);
             }
         };
         *self.current.lock().expect("current") = Some(path.clone());
@@ -2385,21 +2386,78 @@ impl Notebooks {
         Ok(())
     }
 
-    /// `e`, for a failed open: when this call created the notebook, it is
-    /// deleted first and the error says so (or that the file remains).
-    async fn discard_created(&self, path: &str, existed: bool, e: McpError) -> McpError {
+    /// Whether this connection holds `path`'s room open now.
+    async fn holds_room(&self, path: &str) -> bool {
+        let Ok(id) = notebook_room_id(&self.state.collab, &self.state.contents, path).await else {
+            return false;
+        };
+        self.holds
+            .lock()
+            .expect("holds")
+            .get(&id)
+            .is_some_and(Hold::is_live)
+    }
+
+    /// Let go of this connection's hold on `path`'s room (it leaves the
+    /// room as the hold drops).
+    async fn release_hold(&self, path: &str) {
+        if let Ok(id) = notebook_room_id(&self.state.collab, &self.state.contents, path).await {
+            self.holds.lock().expect("holds").remove(&id);
+        }
+    }
+
+    /// `e`, for a failed open, once this call's own traces are gone. Holds
+    /// and read tokens made by this call are dropped (`before` says what
+    /// existed). A notebook this call created is deleted, with the kernel
+    /// session it started if `started`, unless someone else has its room
+    /// open, as a person who found it during the kernel start may have.
+    async fn failed_open(
+        &self,
+        path: &str,
+        existed: bool,
+        before: (bool, bool),
+        started: bool,
+        e: McpError,
+    ) -> McpError {
+        let (had_hold, had_token) = before;
+        if !existed || !had_hold {
+            self.release_hold(path).await;
+        }
+        if !existed || !had_token {
+            self.tokens.lock().expect("tokens").remove(path);
+        }
         if existed {
-            return e;
+            return err(format!(
+                "{}; no notebook is current, so pass path",
+                e.message
+            ));
         }
         let shown = self.show(path);
-        if let Some(s) = self
+        // This connection has left the room (the leave is ahead of this
+        // question in the room's queue); anyone listed is someone else.
+        let others = self
             .state
-            .sessions
-            .list()
+            .collab
+            .list_rooms()
+            .await
             .into_iter()
-            .find(|s| s.path == path)
-        {
-            let _ = self.state.sessions.delete(&s.id).await;
+            .any(|r| r.path == path && !r.clients.is_empty());
+        if others {
+            return err(format!(
+                "{}; kept {shown}: someone else has it open",
+                e.message
+            ));
+        }
+        if started {
+            if let Some(s) = self
+                .state
+                .sessions
+                .list()
+                .into_iter()
+                .find(|s| s.path == path)
+            {
+                let _ = self.state.sessions.delete(&s.id).await;
+            }
         }
         match self.state.collab.delete(&self.state.contents, path).await {
             Ok(()) => err(format!(
