@@ -540,16 +540,29 @@ impl Notebooks {
     }
 
     #[tool(
-        description = "Open a notebook, creating it if it doesn't exist, and start or join its kernel. Later calls may leave out `path`. Paths are relative to the directory the reply names: the server's root, or your own folder when `ganymede mcp` forwards to a server rooted above it, where a leading / starts at the root. Returns a compact view of the notebook."
+        description = "Open a notebook, creating it if it doesn't exist, and start or join its kernel. Later calls may leave out `path`. Paths are relative to the directory the reply names: the server's root, or your own folder when `ganymede mcp` forwards to a server rooted above it, where a leading / starts at the root. Returns a compact view of the notebook. A failed open leaves no notebook current."
     )]
     async fn notebook_open(
         &self,
         Parameters(a): Parameters<OpenArgs>,
     ) -> Result<CallToolResult, McpError> {
         let path = self.resolve(&a.path);
+        let opened = self.open_checked(&path, &a).await;
+        if opened.is_err() {
+            // A failed open leaves no notebook current, not the one
+            // before it: the agent's next path-less call would land there.
+            *self.current.lock().expect("current") = None;
+        }
+        opened
+    }
+
+    /// [`Self::notebook_open`] without clearing the current notebook on
+    /// failure. Sets the current notebook only when it succeeds.
+    async fn open_checked(&self, path: &str, a: &OpenArgs) -> Result<CallToolResult, McpError> {
         if !path.ends_with(".ipynb") {
             return Err(err("path must end in .ipynb"));
         }
+        let path = path.to_string();
         // Create only what isn't there; another error (permissions, I/O)
         // must not lead to writing over the file.
         let exists = match self.state.contents.get(&path, GetOptions::default()).await {
@@ -577,16 +590,63 @@ impl Notebooks {
                     folder_default.as_ref().map(|f| f.kernel.clone())
                 }
             };
+            // A kernel will start: with none to start, fail before
+            // writing anything.
+            if !self.opts.no_execute && kernel.is_none() {
+                let specs = self
+                    .state
+                    .kernels
+                    .kernelspecs()
+                    .map_err(|e| err(e.message))?;
+                let why = if specs.default.is_empty() {
+                    "none named, no folder default, and no kernelspecs installed here".to_string()
+                } else if !specs.kernelspecs.contains_key(&specs.default) {
+                    format!(
+                        "none named, no folder default, and the server's default kernel {} isn't installed here",
+                        specs.default
+                    )
+                } else {
+                    String::new()
+                };
+                if !why.is_empty() {
+                    return Err(err(format!(
+                        "no kernel to start for {path}: {why} (see kernelspecs_list); nothing was created",
+                        path = self.show(&path)
+                    )));
+                }
+            }
+            if let Some(k) = &a.kernel {
+                let specs = self
+                    .state
+                    .kernels
+                    .kernelspecs()
+                    .map_err(|e| err(e.message))?;
+                if !specs.kernelspecs.contains_key(k) {
+                    return Err(err(format!("no kernel named {k}; nothing was created")));
+                }
+            }
             self.create(&path, kernel.as_deref(), a.title.as_deref())
                 .await?;
         }
-        *self.current.lock().expect("current") = Some(path.clone());
+        // What this connection held before, so a failure leaves it so.
+        let had_hold = self.holds_room(&path).await;
         let kernel = if self.opts.read_only || self.opts.no_execute {
             None
         } else {
-            Some(self.kernel_for(&path, a.kernel.as_deref()).await?)
+            match self.kernel_for(&path, a.kernel.as_deref()).await {
+                Ok(k) => Some(k),
+                Err(e) => {
+                    return Err(self.failed_open(&path, exists, had_hold, e).await);
+                }
+            }
         };
-        let (nb, token) = self.read_marked(&path).await?;
+        let (nb, token) = match self.read_marked(&path).await {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(self.failed_open(&path, exists, had_hold, e).await);
+            }
+        };
+        *self.current.lock().expect("current") = Some(path.clone());
         let dir = self.dir.lock().expect("dir").clone();
         let root = match (self.state.collab.root(), dir) {
             (Some(r), Some(d)) => format!(
@@ -2319,6 +2379,50 @@ impl Notebooks {
             .await
             .map_err(|e| err(e.to_string()))?;
         Ok(())
+    }
+
+    /// Whether this connection holds `path`'s room open now.
+    async fn holds_room(&self, path: &str) -> bool {
+        let Ok(id) = notebook_room_id(&self.state.collab, &self.state.contents, path).await else {
+            return false;
+        };
+        self.holds
+            .lock()
+            .expect("holds")
+            .get(&id)
+            .is_some_and(Hold::is_live)
+    }
+
+    /// Let go of this connection's hold on `path`'s room (it leaves the
+    /// room as the hold drops).
+    async fn release_hold(&self, path: &str) {
+        if let Ok(id) = notebook_room_id(&self.state.collab, &self.state.contents, path).await {
+            self.holds.lock().expect("holds").remove(&id);
+        }
+    }
+
+    /// `e`, for a failed open, once the hold this call made on the room
+    /// (if the connection had none before) is let go. A notebook this call
+    /// created stays: others may have saved to it by now.
+    async fn failed_open(
+        &self,
+        path: &str,
+        existed: bool,
+        had_hold: bool,
+        e: McpError,
+    ) -> McpError {
+        if !had_hold {
+            self.release_hold(path).await;
+        }
+        let kept = if existed {
+            String::new()
+        } else {
+            format!("{} was created and stays, but ", self.show(path))
+        };
+        err(format!(
+            "{}; {kept}no notebook is current, so pass path",
+            e.message
+        ))
     }
 
     /// Make `dir` (an API path) and its parents, as `mkdir -p`.

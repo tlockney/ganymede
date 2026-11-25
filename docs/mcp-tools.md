@@ -110,7 +110,7 @@ List the kernels that can run notebooks here, the server's default, and the defa
 
 ## `notebook_open`
 
-Open a notebook, creating it if it doesn't exist, and start or join its kernel. Later calls may leave out `path`. Paths are relative to the directory the reply names: the server's root, or your own folder when `ganymede mcp` forwards to a server rooted above it, where a leading / starts at the root. Returns a compact view of the notebook.
+Open a notebook, creating it if it doesn't exist, and start or join its kernel. Later calls may leave out `path`. Paths are relative to the directory the reply names: the server's root, or your own folder when `ganymede mcp` forwards to a server rooted above it, where a leading / starts at the root. Returns a compact view of the notebook. A failed open leaves no notebook current.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
