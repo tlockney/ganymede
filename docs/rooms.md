@@ -237,13 +237,17 @@ source. The cell's other metadata, and the other keys under its
 `ganymede`, are left alone, and the notebook's `clean_run` stamp stays:
 cell metadata doesn't change a run's fingerprint.
 
-Ganymede's executor records the key too: `ganymede execute`, a
-notebooks run (`POST /api/notebooks/run`) and the host API write the
-hash of the source they ran, and the copy a notebooks run saves drops
-the key from cells the run never started. Tools outside Ganymede —
-nbconvert, papermill, VS Code, a plain `PUT` of the file — keep
-whatever key the notebook has, so the key says which source ran only
-when Ganymede did the last run.
+The entry points that record the key are the room runs above, a
+notebooks run (`POST /api/notebooks/run`) and the host API: each
+records, on every cell it runs, the hash of that cell's source, and the
+copy a notebooks run saves drops the key from cells the run never
+started. `ganymede execute` records none, so its notebooks come out as
+`jupyter execute` writes them: it removes the key (and a skip note)
+from the cells it runs, keeping the rest of the `ganymede` object and
+dropping an emptied one. Tools outside Ganymede — nbconvert, papermill,
+VS Code, a plain `PUT` of the file — keep whatever key the notebook
+has, so the key says which source ran only when Ganymede did the last
+run.
 
 A client that runs a cell itself, such as
 JupyterLab, writes the outputs and the execution count into the room, and

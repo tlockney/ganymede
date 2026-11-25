@@ -30,14 +30,18 @@ What changed, in `execute.rs` unless said:
   the hash of the current source. Other cell metadata and other
   `ganymede` keys are kept; cell metadata isn't in the room's run
   fingerprint, so the `clean_run` stamp stays.
-- Runs the server executes through the room write that key, and so does
-  Ganymede's executor: `ganymede execute`, a notebooks run and the host
-  API set it for every cell they run (`ganymede-exec`'s
-  `set_ran_source_hash`, over a `source_hash` moved to
-  `ganymede-nbformat` and re-exported), and a run's saved copy removes it
-  from cells the run never started. Tools outside Ganymede (nbconvert,
-  papermill, VS Code, a plain `PUT`) keep whatever key they find, so the
-  key says which source ran only when Ganymede did the last run.
+- Room runs, a notebooks run and the host API write that key for every
+  cell they run (`ganymede-exec`'s `set_ran_source_hash`, over a
+  `source_hash` moved to `ganymede-nbformat` and re-exported), and a
+  run's saved copy removes it from cells the run never started. The
+  executor records it only behind its new `record_source_hash` option,
+  which those entry points turn on; off, the default, it removes the
+  key and a skip note from the cells it runs instead — keeping the rest
+  of the `ganymede` object and dropping an emptied one — so
+  `ganymede execute` matches `jupyter execute` byte for byte. Tools
+  outside Ganymede (nbconvert, papermill, VS Code, a plain `PUT`) keep
+  whatever key they find, so the key says which source ran only when
+  Ganymede did the last run.
   JupyterLab and the apps run cells themselves, so an old hash would
   call their new outputs stale. The room (`room.rs`) now removes it when a
   client's update changes a code cell's `execution_count` or outputs:
@@ -89,7 +93,11 @@ on a `sleep` cell that is interrupted to release the batch):
 - `a_note_removed_by_the_room_is_not_content_to_save`: the room's own
   removal of a skip note doesn't count as a change to save.
 - In `ganymede-exec`, `a_cell_that_ran_records_the_hash_of_the_source_it_ran`
-  covers the executor's side, over `source_hash` moved to
-  `ganymede-nbformat` (with its `murmur2` test) and re-exported from
-  `ganymede-documents`.
+  covers the executor's side with `record_source_hash` on, over
+  `source_hash` moved to `ganymede-nbformat` (with its `murmur2` test)
+  and re-exported from `ganymede-documents`;
+  `a_run_that_records_no_hash_removes_the_notes_a_cell_had` covers the
+  default-off path. In `tests/http.rs`,
+  `notebooks_run_saves_a_copy_under_runs` checks a run's copy: the hash
+  on a cell that ran, and none on one the run never started.
 - `the_ran_source_hash_is_set_and_removed_in_plain_and_shared_metadata`.
