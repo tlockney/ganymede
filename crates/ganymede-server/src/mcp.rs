@@ -630,38 +630,20 @@ impl Notebooks {
         }
         // What this connection held before, so a failure leaves it so.
         let had_hold = self.holds_room(&path).await;
-        let had_token = self.tokens.lock().expect("tokens").contains_key(&path);
-        let mut started = false;
         let kernel = if self.opts.read_only || self.opts.no_execute {
             None
         } else {
-            match self.kernel_for_new(&path, a.kernel.as_deref()).await {
-                Ok((id, name, made)) => {
-                    started = made;
-                    Some((id, name))
-                }
+            match self.kernel_for(&path, a.kernel.as_deref()).await {
+                Ok(k) => Some(k),
                 Err(e) => {
-                    let e = if exists {
-                        e
-                    } else {
-                        err(format!(
-                            "the kernel for {shown} didn't start: {}",
-                            e.message,
-                            shown = self.show(&path)
-                        ))
-                    };
-                    return Err(self
-                        .failed_open(&path, exists, (had_hold, had_token), false, e)
-                        .await);
+                    return Err(self.failed_open(&path, exists, had_hold, e).await);
                 }
             }
         };
         let (nb, token) = match self.read_marked(&path).await {
             Ok(r) => r,
             Err(e) => {
-                return Err(self
-                    .failed_open(&path, exists, (had_hold, had_token), started, e)
-                    .await);
+                return Err(self.failed_open(&path, exists, had_hold, e).await);
             }
         };
         *self.current.lock().expect("current") = Some(path.clone());
@@ -2419,81 +2401,28 @@ impl Notebooks {
         }
     }
 
-    /// `e`, for a failed open, once this call's own traces are gone. Holds
-    /// and read tokens made by this call are dropped (`before` says what
-    /// existed). A notebook this call created is deleted, with the kernel
-    /// session it started if `started`, unless someone else has its room
-    /// open, as a person who found it during the kernel start may have.
+    /// `e`, for a failed open, once the hold this call made on the room
+    /// (if the connection had none before) is let go. A notebook this call
+    /// created stays: others may have saved to it by now.
     async fn failed_open(
         &self,
         path: &str,
         existed: bool,
-        before: (bool, bool),
-        started: bool,
+        had_hold: bool,
         e: McpError,
     ) -> McpError {
-        let (had_hold, had_token) = before;
-        if !existed || !had_hold {
+        if !had_hold {
             self.release_hold(path).await;
         }
-        if !existed || !had_token {
-            self.tokens.lock().expect("tokens").remove(path);
-        }
-        if existed {
-            return err(format!(
-                "{}; no notebook is current, so pass path",
-                e.message
-            ));
-        }
-        let shown = self.show(path);
-        // This connection has left the room (the leave is ahead of this
-        // question in the room's queue); anyone in it is someone else.
-        let occupied = match notebook_room_id(&self.state.collab, &self.state.contents, path).await
-        {
-            Ok(id) => {
-                self.state
-                    .collab
-                    .room_occupied(&id, Duration::from_secs(2))
-                    .await
-            }
-            Err(_) => Err(()),
+        let kept = if existed {
+            String::new()
+        } else {
+            format!("{} was created and stays, but ", self.show(path))
         };
-        match occupied {
-            Ok(false) => {}
-            Ok(true) => {
-                return err(format!(
-                    "{}; kept {shown}: someone else has it open",
-                    e.message
-                ))
-            }
-            Err(()) => {
-                return err(format!(
-                    "{}; kept {shown}: couldn't tell whether someone has it open",
-                    e.message
-                ))
-            }
-        }
-        if started {
-            if let Some(s) = self
-                .state
-                .sessions
-                .list()
-                .into_iter()
-                .find(|s| s.path == path)
-            {
-                let _ = self.state.sessions.delete(&s.id).await;
-            }
-        }
-        match self.state.collab.delete(&self.state.contents, path).await {
-            Ok(()) => err(format!(
-                "{}; nothing was kept ({shown} was deleted)",
-                e.message
-            )),
-            Err(d) => err(format!(
-                "{}; deleting the {shown} this call created also failed ({d}), so the file remains",
-                e.message
-            )),
-        }
+        err(format!(
+            "{}; {kept}no notebook is current, so pass path",
+            e.message
+        ))
     }
 
     /// Make `dir` (an API path) and its parents, as `mkdir -p`.
@@ -2569,17 +2498,6 @@ impl Notebooks {
         path: &str,
         kernel: Option<&str>,
     ) -> Result<(String, String), McpError> {
-        let (id, name, _) = self.kernel_for_new(path, kernel).await?;
-        Ok((id, name))
-    }
-
-    /// [`Self::kernel_for`], and whether this call started the session
-    /// (not one that was there, or that a concurrent call made).
-    async fn kernel_for_new(
-        &self,
-        path: &str,
-        kernel: Option<&str>,
-    ) -> Result<(String, String, bool), McpError> {
         if let Some(s) = self
             .state
             .sessions
@@ -2587,7 +2505,7 @@ impl Notebooks {
             .into_iter()
             .find(|s| s.path == path)
         {
-            return Ok((s.kernel.id, s.kernel.name, false));
+            return Ok((s.kernel.id, s.kernel.name));
         }
         let name = match kernel {
             Some(k) => Some(k.to_string()),
@@ -2618,7 +2536,7 @@ impl Notebooks {
             })
             .await
             .map_err(|e| err(e.message))?;
-        Ok((s.kernel.id, s.kernel.name, true))
+        Ok((s.kernel.id, s.kernel.name))
     }
 
     async fn insert(

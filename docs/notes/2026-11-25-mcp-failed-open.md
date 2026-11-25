@@ -8,29 +8,24 @@ saw an error and thought nothing was open, while its next path-less
 `notebook_open` now behaves as follows:
 
 - It sets the current notebook only after the kernel has started and the
-  notebook has been read, which is the order it always had.
+  notebook has been read. The kernel-then-read order is unchanged; what
+  changed is that `current` is set after both, where it used to be set
+  before the kernel start.
 - Any failure clears the current notebook, including a path that doesn't
   end in `.ipynb`, so an earlier notebook doesn't stay current and receive
   the next path-less call. The agent passes `path`.
-- When it would create a notebook and start a kernel, it resolves the kernel
-  first (the one named, the folder default, the server default) and fails
-  with "nothing was created" when there is none, or when the server default
-  names a kernel that isn't installed. A kernel named in the call that isn't
-  installed fails the same way ("no kernel named X; nothing was created").
-  `--no-execute` still creates without one; read-only refuses to create.
-- A failure leaves this connection holding no room and no read token that
-  it didn't have before the call.
-- If the kernel fails to start, or the read fails, for a notebook the call
-  just created, the call deletes it and the error says nothing was kept.
-  When the read failed after the call started a kernel session, that session
-  goes too; a session that was already there, or that another call made, is
-  left alone. The call first leaves the notebook's room itself, then asks
-  that room whether anyone is in it. If someone is (a person who found the
-  notebook during the kernel start), nothing is deleted and the error says
-  "kept <path>: someone else has it open"; if the room doesn't answer in two
-  seconds, it says "couldn't tell whether someone has it open" and keeps the
-  file too. The check and the delete aren't atomic: a person opening the
-  notebook in between loses it. If the delete itself fails, the error says
-  the file remains.
+- Before it writes anything it checks there is a kernel to start: the one
+  named, the folder default, or the server default. With none, or with a
+  named kernel or a server default that isn't installed, it fails with
+  "nothing was created". `--no-execute` still creates without a kernel;
+  read-only refuses to create.
+- If the kernel then fails to start, or the read fails, for a notebook the
+  call just created, the file stays (someone may have saved to it by now;
+  an earlier version deleted it and could lose that work) and the error says
+  so: "<path> was created and stays, but no notebook is current, so pass
+  path".
 - If it fails for an existing notebook, that stays as it was, and the error
   ends "no notebook is current, so pass path".
+- A failure leaves this connection holding no room that it didn't hold
+  before the call. (A read that fails may leave an unused read token for the
+  path; the next read reuses it.)

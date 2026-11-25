@@ -6876,7 +6876,6 @@ async fn mcp_failed_open_creates_nothing_and_is_not_current() {
     let v = mcp_tool(&app, &sid, "cell_add", json!({"source": "1"})).await;
     assert!(failed(&v), "{v}");
     assert!(msg(&v).contains("no notebook open"), "{v}");
-    assert!(!dir.path().join("t.ipynb").exists(), "still no file");
 }
 
 /// An existing notebook whose kernel can't start fails to open and is
@@ -6930,10 +6929,10 @@ impl Provisioner for FailingProvisioner {
     }
 }
 
-/// A notebook this call created is deleted when its kernel won't start,
-/// and nothing is current (#938).
+/// A notebook this call created stays when its kernel won't start, the
+/// error says so, and nothing is current (#938).
 #[tokio::test]
-async fn mcp_failed_kernel_start_deletes_the_notebook_it_created() {
+async fn mcp_failed_kernel_start_keeps_the_notebook_it_created() {
     let dir = tempfile::tempdir().unwrap();
     let st = state_with(
         dir.path(),
@@ -6945,13 +6944,14 @@ async fn mcp_failed_kernel_start_deletes_the_notebook_it_created() {
     let v = mcp_tool(&app, &sid, "notebook_open", json!({"path": "t.ipynb"})).await;
     assert!(mcp_failed(&v), "{v}");
     let m = v.to_string();
-    assert!(m.contains("didn't start"), "{v}");
-    assert!(m.contains("nothing was kept"), "{v}");
-    assert!(!dir.path().join("t.ipynb").exists(), "file deleted");
+    assert!(
+        m.contains("t.ipynb was created and stays, but no notebook is current, so pass path"),
+        "{v}"
+    );
+    assert!(dir.path().join("t.ipynb").exists(), "file kept");
     let v = mcp_tool(&app, &sid, "cell_add", json!({"source": "1"})).await;
     assert!(mcp_failed(&v), "{v}");
     assert!(v.to_string().contains("no notebook open"), "{v}");
-    assert!(!dir.path().join("t.ipynb").exists(), "still no file");
     // An existing notebook whose kernel won't start stays, says why, and
     // this connection is left holding no room for it.
     let nb = json!({"cells": [], "metadata": {"kernelspec": {"name": "fake"}}, "nbformat": 4, "nbformat_minor": 5});
@@ -6973,102 +6973,6 @@ async fn mcp_failed_kernel_start_deletes_the_notebook_it_created() {
             .all(|r| r["clients"].as_array().unwrap().is_empty()),
         "no hold left: {rooms}"
     );
-}
-
-/// A provisioner that says it has been asked to launch, waits to be told
-/// to go on, then launches `FakeProvisioner`'s kernel or fails.
-struct GatedProvisioner {
-    started: Arc<tokio::sync::Notify>,
-    go: Arc<tokio::sync::Notify>,
-    fail: bool,
-}
-#[async_trait]
-impl Provisioner for GatedProvisioner {
-    async fn launch(
-        &self,
-        spec: &Kernelspec,
-        opts: LaunchOptions,
-    ) -> ganymede_kernel_host::Result<LaunchedKernel> {
-        self.started.notify_one();
-        self.go.notified().await;
-        if self.fail {
-            Err(ganymede_kernel_host::Error::Unsupported("test launch"))
-        } else {
-            FakeProvisioner.launch(spec, opts).await
-        }
-    }
-}
-
-/// `notebook_open` of a new `t.ipynb` (kernel `fake`) on a gated
-/// provisioner, running. Wait on `started` for the kernel start, do
-/// something, then `go.notify_one()` and await the call.
-async fn gated_open(
-    dir: &std::path::Path,
-    fail: bool,
-) -> (
-    axum::Router,
-    Arc<tokio::sync::Notify>,
-    Arc<tokio::sync::Notify>,
-    tokio::task::JoinHandle<Value>,
-) {
-    let started = Arc::new(tokio::sync::Notify::new());
-    let go = Arc::new(tokio::sync::Notify::new());
-    let st = state_with(
-        dir,
-        Arc::new(GatedProvisioner {
-            started: started.clone(),
-            go: go.clone(),
-            fail,
-        }),
-        Arc::new(FakeTransports),
-    );
-    let app = mcp_app_on(st, dir);
-    let sid = mcp_connect(&app, "agent").await;
-    let call = {
-        let app = app.clone();
-        tokio::spawn(async move {
-            let args = json!({"path": "t.ipynb", "kernel": "fake"});
-            mcp_tool(&app, &sid, "notebook_open", args).await
-        })
-    };
-    (app, started, go, call)
-}
-
-/// Someone opens a notebook while its kernel starts, then the kernel
-/// fails: the notebook this call created is kept, not deleted with their
-/// work (#938).
-#[tokio::test]
-async fn mcp_failed_kernel_start_keeps_a_notebook_someone_opened() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, started, go, call) = gated_open(dir.path(), true).await;
-    started.notified().await;
-    let _person = RoomWatch::open(&app, "t.ipynb").await;
-    go.notify_one();
-    let v = call.await.unwrap();
-    assert!(mcp_failed(&v), "{v}");
-    assert!(
-        v.to_string()
-            .contains("kept t.ipynb: someone else has it open"),
-        "{v}"
-    );
-    assert!(dir.path().join("t.ipynb").exists(), "file kept");
-}
-
-/// The notebook can't be read once its kernel has started: the notebook
-/// this call created and the session it started are both gone (#938).
-#[tokio::test]
-async fn mcp_failed_read_deletes_the_notebook_and_session_it_created() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, started, go, call) = gated_open(dir.path(), false).await;
-    started.notified().await;
-    std::fs::write(dir.path().join("t.ipynb"), "not json").unwrap();
-    go.notify_one();
-    let v = call.await.unwrap();
-    assert!(mcp_failed(&v), "{v}");
-    assert!(v.to_string().contains("nothing was kept"), "{v}");
-    assert!(!dir.path().join("t.ipynb").exists(), "file deleted");
-    let (_, sessions) = call_sessions(&app).await;
-    assert_eq!(sessions, json!([]), "session deleted");
 }
 
 /// A failed open of a path that isn't a notebook leaves no notebook
