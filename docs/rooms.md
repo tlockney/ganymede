@@ -94,7 +94,7 @@ doesn't make them trusted.
 
 A room with no clients is saved and closed a minute after the last one
 leaves. It never closes holding edits the file doesn't have unless a
-recovery copy of them is on disk.
+recovery copy of them is on disk, except in the cases below.
 
 **Save state.** The room's `state` map, which clients can read and watch
 next to `dirty` and `hash`, says whether the edits reached the file:
@@ -139,7 +139,9 @@ nothing to copy, and says so until a client saves.
 
 A server with no data directory, or that can't make `recovery` in it when
 it starts (it logs a warning), keeps no copies, and its rooms close
-without them.
+without them. On iPad and iPhone the platform gives the server no data
+directory, so no copies; [#957](https://github.com/tlockney/ganymede/issues/957)
+tracks giving the apps one.
 
 Copies live in `recovery` under the Ganymede data directory (`ganymede
 info` shows it as `data_dir`), not beside the notebook, so they survive a
@@ -161,8 +163,8 @@ afterwards doesn't list its earlier ones.
 
 Three routes, with the same credentials as the other `/api/collaboration`
 routes, list, read and discard copies. An `id` is the 25 characters the
-server made (`[0-9a-f]`, one `-`); any other gets `400`, and an unknown one
-`404`. A server with no recovery directory answers `404`.
+server made (`[0-9a-f]`, one `-`); an id with other characters gets `400`,
+and an unknown one `404`. A server with no recovery directory answers `404`.
 
 - `GET /api/collaboration/recovery?path=<api path>` lists the copies of
   that notebook, newest first, without their notebooks:

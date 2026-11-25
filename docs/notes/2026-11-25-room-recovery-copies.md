@@ -34,8 +34,10 @@ What changed:
   goes back gives the next microsecond.
 - `Collab::with_recovery_dir`; `serve.rs` sets it to `recovery` under
   `lab::data_dir()` (what `ganymede info` prints as `data_dir`: persistent,
-  and not beside the notebook) whenever there is a data dir, embedding apps
-  included. Without one (tests, no data dir), or when the dir can't be
+  and not beside the notebook) whenever there is a data dir, embedding
+  apps on the Mac included. On iPad and iPhone the platform gives no data
+  directory, so no copies there; #957 tracks giving the apps one. Without
+  a data dir (tests), or when the dir can't be
   made (a warning is logged), rooms behave as before. Only `recovery` is
   made at start; a root's dir is made by its first copy.
 - `run_room`: the three ways an empty room closes holding edits (file
@@ -148,3 +150,48 @@ contents that fails saves; the room's `Instant` is tokio's):
   `collaboration_room_names_its_recovery_copy_until_it_is_discarded` (a
   websocket client sees `state.recovery` on open, and each discard moves it
   on), `collaboration_recovery_is_per_root`.
+
+Review round 2, same day:
+
+- docs/reference.md: the `GANYMEDE_DATA_DIR` row's inline "(unreleased)"
+  moved to the standard note under the table, which check-unreleased.mjs
+  accepts and a release finds.
+- A room's state changes reach its clients as updates, not only its own
+  copy of the state map. The tests read the client side of the room
+  (`client` in `recovery_tests`): a doc that answers the room's sync
+  step 1 and applies its frames, as tests/http.rs's websocket client
+  does, until the state it was owed arrives. `state.recovery` and
+  `save: "saved"` in the merge conflict test, `save`/`save_error`
+  through a failed and a good save in `save_state_follows...`, and the
+  copy named at shutdown in `stopping_keeps...`. Each fails with the
+  `dispatch` it rides replaced by `let _`: `set_recovery` in
+  `keep_lost` and in `kept_before_closing`, `set_save_state("failed")`
+  in `save_room`.
+- `Cmd::Flush` and `Cmd::Removed` try again the copy a merge conflict
+  couldn't write, once the dir works:
+  `stopping_writes_the_copy_a_merge_conflict_lacked` and
+  `removing_the_file_writes_the_copy_a_merge_conflict_lacked`. Each
+  fails with its `|| !keep_lost(...)` removed.
+- `keep_lost` says `saved` on a clean room whose copy it just wrote:
+  `keep_lost_on_a_clean_room_says_saved`, which fails without the
+  `say_saved` in it.
+- Two servers on one root share the store, so a discard or a prune on
+  one leaves the other's room naming a copy that is gone. A 404 read
+  now asks every open notebook room whether `state.recovery` names the
+  id (`Collab::recovery_gone`, from the GET route), and each that does
+  names the newest copy of its path left, or clears the key.
+  tests/http.rs deletes the copies from under the server, as the other
+  server would, and reads them: the room names the next copy, then,
+  with none left, clears the name.
+- rooms.md and the collab.rs module doc say the
+  no-closing-without-a-copy rule has the exceptions each lists below
+  it. The id rule reads "an id with other characters gets 400". The
+  merge diagram's two warn boxes and its alt text name the recovery
+  copy. rooms.md says iPad and iPhone have no data directory, so no
+  copies, with #957 tracking an app data dir.
+- `reload` still snapshots the room's notebook on every disk change
+  while it is dirty: `merge_disk` applies the merge and reports the
+  conflicts in one call, so the room's own version is gone by the time
+  the conflicts are known, and telling beforehand would take a merge of
+  its own over a notebook serialized like the snapshot. The comment at
+  the snapshot says so.
