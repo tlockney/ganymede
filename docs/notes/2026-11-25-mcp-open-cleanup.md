@@ -2,9 +2,8 @@
 
 #938 made a failed `notebook_open` leave no current notebook, but a
 notebook the call had created stayed, and a kernel session it had started
-kept running when the read after the start failed. See
-[the #938 entry](2026-11-25-mcp-failed-open.md), whose "Left for #941" this
-closes.
+kept running when the read after the start failed. See the #938 entry,
+whose "Left for #941" this closes.
 
 `notebook_open` now undoes what the call itself made when the kernel start
 or the read fails:
