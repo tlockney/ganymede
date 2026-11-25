@@ -7130,6 +7130,87 @@ async fn mcp_no_execute_creates_a_notebook_without_kernelspecs() {
     assert!(!mcp_failed(&v), "{v}");
 }
 
+/// Launches fail while `fail` is set.
+struct SwitchProvisioner {
+    fail: Arc<std::sync::atomic::AtomicBool>,
+}
+#[async_trait]
+impl Provisioner for SwitchProvisioner {
+    async fn launch(
+        &self,
+        spec: &Kernelspec,
+        opts: LaunchOptions,
+    ) -> ganymede_kernel_host::Result<LaunchedKernel> {
+        if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+            Err(ganymede_kernel_host::Error::Unsupported("test launch"))
+        } else {
+            FakeProvisioner.launch(spec, opts).await
+        }
+    }
+}
+
+/// A failed re-open of a notebook this connection already had open (its
+/// session gone, its kernel now failing) leaves the hold on its room and
+/// its read mark as they were (#938).
+#[tokio::test]
+async fn mcp_failed_reopen_keeps_the_hold_and_the_read_mark() {
+    let dir = tempfile::tempdir().unwrap();
+    let fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let st = state_with(
+        dir.path(),
+        Arc::new(SwitchProvisioner { fail: fail.clone() }),
+        Arc::new(FakeTransports),
+    );
+    let app = mcp_app_on(st, dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    let nb = json!({"cells": [], "metadata": {"kernelspec": {"name": "fake"}}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.path().join("e.ipynb"), nb.to_string()).unwrap();
+    let v = mcp_tool(&app, &sid, "notebook_open", json!({"path": "e.ipynb"})).await;
+    assert!(!mcp_failed(&v), "{v}");
+    let mark = read_mark(&mcp_text(&v));
+    let (_, sessions) = call_sessions(&app).await;
+    for s in sessions.as_array().unwrap() {
+        let id = s["id"].as_str().unwrap();
+        call(
+            &app,
+            "DELETE",
+            &format!("/api/sessions/{id}"),
+            None,
+            Some(TOKEN),
+        )
+        .await;
+    }
+    fail.store(true, std::sync::atomic::Ordering::SeqCst);
+    let v = mcp_tool(&app, &sid, "notebook_open", json!({"path": "e.ipynb"})).await;
+    assert!(mcp_failed(&v), "{v}");
+    let rooms = list_rooms(&app).await;
+    let clients = rooms["rooms"][0]["clients"].as_array().unwrap();
+    assert_eq!(clients.len(), 1, "the agent still holds the room: {rooms}");
+    fail.store(false, std::sync::atomic::Ordering::SeqCst);
+    let v = mcp_tool(&app, &sid, "notebook_open", json!({"path": "e.ipynb"})).await;
+    assert!(!mcp_failed(&v), "{v}");
+    assert_eq!(read_mark(&mcp_text(&v)), mark, "the read mark is kept");
+    let v = mcp_tool(&app, &sid, "notebook_read", json!({"since": mark})).await;
+    assert!(!mcp_failed(&v), "{v}");
+}
+
+/// A named kernel that isn't installed fails before anything is written.
+#[tokio::test]
+async fn mcp_open_with_an_uninstalled_kernel_creates_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = mcp_app(dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    let args = json!({"path": "t.ipynb", "kernel": "nope"});
+    let v = mcp_tool(&app, &sid, "notebook_open", args).await;
+    assert!(mcp_failed(&v), "{v}");
+    assert!(
+        v.to_string()
+            .contains("no kernel named nope; nothing was created"),
+        "{v}"
+    );
+    assert!(!dir.path().join("t.ipynb").exists());
+}
+
 async fn call_sessions(app: &axum::Router) -> (StatusCode, Value) {
     call(app, "GET", "/api/sessions", None, Some(TOKEN)).await
 }

@@ -540,7 +540,7 @@ impl Notebooks {
     }
 
     #[tool(
-        description = "Open a notebook, creating it if it doesn't exist, and start or join its kernel. Later calls may leave out `path`. Paths are relative to the directory the reply names: the server's root, or your own folder when `ganymede mcp` forwards to a server rooted above it, where a leading / starts at the root. Returns a compact view of the notebook."
+        description = "Open a notebook, creating it if it doesn't exist, and start or join its kernel. Later calls may leave out `path`. Paths are relative to the directory the reply names: the server's root, or your own folder when `ganymede mcp` forwards to a server rooted above it, where a leading / starts at the root. Returns a compact view of the notebook. A failed open leaves no notebook current."
     )]
     async fn notebook_open(
         &self,
@@ -615,17 +615,31 @@ impl Notebooks {
                     )));
                 }
             }
+            if let Some(k) = &a.kernel {
+                let specs = self
+                    .state
+                    .kernels
+                    .kernelspecs()
+                    .map_err(|e| err(e.message))?;
+                if !specs.kernelspecs.contains_key(k) {
+                    return Err(err(format!("no kernel named {k}; nothing was created")));
+                }
+            }
             self.create(&path, kernel.as_deref(), a.title.as_deref())
                 .await?;
         }
         // What this connection held before, so a failure leaves it so.
         let had_hold = self.holds_room(&path).await;
         let had_token = self.tokens.lock().expect("tokens").contains_key(&path);
+        let mut started = false;
         let kernel = if self.opts.read_only || self.opts.no_execute {
             None
         } else {
-            match self.kernel_for(&path, a.kernel.as_deref()).await {
-                Ok(k) => Some(k),
+            match self.kernel_for_new(&path, a.kernel.as_deref()).await {
+                Ok((id, name, made)) => {
+                    started = made;
+                    Some((id, name))
+                }
                 Err(e) => {
                     let e = if exists {
                         e
@@ -645,7 +659,6 @@ impl Notebooks {
         let (nb, token) = match self.read_marked(&path).await {
             Ok(r) => r,
             Err(e) => {
-                let started = kernel.is_some();
                 return Err(self
                     .failed_open(&path, exists, (had_hold, had_token), started, e)
                     .await);
@@ -2434,19 +2447,31 @@ impl Notebooks {
         }
         let shown = self.show(path);
         // This connection has left the room (the leave is ahead of this
-        // question in the room's queue); anyone listed is someone else.
-        let others = self
-            .state
-            .collab
-            .list_rooms()
-            .await
-            .into_iter()
-            .any(|r| r.path == path && !r.clients.is_empty());
-        if others {
-            return err(format!(
-                "{}; kept {shown}: someone else has it open",
-                e.message
-            ));
+        // question in the room's queue); anyone in it is someone else.
+        let occupied = match notebook_room_id(&self.state.collab, &self.state.contents, path).await
+        {
+            Ok(id) => {
+                self.state
+                    .collab
+                    .room_occupied(&id, Duration::from_secs(2))
+                    .await
+            }
+            Err(_) => Err(()),
+        };
+        match occupied {
+            Ok(false) => {}
+            Ok(true) => {
+                return err(format!(
+                    "{}; kept {shown}: someone else has it open",
+                    e.message
+                ))
+            }
+            Err(()) => {
+                return err(format!(
+                    "{}; kept {shown}: couldn't tell whether someone has it open",
+                    e.message
+                ))
+            }
         }
         if started {
             if let Some(s) = self
@@ -2544,6 +2569,17 @@ impl Notebooks {
         path: &str,
         kernel: Option<&str>,
     ) -> Result<(String, String), McpError> {
+        let (id, name, _) = self.kernel_for_new(path, kernel).await?;
+        Ok((id, name))
+    }
+
+    /// [`Self::kernel_for`], and whether this call started the session
+    /// (not one that was there, or that a concurrent call made).
+    async fn kernel_for_new(
+        &self,
+        path: &str,
+        kernel: Option<&str>,
+    ) -> Result<(String, String, bool), McpError> {
         if let Some(s) = self
             .state
             .sessions
@@ -2551,7 +2587,7 @@ impl Notebooks {
             .into_iter()
             .find(|s| s.path == path)
         {
-            return Ok((s.kernel.id, s.kernel.name));
+            return Ok((s.kernel.id, s.kernel.name, false));
         }
         let name = match kernel {
             Some(k) => Some(k.to_string()),
@@ -2582,7 +2618,7 @@ impl Notebooks {
             })
             .await
             .map_err(|e| err(e.message))?;
-        Ok((s.kernel.id, s.kernel.name))
+        Ok((s.kernel.id, s.kernel.name, true))
     }
 
     async fn insert(

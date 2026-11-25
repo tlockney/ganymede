@@ -360,8 +360,8 @@ When there is no kernel to start (none named, no folder default, and
 the server's default isn't installed), `notebook_open` of a new
 notebook fails and creates nothing. If the kernel of a notebook the
 call just created won't start, or the notebook can't then be read, the
-call deletes it, unless someone else has it open by then: it keeps the
-file and says so. A failed open of any kind (a path that isn't a
+call deletes it, unless someone else has it open by then, or the room
+doesn't say: it keeps the file and says so. A failed open of any kind (a path that isn't a
 `.ipynb` too) leaves no notebook current, not the one open before it, so
 the next call must pass `path`.
 

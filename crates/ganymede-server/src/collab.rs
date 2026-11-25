@@ -271,6 +271,28 @@ impl Collab {
         rooms
     }
 
+    /// Whether anyone is in the notebook room `room_id` (from
+    /// [`notebook_room_id`]): `Ok(false)` when no room is open, and `Err`
+    /// when the room doesn't say within `wait`, which a busy room may not.
+    /// An unlisted hold (a kernel's) doesn't count.
+    pub(crate) async fn room_occupied(&self, room_id: &str, wait: Duration) -> Result<bool, ()> {
+        let tx = self
+            .rooms
+            .lock()
+            .expect("rooms")
+            .get(room_id)
+            .filter(|tx| !tx.is_closed())
+            .cloned();
+        let Some(tx) = tx else { return Ok(false) };
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        tx.send(Cmd::Info(reply)).map_err(|_| ())?;
+        let info = tokio::time::timeout(wait, rx)
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())?;
+        Ok(!info.clients.is_empty())
+    }
+
     /// How many rooms are open.
     pub fn open_rooms(&self) -> usize {
         self.rooms.lock().expect("rooms").len()
@@ -3053,6 +3075,16 @@ mod join_tests {
 
     /// `Collab::delete`, which `DELETE /api/contents` calls, waits for an
     /// index in progress and leaves the path without an id (#580).
+    /// No room open for an id: nobody is in it.
+    #[tokio::test]
+    async fn room_occupied_without_a_room_is_false() {
+        let collab = Collab::new(FileIds::in_memory(), None);
+        let r = collab
+            .room_occupied("json:notebook:none", Duration::from_secs(1))
+            .await;
+        assert_eq!(r, Ok(false));
+    }
+
     #[tokio::test]
     async fn delete_waits_for_indexing_and_drops_the_id() {
         let (dir, contents) = notebook_dir();
