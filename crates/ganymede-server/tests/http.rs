@@ -7233,9 +7233,10 @@ async fn mcp_failed_read_leaves_a_session_it_joined() {
 }
 
 /// The first launch waits for `release`, after saying so on `entered`,
-/// then fails if `fail` is set.
+/// then fails if `fail` is set, or garbles `garble` (keeping its stamp).
 struct GatedProvisioner {
     fail: bool,
+    garble: Option<std::path::PathBuf>,
     first: std::sync::atomic::AtomicBool,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
@@ -7252,6 +7253,9 @@ impl Provisioner for GatedProvisioner {
             self.release.notified().await;
             if self.fail {
                 return Err(ganymede_kernel_host::Error::Unsupported("test launch"));
+            }
+            if let Some(f) = &self.garble {
+                garble(f, true);
             }
         }
         FakeProvisioner.launch(spec, opts).await
@@ -7272,6 +7276,7 @@ async fn mcp_failed_read_leaves_a_session_another_client_started_meanwhile() {
         dir.path(),
         Arc::new(GatedProvisioner {
             fail: false,
+            garble: None,
             first: true.into(),
             entered: entered.clone(),
             release: release.clone(),
@@ -7320,6 +7325,72 @@ async fn mcp_failed_read_leaves_a_session_another_client_started_meanwhile() {
     assert_eq!(listed[0].id, made["id"].as_str().unwrap());
 }
 
+/// Another client starts a session for a new path while `notebook_open`,
+/// which made the file, waits for it: the open joins that session, so
+/// its failed read leaves the file and the session, and says why (#941).
+#[tokio::test]
+async fn mcp_failed_read_keeps_a_created_notebook_with_a_session_someone_started() {
+    let dir = tempfile::tempdir().unwrap();
+    let (entered, release) = (
+        Arc::new(tokio::sync::Notify::new()),
+        Arc::new(tokio::sync::Notify::new()),
+    );
+    let st = state_with(
+        dir.path(),
+        Arc::new(GatedProvisioner {
+            fail: false,
+            // Garbled as the other client's launch finishes, once the
+            // open has made the file and waits for the session.
+            garble: Some(dir.path().join("t.ipynb")),
+            first: true.into(),
+            entered: entered.clone(),
+            release: release.clone(),
+        }),
+        Arc::new(FakeTransports),
+    );
+    let sessions = st.sessions.clone();
+    let app = mcp_app_on(st, dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    let other = tokio::spawn({
+        let app = app.clone();
+        async move {
+            call(
+                &app,
+                "POST",
+                "/api/sessions",
+                Some(json!({"path": "t.ipynb", "type": "notebook", "kernel": {"name": "fake"}})),
+                Some(TOKEN),
+            )
+            .await
+        }
+    });
+    entered.notified().await;
+    let open = tokio::spawn({
+        let app = app.clone();
+        async move {
+            let args = json!({"path": "t.ipynb", "kernel": "fake"});
+            mcp_tool(&app, &sid, "notebook_open", args).await
+        }
+    });
+    // Let the open make the file and reach the path lock (nothing shows
+    // when it has; the garbling in the launch needs the file there).
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    release.notify_one();
+    let (status, made) = other.await.unwrap();
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let v = open.await.unwrap();
+    assert!(mcp_failed(&v), "{v}");
+    assert!(
+        v.to_string()
+            .contains("t.ipynb was created and stays (someone has a session on it), but no notebook is current"),
+        "{v}"
+    );
+    assert!(dir.path().join("t.ipynb").exists(), "file kept");
+    let listed = sessions.list();
+    assert_eq!(listed.len(), 1, "the other client's session stays");
+    assert_eq!(listed[0].id, made["id"].as_str().unwrap());
+}
+
 /// Opens new `t.ipynb` on kernel `fake` through a gated launch, and
 /// while it waits another MCP connection reads the notebook (and so holds
 /// its room). Returns the open's reply, the app and its sessions.
@@ -7335,6 +7406,7 @@ async fn open_while_another_client_holds_it(
         dir,
         Arc::new(GatedProvisioner {
             fail,
+            garble: None,
             first: true.into(),
             entered: entered.clone(),
             release: release.clone(),
