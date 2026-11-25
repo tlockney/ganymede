@@ -253,6 +253,14 @@ enum Refused {
     Unseen(String, String, Option<Box<(usize, Cell)>>),
 }
 
+/// The kernel session of a failed `notebook_open`: none, one the call
+/// started (its id), or one that was running when it asked (it joined).
+enum Session {
+    None,
+    Started(String),
+    Joined,
+}
+
 /// A notebook `notebook_open` created: the file's stamp right after, if it
 /// could be read, and whether the call made folders for it.
 struct Created {
@@ -651,24 +659,29 @@ impl Notebooks {
         }
         // What this connection held before, so a failure leaves it so.
         let had_hold = self.holds_room(&path).await;
-        let mut started = None;
+        let mut session = Session::None;
         let kernel = if self.opts.read_only || self.opts.no_execute {
             None
         } else {
             match self.kernel_session(&path, a.kernel.as_deref()).await {
                 Ok((id, name, s)) => {
-                    started = s;
+                    session = match s {
+                        Some(sid) => Session::Started(sid),
+                        None => Session::Joined,
+                    };
                     Some((id, name))
                 }
                 Err(e) => {
-                    return Err(self.failed_open(&path, created, None, had_hold, e).await);
+                    return Err(self
+                        .failed_open(&path, created, Session::None, had_hold, e)
+                        .await);
                 }
             }
         };
         let (nb, token) = match self.read_marked(&path).await {
             Ok(r) => r,
             Err(e) => {
-                return Err(self.failed_open(&path, created, started, had_hold, e).await);
+                return Err(self.failed_open(&path, created, session, had_hold, e).await);
             }
         };
         *self.current.lock().expect("current") = Some(path.clone());
@@ -2428,16 +2441,18 @@ impl Notebooks {
     }
 
     /// `e`, for a failed open, once what this call made is undone: the
-    /// hold on the room (if the connection had none before), the session
-    /// it started (`started`), and the notebook it created (`created`)
-    /// unless the file changed since or someone has it open. Folders it
-    /// made stay. A session it joined, and a notebook that was there, are
-    /// left. What stays, and why, is in the message.
+    /// hold on the room (if the connection had none before), the notebook
+    /// it created (`created`) and then the session it started (`session`).
+    /// The notebook stays if the file changed since, someone has it open,
+    /// or someone has a session on it (one this call joined); the session
+    /// stays with a notebook someone has open. Folders it made stay. A
+    /// session it joined, and a notebook that was there, are left. What
+    /// stays, and why, is in the message.
     async fn failed_open(
         &self,
         path: &str,
         created: Option<Created>,
-        started: Option<String>,
+        session: Session,
         had_hold: bool,
         e: McpError,
     ) -> McpError {
@@ -2446,23 +2461,10 @@ impl Notebooks {
         }
         let mut msg = e.message.to_string();
         let shown = self.show(path);
-        // A notebook someone has open stays with its kernel: they may have
-        // edits not saved yet, and a kernel they use.
-        let busy = match &created {
-            Some(Created { stamp: Some(_), .. }) => self.state.collab.room_in_use(path).await,
-            _ => false,
-        };
-        if let (Some(id), false) = (started.as_ref(), busy) {
-            // Not found: someone else deleted it, and its kernel with it.
-            if let Err(d) = self.state.sessions.delete(id).await {
-                if d.status != 404 {
-                    msg.push_str(&format!(
-                        "; the kernel session it started for {shown} wasn't shut down: {}",
-                        d.message
-                    ));
-                }
-            }
-        }
+        // The file first, under the move lock, so a notebook someone has
+        // open is kept with its kernel: they may have edits not saved yet,
+        // and a kernel they use.
+        let mut open = false;
         let tail = match created {
             None => String::new(),
             Some(Created { stamp, made_dirs }) => {
@@ -2473,10 +2475,11 @@ impl Notebooks {
                 };
                 let stays = match stamp {
                     None => Some("the contents aren't a local folder".to_string()),
-                    Some(_) if busy => Some(match started {
-                        Some(_) => "someone has it open; it and its kernel stay".to_string(),
-                        None => "someone has it open".to_string(),
-                    }),
+                    // A session another client made while this call waited:
+                    // its kernel runs code in the file.
+                    Some(_) if matches!(session, Session::Joined) => {
+                        Some("someone has a session on it".to_string())
+                    }
                     Some(st) => match self
                         .state
                         .collab
@@ -2487,7 +2490,15 @@ impl Notebooks {
                         Ok(DeleteIf::Changed) => {
                             Some("it changed since this call created it".to_string())
                         }
-                        Ok(DeleteIf::InUse) => Some("someone has it open".to_string()),
+                        Ok(DeleteIf::InUse) => {
+                            open = true;
+                            Some(match session {
+                                Session::Started(_) => {
+                                    "someone has it open; it and its kernel stay".to_string()
+                                }
+                                _ => "someone has it open".to_string(),
+                            })
+                        }
                         Err(d) => Some(format!("deleting it failed: {d}")),
                     },
                 };
@@ -2497,6 +2508,17 @@ impl Notebooks {
                 }
             }
         };
+        if let (Session::Started(id), false) = (&session, open) {
+            // Not found: someone else deleted it, and its kernel with it.
+            if let Err(d) = self.state.sessions.delete(id).await {
+                if d.status != 404 {
+                    msg.push_str(&format!(
+                        "; the kernel session it started for {shown} wasn't shut down: {}",
+                        d.message
+                    ));
+                }
+            }
+        }
         err(format!("{msg}; {tail}no notebook is current, so pass path"))
     }
 

@@ -516,7 +516,7 @@ impl Collab {
     /// a room that doesn't answer within two seconds (busy with a slow
     /// save, which may hold unsaved edits) counts as in use. No room, or
     /// one that stopped, is not.
-    pub(crate) async fn room_in_use(&self, path: &str) -> bool {
+    async fn room_in_use(&self, path: &str) -> bool {
         let path = normalize_api_path(path);
         let Some(file_id) = self.with_ids(move |ids| ids.get(&path)).await else {
             return false;
