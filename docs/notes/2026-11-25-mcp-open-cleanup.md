@@ -9,12 +9,12 @@ whose "Left for #941" this closes.
 or the read fails:
 
 - A session this call started is deleted, which shuts its kernel down. A
-  session it joined (one already running for the path) is left alone. A
-  failed delete is added to the error, except "not found" (someone else
-  deleted it, and its kernel went with it). A session someone joins after
-  this call started it is shut down with it; only one running before the
-  call is left alone. This holds for an existing notebook too; the file is
-  never touched then.
+  session it joined (one running before the call, or one another client
+  started while it waited) is left alone. A failed delete is added to the
+  error, except "not found" (someone else deleted it, and its kernel went
+  with it). A session someone joins after this call started it is shut
+  down with it. This holds for an existing notebook too; the file is never
+  touched then.
 - A notebook this call created is deleted, but only if its stamp (size,
   modification time, inode) is still the one read right after the create.
   `Collab::delete_if_unchanged` re-reads the stamp and deletes under the

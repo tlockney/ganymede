@@ -7000,8 +7000,8 @@ async fn mcp_failed_kernel_start_removes_the_notebook_it_created() {
     );
 }
 
-/// Contents whose deletes fail.
-struct NoDelete(FsContents);
+/// Contents whose deletes fail, and whose gets fail while the flag is set.
+struct NoDelete(FsContents, Arc<std::sync::atomic::AtomicBool>);
 #[async_trait]
 impl ganymede_contents::Contents for NoDelete {
     async fn get(
@@ -7009,6 +7009,9 @@ impl ganymede_contents::Contents for NoDelete {
         p: &str,
         o: ganymede_contents::GetOptions,
     ) -> ganymede_contents::Result<ganymede_contents::ContentsModel> {
+        if self.1.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(std::io::Error::other("test get").into());
+        }
         self.0.get(p, o).await
     }
     async fn save(
@@ -7075,6 +7078,7 @@ async fn mcp_failed_open_says_when_deleting_the_created_notebook_failed() {
     );
     st.contents = Arc::new(NoDelete(
         FsContents::new(dir.path(), FsOptions::default()).unwrap(),
+        Default::default(),
     ));
     let app = mcp_app_on(st, dir.path());
     let sid = mcp_connect(&app, "agent").await;
@@ -7372,9 +7376,19 @@ async fn mcp_failed_read_keeps_a_created_notebook_with_a_session_someone_started
             mcp_tool(&app, &sid, "notebook_open", args).await
         }
     });
-    // Let the open make the file and reach the path lock (nothing shows
-    // when it has; the garbling in the launch needs the file there).
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Let the open make the file (the garbling in the launch needs it),
+    // then reach the path lock (nothing shows when it has).
+    for _ in 0..500 {
+        if dir.path().join("t.ipynb").exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        dir.path().join("t.ipynb").exists(),
+        "the open made the file"
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
     release.notify_one();
     let (status, made) = other.await.unwrap();
     assert_eq!(status, StatusCode::CREATED, "{made}");
@@ -7449,6 +7463,65 @@ async fn mcp_failed_kernel_start_keeps_a_created_notebook_someone_has_open() {
     );
     assert!(dir.path().join("t.ipynb").exists());
     assert!(sessions.list().is_empty());
+}
+
+/// A notebook someone has open, whose kernel session this call started,
+/// when the read then fails: the file is decided first, found in use, and
+/// the session stays with it (#947). The read fails because the contents'
+/// `get` does, with another client's room already open.
+#[tokio::test]
+async fn mcp_failed_read_keeps_the_session_of_a_notebook_someone_has_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let (entered, release) = (
+        Arc::new(tokio::sync::Notify::new()),
+        Arc::new(tokio::sync::Notify::new()),
+    );
+    let mut st = state_with(
+        dir.path(),
+        Arc::new(GatedProvisioner {
+            fail: false,
+            garble: None,
+            first: true.into(),
+            entered: entered.clone(),
+            release: release.clone(),
+        }),
+        Arc::new(FakeTransports),
+    );
+    let no_get = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    st.contents = Arc::new(NoDelete(
+        FsContents::new(dir.path(), FsOptions::default()).unwrap(),
+        no_get.clone(),
+    ));
+    let sessions = st.sessions.clone();
+    let app = mcp_app_on(st, dir.path());
+    let (a, b) = (
+        mcp_connect(&app, "agent").await,
+        mcp_connect(&app, "other").await,
+    );
+    let open = tokio::spawn({
+        let app = app.clone();
+        async move {
+            let args = json!({"path": "t.ipynb", "kernel": "fake"});
+            mcp_tool(&app, &a, "notebook_open", args).await
+        }
+    });
+    entered.notified().await;
+    // The file is made; another client opens its room.
+    let v = mcp_tool(&app, &b, "notebook_read", json!({"path": "t.ipynb"})).await;
+    assert!(!mcp_failed(&v), "{v}");
+    // The kernel starts, then the open's read can't find the notebook.
+    no_get.store(true, std::sync::atomic::Ordering::SeqCst);
+    release.notify_one();
+    let v = open.await.unwrap();
+    assert!(mcp_failed(&v), "{v}");
+    assert!(
+        v.to_string().contains(
+            "t.ipynb was created and stays (someone has it open; it and its kernel stay)"
+        ),
+        "{v}"
+    );
+    assert!(dir.path().join("t.ipynb").exists());
+    assert_eq!(sessions.list().len(), 1, "its kernel session stays");
 }
 
 /// Contents that aren't a local folder have no stamp to check: a created

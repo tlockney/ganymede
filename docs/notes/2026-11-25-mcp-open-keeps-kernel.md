@@ -14,5 +14,11 @@ were fixed. The #941 entry describes the final design; this change:
   (a REST-only client) would otherwise keep a session on a file that is
   gone.
 
-Test: `mcp_failed_read_keeps_a_created_notebook_with_a_session_someone_started`
-(gated provisioner; fails without the change).
+Tests (each fails without the change):
+
+- `mcp_failed_read_keeps_a_created_notebook_with_a_session_someone_started`:
+  a gated provisioner; the file is kept for a joined session.
+- `mcp_failed_read_keeps_the_session_of_a_notebook_someone_has_open`: the
+  call starts the session, another connection holds the room, and the read
+  then fails because the contents' `get` does (a test wrapper, switched on
+  after the room opened); the file and the session stay.
