@@ -20,7 +20,7 @@ fn serve_offers_the_copies_in_its_data_dir() {
     let nb = json!({"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
     std::fs::write(copies.join(format!("{id}.ipynb")), nb.to_string()).unwrap();
     let meta = json!({"path": "a.ipynb", "at": "2026-11-25T10:00:00Z", "reason": "save_failed",
-        "detail": "", "notebook": format!("{id}.ipynb")});
+        "detail": "", "file": canonical.join("a.ipynb"), "notebook": format!("{id}.ipynb")});
     std::fs::write(copies.join(format!("{id}.json")), meta.to_string()).unwrap();
 
     let mut child = KillOnDrop(

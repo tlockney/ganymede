@@ -144,8 +144,13 @@ without them.
 Copies live in `recovery` under the Ganymede data directory (`ganymede
 info` shows it as `data_dir`), not beside the notebook, so they survive a
 reboot. Each root directory has its own directory there, named by the
-SHA-256 of its path, and a server sees only its root's copies. Each copy is a `<id>.ipynb` and a `<id>.json` with the `path`, the
-file's absolute path (`file`, which the routes leave out), `at` (UTC),
+SHA-256 of its path, and that is where a server writes its copies. A
+server finds copies by their file, not by which directory they are in,
+so it sees every copy of a notebook under its root, at the path relative
+to that root: a copy kept by a server rooted at a project is listed, read
+and discarded by one rooted at the folder around it, and a root that
+holds none of the file's path sees none of its copies. Each copy is a `<id>.ipynb` and a `<id>.json` with the `path`,
+the file's absolute path (`file`, which the routes leave out), `at` (UTC),
 `reason`, `detail`, `cells` and the notebook's file name. At most 20
 copies are kept for one notebook path and 200 MB for one root; a write that
 goes over deletes the oldest first, and the server logs each. A copy stays

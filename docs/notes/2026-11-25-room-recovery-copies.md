@@ -18,10 +18,17 @@ What changed:
   write over a limit deletes the oldest first and logs each, never the one
   just written. `list`, `read`, `discard`.
 - Each root has its own dir in the recovery dir, the hex SHA-256 of its
-  canonical path (`recovery::Store`), and list, read, discard, prune and
-  the look when a room opens use only that: every server of a person
-  shares the data dir, and `path` is relative to a root, so one project's
-  copies would otherwise be offered in another. The meta also has the
+  canonical path (`recovery::Store`), and that is where a server writes.
+  Reads match by the copy's file, not its dir: `list`, `read` and
+  `discard` scan every root dir under `recovery/` and keep the copies
+  whose `file` is inside this server's canonical root, mapped to that
+  root's relative path. Every server of a person shares the data dir and
+  `path` is relative to a root, so this is what keeps one project's
+  copies from being offered in another — and what makes a copy kept by
+  `ganymede mcp` rooted at a project visible to the Mac app's server
+  rooted at `/`, which shares the data dir. Writes and the bounds stay
+  per root dir. A store with no root (tests, contents that are not a
+  local dir) sees its own dir only, as before. The meta also has the
   file's absolute path (`file`), which the routes leave out.
 - Ids strictly increase within a process: a clock that stands still or
   goes back gives the next microsecond.
@@ -64,8 +71,9 @@ Network surface, justified: the apps need to show **Save needs attention**
 with copy and restore, and a copy is files on the server's disk, which a
 client on another machine can't reach. List and read are `GET`s that expose
 notebook text the caller could already read through the contents API or the
-room, since a server sees only its own root's copies; discard deletes only
-files in that root's dir.
+room, since a server sees only the copies of files under its own root;
+discard deletes only copies whose file is under that root, whichever
+root's dir they are in.
 The id check is the only thing between a request and a file name, so it is
 exact and tested with `/`, `..`, `%2F` and other characters.
 

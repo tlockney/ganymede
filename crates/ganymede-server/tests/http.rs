@@ -10582,14 +10582,24 @@ fn recovery_of(recovery: &std::path::Path, root: &std::path::Path) -> std::path:
     recovery.join(hex::encode(key))
 }
 
-/// A recovery copy `id` of `path` written to `dir` as the server does.
-fn recovery_copy(dir: &std::path::Path, id: &str, path: &str, reason: &str, source: &str) {
+/// A recovery copy `id` of `path` under `root`, written to its dir as the
+/// server does. The copy's `file` says which root holds it, which is how
+/// a server finds copies across roots (#945).
+fn recovery_copy(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    id: &str,
+    path: &str,
+    reason: &str,
+    source: &str,
+) {
     std::fs::create_dir_all(dir).unwrap();
     let nb = json!({"cells": [{"cell_type": "markdown", "id": "a", "metadata": {}, "source": source}],
         "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
     std::fs::write(dir.join(format!("{id}.ipynb")), nb.to_string()).unwrap();
     let meta = json!({"path": path, "at": "2026-11-25T10:00:00Z", "reason": reason,
-        "file": "/srv/a.ipynb", "detail": "cell a", "cells": ["a"], "notebook": format!("{id}.ipynb")});
+        "file": root.canonicalize().unwrap().join(path), "detail": "cell a", "cells": ["a"],
+        "notebook": format!("{id}.ipynb")});
     std::fs::write(dir.join(format!("{id}.json")), meta.to_string()).unwrap();
 }
 
@@ -10616,9 +10626,10 @@ async fn collaboration_recovery_lists_returns_and_discards_copies() {
     let data = tempfile::tempdir().unwrap();
     let all = data.path().join("recovery");
     let rec = recovery_of(&all, dir.path());
-    recovery_copy(&rec, OLD_COPY, "a.ipynb", "save_failed", "old");
-    recovery_copy(&rec, NEW_COPY, "a.ipynb", "merge_conflict", "new");
+    recovery_copy(dir.path(), &rec, OLD_COPY, "a.ipynb", "save_failed", "old");
+    recovery_copy(dir.path(), &rec, NEW_COPY, "a.ipynb", "merge_conflict", "new");
     recovery_copy(
+        dir.path(),
         &rec,
         "0000000000000003-cccccccc",
         "b.ipynb",
@@ -10750,7 +10761,7 @@ async fn collaboration_recovery_needs_the_same_auth_as_contents() {
     let data = tempfile::tempdir().unwrap();
     let all = data.path().join("recovery");
     let rec = recovery_of(&all, dir.path());
-    recovery_copy(&rec, NEW_COPY, "a.ipynb", "save_failed", "new");
+    recovery_copy(dir.path(), &rec, NEW_COPY, "a.ipynb", "save_failed", "new");
     let app = recovery_app(dir.path(), &all);
     let (contents, _) = call(&app, "GET", "/api/contents", None, None).await;
     assert_eq!(contents, StatusCode::FORBIDDEN);
@@ -10804,8 +10815,8 @@ async fn collaboration_room_names_its_recovery_copy_until_it_is_discarded() {
     let data = tempfile::tempdir().unwrap();
     let all = data.path().join("recovery");
     let rec = recovery_of(&all, dir.path());
-    recovery_copy(&rec, OLD_COPY, "a.ipynb", "save_failed", "old");
-    recovery_copy(&rec, NEW_COPY, "a.ipynb", "merge_conflict", "new");
+    recovery_copy(dir.path(), &rec, OLD_COPY, "a.ipynb", "save_failed", "old");
+    recovery_copy(dir.path(), &rec, NEW_COPY, "a.ipynb", "merge_conflict", "new");
     let app = recovery_app(dir.path(), &all);
     let (s, v) = call(
         &app,
@@ -10908,7 +10919,7 @@ async fn collaboration_recovery_is_per_root() {
     let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let data = tempfile::tempdir().unwrap();
     let rec = recovery_of(data.path(), one.path());
-    recovery_copy(&rec, NEW_COPY, "a.ipynb", "save_failed", "new");
+    recovery_copy(one.path(), &rec, NEW_COPY, "a.ipynb", "save_failed", "new");
     let uri = format!("/api/collaboration/recovery/{NEW_COPY}");
     let other = recovery_app(two.path(), data.path());
     let list = "/api/collaboration/recovery?path=a.ipynb";

@@ -204,8 +204,10 @@ impl Collab {
     /// they are, after a warning, where `dir` can't be made: rooms would
     /// wait forever for a copy.
     pub fn with_recovery_dir(mut self, dir: PathBuf) -> Self {
-        match std::fs::create_dir_all(&dir) {
-            Ok(()) => self.recovery = Some(recovery::Store::new(&dir, self.root.as_deref())),
+        match recovery::make_dir(&dir) {
+            Ok(()) => {
+                self.recovery = Some(recovery::Store::new(&dir, self.root.as_deref()));
+            }
             Err(e) => tracing::warn!(
                 dir = %dir.display(),
                 "cannot make the recovery dir; running without recovery copies: {e}"
@@ -309,8 +311,8 @@ impl Collab {
     async fn forget_recovery(&self, id: &str, path: Option<&str>) {
         let left = match (&self.recovery, path) {
             (Some(store), Some(path)) => {
-                let (dir, p) = (store.dir.clone(), path.to_string());
-                match blocking(move || recovery::list(&dir, &p)).await {
+                let (store, p) = (store.clone(), path.to_string());
+                match blocking(move || recovery::list(&store, &p)).await {
                     Ok(copies) => copies.first().map(recovery::Meta::summary),
                     Err(e) => {
                         tracing::warn!(id, path, "cannot list the recovery copies left: {e}");
@@ -1180,14 +1182,14 @@ pub(crate) struct RecoveryQuery {
     path: Option<String>,
 }
 
-/// Where this server's recovery copies are, or 404: one without a
-/// recovery dir keeps none.
-fn recovery_dir(state: &AppState) -> Result<PathBuf, HttpError> {
+/// This server's recovery copies: the store its root sees. None of the
+/// routes run without one, so a server that keeps no copies answers
+/// `404` before it names any file.
+fn recovery_store(state: &AppState) -> Result<recovery::Store, HttpError> {
     state
         .collab
         .recovery
-        .as_ref()
-        .map(|store| store.dir.clone())
+        .clone()
         .ok_or_else(|| HttpError(404, "this server keeps no recovery copies".into()))
 }
 
@@ -1210,12 +1212,12 @@ pub(crate) async fn recovery_list(
     State(state): State<AppState>,
     Query(q): Query<RecoveryQuery>,
 ) -> Result<Json<Value>, HttpError> {
-    let dir = recovery_dir(&state)?;
+    let store = recovery_store(&state)?;
     let path = q
         .path
         .map(|p| normalize_api_path(&p))
         .ok_or_else(|| HttpError(400, "'path' parameter was not provided.".into()))?;
-    let copies = blocking(move || recovery::list(&dir, &path))
+    let copies = blocking(move || recovery::list(&store, &path))
         .await
         .map_err(recovery_io)?;
     let copies: Vec<Value> = copies.iter().map(recovery::Meta::public).collect();
@@ -1230,8 +1232,8 @@ pub(crate) async fn recovery_get(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, HttpError> {
     recovery_id(&id)?;
-    let dir = recovery_dir(&state)?;
-    let found = blocking(move || recovery::read(&dir, &id))
+    let store = recovery_store(&state)?;
+    let found = blocking(move || recovery::read(&store, &id))
         .await
         .map_err(recovery_io)?;
     let (meta, content) = found.ok_or_else(|| HttpError(404, "no such recovery copy".into()))?;
@@ -1248,10 +1250,10 @@ pub(crate) async fn recovery_discard(
     Path(id): Path<String>,
 ) -> Result<StatusCode, HttpError> {
     recovery_id(&id)?;
-    let dir = recovery_dir(&state)?;
+    let store = recovery_store(&state)?;
     let named = id.clone();
     let (existed, path) = blocking(move || {
-        let path = match recovery::read_meta(&dir, &named) {
+        let path = match recovery::read_meta(&store, &named) {
             Ok(meta) => meta.map(|m| m.path),
             Err(e) => {
                 // Discardable all the same; only its path isn't known.
@@ -1259,7 +1261,7 @@ pub(crate) async fn recovery_discard(
                 None
             }
         };
-        Ok((recovery::discard(&dir, &named)?, path))
+        Ok((recovery::discard(&store, &named)?, path))
     })
     .await
     .map_err(recovery_io)?;
@@ -1924,8 +1926,8 @@ async fn run_room(
                 // A copy kept before, by this run or an earlier one, stays
                 // on offer until it is restored or discarded.
                 if let Some(store) = &collab.recovery {
-                    let (dir, p) = (store.dir.clone(), path.clone());
-                    match blocking(move || recovery::list(&dir, &p)).await {
+                    let (store, p) = (store.clone(), path.clone());
+                    match blocking(move || recovery::list(&store, &p)).await {
                         Ok(copies) => {
                             room.set_recovery(copies.first().map(recovery::Meta::summary).as_ref());
                         }
@@ -4315,7 +4317,7 @@ mod recovery_tests {
 
         fn copies(&self) -> Vec<recovery::Meta> {
             // None while a file is in the dir's place.
-            recovery::list(&self.store().dir, "a.ipynb").unwrap_or_default()
+            recovery::list(&self.store(), "a.ipynb").unwrap_or_default()
         }
 
         /// A room with a recovery dir. With `blocked`, a file takes the
@@ -4442,7 +4444,7 @@ mod recovery_tests {
         assert_eq!(copies.len(), 1);
         assert_eq!(copies[0].reason, "save_failed");
         assert!(copies[0].detail.contains("disk full"), "{:?}", copies[0]);
-        let (_, content) = recovery::read(&fx.store().dir, &copies[0].id)
+        let (_, content) = recovery::read(&fx.store(), &copies[0].id)
             .unwrap()
             .unwrap();
         let nb = Notebook::from_value(content.clone()).expect("the copy is a notebook");
@@ -4467,7 +4469,7 @@ mod recovery_tests {
             .await;
         let copies = fx.copies();
         assert_eq!(copies[0].reason, "file_gone");
-        let (_, content) = recovery::read(&fx.store().dir, &copies[0].id)
+        let (_, content) = recovery::read(&fx.store(), &copies[0].id)
             .unwrap()
             .unwrap();
         assert_eq!(source_of_a(&content), "typed here");
@@ -4544,7 +4546,7 @@ mod recovery_tests {
         assert_eq!(copies[0].reason, "merge_conflict");
         assert_eq!(copies[0].cells, ["a"]);
         assert_eq!(copies[0].detail, "cell a");
-        let (_, content) = recovery::read(&fx.store().dir, &copies[0].id)
+        let (_, content) = recovery::read(&fx.store(), &copies[0].id)
             .unwrap()
             .unwrap();
         assert_eq!(source_of_a(&content), "room wrote this");
@@ -4656,13 +4658,13 @@ mod recovery_tests {
         assert_eq!(named["cells"], json!(["a"]));
         // Discarding the named one names the next newest of the path, and
         // discarding another leaves that; with none left, none is named.
-        recovery::discard(&store.dir, &new.id).unwrap();
+        recovery::discard(&store, &new.id).unwrap();
         fx.collab.forget_recovery(&new.id, Some("a.ipynb")).await;
         let named = fx.state("recovery").await.expect("the older copy");
         assert_eq!(named["id"], old.id.as_str());
         fx.collab.forget_recovery(&new.id, Some("a.ipynb")).await;
         assert!(fx.state("recovery").await.is_some());
-        recovery::discard(&store.dir, &old.id).unwrap();
+        recovery::discard(&store, &old.id).unwrap();
         fx.collab.forget_recovery(&old.id, Some("a.ipynb")).await;
         assert_eq!(fx.state("recovery").await, None);
     }
@@ -4772,7 +4774,7 @@ mod recovery_tests {
         let copies = fx.copies();
         assert_eq!(copies.len(), 1);
         assert_eq!(copies[0].reason, "merge_conflict");
-        let (_, content) = recovery::read(&fx.store().dir, &copies[0].id)
+        let (_, content) = recovery::read(&fx.store(), &copies[0].id)
             .unwrap()
             .unwrap();
         assert_eq!(source_of_a(&content), "room wrote this");
@@ -4900,7 +4902,7 @@ mod recovery_tests {
         assert_eq!(copies.len(), 1);
         assert_eq!(copies[0].reason, "save_failed");
         assert!(copies[0].detail.contains("disk full"), "{:?}", copies[0]);
-        let (_, content) = recovery::read(&fx.store().dir, &copies[0].id)
+        let (_, content) = recovery::read(&fx.store(), &copies[0].id)
             .unwrap()
             .unwrap();
         assert_eq!(source_of_a(&content), "typed here");
@@ -5028,6 +5030,59 @@ mod recovery_tests {
             named.push(state.await.unwrap().map(|r| r["id"].clone()));
         }
         assert_eq!(named, [Some(json!(copy.id)), None]);
+    }
+
+    /// Two servers on one data dir, one rooted at a folder and one at a
+    /// project inside it (#945): the outer one lists, reads and discards
+    /// the inner one's copy at its path relative to the outer root, and
+    /// the inner one doesn't see a third root's copies.
+    #[test]
+    fn copies_are_seen_from_every_root_that_holds_the_file() {
+        let data = tempfile::tempdir().unwrap();
+        let outer_root = tempfile::tempdir().unwrap();
+        let inner_dir = outer_root.path().join("proj");
+        std::fs::create_dir(&inner_dir).unwrap();
+        let far = tempfile::tempdir().unwrap();
+        let collab = |root: PathBuf| {
+            Collab::new(FileIds::in_memory(), Some(root))
+                .with_recovery_dir(data.path().join("recovery"))
+        };
+        let (outer, inner, elsewhere) = (
+            collab(outer_root.path().to_path_buf()),
+            collab(inner_dir),
+            collab(far.path().to_path_buf()),
+        );
+        let nb = Notebook::from_value(serde_json::from_str(NB).unwrap()).unwrap();
+        let inner_store = inner.recovery.clone().unwrap();
+        let mine = recovery::write(
+            &inner_store,
+            "a.ipynb",
+            &nb,
+            Reason::MergeConflict,
+            "cell a",
+            &["a".to_string()],
+        )
+        .unwrap()
+        .0;
+        let far_store = elsewhere.recovery.clone().unwrap();
+        recovery::write(&far_store, "a.ipynb", &nb, Reason::SaveFailed, "", &[]).unwrap();
+        // The outer server sees the inner one's copy at proj/a.ipynb.
+        let outer_store = outer.recovery.clone().unwrap();
+        let listed = recovery::list(&outer_store, "proj/a.ipynb").unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, mine.id);
+        assert_eq!(listed[0].path, "proj/a.ipynb");
+        let (meta, _) = recovery::read(&outer_store, &mine.id).unwrap().unwrap();
+        assert_eq!(meta.path, "proj/a.ipynb");
+        // The inner one sees it at its own path, not the far root's
+        // copy of the same path.
+        let at_inner = recovery::list(&inner_store, "a.ipynb").unwrap();
+        assert_eq!(at_inner.len(), 1);
+        assert_eq!(at_inner[0].id, mine.id);
+        // Discarding from the outer root removes it everywhere.
+        assert!(recovery::discard(&outer_store, &mine.id).unwrap());
+        assert!(recovery::read(&inner_store, &mine.id).unwrap().is_none());
+        assert_eq!(recovery::list(&inner_store, "a.ipynb").unwrap(), []);
     }
 
     /// A recovery dir that can't be made leaves the server without one, so
