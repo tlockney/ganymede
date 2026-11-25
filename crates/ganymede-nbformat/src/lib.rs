@@ -25,6 +25,7 @@
 mod ansi;
 mod atomic;
 mod export;
+mod hash;
 mod highlight;
 mod html;
 mod multiline;
@@ -41,6 +42,7 @@ pub use export::{
     fenced, overwrite_returns, replace_attachment_refs, to_markdown, to_script, url_path, Export,
     Resource, ResourceData, BASE64_LENIENT, FORMATS,
 };
+pub use hash::{murmur2, source_hash};
 pub use html::{to_html, CodeMode, HtmlOptions, HTML_GENERATOR_MARK};
 pub use multiline::{splitlines, MultilineString};
 pub use params::{params_env, record_params, PARAMS_ENV, PARAMS_MAX};

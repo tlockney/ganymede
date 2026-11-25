@@ -193,7 +193,7 @@ pub(crate) struct BatchEnd {
 /// The hash a request gives a cell's source: MurmurHash2, seed 0, as a
 /// decimal string.
 fn source_hash(source: &str) -> String {
-    ganymede_documents::murmur2(source.as_bytes(), 0).to_string()
+    ganymede_nbformat::source_hash(source)
 }
 
 /// A queued cell: its id, and the hash its source must still have when
