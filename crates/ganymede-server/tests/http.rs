@@ -10574,6 +10574,14 @@ async fn collaboration_rooms_needs_the_same_auth_as_the_other_routes() {
     assert_eq!(s, StatusCode::METHOD_NOT_ALLOWED);
 }
 
+/// The part of recovery dir `recovery` that a server on `root` uses.
+fn recovery_of(recovery: &std::path::Path, root: &std::path::Path) -> std::path::PathBuf {
+    use sha2::Digest;
+    let root = root.canonicalize().unwrap();
+    let key = sha2::Sha256::digest(root.as_os_str().as_encoded_bytes());
+    recovery.join(hex::encode(key))
+}
+
 /// A recovery copy `id` of `path` written to `dir` as the server does.
 fn recovery_copy(dir: &std::path::Path, id: &str, path: &str, reason: &str, source: &str) {
     std::fs::create_dir_all(dir).unwrap();
@@ -10581,7 +10589,7 @@ fn recovery_copy(dir: &std::path::Path, id: &str, path: &str, reason: &str, sour
         "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
     std::fs::write(dir.join(format!("{id}.ipynb")), nb.to_string()).unwrap();
     let meta = json!({"path": path, "at": "2026-11-25T10:00:00Z", "reason": reason,
-        "detail": "cell a", "cells": ["a"], "notebook": format!("{id}.ipynb")});
+        "file": "/srv/a.ipynb", "detail": "cell a", "cells": ["a"], "notebook": format!("{id}.ipynb")});
     std::fs::write(dir.join(format!("{id}.json")), meta.to_string()).unwrap();
 }
 
@@ -10606,7 +10614,8 @@ fn recovery_app(root: &std::path::Path, recovery: &std::path::Path) -> axum::Rou
 async fn collaboration_recovery_lists_returns_and_discards_copies() {
     let dir = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
-    let rec = data.path().join("recovery");
+    let all = data.path().join("recovery");
+    let rec = recovery_of(&all, dir.path());
     recovery_copy(&rec, OLD_COPY, "a.ipynb", "save_failed", "old");
     recovery_copy(&rec, NEW_COPY, "a.ipynb", "merge_conflict", "new");
     recovery_copy(
@@ -10616,7 +10625,7 @@ async fn collaboration_recovery_lists_returns_and_discards_copies() {
         "file_gone",
         "b",
     );
-    let app = recovery_app(dir.path(), &rec);
+    let app = recovery_app(dir.path(), &all);
 
     let (s, v) = call(
         &app,
@@ -10636,6 +10645,7 @@ async fn collaboration_recovery_lists_returns_and_discards_copies() {
     assert_eq!(ids, [NEW_COPY, OLD_COPY], "newest first, only this path's");
     assert_eq!(v["copies"][0]["reason"], "merge_conflict");
     assert!(v["copies"][0].get("content").is_none(), "metadata only");
+    assert!(v["copies"][0].get("file").is_none(), "no server path");
     let (s, _) = call(
         &app,
         "GET",
@@ -10656,6 +10666,7 @@ async fn collaboration_recovery_lists_returns_and_discards_copies() {
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v["path"], "a.ipynb");
+    assert!(v.get("file").is_none(), "no server path");
     assert_eq!(v["content"]["cells"][0]["source"], "new");
 
     // Ids that are not the server's are refused before any file is named.
@@ -10737,9 +10748,10 @@ async fn collaboration_recovery_lists_returns_and_discards_copies() {
 async fn collaboration_recovery_needs_the_same_auth_as_contents() {
     let dir = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
-    let rec = data.path().join("recovery");
+    let all = data.path().join("recovery");
+    let rec = recovery_of(&all, dir.path());
     recovery_copy(&rec, NEW_COPY, "a.ipynb", "save_failed", "new");
-    let app = recovery_app(dir.path(), &rec);
+    let app = recovery_app(dir.path(), &all);
     let (contents, _) = call(&app, "GET", "/api/contents", None, None).await;
     assert_eq!(contents, StatusCode::FORBIDDEN);
     for (method, uri) in [
@@ -10790,10 +10802,11 @@ async fn collaboration_room_names_its_recovery_copy_until_it_is_discarded() {
     )
     .unwrap();
     let data = tempfile::tempdir().unwrap();
-    let rec = data.path().join("recovery");
+    let all = data.path().join("recovery");
+    let rec = recovery_of(&all, dir.path());
     recovery_copy(&rec, OLD_COPY, "a.ipynb", "save_failed", "old");
     recovery_copy(&rec, NEW_COPY, "a.ipynb", "merge_conflict", "new");
-    let app = recovery_app(dir.path(), &rec);
+    let app = recovery_app(dir.path(), &all);
     let (s, v) = call(
         &app,
         "PUT",
@@ -10869,28 +10882,45 @@ async fn collaboration_room_names_its_recovery_copy_until_it_is_discarded() {
         (Some("merge_conflict"), &json!(["a"]))
     );
 
-    // Discarding the older copy leaves the name; the newer clears it.
-    let (s, _) = call(
-        &app,
-        "DELETE",
-        &format!("/api/collaboration/recovery/{OLD_COPY}"),
-        None,
-        Some(TOKEN),
-    )
-    .await;
-    assert_eq!(s, StatusCode::NO_CONTENT);
-    let (s, _) = call(
-        &app,
-        "DELETE",
-        &format!("/api/collaboration/recovery/{NEW_COPY}"),
-        None,
-        Some(TOKEN),
-    )
-    .await;
-    assert_eq!(s, StatusCode::NO_CONTENT);
-    while recovery_id(&doc).is_some() {
-        next(&mut ws, &doc).await;
+    // Discarding the newest names the one before it; discarding that
+    // leaves none to name.
+    for (copy, left) in [(NEW_COPY, Some(OLD_COPY)), (OLD_COPY, None)] {
+        let (s, _) = call(
+            &app,
+            "DELETE",
+            &format!("/api/collaboration/recovery/{copy}"),
+            None,
+            Some(TOKEN),
+        )
+        .await;
+        assert_eq!(s, StatusCode::NO_CONTENT);
+        while recovery_id(&doc).as_deref() == Some(copy) {
+            next(&mut ws, &doc).await;
+        }
+        assert_eq!(recovery_id(&doc).as_deref(), left);
     }
+}
+
+/// Servers on two roots share a recovery dir and not their copies, the
+/// same relative path included (#945).
+#[tokio::test]
+async fn collaboration_recovery_is_per_root() {
+    let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let data = tempfile::tempdir().unwrap();
+    let rec = recovery_of(data.path(), one.path());
+    recovery_copy(&rec, NEW_COPY, "a.ipynb", "save_failed", "new");
+    let uri = format!("/api/collaboration/recovery/{NEW_COPY}");
+    let other = recovery_app(two.path(), data.path());
+    let list = "/api/collaboration/recovery?path=a.ipynb";
+    let (s, v) = call(&other, "GET", list, None, Some(TOKEN)).await;
+    assert_eq!((s, &v["copies"]), (StatusCode::OK, &json!([])));
+    for method in ["GET", "DELETE"] {
+        let (s, _) = call(&other, method, &uri, None, Some(TOKEN)).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{method}");
+    }
+    let mine = recovery_app(one.path(), data.path());
+    let (s, v) = call(&mine, "GET", &uri, None, Some(TOKEN)).await;
+    assert_eq!((s, v["path"].as_str()), (StatusCode::OK, Some("a.ipynb")));
 }
 
 // ----- tailnet identity (#816) ------------------------------------------------

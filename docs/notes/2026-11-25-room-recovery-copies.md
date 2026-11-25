@@ -14,13 +14,23 @@ What changed:
   temporary file and a rename, notebook first. The id is 16 hex digits of
   microseconds, `-`, 8 random hex digits, so it sorts by time. `valid_id`
   accepts only that shape and every function takes an id through it, so an
-  id is never a path. At most 20 copies of a path and 200 MB in all; a
+  id is never a path. At most 20 copies of a path and 200 MB in a root's dir; a
   write over a limit deletes the oldest first and logs each, never the one
   just written. `list`, `read`, `discard`.
+- Each root has its own dir in the recovery dir, the hex SHA-256 of its
+  canonical path (`recovery::Store`), and list, read, discard, prune and
+  the look when a room opens use only that: every server of a person
+  shares the data dir, and `path` is relative to a root, so one project's
+  copies would otherwise be offered in another. The meta also has the
+  file's absolute path (`file`), which the routes leave out.
+- Ids strictly increase within a process: a clock that stands still or
+  goes back gives the next microsecond.
 - `Collab::with_recovery_dir`; `serve.rs` sets it to `recovery` under
   `lab::data_dir()` (what `ganymede info` prints as `data_dir`: persistent,
   and not beside the notebook) whenever there is a data dir, embedding apps
-  included. Without one (tests, no data dir) rooms behave as before.
+  included. Without one (tests, no data dir), or when the dir can't be
+  made (a warning is logged), rooms behave as before. Only `recovery` is
+  made at start; a root's dir is made by its first copy.
 - `run_room`: the three ways an empty room closes holding edits (file
   gone, saves keep failing, read-only with edits) write a copy first
   (`kept_before_closing`). If that fails the error is logged and the room
@@ -39,11 +49,13 @@ What changed:
   the change to clients like any state change. A reload that leaves the
   room clean sets `saved`. A room opening on a path with copies names the
   newest. `saving` is not set: the save is one awaited call and clients
-  would see it for an instant.
+  would see it for an instant; the app shows "Saving" itself (ui#808).
+  A read-only room with edits says `failed`, "another server owns the file".
 - Three routes on the `/api/collaboration` router, same auth layer:
   `GET /recovery?path=`, `GET /recovery/{id}`, `DELETE /recovery/{id}`. A
-  discard sends every open notebook room a command that clears
-  `state.recovery` if it names that id. No restore route: the client takes
+  discard sends every open notebook room a command that, if
+  `state.recovery` names that id, names the next newest copy of the path,
+  or none. So does each copy that `prune` deletes. No restore route: the client takes
   `content` and writes it through the contents API or the room.
 - collab.rs now uses `tokio::time::Instant`, so a test can pause the
   clock; it is the same clock outside tests.
@@ -52,7 +64,8 @@ Network surface, justified: the apps need to show **Save needs attention**
 with copy and restore, and a copy is files on the server's disk, which a
 client on another machine can't reach. List and read are `GET`s that expose
 notebook text the caller could already read through the contents API or the
-room; discard deletes only files the server wrote in its own recovery dir.
+room, since a server sees only its own root's copies; discard deletes only
+files in that root's dir.
 The id check is the only thing between a request and a file name, so it is
 exact and tested with `/`, `..`, `%2F` and other characters.
 
@@ -62,12 +75,22 @@ Decisions the brief left open (conservative choice each time):
   file id is already dropped, and keeping a room that would save a deleted
   file back is worse. It logs an error. Every other close waits for a copy.
 - A merge conflict whose copy can't be written has already merged. The
-  room sets `save` to `failed` with an error saying the copy was not kept,
-  and logs at error level; the edits are not recoverable.
+  room holds its notebook from before (`Disk::lost`, at most 20), logs an
+  error and keeps `save` at `failed` through later merges and saves. It
+  tries again at each save and before closing, and stays open until the
+  copy is written. A client's explicit save that succeeds ends it too:
+  that is read as the person acting.
+- A room that isn't a notebook can't be copied. It closes after
+  `GIVE_UP_AFTER` failures with an error in the log, and when the file
+  replaces it, `save` is `failed` with the reason until a client saves.
+- `Cmd::Removed` is also how a deletion the room's own look finds
+  (`file_gone`) ends, so that closes without a copy too, like a delete
+  through the contents API. Only the cleanup's own check keeps the room.
 - Copies are filed under the path they were made for. A rename leaves
   earlier copies under the old path; the discard route and `state.recovery`
   clearing work by id, so they still work.
-- Shutdown (`flush_all`) writes no copy for a failed final save.
+- Shutdown (`flush_all`) writes a copy of a room still dirty after its
+  last save, `read_only` or `save_failed`, and logs an error if it can't.
 
 Tests (`recovery_tests` in collab.rs use paused time and a stand-in
 contents that fails saves; the room's `Instant` is tokio's):
@@ -87,14 +110,33 @@ contents that fails saves; the room's `Instant` is tokio's):
 - `save_state_follows_the_saves_and_stays_out_of_the_file`: `failed` with
   `save_error`, then `saved` with no `save_error`; none of the state keys
   in the `.ipynb`.
-- `opening_a_room_names_the_newest_copy_until_it_is_discarded`.
-- recovery.rs: id shape, a copy's round trip, 21 copies leave 20, the size
-  bound.
+- `opening_a_room_names_the_newest_copy_until_it_is_discarded`: then the
+  next newest, then none.
+- `edits_lost_without_a_copy_stay_failed_until_they_have_one`,
+  `a_clients_own_save_clears_edits_lost_without_a_copy`,
+  `a_save_that_loses_edits_does_not_clear_them`,
+  `a_room_with_lost_edits_stays_open_until_they_have_a_copy`,
+  `a_reload_that_leaves_the_room_clean_says_saved`.
+- `a_replaced_room_that_is_no_notebook_says_so`,
+  `a_room_that_is_no_notebook_still_gives_up`.
+- `stopping_keeps_a_copy_of_edits_that_cannot_be_saved`,
+  `stopping_keeps_a_copy_of_a_read_only_rooms_edits`.
+- `a_read_only_room_keeps_a_copy_before_closing`,
+  `a_cleanup_that_finds_the_file_gone_keeps_a_copy`,
+  `closing_again_keeps_no_second_copy_of_the_same_edits`.
+- `a_room_stops_naming_a_copy_that_is_pruned`,
+  `servers_on_two_roots_offer_only_their_own_copies`,
+  `a_recovery_dir_that_cannot_be_made_is_done_without`.
+- recovery.rs: id shape, `ids_strictly_increase`, a copy's round trip,
+  `roots_do_not_see_each_others_copies`, 21 copies leave 20, the size
+  bound (measured from the copies, whose sizes differ with their times).
+- `crates/ganymede-cli/tests/recovery.rs`: `ganymede serve` offers the
+  copies in its data dir.
 - tests/http.rs: `collaboration_recovery_lists_returns_and_discards_copies`
   (list, get, delete, ids with `/`, `..`, `%2F`, other characters are 400,
   unknown 404), `collaboration_recovery_needs_the_same_auth_as_contents`
   (no or wrong token refused as `/api/contents` is, nothing deleted; 404
   without a recovery dir), and
   `collaboration_room_names_its_recovery_copy_until_it_is_discarded` (a
-  websocket client sees `state.recovery` on open, and the discard removes
-  it).
+  websocket client sees `state.recovery` on open, and each discard moves it
+  on), `collaboration_recovery_is_per_root`.

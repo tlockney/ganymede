@@ -29,8 +29,9 @@
 //! cell, and the room's version of it is kept in a recovery copy (#945).
 //! A room with no clients is saved and dropped after a minute, and never
 //! while it holds edits the file doesn't have, unless a recovery copy of
-//! them is on disk (`recovery.rs`). A delete through the contents
-//! API closes the rooms on the deleted file.
+//! them is on disk (`recovery.rs`) or they are not a notebook, which no
+//! copy can hold. A delete through the contents API closes the rooms on
+//! the deleted file.
 //!
 //! On one machine, a room owns its file while it is open: it holds a lock
 //! in the runtime dir (see `room_lock.rs`). A room opened on a file
@@ -152,7 +153,7 @@ pub struct Collab {
     /// Where a room keeps a copy of edits it would otherwise lose
     /// (`recovery.rs`); `None` in tests and embedding apps that set
     /// none, where such edits are only logged.
-    recovery: Option<PathBuf>,
+    recovery: Option<recovery::Store>,
     /// Request ids the execute endpoint has queued.
     pub(crate) requests: crate::execute::Requests,
     /// Stamps of files for host grants, and the saves in flight
@@ -197,11 +198,19 @@ impl Collab {
         self
     }
 
-    /// Rooms keep a copy of the edits they would lose in `dir` (see
-    /// `recovery.rs`), and never retire holding edits they couldn't
-    /// keep a copy of. Without this they are only logged.
+    /// Rooms keep a copy of the edits they would lose in this root's part
+    /// of `dir` (see `recovery.rs`), and never retire holding edits they
+    /// couldn't keep a copy of. Without this they are only logged, and so
+    /// they are, after a warning, where `dir` can't be made: rooms would
+    /// wait forever for a copy.
     pub fn with_recovery_dir(mut self, dir: PathBuf) -> Self {
-        self.recovery = Some(dir);
+        match std::fs::create_dir_all(&dir) {
+            Ok(()) => self.recovery = Some(recovery::Store::new(&dir, self.root.as_deref())),
+            Err(e) => tracing::warn!(
+                dir = %dir.display(),
+                "cannot make the recovery dir; running without recovery copies: {e}"
+            ),
+        }
         self
     }
 
@@ -293,8 +302,24 @@ impl Collab {
         rooms
     }
 
-    /// Open rooms stop naming recovery copy `id` in `state.recovery`.
-    fn forget_recovery(&self, id: &str) {
+    /// Recovery copy `id`, of notebook `path`, is deleted: open rooms that
+    /// name it in `state.recovery` name the newest copy of `path` that is
+    /// left, or none. With no `path` (its meta couldn't be read) they name
+    /// none.
+    async fn forget_recovery(&self, id: &str, path: Option<&str>) {
+        let left = match (&self.recovery, path) {
+            (Some(store), Some(path)) => {
+                let (dir, p) = (store.dir.clone(), path.to_string());
+                match blocking(move || recovery::list(&dir, &p)).await {
+                    Ok(copies) => copies.first().map(recovery::Meta::summary),
+                    Err(e) => {
+                        tracing::warn!(id, path, "cannot list the recovery copies left: {e}");
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
         let rooms: Vec<mpsc::UnboundedSender<Cmd>> = self
             .rooms
             .lock()
@@ -304,13 +329,13 @@ impl Collab {
             .map(|(_, tx)| tx.clone())
             .collect();
         for tx in rooms {
-            let id = id.to_string();
+            let (id, left) = (id.to_string(), left.clone());
             let cmd = Cmd::With(Box::new(move |room: &mut Room| {
                 let names_it = room
                     .state_value("recovery")
                     .is_some_and(|r| r["id"] == id.as_str());
                 if names_it {
-                    room.set_recovery(None)
+                    room.set_recovery(left.as_ref())
                 } else {
                     Default::default()
                 }
@@ -1155,12 +1180,14 @@ pub(crate) struct RecoveryQuery {
     path: Option<String>,
 }
 
-/// The recovery dir, or 404: a server without one keeps no copies.
-fn recovery_dir(state: &AppState) -> Result<&std::path::Path, HttpError> {
+/// Where this server's recovery copies are, or 404: one without a
+/// recovery dir keeps none.
+fn recovery_dir(state: &AppState) -> Result<PathBuf, HttpError> {
     state
         .collab
         .recovery
-        .as_deref()
+        .as_ref()
+        .map(|store| store.dir.clone())
         .ok_or_else(|| HttpError(404, "this server keeps no recovery copies".into()))
 }
 
@@ -1183,7 +1210,7 @@ pub(crate) async fn recovery_list(
     State(state): State<AppState>,
     Query(q): Query<RecoveryQuery>,
 ) -> Result<Json<Value>, HttpError> {
-    let dir = recovery_dir(&state)?.to_path_buf();
+    let dir = recovery_dir(&state)?;
     let path = q
         .path
         .map(|p| normalize_api_path(&p))
@@ -1191,6 +1218,7 @@ pub(crate) async fn recovery_list(
     let copies = blocking(move || recovery::list(&dir, &path))
         .await
         .map_err(recovery_io)?;
+    let copies: Vec<Value> = copies.iter().map(recovery::Meta::public).collect();
     Ok(Json(json!({ "copies": copies })))
 }
 
@@ -1202,32 +1230,43 @@ pub(crate) async fn recovery_get(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, HttpError> {
     recovery_id(&id)?;
-    let dir = recovery_dir(&state)?.to_path_buf();
+    let dir = recovery_dir(&state)?;
     let found = blocking(move || recovery::read(&dir, &id))
         .await
         .map_err(recovery_io)?;
     let (meta, content) = found.ok_or_else(|| HttpError(404, "no such recovery copy".into()))?;
-    let mut body = serde_json::to_value(meta).expect("a meta serializes");
+    let mut body = meta.public();
     body["content"] = content;
     Ok(Json(body))
 }
 
 /// `DELETE /api/collaboration/recovery/{id}`: discard a copy. A room that
-/// names it in `state.recovery` stops naming it.
+/// names it in `state.recovery` names the next newest of that path, if
+/// any.
 pub(crate) async fn recovery_discard(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, HttpError> {
     recovery_id(&id)?;
-    let dir = recovery_dir(&state)?.to_path_buf();
+    let dir = recovery_dir(&state)?;
     let named = id.clone();
-    let existed = blocking(move || recovery::discard(&dir, &named))
-        .await
-        .map_err(recovery_io)?;
+    let (existed, path) = blocking(move || {
+        let path = match recovery::read_meta(&dir, &named) {
+            Ok(meta) => meta.map(|m| m.path),
+            Err(e) => {
+                // Discardable all the same; only its path isn't known.
+                tracing::warn!(id = %named, "unreadable recovery copy: {e}");
+                None
+            }
+        };
+        Ok((recovery::discard(&dir, &named)?, path))
+    })
+    .await
+    .map_err(recovery_io)?;
     if !existed {
         return Err(HttpError(404, "no such recovery copy".into()));
     }
-    state.collab.forget_recovery(&id);
+    state.collab.forget_recovery(&id, path.as_deref()).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1631,11 +1670,33 @@ struct Disk {
     /// someone trusts the file. Other outputs came from a run here or a
     /// signed file.
     untrusted: HashSet<String>,
-    /// Where the room keeps recovery copies, if anywhere.
-    recovery: Option<PathBuf>,
+    /// The server whose recovery dir the room keeps copies in, if it has
+    /// one.
+    recovery: Option<Arc<Collab>>,
     /// The last error of a failed save, until a save succeeds.
     save_error: Option<String>,
+    /// Edits the disk won over the room's that have no recovery copy yet,
+    /// oldest first. While there are any, clients are told that saving
+    /// failed, however the saves since went: until each has its copy, or a
+    /// client saves the room as it is now.
+    lost: Vec<Lost>,
 }
+
+/// Unsaved edits that a merge with the disk lost, and that could not be
+/// kept.
+struct Lost {
+    /// The room's notebook before the merge; `None` when it wasn't a
+    /// notebook, so there is nothing a copy could hold.
+    notebook: Option<Notebook>,
+    /// The conflicting parts, and the cells among them.
+    detail: String,
+    cells: Vec<String>,
+    /// What clients are told.
+    error: String,
+}
+
+/// How many [`Lost`] edits a room holds on to; the oldest go first.
+const MAX_LOST: usize = 20;
 
 impl Disk {
     /// Take in the outputs of the file as last read, when it was unsigned,
@@ -1733,6 +1794,7 @@ async fn load(contents: &dyn Contents, path: &str) -> Result<(Notebook, Disk), L
             untrusted: HashSet::new(),
             recovery: None,
             save_error: None,
+            lost: Vec::new(),
         },
     ))
 }
@@ -1858,11 +1920,11 @@ async fn run_room(
                 let mut room = Room::notebook_room(&nb, path);
                 room.saved(0, &disk.hash);
                 disk.track(None);
-                disk.recovery = collab.recovery.clone();
+                disk.recovery = collab.recovery.is_some().then(|| collab.clone());
                 // A copy kept before, by this run or an earlier one, stays
                 // on offer until it is restored or discarded.
-                if let Some(dir) = disk.recovery.clone() {
-                    let p = path.clone();
+                if let Some(store) = &collab.recovery {
+                    let (dir, p) = (store.dir.clone(), path.clone());
                     match blocking(move || recovery::list(&dir, &p)).await {
                         Ok(copies) => {
                             room.set_recovery(copies.first().map(recovery::Meta::summary).as_ref());
@@ -2006,11 +2068,12 @@ async fn run_room(
                         lock_retry = take_lock(&collab, &room_id, &d.path, &mut room, &mut lock);
                     }
                     Cmd::Removed(gone) => {
-                        let Some(d) = disk.as_ref() else { continue };
+                        let Some(d) = disk.as_mut() else { continue };
                         if !is_under(&d.path, &gone) { continue }
                         // The file id is gone, so the room can't stay: if
                         // the copy can't be kept, the failure is logged.
-                        if !kept_before_closing(&mut room, d, &clients, &mut recovered_at, recovery::Reason::FileGone).await {
+                        let kept = kept_before_closing(&mut room, d, &clients, &mut recovered_at, recovery::Reason::FileGone).await;
+                        if !kept || !keep_lost(&mut room, d, &clients).await {
                             tracing::error!(room = %room_id, path = %d.path, "closing the room without a recovery copy of its unsaved edits");
                         }
                         // As a reconnect would find: the file id is gone.
@@ -2059,6 +2122,19 @@ async fn run_room(
                             _ => SaveStatus::Skipped,
                         };
                         after_save(status, &mut last_edit, &mut save_failures);
+                        // The server is stopping: what the file didn't get
+                        // is lost with the room unless it has a copy.
+                        if let Some(d) = disk.as_mut() {
+                            let reason = if room.is_read_only() {
+                                recovery::Reason::ReadOnly
+                            } else {
+                                recovery::Reason::SaveFailed
+                            };
+                            let kept = kept_before_closing(&mut room, d, &clients, &mut recovered_at, reason).await;
+                            if !kept || !keep_lost(&mut room, d, &clients).await {
+                                tracing::error!(room = %room_id, path = %d.path, "stopping without a recovery copy of the room's unsaved edits");
+                            }
+                        }
                         let _ = done.send(());
                     }
                 }
@@ -2172,6 +2248,10 @@ async fn run_room(
                             empty_since = Some(Instant::now());
                             continue;
                         }
+                    }
+                    if !keep_lost(&mut room, d, &clients).await {
+                        empty_since = Some(Instant::now());
+                        continue;
                     }
                     if next.is_none() && retire(&collab, &room_id, &mut rx, &mut lock) { break }
                     empty_since = Some(Instant::now());
@@ -2378,22 +2458,43 @@ async fn save_room(
 ) -> SaveStatus {
     disk.save_error = None;
     let status = try_save(contents, room, disk, clients, force).await;
+    if !disk.lost.is_empty() {
+        if force && status == SaveStatus::Success {
+            // A person saved the room as it is, without those edits.
+            disk.lost.clear();
+        } else {
+            keep_lost(room, disk, clients).await;
+        }
+    }
     // What clients are told: the room's edits are in the file, or a save
     // of them failed and they are not.
-    let fx = match status {
+    match status {
         SaveStatus::Failed if room.is_dirty() => {
             let error = disk
                 .save_error
                 .get_or_insert_with(|| "the file kept changing".into())
                 .clone();
-            room.set_save_state("failed", Some(&error))
+            dispatch(clients, room.set_save_state("failed", Some(&error)).send);
         }
         // Saved, or failed only because the file won a cell of the client's.
-        SaveStatus::Success | SaveStatus::Failed => room.set_save_state("saved", None),
-        SaveStatus::Skipped => return status,
+        SaveStatus::Success | SaveStatus::Failed => say_saved(room, disk, clients),
+        SaveStatus::Skipped if room.is_read_only() && room.is_dirty() => {
+            let error = "another server owns the file";
+            dispatch(clients, room.set_save_state("failed", Some(error)).send);
+        }
+        SaveStatus::Skipped => {}
+    }
+    status
+}
+
+/// Tell clients that the file has the room's edits, unless edits the disk
+/// won have no copy ([`Disk::lost`]).
+fn say_saved(room: &mut Room, disk: &Disk, clients: &HashMap<ConnId, ClientTx>) {
+    let fx = match disk.lost.last() {
+        Some(lost) => room.set_save_state("failed", Some(&lost.error)),
+        None => room.set_save_state("saved", None),
     };
     dispatch(clients, fx.send);
-    status
 }
 
 /// [`save_room`] without telling clients how it went.
@@ -2532,20 +2633,28 @@ async fn keep_copy(
     detail: String,
     cells: Vec<String>,
 ) -> std::io::Result<Option<recovery::Meta>> {
-    let Some(dir) = disk.recovery.clone() else {
+    let Some(collab) = disk.recovery.clone() else {
+        return Ok(None);
+    };
+    let Some(store) = collab.recovery.clone() else {
         return Ok(None);
     };
     let path = disk.path.clone();
-    blocking(move || recovery::write(&dir, &path, &notebook, reason, &detail, &cells))
-        .await
-        .map(Some)
+    let (meta, pruned) =
+        blocking(move || recovery::write(&store, &path, &notebook, reason, &detail, &cells))
+            .await?;
+    for gone in pruned {
+        collab.forget_recovery(&gone.id, Some(&gone.path)).await;
+    }
+    Ok(Some(meta))
 }
 
 /// Before the room closes with edits the file doesn't have: keep a copy
 /// of them and tell the room's clients, which are the ones about to find
 /// it gone. False when the copy could not be made, and the room should
-/// stay. True without a recovery dir, as before, and for a room whose
-/// edits already have a copy.
+/// stay. True without a recovery dir, as before, for a room whose edits
+/// already have a copy, and for one whose content is not a notebook: no
+/// copy of it is possible.
 async fn kept_before_closing(
     room: &mut Room,
     disk: &Disk,
@@ -2560,7 +2669,7 @@ async fn kept_before_closing(
         Some(Ok(nb)) => nb,
         Some(Err(e)) => {
             tracing::error!(path = %disk.path, "cannot keep a recovery copy: the room's content is not a notebook: {e}");
-            return disk.recovery.is_none();
+            return true;
         }
         None => return true,
     };
@@ -2587,39 +2696,92 @@ async fn kept_before_closing(
 
 /// The disk won `conflicts` over the room's edits: keep `ours`, the room's
 /// notebook from before the merge, as a recovery copy and tell clients.
-/// A copy that can't be kept is an error in the log and a failed save to
-/// clients: the edits are gone from the room.
+/// False when it can't be kept: the edits are gone from the room, so the
+/// log has an error, and [`Disk::lost`] tells clients that saving failed
+/// and tries again.
 async fn keep_conflicting(
     room: &mut Room,
-    disk: &Disk,
+    disk: &mut Disk,
     clients: &HashMap<ConnId, ClientTx>,
-    ours: Option<Notebook>,
+    ours: Option<Result<Notebook, String>>,
     conflicts: &[String],
-) {
-    let Some(ours) = ours else { return };
-    // "cell <id>" names a cell; the rest ("order", "metadata", "all") a
-    // part of the notebook.
-    let cells = conflicts
-        .iter()
-        .filter_map(|c| c.strip_prefix("cell "))
-        .map(str::to_owned)
-        .collect();
+) -> bool {
     let detail = conflicts.join(", ");
-    match keep_copy(disk, ours, recovery::Reason::MergeConflict, detail, cells).await {
-        Ok(Some(meta)) => {
-            tracing::warn!(path = %disk.path, id = %meta.id, "kept the room's version of what the disk won");
-            dispatch(clients, room.set_recovery(Some(&meta.summary())).send);
-        }
-        Ok(None) => {}
-        Err(e) => {
-            tracing::error!(path = %disk.path, "cannot keep a recovery copy of the room's edits the disk won: {e}");
-            let error = format!(
-                "the disk won {} and its copy of the room's edits could not be kept: {e}",
-                conflicts.join(", ")
+    let mut lost = Lost {
+        notebook: None,
+        // "cell <id>" names a cell; the rest ("order", "metadata", "all") a
+        // part of the notebook.
+        cells: conflicts
+            .iter()
+            .filter_map(|c| c.strip_prefix("cell "))
+            .map(str::to_owned)
+            .collect(),
+        error: format!("the disk won {detail}, and the room's edits have no recovery copy yet"),
+        detail,
+    };
+    match ours {
+        None => return true,
+        Some(Ok(nb)) if disk.recovery.is_some() => lost.notebook = Some(nb),
+        // With no recovery dir, only logged, as by the caller.
+        Some(Ok(_)) => return true,
+        Some(Err(e)) => {
+            tracing::error!(path = %disk.path, "the disk won over the room's edits, which are not a notebook, so no copy of them can be kept: {e}");
+            lost.error = format!(
+                "the file replaced the room's edits, which could not be kept: they are not a notebook: {e}"
             );
-            dispatch(clients, room.set_save_state("failed", Some(&error)).send);
         }
     }
+    if disk.lost.len() >= MAX_LOST {
+        let oldest = disk.lost.remove(0);
+        tracing::error!(path = %disk.path, "too many edits without a recovery copy; dropping those to {}", oldest.detail);
+    }
+    disk.lost.push(lost);
+    keep_lost(room, disk, clients).await;
+    let kept = disk.lost.is_empty();
+    if !kept {
+        say_saved(room, disk, clients);
+    }
+    kept
+}
+
+/// Try to make the copies that [`Disk::lost`] edits still lack. False while
+/// one that could have a copy doesn't; a room in that state stays open.
+async fn keep_lost(
+    room: &mut Room,
+    disk: &mut Disk,
+    clients: &HashMap<ConnId, ClientTx>,
+) -> bool {
+    let mut left = Vec::new();
+    let mut kept_one = false;
+    for mut lost in std::mem::take(&mut disk.lost) {
+        let Some(notebook) = lost.notebook.clone() else {
+            left.push(lost);
+            continue;
+        };
+        let (reason, cells) = (recovery::Reason::MergeConflict, lost.cells.clone());
+        match keep_copy(disk, notebook, reason, lost.detail.clone(), cells).await {
+            Ok(Some(meta)) => {
+                tracing::warn!(path = %disk.path, id = %meta.id, "kept the room's version of what the disk won");
+                dispatch(clients, room.set_recovery(Some(&meta.summary())).send);
+                kept_one = true;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::error!(path = %disk.path, "cannot keep a recovery copy of the room's edits the disk won: {e}");
+                lost.error = format!(
+                    "the disk won {} and its copy of the room's edits could not be kept: {e}",
+                    lost.detail
+                );
+                left.push(lost);
+            }
+        }
+    }
+    disk.lost = left;
+    // Nothing else to say: the file has the rest of the room.
+    if kept_one && !room.is_dirty() {
+        say_saved(room, disk, clients);
+    }
+    disk.lost.iter().all(|l| l.notebook.is_none())
 }
 
 /// What [`reload`] did.
@@ -2662,9 +2824,9 @@ async fn reload(
             disk.hash = fresh.hash;
             // The room's edits as they are before the disk takes the cells
             // they conflict over.
-            let ours = match (&disk.recovery, room.is_dirty()) {
-                (Some(_), true) => room.notebook().and_then(Result::ok),
-                _ => None,
+            let ours = match room.is_dirty() {
+                true => room.notebook().map(|nb| nb.map_err(|e| e.to_string())),
+                false => None,
             };
             let (fx, conflicts) = room.merge_disk(&disk.base, &nb, &disk.hash);
             // Another program wrote the file: what it brought is trusted
@@ -2682,12 +2844,11 @@ async fn reload(
                 );
             }
             dispatch(clients, fx.send);
-            if !conflicts.is_empty() {
-                keep_conflicting(room, disk, clients, ours, &conflicts).await;
-            }
-            if !room.is_dirty() {
+            let kept = conflicts.is_empty()
+                || keep_conflicting(room, disk, clients, ours, &conflicts).await;
+            if kept && !room.is_dirty() {
                 // The file's version is the room's now.
-                dispatch(clients, room.set_save_state("saved", None).send);
+                say_saved(room, disk, clients);
             }
             Reloaded {
                 needs_save: room.is_dirty(),
@@ -4062,6 +4223,9 @@ mod recovery_tests {
     struct FailSaves {
         inner: FsContents,
         fail: Arc<AtomicBool>,
+        /// Once a save has failed, the file is gone.
+        vanish: Arc<AtomicBool>,
+        vanished: AtomicBool,
     }
 
     #[async_trait::async_trait]
@@ -4071,6 +4235,9 @@ mod recovery_tests {
             path: &str,
             options: GetOptions,
         ) -> ganymede_contents::Result<ganymede_contents::ContentsModel> {
+            if self.vanished.load(Ordering::SeqCst) {
+                return Err(ganymede_contents::Error::NotFound(path.into()));
+            }
             self.inner.get(path, options).await
         }
         async fn save(
@@ -4079,6 +4246,8 @@ mod recovery_tests {
             request: SaveRequest,
         ) -> ganymede_contents::Result<ganymede_contents::ContentsModel> {
             if self.fail.load(Ordering::SeqCst) {
+                self.vanished
+                    .store(self.vanish.load(Ordering::SeqCst), Ordering::SeqCst);
                 return Err(std::io::Error::other("disk full").into());
             }
             self.inner.save(path, request).await
@@ -4135,6 +4304,7 @@ mod recovery_tests {
         collab: Arc<Collab>,
         contents: Arc<dyn Contents>,
         fail: Arc<AtomicBool>,
+        vanish: Arc<AtomicBool>,
         room_id: String,
     }
 
@@ -4143,29 +4313,39 @@ mod recovery_tests {
             self.data.path().join("recovery")
         }
 
-        fn copies(&self) -> Vec<recovery::Meta> {
-            recovery::list(&self.recovery_dir(), "a.ipynb").unwrap()
+        fn store(&self) -> recovery::Store {
+            recovery::Store::new(&self.recovery_dir(), None)
         }
 
-        /// A room with no recovery dir set unless `with_dir`; a recovery
-        /// dir is a file when `blocked`.
+        fn copies(&self) -> Vec<recovery::Meta> {
+            // None while a file is in the dir's place.
+            recovery::list(&self.store().dir, "a.ipynb").unwrap_or_default()
+        }
+
+        /// A room with a recovery dir. With `blocked`, a file takes the
+        /// dir's place once the server has it, so no copy can be written.
         async fn new(blocked: bool) -> Fixture {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join("a.ipynb"), NB).unwrap();
             let data = tempfile::tempdir().unwrap();
-            if blocked {
-                std::fs::write(data.path().join("recovery"), "not a directory").unwrap();
-            }
             let fail = Arc::new(AtomicBool::new(false));
+            let vanish = Arc::new(AtomicBool::new(false));
             let contents: Arc<dyn Contents> = Arc::new(FailSaves {
                 inner: FsContents::new(dir.path(), Default::default()).unwrap(),
                 fail: fail.clone(),
+                vanish: vanish.clone(),
+                vanished: AtomicBool::new(false),
             });
             let collab = Arc::new(
                 Collab::new(FileIds::in_memory(), None)
                     .with_recovery_dir(data.path().join("recovery"))
                     .with_cleanup_delay(Duration::from_secs(1)),
             );
+            if blocked {
+                let rec = data.path().join("recovery");
+                std::fs::remove_dir(&rec).unwrap();
+                std::fs::write(&rec, "not a directory").unwrap();
+            }
             let room_id = notebook_room_id(&collab, &contents, "a.ipynb")
                 .await
                 .unwrap();
@@ -4175,6 +4355,7 @@ mod recovery_tests {
                 collab,
                 contents,
                 fail,
+                vanish,
                 room_id,
             }
         }
@@ -4203,6 +4384,16 @@ mod recovery_tests {
             })
             .await
             .unwrap();
+        }
+
+        async fn until_state(&self, key: &'static str, want: Value) {
+            for _ in 0..30 {
+                if self.state(key).await.as_ref() == Some(&want) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            panic!("state.{key} never became {want}");
         }
 
         async fn state(&self, key: &'static str) -> Option<Value> {
@@ -4255,7 +4446,7 @@ mod recovery_tests {
         assert_eq!(copies.len(), 1);
         assert_eq!(copies[0].reason, "save_failed");
         assert!(copies[0].detail.contains("disk full"), "{:?}", copies[0]);
-        let (_, content) = recovery::read(&fx.recovery_dir(), &copies[0].id)
+        let (_, content) = recovery::read(&fx.store().dir, &copies[0].id)
             .unwrap()
             .unwrap();
         let nb = Notebook::from_value(content.clone()).expect("the copy is a notebook");
@@ -4280,7 +4471,7 @@ mod recovery_tests {
             .await;
         let copies = fx.copies();
         assert_eq!(copies[0].reason, "file_gone");
-        let (_, content) = recovery::read(&fx.recovery_dir(), &copies[0].id)
+        let (_, content) = recovery::read(&fx.store().dir, &copies[0].id)
             .unwrap()
             .unwrap();
         assert_eq!(source_of_a(&content), "typed here");
@@ -4319,7 +4510,6 @@ mod recovery_tests {
     #[tokio::test(start_paused = true)]
     async fn a_room_without_a_recovery_dir_still_gives_up() {
         let mut fx = Fixture::new(false).await;
-        let dir = fx.data.path().join("none");
         fx.collab = Arc::new(
             Collab::new(FileIds::in_memory(), None).with_cleanup_delay(Duration::from_secs(1)),
         );
@@ -4332,8 +4522,11 @@ mod recovery_tests {
         tx.send(Cmd::Leave(1)).unwrap();
         fx.until(2000, "the room retired", |fx| fx.collab.open_rooms() == 0)
             .await;
-        assert!(!dir.exists());
-        assert!(!fx.recovery_dir().exists());
+        // The fixture's server made the dir; nothing is in it.
+        assert_eq!(std::fs::read_dir(fx.recovery_dir()).unwrap().count(), 0);
+        assert!(std::fs::read_to_string(fx.dir.path().join("a.ipynb"))
+            .unwrap()
+            .contains("keep"));
     }
 
     /// The room and the disk both changed cell `a`: the disk wins it, and
@@ -4355,7 +4548,7 @@ mod recovery_tests {
         assert_eq!(copies[0].reason, "merge_conflict");
         assert_eq!(copies[0].cells, ["a"]);
         assert_eq!(copies[0].detail, "cell a");
-        let (_, content) = recovery::read(&fx.recovery_dir(), &copies[0].id)
+        let (_, content) = recovery::read(&fx.store().dir, &copies[0].id)
             .unwrap()
             .unwrap();
         assert_eq!(source_of_a(&content), "room wrote this");
@@ -4444,10 +4637,15 @@ mod recovery_tests {
     async fn opening_a_room_names_the_newest_copy_until_it_is_discarded() {
         let fx = Fixture::new(false).await;
         let nb = Notebook::from_value(serde_json::from_str(NB).unwrap()).unwrap();
-        let dir = fx.recovery_dir();
-        let old = recovery::write(&dir, "a.ipynb", &nb, Reason::SaveFailed, "x", &[]).unwrap();
-        let new = recovery::write(
-            &dir,
+        let store = fx.store();
+        let write = |path: &str, reason| {
+            recovery::write(&store, path, &nb, reason, "x", &[])
+                .unwrap()
+                .0
+        };
+        let old = write("a.ipynb", Reason::SaveFailed);
+        let (new, _) = recovery::write(
+            &store,
             "a.ipynb",
             &nb,
             Reason::MergeConflict,
@@ -4455,15 +4653,407 @@ mod recovery_tests {
             &["a".to_string()],
         )
         .unwrap();
-        recovery::write(&dir, "other.ipynb", &nb, Reason::FileGone, "", &[]).unwrap();
+        write("other.ipynb", Reason::FileGone);
         let named = fx.state("recovery").await.expect("state.recovery is set");
         assert_eq!(named["id"], new.id.as_str());
         assert_eq!(named["reason"], "merge_conflict");
         assert_eq!(named["cells"], json!(["a"]));
-        // Discarding another copy leaves it; discarding that one clears it.
-        fx.collab.forget_recovery(&old.id);
+        // Discarding the named one names the next newest of the path, and
+        // discarding another leaves that; with none left, none is named.
+        recovery::discard(&store.dir, &new.id).unwrap();
+        fx.collab.forget_recovery(&new.id, Some("a.ipynb")).await;
+        let named = fx.state("recovery").await.expect("the older copy");
+        assert_eq!(named["id"], old.id.as_str());
+        fx.collab.forget_recovery(&new.id, Some("a.ipynb")).await;
         assert!(fx.state("recovery").await.is_some());
-        fx.collab.forget_recovery(&new.id);
+        recovery::discard(&store.dir, &old.id).unwrap();
+        fx.collab.forget_recovery(&old.id, Some("a.ipynb")).await;
         assert_eq!(fx.state("recovery").await, None);
+    }
+
+    impl Fixture {
+        /// Edit the room on the server's side.
+        async fn edit(&self, f: impl FnOnce(&mut Room) + Send + 'static) {
+            with_notebook(&self.collab, &self.contents, &self.room_id, move |room| {
+                f(room);
+                let mut fx = ganymede_documents::Effects::default();
+                fx.changed = true;
+                ((), fx)
+            })
+            .await
+            .unwrap();
+        }
+
+        /// The notebook in a room and its file, with no task running them.
+        async fn bare(&self) -> (Room, Disk) {
+            let loaded = load(self.contents.as_ref(), "a.ipynb").await;
+            let (nb, mut disk) = loaded.unwrap_or_else(|e| panic!("{e}"));
+            let mut room = Room::notebook_room(&nb, "a.ipynb");
+            room.saved(0, &disk.hash);
+            disk.recovery = Some(self.collab.clone());
+            (room, disk)
+        }
+
+        async fn save(&self, room: &mut Room, disk: &mut Disk, force: bool) -> SaveStatus {
+            save_room(self.contents.as_ref(), room, disk, &HashMap::new(), force).await
+        }
+
+        async fn reload(&self, room: &mut Room, disk: &mut Disk) -> Reloaded {
+            reload(self.contents.as_ref(), room, disk, &HashMap::new()).await
+        }
+
+        fn write_file(&self, text: &str) {
+            std::fs::write(
+                self.dir.path().join("a.ipynb"),
+                NB.replace("keep", text),
+            )
+            .unwrap();
+        }
+
+        /// Let copies be written again.
+        fn unblock(&self) {
+            std::fs::remove_file(self.recovery_dir()).unwrap();
+        }
+    }
+
+    fn type_a(room: &mut Room, text: &'static str) {
+        room.edit(|txn, roots| {
+            assert!(crate::room_ops::set_source(txn, roots, "a", text, "me"));
+        });
+    }
+
+    /// Put something in the room that no notebook holds.
+    fn spoil(room: &mut Room) {
+        use ganymede_documents::yrs::Map;
+        room.edit(|txn, roots| roots.meta.remove(txn, "nbformat"));
+        assert!(room.notebook().unwrap().is_err() && room.is_dirty());
+    }
+
+    fn save_state(room: &Room) -> (Value, String) {
+        let error = room.state_value("save_error");
+        (
+            room.state_value("save").unwrap(),
+            error.map_or(String::new(), |e| e.as_str().unwrap().to_string()),
+        )
+    }
+
+    /// A conflict whose copy can't be written keeps `save` failed after the
+    /// merge and after good saves, until the copy is written.
+    #[tokio::test]
+    async fn edits_lost_without_a_copy_stay_failed_until_they_have_one() {
+        let fx = Fixture::new(true).await;
+        let (mut room, mut disk) = fx.bare().await;
+        type_a(&mut room, "room wrote this");
+        fx.write_file("disk wrote this");
+        assert!(fx.reload(&mut room, &mut disk).await.lost);
+        let failed = |room: &Room| {
+            let (save, error) = save_state(room);
+            assert_eq!(save, json!("failed"));
+            assert!(error.contains("cell a") && error.contains("not be kept"), "{error}");
+        };
+        failed(&room);
+        // A reload and a good save don't clear it.
+        fx.write_file("disk wrote more");
+        fx.reload(&mut room, &mut disk).await;
+        failed(&room);
+        type_a(&mut room, "a later edit");
+        assert_eq!(
+            fx.save(&mut room, &mut disk, false).await,
+            SaveStatus::Success
+        );
+        failed(&room);
+        // Nor may the room close, with or without other edits.
+        assert!(!keep_lost(&mut room, &mut disk, &HashMap::new()).await);
+        // Once a copy can be written, the next save writes it.
+        fx.unblock();
+        type_a(&mut room, "another edit");
+        assert_eq!(
+            fx.save(&mut room, &mut disk, false).await,
+            SaveStatus::Success
+        );
+        assert_eq!(save_state(&room), (json!("saved"), String::new()));
+        let copies = fx.copies();
+        assert_eq!(copies.len(), 1);
+        assert_eq!(copies[0].reason, "merge_conflict");
+        let (_, content) = recovery::read(&fx.store().dir, &copies[0].id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(source_of_a(&content), "room wrote this");
+        assert_eq!(
+            room.state_value("recovery").unwrap()["id"],
+            copies[0].id.as_str()
+        );
+    }
+
+    /// A person who saves the room as it is has seen the failure.
+    #[tokio::test]
+    async fn a_clients_own_save_clears_edits_lost_without_a_copy() {
+        let fx = Fixture::new(true).await;
+        let (mut room, mut disk) = fx.bare().await;
+        type_a(&mut room, "room wrote this");
+        fx.write_file("disk wrote this");
+        fx.reload(&mut room, &mut disk).await;
+        assert_eq!(save_state(&room).0, json!("failed"));
+        assert_eq!(
+            fx.save(&mut room, &mut disk, true).await,
+            SaveStatus::Success
+        );
+        assert_eq!(save_state(&room), (json!("saved"), String::new()));
+        assert!(keep_lost(&mut room, &mut disk, &HashMap::new()).await);
+    }
+
+    /// The save whose own merge lost the edits doesn't clear them.
+    #[tokio::test]
+    async fn a_save_that_loses_edits_does_not_clear_them() {
+        let fx = Fixture::new(true).await;
+        let (mut room, mut disk) = fx.bare().await;
+        type_a(&mut room, "room wrote this");
+        fx.write_file("disk wrote this");
+        assert_eq!(
+            fx.save(&mut room, &mut disk, true).await,
+            SaveStatus::Failed
+        );
+        assert_eq!(save_state(&room).0, json!("failed"));
+    }
+
+    /// Lost edits hold an empty room open until their copy is written.
+    #[tokio::test(start_paused = true)]
+    async fn a_room_with_lost_edits_stays_open_until_they_have_a_copy() {
+        let fx = Fixture::new(true).await;
+        let (tx, _rx) = fx.join(1).await;
+        fx.type_into_a("room wrote this").await;
+        fx.write_file("disk wrote this");
+        fx.until_state("save", json!("failed")).await;
+        tx.send(Cmd::Leave(1)).unwrap();
+        tokio::time::sleep(Duration::from_secs(120)).await;
+        assert_eq!(fx.collab.open_rooms(), 1);
+        fx.unblock();
+        fx.until(100, "the room retired", |fx| fx.collab.open_rooms() == 0)
+            .await;
+        assert_eq!(fx.copies()[0].reason, "merge_conflict");
+    }
+
+    /// The file takes on what the room couldn't save: the room is clean, so
+    /// its save state is `saved` again.
+    #[tokio::test]
+    async fn a_reload_that_leaves_the_room_clean_says_saved() {
+        let fx = Fixture::new(false).await;
+        let (mut room, mut disk) = fx.bare().await;
+        fx.fail.store(true, Ordering::SeqCst);
+        // Without the agent's name that `type_a` leaves in the metadata.
+        room.edit(|txn, roots| {
+            use ganymede_documents::{schema, yrs};
+            let a = schema::find_cell(txn, roots, "a").unwrap();
+            let Some(yrs::Out::YText(source)) = yrs::Map::get(&a, txn, "source") else {
+                panic!("no source")
+            };
+            schema::set_text(txn, &source, "same");
+        });
+        fx.save(&mut room, &mut disk, false).await;
+        let (save, error) = save_state(&room);
+        assert_eq!(save, json!("failed"));
+        assert!(error.contains("disk full"), "{error}");
+        fx.write_file("same");
+        assert!(!fx.reload(&mut room, &mut disk).await.lost);
+        assert!(!room.is_dirty());
+        assert_eq!(save_state(&room), (json!("saved"), String::new()));
+        assert!(fx.copies().is_empty());
+    }
+
+    /// The disk replaces a room that isn't a notebook: there is nothing to
+    /// keep, and clients are told so.
+    #[tokio::test]
+    async fn a_replaced_room_that_is_no_notebook_says_so() {
+        let fx = Fixture::new(false).await;
+        let (mut room, mut disk) = fx.bare().await;
+        spoil(&mut room);
+        fx.write_file("disk wrote this");
+        assert!(fx.reload(&mut room, &mut disk).await.lost);
+        assert!(room.notebook().unwrap().is_ok(), "the file's version");
+        let (save, error) = save_state(&room);
+        assert_eq!(save, json!("failed"));
+        assert!(error.contains("not a notebook"), "{error}");
+        assert!(fx.copies().is_empty());
+        // It holds no room open.
+        assert!(keep_lost(&mut room, &mut disk, &HashMap::new()).await);
+    }
+
+    /// No copy of a room that isn't a notebook is possible, so it closes
+    /// when its saves keep failing, as without recovery copies.
+    #[tokio::test(start_paused = true)]
+    async fn a_room_that_is_no_notebook_still_gives_up() {
+        let fx = Fixture::new(false).await;
+        let (tx, _rx) = fx.join(1).await;
+        fx.edit(spoil).await;
+        tx.send(Cmd::Leave(1)).unwrap();
+        fx.until(2000, "the room retired", |fx| fx.collab.open_rooms() == 0)
+            .await;
+        assert!(fx.copies().is_empty());
+    }
+
+    /// The server stops while a save fails: the edits get a copy.
+    #[tokio::test(start_paused = true)]
+    async fn stopping_keeps_a_copy_of_edits_that_cannot_be_saved() {
+        let fx = Fixture::new(false).await;
+        let (_tx, _rx) = fx.join(1).await;
+        fx.fail.store(true, Ordering::SeqCst);
+        fx.type_into_a("typed here").await;
+        fx.collab.flush_all().await;
+        let copies = fx.copies();
+        assert_eq!(copies.len(), 1);
+        assert_eq!(copies[0].reason, "save_failed");
+        assert!(copies[0].detail.contains("disk full"), "{:?}", copies[0]);
+        let (_, content) = recovery::read(&fx.store().dir, &copies[0].id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(source_of_a(&content), "typed here");
+    }
+
+    /// The server stops with edits in a read-only room, or with none.
+    #[tokio::test(start_paused = true)]
+    async fn stopping_keeps_a_copy_of_a_read_only_rooms_edits() {
+        let fx = Fixture::new(false).await;
+        let (_tx, _rx) = fx.join(1).await;
+        fx.collab.flush_all().await;
+        assert!(fx.copies().is_empty(), "nothing unsaved");
+        fx.edit(|room| {
+            type_a(room, "typed here");
+            room.set_read_only(true);
+        })
+        .await;
+        fx.collab.flush_all().await;
+        let copies = fx.copies();
+        assert_eq!(copies.len(), 1);
+        assert_eq!(copies[0].reason, "read_only");
+    }
+
+    /// An empty read-only room with edits closes, with a copy of them.
+    #[tokio::test(start_paused = true)]
+    async fn a_read_only_room_keeps_a_copy_before_closing() {
+        let fx = Fixture::new(false).await;
+        let (tx, _rx) = fx.join(1).await;
+        fx.edit(|room| {
+            type_a(room, "typed here");
+            room.set_read_only(true);
+        })
+        .await;
+        fx.until_state("save", json!("failed")).await;
+        assert_eq!(
+            fx.state("save_error").await,
+            Some(json!("another server owns the file"))
+        );
+        tx.send(Cmd::Leave(1)).unwrap();
+        fx.until(100, "the room retired", |fx| fx.collab.open_rooms() == 0)
+            .await;
+        let copies = fx.copies();
+        assert_eq!(copies.len(), 1);
+        assert_eq!(copies[0].reason, "read_only");
+    }
+
+    /// The cleanup finds the file gone before the room's own look does. It
+    /// doesn't drop the file's id, as the latter would.
+    #[tokio::test(start_paused = true)]
+    async fn a_cleanup_that_finds_the_file_gone_keeps_a_copy() {
+        let fx = Fixture::new(false).await;
+        let (tx, _rx) = fx.join(1).await;
+        fx.vanish.store(true, Ordering::SeqCst);
+        fx.fail.store(true, Ordering::SeqCst);
+        fx.type_into_a("typed here").await;
+        tx.send(Cmd::Leave(1)).unwrap();
+        fx.until(10, "the room retired", |fx| fx.collab.open_rooms() == 0)
+            .await;
+        let copies = fx.copies();
+        assert_eq!(copies.len(), 1);
+        assert_eq!(copies[0].reason, "file_gone");
+        let id = fx.room_id.rsplit(':').next().unwrap();
+        assert_eq!(fx.collab.path_of(id).await.as_deref(), Some("a.ipynb"));
+    }
+
+    /// A close that a client's arrival stopped makes no second copy of the
+    /// same content when it comes round again, and one of new edits.
+    #[tokio::test]
+    async fn closing_again_keeps_no_second_copy_of_the_same_edits() {
+        let fx = Fixture::new(false).await;
+        let (mut room, disk) = fx.bare().await;
+        let clients = HashMap::new();
+        let mut at = None;
+        for (text, copies) in [("one", 1), ("one", 1), ("two", 2), ("two", 2)] {
+            type_a(&mut room, text);
+            let reason = Reason::SaveFailed;
+            assert!(kept_before_closing(&mut room, &disk, &clients, &mut at, reason).await);
+            assert_eq!(fx.copies().len(), copies, "{text}");
+        }
+    }
+
+    /// A copy pushed out by the limits is no longer named by any room.
+    #[tokio::test(start_paused = true)]
+    async fn a_room_stops_naming_a_copy_that_is_pruned() {
+        let fx = Fixture::new(false).await;
+        let (room, disk) = fx.bare().await;
+        let nb = room.notebook().unwrap().unwrap();
+        let keep = || keep_copy(&disk, nb.clone(), Reason::SaveFailed, "".into(), vec![]);
+        let first = keep().await.unwrap().unwrap();
+        let named = fx.state("recovery").await.unwrap();
+        assert_eq!(named["id"], first.id.as_str());
+        let mut newest = first;
+        for _ in 0..recovery::MAX_PER_PATH {
+            newest = keep().await.unwrap().unwrap();
+        }
+        let named = fx.state("recovery").await.unwrap();
+        assert_eq!(named["id"], newest.id.as_str());
+    }
+
+    /// Two servers' rooms on the same relative path, sharing a recovery
+    /// dir: each is offered its own copies only.
+    #[tokio::test(start_paused = true)]
+    async fn servers_on_two_roots_offer_only_their_own_copies() {
+        let data = tempfile::tempdir().unwrap();
+        let nb = Notebook::from_value(serde_json::from_str(NB).unwrap()).unwrap();
+        let mut servers = Vec::new();
+        for _ in 0..2 {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("a.ipynb"), NB).unwrap();
+            let contents: Arc<dyn Contents> =
+                Arc::new(FsContents::new(dir.path(), Default::default()).unwrap());
+            let collab = Collab::new(FileIds::in_memory(), Some(dir.path().to_path_buf()))
+                .with_recovery_dir(data.path().join("recovery"));
+            servers.push((dir, contents, Arc::new(collab)));
+        }
+        let store = servers[0].2.recovery.clone().unwrap();
+        let (copy, _) =
+            recovery::write(&store, "a.ipynb", &nb, Reason::SaveFailed, "", &[]).unwrap();
+        let mut named = Vec::new();
+        for (_, contents, collab) in &servers {
+            let id = notebook_room_id(collab, contents, "a.ipynb").await.unwrap();
+            let state = with_notebook(collab, contents, &id, |room| {
+                (room.state_value("recovery"), Default::default())
+            });
+            named.push(state.await.unwrap().map(|r| r["id"].clone()));
+        }
+        assert_eq!(named, [Some(json!(copy.id)), None]);
+    }
+
+    /// A recovery dir that can't be made leaves the server without one, so
+    /// its rooms close as before instead of waiting for a copy.
+    #[tokio::test(start_paused = true)]
+    async fn a_recovery_dir_that_cannot_be_made_is_done_without() {
+        let mut fx = Fixture::new(false).await;
+        let blocked = fx.data.path().join("file");
+        std::fs::write(&blocked, "").unwrap();
+        fx.collab = Arc::new(
+            Collab::new(FileIds::in_memory(), None)
+                .with_recovery_dir(blocked.join("recovery"))
+                .with_cleanup_delay(Duration::from_secs(1)),
+        );
+        assert!(fx.collab.recovery.is_none());
+        fx.room_id = notebook_room_id(&fx.collab, &fx.contents, "a.ipynb")
+            .await
+            .unwrap();
+        fx.fail.store(true, Ordering::SeqCst);
+        let (tx, _rx) = fx.join(1).await;
+        fx.type_into_a("typed here").await;
+        tx.send(Cmd::Leave(1)).unwrap();
+        fx.until(2000, "the room retired", |fx| fx.collab.open_rooms() == 0)
+            .await;
     }
 }

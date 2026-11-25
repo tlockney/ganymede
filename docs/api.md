@@ -472,3 +472,7 @@ client offers it, and the legacy JSON framing otherwise. JSON bodies are
 parsed whatever their `Content-Type`, because `@jupyterlab/services`
 omits the header on some requests. [Security](security.md) has how
 requests are authenticated and which `Host` and `Origin` are accepted.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. This is about `/api/collaboration/recovery`.

@@ -688,7 +688,7 @@ impl Room {
     }
 
     /// Tell clients whether the room's edits reached the file: `state.save`
-    /// is `"saved"`, `"saving"` or `"failed"`, and `state.save_error` holds
+    /// is `"saved"` or `"failed"`, and `state.save_error` holds
     /// the last error while it is `"failed"` and is removed otherwise.
     /// Room-only: the save never writes it. Nothing is sent when it is
     /// already so.
