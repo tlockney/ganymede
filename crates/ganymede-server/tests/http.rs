@@ -10574,6 +10574,325 @@ async fn collaboration_rooms_needs_the_same_auth_as_the_other_routes() {
     assert_eq!(s, StatusCode::METHOD_NOT_ALLOWED);
 }
 
+/// A recovery copy `id` of `path` written to `dir` as the server does.
+fn recovery_copy(dir: &std::path::Path, id: &str, path: &str, reason: &str, source: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    let nb = json!({"cells": [{"cell_type": "markdown", "id": "a", "metadata": {}, "source": source}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.join(format!("{id}.ipynb")), nb.to_string()).unwrap();
+    let meta = json!({"path": path, "at": "2026-11-25T10:00:00Z", "reason": reason,
+        "detail": "cell a", "cells": ["a"], "notebook": format!("{id}.ipynb")});
+    std::fs::write(dir.join(format!("{id}.json")), meta.to_string()).unwrap();
+}
+
+const OLD_COPY: &str = "0000000000000001-aaaaaaaa";
+const NEW_COPY: &str = "0000000000000002-bbbbbbbb";
+
+fn recovery_app(root: &std::path::Path, recovery: &std::path::Path) -> axum::Router {
+    let mut st = state(root);
+    st.collab = Arc::new(
+        ganymede_server::collab::Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            root.canonicalize().ok(),
+        )
+        .with_recovery_dir(recovery.to_path_buf()),
+    );
+    build_router(st)
+}
+
+/// The recovery routes list, return and discard copies, and take only
+/// ids the server makes (#945).
+#[tokio::test]
+async fn collaboration_recovery_lists_returns_and_discards_copies() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let rec = data.path().join("recovery");
+    recovery_copy(&rec, OLD_COPY, "a.ipynb", "save_failed", "old");
+    recovery_copy(&rec, NEW_COPY, "a.ipynb", "merge_conflict", "new");
+    recovery_copy(
+        &rec,
+        "0000000000000003-cccccccc",
+        "b.ipynb",
+        "file_gone",
+        "b",
+    );
+    let app = recovery_app(dir.path(), &rec);
+
+    let (s, v) = call(
+        &app,
+        "GET",
+        "/api/collaboration/recovery?path=a.ipynb",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let ids: Vec<&str> = v["copies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, [NEW_COPY, OLD_COPY], "newest first, only this path's");
+    assert_eq!(v["copies"][0]["reason"], "merge_conflict");
+    assert!(v["copies"][0].get("content").is_none(), "metadata only");
+    let (s, _) = call(
+        &app,
+        "GET",
+        "/api/collaboration/recovery",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    let (s, v) = call(
+        &app,
+        "GET",
+        &format!("/api/collaboration/recovery/{NEW_COPY}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["path"], "a.ipynb");
+    assert_eq!(v["content"]["cells"][0]["source"], "new");
+
+    // Ids that are not the server's are refused before any file is named.
+    for bad in [
+        "..",
+        "..%2F..%2Fetc%2Fpasswd",
+        "a%2Fb",
+        "%2e%2e",
+        "ABCDEFABCDEFABCD-ABCDEFAB",
+        "0000000000000001-aaaaaaa.json",
+        "x%20y",
+    ] {
+        for method in ["GET", "DELETE"] {
+            let (s, _) = call(
+                &app,
+                method,
+                &format!("/api/collaboration/recovery/{bad}"),
+                None,
+                Some(TOKEN),
+            )
+            .await;
+            assert_eq!(s, StatusCode::BAD_REQUEST, "{method} {bad}");
+        }
+    }
+    let (s, _) = call(
+        &app,
+        "GET",
+        "/api/collaboration/recovery/a/b",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = call(
+        &app,
+        "GET",
+        "/api/collaboration/recovery/0000000000000009-dddddddd",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    let (s, _) = call(
+        &app,
+        "DELETE",
+        &format!("/api/collaboration/recovery/{OLD_COPY}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    assert!(!rec.join(format!("{OLD_COPY}.ipynb")).exists());
+    assert!(!rec.join(format!("{OLD_COPY}.json")).exists());
+    assert!(rec.join(format!("{NEW_COPY}.json")).exists());
+    let (s, _) = call(
+        &app,
+        "DELETE",
+        &format!("/api/collaboration/recovery/{OLD_COPY}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = call(
+        &app,
+        "GET",
+        &format!("/api/collaboration/recovery/{OLD_COPY}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+/// The recovery routes need what `/api/contents` needs, and a server
+/// with no recovery dir answers 404.
+#[tokio::test]
+async fn collaboration_recovery_needs_the_same_auth_as_contents() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let rec = data.path().join("recovery");
+    recovery_copy(&rec, NEW_COPY, "a.ipynb", "save_failed", "new");
+    let app = recovery_app(dir.path(), &rec);
+    let (contents, _) = call(&app, "GET", "/api/contents", None, None).await;
+    assert_eq!(contents, StatusCode::FORBIDDEN);
+    for (method, uri) in [
+        (
+            "GET",
+            "/api/collaboration/recovery?path=a.ipynb".to_string(),
+        ),
+        ("GET", format!("/api/collaboration/recovery/{NEW_COPY}")),
+        ("DELETE", format!("/api/collaboration/recovery/{NEW_COPY}")),
+    ] {
+        let (s, _) = call(&app, method, &uri, None, None).await;
+        assert_eq!(s, contents, "{method} {uri} without a token");
+        let (s, _) = call(&app, method, &uri, None, Some("wrong")).await;
+        assert_eq!(s, contents, "{method} {uri} with a wrong token");
+    }
+    assert!(
+        rec.join(format!("{NEW_COPY}.json")).exists(),
+        "an unauthenticated delete deleted"
+    );
+
+    let bare = build_router(state(dir.path()));
+    let (s, _) = call(
+        &bare,
+        "GET",
+        "/api/collaboration/recovery?path=a.ipynb",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+/// A room names its notebook's newest recovery copy in `state.recovery`
+/// when it opens, and stops when the copy is discarded (#945).
+#[tokio::test]
+async fn collaboration_room_names_its_recovery_copy_until_it_is_discarded() {
+    use ganymede_documents::schema::Roots;
+    use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
+    use ganymede_documents::yrs::updates::decoder::Decode;
+    use ganymede_documents::yrs::updates::encoder::Encode;
+    use ganymede_documents::yrs::{Doc, Map, Out, ReadTxn, Transact, Update};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("a.ipynb"),
+        json!({"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}).to_string(),
+    )
+    .unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let rec = data.path().join("recovery");
+    recovery_copy(&rec, OLD_COPY, "a.ipynb", "save_failed", "old");
+    recovery_copy(&rec, NEW_COPY, "a.ipynb", "merge_conflict", "new");
+    let app = recovery_app(dir.path(), &rec);
+    let (s, v) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/a.ipynb",
+        Some(json!({"format": "json", "type": "notebook"})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let served = app.clone();
+    tokio::spawn(async move { axum::serve(listener, served).await.unwrap() });
+    let mut req = format!(
+        "ws://{addr}/api/collaboration/room/json:notebook:{}?sessionId={}",
+        v["fileId"].as_str().unwrap(),
+        v["sessionId"].as_str().unwrap()
+    )
+    .into_client_request()
+    .unwrap();
+    req.headers_mut()
+        .insert("Authorization", format!("token {TOKEN}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let doc = Doc::new();
+    let roots = Roots::get(&doc);
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::SyncStep1(doc.transact().state_vector()))
+            .encode_v1()
+            .into(),
+    ))
+    .await
+    .unwrap();
+    // The recovery summary's id in the client's copy of the state map.
+    let recovery_id = |doc: &Doc| -> Option<String> {
+        let txn = doc.transact();
+        let Some(Out::Any(any)) = roots.state.get(&txn, "recovery") else {
+            return None;
+        };
+        let v = ganymede_documents::schema::any_to_json(&any);
+        Some(v["id"].as_str().unwrap().to_string())
+    };
+    async fn next<S>(ws: &mut S, doc: &Doc)
+    where
+        S: futures::Stream<Item = Result<TMsg, tokio_tungstenite::tungstenite::Error>> + Unpin,
+    {
+        let msg = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .expect("timed out waiting for the room")
+            .unwrap()
+            .unwrap();
+        let TMsg::Binary(b) = msg else { return };
+        if let Ok(YMsg::Sync(SyncMessage::SyncStep2(u) | SyncMessage::Update(u))) =
+            YMsg::decode_v1(&b)
+        {
+            doc.transact_mut()
+                .apply_update(Update::decode_v1(&u).unwrap())
+                .unwrap();
+        }
+    }
+    while recovery_id(&doc).is_none() {
+        next(&mut ws, &doc).await;
+    }
+    assert_eq!(recovery_id(&doc).as_deref(), Some(NEW_COPY));
+    let summary = {
+        let txn = doc.transact();
+        let Some(Out::Any(any)) = roots.state.get(&txn, "recovery") else {
+            panic!()
+        };
+        ganymede_documents::schema::any_to_json(&any)
+    };
+    assert_eq!(
+        (summary["reason"].as_str(), &summary["cells"]),
+        (Some("merge_conflict"), &json!(["a"]))
+    );
+
+    // Discarding the older copy leaves the name; the newer clears it.
+    let (s, _) = call(
+        &app,
+        "DELETE",
+        &format!("/api/collaboration/recovery/{OLD_COPY}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _) = call(
+        &app,
+        "DELETE",
+        &format!("/api/collaboration/recovery/{NEW_COPY}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    while recovery_id(&doc).is_some() {
+        next(&mut ws, &doc).await;
+    }
+}
+
 // ----- tailnet identity (#816) ------------------------------------------------
 
 /// A request as `tailscale serve` forwards it: from a loopback peer, with

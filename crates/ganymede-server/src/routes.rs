@@ -136,6 +136,14 @@ pub fn router(state: AppState) -> Router {
             axum::routing::put(crate::collab::session),
         )
         .route("/api/collaboration/rooms", get(crate::collab::rooms))
+        .route(
+            "/api/collaboration/recovery",
+            get(crate::collab::recovery_list),
+        )
+        .route(
+            "/api/collaboration/recovery/{id}",
+            get(crate::collab::recovery_get).delete(crate::collab::recovery_discard),
+        )
         .route("/api/collaboration/room/{room}", get(crate::collab::room))
         .route("/api/fileid/index", post(crate::collab::fileid_index))
         .route("/api/fileid/id", get(crate::collab::fileid_id))
