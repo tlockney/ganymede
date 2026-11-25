@@ -253,6 +253,13 @@ enum Refused {
     Unseen(String, String, Option<Box<(usize, Cell)>>),
 }
 
+/// A notebook `notebook_open` created: the file's stamp right after, if it
+/// could be read, and whether the call made folders for it.
+struct Created {
+    stamp: Option<String>,
+    made_dirs: bool,
+}
+
 fn err(msg: impl Into<String>) -> McpError {
     McpError::invalid_params(msg.into(), None)
 }
@@ -576,8 +583,8 @@ impl Notebooks {
             }
         };
         let mut folder_default = None;
-        // Some(stamp of the file) when this call created the notebook.
-        let mut created: Option<Option<String>> = None;
+        // Set when this call created the notebook.
+        let mut created: Option<Created> = None;
         if !exists {
             if self.opts.read_only {
                 return Err(err(format!(
@@ -627,15 +634,20 @@ impl Notebooks {
                     return Err(err(format!("no kernel named {k}; nothing was created")));
                 }
             }
-            self.create(&path, kernel.as_deref(), a.title.as_deref())
+            let made_dirs = self
+                .create(&path, kernel.as_deref(), a.title.as_deref())
                 .await?;
-            // The file as this call made it, so a failure deletes only that.
-            created = Some(
-                self.state
+            // The file as this call made it, so a failure deletes only
+            // that. Read after `create` returns, so a save landing between
+            // its write and this read is taken for the call's own.
+            created = Some(Created {
+                stamp: self
+                    .state
                     .collab
                     .root()
                     .and_then(|r| ganymede_contents::fileid::api_file_stamp(r, &path)),
-            );
+                made_dirs,
+            });
         }
         // What this connection held before, so a failure leaves it so.
         let had_hold = self.holds_room(&path).await;
@@ -2363,7 +2375,7 @@ impl Notebooks {
         path: &str,
         kernel: Option<&str>,
         title: Option<&str>,
-    ) -> Result<(), McpError> {
+    ) -> Result<bool, McpError> {
         let specs = self
             .state
             .kernels
@@ -2383,15 +2395,16 @@ impl Notebooks {
             .collect();
         let nb = json!({"cells": cells, "metadata": metadata, "nbformat": 4, "nbformat_minor": 5});
         // Its directories, as `mkdir -p`.
+        let mut made_dirs = false;
         if let Some((dir, _)) = path.rsplit_once('/') {
-            self.mkdirs(dir).await?;
+            made_dirs = self.mkdirs(dir).await?;
         }
         self.state
             .contents
             .save(path, SaveRequest::notebook(nb))
             .await
             .map_err(|e| err(e.to_string()))?;
-        Ok(())
+        Ok(made_dirs)
     }
 
     /// Whether this connection holds `path`'s room open now.
@@ -2416,15 +2429,14 @@ impl Notebooks {
 
     /// `e`, for a failed open, once what this call made is undone: the
     /// hold on the room (if the connection had none before), the session
-    /// it started (`started`), and the notebook it created (`created`,
-    /// with the file's stamp then, if it could be read) unless the file
-    /// changed since or someone has it open. A session it joined, and a
-    /// notebook that was there, are left. What stays, and why, is in the
-    /// message.
+    /// it started (`started`), and the notebook it created (`created`)
+    /// unless the file changed since or someone has it open. Folders it
+    /// made stay. A session it joined, and a notebook that was there, are
+    /// left. What stays, and why, is in the message.
     async fn failed_open(
         &self,
         path: &str,
-        created: Option<Option<String>>,
+        created: Option<Created>,
         started: Option<String>,
         had_hold: bool,
         e: McpError,
@@ -2433,23 +2445,38 @@ impl Notebooks {
             self.release_hold(path).await;
         }
         let mut msg = e.message.to_string();
-        let mut session_left = false;
-        if let Some(id) = started {
-            if let Err(d) = self.state.sessions.delete(&id).await {
-                msg.push_str(&format!(
-                    "; the kernel session it started for {} wasn't shut down: {}",
-                    self.show(path),
-                    d.message
-                ));
-                session_left = true;
+        let shown = self.show(path);
+        // A notebook someone has open stays with its kernel: they may have
+        // edits not saved yet, and a kernel they use.
+        let busy = match &created {
+            Some(Created { stamp: Some(_), .. }) => self.state.collab.room_in_use(path).await,
+            _ => false,
+        };
+        if let (Some(id), false) = (started.as_ref(), busy) {
+            // Not found: someone else deleted it, and its kernel with it.
+            if let Err(d) = self.state.sessions.delete(id).await {
+                if d.status != 404 {
+                    msg.push_str(&format!(
+                        "; the kernel session it started for {shown} wasn't shut down: {}",
+                        d.message
+                    ));
+                }
             }
         }
-        let shown = self.show(path);
         let tail = match created {
             None => String::new(),
-            Some(stamp) => {
+            Some(Created { stamp, made_dirs }) => {
+                let folders = if made_dirs {
+                    " (the folders it made stay)"
+                } else {
+                    ""
+                };
                 let stays = match stamp {
                     None => Some("the contents aren't a local folder".to_string()),
+                    Some(_) if busy => Some(match started {
+                        Some(_) => "someone has it open; it and its kernel stay".to_string(),
+                        None => "someone has it open".to_string(),
+                    }),
                     Some(st) => match self
                         .state
                         .collab
@@ -2465,18 +2492,18 @@ impl Notebooks {
                     },
                 };
                 match stays {
-                    // Not "nothing": the session it started is still there.
-                    None if session_left => "no notebook was created, ".to_string(),
-                    None => "nothing was created, ".to_string(),
-                    Some(why) => format!("{shown} was created and stays ({why}), but "),
+                    None => format!("the notebook was removed{folders}, "),
+                    Some(why) => format!("{shown} was created and stays ({why}){folders}, but "),
                 }
             }
         };
         err(format!("{msg}; {tail}no notebook is current, so pass path"))
     }
 
-    /// Make `dir` (an API path) and its parents, as `mkdir -p`.
-    async fn mkdirs(&self, dir: &str) -> Result<(), McpError> {
+    /// Make `dir` (an API path) and its parents, as `mkdir -p`. True when
+    /// it made any.
+    async fn mkdirs(&self, dir: &str) -> Result<bool, McpError> {
+        let mut made = false;
         let mut sofar = String::new();
         for part in dir.split('/').filter(|p| !p.is_empty()) {
             if !sofar.is_empty() {
@@ -2495,9 +2522,10 @@ impl Notebooks {
                     .save(&sofar, SaveRequest::directory())
                     .await
                     .map_err(|e| err(e.to_string()))?;
+                made = true;
             }
         }
-        Ok(())
+        Ok(made)
     }
 
     /// The kernel of the notebook's session, if it has one.

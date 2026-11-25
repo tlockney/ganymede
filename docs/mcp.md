@@ -362,15 +362,18 @@ installed, `notebook_open` of a new notebook fails and creates nothing.
 If the kernel of a notebook the call just created won't start, or the
 notebook can't then be read, the call undoes what it made: it shuts
 down a kernel session it started and deletes the notebook, and the error
-says "nothing was created". Only a session that was already running
-before the call is left alone; one that someone joins after the call
-started it is shut down with it. The notebook is deleted only if the
-file is still as the call created it. If it changed meanwhile (someone
-saved), someone has it open (or its room didn't answer in two seconds),
-the contents aren't a local folder, or the delete fails, it stays and the
-error says why. A kernel session started for an existing notebook is shut
-down too when the notebook can't be read; the notebook itself is never
-touched. If the session can't be shut down, the error says so.
+says "the notebook was removed". Folders it made for the notebook stay,
+and the error says so. Only a session that was already running before
+the call is left alone; one that someone joins after the call started it
+is shut down with it. The notebook is deleted only if the file is still
+as the call created it. If it changed meanwhile (someone saved), the
+contents aren't a local folder, or the delete fails, it stays and the
+error says why. If someone has it open (or its room didn't answer in two
+seconds) it stays, and so does the kernel session the call started, as
+they may be using both. A kernel session started for an existing
+notebook is shut down too when the notebook can't be read; the notebook
+itself is never touched. If a session can't be shut down, the error says
+so.
 A failed open of any kind (a path that isn't a `.ipynb` too) leaves no
 notebook current, not the one open before it, so the next call must pass
 `path`.

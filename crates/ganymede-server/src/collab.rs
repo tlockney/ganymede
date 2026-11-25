@@ -516,7 +516,7 @@ impl Collab {
     /// a room that doesn't answer within two seconds (busy with a slow
     /// save, which may hold unsaved edits) counts as in use. No room, or
     /// one that stopped, is not.
-    async fn room_in_use(&self, path: &str) -> bool {
+    pub(crate) async fn room_in_use(&self, path: &str) -> bool {
         let path = normalize_api_path(path);
         let Some(file_id) = self.with_ids(move |ids| ids.get(&path)).await else {
             return false;
@@ -3651,6 +3651,30 @@ mod delete_if_unchanged_tests {
             .delete_if_unchanged(&contents, "a.ipynb", "1:2:3")
             .await;
         assert_eq!(r.unwrap(), DeleteIf::Changed);
+        assert!(dir.path().join("a.ipynb").exists());
+    }
+
+    /// A room that doesn't answer within two seconds may be busy saving
+    /// edits: the file stays.
+    #[tokio::test(start_paused = true)]
+    async fn a_room_that_does_not_answer_keeps_the_file() {
+        let (dir, collab, contents) = setup(true);
+        let stamp = api_file_stamp(collab.root().unwrap(), "a.ipynb").unwrap();
+        let (id, _) = collab
+            .index_existing(&contents, "a.ipynb", GetOptions::default())
+            .await
+            .unwrap();
+        // A room whose receiver is kept and never read.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        collab
+            .rooms
+            .lock()
+            .unwrap()
+            .insert(format!("json:notebook:{id}"), tx);
+        let r = collab
+            .delete_if_unchanged(&contents, "a.ipynb", &stamp)
+            .await;
+        assert_eq!(r.unwrap(), DeleteIf::InUse);
         assert!(dir.path().join("a.ipynb").exists());
     }
 

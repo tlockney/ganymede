@@ -71,4 +71,6 @@ notify = { version = "8", default-features = false, features = ["macos_fsevent"]
 sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 
 [dev-dependencies]
+# Paused time in tests (no new crate).
+tokio = { workspace = true, features = ["test-util"] }
 tokio-tungstenite.workspace = true

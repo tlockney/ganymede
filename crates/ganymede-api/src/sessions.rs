@@ -618,8 +618,10 @@ mod tests {
         (m, transports)
     }
 
-    /// `create_reporting` says whether the call made the session: a second
-    /// create for the path, sequential or racing the first, finds it.
+    /// `create_reporting` says whether the call made the session: of two
+    /// creates for the path started together, one made it and the other
+    /// found it; a later one finds it too. (The server's http tests cover
+    /// the race through `notebook_open`.)
     #[tokio::test]
     async fn create_reporting_says_who_made_the_session() {
         let sm = Arc::new(SessionManager::new(manager(None)));

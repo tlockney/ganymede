@@ -6950,7 +6950,7 @@ async fn mcp_failed_kernel_start_removes_the_notebook_it_created() {
     assert!(mcp_failed(&v), "{v}");
     let m = v.to_string();
     assert!(
-        m.contains("; nothing was created, no notebook is current, so pass path"),
+        m.contains("; the notebook was removed, no notebook is current, so pass path"),
         "{v}"
     );
     assert!(!dir.path().join("t.ipynb").exists(), "file removed");
@@ -7095,6 +7095,20 @@ async fn mcp_failed_open_says_when_deleting_the_created_notebook_failed() {
     assert_eq!(list_rooms(&app).await["rooms"].as_array().unwrap().len(), 1);
 }
 
+/// Overwrites `file` with text that isn't a notebook; with `keep_stamp`
+/// it keeps its length, inode and modification time.
+fn garble(file: &std::path::Path, keep_stamp: bool) {
+    use std::io::Write;
+    let meta = std::fs::metadata(file).unwrap();
+    let (mtime, len) = (meta.modified().unwrap(), meta.len() as usize);
+    let mut f = std::fs::OpenOptions::new().write(true).open(file).unwrap();
+    let n = if keep_stamp { len } else { len + 7 };
+    f.write_all(&vec![b'x'; n]).unwrap();
+    if keep_stamp {
+        f.set_modified(mtime).unwrap();
+    }
+}
+
 /// Launches like [`FakeProvisioner`], then overwrites `path` (under
 /// `root`) with text that isn't a notebook, so the read after the launch
 /// fails. With `keep_stamp` the file keeps its length, inode and
@@ -7110,19 +7124,7 @@ impl Provisioner for GarblingProvisioner {
         spec: &Kernelspec,
         opts: LaunchOptions,
     ) -> ganymede_kernel_host::Result<LaunchedKernel> {
-        use std::io::Write;
-        let mtime = std::fs::metadata(&self.file).unwrap().modified().unwrap();
-        let len = std::fs::metadata(&self.file).unwrap().len() as usize;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .open(&self.file)
-            .unwrap();
-        let n = if self.keep_stamp { len } else { len + 7 };
-        f.write_all(&vec![b'x'; n]).unwrap();
-        if self.keep_stamp {
-            f.set_modified(mtime).unwrap();
-        }
-        drop(f);
+        garble(&self.file, self.keep_stamp);
         FakeProvisioner.launch(spec, opts).await
     }
 }
@@ -7154,7 +7156,7 @@ async fn mcp_failed_read_of_a_new_notebook_removes_session_and_file() {
     let args = json!({"path": "t.ipynb", "kernel": "fake"});
     let v = mcp_tool(&app, &sid, "notebook_open", args).await;
     assert!(mcp_failed(&v), "{v}");
-    assert!(v.to_string().contains("nothing was created"), "{v}");
+    assert!(v.to_string().contains("the notebook was removed"), "{v}");
     assert!(sessions.list().is_empty(), "session shut down");
     assert!(!file.exists(), "file removed");
 }
@@ -7230,8 +7232,10 @@ async fn mcp_failed_read_leaves_a_session_it_joined() {
     assert!(dir.path().join("t.ipynb").exists());
 }
 
-/// The first launch waits for `release`, after saying so on `entered`.
+/// The first launch waits for `release`, after saying so on `entered`,
+/// then fails if `fail` is set.
 struct GatedProvisioner {
+    fail: bool,
     first: std::sync::atomic::AtomicBool,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
@@ -7246,6 +7250,9 @@ impl Provisioner for GatedProvisioner {
         if self.first.swap(false, std::sync::atomic::Ordering::SeqCst) {
             self.entered.notify_one();
             self.release.notified().await;
+            if self.fail {
+                return Err(ganymede_kernel_host::Error::Unsupported("test launch"));
+            }
         }
         FakeProvisioner.launch(spec, opts).await
     }
@@ -7264,6 +7271,7 @@ async fn mcp_failed_read_leaves_a_session_another_client_started_meanwhile() {
     let st = state_with(
         dir.path(),
         Arc::new(GatedProvisioner {
+            fail: false,
             first: true.into(),
             entered: entered.clone(),
             release: release.clone(),
@@ -7310,6 +7318,122 @@ async fn mcp_failed_read_leaves_a_session_another_client_started_meanwhile() {
     let listed = sessions.list();
     assert_eq!(listed.len(), 1, "the other client's session is running");
     assert_eq!(listed[0].id, made["id"].as_str().unwrap());
+}
+
+/// Opens new `t.ipynb` on kernel `fake` through a gated launch, and
+/// while it waits another MCP connection reads the notebook (and so holds
+/// its room). Returns the open's reply, the app and its sessions.
+async fn open_while_another_client_holds_it(
+    dir: &std::path::Path,
+    fail: bool,
+) -> (Value, axum::Router, Arc<SessionManager>) {
+    let (entered, release) = (
+        Arc::new(tokio::sync::Notify::new()),
+        Arc::new(tokio::sync::Notify::new()),
+    );
+    let st = state_with(
+        dir,
+        Arc::new(GatedProvisioner {
+            fail,
+            first: true.into(),
+            entered: entered.clone(),
+            release: release.clone(),
+        }),
+        Arc::new(FakeTransports),
+    );
+    let sessions = st.sessions.clone();
+    let app = mcp_app_on(st, dir);
+    let (a, b) = (
+        mcp_connect(&app, "agent").await,
+        mcp_connect(&app, "other").await,
+    );
+    let open = tokio::spawn({
+        let app = app.clone();
+        async move {
+            let args = json!({"path": "t.ipynb", "kernel": "fake"});
+            mcp_tool(&app, &a, "notebook_open", args).await
+        }
+    });
+    entered.notified().await;
+    // The file is made and the launch is held.
+    let v = mcp_tool(&app, &b, "notebook_read", json!({"path": "t.ipynb"})).await;
+    assert!(!mcp_failed(&v), "{v}");
+    release.notify_one();
+    (open.await.unwrap(), app, sessions)
+}
+
+/// Someone else holds the notebook's room when the kernel won't start:
+/// the file stays and the error says someone has it open (#941).
+#[tokio::test]
+async fn mcp_failed_kernel_start_keeps_a_created_notebook_someone_has_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let (v, _, sessions) = open_while_another_client_holds_it(dir.path(), true).await;
+    assert!(mcp_failed(&v), "{v}");
+    assert!(
+        v.to_string().contains(
+            "t.ipynb was created and stays (someone has it open), but no notebook is current"
+        ),
+        "{v}"
+    );
+    assert!(dir.path().join("t.ipynb").exists());
+    assert!(sessions.list().is_empty());
+}
+
+/// Contents that aren't a local folder have no stamp to check: a created
+/// notebook stays and the error says so (#941).
+#[tokio::test]
+async fn mcp_failed_open_keeps_a_notebook_on_contents_without_a_local_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state_with(
+        dir.path(),
+        Arc::new(FailingProvisioner),
+        Arc::new(FakeTransports),
+    );
+    st.collab = Arc::new(ganymede_server::collab::Collab::new(
+        ganymede_contents::FileIds::in_memory(),
+        None,
+    ));
+    let app = mcp_app_on(st, dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    let v = mcp_tool(&app, &sid, "notebook_open", json!({"path": "t.ipynb"})).await;
+    assert!(mcp_failed(&v), "{v}");
+    assert!(
+        v.to_string()
+            .contains("t.ipynb was created and stays (the contents aren't a local folder)"),
+        "{v}"
+    );
+    assert!(dir.path().join("t.ipynb").exists());
+}
+
+/// The notebook is removed but the folders the call made for it stay,
+/// and the error says so (#941).
+#[tokio::test]
+async fn mcp_failed_open_leaves_the_folders_it_made() {
+    let dir = tempfile::tempdir().unwrap();
+    let st = state_with(
+        dir.path(),
+        Arc::new(FailingProvisioner),
+        Arc::new(FakeTransports),
+    );
+    let app = mcp_app_on(st, dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    let v = mcp_tool(&app, &sid, "notebook_open", json!({"path": "a/b/t.ipynb"})).await;
+    assert!(mcp_failed(&v), "{v}");
+    assert!(
+        v.to_string().contains(
+            "the notebook was removed (the folders it made stay), no notebook is current"
+        ),
+        "{v}"
+    );
+    assert!(!dir.path().join("a/b/t.ipynb").exists());
+    assert!(dir.path().join("a/b").is_dir(), "folders stay");
+    // In a folder that was there, the message doesn't claim folders.
+    let v = mcp_tool(&app, &sid, "notebook_open", json!({"path": "a/b/u.ipynb"})).await;
+    assert!(
+        v.to_string()
+            .contains("the notebook was removed, no notebook is current"),
+        "{v}"
+    );
 }
 
 /// A failed open of a path that isn't a notebook leaves no notebook
