@@ -29,9 +29,10 @@
 //! cell, and the room's version of it is kept in a recovery copy (#945).
 //! A room with no clients is saved and dropped after a minute, and never
 //! while it holds edits the file doesn't have, unless a recovery copy of
-//! them is on disk (`recovery.rs`) or they are not a notebook, which no
-//! copy can hold. A delete through the contents API closes the rooms on
-//! the deleted file.
+//! them is on disk (`recovery.rs`), except in the cases below: the room's
+//! content is not a notebook, which no copy can hold; its file id is gone,
+//! so it can't save the file back; or the server is stopping. A delete
+//! through the contents API closes the rooms on the deleted file.
 //!
 //! On one machine, a room owns its file while it is open: it holds a lock
 //! in the runtime dir (see `room_lock.rs`). A room opened on a file
@@ -2876,7 +2877,14 @@ async fn reload(
             }
             disk.hash = fresh.hash;
             // The room's edits as they are before the disk takes the cells
-            // they conflict over.
+            // they conflict over. Taken on every disk change while the
+            // room is dirty, not only when the merge turns out to
+            // conflict: `merge_disk` applies the merge and reports the
+            // conflicts in one call, so by the time they are known the
+            // room no longer holds its own version of them to snapshot,
+            // and finding out beforehand would take a merge of its own
+            // over a notebook serialized like this one, costing more
+            // than the snapshot it was meant to save.
             let ours = match room.is_dirty() {
                 true => room.notebook().map(|nb| nb.map_err(|e| e.to_string())),
                 false => None,
@@ -4484,6 +4492,103 @@ mod recovery_tests {
         }
     }
 
+    /// What a client makes of the frames its room sends it, as the
+    /// websocket client in tests/http.rs: a doc that answers the room's
+    /// sync step 1 and applies its updates.
+    mod client {
+        use super::super::{Cmd, Out};
+        use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
+        use ganymede_documents::yrs::updates::decoder::Decode;
+        use ganymede_documents::yrs::updates::encoder::Encode;
+        use ganymede_documents::yrs::{Doc, Map, ReadTxn, Transact, Update};
+        use ganymede_documents::ConnId;
+        use serde_json::Value;
+
+        /// The `state` map's `key` as the client's doc holds it.
+        pub(crate) fn state(doc: &Doc, key: &str) -> Option<Value> {
+            let roots = ganymede_documents::schema::Roots::get(doc);
+            let txn = doc.transact();
+            match roots.state.get(&txn, key) {
+                Some(ganymede_documents::yrs::Out::Any(any)) => {
+                    Some(ganymede_documents::schema::any_to_json(&any))
+                }
+                _ => None,
+            }
+        }
+
+        /// How long the client waits for a frame before it decides the
+        /// room isn't going to send one. The tests pause the clock, which
+        /// only moves once nothing is running, so a room with nothing
+        /// left to say ends this quickly.
+        const WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+        /// Bring `doc` up to date with the room: say hello, answer its
+        /// sync step 1, and apply frames until it has nothing more
+        /// queued. The frames pile up in `rx` until the client looks, as
+        /// they would in a slow socket. Ends drained, so that [`until`]
+        /// afterwards sees only what the room sends from then on.
+        pub(crate) async fn sync(
+            tx: &tokio::sync::mpsc::UnboundedSender<Cmd>,
+            rx: &mut tokio::sync::mpsc::Receiver<Out>,
+            conn: ConnId,
+            doc: &Doc,
+        ) {
+            let sv = doc.transact().state_vector();
+            let hello = YMsg::Sync(SyncMessage::SyncStep1(sv)).encode_v1();
+            tx.send(Cmd::Frame(conn, hello)).unwrap();
+            while let Ok(Some(out)) = tokio::time::timeout(WAIT, rx.recv()).await {
+                apply(tx, conn, doc, out);
+            }
+        }
+
+        /// Apply what the room sends until `until` holds, saying no
+        /// hello first: a state the room set without dispatching to its
+        /// clients would ride a fresh sync, so the test watches the
+        /// dispatched updates alone and fails without them.
+        pub(crate) async fn until(
+            tx: &tokio::sync::mpsc::UnboundedSender<Cmd>,
+            rx: &mut tokio::sync::mpsc::Receiver<Out>,
+            conn: ConnId,
+            doc: &Doc,
+            until: impl Fn(&Doc) -> bool,
+        ) {
+            for _ in 0..2000 {
+                if until(doc) {
+                    return;
+                }
+                match tokio::time::timeout(WAIT, rx.recv()).await {
+                    Ok(Some(out)) => apply(tx, conn, doc, out),
+                    _ => panic!("the room never told the client what it owes it"),
+                }
+            }
+            panic!("the client never saw the state the room owes it");
+        }
+
+        /// One thing the room sent: an update to apply, or a sync step 1
+        /// to answer.
+        fn apply(
+            tx: &tokio::sync::mpsc::UnboundedSender<Cmd>,
+            conn: ConnId,
+            doc: &Doc,
+            out: Out,
+        ) {
+            let Out::Frame(frame) = out else { return };
+            match YMsg::decode_v1(&frame) {
+                Ok(YMsg::Sync(SyncMessage::SyncStep1(sv))) => {
+                    let u = doc.transact().encode_state_as_update_v1(&sv);
+                    let reply = YMsg::Sync(SyncMessage::SyncStep2(u)).encode_v1();
+                    tx.send(Cmd::Frame(conn, reply)).unwrap();
+                }
+                Ok(YMsg::Sync(SyncMessage::SyncStep2(u) | SyncMessage::Update(u))) => {
+                    doc.transact_mut()
+                        .apply_update(Update::decode_v1(&u).unwrap())
+                        .unwrap();
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Saves fail, the client leaves, and the room gives up after
     /// `GIVE_UP_AFTER` failures: its edits are in a recovery copy.
     #[tokio::test(start_paused = true)]
@@ -4583,11 +4688,14 @@ mod recovery_tests {
     }
 
     /// The room and the disk both changed cell `a`: the disk wins it, and
-    /// the room's version is kept and named in `state.recovery`.
+    /// the room's version is kept and named in `state.recovery`, which
+    /// the client sees arrive.
     #[tokio::test(start_paused = true)]
     async fn a_merge_conflict_keeps_the_rooms_version() {
         let fx = Fixture::new(false).await;
-        let (_tx, _rx) = fx.join(1).await;
+        let (tx, mut rx) = fx.join(1).await;
+        let doc = ganymede_documents::yrs::Doc::new();
+        client::sync(&tx, &mut rx, 1, &doc).await;
         fx.type_into_a("room wrote this").await;
         std::fs::write(
             fx.dir.path().join("a.ipynb"),
@@ -4619,6 +4727,14 @@ mod recovery_tests {
             serde_json::to_value(&nb).unwrap()["cells"][0]["source"],
             "disk wrote this"
         );
+        // The client is told: the copy and the clean save state reach
+        // its doc as updates, not only the server's room.
+        let id = copies[0].id.clone();
+        client::until(&tx, &mut rx, 1, &doc, |d| {
+            client::state(d, "recovery").is_some_and(|r| r["id"] == id.as_str())
+                && client::state(d, "save").as_ref().and_then(Value::as_str) == Some("saved")
+        })
+        .await;
     }
 
     /// A merge with no conflict keeps no copy.
@@ -4646,13 +4762,15 @@ mod recovery_tests {
         assert_eq!(fx.state("recovery").await, None);
     }
 
-    /// `state.save` follows the saves, and neither it nor the other state
-    /// keys reach the file.
+    /// `state.save` follows the saves and neither it nor the other state
+    /// keys reach the file, and a client is told of each change.
     #[tokio::test(start_paused = true)]
     async fn save_state_follows_the_saves_and_stays_out_of_the_file() {
         let fx = Fixture::new(false).await;
         assert_eq!(fx.state("save").await, Some(json!("saved")));
-        let (_tx, _rx) = fx.join(1).await;
+        let (tx, mut rx) = fx.join(1).await;
+        let doc = ganymede_documents::yrs::Doc::new();
+        client::sync(&tx, &mut rx, 1, &doc).await;
         fx.fail.store(true, Ordering::SeqCst);
         fx.type_into_a("typed here").await;
         let failed = || async { fx.state("save").await == Some(json!("failed")) };
@@ -4665,6 +4783,13 @@ mod recovery_tests {
         assert!(failed().await, "state.save never failed");
         let error = fx.state("save_error").await.unwrap();
         assert!(error.as_str().unwrap().contains("disk full"), "{error}");
+        // The client is told of the failure, not only the room.
+        client::until(&tx, &mut rx, 1, &doc, |d| {
+            client::state(d, "save").as_ref().and_then(Value::as_str) == Some("failed")
+                && client::state(d, "save_error")
+                    .is_some_and(|e| e.as_str().is_some_and(|e| e.contains("disk full")))
+        })
+        .await;
         fx.fail.store(false, Ordering::SeqCst);
         for _ in 0..200 {
             if fx.state("save").await == Some(json!("saved")) {
@@ -4674,6 +4799,12 @@ mod recovery_tests {
         }
         assert_eq!(fx.state("save").await, Some(json!("saved")));
         assert_eq!(fx.state("save_error").await, None);
+        // And of the save that fixed it.
+        client::until(&tx, &mut rx, 1, &doc, |d| {
+            client::state(d, "save").as_ref().and_then(Value::as_str) == Some("saved")
+                && client::state(d, "save_error").is_none()
+        })
+        .await;
         let on_disk = std::fs::read_to_string(fx.dir.path().join("a.ipynb")).unwrap();
         assert!(on_disk.contains("typed here"), "the save happened");
         for key in ["save", "save_error", "recovery", "dirty", "hash", "state"] {
@@ -4856,6 +4987,31 @@ mod recovery_tests {
         assert!(keep_lost(&mut room, &mut disk, &HashMap::new()).await);
     }
 
+    /// `keep_lost` on a clean room with a writable dir sets `save` to
+    /// `saved`: the edits it copied were the only thing failing.
+    #[tokio::test]
+    async fn keep_lost_on_a_clean_room_says_saved() {
+        let fx = Fixture::new(true).await;
+        let (mut room, mut disk) = fx.bare().await;
+        type_a(&mut room, "room wrote this");
+        fx.write_file("disk wrote this");
+        fx.reload(&mut room, &mut disk).await;
+        // The merge itself saves; the copy it owes is still blocked, so
+        // the room is clean and the save state still failed.
+        assert_eq!(
+            fx.save(&mut room, &mut disk, false).await,
+            SaveStatus::Success
+        );
+        assert_eq!(save_state(&room).0, json!("failed"));
+        assert!(!room.is_dirty());
+        fx.unblock();
+        assert!(keep_lost(&mut room, &mut disk, &HashMap::new()).await);
+        assert_eq!(save_state(&room), (json!("saved"), String::new()));
+        let copies = fx.copies();
+        assert_eq!(copies.len(), 1);
+        assert_eq!(copies[0].reason, "merge_conflict");
+    }
+
     /// The save whose own merge lost the edits doesn't clear them.
     #[tokio::test]
     async fn a_save_that_loses_edits_does_not_clear_them() {
@@ -4945,11 +5101,14 @@ mod recovery_tests {
         assert!(fx.copies().is_empty());
     }
 
-    /// The server stops while a save fails: the edits get a copy.
+    /// The server stops while a save fails: the edits get a copy, and the
+    /// client still in the room sees it named.
     #[tokio::test(start_paused = true)]
     async fn stopping_keeps_a_copy_of_edits_that_cannot_be_saved() {
         let fx = Fixture::new(false).await;
-        let (_tx, _rx) = fx.join(1).await;
+        let (tx, mut rx) = fx.join(1).await;
+        let doc = ganymede_documents::yrs::Doc::new();
+        client::sync(&tx, &mut rx, 1, &doc).await;
         fx.fail.store(true, Ordering::SeqCst);
         fx.type_into_a("typed here").await;
         fx.collab.flush_all().await;
@@ -4961,6 +5120,11 @@ mod recovery_tests {
             .unwrap()
             .unwrap();
         assert_eq!(source_of_a(&content), "typed here");
+        let id = copies[0].id.clone();
+        client::until(&tx, &mut rx, 1, &doc, |d| {
+            client::state(d, "recovery").is_some_and(|r| r["id"] == id.as_str())
+        })
+        .await;
     }
 
     /// The server stops with edits in a read-only room, or with none.
@@ -4979,6 +5143,52 @@ mod recovery_tests {
         let copies = fx.copies();
         assert_eq!(copies.len(), 1);
         assert_eq!(copies[0].reason, "read_only");
+    }
+
+    /// A merge conflict whose copy couldn't be written while the dir was
+    /// blocked gets it when the server stops: the flush tries again.
+    #[tokio::test(start_paused = true)]
+    async fn stopping_writes_the_copy_a_merge_conflict_lacked() {
+        let fx = Fixture::new(true).await;
+        let (_tx, _rx) = fx.join(1).await;
+        fx.type_into_a("room wrote this").await;
+        fx.write_file("disk wrote this");
+        fx.until_state("save", json!("failed")).await;
+        fx.unblock();
+        fx.collab.flush_all().await;
+        let copies = fx.copies();
+        assert_eq!(copies.len(), 1);
+        assert_eq!(copies[0].reason, "merge_conflict");
+        assert_eq!(copies[0].detail, "cell a");
+        let (_, content) = recovery::read(&fx.store(), &copies[0].id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(source_of_a(&content), "room wrote this");
+    }
+
+    /// The file's id goes (a delete through the contents API) while a
+    /// merge conflict's copy couldn't be written: closing the room tries
+    /// the copy again.
+    #[tokio::test(start_paused = true)]
+    async fn removing_the_file_writes_the_copy_a_merge_conflict_lacked() {
+        let fx = Fixture::new(true).await;
+        let (_tx, _rx) = fx.join(1).await;
+        fx.type_into_a("room wrote this").await;
+        fx.write_file("disk wrote this");
+        fx.until_state("save", json!("failed")).await;
+        fx.unblock();
+        fx.collab.removed("a.ipynb").await;
+        fx.until(10, "a recovery copy", |fx| !fx.copies().is_empty())
+            .await;
+        fx.until(10, "the room closed", |fx| fx.collab.open_rooms() == 0)
+            .await;
+        let copies = fx.copies();
+        assert_eq!(copies.len(), 1);
+        assert_eq!(copies[0].reason, "merge_conflict");
+        let (_, content) = recovery::read(&fx.store(), &copies[0].id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(source_of_a(&content), "room wrote this");
     }
 
     /// An empty read-only room with edits closes, with a copy of them.

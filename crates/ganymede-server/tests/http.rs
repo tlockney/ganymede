@@ -10605,6 +10605,7 @@ fn recovery_copy(
 
 const OLD_COPY: &str = "0000000000000001-aaaaaaaa";
 const NEW_COPY: &str = "0000000000000002-bbbbbbbb";
+const GONE_COPY: &str = "0000000000000000-cccccccc";
 
 fn recovery_app(root: &std::path::Path, recovery: &std::path::Path) -> axum::Router {
     let mut st = state(root);
@@ -10817,6 +10818,7 @@ async fn collaboration_room_names_its_recovery_copy_until_it_is_discarded() {
     let rec = recovery_of(&all, dir.path());
     recovery_copy(dir.path(), &rec, OLD_COPY, "a.ipynb", "save_failed", "old");
     recovery_copy(dir.path(), &rec, NEW_COPY, "a.ipynb", "merge_conflict", "new");
+    recovery_copy(dir.path(), &rec, GONE_COPY, "a.ipynb", "file_gone", "gone");
     let app = recovery_app(dir.path(), &all);
     let (s, v) = call(
         &app,
@@ -10911,7 +10913,7 @@ async fn collaboration_room_names_its_recovery_copy_until_it_is_discarded() {
     while recovery_id(&doc).as_deref() != Some(OLD_COPY) {
         next(&mut ws, &doc).await;
     }
-    // Discarding the one left by the route clears the name.
+    // Discarding the one left by the route names the oldest.
     let (s, _) = call(
         &app,
         "DELETE",
@@ -10921,6 +10923,22 @@ async fn collaboration_room_names_its_recovery_copy_until_it_is_discarded() {
     )
     .await;
     assert_eq!(s, StatusCode::NO_CONTENT);
+    while recovery_id(&doc).as_deref() != Some(GONE_COPY) {
+        next(&mut ws, &doc).await;
+    }
+    // A read that finds none left clears the name.
+    for name in [format!("{GONE_COPY}.json"), format!("{GONE_COPY}.ipynb")] {
+        std::fs::remove_file(rec.join(name)).unwrap();
+    }
+    let (s, _) = call(
+        &app,
+        "GET",
+        &format!("/api/collaboration/recovery/{GONE_COPY}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
     while recovery_id(&doc).is_some() {
         next(&mut ws, &doc).await;
     }
