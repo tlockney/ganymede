@@ -2418,8 +2418,9 @@ impl Notebooks {
     /// hold on the room (if the connection had none before), the session
     /// it started (`started`), and the notebook it created (`created`,
     /// with the file's stamp then, if it could be read) unless the file
-    /// changed since or someone has it open. A session it joined, and a notebook that was there,
-    /// are left. What stays, and why, is in the message.
+    /// changed since or someone has it open. A session it joined, and a
+    /// notebook that was there, are left. What stays, and why, is in the
+    /// message.
     async fn failed_open(
         &self,
         path: &str,
@@ -2432,6 +2433,7 @@ impl Notebooks {
             self.release_hold(path).await;
         }
         let mut msg = e.message.to_string();
+        let mut session_left = false;
         if let Some(id) = started {
             if let Err(d) = self.state.sessions.delete(&id).await {
                 msg.push_str(&format!(
@@ -2439,6 +2441,7 @@ impl Notebooks {
                     self.show(path),
                     d.message
                 ));
+                session_left = true;
             }
         }
         let shown = self.show(path);
@@ -2462,6 +2465,8 @@ impl Notebooks {
                     },
                 };
                 match stays {
+                    // Not "nothing": the session it started is still there.
+                    None if session_left => "no notebook was created, ".to_string(),
                     None => "nothing was created, ".to_string(),
                     Some(why) => format!("{shown} was created and stays ({why}), but "),
                 }

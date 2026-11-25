@@ -7230,6 +7230,88 @@ async fn mcp_failed_read_leaves_a_session_it_joined() {
     assert!(dir.path().join("t.ipynb").exists());
 }
 
+/// The first launch waits for `release`, after saying so on `entered`.
+struct GatedProvisioner {
+    first: std::sync::atomic::AtomicBool,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+#[async_trait]
+impl Provisioner for GatedProvisioner {
+    async fn launch(
+        &self,
+        spec: &Kernelspec,
+        opts: LaunchOptions,
+    ) -> ganymede_kernel_host::Result<LaunchedKernel> {
+        if self.first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        FakeProvisioner.launch(spec, opts).await
+    }
+}
+
+/// Another client starts the notebook's session while `notebook_open`
+/// waits for it: the open gets that session, didn't start it, and leaves
+/// it running when its read fails (#941).
+#[tokio::test]
+async fn mcp_failed_read_leaves_a_session_another_client_started_meanwhile() {
+    let dir = tempfile::tempdir().unwrap();
+    let (entered, release) = (
+        Arc::new(tokio::sync::Notify::new()),
+        Arc::new(tokio::sync::Notify::new()),
+    );
+    let st = state_with(
+        dir.path(),
+        Arc::new(GatedProvisioner {
+            first: true.into(),
+            entered: entered.clone(),
+            release: release.clone(),
+        }),
+        Arc::new(FakeTransports),
+    );
+    let sessions = st.sessions.clone();
+    let app = mcp_app_on(st, dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    std::fs::write(dir.path().join("t.ipynb"), "not a notebook").unwrap();
+    // The other client, held inside the launch with the path locked.
+    let other = tokio::spawn({
+        let app = app.clone();
+        async move {
+            call(
+                &app,
+                "POST",
+                "/api/sessions",
+                Some(json!({"path": "t.ipynb", "type": "notebook", "kernel": {"name": "fake"}})),
+                Some(TOKEN),
+            )
+            .await
+        }
+    });
+    entered.notified().await;
+    assert!(sessions.list().is_empty(), "not listed until it is made");
+    let open = tokio::spawn({
+        let app = app.clone();
+        let sid = sid.clone();
+        async move {
+            let args = json!({"path": "t.ipynb", "kernel": "fake"});
+            mcp_tool(&app, &sid, "notebook_open", args).await
+        }
+    });
+    // Let the open reach the path lock behind the launch. Nothing shows
+    // when it has; if it hasn't, it finds the session in the list and the
+    // test still passes, but then it doesn't reach the case it is for.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    release.notify_one();
+    let (status, made) = other.await.unwrap();
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let v = open.await.unwrap();
+    assert!(mcp_failed(&v), "{v}");
+    let listed = sessions.list();
+    assert_eq!(listed.len(), 1, "the other client's session is running");
+    assert_eq!(listed[0].id, made["id"].as_str().unwrap());
+}
+
 /// A failed open of a path that isn't a notebook leaves no notebook
 /// current, not the one open before it (#938).
 #[tokio::test]

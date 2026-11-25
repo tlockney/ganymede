@@ -11,8 +11,11 @@ or the read fails:
 
 - A session this call started is deleted, which shuts its kernel down. A
   session it joined (one already running for the path) is left alone. A
-  failed delete is added to the error. This holds for an existing notebook
-  too; the file is never touched then.
+  failed delete is added to the error, which then says "no notebook was
+  created" rather than "nothing was created", as the session is still
+  there. A session someone joins after this call started it is shut down
+  with it; only one running before the call is left alone. This holds for
+  an existing notebook too; the file is never touched then.
 - A notebook this call created is deleted, but only if its stamp (size,
   modification time, inode) is still the one read right after the create.
   `Collab::delete_if_unchanged` re-reads the stamp and deletes under the
@@ -24,12 +27,12 @@ or the read fails:
   created, no notebook is current, so pass path".
 - The stamp check matters because with `delete_to_trash` off a delete is
   permanent, and #938 kept the file because someone may have saved to it.
-
 - It also stays when a room on the file has a client ("someone has it
   open"): a room saves 1 s after an edit, and deleting the file closes the
   room without saving, so a person's edit could be lost. This connection's
-  own hold is released first. A room that doesn't answer the room list
-  within two seconds counts as not open.
+  own hold is released first. The room is looked up by the path's file id
+  and asked directly; one that doesn't answer within two seconds (a slow
+  save may hold unsaved edits) counts as in use, so the file stays.
 - The session id comes from `SessionManager::create_reporting`, which says
   whether the call made the session, so a session another client created
   while this call waited on the path lock is not taken for its own.
@@ -46,7 +49,10 @@ keeping its stamp), the same with a changed stamp (file stays, message
 says why), a read failure of an existing notebook (session gone, file
 kept), one with a joined session (still running), a delete that fails (the
 file stays, "deleting it failed"), and collab unit tests for a changed
-stamp, no local root, a client in the room, and the ids going with the
-file. A failing session delete can't be forced without a seam, so the
-"wasn't shut down" message has no test. No test-only seam in the server
+stamp, no local root, a client in the room, a client in another notebook's
+room (no effect), and the ids going with the file. A gated test has
+another client start the session while the open waits on the path lock
+(it fails if the open takes that session for its own). A room that
+doesn't answer in two seconds, and a failing session delete, can't be
+forced without a seam, so neither has a test. No test-only seam in the server
 was needed.

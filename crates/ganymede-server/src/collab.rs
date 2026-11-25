@@ -512,6 +512,36 @@ impl Collab {
         self.delete_checked(contents, path, None).await.map(|_| ())
     }
 
+    /// Whether the room on the file at `path` has a client, or may have:
+    /// a room that doesn't answer within two seconds (busy with a slow
+    /// save, which may hold unsaved edits) counts as in use. No room, or
+    /// one that stopped, is not.
+    async fn room_in_use(&self, path: &str) -> bool {
+        let path = normalize_api_path(path);
+        let Some(file_id) = self.with_ids(move |ids| ids.get(&path)).await else {
+            return false;
+        };
+        let tx = self
+            .rooms
+            .lock()
+            .expect("rooms")
+            .get(&format!("json:notebook:{file_id}"))
+            .filter(|tx| !tx.is_closed())
+            .cloned();
+        let Some(tx) = tx else {
+            return false;
+        };
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        if tx.send(Cmd::Info(reply)).is_err() {
+            return false;
+        }
+        match tokio::time::timeout(Duration::from_secs(2), rx).await {
+            Ok(Ok(info)) => !info.clients.is_empty(),
+            // No answer: busy, or a room with no file to describe.
+            _ => true,
+        }
+    }
+
     /// [`Collab::delete`] of a file only if it is still as a caller saw
     /// it: its [`ganymede_contents::fileid::api_file_stamp`] is `stamp`
     /// and no room on it has a client (which may hold edits not saved
@@ -543,13 +573,7 @@ impl Collab {
         detached(async move {
             let _deleting = collab.begin_move().await;
             if let Some(stamp) = only_if {
-                let want = normalize_api_path(&path);
-                let open = collab
-                    .list_rooms()
-                    .await
-                    .iter()
-                    .any(|r| normalize_api_path(&r.path) == want && !r.clients.is_empty());
-                if open {
+                if collab.room_in_use(&path).await {
                     return Ok(DeleteIf::InUse);
                 }
                 let now = collab
@@ -765,7 +789,7 @@ pub(crate) enum DeleteIf {
     /// The file's stamp isn't the one given, or can't be read (the
     /// contents aren't a local directory).
     Changed,
-    /// A room on the file has a client.
+    /// A room on the file has a client, or didn't say within two seconds.
     InUse,
 }
 
@@ -3628,6 +3652,26 @@ mod delete_if_unchanged_tests {
             .await;
         assert_eq!(r.unwrap(), DeleteIf::Changed);
         assert!(dir.path().join("a.ipynb").exists());
+    }
+
+    /// A client in another notebook's room doesn't keep this one.
+    #[tokio::test]
+    async fn a_client_in_another_notebooks_room_does_not_keep_the_file() {
+        let (dir, collab, contents) = setup(true);
+        std::fs::write(dir.path().join("b.ipynb"), nb()).unwrap();
+        let stamp = api_file_stamp(collab.root().unwrap(), "a.ipynb").unwrap();
+        let id = notebook_room_id(&collab, &contents, "b.ipynb")
+            .await
+            .unwrap();
+        let _hold = hold_notebook(&collab, &contents, &id, Listing::Agent("x".into()))
+            .await
+            .unwrap();
+        let r = collab
+            .delete_if_unchanged(&contents, "a.ipynb", &stamp)
+            .await;
+        assert_eq!(r.unwrap(), DeleteIf::Deleted);
+        assert!(!dir.path().join("a.ipynb").exists());
+        assert!(dir.path().join("b.ipynb").exists());
     }
 
     /// A room with a client may hold edits not saved yet, which closing
