@@ -29,3 +29,8 @@ saw an error and thought nothing was open, while its next path-less
 - A failure leaves this connection holding no room that it didn't hold
   before the call. (A read that fails may leave an unused read token for the
   path; the next read reuses it.)
+
+Left for a follow-up issue, filed once this merges: when the kernel fails to
+start after the notebook was created, the file stays rather than being
+removed; and a read that fails after the kernel started leaves that kernel's
+session running, as it did before.

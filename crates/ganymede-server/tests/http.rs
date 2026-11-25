@@ -6872,6 +6872,7 @@ async fn mcp_failed_open_creates_nothing_and_is_not_current() {
     let v = mcp_tool(&app, &sid, "notebook_open", json!({"path": "t.ipynb"})).await;
     assert!(failed(&v), "{v}");
     assert!(msg(&v).contains("nothing was created"), "{v}");
+    assert!(msg(&v).contains("no kernelspecs installed here"), "{v}");
     assert!(!dir.path().join("t.ipynb").exists(), "no file");
     let v = mcp_tool(&app, &sid, "cell_add", json!({"source": "1"})).await;
     assert!(failed(&v), "{v}");
@@ -7133,6 +7134,11 @@ async fn mcp_failed_open_clears_the_earlier_current_notebook() {
     std::fs::create_dir(dir.path().join("b.ipynb")).unwrap();
     let v = mcp_tool(&app, &sid, "notebook_open", json!({"path": "b.ipynb"})).await;
     assert!(mcp_failed(&v), "{v}");
+    assert!(
+        v.to_string()
+            .contains("no notebook is current, so pass path"),
+        "{v}"
+    );
     let v = mcp_tool(&app, &sid, "cell_add", json!({"source": "1"})).await;
     assert!(mcp_failed(&v), "{v}");
     assert!(v.to_string().contains("no notebook open"), "{v}");
