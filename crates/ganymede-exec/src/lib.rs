@@ -1934,18 +1934,22 @@ mod tests {
 
         let stale = json!({"keep": 1, "execution_skipped": "Cell changed while queued",
             "ran_source_hash": "stale"});
-        let mut nb: Notebook = Notebook::from_str(&json!({
-            "nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [
-                {"cell_type": "code", "id": "a", "source": "one",
-                 "metadata": {"tags": ["t"], "ganymede": stale}, "outputs": [],
-                 "execution_count": null},
-                // A cell the run never touches keeps what it has.
-                {"cell_type": "code", "id": "s", "source": "skipped",
-                 "metadata": {"tags": ["skip-execution"],
-                             "ganymede": {"keep": 2, "ran_source_hash": "old"}},
-                 "outputs": [], "execution_count": null}
-            ]
-        }).to_string()).unwrap();
+        let mut nb: Notebook = Notebook::from_str(
+            &json!({
+                "nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [
+                    {"cell_type": "code", "id": "a", "source": "one",
+                     "metadata": {"tags": ["t"], "ganymede": stale}, "outputs": [],
+                     "execution_count": null},
+                    // A cell the run never touches keeps what it has.
+                    {"cell_type": "code", "id": "s", "source": "skipped",
+                     "metadata": {"tags": ["skip-execution"],
+                                 "ganymede": {"keep": 2, "ran_source_hash": "old"}},
+                     "outputs": [], "execution_count": null}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
         execute_notebook(
             &s,
             &mut nb,
@@ -1985,24 +1989,28 @@ mod tests {
         let s = KernelSession::start(host, None);
         s.nudge(Duration::from_secs(5)).await.unwrap();
 
-        let mut nb: Notebook = Notebook::from_str(&json!({
-            "nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [
-                {"cell_type": "code", "id": "a", "source": "one",
-                 "metadata": {"tags": ["t"], "ganymede": {"keep": 1,
-                    "ran_source_hash": "stale",
-                    "execution_skipped": "Cell changed while queued"}},
-                 "outputs": [], "execution_count": null},
-                // Only notes: removing them empties the object.
-                {"cell_type": "code", "id": "b", "source": "two",
-                 "metadata": {"ganymede": {"ran_source_hash": "only"}},
-                 "outputs": [], "execution_count": null},
-                // A cell the run never touches keeps what it has.
-                {"cell_type": "code", "id": "s", "source": "skipped",
-                 "metadata": {"tags": ["skip-execution"],
-                             "ganymede": {"keep": 2, "ran_source_hash": "old"}},
-                 "outputs": [], "execution_count": null}
-            ]
-        }).to_string()).unwrap();
+        let mut nb: Notebook = Notebook::from_str(
+            &json!({
+                "nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [
+                    {"cell_type": "code", "id": "a", "source": "one",
+                     "metadata": {"tags": ["t"], "ganymede": {"keep": 1,
+                        "ran_source_hash": "stale",
+                        "execution_skipped": "Cell changed while queued"}},
+                     "outputs": [], "execution_count": null},
+                    // Only notes: removing them empties the object.
+                    {"cell_type": "code", "id": "b", "source": "two",
+                     "metadata": {"ganymede": {"ran_source_hash": "only"}},
+                     "outputs": [], "execution_count": null},
+                    // A cell the run never touches keeps what it has.
+                    {"cell_type": "code", "id": "s", "source": "skipped",
+                     "metadata": {"tags": ["skip-execution"],
+                                 "ganymede": {"keep": 2, "ran_source_hash": "old"}},
+                     "outputs": [], "execution_count": null}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
         execute_notebook(&s, &mut nb, &Options::default())
             .await
             .unwrap();
@@ -2017,7 +2025,11 @@ mod tests {
         let Cell::Code(b) = &nb.cells[1] else {
             panic!()
         };
-        assert_eq!(b.metadata.get("ganymede"), None, "an emptied object is dropped");
+        assert_eq!(
+            b.metadata.get("ganymede"),
+            None,
+            "an emptied object is dropped"
+        );
         let Cell::Code(skipped) = &nb.cells[2] else {
             panic!()
         };
