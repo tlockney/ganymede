@@ -183,9 +183,57 @@ The server checks each cell's source against its hash, clears the cells,
 queues them as one batch, and answers `200 null`. It answers `409
 {"error": "source_mismatch", "cell_id"}` if a cell changed since the
 client hashed it, and `408` if `previous_request_id` wasn't queued within
-ten seconds. A cell that fails stops the rest of its batch.
+ten seconds. A cell that fails stops the rest of its batch, and so does
+one that [changed while queued](#a-cell-that-changed-while-queued).
 
 ![Running cells into a room. A client such as nb-cli or ganymede mcp sends POST /api/kernels/{id}/execute with the document id and each cell's id and source hash (MurmurHash2, seed 0). Ganymede checks each cell's source in the room against its hash: if one changed it answers 409 source_mismatch, and if the previous request wasn't queued within ten seconds it answers 408, and nothing runs. Otherwise it clears the cells, queues them as one batch and answers 200 null. It sends the cells to the kernel one after another; a cell that fails stops the rest of the batch. As outputs arrive on iopub, Ganymede writes them and the execution count into the room, so every client sees them and autosave writes them to the file even with no client connected.](images/rooms/execute.svg)
+
+### A cell that changed while queued
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+A `source_hash` is checked twice: when the request arrives (the `409`
+above), and again when the cell's turn comes, since a batch can wait
+behind other runs. If the room's source then no longer has the hash, the
+cell is not run. It is skipped like a cell after a failure: the rest of
+its batch is skipped too, and the cell goes `idle` with no outputs and no
+new execution count.
+
+The cell shows why in the room: `execution_skipped` is
+`"Cell changed while queued"`. Like `execution_by` it is in the room
+only and is never saved or returned by `GET /api/contents`. It is removed
+when the cell is queued again. The cells skipped after it don't get it,
+nor do cells skipped after a failure; a cell queued twice shows it only
+when its last queued run was skipped for this.
+
+With `wait`, the answer lists these cells, in the order they were to run,
+and leaves the key out when there are none:
+
+```json
+{"finished": true, "cells": [...],
+ "skipped": [{"cell_id": "...", "error": "source_changed_while_queued",
+              "message": "Cell changed while queued"}]}
+```
+
+A cell with no `source_hash`, or chosen by tag or `"all"`, is not
+guarded: it runs the source it has at its turn, unsaved edits included.
+So do the MCP tools that run cells.
+
+A cell that ran records the hash of the source that ran in its
+metadata, saved with the notebook:
+
+```json
+{"metadata": {"ganymede": {"ran_source_hash": "1234567890"}}}
+```
+
+It is the same format as `source_hash`, and a cell edited while it ran
+keeps the hash of the source that ran. Outputs belong to an older source
+when `ran_source_hash` differs from the hash of the cell's current
+source. The cell's other metadata, and the other keys under its
+`ganymede`, are left alone, and the notebook's `clean_run` stamp stays:
+cell metadata doesn't change a run's fingerprint.
 
 ### Who runs a cell
 

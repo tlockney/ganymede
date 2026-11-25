@@ -8,7 +8,7 @@
 //! cells: Array of Map
 //!          id, cell_type, source: Text, metadata: Map,
 //!          code:  execution_count, execution_state, outputs: Array of Map
-//!                 (execution_by, a room-only name, is never saved)
+//!                 (execution_by and execution_skipped, room-only, are never saved)
 //!                 (a stream output's text is a Text)
 //!          markdown/raw: attachments (only when not empty)
 //! ```
@@ -517,6 +517,37 @@ pub fn set_clean_run(txn: &mut TransactionMut, roots: &Roots, stamp: Option<Valu
     }
 }
 
+/// Write `metadata.ganymede.ran_source_hash` on a code cell: the hash of
+/// the source its outputs came from. The cell's other metadata, and the
+/// other keys of its `ganymede` object, are left alone. Works whether the
+/// cell holds `metadata` and `ganymede` as shared maps or plain values.
+pub fn set_ran_source_hash(txn: &mut TransactionMut, ycell: &MapRef, hash: &str) {
+    let ymeta = match ycell.get(txn, "metadata") {
+        Some(Out::YMap(m)) => m,
+        other => {
+            let old = other.map(|o| out_to_json(txn, &o));
+            let ymeta = ycell.insert(txn, "metadata", MapPrelim::default());
+            if let Some(Value::Object(o)) = old {
+                fill_shallow(txn, &ymeta, o);
+            }
+            ymeta
+        }
+    };
+    match ymeta.get(txn, "ganymede") {
+        Some(Out::YMap(g)) => {
+            g.insert(txn, "ran_source_hash", hash);
+        }
+        other => {
+            let mut obj = match other.as_ref().map(|o| out_to_json(txn, o)) {
+                Some(Value::Object(o)) => o,
+                _ => JsonMap::new(),
+            };
+            obj.insert("ran_source_hash".into(), Value::String(hash.to_string()));
+            ymeta.insert(txn, "ganymede", json_to_any(&Value::Object(obj)));
+        }
+    }
+}
+
 /// Fill a map whose values are plain JSON.
 fn fill_shallow(txn: &mut TransactionMut, map: &MapRef, m: JsonMap<String, Value>) {
     for (key, value) in sorted(m) {
@@ -606,6 +637,7 @@ fn strip_runtime(mut cell: Value) -> Value {
     if let Value::Object(m) = &mut cell {
         m.remove("execution_state");
         m.remove("execution_by");
+        m.remove("execution_skipped");
         let empty_attachments = m
             .get("attachments")
             .is_some_and(|a| a.as_object().is_some_and(JsonMap::is_empty));
