@@ -450,10 +450,9 @@ What `ganymede serve` answers, beyond the examples above:
   `/lsp/status` and `/lsp/ws/{name}`; `jupyter-collaboration`'s
   `/api/collaboration` rooms with `/api/fileid/*`, and
   `jupyter-server-documents`' `/api/kernels/{id}/execute`, with Ganymede's
-  `wait`, room-source and `by` (who runs the cells) extensions, and a
-  second check of each `source_hash` when the cell's turn comes
-  ([below](#the-execute-endpoints-second-check); [Live editing and
-  document rooms](rooms.md)); `jupyter-resource-usage`'s `/api/metrics/v1`.
+  `wait`, room-source and `by` (who runs the cells) extensions
+  ([its second check of a cell's `source_hash`](#execute-checks-the-hash-again-before-each-run);
+  [Live editing and document rooms](rooms.md)); `jupyter-resource-usage`'s `/api/metrics/v1`.
 - Ganymede's own: `/api/kernels/{id}/log`, `/api/notebooks/run`
   ([Run a notebook](#run-a-notebook),
   [Parameters and named results](reference.md#parameters-and-named-results)),
@@ -472,7 +471,7 @@ parsed whatever their `Content-Type`, because `@jupyterlab/services`
 omits the header on some requests. [Security](security.md) has how
 requests are authenticated and which `Host` and `Origin` are accepted.
 
-### The execute endpoint's second check
+### Execute checks the hash again before each run
 
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
