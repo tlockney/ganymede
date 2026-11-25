@@ -1262,21 +1262,8 @@ struct McpClient {
 }
 
 impl McpClient {
-    fn start(mut cmd: std::process::Command) -> Self {
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .unwrap();
-        let stdin = child.stdin.take();
-        let lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
-        let mut c = McpClient {
-            child,
-            stdin,
-            lines,
-            next: 0,
-        };
+    fn start(cmd: std::process::Command) -> Self {
+        let mut c = McpClient::start_bare(cmd);
         let v = c.request(
             "initialize",
             serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {},
@@ -1285,6 +1272,35 @@ impl McpClient {
         assert_eq!(v["result"]["serverInfo"]["name"], "ganymede", "{v}");
         c.send(serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
         c
+    }
+
+    /// The command started, with nothing sent yet.
+    fn start_bare(mut cmd: std::process::Command) -> Self {
+        let mut child = cmd
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take();
+        let lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        McpClient {
+            child,
+            stdin,
+            lines,
+            next: 0,
+        }
+    }
+
+    /// A request as a client on protocol 2026-07-28 sends it: no
+    /// `initialize` before it, and who the client is in `_meta`.
+    fn inline(&mut self, method: &str, mut params: serde_json::Value) -> serde_json::Value {
+        params["_meta"] = serde_json::json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": {"name": "claude-code", "title": "Claude Code", "version": "2.1.331"},
+            "io.modelcontextprotocol/clientCapabilities": {"roots": {"listChanged": true},
+                                                          "elicitation": {"form": {}, "url": {}}}});
+        self.request(method, params)
     }
 
     fn send(&mut self, v: serde_json::Value) {
@@ -1502,6 +1518,263 @@ fn mcp_on_stdio_starts_a_new_session_when_the_server_ends_one() {
     stop(server);
 }
 
+/// The environment of a `ganymede mcp` that touches nothing of the
+/// developer's, and has the skills on.
+fn mcp_isolated(cmd: &mut std::process::Command, state: &std::path::Path) {
+    cmd.env("JUPYTER_RUNTIME_DIR", state.join("runtime"))
+        .env("JUPYTER_CONFIG_DIR", state.join("config"))
+        .env("GANYMEDE_CONFIG_DIR", state.join("config"))
+        .env("JUPYTER_DATA_DIR", state.join("data"))
+        .env_remove("GANYMEDE_MCP_SKILLS");
+}
+
+/// Claude Code on protocol 2026-07-28 opens with `server/discover` and
+/// never sends `initialize`: the proxy answers it, then starts the session
+/// the next messages need, so the notebook it opens is still open for its
+/// next call, and the skills are served (#936).
+#[test]
+fn mcp_on_stdio_serves_the_skills_to_a_client_that_skips_initialize() {
+    use sha2::{Digest, Sha256};
+    let root = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let mut cmd = ganymede(&["mcp", "--no-execute", "--root-dir"]);
+    cmd.arg(root.path());
+    mcp_isolated(&mut cmd, state.path());
+    let mut mcp = McpClient::start_bare(cmd);
+
+    let v = mcp.inline("server/discover", serde_json::json!({}));
+    assert!(v.get("error").is_none(), "{v}");
+    assert_eq!(
+        v["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"], "ganymede",
+        "{v}"
+    );
+    assert!(
+        v["result"]["capabilities"]["extensions"]["io.modelcontextprotocol/skills"].is_object(),
+        "{v}"
+    );
+
+    let v = mcp.inline("tools/list", serde_json::json!({}));
+    let tools = v["result"]["tools"].as_array().expect("tools");
+    assert!(tools.iter().any(|t| t["name"] == "notebook_open"), "{v}");
+
+    let v = mcp.inline("skills/list", serde_json::json!({}));
+    let skills = v["result"]["skills"].as_array().expect("skills");
+    let names: Vec<_> = skills
+        .iter()
+        .map(|s| s["frontmatter"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["journal", "page-style"], "{v}");
+
+    let v = mcp.inline(
+        "resources/read",
+        serde_json::json!({"uri": "skill://journal/SKILL.md"}),
+    );
+    let text = v["result"]["contents"][0]["text"].as_str().expect("text");
+    let entry = skills[0]["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["uri"] == "skill://journal/SKILL.md")
+        .unwrap();
+    assert_eq!(entry["size"], text.len());
+    assert_eq!(
+        entry["digest"],
+        format!("sha256:{}", hex::encode(Sha256::digest(text.as_bytes())))
+    );
+    // A file that isn't there.
+    let v = mcp.inline(
+        "resources/read",
+        serde_json::json!({"uri": "skill://journal/né.md"}),
+    );
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no such skill file"),
+        "{v}"
+    );
+
+    // One session behind all of these: what the first call opened is
+    // there for the second, which names no path.
+    let out = {
+        let v = mcp.inline(
+            "tools/call",
+            serde_json::json!({"name": "notebook_open",
+                               "arguments": {"path": "log.ipynb", "title": "Log"}}),
+        );
+        v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert!(out.starts_with("Created log.ipynb"), "{out}");
+    let v = mcp.inline(
+        "tools/call",
+        serde_json::json!({"name": "cell_add", "arguments": {"source": "A finding."}}),
+    );
+    assert!(
+        v.get("error").is_none() && v["result"]["isError"] != true,
+        "{v}"
+    );
+    assert!(mcp.finish().success());
+
+    let nb: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.path().join("log.ipynb")).unwrap()).unwrap();
+    let cell = nb["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["source"].to_string().contains("A finding."))
+        .expect("the cell");
+    // The client's name, from its `_meta`, is the provenance.
+    assert_eq!(cell["metadata"]["ganymede"]["agent"]["by"], "claude-code");
+}
+
+/// With `GANYMEDE_MCP_SKILLS=off` (the journal plugin's setting) the proxy
+/// answers `server/discover` itself with "method not found", so Claude
+/// Code falls back to `initialize`; that answer doesn't declare the Skills
+/// extension, and the skills' methods and files are refused.
+#[test]
+fn mcp_on_stdio_refuses_discover_with_the_skills_off() {
+    let root = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let mut cmd = ganymede(&["mcp", "--no-execute", "--root-dir"]);
+    cmd.arg(root.path());
+    mcp_isolated(&mut cmd, state.path());
+    cmd.env("GANYMEDE_MCP_SKILLS", "off");
+    let mut mcp = McpClient::start_bare(cmd);
+    let v = mcp.inline("server/discover", serde_json::json!({}));
+    assert_eq!(v["error"]["code"], -32601, "{v}");
+    assert_eq!(v["error"]["message"], "Method not found", "{v}");
+    // The fallback: `initialize`, whose answer has no skills.
+    let v = mcp.request(
+        "initialize",
+        serde_json::json!({"protocolVersion": "2025-11-25", "capabilities": {},
+                           "clientInfo": {"name": "claude-code", "version": "2.1.331"}}),
+    );
+    assert_eq!(v["result"]["serverInfo"]["name"], "ganymede", "{v}");
+    assert!(v["result"]["capabilities"]["tools"].is_object(), "{v}");
+    assert!(
+        v["result"]["capabilities"]["extensions"]["io.modelcontextprotocol/skills"].is_null(),
+        "{v}"
+    );
+    mcp.send(serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    for (method, params, code) in [
+        ("skills/list", serde_json::json!({}), -32601),
+        (
+            "skills/get",
+            serde_json::json!({"uri": "skill://journal/SKILL.md"}),
+            -32601,
+        ),
+        (
+            "resources/read",
+            serde_json::json!({"uri": "skill://journal/SKILL.md"}),
+            -32002,
+        ),
+    ] {
+        let v = mcp.request(method, params);
+        assert_eq!(v["error"]["code"], code, "{method}: {v}");
+    }
+    let out = mcp.tool("notebooks_list", serde_json::json!({}));
+    assert!(!out.contains("error"), "{out}");
+    assert!(mcp.finish().success());
+}
+
+/// A client without `initialize` on a server rooted above its folder gets
+/// the folder as an `initialize` client does: the session the proxy starts
+/// for it names the folder (#936).
+#[test]
+fn mcp_on_stdio_names_the_folder_for_a_client_that_skips_initialize() {
+    let root = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("sub")).unwrap();
+    std::fs::write(
+        root.path().join("sub/a.ipynb"),
+        r##"{"cells":[{"cell_type":"markdown","id":"m1","metadata":{},"source":"from disk"}],"metadata":{},"nbformat":4,"nbformat_minor":5}"##,
+    )
+    .unwrap();
+    let mut serve = ganymede(&[
+        "serve",
+        "--mcp",
+        "--port",
+        "0",
+        "--token",
+        "secret",
+        "--root-dir",
+    ]);
+    serve
+        .arg(root.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    mcp_isolated(&mut serve, state.path());
+    let mut server = serve.spawn().unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(server.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+
+    let mut cmd = ganymede(&["mcp"]);
+    cmd.current_dir(root.path().join("sub"));
+    mcp_isolated(&mut cmd, state.path());
+    let mut mcp = McpClient::start_bare(cmd);
+    let v = mcp.inline("server/discover", serde_json::json!({}));
+    assert!(v.get("error").is_none(), "{v}");
+    let v = mcp.inline(
+        "tools/call",
+        serde_json::json!({"name": "notebook_read", "arguments": {"path": "a.ipynb"}}),
+    );
+    assert!(v.to_string().contains("from disk"), "{v}");
+    let v = mcp.inline(
+        "tools/call",
+        serde_json::json!({"name": "notebooks_list", "arguments": {}}),
+    );
+    assert_eq!(v["result"]["content"][0]["text"], "a.ipynb\n", "{v}");
+    assert!(mcp.finish().success());
+    unsafe {
+        kill(server.id() as i32, 15);
+    }
+    server.wait().unwrap();
+}
+
+/// Inline requests that arrive together start one session and go in it.
+#[test]
+fn mcp_on_stdio_starts_one_session_for_inline_requests() {
+    let fake = std::sync::Arc::new(std::sync::Mutex::new(FakeMcp::default()));
+    let mut cmd = ganymede(&["mcp", "--server"]);
+    cmd.arg(FakeMcp::serve(fake.clone()));
+    cmd.env_remove("GANYMEDE_MCP_SKILLS");
+    let mut mcp = McpClient::start_bare(cmd);
+    for id in 100..104 {
+        mcp.send(
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {"name": "notebooks_list", "arguments": {}, "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientInfo": {"name": "claude-code", "version": "1"}}}}),
+        );
+    }
+    let mut seen = 0;
+    while seen < 4 {
+        let line = mcp.lines.next().expect("an answer").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["result"]["content"][0]["text"], "in s1", "{v}");
+        seen += 1;
+    }
+    let f = fake.lock().unwrap();
+    assert_eq!(f.inits, 1, "one session for four first requests");
+    // They went in that session, in the version it settled on, without
+    // the keys that would make the server answer each on its own.
+    assert_eq!(f.calls, vec![("2025-06-18".to_string(), false); 4]);
+    drop(f);
+    // The server ends the session: the next inline request starts another.
+    fake.lock().unwrap().sessions.clear();
+    let v = mcp.inline(
+        "tools/call",
+        serde_json::json!({"name": "notebooks_list", "arguments": {}}),
+    );
+    assert_eq!(v["result"]["content"][0]["text"], "in s2", "{v}");
+    assert!(mcp.finish().success());
+}
+
 /// A stand-in MCP server for the proxy's reconnects: it hands out session
 /// ids, forgets them all on `end_sessions`, and can refuse the next
 /// `initialize`s or answer them slowly.
@@ -1513,6 +1786,9 @@ struct FakeMcp {
     inits: usize,
     refuse_init: usize,
     slow_init: bool,
+    /// The `MCP-Protocol-Version` of each `tools/call`, and whether its
+    /// body still had a 2026-07-28 handshake key in `_meta`.
+    calls: Vec<(String, bool)>,
 }
 
 impl FakeMcp {
@@ -1544,6 +1820,7 @@ impl FakeMcp {
                 return Ok(());
             }
             let (mut len, mut session) = (0usize, None::<String>);
+            let mut version = String::new();
             loop {
                 let mut h = String::new();
                 read.read_line(&mut h)?;
@@ -1555,6 +1832,7 @@ impl FakeMcp {
                 match k.to_ascii_lowercase().as_str() {
                     "content-length" => len = v.trim().parse().unwrap(),
                     "mcp-session-id" => session = Some(v.trim().to_string()),
+                    "mcp-protocol-version" => version = v.trim().to_string(),
                     _ => {}
                 }
             }
@@ -1568,7 +1846,12 @@ impl FakeMcp {
                 if slow {
                     std::thread::sleep(std::time::Duration::from_millis(500));
                 }
-                state.lock().unwrap().answer(&msg, session)
+                let mut f = state.lock().unwrap();
+                if msg["method"] == "tools/call" {
+                    let leaked = msg.to_string().contains("io.modelcontextprotocol/");
+                    f.calls.push((version, leaked));
+                }
+                f.answer(&msg, session)
             } else {
                 (200, String::new(), String::new())
             };

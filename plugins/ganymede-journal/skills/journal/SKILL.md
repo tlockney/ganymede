@@ -100,7 +100,7 @@ Edit.
 10. A shell command or a file you wrote is part of the story but didn't
    run in the kernel. Add it with `cell_add(mode: "recorded")`, never as
    kernel output. Put the command in a ```` ```sh ```` block and its
-   output in a ```` ```text ```` block, as the hook does: a bare
+   output in a ```` ```text ```` block, as the plugin's hook does: a bare
    `# comment` line renders as a heading. With this plugin's hooks, a
    Bash command that ends in the comment `# journal` is recorded for
    you; the hook says so, so don't add it twice. Keep credentials out
@@ -228,8 +228,8 @@ the work there. Keep both sides usable:
 20. Add a Markdown summary after the title (`cell_add(after: <title
     cell id>)`): the findings as a short numbered list, and what is
     still open.
-21. For a longer journal, ask the `journal-reviewer` agent to read it
-    cold, and fix the gaps it finds.
+21. For a longer journal, with this plugin, ask the `journal-reviewer`
+    agent to read it cold, and fix the gaps it finds.
 
 ## Publish
 

@@ -61,6 +61,7 @@ run_case "docs/mcp-tools.md"                  $PR true,false,false,true docs/mcp
 run_case "v8-spike workflow"                  $PR false,false,false,false .github/workflows/v8-spike.yml
 run_case "evals only"                         $PR true,false,false,false evals/journal/x.mjs
 run_case "plugins only"                       $PR true,false,false,false plugins/ganymede-journal/x.json
+run_case "plugin skills"                      $PR true,true,false,true plugins/ganymede-journal/skills/journal/SKILL.md
 run_case "container only"                     $PR true,false,false,false container/Dockerfile
 run_case "release workflow only"              $PR true,false,false,false .github/workflows/release.yml
 run_case "dependabot config"                   $PR true,false,false,false .github/dependabot.yml
