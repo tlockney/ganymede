@@ -10421,8 +10421,10 @@ async fn notebooks_run_saves_a_copy_under_runs() {
         std::fs::write(path, serde_json::to_string_pretty(&nb).unwrap()).unwrap();
     };
     write("reports/daily.ipynb", vec![code("a", "result total 42")]);
-    // The cell after the failure keeps an older run's output in the file.
-    let stale = json!({"cell_type": "code", "execution_count": 7, "id": "c", "metadata": {},
+    // The cell after the failure keeps an older run's output and hash in
+    // the file.
+    let stale = json!({"cell_type": "code", "execution_count": 7, "id": "c",
+        "metadata": {"ganymede": {"ran_source_hash": "old"}},
         "outputs": [{"output_type": "stream", "name": "stdout", "text": "older run"}],
         "source": "result second 2"});
     write(
@@ -10456,6 +10458,12 @@ async fn notebooks_run_saves_a_copy_under_runs() {
     let saved = read(&copy);
     assert_eq!(saved["cells"][0]["execution_count"], 1, "{saved:#}");
     assert!(!saved["cells"][0]["outputs"].as_array().unwrap().is_empty());
+    // The run records the hash of the source each cell ran.
+    assert_eq!(
+        saved["cells"][0]["metadata"]["ganymede"]["ran_source_hash"],
+        json!(hash_of("result total 42")),
+        "{saved:#}"
+    );
     assert_eq!(
         saved["metadata"]["ganymede"]["params"],
         json!({"day": "mon"})
@@ -10497,6 +10505,12 @@ async fn notebooks_run_saves_a_copy_under_runs() {
     );
     assert_eq!(saved["cells"][2]["outputs"], json!([]), "{saved:#}");
     assert_eq!(saved["cells"][2]["execution_count"], Value::Null);
+    // The cell the run never started loses the hash an older run left.
+    assert_eq!(
+        saved["cells"][2]["metadata"]["ganymede"]["ran_source_hash"],
+        Value::Null,
+        "{saved:#}"
+    );
 
     // Without save, nothing is written.
     let (_, v) = run(json!({"path": "reports/daily.ipynb"})).await;

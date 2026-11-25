@@ -248,6 +248,8 @@ pub async fn run_notebook(
     let opts = Options {
         // As `ganymede execute`: a cell that asks for input fails.
         allow_stdin: false,
+        // The run names the source each cell ran, as a room run does.
+        record_source_hash: true,
         ..Default::default()
     };
     // Cells this run started: only their outputs are its results. A cell
