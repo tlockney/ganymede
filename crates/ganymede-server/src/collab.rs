@@ -352,6 +352,47 @@ impl Collab {
         self.rooms.lock().expect("rooms").len()
     }
 
+    /// A read of copy `id` found nothing, so the copy is gone from the
+    /// store while a room may still name it: another server on this root
+    /// discarded or pruned it. Every open room that names it takes the
+    /// newest copy of its path left, or none.
+    pub(crate) async fn recovery_gone(&self, id: &str) {
+        for path in self.rooms_naming(id).await {
+            self.forget_recovery(id, Some(&path)).await;
+        }
+    }
+
+    /// The paths of the open rooms whose `state.recovery` names `id`.
+    async fn rooms_naming(&self, id: &str) -> Vec<String> {
+        let open: Vec<mpsc::UnboundedSender<Cmd>> = self
+            .rooms
+            .lock()
+            .expect("rooms")
+            .iter()
+            .filter(|(room_id, tx)| room_id.starts_with("json:notebook:") && !tx.is_closed())
+            .map(|(_, tx)| tx.clone())
+            .collect();
+        let wanted = id.to_string();
+        let asked = open.into_iter().map(|tx| {
+            let wanted = wanted.clone();
+            async move {
+                let (reply, rx) = tokio::sync::oneshot::channel();
+                tx.send(Cmd::Info(reply)).ok()?;
+                let info = tokio::time::timeout(Duration::from_secs(2), rx)
+                    .await
+                    .ok()?
+                    .ok()?;
+                (info.recovery.as_ref().and_then(|r| r.get("id")) == Some(&json!(wanted)))
+                    .then_some(info.path)
+            }
+        });
+        futures::future::join_all(asked)
+            .await
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
     /// Keep rooms with no clients for `delay` instead of a minute, so
     /// tests can see rooms retire.
     #[doc(hidden)]
@@ -907,6 +948,9 @@ pub(crate) struct RoomInfo {
     path: String,
     clients: Vec<ListedClient>,
     last_change: Option<(std::time::SystemTime, String, bool)>,
+    /// The copy the room names in `state.recovery`, if any: read to
+    /// find rooms naming a copy that is gone ([`Collab::recovery_gone`]).
+    recovery: Option<Value>,
 }
 
 struct ListedClient {
@@ -1233,10 +1277,20 @@ pub(crate) async fn recovery_get(
 ) -> Result<Json<Value>, HttpError> {
     recovery_id(&id)?;
     let store = recovery_store(&state)?;
-    let found = blocking(move || recovery::read(&store, &id))
+    let wanted = id.clone();
+    let found = blocking(move || recovery::read(&store, &wanted))
         .await
         .map_err(recovery_io)?;
-    let (meta, content) = found.ok_or_else(|| HttpError(404, "no such recovery copy".into()))?;
+    let (meta, content) = match found {
+        Some(found) => found,
+        None => {
+            // A room may still name the id: another server on this root
+            // shares the store and may have discarded or pruned the
+            // copy. It takes the newest copy left, or none.
+            state.collab.recovery_gone(&id).await;
+            return Err(HttpError(404, "no such recovery copy".into()));
+        }
+    };
     let mut body = meta.public();
     body["content"] = content;
     Ok(Json(body))
@@ -2043,7 +2097,8 @@ async fn run_room(
                             let last_change = room
                                 .last_change()
                                 .map(|(at, by)| (at, by.name.clone(), by.person));
-                            let _ = reply.send(RoomInfo { path: d.path.clone(), clients: listed, last_change });
+                            let recovery = room.state_value("recovery");
+                            let _ = reply.send(RoomInfo { path: d.path.clone(), clients: listed, last_change, recovery });
                         }
                     }
                     Cmd::Leave(conn) => {

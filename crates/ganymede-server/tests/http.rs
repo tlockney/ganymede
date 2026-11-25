@@ -10893,22 +10893,36 @@ async fn collaboration_room_names_its_recovery_copy_until_it_is_discarded() {
         (Some("merge_conflict"), &json!(["a"]))
     );
 
-    // Discarding the newest names the one before it; discarding that
-    // leaves none to name.
-    for (copy, left) in [(NEW_COPY, Some(OLD_COPY)), (OLD_COPY, None)] {
-        let (s, _) = call(
-            &app,
-            "DELETE",
-            &format!("/api/collaboration/recovery/{copy}"),
-            None,
-            Some(TOKEN),
-        )
-        .await;
-        assert_eq!(s, StatusCode::NO_CONTENT);
-        while recovery_id(&doc).as_deref() == Some(copy) {
-            next(&mut ws, &doc).await;
-        }
-        assert_eq!(recovery_id(&doc).as_deref(), left);
+    // A copy another server on the same root discarded or pruned is gone
+    // from the store while this server's room still names it: reading it
+    // answers 404 and the room takes the newest copy of its path left.
+    for name in [format!("{NEW_COPY}.json"), format!("{NEW_COPY}.ipynb")] {
+        std::fs::remove_file(rec.join(name)).unwrap();
+    }
+    let (s, _) = call(
+        &app,
+        "GET",
+        &format!("/api/collaboration/recovery/{NEW_COPY}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    while recovery_id(&doc).as_deref() != Some(OLD_COPY) {
+        next(&mut ws, &doc).await;
+    }
+    // Discarding the one left by the route clears the name.
+    let (s, _) = call(
+        &app,
+        "DELETE",
+        &format!("/api/collaboration/recovery/{OLD_COPY}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    while recovery_id(&doc).is_some() {
+        next(&mut ws, &doc).await;
     }
 }
 
