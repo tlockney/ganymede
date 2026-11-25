@@ -221,6 +221,13 @@ bundle, so the app fetches them from jsDelivr into the page's cache the
 first time it is online, and maps them with cdp-kernel 0.12.1's
 `SQL_MODULES`. After that, SQL runs offline.
 
+> [!NOTE]
+> **Unreleased in ganymede-ui.** A build of ganymede-ui's `main` fetches
+> DuckDB's files the first time something uses them (a SQL cell, the
+> DuckDB console, a Parquet view), or when you choose Settings > Offline
+> SQL > Download DuckDB in a browser, not the first time the page is
+> online.
+
 With it, the journal skill's Plot section becomes one call, and its
 advice to end a cell with `chart.querySelector("svg")` and name the
 colors in the text goes away: the agent sees the legend in the PNG the
