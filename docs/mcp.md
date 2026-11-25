@@ -360,7 +360,14 @@ When there is no kernel to start (none named, no folder default, and
 the server's default isn't installed), or a kernel the call names isn't
 installed, `notebook_open` of a new notebook fails and creates nothing.
 If the kernel of a notebook the call just created won't start, or the
-notebook can't then be read, the notebook stays and the error says so.
+notebook can't then be read, the call undoes what it made: it shuts
+down a kernel session it started (one it joined is left running) and
+deletes the notebook, and the error says "nothing was created". The
+notebook is deleted only if the file is still as the call created it;
+if it changed meanwhile (someone saved), the contents aren't a local
+folder, or the delete fails, it stays and the error says why. A kernel
+session started for an existing notebook is shut down too when the
+notebook can't be read; the notebook itself is never touched.
 A failed open of any kind (a path that isn't a `.ipynb` too) leaves no
 notebook current, not the one open before it, so the next call must pass
 `path`.

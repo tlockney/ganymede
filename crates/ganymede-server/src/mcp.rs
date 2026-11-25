@@ -576,6 +576,8 @@ impl Notebooks {
             }
         };
         let mut folder_default = None;
+        // Some(stamp of the file) when this call created the notebook.
+        let mut created: Option<Option<String>> = None;
         if !exists {
             if self.opts.read_only {
                 return Err(err(format!(
@@ -627,23 +629,34 @@ impl Notebooks {
             }
             self.create(&path, kernel.as_deref(), a.title.as_deref())
                 .await?;
+            // The file as this call made it, so a failure deletes only that.
+            created = Some(
+                self.state
+                    .collab
+                    .root()
+                    .and_then(|r| ganymede_contents::fileid::api_file_stamp(r, &path)),
+            );
         }
         // What this connection held before, so a failure leaves it so.
         let had_hold = self.holds_room(&path).await;
+        let mut started = None;
         let kernel = if self.opts.read_only || self.opts.no_execute {
             None
         } else {
-            match self.kernel_for(&path, a.kernel.as_deref()).await {
-                Ok(k) => Some(k),
+            match self.kernel_session(&path, a.kernel.as_deref()).await {
+                Ok((id, name, s)) => {
+                    started = s;
+                    Some((id, name))
+                }
                 Err(e) => {
-                    return Err(self.failed_open(&path, exists, had_hold, e).await);
+                    return Err(self.failed_open(&path, created, None, had_hold, e).await);
                 }
             }
         };
         let (nb, token) = match self.read_marked(&path).await {
             Ok(r) => r,
             Err(e) => {
-                return Err(self.failed_open(&path, exists, had_hold, e).await);
+                return Err(self.failed_open(&path, created, started, had_hold, e).await);
             }
         };
         *self.current.lock().expect("current") = Some(path.clone());
@@ -2401,28 +2414,57 @@ impl Notebooks {
         }
     }
 
-    /// `e`, for a failed open, once the hold this call made on the room
-    /// (if the connection had none before) is let go. A notebook this call
-    /// created stays: others may have saved to it by now.
+    /// `e`, for a failed open, once what this call made is undone: the
+    /// hold on the room (if the connection had none before), the session
+    /// it started (`started`), and the notebook it created (`created`,
+    /// with the file's stamp then, if it could be read) unless the file
+    /// changed since. A session it joined, and a notebook that was there,
+    /// are left. What stays, and why, is in the message.
     async fn failed_open(
         &self,
         path: &str,
-        existed: bool,
+        created: Option<Option<String>>,
+        started: Option<String>,
         had_hold: bool,
         e: McpError,
     ) -> McpError {
         if !had_hold {
             self.release_hold(path).await;
         }
-        let kept = if existed {
-            String::new()
-        } else {
-            format!("{} was created and stays, but ", self.show(path))
+        let mut msg = e.message.to_string();
+        if let Some(id) = started {
+            if let Err(d) = self.state.sessions.delete(&id).await {
+                msg.push_str(&format!(
+                    "; the kernel session it started for {} wasn't shut down: {}",
+                    self.show(path),
+                    d.message
+                ));
+            }
+        }
+        let shown = self.show(path);
+        let tail = match created {
+            None => String::new(),
+            Some(stamp) => {
+                let stays = match stamp {
+                    None => Some("the contents aren't a local folder".to_string()),
+                    Some(st) => match self
+                        .state
+                        .collab
+                        .delete_if_unchanged(&self.state.contents, path, &st)
+                        .await
+                    {
+                        Ok(true) => None,
+                        Ok(false) => Some("it changed since this call created it".to_string()),
+                        Err(d) => Some(format!("deleting it failed: {d}")),
+                    },
+                };
+                match stays {
+                    None => "nothing was created, ".to_string(),
+                    Some(why) => format!("{shown} was created and stays ({why}), but "),
+                }
+            }
         };
-        err(format!(
-            "{}; {kept}no notebook is current, so pass path",
-            e.message
-        ))
+        err(format!("{msg}; {tail}no notebook is current, so pass path"))
     }
 
     /// Make `dir` (an API path) and its parents, as `mkdir -p`.
@@ -2498,6 +2540,17 @@ impl Notebooks {
         path: &str,
         kernel: Option<&str>,
     ) -> Result<(String, String), McpError> {
+        let (id, name, _) = self.kernel_session(path, kernel).await?;
+        Ok((id, name))
+    }
+
+    /// [`Self::kernel_for`], and the id of the session this call started:
+    /// `None` when it joined one that was running.
+    async fn kernel_session(
+        &self,
+        path: &str,
+        kernel: Option<&str>,
+    ) -> Result<(String, String, Option<String>), McpError> {
         if let Some(s) = self
             .state
             .sessions
@@ -2505,7 +2558,7 @@ impl Notebooks {
             .into_iter()
             .find(|s| s.path == path)
         {
-            return Ok((s.kernel.id, s.kernel.name));
+            return Ok((s.kernel.id, s.kernel.name, None));
         }
         let name = match kernel {
             Some(k) => Some(k.to_string()),
@@ -2536,7 +2589,7 @@ impl Notebooks {
             })
             .await
             .map_err(|e| err(e.message))?;
-        Ok((s.kernel.id, s.kernel.name))
+        Ok((s.kernel.id, s.kernel.name, Some(s.id)))
     }
 
     async fn insert(

@@ -520,6 +520,39 @@ impl Collab {
         .await
     }
 
+    /// [`Collab::delete`] of the file at `path`, only if its
+    /// [`ganymede_contents::fileid::api_file_stamp`] is still `stamp`;
+    /// true when it deleted. A file that changed, a stamp that can't be
+    /// read, or contents that aren't a local directory leave it (false).
+    /// The check and the delete are under [`Collab::begin_move`]'s lock,
+    /// but a room's autosave doesn't take that lock, so one landing
+    /// between them is still deleted with the file: the window is a few
+    /// microseconds, and a file a call just created has no room edit to
+    /// lose unless someone opened it meanwhile.
+    pub(crate) async fn delete_if_unchanged(
+        self: &Arc<Self>,
+        contents: &Arc<dyn Contents>,
+        path: &str,
+        stamp: &str,
+    ) -> ganymede_contents::Result<bool> {
+        let (collab, contents) = (self.clone(), contents.clone());
+        let (path, stamp) = (path.to_string(), stamp.to_string());
+        detached(async move {
+            let _deleting = collab.begin_move().await;
+            let now = collab
+                .root()
+                .and_then(|r| ganymede_contents::fileid::api_file_stamp(r, &path));
+            if now.as_deref() != Some(stamp.as_str()) {
+                return Ok(false);
+            }
+            contents.delete(&path).await?;
+            collab.removed(&path).await;
+            collab.removed_in_other_roots(&path).await;
+            Ok(true)
+        })
+        .await
+    }
+
     /// Renames `old` to `new` through `contents`, and the ids and open
     /// rooms follow, under [`Collab::begin_move`]'s lock so no room opens
     /// on the old path in between (#522). Runs to the end even if the

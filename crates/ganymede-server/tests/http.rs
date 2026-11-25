@@ -4,8 +4,10 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use futures::{SinkExt, StreamExt};
+use ganymede_api::sessions::KernelRef;
 use ganymede_api::{
-    KernelManager, KernelManagerConfig, SessionManager, StaticKernelspecs, TransportFactory,
+    KernelManager, KernelManagerConfig, SessionCreate, SessionManager, StaticKernelspecs,
+    TransportFactory,
 };
 use ganymede_contents::{FsContents, FsOptions};
 use ganymede_kernel_host::protocol::{
@@ -6930,26 +6932,29 @@ impl Provisioner for FailingProvisioner {
     }
 }
 
-/// A notebook this call created stays when its kernel won't start, the
-/// error says so, and nothing is current (#938).
+/// A notebook this call created is deleted again when its kernel won't
+/// start, the error says so, no session is left, and nothing is current
+/// (#941).
 #[tokio::test]
-async fn mcp_failed_kernel_start_keeps_the_notebook_it_created() {
+async fn mcp_failed_kernel_start_removes_the_notebook_it_created() {
     let dir = tempfile::tempdir().unwrap();
     let st = state_with(
         dir.path(),
         Arc::new(FailingProvisioner),
         Arc::new(FakeTransports),
     );
+    let sessions = st.sessions.clone();
     let app = mcp_app_on(st, dir.path());
     let sid = mcp_connect(&app, "agent").await;
     let v = mcp_tool(&app, &sid, "notebook_open", json!({"path": "t.ipynb"})).await;
     assert!(mcp_failed(&v), "{v}");
     let m = v.to_string();
     assert!(
-        m.contains("t.ipynb was created and stays, but no notebook is current, so pass path"),
+        m.contains("; nothing was created, no notebook is current, so pass path"),
         "{v}"
     );
-    assert!(dir.path().join("t.ipynb").exists(), "file kept");
+    assert!(!dir.path().join("t.ipynb").exists(), "file removed");
+    assert!(sessions.list().is_empty(), "no session");
     let v = mcp_tool(&app, &sid, "cell_add", json!({"source": "1"})).await;
     assert!(mcp_failed(&v), "{v}");
     assert!(v.to_string().contains("no notebook open"), "{v}");
@@ -6974,6 +6979,141 @@ async fn mcp_failed_kernel_start_keeps_the_notebook_it_created() {
             .all(|r| r["clients"].as_array().unwrap().is_empty()),
         "no hold left: {rooms}"
     );
+}
+
+/// Launches like [`FakeProvisioner`], then overwrites `path` (under
+/// `root`) with text that isn't a notebook, so the read after the launch
+/// fails. With `keep_stamp` the file keeps its length, inode and
+/// modification time, so its stamp is what it was.
+struct GarblingProvisioner {
+    file: std::path::PathBuf,
+    keep_stamp: bool,
+}
+#[async_trait]
+impl Provisioner for GarblingProvisioner {
+    async fn launch(
+        &self,
+        spec: &Kernelspec,
+        opts: LaunchOptions,
+    ) -> ganymede_kernel_host::Result<LaunchedKernel> {
+        use std::io::Write;
+        let mtime = std::fs::metadata(&self.file).unwrap().modified().unwrap();
+        let len = std::fs::metadata(&self.file).unwrap().len() as usize;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&self.file)
+            .unwrap();
+        let n = if self.keep_stamp { len } else { len + 7 };
+        f.write_all(&vec![b'x'; n]).unwrap();
+        if self.keep_stamp {
+            f.set_modified(mtime).unwrap();
+        }
+        drop(f);
+        FakeProvisioner.launch(spec, opts).await
+    }
+}
+
+fn garbled_app(
+    dir: &std::path::Path,
+    keep_stamp: bool,
+) -> (axum::Router, Arc<SessionManager>, std::path::PathBuf) {
+    let file = dir.join("t.ipynb");
+    let st = state_with(
+        dir,
+        Arc::new(GarblingProvisioner {
+            file: file.clone(),
+            keep_stamp,
+        }),
+        Arc::new(FakeTransports),
+    );
+    let sessions = st.sessions.clone();
+    (mcp_app_on(st, dir), sessions, file)
+}
+
+/// A new notebook whose kernel starts but whose read fails: the session
+/// this call started is shut down and the file it made is deleted (#941).
+#[tokio::test]
+async fn mcp_failed_read_of_a_new_notebook_removes_session_and_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let (app, sessions, file) = garbled_app(dir.path(), true);
+    let sid = mcp_connect(&app, "agent").await;
+    let args = json!({"path": "t.ipynb", "kernel": "fake"});
+    let v = mcp_tool(&app, &sid, "notebook_open", args).await;
+    assert!(mcp_failed(&v), "{v}");
+    assert!(v.to_string().contains("nothing was created"), "{v}");
+    assert!(sessions.list().is_empty(), "session shut down");
+    assert!(!file.exists(), "file removed");
+}
+
+/// The file changed after this call created it and before it failed:
+/// it stays, and the error says why (#941).
+#[tokio::test]
+async fn mcp_failed_open_keeps_a_created_notebook_that_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (app, sessions, file) = garbled_app(dir.path(), false);
+    let sid = mcp_connect(&app, "agent").await;
+    let args = json!({"path": "t.ipynb", "kernel": "fake"});
+    let v = mcp_tool(&app, &sid, "notebook_open", args).await;
+    assert!(mcp_failed(&v), "{v}");
+    assert!(
+        v.to_string().contains(
+            "t.ipynb was created and stays (it changed since this call created it), \
+             but no notebook is current, so pass path"
+        ),
+        "{v}"
+    );
+    assert!(file.exists(), "changed file kept");
+    assert!(sessions.list().is_empty(), "session shut down");
+}
+
+/// An existing notebook whose read fails after this call started its
+/// kernel: the session goes, the file stays (#941).
+#[tokio::test]
+async fn mcp_failed_read_of_an_existing_notebook_shuts_down_its_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let st = state(dir.path());
+    let sessions = st.sessions.clone();
+    let app = mcp_app_on(st, dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    std::fs::write(dir.path().join("t.ipynb"), "not a notebook").unwrap();
+    let args = json!({"path": "t.ipynb", "kernel": "fake"});
+    let v = mcp_tool(&app, &sid, "notebook_open", args).await;
+    assert!(mcp_failed(&v), "{v}");
+    assert!(!v.to_string().contains("was created"), "{v}");
+    assert!(sessions.list().is_empty(), "session shut down");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("t.ipynb")).unwrap(),
+        "not a notebook"
+    );
+}
+
+/// A session that was already running is left alone when the read fails
+/// (#941).
+#[tokio::test]
+async fn mcp_failed_read_leaves_a_session_it_joined() {
+    let dir = tempfile::tempdir().unwrap();
+    let st = state(dir.path());
+    let sessions = st.sessions.clone();
+    let app = mcp_app_on(st, dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    std::fs::write(dir.path().join("t.ipynb"), "not a notebook").unwrap();
+    sessions
+        .create(SessionCreate {
+            path: "t.ipynb".into(),
+            name: Some("t.ipynb".into()),
+            type_: Some("notebook".into()),
+            kernel: KernelRef {
+                id: None,
+                name: Some("fake".into()),
+            },
+        })
+        .await
+        .unwrap();
+    let args = json!({"path": "t.ipynb"});
+    let v = mcp_tool(&app, &sid, "notebook_open", args).await;
+    assert!(mcp_failed(&v), "{v}");
+    assert_eq!(sessions.list().len(), 1, "joined session still running");
+    assert!(dir.path().join("t.ipynb").exists());
 }
 
 /// A failed open of a path that isn't a notebook leaves no notebook
