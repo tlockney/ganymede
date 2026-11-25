@@ -371,7 +371,10 @@ mod tests {
             .flat_map(|_| put(&two, "two").1)
             .collect();
         assert_eq!(pruned.len(), 1);
-        assert_eq!(list(&one.dir, "a.ipynb").unwrap(), [mine.clone()]);
+        assert_eq!(
+            list(&one.dir, "a.ipynb").unwrap(),
+            std::slice::from_ref(&mine)
+        );
         assert_eq!(list(&two.dir, "a.ipynb").unwrap().len(), MAX_PER_PATH);
         assert!(read(&two.dir, &mine.id).unwrap().is_none());
         assert!(!discard(&two.dir, &mine.id).unwrap());
@@ -455,10 +458,18 @@ mod tests {
         let pruned = prune(&copies.dir, two);
         assert_eq!(pruned.len(), 1, "it says what it deleted");
         assert_eq!(pruned[0].id, ids[0]);
-        let left: Vec<String> = all(&copies.dir).unwrap().into_iter().map(|m| m.id).collect();
+        let left: Vec<String> = all(&copies.dir)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
         assert_eq!(left, [ids[2].clone(), ids[1].clone()]);
         prune(&copies.dir, 1);
-        let left: Vec<String> = all(&copies.dir).unwrap().into_iter().map(|m| m.id).collect();
+        let left: Vec<String> = all(&copies.dir)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
         assert_eq!(left, [ids[2].clone()]);
     }
 

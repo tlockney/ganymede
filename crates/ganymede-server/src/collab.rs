@@ -2746,11 +2746,7 @@ async fn keep_conflicting(
 
 /// Try to make the copies that [`Disk::lost`] edits still lack. False while
 /// one that could have a copy doesn't; a room in that state stays open.
-async fn keep_lost(
-    room: &mut Room,
-    disk: &mut Disk,
-    clients: &HashMap<ConnId, ClientTx>,
-) -> bool {
+async fn keep_lost(room: &mut Room, disk: &mut Disk, clients: &HashMap<ConnId, ClientTx>) -> bool {
     let mut left = Vec::new();
     let mut kept_one = false;
     for mut lost in std::mem::take(&mut disk.lost) {
@@ -4676,8 +4672,10 @@ mod recovery_tests {
         async fn edit(&self, f: impl FnOnce(&mut Room) + Send + 'static) {
             with_notebook(&self.collab, &self.contents, &self.room_id, move |room| {
                 f(room);
-                let mut fx = ganymede_documents::Effects::default();
-                fx.changed = true;
+                let fx = ganymede_documents::Effects {
+                    changed: true,
+                    ..Default::default()
+                };
                 ((), fx)
             })
             .await
@@ -4703,11 +4701,7 @@ mod recovery_tests {
         }
 
         fn write_file(&self, text: &str) {
-            std::fs::write(
-                self.dir.path().join("a.ipynb"),
-                NB.replace("keep", text),
-            )
-            .unwrap();
+            std::fs::write(self.dir.path().join("a.ipynb"), NB.replace("keep", text)).unwrap();
         }
 
         /// Let copies be written again.
@@ -4749,7 +4743,10 @@ mod recovery_tests {
         let failed = |room: &Room| {
             let (save, error) = save_state(room);
             assert_eq!(save, json!("failed"));
-            assert!(error.contains("cell a") && error.contains("not be kept"), "{error}");
+            assert!(
+                error.contains("cell a") && error.contains("not be kept"),
+                "{error}"
+            );
         };
         failed(&room);
         // A reload and a good save don't clear it.
