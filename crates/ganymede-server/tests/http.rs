@@ -10628,7 +10628,14 @@ async fn collaboration_recovery_lists_returns_and_discards_copies() {
     let all = data.path().join("recovery");
     let rec = recovery_of(&all, dir.path());
     recovery_copy(dir.path(), &rec, OLD_COPY, "a.ipynb", "save_failed", "old");
-    recovery_copy(dir.path(), &rec, NEW_COPY, "a.ipynb", "merge_conflict", "new");
+    recovery_copy(
+        dir.path(),
+        &rec,
+        NEW_COPY,
+        "a.ipynb",
+        "merge_conflict",
+        "new",
+    );
     recovery_copy(
         dir.path(),
         &rec,
@@ -10817,7 +10824,14 @@ async fn collaboration_room_names_its_recovery_copy_until_it_is_discarded() {
     let all = data.path().join("recovery");
     let rec = recovery_of(&all, dir.path());
     recovery_copy(dir.path(), &rec, OLD_COPY, "a.ipynb", "save_failed", "old");
-    recovery_copy(dir.path(), &rec, NEW_COPY, "a.ipynb", "merge_conflict", "new");
+    recovery_copy(
+        dir.path(),
+        &rec,
+        NEW_COPY,
+        "a.ipynb",
+        "merge_conflict",
+        "new",
+    );
     recovery_copy(dir.path(), &rec, GONE_COPY, "a.ipynb", "file_gone", "gone");
     let app = recovery_app(dir.path(), &all);
     let (s, v) = call(

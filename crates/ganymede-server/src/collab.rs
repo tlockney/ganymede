@@ -4566,12 +4566,7 @@ mod recovery_tests {
 
         /// One thing the room sent: an update to apply, or a sync step 1
         /// to answer.
-        fn apply(
-            tx: &tokio::sync::mpsc::UnboundedSender<Cmd>,
-            conn: ConnId,
-            doc: &Doc,
-            out: Out,
-        ) {
+        fn apply(tx: &tokio::sync::mpsc::UnboundedSender<Cmd>, conn: ConnId, doc: &Doc, out: Out) {
             let Out::Frame(frame) = out else { return };
             match YMsg::decode_v1(&frame) {
                 Ok(YMsg::Sync(SyncMessage::SyncStep1(sv))) => {
@@ -4604,9 +4599,7 @@ mod recovery_tests {
         assert_eq!(copies.len(), 1);
         assert_eq!(copies[0].reason, "save_failed");
         assert!(copies[0].detail.contains("disk full"), "{:?}", copies[0]);
-        let (_, content) = recovery::read(&fx.store(), &copies[0].id)
-            .unwrap()
-            .unwrap();
+        let (_, content) = recovery::read(&fx.store(), &copies[0].id).unwrap().unwrap();
         let nb = Notebook::from_value(content.clone()).expect("the copy is a notebook");
         assert_eq!(nb.cells.len(), 1);
         assert_eq!(source_of_a(&content), "typed here");
@@ -4629,9 +4622,7 @@ mod recovery_tests {
             .await;
         let copies = fx.copies();
         assert_eq!(copies[0].reason, "file_gone");
-        let (_, content) = recovery::read(&fx.store(), &copies[0].id)
-            .unwrap()
-            .unwrap();
+        let (_, content) = recovery::read(&fx.store(), &copies[0].id).unwrap().unwrap();
         assert_eq!(source_of_a(&content), "typed here");
         fx.until(100, "the room retired", |fx| fx.collab.open_rooms() == 0)
             .await;
@@ -4709,9 +4700,7 @@ mod recovery_tests {
         assert_eq!(copies[0].reason, "merge_conflict");
         assert_eq!(copies[0].cells, ["a"]);
         assert_eq!(copies[0].detail, "cell a");
-        let (_, content) = recovery::read(&fx.store(), &copies[0].id)
-            .unwrap()
-            .unwrap();
+        let (_, content) = recovery::read(&fx.store(), &copies[0].id).unwrap().unwrap();
         assert_eq!(source_of_a(&content), "room wrote this");
         let named = fx.state("recovery").await.expect("state.recovery is set");
         assert_eq!(named["id"], copies[0].id.as_str());
@@ -4960,9 +4949,7 @@ mod recovery_tests {
         let copies = fx.copies();
         assert_eq!(copies.len(), 1);
         assert_eq!(copies[0].reason, "merge_conflict");
-        let (_, content) = recovery::read(&fx.store(), &copies[0].id)
-            .unwrap()
-            .unwrap();
+        let (_, content) = recovery::read(&fx.store(), &copies[0].id).unwrap().unwrap();
         assert_eq!(source_of_a(&content), "room wrote this");
         assert_eq!(
             room.state_value("recovery").unwrap()["id"],
@@ -5116,9 +5103,7 @@ mod recovery_tests {
         assert_eq!(copies.len(), 1);
         assert_eq!(copies[0].reason, "save_failed");
         assert!(copies[0].detail.contains("disk full"), "{:?}", copies[0]);
-        let (_, content) = recovery::read(&fx.store(), &copies[0].id)
-            .unwrap()
-            .unwrap();
+        let (_, content) = recovery::read(&fx.store(), &copies[0].id).unwrap().unwrap();
         assert_eq!(source_of_a(&content), "typed here");
         let id = copies[0].id.clone();
         client::until(&tx, &mut rx, 1, &doc, |d| {
@@ -5160,9 +5145,7 @@ mod recovery_tests {
         assert_eq!(copies.len(), 1);
         assert_eq!(copies[0].reason, "merge_conflict");
         assert_eq!(copies[0].detail, "cell a");
-        let (_, content) = recovery::read(&fx.store(), &copies[0].id)
-            .unwrap()
-            .unwrap();
+        let (_, content) = recovery::read(&fx.store(), &copies[0].id).unwrap().unwrap();
         assert_eq!(source_of_a(&content), "room wrote this");
     }
 
@@ -5185,9 +5168,7 @@ mod recovery_tests {
         let copies = fx.copies();
         assert_eq!(copies.len(), 1);
         assert_eq!(copies[0].reason, "merge_conflict");
-        let (_, content) = recovery::read(&fx.store(), &copies[0].id)
-            .unwrap()
-            .unwrap();
+        let (_, content) = recovery::read(&fx.store(), &copies[0].id).unwrap().unwrap();
         assert_eq!(source_of_a(&content), "room wrote this");
     }
 

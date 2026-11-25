@@ -193,7 +193,10 @@ pub(crate) fn make_dir(dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new().mode(0o700).recursive(true).create(dir)
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(dir)
     }
     #[cfg(not(unix))]
     {
@@ -540,10 +543,7 @@ mod tests {
             .flat_map(|_| put(&two, "two").1)
             .collect();
         assert_eq!(pruned.len(), 1);
-        assert_eq!(
-            list(&one, "a.ipynb").unwrap(),
-            std::slice::from_ref(&mine)
-        );
+        assert_eq!(list(&one, "a.ipynb").unwrap(), std::slice::from_ref(&mine));
         assert_eq!(list(&two, "a.ipynb").unwrap().len(), MAX_PER_PATH);
         assert!(read(&two, &mine.id).unwrap().is_none());
         assert!(!discard(&two, &mine.id).unwrap());
@@ -567,10 +567,25 @@ mod tests {
         let outer = Store::new(rec.path(), Some(outer_root.path()));
         let inner = Store::new(rec.path(), Some(&inner_dir));
         let elsewhere = Store::new(rec.path(), Some(far.path()));
-        let mine = write(&inner, "a.ipynb", &nb("mine"), Reason::MergeConflict, "cell a", &[])
-            .unwrap()
-            .0;
-        write(&elsewhere, "a.ipynb", &nb("theirs"), Reason::SaveFailed, "", &[]).unwrap();
+        let mine = write(
+            &inner,
+            "a.ipynb",
+            &nb("mine"),
+            Reason::MergeConflict,
+            "cell a",
+            &[],
+        )
+        .unwrap()
+        .0;
+        write(
+            &elsewhere,
+            "a.ipynb",
+            &nb("theirs"),
+            Reason::SaveFailed,
+            "",
+            &[],
+        )
+        .unwrap();
         // The outer root sees it at the path relative to it; the copy's
         // own path is the inner root's.
         let listed = list(&outer, "proj/a.ipynb").unwrap();
@@ -754,8 +769,8 @@ mod tests {
         }
         // Counted with the future copies, the new one is the 21st of the
         // path: its own prune must not delete it.
-        let (meta, pruned) = write(&copies, "a.ipynb", &nb("new"), Reason::SaveFailed, "", &[])
-            .unwrap();
+        let (meta, pruned) =
+            write(&copies, "a.ipynb", &nb("new"), Reason::SaveFailed, "", &[]).unwrap();
         assert!(pruned.is_empty(), "{pruned:?}");
         assert!(read_meta_in(&copies.dir, &meta.id).unwrap().is_some());
         // The size bound, met only by the others, stops at it too.
