@@ -577,16 +577,42 @@ impl Notebooks {
                     folder_default.as_ref().map(|f| f.kernel.clone())
                 }
             };
+            // A kernel will start: with none to start, fail before
+            // writing anything.
+            if !self.opts.no_execute && kernel.is_none() {
+                let specs = self
+                    .state
+                    .kernels
+                    .kernelspecs()
+                    .map_err(|e| err(e.message))?;
+                if specs.default.is_empty() {
+                    return Err(err(format!(
+                        "no kernel to start for {path}: none named, no folder default, and no kernelspecs installed here (see kernelspecs_list); nothing was created",
+                        path = self.show(&path)
+                    )));
+                }
+            }
             self.create(&path, kernel.as_deref(), a.title.as_deref())
                 .await?;
         }
-        *self.current.lock().expect("current") = Some(path.clone());
+        // Not the current notebook until it has opened.
         let kernel = if self.opts.read_only || self.opts.no_execute {
             None
         } else {
-            Some(self.kernel_for(&path, a.kernel.as_deref()).await?)
+            match self.kernel_for(&path, a.kernel.as_deref()).await {
+                Ok(k) => Some(k),
+                Err(e) if !exists => {
+                    return Err(err(format!(
+                        "created {path}, but its kernel didn't start ({}); it is not the current notebook, so pass path",
+                        e.message,
+                        path = self.show(&path)
+                    )))
+                }
+                Err(e) => return Err(e),
+            }
         };
         let (nb, token) = self.read_marked(&path).await?;
+        *self.current.lock().expect("current") = Some(path.clone());
         let dir = self.dir.lock().expect("dir").clone();
         let root = match (self.state.collab.root(), dir) {
             (Some(r), Some(d)) => format!(

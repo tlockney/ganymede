@@ -57,6 +57,16 @@ fn state_with(
     provisioner: Arc<dyn Provisioner>,
     transports: Arc<dyn TransportFactory>,
 ) -> AppState {
+    state_specs(root, provisioner, transports, true)
+}
+
+/// [`state_with`], with or without the `fake` kernelspec.
+fn state_specs(
+    root: &std::path::Path,
+    provisioner: Arc<dyn Provisioner>,
+    transports: Arc<dyn TransportFactory>,
+    with_spec: bool,
+) -> AppState {
     let spec = Kernelspec {
         name: "fake".into(),
         resource_dir: root.into(),
@@ -69,7 +79,11 @@ fn state_with(
         extra: Default::default(),
     };
     let kernels = Arc::new(KernelManager::new(
-        Arc::new(StaticKernelspecs(vec![spec])),
+        Arc::new(StaticKernelspecs(if with_spec {
+            vec![spec]
+        } else {
+            vec![]
+        })),
         provisioner,
         transports,
         KernelManagerConfig {
@@ -6345,7 +6359,10 @@ async fn mcp_tool(app: &axum::Router, sid: &str, name: &str, args: Value) -> Val
 }
 
 fn mcp_app(dir: &std::path::Path) -> axum::Router {
-    let mut st = state(dir);
+    mcp_app_on(state(dir), dir)
+}
+
+fn mcp_app_on(mut st: AppState, dir: &std::path::Path) -> axum::Router {
     st.mcp = Some(Arc::new(ganymede_server::mcp::McpState::new(
         ganymede_server::mcp::McpOptions {
             read_only: false,
@@ -6816,6 +6833,59 @@ async fn mcp_works_on_notebooks_without_cell_ids() {
     assert_eq!(saved["nbformat_minor"], 4);
     assert!(saved["cells"][2].get("id").is_none());
     assert!(saved["cells"][2]["outputs"].to_string().contains("hello"));
+}
+
+/// An MCP app on a server with no kernelspecs, and a session on it.
+async fn mcp_no_kernelspecs(dir: &std::path::Path) -> (axum::Router, String) {
+    let st = state_specs(
+        dir,
+        Arc::new(FakeProvisioner),
+        Arc::new(FakeTransports),
+        false,
+    );
+    let app = mcp_app_on(st, dir);
+    let sid = mcp_connect(&app, "agent").await;
+    (app, sid)
+}
+
+fn mcp_failed(v: &Value) -> bool {
+    v.get("error").is_some() || v["result"]["isError"] == true
+}
+
+/// With no kernelspecs, `notebook_open` of a new notebook fails before
+/// creating it and leaves no current notebook (#938).
+#[tokio::test]
+async fn mcp_failed_open_creates_nothing_and_is_not_current() {
+    let dir = tempfile::tempdir().unwrap();
+    let (app, sid) = mcp_no_kernelspecs(dir.path()).await;
+    let failed = mcp_failed;
+    let msg = |v: &Value| v.to_string();
+
+    let v = mcp_tool(&app, &sid, "notebook_open", json!({"path": "t.ipynb"})).await;
+    assert!(failed(&v), "{v}");
+    assert!(msg(&v).contains("nothing was created"), "{v}");
+    assert!(!dir.path().join("t.ipynb").exists(), "no file");
+    let v = mcp_tool(&app, &sid, "cell_add", json!({"source": "1"})).await;
+    assert!(failed(&v), "{v}");
+    assert!(msg(&v).contains("no notebook open"), "{v}");
+    assert!(!dir.path().join("t.ipynb").exists(), "still no file");
+}
+
+/// An existing notebook whose kernel can't start fails to open and is
+/// not the current notebook (#938).
+#[tokio::test]
+async fn mcp_failed_open_of_an_existing_notebook_is_not_current() {
+    let dir = tempfile::tempdir().unwrap();
+    let (app, sid) = mcp_no_kernelspecs(dir.path()).await;
+    let failed = mcp_failed;
+    let msg = |v: &Value| v.to_string();
+    let nb = json!({"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.path().join("e.ipynb"), nb.to_string()).unwrap();
+    let v = mcp_tool(&app, &sid, "notebook_open", json!({"path": "e.ipynb"})).await;
+    assert!(failed(&v), "{v}");
+    let v = mcp_tool(&app, &sid, "cell_add", json!({"source": "1"})).await;
+    assert!(failed(&v), "{v}");
+    assert!(msg(&v).contains("no notebook open"), "{v}");
 }
 
 /// A folder's `.ganymede.toml` sets the kernel new notebooks there start,
