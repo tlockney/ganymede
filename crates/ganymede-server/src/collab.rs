@@ -3073,8 +3073,6 @@ mod join_tests {
         );
     }
 
-    /// `Collab::delete`, which `DELETE /api/contents` calls, waits for an
-    /// index in progress and leaves the path without an id (#580).
     /// No room open for an id: nobody is in it.
     #[tokio::test]
     async fn room_occupied_without_a_room_is_false() {
@@ -3085,6 +3083,8 @@ mod join_tests {
         assert_eq!(r, Ok(false));
     }
 
+    /// `Collab::delete`, which `DELETE /api/contents` calls, waits for an
+    /// index in progress and leaves the path without an id (#580).
     #[tokio::test]
     async fn delete_waits_for_indexing_and_drops_the_id() {
         let (dir, contents) = notebook_dir();
