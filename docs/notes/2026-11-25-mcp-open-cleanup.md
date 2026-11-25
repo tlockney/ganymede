@@ -9,11 +9,12 @@ whose "Left for #941" this closes.
 or the read fails:
 
 - A session this call started is deleted, which shuts its kernel down. A
-  session it joined (one already running for the path) is left alone. A
-  failed delete is added to the error, except "not found" (someone else
-  deleted it, and its kernel went with it). A session someone joins after this call started it is shut down
-  with it; only one running before the call is left alone. This holds for
-  an existing notebook too; the file is never touched then.
+  session it joined (one running before the call, or one another client
+  started while it waited) is left alone. A failed delete is added to the
+  error, except "not found" (someone else deleted it, and its kernel went
+  with it). A session someone joins after this call started it is shut
+  down with it. This holds for an existing notebook too; the file is never
+  touched then.
 - A notebook this call created is deleted, but only if its stamp (size,
   modification time, inode) is still the one read right after the create.
   `Collab::delete_if_unchanged` re-reads the stamp and deletes under the
@@ -35,8 +36,13 @@ or the read fails:
   and asked directly; one that doesn't answer within two seconds (a slow
   save may hold unsaved edits) counts as in use, so the file stays. So
   does the session the call started, which is left running ("someone has
-  it open; it and its kernel stay"): the room is checked before the
-  session is shut down.
+  it open; it and its kernel stay"). The file is decided first, under the
+  move lock, and the session is shut down only if the result isn't "in
+  use", so a client joining between a separate check and the delete can't
+  leave the file kept and its kernel gone.
+- A notebook this call created but whose session it joined (another client
+  made one for the new path while it waited) is kept: "someone has a
+  session on it". That kernel runs code against the file.
 - The session id comes from `SessionManager::create_reporting`, which says
   whether the call made the session, so a session another client created
   while this call waited on the path lock is not taken for its own.
@@ -61,8 +67,9 @@ another client start the session while the open waits on the path lock
 (it fails if the open takes that session for its own); an open of a nested
 path (the folders stay and the message says so); contents without a local
 root; a client from another connection holding the room when the kernel
-won't start; and a room that doesn't answer (a unit test with paused time).
-Not tested: a notebook someone has open whose kernel started and whose read
-then failed (it can't be set up, since a room won't open on a file that
-isn't a notebook), and a failing session delete other than "not found". No test-only seam in the server
-was needed.
+won't start; a notebook created by the call whose session another client
+made meanwhile (kept, with the session); and a room that doesn't answer (a
+unit test with paused time). Not tested: a notebook someone has open whose
+kernel started and whose read then failed (it can't be set up, since a room
+won't open on a file that isn't a notebook), and a failing session delete
+other than "not found". No test-only seam in the server was needed.

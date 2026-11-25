@@ -363,17 +363,21 @@ If the kernel of a notebook the call just created won't start, or the
 notebook can't then be read, the call undoes what it made: it shuts
 down a kernel session it started and deletes the notebook, and the error
 says "the notebook was removed". Folders it made for the notebook stay,
-and the error says so. Only a session that was already running before
-the call is left alone; one that someone joins after the call started it
-is shut down with it. The notebook is deleted only if the file is still
-as the call created it. If it changed meanwhile (someone saved), the
-contents aren't a local folder, or the delete fails, it stays and the
-error says why. If someone has it open (or its room didn't answer in two
+and the error says so. A session the call joined (one already on that
+path, or one another client started while it waited) is left alone; one
+that someone joins after the call started it is shut down with it. The
+notebook is deleted only if the file is still as the call created it. If
+it changed meanwhile (someone saved), the contents aren't a local folder,
+or the delete fails, it stays and the error says why. If someone has a
+session on its path that the call joined (one another client started
+while the call waited, or one left from an earlier file at that path,
+since deleting a file doesn't end its session) it stays too. If someone has it open (or its room didn't answer in two
 seconds) it stays, and so does the kernel session the call started, as
-they may be using both. A kernel session started for an existing
-notebook is shut down too when the notebook can't be read; the notebook
-itself is never touched. If a session can't be shut down, the error says
-so.
+they may be using both; the file is decided first, so a client joining
+before the file is decided can't leave the file without its kernel. A
+kernel session started for an existing notebook is shut down too when the
+notebook can't be read; the notebook itself is never touched. If a
+session can't be shut down, the error says so.
 A failed open of any kind (a path that isn't a `.ipynb` too) leaves no
 notebook current, not the one open before it, so the next call must pass
 `path`.
