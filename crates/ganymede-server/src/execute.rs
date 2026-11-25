@@ -41,7 +41,10 @@
 //! cell that fails stops the rest of its batch, as a kernel's
 //! `stop_on_error` does for JupyterLab's Run All. A cell that ran gets
 //! `metadata.ganymede.ran_source_hash`, the hash of the source it ran,
-//! saved with the notebook. Input requests are refused (`allow_stdin`
+//! saved with the notebook. Only these runs write it: when a client runs
+//! the cell itself, the room removes it (and `execution_skipped`), since
+//! the server doesn't see what source ran. It is cell metadata because
+//! stream and error outputs have none of their own. Input requests are refused (`allow_stdin`
 //! off).
 
 use crate::collab::{send_to_notebook_room, Cmd};
@@ -1670,6 +1673,55 @@ mod request_tests {
             cell_json(&mut room, "a")["metadata"]["ganymede"]["ran_source_hash"],
             "78"
         );
+    }
+
+    #[test]
+    fn a_client_run_removes_the_hash_and_a_room_run_records_it_again() {
+        use ganymede_documents::yrs::sync::{Message, SyncMessage};
+        use ganymede_documents::yrs::updates::{decoder::Decode, encoder::Encode};
+        use ganymede_documents::yrs::{Doc, ReadTxn, Transact, Update};
+        let (mut room, mut x) = (room_of(5), exec());
+        room.edit(|txn, roots| {
+            let a = schema::find_cell(txn, roots, "a").unwrap();
+            let Some(Out::YMap(meta)) = a.get(txn, "metadata") else {
+                panic!("metadata is a map");
+            };
+            let keep = schema::json_to_any(&json!({"keep": 1}));
+            meta.insert(txn, "ganymede", keep);
+        });
+        let room_run = |room: &mut Room, x: &mut RoomExec, hash: &str| {
+            run(x, room, &[id("a")], "A");
+            let out = json!({"output_type": "stream", "name": "stdout", "text": "1"});
+            let outputs = Some(vec![out]);
+            x.finish(room, "a", outputs, Some(1), Some(hash.into()), false);
+            cell_json(room, "a")["metadata"]["ganymede"].clone()
+        };
+        let recorded = room_run(&mut room, &mut x, "77");
+        assert_eq!(recorded, json!({"keep": 1, "ran_source_hash": "77"}));
+
+        // A client runs it, as JupyterLab does: blank the count, replace
+        // the outputs.
+        let client = Doc::new();
+        let state = Update::decode_v1(&room.encode_state()).unwrap();
+        client.transact_mut().apply_update(state).unwrap();
+        let before = client.transact().state_vector();
+        {
+            let roots = Roots::get(&client);
+            let mut txn = client.transact_mut();
+            let a = schema::find_cell(&txn, &roots, "a").unwrap();
+            a.insert(&mut txn, "execution_count", Any::Null);
+            let out = json!({"output_type": "stream", "name": "stdout", "text": "2"});
+            schema::set_outputs(&mut txn, &a, vec![out]);
+        }
+        let update = client.transact().encode_state_as_update_v1(&before);
+        room.receive(1, &Message::Sync(SyncMessage::Update(update)).encode_v1())
+            .unwrap();
+        let a = cell_json(&mut room, "a");
+        assert_eq!(a["metadata"]["ganymede"], json!({"keep": 1}));
+        assert_eq!(a["outputs"][0]["text"], json!("2"));
+
+        let recorded = room_run(&mut room, &mut x, "78");
+        assert_eq!(recorded, json!({"keep": 1, "ran_source_hash": "78"}));
     }
 
     #[test]

@@ -517,8 +517,8 @@ pub fn set_clean_run(txn: &mut TransactionMut, roots: &Roots, stamp: Option<Valu
     }
 }
 
-/// Write `metadata.ganymede.ran_source_hash` on a code cell: the hash of
-/// the source its outputs came from. The cell's other metadata, and the
+/// Write `metadata.ganymede.ran_source_hash` on a code cell the server
+/// ran: the hash of the source its outputs came from. The cell's other metadata, and the
 /// other keys of its `ganymede` object, are left alone. Works whether the
 /// cell holds `metadata` and `ganymede` as shared maps or plain values.
 pub fn set_ran_source_hash(txn: &mut TransactionMut, ycell: &MapRef, hash: &str) {
@@ -545,6 +545,40 @@ pub fn set_ran_source_hash(txn: &mut TransactionMut, ycell: &MapRef, hash: &str)
             obj.insert("ran_source_hash".into(), Value::String(hash.to_string()));
             ymeta.insert(txn, "ganymede", json_to_any(&Value::Object(obj)));
         }
+    }
+}
+
+/// Remove [`set_ran_source_hash`]'s key from a cell, leaving the rest of its
+/// metadata (an emptied `ganymede` stays, as `{}`). Whether it was there.
+pub fn clear_ran_source_hash(txn: &mut TransactionMut, ycell: &MapRef) -> bool {
+    const KEY: &str = "ran_source_hash";
+    match ycell.get(txn, "metadata") {
+        Some(Out::YMap(ymeta)) => match ymeta.get(txn, "ganymede") {
+            Some(Out::YMap(g)) => g.remove(txn, KEY).is_some(),
+            Some(other) => {
+                let Value::Object(mut obj) = out_to_json(txn, &other) else {
+                    return false;
+                };
+                let had = obj.remove(KEY).is_some();
+                if had {
+                    ymeta.insert(txn, "ganymede", json_to_any(&Value::Object(obj)));
+                }
+                had
+            }
+            None => false,
+        },
+        Some(other) => {
+            let mut meta = out_to_json(txn, &other);
+            let had = meta
+                .get_mut("ganymede")
+                .and_then(Value::as_object_mut)
+                .is_some_and(|g| g.remove(KEY).is_some());
+            if had {
+                ycell.insert(txn, "metadata", json_to_any(&meta));
+            }
+            had
+        }
+        None => false,
     }
 }
 

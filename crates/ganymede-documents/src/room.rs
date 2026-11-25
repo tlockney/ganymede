@@ -57,6 +57,44 @@ fn hash_type_and_source<T: ReadTxn>(
     code
 }
 
+/// The id of the cell in `cells` whose `execution_count` or outputs `event`
+/// changed, if it did. A cell added or replaced whole is no such change,
+/// nor is writing the count it has.
+fn rerun_cell(
+    txn: &yrs::TransactionMut,
+    cells: &yrs::ArrayRef,
+    event: &yrs::types::Event,
+) -> Option<String> {
+    use yrs::types::{EntryChange, Event, PathSegment};
+    use yrs::{Array, Out};
+    let path = event.path();
+    let Some(PathSegment::Index(index)) = path.front() else {
+        return None;
+    };
+    let changed = match (path.get(1), event) {
+        (Some(PathSegment::Key(key)), _) => &**key == "outputs",
+        (None, Event::Map(e)) => {
+            let keys = e.keys(txn);
+            keys.contains_key("outputs")
+                || match keys.get("execution_count") {
+                    Some(EntryChange::Updated(Out::Any(old), Out::Any(new))) => old != new,
+                    change => change.is_some(),
+                }
+        }
+        _ => false,
+    };
+    if !changed {
+        return None;
+    }
+    let Some(Out::YMap(cell)) = cells.get(txn, *index) else {
+        return None;
+    };
+    match cell.get(txn, "id") {
+        Some(Out::Any(yrs::Any::String(id))) => Some(id.to_string()),
+        _ => None,
+    }
+}
+
 /// `jupyter-collaboration`'s raw message type.
 pub const MSG_RAW: u32 = 2;
 
@@ -180,6 +218,10 @@ pub struct Room {
     /// Set when a transaction touches `cells` or `meta` (not `state`,
     /// which clients write too: `document_id` on connect).
     content_changed: Arc<AtomicBool>,
+    /// Ids of the cells whose `execution_count` or outputs changed since
+    /// this was last emptied, from the observer of `cells`. A client's
+    /// update is emptied before and read after; the rest is ignored.
+    rerun: Arc<Mutex<HashSet<String>>>,
     /// Another process owns the file (#272): see [`Room::set_read_only`].
     read_only: bool,
     /// The depth of each nested shared type, by the id of the item holding
@@ -237,11 +279,15 @@ impl Room {
         let doc = Doc::new();
         let roots = notebook.then(|| Roots::get(&doc));
         let content_changed: Arc<AtomicBool> = Arc::default();
+        let rerun: Arc<Mutex<HashSet<String>>> = Arc::default();
         if let Some(roots) = &roots {
             use yrs::DeepObservable;
             let flag = content_changed.clone();
-            roots.cells.observe_deep(OBSERVER, move |_, _| {
+            let (ids, cells) = (rerun.clone(), roots.cells.clone());
+            roots.cells.observe_deep(OBSERVER, move |txn, events| {
                 flag.store(true, Ordering::Relaxed);
+                let mut ids = ids.lock().expect("rerun cells");
+                ids.extend(events.iter().filter_map(|e| rerun_cell(txn, &cells, e)));
             });
             let flag = content_changed.clone();
             roots.meta.observe_deep(OBSERVER, move |_, _| {
@@ -264,6 +310,7 @@ impl Room {
             saved_generation: 0,
             baseline: None,
             content_changed,
+            rerun,
             read_only: false,
             depths: HashMap::new(),
             shared_depth: 0,
@@ -488,6 +535,7 @@ impl Room {
                 // update changed.
                 let before = (refused.is_none() && !self.read_only).then(|| self.prints());
                 let run_before = before.as_ref().and_then(|_| self.run_print_if_stamped());
+                self.take_rerun();
                 let applied = match refused {
                     Some(e) => Err(e),
                     None => Update::decode_v1(&bytes).map_err(|e| e.to_string()),
@@ -548,6 +596,8 @@ impl Room {
                             person: true,
                         };
                         self.attribute(&before, &author);
+                        let rerun = self.take_rerun();
+                        self.clear_run_notes(&before, &rerun);
                     }
                 }
                 if !updates.is_empty() {
@@ -558,6 +608,7 @@ impl Room {
                         ));
                     }
                 }
+                fx.merge(self.broadcast_own());
                 if let Some(run) = run_before {
                     fx.merge(self.clear_stale_clean_run(run));
                 }
@@ -724,6 +775,7 @@ impl Room {
         }
         self.content_changed.store(false, Ordering::Relaxed);
         self.attribute(&before, &from_file());
+        self.clear_run_notes(&before, &HashSet::new());
         self.generation += 1;
         self.saved_generation = self.generation;
         self.baseline = Some(schema::notebook_value(notebook));
@@ -775,6 +827,7 @@ impl Room {
         }
         self.content_changed.store(false, Ordering::Relaxed);
         self.attribute(&before, &from_file());
+        self.clear_run_notes(&before, &HashSet::new());
         self.generation += 1;
         self.baseline = Some(theirs);
         let mut fx = self.broadcast_own();
@@ -842,6 +895,57 @@ impl Room {
             out.insert(id.to_string(), h.finish());
         }
         out
+    }
+
+    /// The cells in [`Room::rerun`], which is empty afterwards.
+    fn take_rerun(&self) -> HashSet<String> {
+        std::mem::take(&mut *self.rerun.lock().expect("rerun cells"))
+    }
+
+    /// After a change to the document: remove what the cells say of a run
+    /// that the change outdates. A cell in `rerun`, which a client ran (or
+    /// cleared) itself, loses `ran_source_hash` and `execution_skipped`;
+    /// one whose source or type is no longer `before`'s loses
+    /// `execution_skipped`. A server edit, left for the caller to send and
+    /// count as part of the change.
+    fn clear_run_notes(&mut self, before: &HashMap<String, u64>, rerun: &HashSet<String>) {
+        use yrs::{Array, Out};
+        let Some(roots) = self.roots.clone() else {
+            return;
+        };
+        let mut edits: Vec<(yrs::MapRef, bool)> = Vec::new();
+        {
+            use std::hash::Hasher;
+            let txn = self.doc().transact();
+            for cell in roots.cells.iter(&txn) {
+                let Out::YMap(m) = cell else { continue };
+                let Some(Out::Any(yrs::Any::String(id))) = m.get(&txn, "id") else {
+                    continue;
+                };
+                let reran = rerun.contains(&*id);
+                let edited = || {
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    hash_type_and_source(&txn, &m, &mut h);
+                    before.get(&*id).is_some_and(|fp| *fp != h.finish())
+                };
+                if reran || (m.contains_key(&txn, "execution_skipped") && edited()) {
+                    edits.push((m, reran));
+                }
+            }
+        }
+        if edits.is_empty() {
+            return;
+        }
+        {
+            let mut txn = self.awareness.doc().transact_mut();
+            for (cell, reran) in edits {
+                cell.remove(&mut txn, "execution_skipped");
+                if reran {
+                    schema::clear_ran_source_hash(&mut txn, &cell);
+                }
+            }
+        }
+        self.content_changed.store(false, Ordering::Relaxed);
     }
 
     /// A hash of what a full run of the notebook depends on and leaves
@@ -1014,6 +1118,8 @@ impl Room {
                 person: false,
             };
             self.edit_unclaimed = self.attribute(&before, &server);
+            self.clear_run_notes(&before, &HashSet::new());
+            fx.merge(self.broadcast_own());
             if let Some(run) = run_before {
                 fx.merge(self.clear_stale_clean_run(run));
             }

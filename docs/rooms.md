@@ -204,7 +204,9 @@ new execution count.
 The cell shows why in the room: `execution_skipped` is
 `"Cell changed while queued"`. Like `execution_by` it is in the room
 only and is never saved or returned by `GET /api/contents`. It is removed
-when the cell is queued again. The cells skipped after it don't get it,
+when the cell is queued again, when its source or type is edited (by a
+client, the server or a change to the file), and when a client runs the
+cell itself. The cells skipped after it don't get it,
 nor do cells skipped after a failure; a cell queued twice shows it only
 when its last queued run was skipped for this.
 
@@ -221,8 +223,8 @@ A cell with no `source_hash`, or chosen by tag or `"all"`, is not
 guarded: it runs the source it has at its turn, unsaved edits included.
 So do the MCP tools that run cells.
 
-A cell that ran records the hash of the source that ran in its
-metadata, saved with the notebook:
+A cell the server runs through the room records the hash of the source
+that ran in its metadata, saved with the notebook:
 
 ```json
 {"metadata": {"ganymede": {"ran_source_hash": "1234567890"}}}
@@ -234,6 +236,16 @@ when `ran_source_hash` differs from the hash of the cell's current
 source. The cell's other metadata, and the other keys under its
 `ganymede`, are left alone, and the notebook's `clean_run` stamp stays:
 cell metadata doesn't change a run's fingerprint.
+
+Only those runs write the key. A client that runs a cell itself, such as
+JupyterLab, writes the outputs and the execution count into the room, and
+the server doesn't see which source they came from. So when a client's
+update changes a code cell's `execution_count` or outputs (clearing them
+too), the room removes the cell's `ran_source_hash`: a cell without the
+key says nothing about which source its outputs came from. A change to
+the file keeps what the file has. The hash is in the cell's metadata, not
+each output's, because stream and error outputs have no metadata, and a
+cell can run without any output.
 
 ### Who runs a cell
 
