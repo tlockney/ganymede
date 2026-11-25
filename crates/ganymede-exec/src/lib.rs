@@ -9,9 +9,13 @@
 //! - Cells whose source is blank, and cells tagged `skip-execution`, are
 //!   left untouched.
 //! - `execution_count` counts the cells this run executed.
-//! - Each executed code cell records `metadata.ganymede.ran_source_hash`,
-//!   the hash of the source this run sent, and loses any
-//!   `metadata.ganymede.execution_skipped` note.
+//! - Each executed code cell loses any
+//!   `metadata.ganymede.execution_skipped` note, and its
+//!   `metadata.ganymede.ran_source_hash` is the hash of the source this
+//!   run sent with [`Options::record_source_hash`] on — off, as
+//!   `jupyter execute` writes it, a stale key is removed instead,
+//!   keeping the other keys of the `ganymede` object and dropping an
+//!   emptied one.
 //! - `metadata.execution` records the busy, execute_input, reply, and idle
 //!   timestamps from the kernel's message headers.
 //! - `clear_output` with `wait` clears when the next output arrives.
@@ -88,6 +92,13 @@ pub struct Options {
     /// count and history (what else it skips is kernel-dependent). Off for
     /// scratch runs.
     pub store_history: bool,
+    /// Record `metadata.ganymede.ran_source_hash` on each executed cell,
+    /// the hash of the source this run sends, as the run entries that
+    /// guard a source do (room runs, notebooks run, the host API). Off,
+    /// as `jupyter execute` writes it: a cell this run executes loses a
+    /// stale key and its `execution_skipped` note instead, keeping the
+    /// other keys of its `ganymede` object and dropping an emptied one.
+    pub record_source_hash: bool,
 }
 
 impl Default for Options {
@@ -103,6 +114,7 @@ impl Default for Options {
             store_widget_state: true,
             allow_stdin: false,
             store_history: true,
+            record_source_hash: false,
         }
     }
 }
@@ -491,8 +503,14 @@ impl NotebookRun {
         req.stop_on_error = !allows_errors;
         // The run names the source it sends, as a run through a room does,
         // and supersedes a skip note. Written before the run, so a failed
-        // one leaves the hash of the source it sent too.
-        set_ran_source_hash(cell, &ganymede_nbformat::source_hash(cell.source.as_str()));
+        // one leaves the hash of the source it sent too. Without the key,
+        // a stale one and the skip note are removed instead, so the cell
+        // comes out as `jupyter execute` writes it.
+        if self.opts.record_source_hash {
+            set_ran_source_hash(cell, &ganymede_nbformat::source_hash(cell.source.as_str()));
+        } else {
+            clear_run_notes(cell);
+        }
         cell.outputs.clear();
         self.executed += 1;
         let execution_count = self.executed;
@@ -840,6 +858,21 @@ pub fn set_ran_source_hash(cell: &mut CodeCell, hash: &str) {
 pub fn clear_ran_source_hash(cell: &mut CodeCell) {
     if let Some(Value::Object(g)) = cell.metadata.get_mut("ganymede") {
         g.remove("ran_source_hash");
+    }
+}
+
+/// Remove the run notes — [`set_ran_source_hash`]'s key and the
+/// `execution_skipped` note it supersedes — from a cell a run executes
+/// without recording them, as `jupyter execute` writes it. No key is
+/// added; the other keys of the `ganymede` object stay, and an object
+/// the removals empty is dropped.
+fn clear_run_notes(cell: &mut CodeCell) {
+    if let Some(Value::Object(g)) = cell.metadata.get_mut("ganymede") {
+        g.remove("ran_source_hash");
+        g.remove("execution_skipped");
+        if g.is_empty() {
+            cell.metadata.remove("ganymede");
+        }
     }
 }
 
@@ -1889,8 +1922,9 @@ mod tests {
         );
     }
 
-    /// A cell that ran names the source it ran, replacing a stale hash and
-    /// a skip note an earlier run left, and keeping the rest.
+    /// With `record_source_hash` on, a cell that ran names the source it
+    /// ran, replacing a stale hash and a skip note an earlier run left,
+    /// and keeping the rest.
     #[tokio::test]
     async fn a_cell_that_ran_records_the_hash_of_the_source_it_ran() {
         let (host, side) = in_process_pair(64);
@@ -1912,9 +1946,16 @@ mod tests {
                  "outputs": [], "execution_count": null}
             ]
         }).to_string()).unwrap();
-        execute_notebook(&s, &mut nb, &Options::default())
-            .await
-            .unwrap();
+        execute_notebook(
+            &s,
+            &mut nb,
+            &Options {
+                record_source_hash: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         let Cell::Code(a) = &nb.cells[0] else {
             panic!()
         };
@@ -1923,6 +1964,61 @@ mod tests {
             json!({"keep": 1, "ran_source_hash": ganymede_nbformat::source_hash("one")})
         );
         let Cell::Code(skipped) = &nb.cells[1] else {
+            panic!()
+        };
+        assert_eq!(
+            skipped.metadata["ganymede"],
+            json!({"keep": 2, "ran_source_hash": "old"}),
+            "a cell that did not run keeps its hash"
+        );
+    }
+
+    /// With `record_source_hash` off (the default), a cell a run executes
+    /// removes a stale hash and a skip note and adds nothing, as
+    /// `jupyter execute` writes it: the other keys of its `ganymede`
+    /// object stay, an object the removals empty is dropped, and a cell
+    /// the run never touches keeps what it has.
+    #[tokio::test]
+    async fn a_run_that_records_no_hash_removes_the_notes_a_cell_had() {
+        let (host, side) = in_process_pair(64);
+        FakeKernel::spawn(side, ReplyOrder::IdleThenReply);
+        let s = KernelSession::start(host, None);
+        s.nudge(Duration::from_secs(5)).await.unwrap();
+
+        let mut nb: Notebook = Notebook::from_str(&json!({
+            "nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [
+                {"cell_type": "code", "id": "a", "source": "one",
+                 "metadata": {"tags": ["t"], "ganymede": {"keep": 1,
+                    "ran_source_hash": "stale",
+                    "execution_skipped": "Cell changed while queued"}},
+                 "outputs": [], "execution_count": null},
+                // Only notes: removing them empties the object.
+                {"cell_type": "code", "id": "b", "source": "two",
+                 "metadata": {"ganymede": {"ran_source_hash": "only"}},
+                 "outputs": [], "execution_count": null},
+                // A cell the run never touches keeps what it has.
+                {"cell_type": "code", "id": "s", "source": "skipped",
+                 "metadata": {"tags": ["skip-execution"],
+                             "ganymede": {"keep": 2, "ran_source_hash": "old"}},
+                 "outputs": [], "execution_count": null}
+            ]
+        }).to_string()).unwrap();
+        execute_notebook(&s, &mut nb, &Options::default())
+            .await
+            .unwrap();
+        let Cell::Code(a) = &nb.cells[0] else {
+            panic!()
+        };
+        assert_eq!(
+            a.metadata["ganymede"],
+            json!({"keep": 1}),
+            "the stale hash and skip note go, the rest stays"
+        );
+        let Cell::Code(b) = &nb.cells[1] else {
+            panic!()
+        };
+        assert_eq!(b.metadata.get("ganymede"), None, "an emptied object is dropped");
+        let Cell::Code(skipped) = &nb.cells[2] else {
             panic!()
         };
         assert_eq!(

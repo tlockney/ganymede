@@ -1136,6 +1136,9 @@ async fn execute(
         // As `jupyter execute`: a cell that asks for input fails.
         allow_stdin: false,
         store_history: true,
+        // As `jupyter execute`: no run key is recorded; a stale one on a
+        // cell this run executes is removed.
+        record_source_hash: false,
     };
     let mut stop = StopSignals::new()?;
     let mut status = ExitCode::SUCCESS;
