@@ -22,7 +22,7 @@ saw an error and thought nothing was open, while its next path-less
 - If the kernel then fails to start, or the read fails, for a notebook the
   call just created, the file stays (someone may have saved to it by now;
   an earlier version deleted it and could lose that work) and the error says
-  so: "<path> was created and stays, but no notebook is current, so pass
+  so: "`<path>` was created and stays, but no notebook is current, so pass
   path".
 - If it fails for an existing notebook, that stays as it was, and the error
   ends "no notebook is current, so pass path".
