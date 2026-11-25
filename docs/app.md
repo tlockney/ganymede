@@ -114,6 +114,14 @@ don't use it: they run their kernel as a kernel of their server.
 
 - **Toolbar.** Run, insert, kernel picker, interrupt and restart, Trust
   Notebook, and Download Notebook.
+
+  > [!NOTE]
+  > **Unreleased in ganymede-ui.** In a build of ganymede-ui's `main`,
+  > the browser toolbar has Run Cell with a run menu (Run All, restarts),
+  > Interrupt, Trust Notebook and Notebook Access when they apply, Share
+  > and a ⋯ menu; the kernel picker is in a status line under the title.
+  > Not in its latest release.
+
 - **Shortcuts.** JupyterLab's defaults. Press H in command mode, or Help ›
   Keyboard Shortcuts on the Mac, for the list; bindings can be changed
   there and are kept in the browser.
