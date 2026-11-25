@@ -57,15 +57,17 @@ fn state_with(
     provisioner: Arc<dyn Provisioner>,
     transports: Arc<dyn TransportFactory>,
 ) -> AppState {
-    state_specs(root, provisioner, transports, true)
+    state_specs(root, provisioner, transports, true, None)
 }
 
-/// [`state_with`], with or without the `fake` kernelspec.
+/// [`state_with`], with or without the `fake` kernelspec, and with the
+/// server's default kernel set to `default_kernel`.
 fn state_specs(
     root: &std::path::Path,
     provisioner: Arc<dyn Provisioner>,
     transports: Arc<dyn TransportFactory>,
     with_spec: bool,
+    default_kernel: Option<&str>,
 ) -> AppState {
     let spec = Kernelspec {
         name: "fake".into(),
@@ -89,6 +91,7 @@ fn state_specs(
         KernelManagerConfig {
             startup_timeout: Duration::from_secs(5),
             root_dir: root.into(),
+            default_kernel: default_kernel.map(str::to_string),
             ..Default::default()
         },
     ));
@@ -6842,6 +6845,7 @@ async fn mcp_no_kernelspecs(dir: &std::path::Path) -> (axum::Router, String) {
         Arc::new(FakeProvisioner),
         Arc::new(FakeTransports),
         false,
+        None,
     );
     let app = mcp_app_on(st, dir);
     let sid = mcp_connect(&app, "agent").await;
@@ -6886,6 +6890,95 @@ async fn mcp_failed_open_of_an_existing_notebook_is_not_current() {
     let v = mcp_tool(&app, &sid, "cell_add", json!({"source": "1"})).await;
     assert!(failed(&v), "{v}");
     assert!(msg(&v).contains("no notebook open"), "{v}");
+}
+
+/// A server default kernel that isn't installed is no kernel to start:
+/// `notebook_open` of a new notebook fails before creating it (#938).
+#[tokio::test]
+async fn mcp_failed_open_when_the_default_kernel_isnt_installed() {
+    let dir = tempfile::tempdir().unwrap();
+    let st = state_specs(
+        dir.path(),
+        Arc::new(FakeProvisioner),
+        Arc::new(FakeTransports),
+        true,
+        Some("python3"),
+    );
+    let app = mcp_app_on(st, dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    let v = mcp_tool(&app, &sid, "notebook_open", json!({"path": "t.ipynb"})).await;
+    assert!(mcp_failed(&v), "{v}");
+    let m = v.to_string();
+    assert!(m.contains("default kernel python3 isn't installed"), "{v}");
+    assert!(m.contains("nothing was created"), "{v}");
+    assert!(!dir.path().join("t.ipynb").exists(), "no file");
+}
+
+struct FailingProvisioner;
+#[async_trait]
+impl Provisioner for FailingProvisioner {
+    async fn launch(
+        &self,
+        _: &Kernelspec,
+        _: LaunchOptions,
+    ) -> ganymede_kernel_host::Result<LaunchedKernel> {
+        Err(ganymede_kernel_host::Error::Unsupported("test launch"))
+    }
+}
+
+/// A notebook this call created is deleted when its kernel won't start,
+/// and nothing is current (#938).
+#[tokio::test]
+async fn mcp_failed_kernel_start_deletes_the_notebook_it_created() {
+    let dir = tempfile::tempdir().unwrap();
+    let st = state_with(
+        dir.path(),
+        Arc::new(FailingProvisioner),
+        Arc::new(FakeTransports),
+    );
+    let app = mcp_app_on(st, dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    let v = mcp_tool(&app, &sid, "notebook_open", json!({"path": "t.ipynb"})).await;
+    assert!(mcp_failed(&v), "{v}");
+    let m = v.to_string();
+    assert!(m.contains("didn't start"), "{v}");
+    assert!(m.contains("nothing was kept"), "{v}");
+    assert!(!dir.path().join("t.ipynb").exists(), "file deleted");
+    let v = mcp_tool(&app, &sid, "cell_add", json!({"source": "1"})).await;
+    assert!(mcp_failed(&v), "{v}");
+    assert!(v.to_string().contains("no notebook open"), "{v}");
+    assert!(!dir.path().join("t.ipynb").exists(), "still no file");
+    // An existing notebook whose kernel won't start stays, and says why.
+    let nb = json!({"cells": [], "metadata": {"kernelspec": {"name": "fake"}}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.path().join("e.ipynb"), nb.to_string()).unwrap();
+    let v = mcp_tool(&app, &sid, "notebook_open", json!({"path": "e.ipynb"})).await;
+    assert!(mcp_failed(&v), "{v}");
+    assert!(
+        v.to_string()
+            .contains("no notebook is current, so pass path"),
+        "{v}"
+    );
+    assert!(dir.path().join("e.ipynb").exists(), "existing file kept");
+}
+
+/// A failed open leaves no notebook current, not the one open before it,
+/// and that one is unchanged (#938).
+#[tokio::test]
+async fn mcp_failed_open_clears_the_earlier_current_notebook() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = mcp_app(dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    let v = mcp_tool(&app, &sid, "notebook_open", json!({"path": "a.ipynb"})).await;
+    assert!(!mcp_failed(&v), "{v}");
+    let before = std::fs::read(dir.path().join("a.ipynb")).unwrap();
+    // A folder named b.ipynb can't open as a notebook.
+    std::fs::create_dir(dir.path().join("b.ipynb")).unwrap();
+    let v = mcp_tool(&app, &sid, "notebook_open", json!({"path": "b.ipynb"})).await;
+    assert!(mcp_failed(&v), "{v}");
+    let v = mcp_tool(&app, &sid, "cell_add", json!({"source": "1"})).await;
+    assert!(mcp_failed(&v), "{v}");
+    assert!(v.to_string().contains("no notebook open"), "{v}");
+    assert_eq!(std::fs::read(dir.path().join("a.ipynb")).unwrap(), before);
 }
 
 /// A folder's `.ganymede.toml` sets the kernel new notebooks there start,

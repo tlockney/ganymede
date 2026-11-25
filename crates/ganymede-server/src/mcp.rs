@@ -550,6 +550,19 @@ impl Notebooks {
         if !path.ends_with(".ipynb") {
             return Err(err("path must end in .ipynb"));
         }
+        let opened = self.open_checked(&path, &a).await;
+        if opened.is_err() {
+            // A failed open leaves no notebook current, not the one
+            // before it: the agent's next path-less call would land there.
+            *self.current.lock().expect("current") = None;
+        }
+        opened
+    }
+
+    /// [`Self::notebook_open`] once `path` is a valid notebook path. Sets
+    /// the current notebook only when it succeeds.
+    async fn open_checked(&self, path: &str, a: &OpenArgs) -> Result<CallToolResult, McpError> {
+        let path = path.to_string();
         // Create only what isn't there; another error (permissions, I/O)
         // must not lead to writing over the file.
         let exists = match self.state.contents.get(&path, GetOptions::default()).await {
@@ -585,9 +598,19 @@ impl Notebooks {
                     .kernels
                     .kernelspecs()
                     .map_err(|e| err(e.message))?;
-                if specs.default.is_empty() {
+                let why = if specs.default.is_empty() {
+                    "none named, no folder default, and no kernelspecs installed here".to_string()
+                } else if !specs.kernelspecs.contains_key(&specs.default) {
+                    format!(
+                        "none named, no folder default, and the server's default kernel {} isn't installed here",
+                        specs.default
+                    )
+                } else {
+                    String::new()
+                };
+                if !why.is_empty() {
                     return Err(err(format!(
-                        "no kernel to start for {path}: none named, no folder default, and no kernelspecs installed here (see kernelspecs_list); nothing was created",
+                        "no kernel to start for {path}: {why} (see kernelspecs_list); nothing was created",
                         path = self.show(&path)
                     )));
                 }
@@ -595,23 +618,38 @@ impl Notebooks {
             self.create(&path, kernel.as_deref(), a.title.as_deref())
                 .await?;
         }
-        // Not the current notebook until it has opened.
+        // Read before starting the kernel, so a read that fails leaves no
+        // session running. Starting a kernel doesn't change the cells.
+        let (nb, token) = match self.read_marked(&path).await {
+            Ok(r) => r,
+            Err(e) => return Err(self.discard_created(&path, exists, e).await),
+        };
         let kernel = if self.opts.read_only || self.opts.no_execute {
             None
         } else {
             match self.kernel_for(&path, a.kernel.as_deref()).await {
                 Ok(k) => Some(k),
                 Err(e) if !exists => {
+                    let shown = self.show(&path);
+                    return Err(self
+                        .discard_created(
+                            &path,
+                            exists,
+                            err(format!(
+                                "the kernel for {shown} didn't start: {}",
+                                e.message
+                            )),
+                        )
+                        .await);
+                }
+                Err(e) => {
                     return Err(err(format!(
-                        "created {path}, but its kernel didn't start ({}); it is not the current notebook, so pass path",
-                        e.message,
-                        path = self.show(&path)
+                        "{}; no notebook is current, so pass path",
+                        e.message
                     )))
                 }
-                Err(e) => return Err(e),
             }
         };
-        let (nb, token) = self.read_marked(&path).await?;
         *self.current.lock().expect("current") = Some(path.clone());
         let dir = self.dir.lock().expect("dir").clone();
         let root = match (self.state.collab.root(), dir) {
@@ -2345,6 +2383,34 @@ impl Notebooks {
             .await
             .map_err(|e| err(e.to_string()))?;
         Ok(())
+    }
+
+    /// `e`, for a failed open: when this call created the notebook, it is
+    /// deleted first and the error says so (or that the file remains).
+    async fn discard_created(&self, path: &str, existed: bool, e: McpError) -> McpError {
+        if existed {
+            return e;
+        }
+        let shown = self.show(path);
+        if let Some(s) = self
+            .state
+            .sessions
+            .list()
+            .into_iter()
+            .find(|s| s.path == path)
+        {
+            let _ = self.state.sessions.delete(&s.id).await;
+        }
+        match self.state.collab.delete(&self.state.contents, path).await {
+            Ok(()) => err(format!(
+                "{}; nothing was kept ({shown} was deleted)",
+                e.message
+            )),
+            Err(d) => err(format!(
+                "{}; deleting the {shown} this call created also failed ({d}), so the file remains",
+                e.message
+            )),
+        }
     }
 
     /// Make `dir` (an API path) and its parents, as `mkdir -p`.

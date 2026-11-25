@@ -356,6 +356,13 @@ from disk and never above its root, not even through a symlinked folder; it isn'
 contents API, since its name starts with a dot. The same rule picks the
 kernel for an existing notebook whose metadata names none.
 
+When there is no kernel to start (none named, no folder default, and
+the server's default isn't installed), `notebook_open` of a new
+notebook fails and creates nothing. If the kernel of a notebook the
+call just created won't start, the call deletes it. A failed open
+leaves no notebook current, not the one open before it, so the next
+call must pass `path`.
+
 ## Outputs
 
 The notebook keeps each recorded cell's outputs: a journal records what a
