@@ -38,7 +38,7 @@ pub(crate) mod search;
 mod skills;
 mod snapshot;
 
-use crate::collab::{hold_notebook, notebook_room_id, with_notebook, Hold, Listing};
+use crate::collab::{hold_notebook, notebook_room_id, with_notebook, DeleteIf, Hold, Listing};
 use crate::folder;
 use crate::room_ops;
 use crate::AppState;
@@ -2418,7 +2418,7 @@ impl Notebooks {
     /// hold on the room (if the connection had none before), the session
     /// it started (`started`), and the notebook it created (`created`,
     /// with the file's stamp then, if it could be read) unless the file
-    /// changed since. A session it joined, and a notebook that was there,
+    /// changed since or someone has it open. A session it joined, and a notebook that was there,
     /// are left. What stays, and why, is in the message.
     async fn failed_open(
         &self,
@@ -2453,8 +2453,11 @@ impl Notebooks {
                         .delete_if_unchanged(&self.state.contents, path, &st)
                         .await
                     {
-                        Ok(true) => None,
-                        Ok(false) => Some("it changed since this call created it".to_string()),
+                        Ok(DeleteIf::Deleted) => None,
+                        Ok(DeleteIf::Changed) => {
+                            Some("it changed since this call created it".to_string())
+                        }
+                        Ok(DeleteIf::InUse) => Some("someone has it open".to_string()),
                         Err(d) => Some(format!("deleting it failed: {d}")),
                     },
                 };
@@ -2578,10 +2581,10 @@ impl Notebooks {
                 }
             }
         };
-        let s = self
+        let (s, made) = self
             .state
             .sessions
-            .create(SessionCreate {
+            .create_reporting(SessionCreate {
                 path: path.to_string(),
                 name: Some(path.rsplit('/').next().unwrap_or(path).to_string()),
                 type_: Some("notebook".into()),
@@ -2589,7 +2592,7 @@ impl Notebooks {
             })
             .await
             .map_err(|e| err(e.message))?;
-        Ok((s.kernel.id, s.kernel.name, Some(s.id)))
+        Ok((s.kernel.id, s.kernel.name, made.then_some(s.id)))
     }
 
     async fn insert(

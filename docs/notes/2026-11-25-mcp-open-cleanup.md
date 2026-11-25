@@ -25,13 +25,28 @@ or the read fails:
 - The stamp check matters because with `delete_to_trash` off a delete is
   permanent, and #938 kept the file because someone may have saved to it.
 
-Known window: a room's autosave doesn't take the move lock, so a save that
-lands between the stamp check and the delete is deleted with the file. The
-window is tiny and the file was created moments before by this call.
+- It also stays when a room on the file has a client ("someone has it
+  open"): a room saves 1 s after an edit, and deleting the file closes the
+  room without saving, so a person's edit could be lost. This connection's
+  own hold is released first. A room that doesn't answer the room list
+  within two seconds counts as not open.
+- The session id comes from `SessionManager::create_reporting`, which says
+  whether the call made the session, so a session another client created
+  while this call waited on the path lock is not taken for its own.
+
+Known window that remains: the checks and the delete run under the move
+lock, which keeps out renames, deletes and new rooms, but not a write to
+the file that doesn't go through a room (another program, or a REST save
+of the file). One landing after the stamp is read is deleted with the file.
+`Collab::delete` and `delete_if_unchanged` share one helper.
 
 Tests: a kernel that won't start (file and session gone), a read failure of
 a new notebook (the test provisioner overwrites the file after launch,
 keeping its stamp), the same with a changed stamp (file stays, message
 says why), a read failure of an existing notebook (session gone, file
-kept), and one with a joined session (still running). No test-only seam in
-the server was needed.
+kept), one with a joined session (still running), a delete that fails (the
+file stays, "deleting it failed"), and collab unit tests for a changed
+stamp, no local root, a client in the room, and the ids going with the
+file. A failing session delete can't be forced without a seam, so the
+"wasn't shut down" message has no test. No test-only seam in the server
+was needed.

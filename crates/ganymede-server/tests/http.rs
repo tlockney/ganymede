@@ -6955,6 +6955,25 @@ async fn mcp_failed_kernel_start_removes_the_notebook_it_created() {
     );
     assert!(!dir.path().join("t.ipynb").exists(), "file removed");
     assert!(sessions.list().is_empty(), "no session");
+    // The deleted file's ids went with it, which closes its room (left
+    // open for a minute otherwise).
+    for _ in 0..100 {
+        if list_rooms(&app).await["rooms"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        list_rooms(&app).await["rooms"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "no room on the deleted file"
+    );
     let v = mcp_tool(&app, &sid, "cell_add", json!({"source": "1"})).await;
     assert!(mcp_failed(&v), "{v}");
     assert!(v.to_string().contains("no notebook open"), "{v}");
@@ -6979,6 +6998,101 @@ async fn mcp_failed_kernel_start_removes_the_notebook_it_created() {
             .all(|r| r["clients"].as_array().unwrap().is_empty()),
         "no hold left: {rooms}"
     );
+}
+
+/// Contents whose deletes fail.
+struct NoDelete(FsContents);
+#[async_trait]
+impl ganymede_contents::Contents for NoDelete {
+    async fn get(
+        &self,
+        p: &str,
+        o: ganymede_contents::GetOptions,
+    ) -> ganymede_contents::Result<ganymede_contents::ContentsModel> {
+        self.0.get(p, o).await
+    }
+    async fn save(
+        &self,
+        p: &str,
+        r: ganymede_contents::SaveRequest,
+    ) -> ganymede_contents::Result<ganymede_contents::ContentsModel> {
+        self.0.save(p, r).await
+    }
+    async fn delete(&self, _: &str) -> ganymede_contents::Result<()> {
+        Err(std::io::Error::other("test delete").into())
+    }
+    async fn rename(
+        &self,
+        a: &str,
+        b: &str,
+    ) -> ganymede_contents::Result<ganymede_contents::ContentsModel> {
+        self.0.rename(a, b).await
+    }
+    async fn new_untitled(
+        &self,
+        d: &str,
+        k: ganymede_contents::ContentType,
+        e: Option<&str>,
+    ) -> ganymede_contents::Result<ganymede_contents::ContentsModel> {
+        self.0.new_untitled(d, k, e).await
+    }
+    async fn copy(
+        &self,
+        f: &str,
+        t: Option<&str>,
+    ) -> ganymede_contents::Result<ganymede_contents::ContentsModel> {
+        self.0.copy(f, t).await
+    }
+    async fn list_checkpoints(
+        &self,
+        p: &str,
+    ) -> ganymede_contents::Result<Vec<ganymede_contents::Checkpoint>> {
+        self.0.list_checkpoints(p).await
+    }
+    async fn create_checkpoint(
+        &self,
+        p: &str,
+    ) -> ganymede_contents::Result<ganymede_contents::Checkpoint> {
+        self.0.create_checkpoint(p).await
+    }
+    async fn restore_checkpoint(&self, p: &str, c: &str) -> ganymede_contents::Result<()> {
+        self.0.restore_checkpoint(p, c).await
+    }
+    async fn delete_checkpoint(&self, p: &str, c: &str) -> ganymede_contents::Result<()> {
+        self.0.delete_checkpoint(p, c).await
+    }
+}
+
+/// A created notebook whose delete fails stays, and the error says so
+/// (#941).
+#[tokio::test]
+async fn mcp_failed_open_says_when_deleting_the_created_notebook_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = state_with(
+        dir.path(),
+        Arc::new(FailingProvisioner),
+        Arc::new(FakeTransports),
+    );
+    st.contents = Arc::new(NoDelete(
+        FsContents::new(dir.path(), FsOptions::default()).unwrap(),
+    ));
+    let app = mcp_app_on(st, dir.path());
+    let sid = mcp_connect(&app, "agent").await;
+    let v = mcp_tool(&app, &sid, "notebook_open", json!({"path": "t.ipynb"})).await;
+    assert!(mcp_failed(&v), "{v}");
+    let m = v.to_string();
+    assert!(
+        m.contains("t.ipynb was created and stays (deleting it failed:"),
+        "{v}"
+    );
+    assert!(
+        m.contains("but no notebook is current, so pass path"),
+        "{v}"
+    );
+    assert!(dir.path().join("t.ipynb").exists(), "file kept");
+    // The room the call opened is still there: it is only closed when
+    // the file is deleted (the test above).
+    assert_eq!(list_rooms(&app).await["rooms"].as_array().unwrap().len(), 1);
 }
 
 /// Launches like [`FakeProvisioner`], then overwrites `path` (under

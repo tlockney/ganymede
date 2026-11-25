@@ -509,46 +509,60 @@ impl Collab {
         contents: &Arc<dyn Contents>,
         path: &str,
     ) -> ganymede_contents::Result<()> {
-        let (collab, contents, path) = (self.clone(), contents.clone(), path.to_string());
-        detached(async move {
-            let _deleting = collab.begin_move().await;
-            contents.delete(&path).await?;
-            collab.removed(&path).await;
-            collab.removed_in_other_roots(&path).await;
-            Ok(())
-        })
-        .await
+        self.delete_checked(contents, path, None).await.map(|_| ())
     }
 
-    /// [`Collab::delete`] of the file at `path`, only if its
-    /// [`ganymede_contents::fileid::api_file_stamp`] is still `stamp`;
-    /// true when it deleted. A file that changed, a stamp that can't be
-    /// read, or contents that aren't a local directory leave it (false).
-    /// The check and the delete are under [`Collab::begin_move`]'s lock,
-    /// but a room's autosave doesn't take that lock, so one landing
-    /// between them is still deleted with the file: the window is a few
-    /// microseconds, and a file a call just created has no room edit to
-    /// lose unless someone opened it meanwhile.
+    /// [`Collab::delete`] of a file only if it is still as a caller saw
+    /// it: its [`ganymede_contents::fileid::api_file_stamp`] is `stamp`
+    /// and no room on it has a client (which may hold edits not saved
+    /// yet, and a delete closes the room without saving). Otherwise the
+    /// file stays; see [`DeleteIf`].
+    ///
+    /// The checks and the delete are under the move lock, so no rename,
+    /// delete or new room lands between them. What the lock doesn't keep
+    /// out is a write to the file that doesn't go through a room (another
+    /// program, or a REST save), which is deleted with the file if it
+    /// lands after the stamp is read.
     pub(crate) async fn delete_if_unchanged(
         self: &Arc<Self>,
         contents: &Arc<dyn Contents>,
         path: &str,
         stamp: &str,
-    ) -> ganymede_contents::Result<bool> {
-        let (collab, contents) = (self.clone(), contents.clone());
-        let (path, stamp) = (path.to_string(), stamp.to_string());
+    ) -> ganymede_contents::Result<DeleteIf> {
+        self.delete_checked(contents, path, Some(stamp.to_string()))
+            .await
+    }
+
+    async fn delete_checked(
+        self: &Arc<Self>,
+        contents: &Arc<dyn Contents>,
+        path: &str,
+        only_if: Option<String>,
+    ) -> ganymede_contents::Result<DeleteIf> {
+        let (collab, contents, path) = (self.clone(), contents.clone(), path.to_string());
         detached(async move {
             let _deleting = collab.begin_move().await;
-            let now = collab
-                .root()
-                .and_then(|r| ganymede_contents::fileid::api_file_stamp(r, &path));
-            if now.as_deref() != Some(stamp.as_str()) {
-                return Ok(false);
+            if let Some(stamp) = only_if {
+                let want = normalize_api_path(&path);
+                let open = collab
+                    .list_rooms()
+                    .await
+                    .iter()
+                    .any(|r| normalize_api_path(&r.path) == want && !r.clients.is_empty());
+                if open {
+                    return Ok(DeleteIf::InUse);
+                }
+                let now = collab
+                    .root()
+                    .and_then(|r| ganymede_contents::fileid::api_file_stamp(r, &path));
+                if now.as_deref() != Some(stamp.as_str()) {
+                    return Ok(DeleteIf::Changed);
+                }
             }
             contents.delete(&path).await?;
             collab.removed(&path).await;
             collab.removed_in_other_roots(&path).await;
-            Ok(true)
+            Ok(DeleteIf::Deleted)
         })
         .await
     }
@@ -742,6 +756,17 @@ impl Collab {
         let file = self.root.as_ref()?.join(path);
         self.watcher.watch(&file)
     }
+}
+
+/// What [`Collab::delete_if_unchanged`] did.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DeleteIf {
+    Deleted,
+    /// The file's stamp isn't the one given, or can't be read (the
+    /// contents aren't a local directory).
+    Changed,
+    /// A room on the file has a client.
+    InUse,
 }
 
 pub(crate) enum Cmd {
@@ -3545,5 +3570,88 @@ mod trust_tests {
         notary.sign(&serde_json::from_str(&text).unwrap()).unwrap();
         edit_and_save(&contents, &mut room, &mut disk).await;
         assert!(signed(dir.path(), &notary));
+    }
+}
+
+#[cfg(test)]
+mod delete_if_unchanged_tests {
+    use super::*;
+    use ganymede_contents::fileid::api_file_stamp;
+
+    fn nb() -> &'static str {
+        r#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#
+    }
+
+    fn setup(root: bool) -> (tempfile::TempDir, Arc<Collab>, Arc<dyn Contents>) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.ipynb"), nb()).unwrap();
+        let root = root.then(|| dir.path().canonicalize().unwrap());
+        let collab = Arc::new(Collab::new(FileIds::in_memory(), root));
+        let contents: Arc<dyn Contents> =
+            Arc::new(ganymede_contents::FsContents::new(dir.path(), Default::default()).unwrap());
+        (dir, collab, contents)
+    }
+
+    #[tokio::test]
+    async fn a_matching_stamp_deletes_the_file_and_its_id() {
+        let (dir, collab, contents) = setup(true);
+        let stamp = api_file_stamp(collab.root().unwrap(), "a.ipynb").unwrap();
+        let (id, _) = collab
+            .index_existing(&contents, "a.ipynb", GetOptions::default())
+            .await
+            .unwrap();
+        let r = collab
+            .delete_if_unchanged(&contents, "a.ipynb", &stamp)
+            .await;
+        assert_eq!(r.unwrap(), DeleteIf::Deleted);
+        assert!(!dir.path().join("a.ipynb").exists());
+        assert_eq!(collab.path_of(&id).await, None, "the id went with it");
+    }
+
+    #[tokio::test]
+    async fn a_stamp_that_changed_keeps_the_file() {
+        let (dir, collab, contents) = setup(true);
+        let stamp = api_file_stamp(collab.root().unwrap(), "a.ipynb").unwrap();
+        std::fs::write(dir.path().join("a.ipynb"), format!("{} ", nb())).unwrap();
+        let r = collab
+            .delete_if_unchanged(&contents, "a.ipynb", &stamp)
+            .await;
+        assert_eq!(r.unwrap(), DeleteIf::Changed);
+        assert!(dir.path().join("a.ipynb").exists());
+    }
+
+    #[tokio::test]
+    async fn contents_without_a_local_root_keep_the_file() {
+        let (dir, collab, contents) = setup(false);
+        let r = collab
+            .delete_if_unchanged(&contents, "a.ipynb", "1:2:3")
+            .await;
+        assert_eq!(r.unwrap(), DeleteIf::Changed);
+        assert!(dir.path().join("a.ipynb").exists());
+    }
+
+    /// A room with a client may hold edits not saved yet, which closing
+    /// it would drop: the file stays until the client leaves.
+    #[tokio::test]
+    async fn a_file_with_a_client_in_its_room_is_kept() {
+        let (dir, collab, contents) = setup(true);
+        let stamp = api_file_stamp(collab.root().unwrap(), "a.ipynb").unwrap();
+        let id = notebook_room_id(&collab, &contents, "a.ipynb")
+            .await
+            .unwrap();
+        let hold = hold_notebook(&collab, &contents, &id, Listing::Agent("x".into()))
+            .await
+            .unwrap();
+        let r = collab
+            .delete_if_unchanged(&contents, "a.ipynb", &stamp)
+            .await;
+        assert_eq!(r.unwrap(), DeleteIf::InUse);
+        assert!(dir.path().join("a.ipynb").exists());
+        drop(hold);
+        let r = collab
+            .delete_if_unchanged(&contents, "a.ipynb", &stamp)
+            .await;
+        assert_eq!(r.unwrap(), DeleteIf::Deleted);
+        assert!(!dir.path().join("a.ipynb").exists());
     }
 }
