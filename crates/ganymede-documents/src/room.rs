@@ -707,6 +707,38 @@ impl Room {
         }
     }
 
+    /// Remove the `clean_run` stamp when it doesn't describe the room's
+    /// cells ([`schema::clean_run_status`] is stale or unverified): a
+    /// server edit that leaves the room unsaved. A host calls this once a
+    /// room has opened a file; `reload` and `merge_disk` do it for the
+    /// files they take. A read-only room is left alone, its owner decides.
+    pub fn clear_unfit_clean_run(&mut self) -> Effects {
+        if self.read_only {
+            return Effects::default();
+        }
+        let Some(Ok(nb)) = self.notebook() else {
+            return Effects::default();
+        };
+        if !matches!(
+            schema::clean_run_status(&nb),
+            schema::CleanRun::Stale | schema::CleanRun::Unverified
+        ) {
+            return Effects::default();
+        }
+        let Some(roots) = self.roots.clone() else {
+            return Effects::default();
+        };
+        {
+            let mut txn = self.awareness.doc().transact_mut();
+            schema::set_clean_run(&mut txn, &roots, None);
+        }
+        self.content_changed.store(false, Ordering::Relaxed);
+        self.generation += 1;
+        let mut fx = self.broadcast_own();
+        fx.changed = true;
+        fx
+    }
+
     /// The file changed on disk: make the document match it, granularly
     /// (see [`schema::set`]), and mark it clean at `hash`. A change to the
     /// cells that makes a run stale removes the notebook's `clean_run`
@@ -730,6 +762,7 @@ impl Room {
         let mut fx = self.broadcast_own();
         // Before the state goes out, so it says the room is unsaved.
         fx.merge(self.clear_clean_run_for_file(run, stamp));
+        fx.merge(self.clear_unfit_clean_run());
         fx.merge(self.set_state(hash));
         fx
     }
@@ -779,6 +812,7 @@ impl Room {
         self.baseline = Some(theirs);
         let mut fx = self.broadcast_own();
         fx.merge(self.clear_clean_run_for_file(run, stamp));
+        fx.merge(self.clear_unfit_clean_run());
         fx.merge(self.set_state(hash));
         fx.changed = true;
         (fx, merged.conflicts)

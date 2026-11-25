@@ -1813,8 +1813,10 @@ fn clean_run_edit(
 ) -> ((), Effects) {
     let stamp = run.and_then(|(layout, kernel)| {
         let nb = room.notebook_with_ids()?.ok()?;
-        (run_layout(&nb, true) == layout)
-            .then(|| json!({"at": room_ops::now(), "by": by, "kernel": kernel}))
+        (run_layout(&nb, true) == layout).then(|| {
+            json!({"at": room_ops::now(), "by": by, "kernel": kernel,
+                    "fingerprint": schema::source_fingerprint(&nb)})
+        })
     });
     room.edit(|txn, roots| schema::set_clean_run(txn, roots, stamp))
 }

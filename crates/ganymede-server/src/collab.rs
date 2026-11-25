@@ -1759,6 +1759,12 @@ async fn run_room(
     tracing::info!(room = %room_id, path = ?path, watched = watch.is_some(), read_only = room.is_read_only(), "room opened");
 
     let mut last_edit: Option<Instant> = None;
+    // A stamp the file's cells don't match goes, and the room saves that.
+    let fx = room.clear_unfit_clean_run();
+    if fx.changed {
+        last_edit = Some(Instant::now());
+    }
+    dispatch(&clients, fx.send);
     // Saves that failed in a row, for the retry's backoff.
     let mut save_failures = 0;
     // A room opened for execution, with no client, retires like one whose

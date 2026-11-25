@@ -233,13 +233,19 @@ journal view's "reproduced from a clean kernel" stamp) can tell:
 
 ```json
 {"metadata": {"ganymede": {"clean_run": {
-  "at": "2026-11-20T18:04:12.331Z", "by": "Claude Code", "kernel": "python3"}}}}
+  "at": "2026-11-20T18:04:12.331Z", "by": "Claude Code", "kernel": "python3",
+  "fingerprint": "v1:250ab6e8"}}}}
 ```
 
 `at` is when the run ended, in UTC. `by` is the name the MCP client gave
 when it connected (cleaned like the [names in the room](#who-runs-a-cell)).
 `kernel` is the name of the kernelspec the kernel ran. Other keys under
-`metadata.ganymede` are left alone.
+`metadata.ganymede` are left alone. `fingerprint` is `v1:` and eight hex
+digits (MurmurHash2) of every cell's type and source, in order. It
+covers nothing else: not outputs, execution counts, cell ids or
+metadata, so clearing a notebook's outputs keeps the stamp, and a
+changed source, a changed cell type or a reordering does not. The stamp
+means "Ran from a fresh kernel", of those cells.
 
 Only the MCP tool `notebook_run_all` sets it, and only when the run
 
@@ -284,8 +290,20 @@ stamp as the file has it.
 
 The stamp is saved with the notebook, unlike `execution_by`. A file that
 holds one opens with it, and it stays until a change above removes it.
-Nothing checks it against the cells of a file when a room opens: one
-edited while no room was open for it keeps a stamp that no longer holds.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+A room also checks the stamp against the cells whenever it takes content
+from the file: when it opens, and when the file changes on disk (a reload,
+or a merge into unsaved edits). A stamp whose `fingerprint` is missing (as
+older versions wrote), has a version prefix other than `v1:`, or doesn't
+match the cells in the file is removed the same way, as an edit by the
+server, and the file is saved without it. So a notebook edited while no
+room was open for it doesn't keep a stamp that no longer holds. A stamp
+that matches is kept, whatever the outputs and counts. A read-only room,
+whose file another process owns, leaves the stamp as the file has it.
 
 ### Waiting for the cells
 

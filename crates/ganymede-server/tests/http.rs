@@ -5506,6 +5506,12 @@ async fn mcp_run_all_stamps_a_clean_run_and_an_edit_clears_it() {
         "RFC 3339 UTC: {at}"
     );
     assert_eq!(saved["metadata"]["kernelspec"]["name"], "fake", "kept");
+    // It carries the fingerprint of the cells it ran (#944).
+    let fingerprint = ganymede_documents::schema::source_fingerprint(
+        &ganymede_nbformat::Notebook::from_value(saved.clone()).unwrap(),
+    );
+    assert!(fingerprint.starts_with("v1:"), "{fingerprint}");
+    assert_eq!(stamp["fingerprint"], fingerprint);
 
     // An edit to a cell's source clears it.
     mcp_text(
@@ -5519,6 +5525,50 @@ async fn mcp_run_all_stamps_a_clean_run_and_an_edit_clears_it() {
     );
     let saved = saved_clean_run(&file, |s| s.is_none()).await;
     assert_eq!(saved["metadata"]["kernelspec"]["name"], "fake");
+}
+
+/// A room that opens a file whose stamp doesn't describe its cells removes
+/// the stamp and saves the file without it (#944). The stamp of a file
+/// that was edited after the run, and one without a fingerprint (older
+/// versions), go; one that matches stays.
+#[tokio::test]
+async fn opening_a_notebook_drops_a_clean_run_stamp_that_does_not_fit_its_cells() {
+    let fingerprint = |cells: &[Value]| {
+        let nb = clean_run_notebook(cells.to_vec(), None);
+        ganymede_documents::schema::source_fingerprint(
+            &ganymede_nbformat::Notebook::from_value(nb).unwrap(),
+        )
+    };
+    let ran = vec![code_cell(Some("a"), "hello", &[])];
+    let edited = vec![code_cell(Some("a"), "hello again", &[])];
+    let mut with = old_stamp();
+    with["fingerprint"] = json!(fingerprint(&ran));
+    let cases = [
+        ("edited after the run", edited.clone(), with.clone(), false),
+        ("no fingerprint", ran.clone(), old_stamp(), false),
+        ("matches", ran.clone(), with.clone(), true),
+    ];
+    for (name, cells, stamp, kept) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let app = mcp_app(dir.path());
+        let file = dir.path().join("n.ipynb");
+        std::fs::write(
+            &file,
+            clean_run_notebook(cells, Some(stamp.clone())).to_string(),
+        )
+        .unwrap();
+        let sid = mcp_connect(&app, "Claude Test").await;
+        mcp_tool(&app, &sid, "notebook_open", json!({"path": "n.ipynb"})).await;
+        if kept {
+            // Make the room save: an edit that leaves the run standing.
+            mcp_tool(&app, &sid, "cell_clear_outputs", json!({"id": "a"})).await;
+            let saved = saved_notebook(&file, |_| true).await;
+            assert_eq!(saved["metadata"]["ganymede"]["clean_run"], stamp, "{name}");
+        } else {
+            let saved = saved_clean_run(&file, |s| s.is_none()).await;
+            assert_eq!(saved["metadata"]["ganymede"]["other"], 1, "{name}");
+        }
+    }
 }
 
 /// Run all without a restart, with a failing cell, or in a notebook that

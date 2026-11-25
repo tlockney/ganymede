@@ -1812,8 +1812,11 @@ const CLEAN_RUN_NB: &str = r##"{"cells":[
   {"cell_type":"code","id":"b","execution_count":2,"metadata":{},"outputs":[],"source":["x + 1"]}],
   "metadata":{"ganymede":{"other":true}},"nbformat":4,"nbformat_minor":5}"##;
 
+/// The stamp of a clean run of `CLEAN_RUN_NB`, as the server writes it.
 fn stamp() -> serde_json::Value {
-    serde_json::json!({"at": "2026-11-20T10:00:00Z", "by": "claude-code", "kernel": "python3"})
+    let nb = Notebook::from_str(CLEAN_RUN_NB).unwrap();
+    serde_json::json!({"at": "2026-11-20T10:00:00Z", "by": "claude-code", "kernel": "python3",
+        "fingerprint": schema::source_fingerprint(&nb)})
 }
 
 fn stamp_in(doc: &Doc) -> Option<serde_json::Value> {
@@ -2142,6 +2145,13 @@ fn stamped_file(change: impl FnOnce(&mut serde_json::Value)) -> Notebook {
     Notebook::from_value(v).unwrap()
 }
 
+/// A stamp another writer made for the notebook with `x = 2` in cell `a`.
+fn own_stamp() -> serde_json::Value {
+    let nb = stamped_file(|v| v["cells"][1]["source"] = "x = 2".into());
+    serde_json::json!({"at": "2026-12-01T00:00:00Z", "by": "x", "kernel": "k",
+        "fingerprint": schema::source_fingerprint(&nb)})
+}
+
 /// A change that makes the run stale, and ones that don't.
 type FileChange = fn(&mut serde_json::Value);
 const STALE: [(&str, FileChange); 3] = [
@@ -2202,7 +2212,7 @@ fn a_file_changed_under_the_room_clears_the_clean_run_stamp_on_reload() {
     // The file brought a new stamp along with its changes: its writer's.
     let base = stamped_file(|_| {});
     let mut room = Room::notebook_room(&base, "n.ipynb");
-    let new = serde_json::json!({"at": "2026-12-01T00:00:00Z", "by": "x", "kernel": "k"});
+    let new = own_stamp();
     let n = new.clone();
     room.reload(
         &stamped_file(move |v| {
@@ -2266,7 +2276,7 @@ fn a_file_changed_under_a_dirty_room_clears_the_clean_run_stamp_on_merge() {
     }
     // The file's own new stamp stays.
     let mut room = dirty_room();
-    let new = serde_json::json!({"at": "2026-12-01T00:00:00Z", "by": "x", "kernel": "k"});
+    let new = own_stamp();
     let n = new.clone();
     room.merge_disk(
         &base,
@@ -2364,4 +2374,205 @@ fn removing_a_stamp_that_is_not_there_changes_nothing() {
     let (_, fx) = room.edit(|txn, roots| schema::set_clean_run(txn, roots, None));
     assert!(!fx.changed && !room.is_dirty());
     assert!(fx.send.is_empty());
+}
+
+// The clean run stamp's fingerprint of the cells (#944).
+
+/// The notebook with the stamp (`stamp()` unless `fingerprint` is given:
+/// `Some(None)` leaves it out) and `change` applied to its JSON.
+fn fingerprinted_file(
+    fingerprint: Option<Option<&str>>,
+    change: impl FnOnce(&mut serde_json::Value),
+) -> Notebook {
+    stamped_file(|v| {
+        match fingerprint {
+            Some(Some(f)) => v["metadata"]["ganymede"]["clean_run"]["fingerprint"] = f.into(),
+            Some(None) => {
+                v["metadata"]["ganymede"]["clean_run"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("fingerprint");
+            }
+            None => {}
+        }
+        change(v)
+    })
+}
+
+/// The cell changes that make the fingerprint stale: a source, the order,
+/// a type.
+const FINGERPRINT_STALE: [(&str, FileChange); 3] = [
+    ("source", |v| v["cells"][1]["source"] = "x = 2".into()),
+    ("order", |v| v["cells"].as_array_mut().unwrap().swap(1, 2)),
+    ("type", |v| {
+        let c = &mut v["cells"][1];
+        c["cell_type"] = "markdown".into();
+        c.as_object_mut().unwrap().remove("outputs");
+        c.as_object_mut().unwrap().remove("execution_count");
+    }),
+];
+
+/// Save a stamped room, close it, change the file with no room open and
+/// open a room on it: the stamp is gone, the room is unsaved so the file
+/// is rewritten without it, and the file's other metadata stays.
+#[test]
+fn a_room_opened_on_a_file_changed_since_the_stamp_drops_the_stamp() {
+    for (name, change) in FINGERPRINT_STALE {
+        let (room, _client) = stamped();
+        let mut saved: serde_json::Value =
+            serde_json::to_value(room.notebook().unwrap().unwrap()).unwrap();
+        assert!(saved["metadata"]["ganymede"]["clean_run"]["fingerprint"].is_string());
+        change(&mut saved);
+        drop(room);
+        let nb = Notebook::from_value(saved).unwrap();
+        let mut reopened = Room::notebook_room(&nb, "n.ipynb");
+        assert!(stamp_of(&reopened).is_some(), "{name}: as the file has it");
+        let fx = reopened.clear_unfit_clean_run();
+        assert_eq!(stamp_of(&reopened), None, "{name}");
+        assert!(fx.changed && reopened.is_dirty(), "{name}");
+        let after = reopened.notebook().unwrap().unwrap();
+        assert!(!after.to_file_string().contains("clean_run"), "{name}");
+        assert_eq!(
+            after.metadata["ganymede"],
+            serde_json::json!({"other": true})
+        );
+    }
+}
+
+/// A stamp with no fingerprint, as older versions wrote, or one of a
+/// version this code doesn't know, is not a clean run.
+#[test]
+fn an_unverified_stamp_is_dropped_on_open() {
+    for f in [None, Some("v2:00000000"), Some("")] {
+        let nb = fingerprinted_file(Some(f), |_| {});
+        assert_eq!(schema::clean_run_status(&nb), schema::CleanRun::Unverified);
+        let mut room = Room::notebook_room(&nb, "n.ipynb");
+        let fx = room.clear_unfit_clean_run();
+        assert_eq!(stamp_of(&room), None, "{f:?}");
+        assert!(fx.changed && room.is_dirty(), "{f:?}");
+    }
+}
+
+/// A fingerprint that matches survives, and clearing the outputs in the
+/// file doesn't change it: outputs aren't covered. Neither does a change
+/// to an execution count or to metadata.
+#[test]
+fn a_matching_stamp_survives_open_and_outputs_are_not_covered() {
+    for (name, change) in [
+        ("as written", (|_| {}) as FileChange),
+        ("outputs cleared", |v| {
+            v["cells"][1]["outputs"] = serde_json::json!([]);
+            v["cells"][2]["outputs"] = serde_json::json!(
+                [{"output_type": "stream", "name": "stdout", "text": "hi\n"}]);
+        }),
+        ("counts cleared", |v| {
+            v["cells"][1]["execution_count"] = serde_json::Value::Null
+        }),
+    ] {
+        let nb = fingerprinted_file(None, change);
+        assert_eq!(
+            schema::clean_run_status(&nb),
+            schema::CleanRun::Current,
+            "{name}"
+        );
+        let mut room = Room::notebook_room(&nb, "n.ipynb");
+        let fx = room.clear_unfit_clean_run();
+        assert_eq!(stamp_of(&room), Some(stamp()), "{name}");
+        assert!(!fx.changed && !room.is_dirty(), "{name}");
+    }
+}
+
+/// A changed source, order or type is stale; no stamp is `None`.
+#[test]
+fn clean_run_status_tells_stale_from_current() {
+    for (name, change) in FINGERPRINT_STALE {
+        let nb = fingerprinted_file(None, change);
+        assert_eq!(
+            schema::clean_run_status(&nb),
+            schema::CleanRun::Stale,
+            "{name}"
+        );
+    }
+    let nb = Notebook::from_str(CLEAN_RUN_NB).unwrap();
+    assert_eq!(schema::clean_run_status(&nb), schema::CleanRun::None);
+}
+
+/// `reload` and `merge_disk` of a file with another stamp whose
+/// fingerprint doesn't match the file remove it; one that matches stays as
+/// the file has it.
+#[test]
+fn a_stamp_in_a_reloaded_or_merged_file_is_kept_only_when_it_fits_the_file() {
+    let base = stamped_file(|_| {});
+    let dirty_room = || {
+        let mut room = Room::notebook_room(&base, "n.ipynb");
+        room.edit(|txn, roots| {
+            let Some(Out::YMap(meta)) = roots.meta.get(txn, "metadata") else {
+                panic!()
+            };
+            meta.insert(txn, "mine", true);
+        });
+        room
+    };
+    let other = |fingerprint: String, v: &mut serde_json::Value| {
+        v["cells"][1]["source"] = "x = 2".into();
+        v["metadata"]["ganymede"]["clean_run"] = serde_json::json!({"at": "2026-12-01T00:00:00Z", "by": "x", "kernel": "k",
+                "fingerprint": fingerprint});
+    };
+    let fits =
+        schema::source_fingerprint(&stamped_file(|v| v["cells"][1]["source"] = "x = 2".into()));
+    let wrong = schema::source_fingerprint(&base);
+    for (name, fingerprint, kept) in [("fits", fits, true), ("wrong", wrong, false)] {
+        let file = stamped_file(|v| other(fingerprint.clone(), v));
+        let mut room = Room::notebook_room(&base, "n.ipynb");
+        let fx = room.reload(&file, "h1");
+        assert_eq!(stamp_of(&room).is_some(), kept, "reload {name}");
+        assert_eq!(fx.changed, !kept, "reload {name}");
+        assert_eq!(room.is_dirty(), !kept, "reload {name}");
+        let mut room = dirty_room();
+        room.merge_disk(&base, &file, "h1");
+        assert_eq!(stamp_of(&room).is_some(), kept, "merge {name}");
+    }
+}
+
+/// A read-only room (another process owns the file) leaves the stamp, on
+/// open, reload and merge.
+#[test]
+fn a_read_only_room_leaves_a_stamp_that_does_not_fit() {
+    let stale = fingerprinted_file(None, FINGERPRINT_STALE[0].1);
+    let mut room = Room::notebook_room(&stale, "n.ipynb");
+    room.set_read_only(true);
+    let fx = room.clear_unfit_clean_run();
+    assert!(stamp_of(&room).is_some() && !fx.changed && !room.is_dirty());
+    let base = stamped_file(|_| {});
+    let mut room = Room::notebook_room(&base, "n.ipynb");
+    room.set_read_only(true);
+    room.reload(&stale, "h1");
+    assert!(stamp_of(&room).is_some() && !room.is_dirty());
+    room.merge_disk(&base, &stale, "h2");
+    assert!(stamp_of(&room).is_some() && !room.is_dirty());
+}
+
+/// The fingerprint is a fixed function of the cells' types, sources and
+/// order: this value changes only if the algorithm does.
+#[test]
+fn the_source_fingerprint_is_stable_and_has_no_concatenation_collisions() {
+    let nb = Notebook::from_str(CLEAN_RUN_NB).unwrap();
+    assert_eq!(schema::source_fingerprint(&nb), "v1:250ab6e8");
+    let two = |a: &str, b: &str| {
+        let mut nb = Notebook::new();
+        nb.cells = ["a", "b"]
+            .iter()
+            .zip([a, b])
+            .map(|(id, src)| {
+                serde_json::from_value(serde_json::json!(
+                    {"cell_type": "code", "id": id, "metadata": {},
+                     "execution_count": null, "outputs": [], "source": src}))
+                .unwrap()
+            })
+            .collect();
+        schema::source_fingerprint(&nb)
+    };
+    assert_ne!(two("ab", "c"), two("a", "bc"));
+    assert_eq!(two("a", "b"), two("a", "b"));
+    assert_ne!(two("a", "b"), two("b", "a"));
 }

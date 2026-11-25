@@ -459,6 +459,55 @@ fn stream_growth<T: ReadTxn>(txn: &T, old: &MapRef, new: &Value) -> Option<Strin
     (strip(&old) == through_yjs(&strip(new))).then(|| added.to_string())
 }
 
+/// A fingerprint of what a clean run read: every cell's type and source,
+/// in order, and nothing else (no outputs, ids, counts or metadata).
+/// `"v1:"` and eight hex digits of [`crate::murmur2`] (seed 0) over each
+/// cell as `{len}:{cell_type}{len}:{source}\n`, lengths in bytes, so no two
+/// layouts of cells give the same bytes.
+pub fn source_fingerprint(nb: &Notebook) -> String {
+    let mut bytes = Vec::new();
+    for cell in &nb.cells {
+        let cell_type = cell.cell_type().unwrap_or("");
+        let source = cell.source().map_or("", |s| s.as_str());
+        bytes.extend_from_slice(
+            format!("{}:{cell_type}{}:{source}\n", cell_type.len(), source.len()).as_bytes(),
+        );
+    }
+    format!("v1:{:08x}", crate::murmur2(&bytes, 0))
+}
+
+/// What a notebook's `clean_run` stamp says about its current cells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanRun {
+    /// No stamp.
+    None,
+    /// The stamp's fingerprint matches the cells.
+    Current,
+    /// The stamp's fingerprint doesn't match the cells.
+    Stale,
+    /// The stamp has no fingerprint, or one of a version this code doesn't
+    /// know (as older versions wrote).
+    Unverified,
+}
+
+/// Whether `nb`'s `metadata.ganymede.clean_run` stamp still describes its
+/// cells (see [`source_fingerprint`]).
+pub fn clean_run_status(nb: &Notebook) -> CleanRun {
+    let Some(stamp) = nb.metadata.get("ganymede").and_then(|g| g.get("clean_run")) else {
+        return CleanRun::None;
+    };
+    match stamp.get("fingerprint").and_then(Value::as_str) {
+        Some(f) if f.starts_with("v1:") => {
+            if f == source_fingerprint(nb) {
+                CleanRun::Current
+            } else {
+                CleanRun::Stale
+            }
+        }
+        _ => CleanRun::Unverified,
+    }
+}
+
 /// The notebook's `metadata.ganymede.clean_run` stamp, if it has one.
 pub fn clean_run<T: ReadTxn>(txn: &T, roots: &Roots) -> Option<Value> {
     let metadata = out_to_json(txn, &roots.meta.get(txn, "metadata")?);
