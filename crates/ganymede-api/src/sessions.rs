@@ -177,6 +177,13 @@ impl SessionManager {
     /// `jupyter_server` does. An existing session whose kernel is gone
     /// (culled, or died) is dropped and a new one made in its place.
     pub async fn create(&self, req: SessionCreate) -> Result<SessionModel> {
+        self.create_reporting(req).await.map(|(m, _)| m)
+    }
+
+    /// [`Self::create`], and whether this call made the session (false
+    /// when one for the path existed, including one another caller made
+    /// while this one waited for the path).
+    pub async fn create_reporting(&self, req: SessionCreate) -> Result<(SessionModel, bool)> {
         let find = || {
             self.sessions
                 .read()
@@ -187,13 +194,13 @@ impl SessionManager {
         };
         if let Some(existing) = find() {
             if self.kernels.get(&existing.kernel_id).is_ok() {
-                return self.model(&existing);
+                return Ok((self.model(&existing)?, false));
             }
         }
         let _path = PathGuard::lock(&self.path_locks, &req.path).await;
         if let Some(existing) = find() {
             if self.kernels.get(&existing.kernel_id).is_ok() {
-                return self.model(&existing);
+                return Ok((self.model(&existing)?, false));
             }
             self.sessions.write().unwrap().remove(&existing.id);
         }
@@ -225,7 +232,7 @@ impl SessionManager {
             .write()
             .unwrap()
             .insert(s.id.clone(), s.clone());
-        self.model(&s)
+        Ok((self.model(&s)?, true))
     }
 
     /// Change a session's path, name, type or kernel. A session deleted
@@ -609,6 +616,31 @@ mod tests {
             },
         ));
         (m, transports)
+    }
+
+    /// `create_reporting` says whether the call made the session: of two
+    /// creates for the path started together, one made it and the other
+    /// found it; a later one finds it too. (The server's http tests cover
+    /// the race through `notebook_open`.)
+    #[tokio::test]
+    async fn create_reporting_says_who_made_the_session() {
+        let sm = Arc::new(SessionManager::new(manager(None)));
+        let req = || SessionCreate {
+            path: "a.ipynb".into(),
+            name: None,
+            type_: None,
+            kernel: KernelRef {
+                id: None,
+                name: Some("fake".into()),
+            },
+        };
+        let (a, b) = tokio::join!(sm.create_reporting(req()), sm.create_reporting(req()));
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert_eq!(a.0.id, b.0.id);
+        assert_eq!([a.1, b.1].iter().filter(|m| **m).count(), 1, "one made it");
+        let (c, made) = sm.create_reporting(req()).await.unwrap();
+        assert_eq!(c.id, a.0.id);
+        assert!(!made);
     }
 
     #[tokio::test]

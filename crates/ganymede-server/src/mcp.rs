@@ -38,7 +38,7 @@ pub(crate) mod search;
 mod skills;
 mod snapshot;
 
-use crate::collab::{hold_notebook, notebook_room_id, with_notebook, Hold, Listing};
+use crate::collab::{hold_notebook, notebook_room_id, with_notebook, DeleteIf, Hold, Listing};
 use crate::folder;
 use crate::room_ops;
 use crate::AppState;
@@ -251,6 +251,13 @@ enum Refused {
     /// Cell id changed since the read mark named by the token; the cell,
     /// with its index, as it is now.
     Unseen(String, String, Option<Box<(usize, Cell)>>),
+}
+
+/// A notebook `notebook_open` created: the file's stamp right after, if it
+/// could be read, and whether the call made folders for it.
+struct Created {
+    stamp: Option<String>,
+    made_dirs: bool,
 }
 
 fn err(msg: impl Into<String>) -> McpError {
@@ -576,6 +583,8 @@ impl Notebooks {
             }
         };
         let mut folder_default = None;
+        // Set when this call created the notebook.
+        let mut created: Option<Created> = None;
         if !exists {
             if self.opts.read_only {
                 return Err(err(format!(
@@ -625,25 +634,41 @@ impl Notebooks {
                     return Err(err(format!("no kernel named {k}; nothing was created")));
                 }
             }
-            self.create(&path, kernel.as_deref(), a.title.as_deref())
+            let made_dirs = self
+                .create(&path, kernel.as_deref(), a.title.as_deref())
                 .await?;
+            // The file as this call made it, so a failure deletes only
+            // that. Read after `create` returns, so a save landing between
+            // its write and this read is taken for the call's own.
+            created = Some(Created {
+                stamp: self
+                    .state
+                    .collab
+                    .root()
+                    .and_then(|r| ganymede_contents::fileid::api_file_stamp(r, &path)),
+                made_dirs,
+            });
         }
         // What this connection held before, so a failure leaves it so.
         let had_hold = self.holds_room(&path).await;
+        let mut started = None;
         let kernel = if self.opts.read_only || self.opts.no_execute {
             None
         } else {
-            match self.kernel_for(&path, a.kernel.as_deref()).await {
-                Ok(k) => Some(k),
+            match self.kernel_session(&path, a.kernel.as_deref()).await {
+                Ok((id, name, s)) => {
+                    started = s;
+                    Some((id, name))
+                }
                 Err(e) => {
-                    return Err(self.failed_open(&path, exists, had_hold, e).await);
+                    return Err(self.failed_open(&path, created, None, had_hold, e).await);
                 }
             }
         };
         let (nb, token) = match self.read_marked(&path).await {
             Ok(r) => r,
             Err(e) => {
-                return Err(self.failed_open(&path, exists, had_hold, e).await);
+                return Err(self.failed_open(&path, created, started, had_hold, e).await);
             }
         };
         *self.current.lock().expect("current") = Some(path.clone());
@@ -2350,7 +2375,7 @@ impl Notebooks {
         path: &str,
         kernel: Option<&str>,
         title: Option<&str>,
-    ) -> Result<(), McpError> {
+    ) -> Result<bool, McpError> {
         let specs = self
             .state
             .kernels
@@ -2370,15 +2395,16 @@ impl Notebooks {
             .collect();
         let nb = json!({"cells": cells, "metadata": metadata, "nbformat": 4, "nbformat_minor": 5});
         // Its directories, as `mkdir -p`.
+        let mut made_dirs = false;
         if let Some((dir, _)) = path.rsplit_once('/') {
-            self.mkdirs(dir).await?;
+            made_dirs = self.mkdirs(dir).await?;
         }
         self.state
             .contents
             .save(path, SaveRequest::notebook(nb))
             .await
             .map_err(|e| err(e.to_string()))?;
-        Ok(())
+        Ok(made_dirs)
     }
 
     /// Whether this connection holds `path`'s room open now.
@@ -2401,32 +2427,83 @@ impl Notebooks {
         }
     }
 
-    /// `e`, for a failed open, once the hold this call made on the room
-    /// (if the connection had none before) is let go. A notebook this call
-    /// created stays: others may have saved to it by now.
+    /// `e`, for a failed open, once what this call made is undone: the
+    /// hold on the room (if the connection had none before), the session
+    /// it started (`started`), and the notebook it created (`created`)
+    /// unless the file changed since or someone has it open. Folders it
+    /// made stay. A session it joined, and a notebook that was there, are
+    /// left. What stays, and why, is in the message.
     async fn failed_open(
         &self,
         path: &str,
-        existed: bool,
+        created: Option<Created>,
+        started: Option<String>,
         had_hold: bool,
         e: McpError,
     ) -> McpError {
         if !had_hold {
             self.release_hold(path).await;
         }
-        let kept = if existed {
-            String::new()
-        } else {
-            format!("{} was created and stays, but ", self.show(path))
+        let mut msg = e.message.to_string();
+        let shown = self.show(path);
+        // A notebook someone has open stays with its kernel: they may have
+        // edits not saved yet, and a kernel they use.
+        let busy = match &created {
+            Some(Created { stamp: Some(_), .. }) => self.state.collab.room_in_use(path).await,
+            _ => false,
         };
-        err(format!(
-            "{}; {kept}no notebook is current, so pass path",
-            e.message
-        ))
+        if let (Some(id), false) = (started.as_ref(), busy) {
+            // Not found: someone else deleted it, and its kernel with it.
+            if let Err(d) = self.state.sessions.delete(id).await {
+                if d.status != 404 {
+                    msg.push_str(&format!(
+                        "; the kernel session it started for {shown} wasn't shut down: {}",
+                        d.message
+                    ));
+                }
+            }
+        }
+        let tail = match created {
+            None => String::new(),
+            Some(Created { stamp, made_dirs }) => {
+                let folders = if made_dirs {
+                    " (the folders it made stay)"
+                } else {
+                    ""
+                };
+                let stays = match stamp {
+                    None => Some("the contents aren't a local folder".to_string()),
+                    Some(_) if busy => Some(match started {
+                        Some(_) => "someone has it open; it and its kernel stay".to_string(),
+                        None => "someone has it open".to_string(),
+                    }),
+                    Some(st) => match self
+                        .state
+                        .collab
+                        .delete_if_unchanged(&self.state.contents, path, &st)
+                        .await
+                    {
+                        Ok(DeleteIf::Deleted) => None,
+                        Ok(DeleteIf::Changed) => {
+                            Some("it changed since this call created it".to_string())
+                        }
+                        Ok(DeleteIf::InUse) => Some("someone has it open".to_string()),
+                        Err(d) => Some(format!("deleting it failed: {d}")),
+                    },
+                };
+                match stays {
+                    None => format!("the notebook was removed{folders}, "),
+                    Some(why) => format!("{shown} was created and stays ({why}){folders}, but "),
+                }
+            }
+        };
+        err(format!("{msg}; {tail}no notebook is current, so pass path"))
     }
 
-    /// Make `dir` (an API path) and its parents, as `mkdir -p`.
-    async fn mkdirs(&self, dir: &str) -> Result<(), McpError> {
+    /// Make `dir` (an API path) and its parents, as `mkdir -p`. True when
+    /// it made any.
+    async fn mkdirs(&self, dir: &str) -> Result<bool, McpError> {
+        let mut made = false;
         let mut sofar = String::new();
         for part in dir.split('/').filter(|p| !p.is_empty()) {
             if !sofar.is_empty() {
@@ -2445,9 +2522,10 @@ impl Notebooks {
                     .save(&sofar, SaveRequest::directory())
                     .await
                     .map_err(|e| err(e.to_string()))?;
+                made = true;
             }
         }
-        Ok(())
+        Ok(made)
     }
 
     /// The kernel of the notebook's session, if it has one.
@@ -2498,6 +2576,17 @@ impl Notebooks {
         path: &str,
         kernel: Option<&str>,
     ) -> Result<(String, String), McpError> {
+        let (id, name, _) = self.kernel_session(path, kernel).await?;
+        Ok((id, name))
+    }
+
+    /// [`Self::kernel_for`], and the id of the session this call started:
+    /// `None` when it joined one that was running.
+    async fn kernel_session(
+        &self,
+        path: &str,
+        kernel: Option<&str>,
+    ) -> Result<(String, String, Option<String>), McpError> {
         if let Some(s) = self
             .state
             .sessions
@@ -2505,7 +2594,7 @@ impl Notebooks {
             .into_iter()
             .find(|s| s.path == path)
         {
-            return Ok((s.kernel.id, s.kernel.name));
+            return Ok((s.kernel.id, s.kernel.name, None));
         }
         let name = match kernel {
             Some(k) => Some(k.to_string()),
@@ -2525,10 +2614,10 @@ impl Notebooks {
                 }
             }
         };
-        let s = self
+        let (s, made) = self
             .state
             .sessions
-            .create(SessionCreate {
+            .create_reporting(SessionCreate {
                 path: path.to_string(),
                 name: Some(path.rsplit('/').next().unwrap_or(path).to_string()),
                 type_: Some("notebook".into()),
@@ -2536,7 +2625,7 @@ impl Notebooks {
             })
             .await
             .map_err(|e| err(e.message))?;
-        Ok((s.kernel.id, s.kernel.name))
+        Ok((s.kernel.id, s.kernel.name, made.then_some(s.id)))
     }
 
     async fn insert(
