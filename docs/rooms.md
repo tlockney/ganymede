@@ -155,10 +155,13 @@ server finds copies by their file, not by which directory they are in,
 so it sees every copy of a notebook under its root, at the path relative
 to that root: a copy kept by a server rooted at a project is listed, read
 and discarded by one rooted at the folder around it, and a root that
-holds none of the file's path sees none of its copies. A copy whose file
-is under a hidden directory of the root, which the contents API refuses,
-is not seen, unless the path it was saved under resolves to the same file
-(a symlink inside the root to a hidden directory, say). Each copy is a `<id>.ipynb` and a `<id>.json` with the `path`,
+holds none of the file's path sees none of its copies. The exception is
+a copy whose file is under a hidden directory of the root, which the
+contents API doesn't serve either: it is not seen. The server that kept
+the copy still sees it at the path it saved it under, when that path
+resolves to the same file (through a symlink inside its root to a hidden
+directory, say); another root does not. Each copy is a `<id>.ipynb` and
+a `<id>.json` with the `path`,
 the file's absolute path (`file`, which the routes leave out), `at` (UTC),
 `reason`, `detail`, `cells` and the notebook's file name. At most 20
 copies are kept for one notebook path and 200 MB for one root; a write that

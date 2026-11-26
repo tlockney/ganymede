@@ -366,8 +366,6 @@ pub(crate) fn read_meta(store: &Store, id: &str) -> io::Result<Option<Meta>> {
     Ok(find(store, id)?.map(|(_, meta)| meta))
 }
 
-/// `file` with its dir canonical (the file itself may be gone), so every
-/// root that holds it maps it to the same place.
 /// `rel` as an API path: plain components joined with `/`, whatever the
 /// platform's separator. `None` for an empty path, or one with a hidden
 /// component (or anything but a plain name), as the contents API refuses
@@ -387,6 +385,8 @@ fn api_path(rel: &Path) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("/"))
 }
 
+/// `file` with its dir canonical (the file itself may be gone), so every
+/// root that holds it maps it to the same place.
 fn canonical_file(file: &Path) -> PathBuf {
     match (
         file.parent().and_then(|d| d.canonicalize().ok()),
