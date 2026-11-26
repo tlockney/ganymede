@@ -260,7 +260,7 @@ And the [server flags](#server-flags).
 
 | Flag | Effect |
 | --- | --- |
-| `--version <VERSION>` | ganymede-ui version, exactly. Default `0.15.0`. |
+| `--version <VERSION>` | ganymede-ui version, exactly. Default `0.16.0`. |
 | `--force` | Reinstall if this version is already installed. |
 
 ### `ui list`
@@ -655,7 +655,7 @@ given them.
 ```json
 {
   "base_url": "/",
-  "ganymede_version": "0.16.0",
+  "ganymede_version": "0.17.0",
   "hostname": "127.0.0.1",
   "password": false,
   "pid": 41237,
@@ -709,10 +709,6 @@ access-denied page; `--no-redirect-file` opens the URL itself instead, as
 | `GANYMEDE_CRASH_REPORTING` | `1` turns crash reporting on and `0` off, overriding `crash_reporting`; see [Privacy and crash reporting](privacy.md). |
 | `RUST_LOG` | The log filter, when `--log-level` isn't given. |
 | `HTTPS_PROXY` | Used for downloads. |
-
-> [!NOTE]
-> **Unreleased.** Rooms keep recovery copies under this directory only
-> in a build of `main` (HEAD), not in the latest release.
 
 `ganymede info` prints every directory in use.
 

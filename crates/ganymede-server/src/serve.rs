@@ -407,6 +407,22 @@ pub type OnListening = Box<dyn FnOnce(&str) + Send>;
 /// server wrote (`None` when it wrote none) once the port is bound.
 pub type OnOpenPage = Box<dyn FnOnce(&str, Option<&Path>) + Send>;
 
+/// Whether a server's rooms lock their files in the Jupyter runtime
+/// dir, so the first server with a room open on a notebook owns it and
+/// another server's room on the same file is read-only (#272,
+/// `room_lock.rs`). Every server locks, embedded ones included (#966):
+/// the Mac app's server and a `ganymede serve` on one notebook can't
+/// both autosave it. Only iOS locks nothing, which its app asks for
+/// through [`Startup::room_locks`].
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+pub enum RoomLocks {
+    /// Lock in the Jupyter runtime dir's `ganymede-rooms/`.
+    #[default]
+    RuntimeDir,
+    /// Take no locks: two servers' rooms on one file both autosave it.
+    Off,
+}
+
 /// What `ganymede lab` asks of [`run_with`] beyond `ganymede serve`.
 #[derive(Default)]
 pub struct Startup {
@@ -423,6 +439,10 @@ pub struct Startup {
     /// Stop on a message here instead of on Ctrl-C or SIGTERM, and print
     /// nothing to stdout: how an app embedding the server runs it.
     pub stop: Option<tokio::sync::mpsc::Receiver<()>>,
+    /// Whether the server's rooms lock their files in the Jupyter
+    /// runtime dir ([`RoomLocks`]). On, as for `ganymede serve`, unless
+    /// an embedding app turns it off; only iOS does (#966).
+    pub room_locks: RoomLocks,
     /// Where kernelspecs come from, instead of the config's kernelspec
     /// dirs: an app listing the kernels it runs itself.
     pub kernelspecs: Option<Arc<dyn KernelspecSource>>,
@@ -938,15 +958,20 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
     if !cfg.language_servers.is_empty() && !LspManager::supported() {
         tracing::warn!("language servers are configured but cannot run on this platform");
     }
-    // An embedding app has no runtime dir on iOS, so its rooms don't lock.
+    // Every server locks, an embedded app's too (#966): the first to
+    // open a room on a notebook owns it. Only iOS, with no runtime dir,
+    // locks nothing, which its app asks for through `room_locks`.
     let mut collab = crate::collab::Collab::new(file_ids(&root_dir), Some(root_dir.clone()));
     if let Some(observer) = &startup.write_observer {
         collab = collab.with_write_observer(observer.clone());
     }
-    if startup.stop.is_none() {
-        collab = collab.with_room_locks(
-            ganymede_kernel_host::kernelspec::jupyter_runtime_dir().join("ganymede-rooms"),
-        );
+    match startup.room_locks {
+        RoomLocks::RuntimeDir => {
+            collab = collab.with_room_locks(
+                ganymede_kernel_host::kernelspec::jupyter_runtime_dir().join("ganymede-rooms"),
+            );
+        }
+        RoomLocks::Off => {}
     }
     // Recovery copies outlive a reboot, unlike the runtime dir.
     if let Some(data) = crate::lab::data_dir() {

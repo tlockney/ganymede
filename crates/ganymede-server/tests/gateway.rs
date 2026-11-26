@@ -84,6 +84,8 @@ async fn serve_with(cfg: Config, startup: Startup) -> (String, tokio::sync::mpsc
                 let _ = url_tx.send(url.to_string());
             })),
             stop: Some(stop_rx),
+            // Locking isn't under test; keep lock files out of the real runtime dir.
+            room_locks: ganymede_server::serve::RoomLocks::Off,
             ..startup
         },
     ));

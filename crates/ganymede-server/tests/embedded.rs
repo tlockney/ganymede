@@ -115,6 +115,263 @@ async fn serves_the_apps_kernels() {
     server.await.unwrap().unwrap();
 }
 
+/// The Jupyter runtime dir for this test run's servers: a temp dir, set
+/// once before any of them starts, so their rooms lock there and not in
+/// the real one (`~/Library/Jupyter/runtime`). Set once and never changed,
+/// so parallel tests can't race it; each test's notebooks are in its own
+/// temp root, so their locks never meet. The CLI tests, whose servers are
+/// subprocesses, set `JUPYTER_RUNTIME_DIR` per command instead.
+fn temp_runtime_dir() {
+    static RUNTIME_DIR: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    RUNTIME_DIR.get_or_init(|| {
+        let dir = tempfile::tempdir().expect("a temp runtime dir");
+        // Kept, not deleted on drop: the servers' rooms lock in it while
+        // this test binary runs.
+        std::env::set_var("JUPYTER_RUNTIME_DIR", dir.keep());
+    });
+}
+
+/// A server as an embedding app runs one (`stop` set, no output): on a
+/// thread of its own with a tokio runtime of its own, as ganymede-ffi
+/// runs it, serving `root`. Its rooms — and their locks — go with its
+/// runtime: when the server stops, they are dropped, not left running
+/// on this test's runtime to hold their locks. Returns its address, its
+/// stop channel and its thread.
+async fn embedded_server(
+    root: &std::path::Path,
+) -> (
+    String,
+    tokio::sync::mpsc::Sender<()>,
+    std::thread::JoinHandle<anyhow::Result<()>>,
+) {
+    let cfg = Config {
+        port: 0,
+        token: Some("t".into()),
+        root_dir: root.into(),
+        cookie_secret_file: Some(root.join("secret")),
+        notary_dir: Some(root.join("notary")),
+        ..Default::default()
+    };
+    let (url_tx, url_rx) = tokio::sync::oneshot::channel();
+    let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(1);
+    let thread = std::thread::Builder::new()
+        .name("embedded-server".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_name("embedded")
+                .build()?;
+            let startup = Startup {
+                on_listening: Some(Box::new(move |url: &str| {
+                    let _ = url_tx.send(url.to_string());
+                })),
+                stop: Some(stop_rx),
+                kernelspecs: Some(Arc::new(App)),
+                provisioner: Some(Arc::new(App)),
+                transports: Some(Arc::new(App)),
+                ..Default::default()
+            };
+            rt.block_on(run_with(cfg, startup))
+        })
+        .expect("the server thread");
+    let url = url_rx.await.expect("the server to listen");
+    (
+        url.trim_start_matches("http://")
+            .split('/')
+            .next()
+            .unwrap()
+            .to_string(),
+        stop_tx,
+        thread,
+    )
+}
+
+/// Two servers started as an embedding app starts them (with `stop`, as
+/// ganymede-ffi runs its servers) take room locks too: whichever opens a
+/// room on a notebook first owns it and the other's room is read-only,
+/// which its contents API says as `writable: false`. Both orders (#966).
+#[tokio::test]
+async fn an_embedded_server_locks_its_rooms_first_come() {
+    use futures::{SinkExt, StreamExt};
+    use ganymede_documents::schema::Roots;
+    use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
+    use ganymede_documents::yrs::updates::decoder::Decode;
+    use ganymede_documents::yrs::updates::encoder::Encode;
+    use ganymede_documents::yrs::{Array, Doc, Map, Out, ReadTxn, Text, Transact, Update};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+
+    temp_runtime_dir();
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("shared.ipynb");
+    let original = r#"{ "cells": [ { "cell_type": "markdown", "id": "a", "metadata": {}, "source": [ "hello" ] } ], "metadata": {}, "nbformat": 4, "nbformat_minor": 5 }
+"#;
+    std::fs::write(&file, original).unwrap();
+    let (a_addr, a_stop, a_server) = embedded_server(root.path()).await;
+    let (b_addr, b_stop, b_server) = embedded_server(root.path()).await;
+
+    type Ws = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+    // A room's websocket, opened through the session the server hands
+    // out, as JupyterLab opens one.
+    async fn room(addr: &str, path: &str) -> Ws {
+        let (code, v) = call(
+            addr,
+            "PUT",
+            &format!("/api/collaboration/session/{path}"),
+            Some(json!({"format": "json", "type": "notebook"})),
+        )
+        .await;
+        assert!((200..300).contains(&code), "{code}: {v}");
+        let mut req = format!(
+            "ws://{addr}/api/collaboration/room/json:notebook:{}?sessionId={}",
+            v["fileId"].as_str().unwrap(),
+            v["sessionId"].as_str().unwrap()
+        )
+        .into_client_request()
+        .unwrap();
+        req.headers_mut()
+            .insert("Authorization", "token t".parse().unwrap());
+        tokio_tungstenite::connect_async(req).await.unwrap().0
+    }
+    fn source(doc: &Doc) -> Option<String> {
+        let roots = Roots::get(doc);
+        let txn = doc.transact();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+            return None;
+        };
+        let Some(Out::YText(t)) = cell.get(&txn, "source") else {
+            return None;
+        };
+        Some(ganymede_documents::yrs::GetString::get_string(&t, &txn))
+    }
+    // Apply frames until `until` holds, answering the server's step 1.
+    async fn pump(ws: &mut Ws, doc: &Doc, until: impl Fn(&Doc) -> bool) {
+        let sv = doc.transact().state_vector();
+        ws.send(TMsg::Binary(
+            YMsg::Sync(SyncMessage::SyncStep1(sv)).encode_v1().into(),
+        ))
+        .await
+        .unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !until(doc) {
+            let msg = tokio::time::timeout_at(deadline, ws.next())
+                .await
+                .expect("timed out waiting for the room")
+                .unwrap()
+                .unwrap();
+            let TMsg::Binary(b) = msg else { continue };
+            match YMsg::decode_v1(&b) {
+                Ok(YMsg::Sync(SyncMessage::SyncStep1(sv))) => {
+                    let u = doc.transact().encode_state_as_update_v1(&sv);
+                    ws.send(TMsg::Binary(
+                        YMsg::Sync(SyncMessage::SyncStep2(u)).encode_v1().into(),
+                    ))
+                    .await
+                    .unwrap();
+                }
+                Ok(YMsg::Sync(SyncMessage::SyncStep2(u) | SyncMessage::Update(u))) => {
+                    doc.transact_mut()
+                        .apply_update(Update::decode_v1(&u).unwrap())
+                        .unwrap();
+                }
+                _ => {}
+            }
+        }
+    }
+    // Insert `text` at the end of the first cell's source and send it.
+    async fn type_at_end(ws: &mut Ws, doc: &Doc, text: &str) {
+        let before = doc.transact().state_vector();
+        {
+            let roots = Roots::get(doc);
+            let mut txn = doc.transact_mut();
+            let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+                panic!("no cell");
+            };
+            let t = match cell.get(&txn, "source") {
+                Some(Out::YText(t)) => t,
+                _ => panic!("no source"),
+            };
+            let end = t.len(&txn);
+            t.insert(&mut txn, end, text);
+        }
+        let u = doc.transact().encode_state_as_update_v1(&before);
+        ws.send(TMsg::Binary(
+            YMsg::Sync(SyncMessage::Update(u)).encode_v1().into(),
+        ))
+        .await
+        .unwrap();
+    }
+    async fn writable(addr: &str) -> bool {
+        let (code, m) = call(addr, "GET", "/api/contents/shared.ipynb?content=0", None).await;
+        assert_eq!(code, 200, "{m}");
+        m["writable"].as_bool().unwrap()
+    }
+    async fn saved(file: &std::path::Path, what: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !std::fs::read_to_string(file).unwrap().contains(what) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what} was not saved: {:?}",
+                std::fs::read_to_string(file).unwrap()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    // No room is open: both servers see the notebook as theirs to write.
+    assert!(writable(&a_addr).await);
+    assert!(writable(&b_addr).await);
+
+    // Server A, embedded like B, opens the room first and owns the file.
+    let (mut wsa, doca) = (room(&a_addr, "shared.ipynb").await, Doc::new());
+    pump(&mut wsa, &doca, |d| source(d).is_some()).await;
+    assert!(writable(&a_addr).await, "the owner can write");
+    assert!(!writable(&b_addr).await, "the second server is read-only");
+    let (mut wsb, docb) = (room(&b_addr, "shared.ipynb").await, Doc::new());
+    pump(&mut wsb, &docb, |d| source(d).is_some()).await;
+    // B's read-only room undoes its client's edit and saves nothing.
+    type_at_end(&mut wsb, &docb, " from B").await;
+    pump(&mut wsb, &docb, |d| source(d).as_deref() == Some("hello")).await;
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
+    // A's room saves its own client's edit, and B's room shows it.
+    type_at_end(&mut wsa, &doca, " from A").await;
+    saved(&file, "hello from A").await;
+    pump(&mut wsb, &docb, |d| {
+        source(d).as_deref() == Some("hello from A")
+    })
+    .await;
+
+    // The other order: A stops, its room's lock goes with it, and B's
+    // room takes the file over. A fresh embedded server is read-only then.
+    a_stop.send(()).await.unwrap();
+    a_server.join().unwrap().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !writable(&b_addr).await {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the owner's lock was never released"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    // The room's retry tick is about a second; give it room before the
+    // edit, so the edit doesn't land while the room is still read-only.
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    type_at_end(&mut wsb, &docb, " and B").await;
+    saved(&file, "hello from A and B").await;
+
+    let (c_addr, c_stop, c_server) = embedded_server(root.path()).await;
+    assert!(!writable(&c_addr).await, "the new server is read-only");
+    assert!(writable(&b_addr).await, "the new owner can write");
+    c_stop.send(()).await.unwrap();
+    c_server.join().unwrap().unwrap();
+    wsa.close(None).await.unwrap();
+    wsb.close(None).await.unwrap();
+    b_stop.send(()).await.unwrap();
+    b_server.join().unwrap().unwrap();
+}
+
 #[cfg(not(feature = "subprocess"))]
 #[tokio::test]
 async fn without_subprocess_a_provisioner_is_required() {

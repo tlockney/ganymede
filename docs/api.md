@@ -500,15 +500,7 @@ parsed whatever their `Content-Type`, because `@jupyterlab/services`
 omits the header on some requests. [Security](security.md) has how
 requests are authenticated and which `Host` and `Origin` are accepted.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. This is about `/api/collaboration/recovery`.
-
 ### Execute checks the hash again before each run
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 `/api/kernels/{id}/execute` checks a cell's `source_hash` again when the
 cell's turn comes, and skips a cell that changed while it was queued,

@@ -193,7 +193,8 @@ impl Collab {
 
     /// Rooms take a lock in `dir` (a directory in the Jupyter runtime dir)
     /// to own their files, so another server's room on the same file is
-    /// read-only. Without this, as in an embedding app, rooms don't lock.
+    /// read-only. Without this, two servers' rooms on one file both
+    /// autosave it; only iOS, with no runtime dir, leaves it off (#966).
     pub fn with_room_locks(mut self, dir: PathBuf) -> Self {
         self.locks = crate::room_lock::Locks::new(Some(dir));
         self

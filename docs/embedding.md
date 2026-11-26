@@ -17,7 +17,7 @@ design is on [The iPad use case](ipados.md).
 ![Three ways to embed Ganymede: a Rust app calling the engine in-process; an app whose web view talks HTTP to the server that ganymede-ffi runs on loopback; and a wasm or iOS build with zmq and subprocess off, where the kernel sits behind an in-process transport.](images/architecture/embedding.svg)
 
 The crates are not on crates.io, so depend on them from git:
-`ganymede-engine = { git = "https://github.com/tlockney/ganymede", tag = "v0.16.0" }`.
+`ganymede-engine = { git = "https://github.com/tlockney/ganymede", tag = "v0.17.0" }`.
 
 ## The engine in a Rust app
 
@@ -506,6 +506,24 @@ survives the server.
 From Rust, `ganymede_server::write_observer::WriteObserver` is the same
 thing: keep one, pass it as `Startup::write_observer`, and call `set` with
 a closure taking the path and the two stamps.
+
+### Two servers on one notebook
+
+An embedded server's rooms lock their notebooks as every Ganymede server's
+do ([Rooms](rooms.md#two-servers-on-one-notebook)): the first server on the
+machine with a room open on a file owns it, and another server's room on it
+is read-only. The locks are files in the Jupyter runtime dir's
+`ganymede-rooms/`, so the app and the CLI must see the same
+`JUPYTER_RUNTIME_DIR` (or `JUPYTER_DATA_DIR`) for them to meet. An app
+started from the Finder doesn't see variables set in a shell profile.
+
+ganymede-ffi turns locking off on iOS, which has no shared runtime dir. From
+Rust, `Startup::room_locks` decides it: `RoomLocks::RuntimeDir`, the
+default, or `RoomLocks::Off`, which an embedder on iOS sets itself.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. The latest release's embedded servers take no lock.
 
 ## Remote kernels with ganymede-gateway
 

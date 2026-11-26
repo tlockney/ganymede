@@ -44,7 +44,7 @@ use ganymede_kernel_host::{
 };
 use ganymede_server::config::Config;
 use ganymede_server::mount::Machines;
-use ganymede_server::serve::{gateway_configured, run_with, Startup};
+use ganymede_server::serve::{gateway_configured, run_with, RoomLocks, Startup};
 use ganymede_server::write_observer::WriteObserver;
 
 /// A running server. Opaque to C.
@@ -790,9 +790,22 @@ impl TransportFactory for NoKernels {
 /// `subprocess` has no default kernels, so without a gateway it gets
 /// [`NoKernels`] rather than failing to start: the app may run its
 /// kernels elsewhere, as the iPad app runs them in the web page.
+///
+/// The server's rooms lock their files like any server's (#966), so the
+/// Mac app's server and a `ganymede serve` on one notebook can't both
+/// autosave it. iOS is the exception: it has no runtime dir to lock in.
 fn startup(cfg: &Config) -> Startup {
+    let room_locks = if cfg!(target_os = "ios") {
+        tracing::info!("iOS: rooms take no file locks");
+        RoomLocks::Off
+    } else {
+        RoomLocks::RuntimeDir
+    };
     if cfg!(all(feature = "zmq", feature = "subprocess")) || gateway_configured(cfg) {
-        return Startup::default();
+        return Startup {
+            room_locks,
+            ..Default::default()
+        };
     }
     tracing::info!("built without zmq or subprocess and no gateway_url: no kernels to list");
     let none = std::sync::Arc::new(NoKernels);
@@ -800,6 +813,7 @@ fn startup(cfg: &Config) -> Startup {
         kernelspecs: Some(std::sync::Arc::new(StaticKernelspecs(Vec::new()))),
         provisioner: Some(none.clone()),
         transports: Some(none),
+        room_locks,
         ..Default::default()
     }
 }

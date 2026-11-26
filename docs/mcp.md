@@ -40,6 +40,14 @@ themselves are unchanged: their paths start at the root.
 3. Otherwise, a server of its own in the same process, on a loopback
    port with a random token, rooted at the current directory. It stops,
    saving open notebooks, when the agent closes the connection.
+   Its rooms lock their notebooks like any server's, so a notebook
+   another Ganymede server has open, such as one open in the Mac app,
+   is read-only to the agent
+   ([Rooms](rooms.md#two-servers-on-one-notebook)).
+
+   > [!NOTE]
+   > **Unreleased.** Available only from a build of `main` (HEAD), not
+   > in the latest release, where this server takes no lock.
 
 Start a shared server with:
 
@@ -178,10 +186,6 @@ a newer `ganymede`, such as the `requests` monitor, stay off until you
 [update it](install.md#8-update-and-uninstall).
 
 ## Skills over MCP
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 `ganymede mcp` also serves the `journal` and `page-style` skills from the
 plugin, to clients that support the [MCP Skills
