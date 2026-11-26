@@ -72,5 +72,22 @@ Tests:
   `gateway`, no token in the answer, a local spec starting here and a
   gateway spec starting there),
   `an_unreachable_gateway_still_lists_local_kernels_and_says_why` (closed
-  port, `-gateway-name`: local spec still listed, `reachable: false`, an
+  port, `gateway_name`: local spec still listed, `reachable: false`, an
   error without the token or the URL's path).
+
+Pre-push review round:
+
+- A launch goes by the spec's own `gateway` flag, so a restart stays on
+  the side the kernel started on even when the gateway's list changed
+  since (a kernel started here before the gateway's first answer, or one
+  whose name the gateway listed later); test
+  `a_restart_stays_on_the_side_the_kernel_started_on`.
+- The refresh interval is `next_refresh`, tested
+  (`refreshes_sooner_while_the_gateway_isnt_answering`).
+- `error` keeps the causes reqwest leaves out of its message (connection
+  refused, DNS, timeout, TLS), and a remote's error body is cut to its
+  first line, 200 characters (`a_remotes_error_body_is_cut_to_its_first_line`).
+- `Remote` in serve.rs allows dead code without the `gateway` feature, for
+  the `portability` job's `-D warnings` build.
+- Docs: the state before the first refresh, the flag in the Unreleased
+  note, and the `gateway` object being there whenever a gateway is set.

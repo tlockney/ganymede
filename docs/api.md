@@ -110,7 +110,8 @@ Beside `kernelspecs`, the answer says how the gateway is doing:
 
 `name` is `--gateway-name` or the URL's host, never its path, query or
 token. `reachable` is false while the gateway doesn't answer, and `error`
-then says why, with the URL and token taken out. The kernelspecs are still
+then says why, with the URL and token taken out. Before the server's first
+refresh ends, `reachable` is false and `error` is null: not checked yet. The kernelspecs are still
 the local ones and the last the gateway sent, so a client can say the
 remote kernels are missing rather than showing an empty list.
 

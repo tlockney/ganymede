@@ -77,6 +77,31 @@ impl Combined {
     }
 }
 
+impl Combined {
+    /// The side a kernel of `spec` starts on. A spec this source listed says
+    /// which side it came from (`gateway`), and a restart passes the spec
+    /// the kernel first started with, so a kernel stays on its side even
+    /// when the gateway's list has changed since: a kernel started here
+    /// before the gateway's first answer, or one whose name the gateway
+    /// lists later, doesn't move to another machine on a restart. A spec
+    /// from elsewhere goes by the current lists.
+    fn launch_side(&self, spec: &Kernelspec) -> Result<Side> {
+        if spec.gateway {
+            return Ok(Side::Gateway);
+        }
+        let local = self
+            .local
+            .0
+            .list()?
+            .iter()
+            .any(|s| s.name.eq_ignore_ascii_case(&spec.name));
+        if local {
+            return Ok(Side::Local);
+        }
+        self.side_of(&spec.name)
+    }
+}
+
 impl KernelspecSource for Combined {
     fn list(&self) -> Result<Vec<Kernelspec>> {
         let mut specs = self.gateway.0.list()?;
@@ -100,7 +125,7 @@ impl KernelspecSource for Combined {
 #[async_trait]
 impl Provisioner for Combined {
     async fn launch(&self, spec: &Kernelspec, opts: LaunchOptions) -> Result<LaunchedKernel> {
-        let side = self.side_of(&spec.name)?;
+        let side = self.launch_side(spec)?;
         let kernels = match side {
             Side::Gateway => &self.gateway,
             Side::Local => &self.local,
@@ -251,5 +276,29 @@ mod tests {
             Err(e) => panic!("{e}"),
             Ok(_) => panic!("launched a kernelspec neither side lists"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_restart_stays_on_the_side_the_kernel_started_on() {
+        // Started here before the gateway listed the name (its first answer
+        // came later, or it added the name since): the spec the kernel
+        // started with says local, so a restart stays here.
+        let (both, gateway_launcher, local_launcher) = combined(vec!["python3"], vec!["python3"]);
+        both.launch(&spec("python3"), LaunchOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(local_launcher.0.load(Ordering::SeqCst), 1);
+        assert_eq!(gateway_launcher.0.load(Ordering::SeqCst), 0);
+
+        // Started on the gateway, which no longer lists the name: a restart
+        // still goes there rather than to a local kernel of that name.
+        let (both, gateway_launcher, local_launcher) = combined(vec![], vec!["deno"]);
+        let mut remote = spec("deno");
+        remote.gateway = true;
+        both.launch(&remote, LaunchOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(gateway_launcher.0.load(Ordering::SeqCst), 1);
+        assert_eq!(local_launcher.0.load(Ordering::SeqCst), 0);
     }
 }

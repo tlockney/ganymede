@@ -48,6 +48,36 @@ fn remote(what: impl std::fmt::Display) -> Error {
     Error::Io(std::io::Error::other(format!("gateway: {what}")))
 }
 
+/// An error and its causes, outermost first: reqwest's own message leaves
+/// out why a request failed (refused, DNS, timeout, TLS), which its
+/// sources say.
+fn causes(e: &dyn std::error::Error) -> String {
+    let mut text = e.to_string();
+    let mut source = e.source();
+    while let Some(cause) = source {
+        let more = cause.to_string();
+        if !text.contains(&more) {
+            text.push_str(": ");
+            text.push_str(&more);
+        }
+        source = cause.source();
+    }
+    text
+}
+
+/// How much of a remote's error body an error keeps: its first line, cut
+/// to [`BRIEF`] characters. A proxy or captive portal may answer with a
+/// whole HTML page, which `/api/kernelspecs` would otherwise carry.
+const BRIEF: usize = 200;
+
+fn brief(body: &str) -> String {
+    let line = body.trim().lines().next().unwrap_or_default().trim_end();
+    match line.char_indices().nth(BRIEF) {
+        Some((i, _)) => format!("{}…", &line[..i]),
+        None => line.to_string(),
+    }
+}
+
 /// A remote Jupyter server's kernels.
 pub struct Gateway {
     inner: Arc<Inner>,
@@ -183,10 +213,19 @@ impl Gateway {
                         false
                     }
                 };
-                let wait = if reachable { every } else { every.min(RETRY) };
-                tokio::time::sleep(wait).await;
+                tokio::time::sleep(next_refresh(reachable, every)).await;
             }
         });
+    }
+}
+
+/// How long [`Gateway::refresh_every`] waits after a refresh: `every` while
+/// the gateway answers, at most [`RETRY`] while it doesn't.
+fn next_refresh(reachable: bool, every: Duration) -> Duration {
+    if reachable {
+        every
+    } else {
+        every.min(RETRY)
     }
 }
 
@@ -218,7 +257,7 @@ impl Inner {
     }
 
     async fn send(&self, req: reqwest::RequestBuilder) -> Result<reqwest::Response> {
-        let resp = req.send().await.map_err(remote)?;
+        let resp = req.send().await.map_err(|e| remote(causes(&e)))?;
         let status = resp.status();
         if status.is_success() {
             return Ok(resp);
@@ -229,7 +268,7 @@ impl Inner {
             .ok()
             .and_then(|v| v.get("message").and_then(Value::as_str).map(String::from))
             .unwrap_or(body);
-        Err(remote(format!("{url}: {status} {reason}")))
+        Err(remote(format!("{url}: {status} {}", brief(&reason))))
     }
 
     async fn get(&self, path: &str) -> Result<Value> {
@@ -627,6 +666,29 @@ mod tests {
         assert_eq!(gateway.host(), addr.split(':').next().unwrap());
     }
 
+    #[test]
+    fn refreshes_sooner_while_the_gateway_isnt_answering() {
+        let minute = Duration::from_secs(60);
+        assert_eq!(next_refresh(true, minute), minute);
+        assert_eq!(next_refresh(false, minute), RETRY);
+        assert!(RETRY < minute);
+        // Never slower than asked for.
+        assert_eq!(
+            next_refresh(false, Duration::from_secs(5)),
+            Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn a_remotes_error_body_is_cut_to_its_first_line() {
+        assert_eq!(brief("  asleep \n<html>...</html>"), "asleep");
+        let long = "x".repeat(BRIEF + 50);
+        let cut = brief(&long);
+        assert_eq!(cut.chars().count(), BRIEF + 1);
+        assert!(cut.ends_with('…'));
+        assert_eq!(brief(""), "");
+    }
+
     #[tokio::test]
     async fn a_gateway_that_isnt_there_is_unreachable() {
         // Port 1 on loopback: nothing listens, and connecting is refused.
@@ -634,6 +696,8 @@ mod tests {
         assert!(gateway.refresh().await.is_err());
         let status = gateway.status();
         assert!(!status.reachable);
-        assert!(status.error.is_some());
+        let error = status.error.unwrap();
+        // Says why, not only that the request failed.
+        assert!(error.to_lowercase().contains("connect"), "{error}");
     }
 }

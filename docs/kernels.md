@@ -271,11 +271,13 @@ The gateway's specs come first, then every local spec whose name (compared
 case-insensitively) the gateway doesn't have, so a name both have is the
 gateway's and its kernel runs there. A spec's `"gateway": true` in
 [`/api/kernelspecs`](api.md#list-kernelspecs) says the same thing to a
-client, which can show the two groups apart.
+client, which can show the two groups apart. A kernel stays on the side it
+started on, so a restart doesn't move it to the other machine when the
+gateway's list has changed since.
 
 A gateway that is asleep or off the network doesn't empty the list: the
-local kernels stay, and `/api/kernelspecs` adds a `gateway` object saying
-it isn't answering, with the reason and without the URL's path or token.
+local kernels stay, and the `gateway` object `/api/kernelspecs` carries
+whenever a gateway is set says it isn't answering, with the reason and without the URL's path or token.
 Starting a kernel from the remote list fails while it is out; the local
 kernels still start. The server retries every 15 seconds while the
 gateway is down, so the remote kernels come back on their own once it

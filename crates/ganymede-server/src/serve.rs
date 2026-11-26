@@ -477,7 +477,9 @@ fn default_provisioner() -> Result<Arc<dyn Provisioner>> {
 }
 
 /// Where kernels run when `gateway_url` is set: the gateway's, and what
-/// `/api/kernelspecs` says about it.
+/// `/api/kernelspecs` says about it. Only a build with the `gateway`
+/// feature makes one.
+#[cfg_attr(not(feature = "gateway"), allow(dead_code))]
 struct Remote {
     kernels: Kernels,
     /// The gateway's last refresh, for the API's `gateway`.
