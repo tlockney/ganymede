@@ -139,9 +139,10 @@ nothing to copy, and says so until a client saves.
 
 A server with no data directory, or that can't make `recovery` in it when
 it starts (it logs a warning), keeps no copies, and its rooms close
-without them. On iPad and iPhone the platform gives the server no data
-directory, so no copies; [#957](https://github.com/tlockney/ganymede/issues/957)
-tracks giving the apps one.
+without them. On iPad and iPhone the data directory is under the app's
+own container (`Library/Application Support/ganymede`), so the apps keep
+copies there too; [#957](https://github.com/tlockney/ganymede/issues/957)
+tracks checking that on a device.
 
 Copies live in `recovery` under the Ganymede data directory (`ganymede
 info` shows it as `data_dir`), not beside the notebook, so they survive a

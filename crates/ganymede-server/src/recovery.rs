@@ -113,7 +113,15 @@ impl Store {
     fn claimed(&self, meta: Meta) -> Option<Meta> {
         let root = self.root.as_ref()?;
         let file = meta.file.as_deref()?;
-        let rel = file.strip_prefix(root).ok()?.to_string_lossy().into_owned();
+        // An API path: components joined with `/`, whatever the platform's
+        // separator.
+        let rel = file
+            .strip_prefix(root)
+            .ok()?
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
         if rel.is_empty() {
             return None; // the root itself is not a notebook
         }
@@ -240,7 +248,7 @@ pub(crate) fn write(
     let meta = Meta {
         id: id.clone(),
         path: path.to_string(),
-        file: store.root.as_ref().map(|r| r.join(path)),
+        file: store.root.as_ref().map(|r| canonical_file(&r.join(path))),
         at: jiff::Timestamp::now().to_string(),
         reason: reason.as_str().to_string(),
         detail: detail.to_string(),
@@ -362,11 +370,32 @@ pub(crate) fn read_meta(store: &Store, id: &str) -> io::Result<Option<Meta>> {
     Ok(find(store, id)?.map(|(_, meta)| meta))
 }
 
+/// `file` with its dir canonical (the file itself may be gone), so every
+/// root that holds it maps it to the same place.
+fn canonical_file(file: &Path) -> PathBuf {
+    match (
+        file.parent().and_then(|d| d.canonicalize().ok()),
+        file.file_name(),
+    ) {
+        (Some(dir), Some(name)) => dir.join(name),
+        _ => file.to_path_buf(),
+    }
+}
+
 /// The copies of notebook `path`, newest first, at this server's path
 /// for them.
 pub(crate) fn list(store: &Store, path: &str) -> io::Result<Vec<Meta>> {
     let mut metas = visible(store);
-    metas.retain(|m| m.path == path);
+    // A copy's path comes from its canonical file, so the notebook's own
+    // path may spell it differently (a symlinked dir such as macOS's
+    // `/tmp`): compare the canonical forms as well.
+    let canonical = store.root.as_ref().map(|r| canonical_file(&r.join(path)));
+    metas.retain(|m| {
+        m.path == path || (canonical.is_some() && m.file.as_deref() == canonical.as_deref())
+    });
+    for m in &mut metas {
+        m.path = path.to_string();
+    }
     Ok(metas)
 }
 
@@ -551,6 +580,33 @@ mod tests {
         // The same root by another spelling is the same root.
         let again = Store::new(rec.path(), Some(&roots[0].path().join(".")));
         assert_eq!(again.dir, one.dir);
+    }
+
+    /// A root reached through a symlinked dir sees the copy at its own
+    /// path, as `/tmp` is on macOS.
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_is_found_through_a_symlinked_dir() {
+        let data = tempfile::tempdir().unwrap();
+        // `outer` holds `real/proj` and `link`, a symlink to `real`, as `/`
+        // holds `private/tmp` and `tmp` on macOS.
+        let outer = tempfile::tempdir().unwrap();
+        let outer_path = outer.path().canonicalize().unwrap();
+        std::fs::create_dir_all(outer_path.join("real/proj")).unwrap();
+        std::os::unix::fs::symlink(outer_path.join("real"), outer_path.join("link")).unwrap();
+        let real = outer_path.join("real");
+        let rec = data.path().join("recovery");
+        make_dir(&rec).unwrap();
+        let inner = Store::new(&rec, Some(&outer_path.join("link/proj")));
+        let meta = write(&inner, "a.ipynb", &nb("x"), Reason::SaveFailed, "", &[])
+            .unwrap()
+            .0;
+        let via_link = Store::new(&rec, Some(&outer_path));
+        assert!(real.join("proj").is_dir());
+        let found = list(&via_link, "link/proj/a.ipynb").unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, meta.id);
+        assert_eq!(found[0].path, "link/proj/a.ipynb");
     }
 
     /// A copy is visible from every root that holds its file: one made

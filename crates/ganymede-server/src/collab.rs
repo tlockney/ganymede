@@ -2885,7 +2885,8 @@ async fn reload(
             // and finding out beforehand would take a merge of its own
             // over a notebook serialized like this one, costing more
             // than the snapshot it was meant to save.
-            let ours = match room.is_dirty() {
+            // Only a room that can keep a copy needs its own version.
+            let ours = match room.is_dirty() && disk.recovery.is_some() {
                 true => room.notebook().map(|nb| nb.map_err(|e| e.to_string())),
                 false => None,
             };

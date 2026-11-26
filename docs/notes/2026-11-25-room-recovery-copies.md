@@ -35,8 +35,9 @@ What changed:
 - `Collab::with_recovery_dir`; `serve.rs` sets it to `recovery` under
   `lab::data_dir()` (what `ganymede info` prints as `data_dir`: persistent,
   and not beside the notebook) whenever there is a data dir, embedding
-  apps on the Mac included. On iPad and iPhone the platform gives no data
-  directory, so no copies there; #957 tracks giving the apps one. Without
+  apps included. On iPad and iPhone `dirs` reads `$HOME`, which iOS sets
+  to the app container, so copies go under its `Library/Application
+  Support/ganymede`; #957 tracks checking that on a device. Without
   a data dir (tests), or when the dir can't be
   made (a warning is logged), rooms behave as before. Only `recovery` is
   made at start; a root's dir is made by its first copy.
@@ -187,8 +188,8 @@ Review round 2, same day:
   no-closing-without-a-copy rule has the exceptions each lists below
   it. The id rule reads "an id with other characters gets 400". The
   merge diagram's two warn boxes and its alt text name the recovery
-  copy. rooms.md says iPad and iPhone have no data directory, so no
-  copies, with #957 tracking an app data dir.
+  copy. rooms.md says iPad and iPhone keep copies in the app container,
+  with #957 tracking a check on a device.
 - `reload` still snapshots the room's notebook on every disk change
   while it is dirty: `merge_disk` applies the merge and reports the
   conflicts in one call, so the room's own version is gone by the time
