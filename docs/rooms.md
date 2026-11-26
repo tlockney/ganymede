@@ -56,11 +56,6 @@ cell:
 - Notebooks older than nbformat 4.5 have no cell ids, so for them the file
   wins outright, as in `jupyter-collaboration`.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. This is about the recovery copy; the rest of the
-> merge is released.
-
 ![Merging a file change into a room with unsaved edits, cell by cell. A cell only the room edited keeps the room's source. A cell only the file changed, for example with new outputs, takes the file's version. A cell the room edited and another program ran keeps the room's source and takes the file's outputs and execution count. A cell both edited in the same part, or one deleted while the other changed it, takes the file's version, and the server keeps the room's notebook in a recovery copy and logs the cell. A cell the file added is added. Source, outputs with execution count, and each metadata key merge separately; notebook metadata merges key by key. Notebooks before nbformat 4.5 have no cell ids, so the file wins outright. The room saves the merge at once.](images/rooms/merge.svg)
 
 After taking in a change from the file, the room saves its own edits at
@@ -87,10 +82,6 @@ open. A client that writes back the very outputs the unsigned file had
 doesn't make them trusted.
 
 ## Saving and recovery
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 A room with no clients is saved and closed a minute after the last one
 leaves. It never closes holding edits the file doesn't have unless a
@@ -299,10 +290,6 @@ ten seconds. A cell that fails stops the rest of its batch.
 ![Running cells into a room. A client such as nb-cli or ganymede mcp sends POST /api/kernels/{id}/execute with the document id and each cell's id and source hash (MurmurHash2, seed 0). Ganymede checks each cell's source in the room against its hash: if one changed it answers 409 source_mismatch, and if the previous request wasn't queued within ten seconds it answers 408, and nothing runs. Otherwise it clears the cells, queues them as one batch and answers 200 null. It sends the cells to the kernel one after another; a cell that fails stops the rest of the batch. As outputs arrive on iopub, Ganymede writes them and the execution count into the room, so every client sees them and autosave writes them to the file even with no client connected.](images/rooms/execute.svg)
 
 ### A cell that changed while queued
-
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
 
 A `source_hash` is checked twice: when the request arrives (the `409`
 above), and again when the cell's turn comes, since a batch can wait

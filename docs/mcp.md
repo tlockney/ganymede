@@ -179,10 +179,6 @@ a newer `ganymede`, such as the `requests` monitor, stay off until you
 
 ## Skills over MCP
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 `ganymede mcp` also serves the `journal` and `page-style` skills from the
 plugin, to clients that support the [MCP Skills
 extension](https://code.claude.com/docs/en/mcp#use-skills-from-mcp-servers).
