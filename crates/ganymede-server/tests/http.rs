@@ -5082,6 +5082,44 @@ async fn mcp_clearing_outputs_clears_the_ran_source_hash() {
     }
 }
 
+/// A cell the kernel never acknowledged (no `execute_input`) records no
+/// hash, in the answer or the room (#943).
+#[tokio::test]
+async fn execute_a_cell_with_no_execute_input_records_no_hash() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Held::new(
+        dir.path(),
+        "q.ipynb",
+        vec![
+            code_cell(Some("s"), "sleep 600000", &[]),
+            code_cell(Some("q"), "quiet 1", &[]),
+            code_cell(Some("a"), "one", &[]),
+        ],
+    )
+    .await;
+    let (s, v) = h
+        .execute(json!({"wait": 15, "cells": [{"cell_id": "q"}, {"cell_id": "a"}]}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    let cells = v["cells"].as_array().unwrap();
+    assert!(
+        cells[0]["metadata"]["ganymede"]
+            .get("ran_source_hash")
+            .is_none(),
+        "{v:#}"
+    );
+    // A cell that was acknowledged does record it.
+    assert_eq!(
+        cells[1]["metadata"]["ganymede"]["ran_source_hash"],
+        hash_of("one"),
+        "{v:#}"
+    );
+    h.watch
+        .until_shows("the hash on a", |w| w.ran_hash("a").is_some())
+        .await;
+    assert_eq!(h.watch.ran_hash("q"), None);
+}
+
 /// A guarded cell deleted while queued ends the batch as a change: the
 /// cells after it don't run and `skipped` lists it (#943).
 #[tokio::test]
@@ -5126,17 +5164,16 @@ async fn execute_guarded_cell_deleted_while_queued_stops_the_batch() {
     assert_eq!(skipped.len(), 1, "{v:#}");
     assert_eq!(skipped[0]["cell_id"], "a", "{v:#}");
     assert_eq!(skipped[0]["error"], "source_changed_while_queued", "{v:#}");
-    assert!(!v.to_string().contains("two\\n"), "{v:#}");
     h.watch.until("b", "idle", None).await;
     let b = v["cells"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|c| c["id"] == "b");
-    if let Some(b) = b {
-        assert_eq!(b["outputs"], json!([]), "{v:#}");
-        assert_eq!(b["execution_count"], Value::Null, "{v:#}");
-    }
+        .find(|c| c["id"] == "b")
+        .unwrap_or_else(|| panic!("b is in the answer: {v:#}"));
+    assert_eq!(b["source"], "two", "{v:#}");
+    assert_eq!(b["outputs"], json!([]), "{v:#}");
+    assert_eq!(b["execution_count"], Value::Null, "{v:#}");
 }
 
 /// An id with no hash runs the room's current source, edits not yet saved

@@ -12,9 +12,10 @@
 //! - Each executed code cell's `metadata.ganymede.ran_source_hash` is the
 //!   hash of the source this run sent with [`Options::record_source_hash`]
 //!   on, set when the kernel acknowledges the request (`execute_input`), so
-//!   a cell the kernel never ran has none. Off, a stale key is removed instead, keeping the other keys of the
-//!   `ganymede` object and dropping an object the removal emptied (the
-//!   one difference from `jupyter execute`).
+//!   a cell the kernel never ran has none. Off, a stale key is removed
+//!   instead, keeping the other keys of the `ganymede` object and dropping
+//!   an object the removal emptied (the one difference from
+//!   `jupyter execute`).
 //! - `metadata.execution` records the busy, execute_input, reply, and idle
 //!   timestamps from the kernel's message headers.
 //! - `clear_output` with `wait` clears when the next output arrives.
