@@ -338,7 +338,10 @@ async fn an_embedded_server_locks_its_rooms_first_come() {
     // A's room saves its own client's edit, and B's room shows it.
     type_at_end(&mut wsa, &doca, " from A").await;
     saved(&file, "hello from A").await;
-    pump(&mut wsb, &docb, |d| source(d).as_deref() == Some("hello from A")).await;
+    pump(&mut wsb, &docb, |d| {
+        source(d).as_deref() == Some("hello from A")
+    })
+    .await;
 
     // The other order: A stops, its room's lock goes with it, and B's
     // room takes the file over. A fresh embedded server is read-only then.

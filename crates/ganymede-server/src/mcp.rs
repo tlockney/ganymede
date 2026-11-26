@@ -2366,7 +2366,7 @@ impl Notebooks {
             Ok(r) => Ok(r),
             Err(Refused::ReadOnly) => Err(err(format!(
                 "{path} is open in another Ganymede server on this machine (for example \
-                 the Mac app, whose Settings > Agent > MCP lets agents use its server), \
+                 the Mac app, whose Settings > General > MCP lets agents use its server), \
                  so it is read-only here",
                 path = self.show(path)
             ))),

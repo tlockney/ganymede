@@ -1,6 +1,6 @@
 ## 2026-11-26, embedded servers take room locks (#966)
 
-`serve.rs` took room locks only when `startup.stop.is_none()` — that is,
+`serve.rs` took room locks only when `startup.stop.is_none()`, that is,
 only for `ganymede serve`/`lab`/`ui`/`mcp`. Every embedding app passes
 `stop`, so the Mac app's server (through ganymede-ffi) took no lock, and
 it and a `ganymede serve` on one notebook could both edit and autosave
@@ -23,7 +23,7 @@ What changed:
   another Ganymede server on this machine: `room_ops::READ_ONLY` (the
   execute endpoint's 400 and the room's own refusal) and the MCP tools'
   error (`mcp.rs`) now say "another Ganymede server on this machine (for
-  example the Mac app, whose Settings > Agent > MCP lets agents use its
+  example the Mac app, whose Settings > General > MCP lets agents use its
   server)". `room_lock.rs`, `collab.rs` and the comment in `run_with`
   say who doesn't lock: iOS only.
 - Docs ([../rooms.md](../rooms.md) "Two servers on one notebook", and

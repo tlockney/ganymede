@@ -793,7 +793,7 @@ impl TransportFactory for NoKernels {
 ///
 /// The server's rooms lock their files like any server's (#966), so the
 /// Mac app's server and a `ganymede serve` on one notebook can't both
-/// autosave it — except on iOS, which has no runtime dir to lock in.
+/// autosave it. iOS is the exception: it has no runtime dir to lock in.
 fn startup(cfg: &Config) -> Startup {
     let room_locks = if cfg!(target_os = "ios") {
         tracing::info!("iOS: rooms take no file locks");

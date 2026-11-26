@@ -14,11 +14,11 @@ use serde_json::{json, Value};
 
 /// Why an edit is refused on a room another server owns (#272): its room
 /// would undo the edit and never save it. Names the cause, since it is
-/// almost always another Ganymede server on this machine — for example
-/// the Mac app's, whose Settings > Agent > MCP lets agents use its
-/// server — with the notebook open (#966).
+/// almost always another Ganymede server on this machine with the
+/// notebook open, such as the Mac app's, whose Settings > General > MCP
+/// lets agents use its server (#966).
 pub(crate) const READ_ONLY: &str = "the notebook is open in another Ganymede server \
-     on this machine (for example the Mac app, whose Settings > Agent > MCP \
+     on this machine (for example the Mac app, whose Settings > General > MCP \
      lets agents use its server)";
 
 /// Whether `room` takes edits: false when another server owns its file.
