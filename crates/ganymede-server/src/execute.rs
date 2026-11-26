@@ -63,7 +63,7 @@ use ganymede_exec::{CellStatus, Event, NotebookRun, Options};
 use ganymede_nbformat::Cell;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -235,13 +235,23 @@ pub(crate) struct RoomExec {
     me: mpsc::UnboundedSender<Cmd>,
     worker: Option<mpsc::UnboundedSender<Batch>>,
     pending: usize,
-    /// Per cell id, who runs each queued or running run of it, in order:
-    /// the front is the run in progress. Entries are dropped when empty.
-    queued: HashMap<String, VecDeque<String>>,
-    /// Cells with a run that was not run because its source changed, until
-    /// their last queued run ends and the note is set (a cell given twice
-    /// in a batch has its second run skipped after the first).
-    changed: HashSet<String>,
+    /// Per cell id, each queued or running run of it, in order: the front
+    /// is the run in progress. Entries are dropped when empty.
+    queued: HashMap<String, VecDeque<QueuedRun>>,
+    /// The number of the next queued batch.
+    batches: u64,
+}
+
+/// One queued run of a cell.
+struct QueuedRun {
+    /// Who runs it.
+    by: String,
+    /// The batch it is in: a change stops the rest of that batch only.
+    batch: u64,
+    /// It was not run because an earlier run of the cell in its batch was
+    /// skipped for a change, which stops the batch. The skip note goes by
+    /// the cell's last run alone.
+    changed: bool,
 }
 
 impl RoomExec {
@@ -251,7 +261,7 @@ impl RoomExec {
             worker: None,
             pending: 0,
             queued: HashMap::new(),
-            changed: HashSet::new(),
+            batches: 0,
         }
     }
 
@@ -265,11 +275,17 @@ impl RoomExec {
     ) -> (Result<Vec<Queued>, Refused>, Effects) {
         let (checked, fx) = enqueue(room, selectors, by, &self.queued);
         if let Ok(ids) = &checked {
+            let batch = self.batches;
+            self.batches += 1;
             for (id, _) in ids {
                 self.queued
                     .entry(id.clone())
                     .or_default()
-                    .push_back(by.to_string());
+                    .push_back(QueuedRun {
+                        by: by.to_string(),
+                        batch,
+                        changed: false,
+                    });
             }
         }
         (checked, fx)
@@ -278,9 +294,10 @@ impl RoomExec {
     /// A run of `cell_id` ended (or was skipped): its outputs, if it ran.
     /// The cell stays running, now by whoever queued next, while it has
     /// runs queued; otherwise it is idle and has no `execution_by`. A cell
-    /// that `changed` while queued gets `execution_skipped` when this was
-    /// its last run, however many of its runs were skipped; a cell that ran
-    /// records `ran_source_hash`.
+    /// whose last queued run was skipped because it `changed` while queued
+    /// gets `execution_skipped`; a change also skips the cell's later runs
+    /// in the same batch, which carry it. A cell that ran records
+    /// `ran_source_hash`.
     fn finish(
         &mut self,
         room: &mut Room,
@@ -291,26 +308,29 @@ impl RoomExec {
         changed: bool,
     ) -> Effects {
         self.pending = self.pending.saturating_sub(1);
-        if changed {
-            self.changed.insert(cell_id.to_string());
-        } else if ran_source_hash.is_some() {
-            // A later run did run the cell: nothing to explain.
-            self.changed.remove(cell_id);
-        }
         // Also when the cell is gone, so a later cell of that id starts
         // with no stale name.
+        let mut note = false;
         let next = match self.queued.get_mut(cell_id) {
             Some(runs) => {
-                runs.pop_front();
-                let next = runs.front().cloned();
+                let ended = runs.pop_front();
+                let changed = changed || ended.as_ref().is_some_and(|r| r.changed);
+                if let Some(ended) = ended.filter(|_| changed) {
+                    // The batch stops: its next run of this cell is skipped
+                    // for the same reason.
+                    if let Some(later) = runs.iter_mut().find(|r| r.batch == ended.batch) {
+                        later.changed = true;
+                    }
+                }
+                let next = runs.front().map(|r| r.by.clone());
                 if next.is_none() {
                     self.queued.remove(cell_id);
+                    note = changed;
                 }
                 next
             }
             None => None,
         };
-        let note = next.is_none() && self.changed.remove(cell_id);
         room.edit(|txn, roots| {
             let Some(cell) = schema::find_cell(txn, roots, cell_id) else {
                 return;
@@ -466,7 +486,7 @@ fn enqueue(
     room: &mut Room,
     selectors: &[Selector],
     by: &str,
-    queued: &HashMap<String, VecDeque<String>>,
+    queued: &HashMap<String, VecDeque<QueuedRun>>,
 ) -> (Result<Vec<Queued>, Refused>, Effects) {
     if room.notebook().is_none() {
         return (
@@ -651,6 +671,12 @@ fn not_code_end(room: &mpsc::UnboundedSender<Cmd>, cell_id: String, guarded: boo
     }
 }
 
+/// The hash to record for a run: only when the kernel took the source
+/// (`execute_input` gave a count).
+fn hash_if_ran(count: Option<i64>, ran_hash: String) -> Option<String> {
+    count.map(|_| ran_hash)
+}
+
 /// A cell that was skipped or could not run: no outputs, no count.
 fn done(
     room: &mpsc::UnboundedSender<Cmd>,
@@ -827,7 +853,7 @@ impl Run {
             cell_id,
             outputs,
             count,
-            count.map(|_| ran_hash),
+            hash_if_ran(count, ran_hash),
             false,
         );
         if ok {
@@ -1619,9 +1645,24 @@ mod request_tests {
             Some("Cell changed while queued")
         );
         // The memory is spent: a later plain skip shows nothing.
-        assert!(x.changed.is_empty());
         run(&mut x, &mut room, &[id("a")], "A");
         x.finish(&mut room, "a", None, None, None, false);
+        assert_eq!(text_of(&mut room, "a", "execution_skipped"), None);
+    }
+
+    #[test]
+    fn a_cell_skipped_for_a_change_then_for_a_failure_shows_no_change_note() {
+        // A queues `[a#H]`, B queues `[c, a]`. `a` changed, so A's run is
+        // skipped; `c` fails, so B's run of `a` is skipped for that.
+        let (mut room, mut x) = (room_of(5), exec());
+        run(&mut x, &mut room, &[id("a")], "A");
+        run(&mut x, &mut room, &[id("c"), id("a")], "B");
+        x.finish(&mut room, "a", None, None, None, true);
+        assert_eq!(state(&mut room, "a"), ("running", Some("B".into())));
+        assert_eq!(text_of(&mut room, "a", "execution_skipped"), None);
+        x.finish(&mut room, "c", None, None, None, false);
+        x.finish(&mut room, "a", None, None, None, false);
+        assert_eq!(state(&mut room, "a"), ("idle", None));
         assert_eq!(text_of(&mut room, "a", "execution_skipped"), None);
     }
 
@@ -1640,6 +1681,12 @@ mod request_tests {
             false,
         );
         assert_eq!(text_of(&mut room, "a", "execution_skipped"), None);
+    }
+
+    #[test]
+    fn the_ran_hash_is_recorded_only_when_the_kernel_took_the_source() {
+        assert_eq!(hash_if_ran(None, "h".into()), None);
+        assert_eq!(hash_if_ran(Some(3), "h".into()), Some("h".into()));
     }
 
     #[test]
