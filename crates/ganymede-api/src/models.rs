@@ -39,6 +39,28 @@ pub struct KernelspecModel {
     /// a gateway spec or a kernel an app registered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_dir: Option<String>,
+    /// The kernels run on the gateway, not on this machine. An extra key,
+    /// not in `jupyter_server`'s model, left out of local specs.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub gateway: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
+}
+
+/// What `/api/kernelspecs` reports about the gateway this server runs
+/// kernels on, besides the kernelspecs in the same answer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GatewayModel {
+    /// `gateway_name`, or else the gateway URL's host: never its path,
+    /// query or token.
+    pub name: String,
+    /// Whether the last refresh reached it. Kernelspecs go stale, and
+    /// starting a kernel fails, while it is false.
+    pub reachable: bool,
+    /// Why the last refresh failed; none while reachable.
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -47,6 +69,10 @@ pub struct KernelspecsModel {
     /// There is no built-in value; see [`crate::KernelManagerConfig`].
     pub default: String,
     pub kernelspecs: BTreeMap<String, KernelspecModel>,
+    /// The gateway's status, when a gateway is configured. An extra key,
+    /// not in `jupyter_server`'s model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<GatewayModel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

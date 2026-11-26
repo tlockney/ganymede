@@ -9,6 +9,7 @@
 
 pub mod auth;
 pub mod collab;
+pub mod combined;
 pub mod config;
 pub mod execute;
 pub mod folder;

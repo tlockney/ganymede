@@ -70,6 +70,7 @@ same name in snake case, except where the last column says otherwise.
 | `--labextensions-path` | Another directory of prebuilt JupyterLab extensions, searched first. Repeatable. | `labextensions_paths` |
 | `--config-dir` | Where frontend settings and workspaces are kept. Default: the Jupyter config dir (`$JUPYTER_CONFIG_DIR`, else `~/.jupyter`). | |
 | `--gateway-url`, `--gateway-token` | Run kernels on another server; see [Gateway](#gateway). | |
+| `--gateway-name` | What to call that server in `/api/kernelspecs`. Default: the URL's host. | `gateway_name` |
 | `--kernelspec-root` | As above. | `kernelspec_roots` |
 | `--startup-timeout` | As above. | `startup_timeout_secs` |
 | `-q`, `--quiet` | As above. | `quiet` |
@@ -373,6 +374,7 @@ trust_xheaders = false
 max_body_size = 536870912        # 512 MiB
 # gateway_url = "https://kernels.example.org"
 # gateway_token = "..."
+# gateway_name = "work-laptop"   # unset: the gateway URL's host
 terminals_enabled = true         # false: no /api/terminals
 terminal_shell = []              # empty: $SHELL -l, or powershell.exe on Windows
 mcp_enabled = false              # true: notebook tools for agents at /mcp
@@ -609,8 +611,8 @@ ganymede serve --root-dir . \
 
 ![Running kernels on another server. On your machine, a frontend talks to ganymede serve started with --gateway-url, which answers contents, sessions and trust from the notebook folder. For kernelspecs and kernels it calls the kernel server's REST API (kernelspecs, start, interrupt, restart, shut down) and relays each kernel's messages over its websocket. The kernel server, jupyter server or ganymede serve, runs the kernel processes over ZeroMQ.](images/architecture/gateway.svg)
 
-Kernelspecs come from that server (`/api/kernelspecs`, refreshed every
-minute); starting, interrupting, restarting and shutting down a kernel go
+Kernelspecs come from that server's `/api/kernelspecs` (how often is
+below); starting, interrupting, restarting and shutting down a kernel go
 through its REST API, and kernel messages through its websocket. HTTPS is
 checked against the system's trust store.
 
@@ -618,6 +620,34 @@ The token may be left out when the kernel server is a Ganymede server
 that lets this machine in by
 [tailnet identity](security.md#tailnet-identity): the gateway marks its
 requests as a program's (`Ganymede-Client`).
+
+> [!NOTE]
+> **Unreleased.** A build of `main` (HEAD) lists this machine's own
+> kernels beside the gateway's, reports the gateway's status, and takes
+> `--gateway-name` (`gateway_name`); the latest release lists only the
+> gateway's and refuses that flag and key.
+
+This machine's own kernelspecs are listed beside the gateway's, so a
+kernel installed here runs here while the rest run there: the gateway's
+specs first, then every local one whose name (compared case-insensitively)
+the gateway doesn't have. A name both have is the gateway's, so a notebook
+whose kernel the server offers still runs there, as `--gateway-url` says.
+A spec's `"gateway": true` in `/api/kernelspecs` tells a client which.
+A kernel stays on the side it started on: a restart doesn't move it when
+the gateway's list has changed since. Before the gateway's first answer,
+a name both have is listed, and starts, as the local one.
+[Other kernels](kernels.md#kernels-on-another-server) has the rest.
+
+Whenever a gateway is set, `/api/kernelspecs` adds a top-level `gateway`
+object: `name`, `reachable`, and `error` saying why it doesn't answer.
+While it doesn't, the local kernels are still listed, so a client can say the remote kernels are missing
+rather than showing an empty list. `name` is `gateway_name` (`--gateway-name`
+or the config key), or else the URL's host: never its path, query or token,
+and `error` has them taken out too. The refresh retries every 15 seconds
+while the gateway is down, so one that was asleep is found again within
+that, and every minute while it answers. Before the first refresh ends,
+`reachable` is false and `error` is null: not checked yet. [List
+kernelspecs](api.md#list-kernelspecs) documents both keys.
 
 ## Server info file
 

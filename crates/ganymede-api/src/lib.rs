@@ -16,7 +16,8 @@ pub use kernel_log::{KernelLogLine, KernelLogModel};
 #[cfg(feature = "zmq")]
 pub use kernels::ZmqTransportFactory;
 pub use kernels::{
-    KernelManager, KernelManagerConfig, RunningKernel, StaticKernelspecs, TransportFactory,
+    GatewayStatus, KernelManager, KernelManagerConfig, RunningKernel, StaticKernelspecs,
+    TransportFactory,
 };
 pub use models::*;
 pub use sessions::{SessionCreate, SessionManager, SessionPatch};
