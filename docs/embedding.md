@@ -507,6 +507,24 @@ From Rust, `ganymede_server::write_observer::WriteObserver` is the same
 thing: keep one, pass it as `Startup::write_observer`, and call `set` with
 a closure taking the path and the two stamps.
 
+### Two servers on one notebook
+
+An embedded server's rooms lock their notebooks as every Ganymede server's
+do ([Rooms](rooms.md#two-servers-on-one-notebook)): the first server on the
+machine with a room open on a file owns it, and another server's room on it
+is read-only. The locks are files in the Jupyter runtime dir's
+`ganymede-rooms/`, so the app and the CLI must see the same
+`JUPYTER_RUNTIME_DIR` (or `JUPYTER_DATA_DIR`) for them to meet. An app
+started from the Finder doesn't see variables set in a shell profile.
+
+ganymede-ffi turns locking off on iOS, which has no shared runtime dir. From
+Rust, `Startup::room_locks` decides it: `RoomLocks::RuntimeDir`, the
+default, or `RoomLocks::Off`, which an embedder on iOS sets itself.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. The latest release's embedded servers take no lock.
+
 ## Remote kernels with ganymede-gateway
 
 `Gateway` is a kernelspec source, provisioner and transport factory in

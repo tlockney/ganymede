@@ -64,7 +64,8 @@ impl Drop for RoomLock {
 }
 
 impl Locks {
-    /// Locks kept in `dir`, or none when `None` (an embedding app).
+    /// Locks kept in `dir`, or none when `None` (iOS, which has no runtime
+    /// dir; #966).
     pub(crate) fn new(dir: Option<PathBuf>) -> Self {
         Locks {
             dir,
