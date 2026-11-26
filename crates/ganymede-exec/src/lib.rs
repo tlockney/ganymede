@@ -11,7 +11,8 @@
 //! - `execution_count` counts the cells this run executed.
 //! - Each executed code cell's `metadata.ganymede.ran_source_hash` is the
 //!   hash of the source this run sent with [`Options::record_source_hash`]
-//!   on. Off, a stale key is removed instead, keeping the other keys of the
+//!   on, set when the kernel acknowledges the request (`execute_input`), so
+//!   a cell the kernel never ran has none. Off, a stale key is removed instead, keeping the other keys of the
 //!   `ganymede` object and dropping an object the removal emptied (the
 //!   one difference from `jupyter execute`).
 //! - `metadata.execution` records the busy, execute_input, reply, and idle
@@ -91,8 +92,9 @@ pub struct Options {
     /// scratch runs.
     pub store_history: bool,
     /// Record `metadata.ganymede.ran_source_hash` on each executed cell,
-    /// the hash of the source this run sends, as the run entries that
-    /// guard a source do (room runs, notebooks run, the host API). Off,
+    /// the hash of the source this run sends, set when the kernel sends
+    /// `execute_input` for it, as the run entries that guard a source do
+    /// (room runs, notebooks run, the host API). Off,
     /// as `jupyter execute` writes it: a cell this run executes loses a
     /// stale key instead, keeping the other keys of its `ganymede` object
     /// and dropping an object the removal emptied.
@@ -499,12 +501,14 @@ impl NotebookRun {
         req.allow_stdin = self.opts.allow_stdin;
         req.store_history = self.opts.store_history;
         req.stop_on_error = !allows_errors;
-        // The run names the source it sends, as a run through a room does.
-        // Written before the run, so a failed one leaves the hash of the
-        // source it sent too. Without the key, a stale one is removed
-        // instead, so the cell comes out as `jupyter execute` writes it.
+        // The run names the source it sends, as a run through a room does:
+        // when the kernel acknowledges the request (`execute_input`, in
+        // `process`), so a cell the kernel never ran has no hash. A stale
+        // key goes now. Without the option it is removed the same way,
+        // and the object it empties is dropped, so the cell comes out as
+        // `jupyter execute` writes it.
         if self.opts.record_source_hash {
-            set_ran_source_hash(cell, &ganymede_nbformat::source_hash(cell.source.as_str()));
+            clear_ran_source_hash(cell);
         } else {
             clear_run_notes(cell);
         }
@@ -633,7 +637,15 @@ impl NotebookRun {
                 }
             }
             t if t.starts_with("comm") => self.comm(m),
-            "execute_input" | "update_display_data" => {}
+            "execute_input" => {
+                if self.opts.record_source_hash {
+                    if let Some(Cell::Code(cell)) = cells.get_mut(index) {
+                        let hash = ganymede_nbformat::source_hash(cell.source.as_str());
+                        set_ran_source_hash(cell, &hash);
+                    }
+                }
+            }
+            "update_display_data" => {}
             _ => {
                 let Some(out) = output_from_msg(m) else {
                     return changed;
@@ -1976,6 +1988,48 @@ mod tests {
             skipped.metadata["ganymede"],
             json!({"keep": 2, "ran_source_hash": "old"}),
             "a cell that did not run keeps its hash"
+        );
+    }
+
+    /// The hash is recorded when the kernel acknowledges the request, as
+    /// the room does: a cell whose run sent no `execute_input` has none,
+    /// and loses a stale one.
+    #[tokio::test]
+    async fn the_hash_is_recorded_only_once_the_kernel_sent_execute_input() {
+        let (host, side) = in_process_pair(64);
+        FakeKernel::spawn(side, ReplyOrder::IdleThenReply);
+        let s = KernelSession::start(host, None);
+        s.nudge(Duration::from_secs(5)).await.unwrap();
+        let mut nb: Notebook = Notebook::from_str(
+            &json!({
+                "nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [
+                    {"cell_type": "code", "id": "q", "source": "quiet 1",
+                     "metadata": {"ganymede": {"keep": 1, "ran_source_hash": "stale"}},
+                     "outputs": [], "execution_count": null},
+                    {"cell_type": "code", "id": "a", "source": "sleep 1",
+                     "metadata": {}, "outputs": [], "execution_count": null}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        execute_notebook(
+            &s,
+            &mut nb,
+            &Options {
+                record_source_hash: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (Cell::Code(q), Cell::Code(a)) = (&nb.cells[0], &nb.cells[1]) else {
+            panic!()
+        };
+        assert_eq!(q.metadata["ganymede"], json!({"keep": 1}));
+        assert_eq!(
+            a.metadata["ganymede"],
+            json!({"ran_source_hash": ganymede_nbformat::source_hash("sleep 1")})
         );
     }
 
