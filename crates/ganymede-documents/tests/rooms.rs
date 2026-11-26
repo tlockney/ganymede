@@ -2655,4 +2655,21 @@ fn the_ran_source_hash_is_set_and_removed_in_plain_and_shared_metadata() {
     g.insert(&mut txn, "ran_source_hash", "77");
     assert!(schema::clear_ran_source_hash(&mut txn, &cell));
     assert_eq!(metadata(&txn, &cell), serde_json::json!({"ganymede": {}}));
+
+    // A `ganymede` that isn't an object is replaced when the hash is
+    // written, in plain and in shared metadata; clearing it finds nothing.
+    let only_hash = serde_json::json!({"ganymede": {"ran_source_hash": "77"}});
+    cell.insert(
+        &mut txn,
+        "metadata",
+        schema::json_to_any(&serde_json::json!({"ganymede": "x"})),
+    );
+    assert!(!schema::clear_ran_source_hash(&mut txn, &cell));
+    assert_eq!(metadata(&txn, &cell), serde_json::json!({"ganymede": "x"}));
+    schema::set_ran_source_hash(&mut txn, &cell, "77");
+    assert_eq!(metadata(&txn, &cell), only_hash);
+    let meta = cell.insert(&mut txn, "metadata", MapPrelim::default());
+    meta.insert(&mut txn, "ganymede", "x");
+    schema::set_ran_source_hash(&mut txn, &cell, "77");
+    assert_eq!(metadata(&txn, &cell), only_hash);
 }
