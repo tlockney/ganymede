@@ -5029,6 +5029,116 @@ async fn execute_records_the_hash_of_the_source_that_ran() {
     }
 }
 
+/// `cell_clear_outputs` drops the outputs, so the hash of the source that
+/// made them goes too, in the room and in the saved file (#943).
+#[tokio::test]
+async fn mcp_clearing_outputs_clears_the_ran_source_hash() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Held::new(
+        dir.path(),
+        "k.ipynb",
+        vec![
+            code_cell(Some("s"), "sleep 600000", &[]),
+            code_cell(Some("a"), "one", &[]),
+        ],
+    )
+    .await;
+    let (s, v) = h
+        .execute(json!({"wait": 15, "cells": [{"cell_id": "a"}]}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert_eq!(
+        v["cells"][0]["metadata"]["ganymede"]["ran_source_hash"],
+        hash_of("one"),
+        "{v:#}"
+    );
+    h.watch
+        .until_shows("the hash on a", |w| w.ran_hash("a").is_some())
+        .await;
+    let file = dir.path().join("k.ipynb");
+    let saved_hash = || {
+        let nb: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap_or_default())
+            .unwrap_or(Value::Null);
+        nb["cells"][1]["metadata"]["ganymede"]["ran_source_hash"].clone()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while saved_hash() != json!(hash_of("one")) {
+        assert!(std::time::Instant::now() < deadline, "never saved");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let out = mcp_text(&mcp_tool(&h.app, &h.sid, "cell_clear_outputs", json!({"id": "a"})).await);
+    assert!(!out.is_empty());
+    h.watch
+        .until_shows("no hash on a", |w| w.ran_hash("a").is_none())
+        .await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while saved_hash() != Value::Null {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the hash stayed in the file"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// A guarded cell deleted while queued ends the batch as a change: the
+/// cells after it don't run and `skipped` lists it (#943).
+#[tokio::test]
+async fn execute_guarded_cell_deleted_while_queued_stops_the_batch() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Held::new(
+        dir.path(),
+        "d.ipynb",
+        vec![
+            code_cell(Some("s"), "sleep 600000", &[]),
+            code_cell(Some("a"), "one", &[]),
+            code_cell(Some("b"), "two", &[]),
+        ],
+    )
+    .await;
+    let guarded = |id: &str, src: &str| json!({"cell_id": id, "source_hash": hash_of(src)});
+    let (s, v) = h.execute(json!({"cells": [{"cell_id": "s"}]})).await;
+    assert_eq!((s, v), (StatusCode::OK, Value::Null));
+    let queued = tokio::spawn({
+        let (app, kid, doc) = (h.app.clone(), h.kid.clone(), h.doc.clone());
+        let body = json!({"document_id": doc, "wait": 15,
+            "cells": [guarded("a", "one"), guarded("b", "two")]});
+        async move {
+            call(
+                &app,
+                "POST",
+                &format!("/api/kernels/{kid}/execute"),
+                Some(body),
+                Some(TOKEN),
+            )
+            .await
+        }
+    });
+    h.watch.until("a", "running", Some("an API client")).await;
+    let out = mcp_text(&mcp_tool(&h.app, &h.sid, "cell_delete", json!({"id": "a"})).await);
+    assert!(!out.is_empty());
+    h.release("s").await;
+    let (s, v) = queued.await.unwrap();
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert_eq!(v["finished"], true, "{v:#}");
+    let skipped = v["skipped"].as_array().expect("skipped");
+    assert_eq!(skipped.len(), 1, "{v:#}");
+    assert_eq!(skipped[0]["cell_id"], "a", "{v:#}");
+    assert_eq!(skipped[0]["error"], "source_changed_while_queued", "{v:#}");
+    assert!(!v.to_string().contains("two\\n"), "{v:#}");
+    h.watch.until("b", "idle", None).await;
+    let b = v["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "b");
+    if let Some(b) = b {
+        assert_eq!(b["outputs"], json!([]), "{v:#}");
+        assert_eq!(b["execution_count"], Value::Null, "{v:#}");
+    }
+}
+
 /// An id with no hash runs the room's current source, edits not yet saved
 /// included; the file's hash no longer matches the room (#843).
 #[tokio::test]
@@ -5582,6 +5692,27 @@ impl RoomWatch {
                 Some(Out::Any(Any::String(s))) => Some(s.to_string()),
                 _ => None,
             };
+        }
+        None
+    }
+
+    /// The cell's `metadata.ganymede.ran_source_hash` in the synced room.
+    fn ran_hash(&self, id: &str) -> Option<String> {
+        use ganymede_documents::schema::Roots;
+        use ganymede_documents::yrs::{Any, Array, Map, Out, Transact};
+        let roots = Roots::get(&self.doc);
+        let txn = self.doc.transact();
+        for i in 0..roots.cells.len(&txn) {
+            let Some(Out::YMap(cell)) = roots.cells.get(&txn, i) else {
+                continue;
+            };
+            if !matches!(cell.get(&txn, "id"), Some(Out::Any(Any::String(s))) if &*s == id) {
+                continue;
+            }
+            let meta = ganymede_documents::schema::out_to_json(&txn, &cell.get(&txn, "metadata")?);
+            return meta["ganymede"]["ran_source_hash"]
+                .as_str()
+                .map(str::to_string);
         }
         None
     }

@@ -59,10 +59,13 @@ What changed, in `execute.rs` unless said:
   change has no outputs and no hash. A run that ends writes the hash only
   when the kernel sent `execute_input` (the count is known) and the cell
   is still a code cell.
-- `RoomExec` remembers a cell's "changed" per id until its last queued
-  run ends, since a cell given twice in a guarded batch has its second
-  run skipped with no change of its own after the first reported one.
-  A later run that did run the cell forgets it.
+- `RoomExec` keeps a "changed" flag on each queued run of a cell (with
+  the batch it is in), not per cell id. A change marks the cell's next run
+  in the same batch, which the stopped batch skips; the note is set only
+  when the cell's last queued run ended with the flag. A cell queued by
+  two requests, skipped for a change in the first and for a failure in the
+  second, has no note. A guarded cell that is deleted or no longer code at
+  its turn ends the batch as changed (`not_code_end`).
 - It is cell metadata, not per-output metadata, because stream and error
   outputs have no metadata.
 - `docs/rooms.md` and `docs/api.md`: a new section each, with the
@@ -115,7 +118,15 @@ on a `sleep` cell that is interrupted to release the batch):
 - `a_cell_cleared_without_running_loses_its_hash`,
   `a_cell_that_stopped_being_code_gets_no_hash`,
   `a_later_run_that_ran_leaves_no_skip_note`,
-  `a_cell_that_is_gone_or_not_code_ends_a_guarded_run_as_changed`.
+  `a_cell_that_is_gone_or_not_code_ends_a_guarded_run_as_changed`,
+  `a_cell_skipped_for_a_change_then_for_a_failure_shows_no_change_note`,
+  `the_ran_hash_is_recorded_only_when_the_kernel_took_the_source`.
+- `mcp_clearing_outputs_clears_the_ran_source_hash` (the MCP drop clears
+  the key in the room and the saved file) and
+  `execute_guarded_cell_deleted_while_queued_stops_the_batch`.
+- In `ganymede-exec`, the hash is set when `execute_input` arrives, as the
+  room does, and a stale one is removed before the run:
+  `the_hash_is_recorded_only_once_the_kernel_sent_execute_input`.
 - In `ganymede-exec`, a `ganymede` value that isn't an object is replaced,
   and an already empty one stays.
 - `the_ran_source_hash_is_set_and_removed_in_plain_and_shared_metadata`.

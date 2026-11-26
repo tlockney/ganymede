@@ -198,7 +198,9 @@ above), and again when the cell's turn comes, since a batch can wait
 behind other runs. If the room's source then no longer has the hash, the
 cell is not run. It is skipped like a cell after a failure: the rest of
 its batch is skipped too, and the cell goes `idle` with no outputs and no
-new execution count.
+new execution count. A guarded cell that was deleted, or is no longer a
+code cell, when its turn comes counts as changed: the batch stops and
+`skipped` lists it.
 
 The cell shows why in the room: `execution_skipped` is
 `"Cell changed while queued"`. Like `execution_by` it is in the room
@@ -206,8 +208,10 @@ only and is never saved or returned by `GET /api/contents`. It is removed
 when the cell is queued again, when its source or type is edited (by a
 client, the server or a change to the file), and when a client runs the
 cell itself. The cells skipped after it don't get it,
-nor do cells skipped after a failure; a cell queued twice shows it only
-when its last queued run was skipped for this.
+nor do cells skipped after a failure. A cell queued twice shows it only
+when its last queued run was skipped for a change, or because an earlier
+run of it in the same batch was. If that last run was skipped for another
+reason, such as a failure before it in a later request, there is no note.
 
 With `wait`, the answer lists these cells, in the order they were to run,
 and leaves the key out when there are none:
