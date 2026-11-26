@@ -4,7 +4,8 @@ A room could lose edits in two ways. An empty room closed after ten failed
 saves in a row (or when its file was gone, or when another server owned the
 file) with its edits only in the room. And a merge with the disk let the
 disk win a cell both had changed, leaving the room's version in the log
-line and nowhere else. The app half is ganymede-ui#792, not here.
+line and nowhere else. The app half (showing, restoring and discarding
+these copies) is ganymede-ui#831, not here.
 
 What changed:
 

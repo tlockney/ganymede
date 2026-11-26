@@ -114,14 +114,21 @@ impl Store {
         let root = self.root.as_ref()?;
         let file = meta.file.as_deref()?;
         // An API path: components joined with `/`, whatever the platform's
-        // separator.
-        let rel = file
-            .strip_prefix(root)
-            .ok()?
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/");
+        // separator. A hidden component (or anything but a plain name) is
+        // a path the contents API refuses, so the copy isn't this
+        // server's to show.
+        let mut parts = Vec::new();
+        for c in file.strip_prefix(root).ok()?.components() {
+            let std::path::Component::Normal(name) = c else {
+                return None;
+            };
+            let name = name.to_string_lossy();
+            if name.starts_with('.') {
+                return None;
+            }
+            parts.push(name.into_owned());
+        }
+        let rel = parts.join("/");
         if rel.is_empty() {
             return None; // the root itself is not a notebook
         }
@@ -580,6 +587,28 @@ mod tests {
         // The same root by another spelling is the same root.
         let again = Store::new(rec.path(), Some(&roots[0].path().join(".")));
         assert_eq!(again.dir, one.dir);
+    }
+
+    /// A copy under a hidden dir of this root is a path the contents API
+    /// refuses, so it is not listed, read or discarded here.
+    #[test]
+    fn a_copy_under_a_hidden_dir_is_not_seen_from_above() {
+        let data = tempfile::tempdir().unwrap();
+        let outer = tempfile::tempdir().unwrap();
+        let outer_path = outer.path().canonicalize().unwrap();
+        std::fs::create_dir_all(outer_path.join(".work/proj")).unwrap();
+        let rec = data.path().join("recovery");
+        make_dir(&rec).unwrap();
+        let inner = Store::new(&rec, Some(&outer_path.join(".work/proj")));
+        let meta = write(&inner, "a.ipynb", &nb("x"), Reason::SaveFailed, "", &[])
+            .unwrap()
+            .0;
+        assert_eq!(list(&inner, "a.ipynb").unwrap().len(), 1);
+        let above = Store::new(&rec, Some(&outer_path));
+        assert!(list(&above, ".work/proj/a.ipynb").unwrap().is_empty());
+        assert!(read(&above, &meta.id).unwrap().is_none());
+        assert!(!discard(&above, &meta.id).unwrap());
+        assert_eq!(list(&inner, "a.ipynb").unwrap().len(), 1);
     }
 
     /// A root reached through a symlinked dir sees the copy at its own

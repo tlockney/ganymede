@@ -107,7 +107,10 @@ next to `dirty` and `hash`, says whether the edits reached the file:
 
 These keys exist only in the room. A save writes the notebook, never the
 `state` map. A client can show **Save needs attention** while `save` is
-`"failed"` or `recovery` is set.
+`"failed"` or `recovery` is set. When another server sharing the data
+directory discards or prunes a copy, the room keeps naming it until a
+`GET` of that id answers `404`, which also moves `recovery` on; so read
+the copy before trusting `recovery`.
 
 **Recovery copies.** The server keeps a copy of the room's notebook, as
 a save would write it, when edits would otherwise be lost:
@@ -120,8 +123,8 @@ a save would write it, when edits would otherwise be lost:
 | `merge_conflict` | The file changed the same part the room's unsaved edits did, so the file won it. The copy is the room's notebook as it was before the merge; `detail` and `cells` say which parts and cells. |
 
 A room that can't write its copy stays open and tries again on its next
-cleanup, instead of closing. Three cases close without one, and the server
-logs an error:
+cleanup, instead of closing. In three cases the room closes even when its
+copy can't be written, and the server logs an error:
 
 - The file was deleted through the contents API, or the open room noticed
   that it was gone and dropped its file id. (When the cleanup of an empty
