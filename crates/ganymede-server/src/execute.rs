@@ -41,9 +41,10 @@
 //! cell that fails stops the rest of its batch, as a kernel's
 //! `stop_on_error` does for JupyterLab's Run All. A cell that ran gets
 //! `metadata.ganymede.ran_source_hash`, the hash of the source it ran,
-//! saved with the notebook. Only these runs write it: when a client runs
-//! the cell itself, the room removes it (and `execution_skipped`), since
-//! the server doesn't see what source ran. It is cell metadata because
+//! saved with the notebook. Only these runs write it: room runs
+//! (this module), `POST /api/notebooks/run` and the host API. When a client
+//! runs the cell itself, the room removes it (and `execution_skipped`),
+//! since the server doesn't see what source ran. It is cell metadata because
 //! stream and error outputs have none of their own. Input requests are refused (`allow_stdin`
 //! off).
 
@@ -62,7 +63,7 @@ use ganymede_exec::{CellStatus, Event, NotebookRun, Options};
 use ganymede_nbformat::Cell;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -190,12 +191,6 @@ pub(crate) struct BatchEnd {
     pub changed: Vec<String>,
 }
 
-/// The hash a request gives a cell's source: MurmurHash2, seed 0, as a
-/// decimal string.
-fn source_hash(source: &str) -> String {
-    ganymede_nbformat::source_hash(source)
-}
-
 /// A queued cell: its id, and the hash its source must still have when
 /// its turn comes (`None`: run whatever it holds).
 type Queued = (String, Option<String>);
@@ -243,6 +238,10 @@ pub(crate) struct RoomExec {
     /// Per cell id, who runs each queued or running run of it, in order:
     /// the front is the run in progress. Entries are dropped when empty.
     queued: HashMap<String, VecDeque<String>>,
+    /// Cells with a run that was not run because its source changed, until
+    /// their last queued run ends and the note is set (a cell given twice
+    /// in a batch has its second run skipped after the first).
+    changed: HashSet<String>,
 }
 
 impl RoomExec {
@@ -252,6 +251,7 @@ impl RoomExec {
             worker: None,
             pending: 0,
             queued: HashMap::new(),
+            changed: HashSet::new(),
         }
     }
 
@@ -279,7 +279,8 @@ impl RoomExec {
     /// The cell stays running, now by whoever queued next, while it has
     /// runs queued; otherwise it is idle and has no `execution_by`. A cell
     /// that `changed` while queued gets `execution_skipped` when this was
-    /// its last run; a cell that ran records `ran_source_hash`.
+    /// its last run, however many of its runs were skipped; a cell that ran
+    /// records `ran_source_hash`.
     fn finish(
         &mut self,
         room: &mut Room,
@@ -290,6 +291,12 @@ impl RoomExec {
         changed: bool,
     ) -> Effects {
         self.pending = self.pending.saturating_sub(1);
+        if changed {
+            self.changed.insert(cell_id.to_string());
+        } else if ran_source_hash.is_some() {
+            // A later run did run the cell: nothing to explain.
+            self.changed.remove(cell_id);
+        }
         // Also when the cell is gone, so a later cell of that id starts
         // with no stale name.
         let next = match self.queued.get_mut(cell_id) {
@@ -303,6 +310,7 @@ impl RoomExec {
             }
             None => None,
         };
+        let note = next.is_none() && self.changed.remove(cell_id);
         room.edit(|txn, roots| {
             let Some(cell) = schema::find_cell(txn, roots, cell_id) else {
                 return;
@@ -313,10 +321,15 @@ impl RoomExec {
             if let Some(n) = execution_count {
                 cell.insert(txn, "execution_count", schema::json_to_any(&json!(n)));
             }
-            if let Some(hash) = &ran_source_hash {
+            // Not on a cell that is no longer a code cell.
+            let code = cell
+                .get(txn, "cell_type")
+                .map(|o| schema::out_to_json(txn, &o))
+                == Some(json!("code"));
+            if let Some(hash) = ran_source_hash.as_ref().filter(|_| code) {
                 schema::set_ran_source_hash(txn, &cell, hash);
             }
-            if changed && next.is_none() {
+            if note {
                 cell.insert(txn, "execution_skipped", CHANGED_WHILE_QUEUED);
             }
             match next {
@@ -516,7 +529,7 @@ fn enqueue(
                     }
                     let stale = hash.as_ref().is_some_and(|h| {
                         let source = room_ops::source_of(txn, &cell).unwrap_or_default();
-                        source_hash(&source) != *h
+                        ganymede_nbformat::source_hash(&source) != *h
                     });
                     if stale {
                         return Err(Refused::SourceMismatch(id.clone()));
@@ -559,6 +572,9 @@ fn enqueue(
         }
         for (id, cell, _) in &found {
             schema::set_outputs(txn, cell, Vec::new());
+            // The outputs are gone, so no source "ran" to give them: only a
+            // run that ends puts the hash back.
+            schema::clear_ran_source_hash(txn, cell);
             cell.insert(txn, "execution_state", "running");
             cell.remove(txn, "execution_skipped");
             if queued.get(id).is_none_or(VecDeque::is_empty) {
@@ -621,6 +637,19 @@ enum CellEnd {
 
 /// Shown on a cell that was not run because its source changed.
 const CHANGED_WHILE_QUEUED: &str = "Cell changed while queued";
+
+/// A cell that was deleted, or is no longer a code cell, when its turn
+/// came. One queued with a hash (`guarded`) is one whose source the caller
+/// named: not running it stops the batch, as a change does, and the room
+/// says so if the cell is still there.
+fn not_code_end(room: &mpsc::UnboundedSender<Cmd>, cell_id: String, guarded: bool) -> CellEnd {
+    send_done(room, cell_id, None, None, None, guarded);
+    if guarded {
+        CellEnd::Changed
+    } else {
+        CellEnd::Ok
+    }
+}
 
 /// A cell that was skipped or could not run: no outputs, no count.
 fn done(
@@ -700,10 +729,9 @@ impl Run {
         let (tx, rx) = oneshot::channel();
         let _ = room.send(Cmd::Exec(RoomCmd::Get(cell_id.clone(), tx)));
         let Ok(Some(Cell::Code(mut cell))) = rx.await else {
-            done(room, cell_id, None, None);
-            return CellEnd::Ok; // deleted since it was queued
+            return not_code_end(room, cell_id, guard.is_some());
         };
-        let ran_hash = source_hash(&cell.source);
+        let ran_hash = ganymede_nbformat::source_hash(&cell.source);
         if guard.is_some_and(|g| g != ran_hash) {
             send_done(room, cell_id, None, None, None, true);
             return CellEnd::Changed;
@@ -792,7 +820,16 @@ impl Run {
                 false
             }
         };
-        send_done(room, cell_id, outputs, count, Some(ran_hash), false);
+        // No `execute_input` means the kernel never ran the source: clear
+        // the hash, as for a cell that was not run.
+        send_done(
+            room,
+            cell_id,
+            outputs,
+            count,
+            count.map(|_| ran_hash),
+            false,
+        );
         if ok {
             CellEnd::Ok
         } else {
@@ -1524,7 +1561,7 @@ mod request_tests {
     #[test]
     fn a_guard_travels_with_an_id_and_only_an_id() {
         let mut room = room_of(5);
-        let hash = source_hash("1");
+        let hash = ganymede_nbformat::source_hash("1");
         let (r, _) = enqueue(
             &mut room,
             &[
@@ -1568,16 +1605,116 @@ mod request_tests {
 
     #[test]
     fn a_cell_queued_again_shows_no_note_while_its_next_run_waits() {
+        // `[a#H, a#H]` with `a` changed: the worker reports the first run
+        // changed, stops the batch, and skips the second with no change.
         let (mut room, mut x) = (room_of(5), exec());
         run(&mut x, &mut room, &[id("a"), id("a")], "A");
         x.finish(&mut room, "a", None, None, None, true);
         assert_eq!(state(&mut room, "a"), ("running", Some("A".into())));
         assert_eq!(text_of(&mut room, "a", "execution_skipped"), None);
-        x.finish(&mut room, "a", None, None, None, true);
+        x.finish(&mut room, "a", None, None, None, false);
+        assert_eq!(state(&mut room, "a"), ("idle", None));
         assert_eq!(
             text_of(&mut room, "a", "execution_skipped").as_deref(),
             Some("Cell changed while queued")
         );
+        // The memory is spent: a later plain skip shows nothing.
+        assert!(x.changed.is_empty());
+        run(&mut x, &mut room, &[id("a")], "A");
+        x.finish(&mut room, "a", None, None, None, false);
+        assert_eq!(text_of(&mut room, "a", "execution_skipped"), None);
+    }
+
+    #[test]
+    fn a_later_run_that_ran_leaves_no_skip_note() {
+        let (mut room, mut x) = (room_of(5), exec());
+        run(&mut x, &mut room, &[id("a")], "A");
+        run(&mut x, &mut room, &[id("a")], "B");
+        x.finish(&mut room, "a", None, None, None, true);
+        x.finish(
+            &mut room,
+            "a",
+            Some(Vec::new()),
+            Some(1),
+            Some("7".into()),
+            false,
+        );
+        assert_eq!(text_of(&mut room, "a", "execution_skipped"), None);
+    }
+
+    #[test]
+    fn a_cell_that_is_gone_or_not_code_ends_a_guarded_run_as_changed() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sent = |rx: &mut mpsc::UnboundedReceiver<Cmd>| match rx.try_recv() {
+            Ok(Cmd::Exec(RoomCmd::Done { changed, .. })) => changed,
+            _ => panic!("a Done"),
+        };
+        assert!(matches!(
+            not_code_end(&tx, "a".into(), true),
+            CellEnd::Changed
+        ));
+        assert!(sent(&mut rx));
+        assert!(matches!(not_code_end(&tx, "a".into(), false), CellEnd::Ok));
+        assert!(!sent(&mut rx));
+    }
+
+    #[test]
+    fn a_cell_that_stopped_being_code_gets_no_hash() {
+        let (mut room, mut x) = (room_of(5), exec());
+        run(&mut x, &mut room, &[id("a")], "A");
+        room.edit(|txn, roots| {
+            let a = schema::find_cell(txn, roots, "a").unwrap();
+            a.insert(txn, "cell_type", "markdown");
+        });
+        x.finish(
+            &mut room,
+            "a",
+            Some(Vec::new()),
+            Some(1),
+            Some("7".into()),
+            false,
+        );
+        let has_hash = room
+            .edit(|txn, roots| {
+                let a = schema::find_cell(txn, roots, "a").unwrap();
+                let meta = a.get(txn, "metadata").map(|m| schema::out_to_json(txn, &m));
+                meta.is_some_and(|m| m["ganymede"]["ran_source_hash"].is_string())
+            })
+            .0;
+        assert!(!has_hash);
+    }
+
+    #[test]
+    fn a_cell_cleared_without_running_loses_its_hash() {
+        // `[c, a]`: c fails, so a is skipped. Its outputs were cleared when
+        // it was queued, so the hash of the run that made them goes too.
+        let (mut room, mut x) = (room_of(5), exec());
+        run(&mut x, &mut room, &[id("a")], "A");
+        x.finish(
+            &mut room,
+            "a",
+            Some(Vec::new()),
+            Some(1),
+            Some("77".into()),
+            false,
+        );
+        assert_eq!(
+            cell_json(&mut room, "a")["metadata"]["ganymede"]["ran_source_hash"],
+            "77"
+        );
+        run(&mut x, &mut room, &[id("c"), id("a")], "A");
+        x.finish(
+            &mut room,
+            "c",
+            Some(Vec::new()),
+            Some(2),
+            Some("5".into()),
+            false,
+        );
+        x.finish(&mut room, "a", None, None, None, false);
+        assert!(cell_json(&mut room, "a")["metadata"]["ganymede"]
+            .get("ran_source_hash")
+            .is_none());
     }
 
     #[test]
@@ -1596,7 +1733,7 @@ mod request_tests {
     fn a_cell_that_ran_records_the_hash_of_its_source() {
         let (mut room, mut x) = (room_of(5), exec());
         run(&mut x, &mut room, &[id("a")], "A");
-        let hash = source_hash("1");
+        let hash = ganymede_nbformat::source_hash("1");
         x.finish(
             &mut room,
             "a",
