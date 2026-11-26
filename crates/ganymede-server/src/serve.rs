@@ -865,6 +865,10 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
             ganymede_kernel_host::kernelspec::jupyter_runtime_dir().join("ganymede-rooms"),
         );
     }
+    // Recovery copies outlive a reboot, unlike the runtime dir.
+    if let Some(data) = crate::lab::data_dir() {
+        collab = collab.with_recovery_dir(crate::recovery::dir_in(&data));
+    }
     let state_collab = Arc::new(collab);
     let contents = contents_for(&root_dir, fs_options, &state_collab)?;
     let state = AppState {

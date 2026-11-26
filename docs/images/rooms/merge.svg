@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 428" width="900" height="428" role="img" aria-label="Merging a file change into a room with unsaved edits, cell by cell. A cell only the room edited keeps the room&#x27;s source. A cell only the file changed, for example with new outputs, takes the file&#x27;s version. A cell the room edited and another program ran keeps the room&#x27;s source and takes the file&#x27;s outputs and execution count. A cell both edited in the same part, or one deleted while the other changed it, takes the file&#x27;s version and the server logs the cell. A cell the file added is added. Source, outputs with execution count, and each metadata key merge separately; notebook metadata merges key by key. Notebooks before nbformat 4.5 have no cell ids, so the file wins outright. The room saves the merge at once.">
-  <title>Merging a file change into a room with unsaved edits, cell by cell. A cell only the room edited keeps the room's source. A cell only the file changed, for example with new outputs, takes the file's version. A cell the room edited and another program ran keeps the room's source and takes the file's outputs and execution count. A cell both edited in the same part, or one deleted while the other changed it, takes the file's version and the server logs the cell. A cell the file added is added. Source, outputs with execution count, and each metadata key merge separately; notebook metadata merges key by key. Notebooks before nbformat 4.5 have no cell ids, so the file wins outright. The room saves the merge at once.</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 428" width="900" height="428" role="img" aria-label="Merging a file change into a room with unsaved edits, cell by cell. A cell only the room edited keeps the room&#x27;s source. A cell only the file changed, for example with new outputs, takes the file&#x27;s version. A cell the room edited and another program ran keeps the room&#x27;s source and takes the file&#x27;s outputs and execution count. A cell both edited in the same part, or one deleted while the other changed it, takes the file&#x27;s version, and the server keeps the room&#x27;s notebook in a recovery copy and logs the cell. A cell the file added is added. Source, outputs with execution count, and each metadata key merge separately; notebook metadata merges key by key. Notebooks before nbformat 4.5 have no cell ids, so the file wins outright. The room saves the merge at once.">
+  <title>Merging a file change into a room with unsaved edits, cell by cell. A cell only the room edited keeps the room's source. A cell only the file changed, for example with new outputs, takes the file's version. A cell the room edited and another program ran keeps the room's source and takes the file's outputs and execution count. A cell both edited in the same part, or one deleted while the other changed it, takes the file's version, and the server keeps the room's notebook in a recovery copy and logs the cell. A cell the file added is added. Source, outputs with execution count, and each metadata key merge separately; notebook metadata merges key by key. Notebooks before nbformat 4.5 have no cell ids, so the file wins outright. The room saves the merge at once.</title>
   <style>
     .bg { fill: #ffffff; }
     .box { fill: #f6f7f9; stroke: #9aa3ad; stroke-width: 1.2; }
@@ -85,7 +85,8 @@
   <line class="ln" x1="572" y1="223" x2="626" y2="223" marker-end="url(#a)"/>
   <text class="t" x="300" y="228" text-anchor="middle">+</text>
   <rect class="warn" x="630" y="206" width="240" height="34" rx="4"/>
-  <text class="s" x="644" y="228">file's source, cell logged</text>
+  <text class="s" x="644" y="222">file's source, room's</text>
+  <text class="s" x="644" y="236">kept as a recovery copy</text>
   <rect class="acc" x="30" y="252" width="240" height="34" rx="4"/>
   <text class="s" x="44" y="274">source edited</text>
   <rect class="ok" x="330" y="252" width="240" height="34" rx="4"/>
@@ -93,7 +94,8 @@
   <line class="ln" x1="572" y1="269" x2="626" y2="269" marker-end="url(#a)"/>
   <text class="t" x="300" y="274" text-anchor="middle">+</text>
   <rect class="warn" x="630" y="252" width="240" height="34" rx="4"/>
-  <text class="s" x="644" y="274">deleted, cell logged</text>
+  <text class="s" x="644" y="268">deleted, room's kept</text>
+  <text class="s" x="644" y="282">as a recovery copy</text>
   <rect class="inner" x="30" y="298" width="240" height="34" rx="4"/>
   <text class="s" x="44" y="320">—</text>
   <rect class="ok" x="330" y="298" width="240" height="34" rx="4"/>

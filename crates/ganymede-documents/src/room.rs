@@ -263,6 +263,7 @@ impl Room {
             let roots = room.roots.as_ref().expect("notebook room has roots");
             roots.state.insert(&mut txn, "dirty", false);
             roots.state.insert(&mut txn, "path", path);
+            roots.state.insert(&mut txn, "save", "saved");
         }
         room.drain();
         room.content_changed.store(false, Ordering::Relaxed);
@@ -735,6 +736,72 @@ impl Room {
             }
         }
         self.broadcast_own()
+    }
+
+    /// Tell clients whether the room's edits reached the file: `state.save`
+    /// is `"saved"` or `"failed"`, and `state.save_error` holds
+    /// the last error while it is `"failed"` and is removed otherwise.
+    /// Room-only: the save never writes it. Nothing is sent when it is
+    /// already so.
+    pub fn set_save_state(&mut self, save: &str, error: Option<&str>) -> Effects {
+        let Some(roots) = self.roots.clone() else {
+            return Effects::default();
+        };
+        if self.state_value("save") == Some(json!(save))
+            && self.state_value("save_error") == error.map(|e| json!(e))
+        {
+            return Effects::default();
+        }
+        {
+            let mut txn = self.awareness.doc().transact_mut();
+            roots.state.insert(&mut txn, "save", save);
+            match error {
+                Some(e) => {
+                    roots.state.insert(&mut txn, "save_error", e);
+                }
+                None => {
+                    roots.state.remove(&mut txn, "save_error");
+                }
+            }
+        }
+        self.broadcast_own()
+    }
+
+    /// Set `state.recovery`, the summary of the newest recovery copy of
+    /// this notebook (`{"id", "at", "reason", "cells"}`), or remove it.
+    /// Room-only, like [`Room::set_save_state`].
+    pub fn set_recovery(&mut self, summary: Option<&Value>) -> Effects {
+        let Some(roots) = self.roots.clone() else {
+            return Effects::default();
+        };
+        if self.state_value("recovery").as_ref() == summary {
+            return Effects::default();
+        }
+        {
+            let mut txn = self.awareness.doc().transact_mut();
+            match summary {
+                Some(v) => {
+                    roots
+                        .state
+                        .insert(&mut txn, "recovery", schema::json_to_any(v));
+                }
+                None => {
+                    roots.state.remove(&mut txn, "recovery");
+                }
+            }
+        }
+        self.broadcast_own()
+    }
+
+    /// The value under `key` in the room's `state` map, if it is a plain
+    /// value.
+    pub fn state_value(&self, key: &str) -> Option<Value> {
+        let roots = self.roots.as_ref()?;
+        let txn = self.awareness.doc().transact();
+        match roots.state.get(&txn, key)? {
+            yrs::Out::Any(any) => Some(schema::any_to_json(&any)),
+            _ => None,
+        }
     }
 
     /// The room's `clean_run` stamp, if the notebook has one.

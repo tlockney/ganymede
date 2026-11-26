@@ -49,12 +49,19 @@ cell:
   count, and each metadata key merge separately. A source edit in the room
   survives an agent running that cell on disk.
 - Where both changed the same part, or one deleted a cell the other
-  changed, the file on disk wins that part, and the server logs the cell.
+  changed, the file on disk wins that part, and the server keeps the
+  room's version in a [recovery copy](#saving-and-recovery) and logs the
+  cell.
 - Notebook metadata merges key by key the same way.
 - Notebooks older than nbformat 4.5 have no cell ids, so for them the file
   wins outright, as in `jupyter-collaboration`.
 
-![Merging a file change into a room with unsaved edits, cell by cell. A cell only the room edited keeps the room's source. A cell only the file changed, for example with new outputs, takes the file's version. A cell the room edited and another program ran keeps the room's source and takes the file's outputs and execution count. A cell both edited in the same part, or one deleted while the other changed it, takes the file's version and the server logs the cell. A cell the file added is added. Source, outputs with execution count, and each metadata key merge separately; notebook metadata merges key by key. Notebooks before nbformat 4.5 have no cell ids, so the file wins outright. The room saves the merge at once.](images/rooms/merge.svg)
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. This is about the recovery copy; the rest of the
+> merge is released.
+
+![Merging a file change into a room with unsaved edits, cell by cell. A cell only the room edited keeps the room's source. A cell only the file changed, for example with new outputs, takes the file's version. A cell the room edited and another program ran keeps the room's source and takes the file's outputs and execution count. A cell both edited in the same part, or one deleted while the other changed it, takes the file's version, and the server keeps the room's notebook in a recovery copy and logs the cell. A cell the file added is added. Source, outputs with execution count, and each metadata key merge separately; notebook metadata merges key by key. Notebooks before nbformat 4.5 have no cell ids, so the file wins outright. The room saves the merge at once.](images/rooms/merge.svg)
 
 After taking in a change from the file, the room saves its own edits at
 once. A client's explicit save whose merge lets the file win a cell the
@@ -78,6 +85,110 @@ again through the server, or someone trusts the notebook (`ganymede
 trust`, or Trust Notebook in a frontend), which holds with the room
 open. A client that writes back the very outputs the unsigned file had
 doesn't make them trusted.
+
+## Saving and recovery
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+A room with no clients is saved and closed a minute after the last one
+leaves. It never closes holding edits the file doesn't have unless a
+recovery copy of them is on disk, except in the cases below.
+
+**Save state.** The room's `state` map, which clients can read and watch
+next to `dirty` and `hash`, says whether the edits reached the file:
+
+| Key | Value |
+|---|---|
+| `save` | `"saved"` when the file has the room's edits, `"failed"` when a save of them failed, when they can't be saved because another server owns the file, or when edits were lost to the file without a copy (see below). The room opens `"saved"`. |
+| `save_error` | Why, while `save` is `"failed"`; removed when a save succeeds, or when the room takes the file's version. |
+| `recovery` | `{"id", "at", "reason", "cells"}` of the newest recovery copy of this notebook (see below), when there is one. When that copy is discarded or pushed out, it is the next newest, or none. |
+
+These keys exist only in the room. A save writes the notebook, never the
+`state` map. A client can show **Save needs attention** while `save` is
+`"failed"` or `recovery` is set. When another server sharing the data
+directory discards or prunes a copy, the room keeps naming it until a
+`GET` of that id answers `404`, which also moves `recovery` on; so read
+the copy before trusting `recovery`.
+
+**Recovery copies.** The server keeps a copy of the room's notebook, as
+a save would write it, when edits would otherwise be lost:
+
+| `reason` | When |
+|---|---|
+| `save_failed` | The room is empty and its saves have failed ten times in a row (about five minutes of retries), so it gives up; or the server stops and the last save fails. `detail` is the last error. |
+| `file_gone` | The room's file was deleted, so its edits have nowhere to go. |
+| `read_only` | The room is empty, or the server stops, and the room is read-only because [another server owns the file](#two-servers-on-one-notebook), so it can't save its edits. |
+| `merge_conflict` | The file changed the same part the room's unsaved edits did, so the file won it. The copy is the room's notebook as it was before the merge; `detail` and `cells` say which parts and cells. |
+
+A room that can't write its copy stays open and tries again on its next
+cleanup, instead of closing. In three cases the room closes even when its
+copy can't be written, and the server logs an error:
+
+- The file was deleted through the contents API, or the open room noticed
+  that it was gone and dropped its file id. (When the cleanup of an empty
+  room is first to find it gone, the room stays open until it has its
+  copy.)
+- The room's content is not a notebook, so there is nothing to copy.
+- The server is stopping.
+
+Edits that lose a merge and can't be copied keep `save` at `"failed"`,
+with the reason in `save_error`, through later merges and good saves. The
+room tries again to write the copy at each save and before it closes. It
+ends when the copy is written, or when a client explicitly saves the room
+as it is. A room that wasn't a notebook when the file replaced it has
+nothing to copy, and says so until a client saves.
+
+A server with no data directory, or that can't make `recovery` in it when
+it starts (it logs a warning), keeps no copies, and its rooms close
+without them. On iPad and iPhone the data directory is under the app's
+own container (`Library/Application Support/ganymede`), so the apps keep
+copies there too; [#957](https://github.com/tlockney/ganymede/issues/957)
+tracks checking that on a device.
+
+Copies live in `recovery` under the Ganymede data directory (`ganymede
+info` shows it as `data_dir`), not beside the notebook, so they survive a
+reboot. Each root directory has its own directory there, named by the
+SHA-256 of its path, and that is where a server writes its copies. A
+server finds copies by their file, not by which directory they are in,
+so it sees every copy of a notebook under its root, at the path relative
+to that root: a copy kept by a server rooted at a project is listed, read
+and discarded by one rooted at the folder around it, and a root that
+holds none of the file's path sees none of its copies. The exception is
+a copy whose file is under a hidden directory of the root, which the
+contents API doesn't serve either: it is not seen. The server that kept
+the copy still sees it at the path it saved it under, when that path
+resolves to the same file (through a symlink inside its root to a hidden
+directory, say); another root does not. Each copy is a `<id>.ipynb` and
+a `<id>.json` with the `path`,
+the file's absolute path (`file`, which the routes leave out), `at` (UTC),
+`reason`, `detail`, `cells` and the notebook's file name. At most 20
+copies are kept for one notebook path and 200 MB for one root; a write that
+goes over deletes the oldest first, and the server logs each. A copy stays
+until it is discarded or pushed out by those limits. A room that opens on
+a path with copies puts the newest one's summary in `state.recovery`.
+Copies are filed under the path they were made for, so a notebook renamed
+afterwards doesn't list its earlier ones.
+
+Three routes, with the same credentials as the other `/api/collaboration`
+routes, list, read and discard copies. An `id` is the 25 characters the
+server made (`[0-9a-f]`, one `-`); an id with other characters gets `400`,
+and an unknown one `404`. A server with no recovery directory answers `404`.
+
+- `GET /api/collaboration/recovery?path=<api path>` lists the copies of
+  that notebook, newest first, without their notebooks:
+  `{"copies": [{"id", "path", "at", "reason", "detail", "cells",
+  "notebook"}]}`. `path` is required.
+- `GET /api/collaboration/recovery/<id>` returns the same fields for one
+  copy, with the notebook as JSON in `content`.
+- `DELETE /api/collaboration/recovery/<id>` discards the copy and answers
+  `204`. A room whose `state.recovery` names it names the next newest copy
+  of that path, or removes the key when none is left.
+
+There is no restore route. A client restores by taking `content` and
+writing it with the contents API or into the room, then discards the
+copy.
 
 ## Connections
 
