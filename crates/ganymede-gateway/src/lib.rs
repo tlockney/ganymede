@@ -198,9 +198,9 @@ impl Gateway {
     }
 
     /// Calls [`Gateway::refresh`] now and then every `every` while it
-    /// answers, and every [`RETRY`] while it doesn't, logging failures, for
+    /// answers, and every 15 seconds (`RETRY`) while it doesn't, logging failures, for
     /// as long as the gateway exists. A gateway that comes back is found
-    /// within [`RETRY`] rather than `every`.
+    /// within 15 seconds rather than `every`.
     pub fn refresh_every(&self, every: Duration) {
         let weak = Arc::downgrade(&self.inner);
         tokio::spawn(async move {
