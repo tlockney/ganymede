@@ -93,8 +93,11 @@ fn percent_decode(s: &str) -> Option<String> {
 /// (the terminal's socket), `api/notebooks/run`,
 /// `api/metrics/v1/kernel_usage`, `api/events/subscribe`, `api/nbconvert`
 /// and `nbconvert`; subpaths of those that take them. Also
-/// `kernelspecs/{name}/{file}`, exactly that deep, for a kernel's logo.
-/// Nothing else, `mcp` and `api/host` included.
+/// `kernelspecs/{name}/{file}`, exactly that deep, for a kernel's logo, and
+/// `api/host/grants`, a notebook's access settings: a page that may run
+/// code on the machine through this mount adds nothing by setting what its
+/// notebooks may reach (#972). Nothing else, `mcp` and the rest of
+/// `api/host` (the cells' own host API) included.
 pub fn route(rest: &str) -> Result<Kind, Refused> {
     let mut segments = Vec::new();
     let raw: Vec<&str> = rest.split('/').collect();
@@ -119,6 +122,8 @@ pub fn route(rest: &str) -> Result<Kind, Refused> {
         ["api", "events", "subscribe"] | ["api", "nbconvert"] => Kind::Other,
         ["nbconvert", "html", ..] => Kind::Page,
         ["files", ..] | ["nbconvert", ..] => Kind::Other,
+        // A notebook's access settings, and nothing else under `api/host` (#972).
+        ["api", "host", "grants", ..] => Kind::Other,
         ["api", "contents" | "collaboration" | "fileid" | "kernels", ..]
         | ["api", "sessions" | "kernelspecs" | "terminals", ..]
         | ["api", "metrics", "v1", "kernel_usage", ..]
@@ -752,13 +757,21 @@ mod tests {
             "kernelspecs/python3/logo-64x64.png",
             "kernelspecs/a/b%20c.svg",
             "kernelspecs/a/b/",
+            "api/host/grants",
+            "api/host/grants/",
+            "api/host/grants/a.ipynb",
+            "api/host/grants/a/b%20c.ipynb",
         ] {
             assert!(route(ok).is_ok(), "{ok}");
         }
         for no in [
             "mcp",
             "mcp/",
-            "api/host/grants/a.ipynb",
+            "api/host",
+            "api/host/",
+            "api/host/x",
+            "api/host/grantsx",
+            "api/host/grantsx/a.ipynb",
             "api",
             "api/",
             "api/config/x",
@@ -795,6 +808,11 @@ mod tests {
         assert_eq!(route("api/contents/a"), Ok(Kind::Other));
         assert_eq!(route("kernelspecs/a/logo.png"), Ok(Kind::Other));
         assert_eq!(route("kernelspecs/%61/logo.png"), Ok(Kind::Other));
+        // The grant subtree is allowed, but not by climbing into it.
+        assert_eq!(route("api/host/grants/a.ipynb"), Ok(Kind::Other));
+        assert_eq!(route("api/host/grants/a/b%20c.ipynb"), Ok(Kind::Other));
+        assert_eq!(route("api/host/grants/.."), Err(Refused::Malformed));
+        assert_eq!(route("api/host/grants/%2e%2e"), Err(Refused::Malformed));
     }
 
     #[test]
@@ -943,7 +961,7 @@ mod tests {
                 "/api\\contents/x",
                 "/api/contents//x",
                 "/mcp",
-                "/api/host/grants/x",
+                "/api/host/x",
                 "/lab",
                 "/",
                 "/?x=/api/status",

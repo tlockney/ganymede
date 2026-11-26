@@ -403,9 +403,21 @@ or a NUL is a 400:
   file name, nothing deeper)
 - `api/terminals`, and `terminals/websocket/{name}`, the terminal's socket
 - `api/notebooks/run`, `api/metrics/v1/kernel_usage`, `api/events/subscribe`
+- `api/host/grants`, and everything below it: a notebook's access settings
+  (`GET` to show it, `PUT` to set it, `DELETE` to remove it)
 
-`mcp`, `api/host/*` and everything else on the machine are never reachable
-this way.
+`mcp`, the rest of `api/host` and everything else on the machine are never
+reachable this way. The rest of `api/host` is the cells' own host API, which
+a machine's kernels call on the machine itself, not through this one. A
+notebook's access settings add nothing to what the mount already does: it
+forwards `api/kernels`, `api/terminals` and `api/notebooks/run` with the
+machine's token, so a page that may call the mount can already run code
+there, and a page the machine serves holds no token and runs in the sandbox,
+so a notebook can't change its own grant through the mount.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
 
 A forwarded `api/kernelspecs` answer is the machine's own: its
 `resources` are paths on the machine (`/kernelspecs/{name}/logo-64x64.png`
