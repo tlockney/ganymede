@@ -113,25 +113,14 @@ impl Store {
     fn claimed(&self, meta: Meta) -> Option<Meta> {
         let root = self.root.as_ref()?;
         let file = meta.file.as_deref()?;
-        // An API path: components joined with `/`, whatever the platform's
-        // separator. A hidden component (or anything but a plain name) is
-        // a path the contents API refuses, so the copy isn't this
-        // server's to show.
-        let mut parts = Vec::new();
-        for c in file.strip_prefix(root).ok()?.components() {
-            let std::path::Component::Normal(name) = c else {
-                return None;
-            };
-            let name = name.to_string_lossy();
-            if name.starts_with('.') {
-                return None;
-            }
-            parts.push(name.into_owned());
-        }
-        let rel = parts.join("/");
-        if rel.is_empty() {
-            return None; // the root itself is not a notebook
-        }
+        // The file's path under this root, in canonical form. When that
+        // goes through a hidden dir (a symlink inside the root pointing
+        // at one, say), the path the copy was saved under still names the
+        // file if it resolves to the same place.
+        let rel = api_path(file.strip_prefix(root).ok()?).or_else(|| {
+            let saved = api_path(Path::new(&meta.path))?;
+            (canonical_file(&root.join(&saved)) == file).then_some(saved)
+        })?;
         let mut meta = meta;
         meta.path = rel;
         Some(meta)
@@ -379,6 +368,25 @@ pub(crate) fn read_meta(store: &Store, id: &str) -> io::Result<Option<Meta>> {
 
 /// `file` with its dir canonical (the file itself may be gone), so every
 /// root that holds it maps it to the same place.
+/// `rel` as an API path: plain components joined with `/`, whatever the
+/// platform's separator. `None` for an empty path, or one with a hidden
+/// component (or anything but a plain name), as the contents API refuses
+/// those.
+fn api_path(rel: &Path) -> Option<String> {
+    let mut parts = Vec::new();
+    for c in rel.components() {
+        let std::path::Component::Normal(name) = c else {
+            return None;
+        };
+        let name = name.to_str()?;
+        if name.starts_with('.') {
+            return None;
+        }
+        parts.push(name);
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
 fn canonical_file(file: &Path) -> PathBuf {
     match (
         file.parent().and_then(|d| d.canonicalize().ok()),
@@ -609,6 +617,32 @@ mod tests {
         assert!(read(&above, &meta.id).unwrap().is_none());
         assert!(!discard(&above, &meta.id).unwrap());
         assert_eq!(list(&inner, "a.ipynb").unwrap().len(), 1);
+    }
+
+    /// A notebook served through a symlink inside the root that points at
+    /// a hidden dir still sees its own copy: the path it was saved under
+    /// resolves to the same file.
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_under_a_symlink_to_a_hidden_dir_is_seen_at_its_own_path() {
+        let data = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root_path.join(".real")).unwrap();
+        std::os::unix::fs::symlink(root_path.join(".real"), root_path.join("nb")).unwrap();
+        let rec = data.path().join("recovery");
+        make_dir(&rec).unwrap();
+        let store = Store::new(&rec, Some(&root_path));
+        let meta = write(&store, "nb/a.ipynb", &nb("x"), Reason::SaveFailed, "", &[])
+            .unwrap()
+            .0;
+        let listed = list(&store, "nb/a.ipynb").unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].path, "nb/a.ipynb");
+        let (read_meta, _) = read(&store, &meta.id).unwrap().expect("the copy reads");
+        assert_eq!(read_meta.path, "nb/a.ipynb");
+        assert!(discard(&store, &meta.id).unwrap());
+        assert!(list(&store, "nb/a.ipynb").unwrap().is_empty());
     }
 
     /// A root reached through a symlinked dir sees the copy at its own
