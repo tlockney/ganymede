@@ -19,7 +19,13 @@ when it opens a notebook, so an agent working in the notebook is told
 who changed a cell. Other clients with that notebook open there (an
 agent, JupyterLab) see it too. It never goes to a remote server, and
 iPad and iPhone send none.
-<!-- **Unreleased in ganymede-ui.** ganymede-ui#842 sends the name to a connected machine's notebooks too, while that machine's "Show my name" setting is on (the default). Once it is released, reword "It never goes to a remote server" to: it goes to no other server except a connected machine's notebooks while that machine's "Show my name in this machine's notebooks" setting is on. -->
+
+> [!NOTE]
+> **Unreleased in ganymede-ui.** Available only from a build of
+> ganymede-ui's `main`, not in its latest release: the Mac app also gives
+> the name to a connected machine's notebooks while that machine's "Show
+> my name in this machine's notebooks" setting is on, which it is by
+> default (ganymede-ui#842).
 
 From ganymede-ui 0.7.0 on, the Mac app checks for a newer release once a
 day, on by default: it
