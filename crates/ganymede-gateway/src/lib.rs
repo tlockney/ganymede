@@ -596,8 +596,25 @@ mod tests {
                 };
                 let up = up.clone();
                 tokio::spawn(async move {
+                    // The whole request head, which may come in more than
+                    // one read.
+                    let mut head = Vec::new();
                     let mut buf = [0u8; 4096];
-                    let _ = socket.read(&mut buf).await;
+                    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match socket.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => head.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                    let request = String::from_utf8_lossy(&head);
+                    // Echo the request's Authorization header in the error,
+                    // as a careless server might, so `scrub` has a token
+                    // to take out.
+                    let auth = request
+                        .lines()
+                        .find(|l| l.to_ascii_lowercase().starts_with("authorization:"))
+                        .unwrap_or("")
+                        .to_string();
                     let (status, body) = if up.load(Ordering::SeqCst) {
                         let body = serde_json::json!({
                             "default": "fake",
@@ -611,7 +628,7 @@ mod tests {
                         });
                         ("200 OK", body.to_string())
                     } else {
-                        let body = serde_json::json!({"message": "asleep"});
+                        let body = serde_json::json!({"message": format!("asleep {auth}")});
                         ("503 Service Unavailable", body.to_string())
                     };
                     let resp = format!(
@@ -646,6 +663,12 @@ mod tests {
         assert!(!status.reachable);
         let error = status.error.clone().unwrap();
         assert!(error.contains("asleep"), "{error}");
+        // The stub echoes the Authorization header, so the token is in
+        // the answer and `scrub` must take it out.
+        assert!(
+            error.contains("token"),
+            "the stub echoed the header: {error}"
+        );
         // Neither the URL's path nor the token is reported.
         assert!(!error.contains("secret-base"), "{error}");
         assert!(!error.contains("s3cret"), "{error}");
