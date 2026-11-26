@@ -183,8 +183,7 @@ The server checks each cell's source against its hash, clears the cells,
 queues them as one batch, and answers `200 null`. It answers `409
 {"error": "source_mismatch", "cell_id"}` if a cell changed since the
 client hashed it, and `408` if `previous_request_id` wasn't queued within
-ten seconds. A cell that fails stops the rest of its batch, and so does
-one that [changed while queued](#a-cell-that-changed-while-queued).
+ten seconds. A cell that fails stops the rest of its batch.
 
 ![Running cells into a room. A client such as nb-cli or ganymede mcp sends POST /api/kernels/{id}/execute with the document id and each cell's id and source hash (MurmurHash2, seed 0). Ganymede checks each cell's source in the room against its hash: if one changed it answers 409 source_mismatch, and if the previous request wasn't queued within ten seconds it answers 408, and nothing runs. Otherwise it clears the cells, queues them as one batch and answers 200 null. It sends the cells to the kernel one after another; a cell that fails stops the rest of the batch. As outputs arrive on iopub, Ganymede writes them and the execution count into the room, so every client sees them and autosave writes them to the file even with no client connected.](images/rooms/execute.svg)
 
@@ -242,9 +241,9 @@ notebooks run (`POST /api/notebooks/run`) and the host API: each
 records, on every cell it runs, the hash of that cell's source, and the
 copy a notebooks run saves drops the key from cells the run never
 started. `ganymede execute` records none, so its notebooks come out as
-`jupyter execute` writes them: it removes the key (and a skip note)
-from the cells it runs, keeping the rest of the `ganymede` object and
-dropping an emptied one. Tools outside Ganymede — nbconvert, papermill,
+`jupyter execute` writes them, except that it removes a stale key from
+the cells it runs, keeping the rest of the `ganymede` object and
+dropping an object the removal emptied. Tools outside Ganymede — nbconvert, papermill,
 VS Code, a plain `PUT` of the file — keep whatever key the notebook
 has, so the key says which source ran only when Ganymede did the last
 run.
@@ -257,7 +256,9 @@ too), the room removes the cell's `ran_source_hash`: a cell without the
 key says nothing about which source its outputs came from. A change to
 the file keeps what the file has. The hash is in the cell's metadata, not
 each output's, because stream and error outputs have no metadata, and a
-cell can run without any output.
+cell can run without any output. A cell the server clears without running
+it, such as one skipped after an earlier cell failed, or one whose outputs
+an MCP tool drops, loses the key too: only a run that ends puts it back.
 
 ### Who runs a cell
 

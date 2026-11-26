@@ -36,9 +36,11 @@ What changed, in `execute.rs` unless said:
   run's saved copy removes it from cells the run never started. The
   executor records it only behind its new `record_source_hash` option,
   which those entry points turn on; off, the default, it removes the
-  key and a skip note from the cells it runs instead — keeping the rest
-  of the `ganymede` object and dropping an emptied one — so
-  `ganymede execute` matches `jupyter execute` byte for byte. Tools
+  key from the cells it runs instead — keeping the rest of the
+  `ganymede` object and dropping an object the removal emptied, and
+  leaving one that was already empty — so `ganymede execute` matches
+  `jupyter execute` except that it removes a stale `ran_source_hash`.
+  The skip note is room-only, so the executor never reads or writes it. Tools
   outside Ganymede (nbconvert, papermill, VS Code, a plain `PUT`) keep
   whatever key they find, so the key says which source ran only when
   Ganymede did the last run.
@@ -51,6 +53,16 @@ What changed, in `execute.rs` unless said:
   after, keeps the cost of a keystroke independent of the outputs' size.
   The server's own edits and changes from the file don't remove it. Only
   the key goes; an emptied `ganymede` stays (`schema::clear_ran_source_hash`).
+- `enqueue` clears a cell's outputs when it is queued, so it clears
+  `ran_source_hash` there too (`schema::clear_ran_source_hash`), as does
+  the MCP tools' drop of outputs: a cell skipped after a failure or a
+  change has no outputs and no hash. A run that ends writes the hash only
+  when the kernel sent `execute_input` (the count is known) and the cell
+  is still a code cell.
+- `RoomExec` remembers a cell's "changed" per id until its last queued
+  run ends, since a cell given twice in a guarded batch has its second
+  run skipped with no change of its own after the first reported one.
+  A later run that did run the cell forgets it.
 - It is cell metadata, not per-output metadata, because stream and error
   outputs have no metadata.
 - `docs/rooms.md` and `docs/api.md`: a new section each, with the
@@ -65,7 +77,7 @@ on a `sleep` cell that is interrupted to release the batch):
 - `a_guard_travels_with_an_id_and_only_an_id`: ids with a hash come back
   guarded, tags and `"all"` don't.
 - `a_cell_that_changed_while_queued_shows_why_it_did_not_run`,
-  `a_cell_queued_again_shows_no_note_while_its_next_run_waits`,
+  `a_cell_queued_again_shows_no_note_while_its_next_run_waits` (the worker's real sequence for `[a#H, a#H]`),
   `the_skip_note_is_not_saved_or_listed`: the room-only note, set only for
   a change, cleared on the next queue, never in the notebook.
 - `a_cell_that_ran_records_the_hash_of_its_source`,
@@ -100,4 +112,10 @@ on a `sleep` cell that is interrupted to release the batch):
   default-off path. In `tests/http.rs`,
   `notebooks_run_saves_a_copy_under_runs` checks a run's copy: the hash
   on a cell that ran, and none on one the run never started.
+- `a_cell_cleared_without_running_loses_its_hash`,
+  `a_cell_that_stopped_being_code_gets_no_hash`,
+  `a_later_run_that_ran_leaves_no_skip_note`,
+  `a_cell_that_is_gone_or_not_code_ends_a_guarded_run_as_changed`.
+- In `ganymede-exec`, a `ganymede` value that isn't an object is replaced,
+  and an already empty one stays.
 - `the_ran_source_hash_is_set_and_removed_in_plain_and_shared_metadata`.
