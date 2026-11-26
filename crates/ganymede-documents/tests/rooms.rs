@@ -5,7 +5,8 @@ use ganymede_documents::yrs::sync::{Awareness, Message, SyncMessage};
 use ganymede_documents::yrs::updates::decoder::Decode;
 use ganymede_documents::yrs::updates::encoder::Encode;
 use ganymede_documents::yrs::{
-    Array, Doc, GetString, Map, Out, ReadTxn, StateVector, Text, Transact, Update,
+    Array, ArrayPrelim, Doc, GetString, Map, MapPrelim, MapRef, Out, ReadTxn, StateVector, Text,
+    Transact, TransactionMut, Update,
 };
 use ganymede_documents::{Room, SaveStatus, Target};
 use ganymede_nbformat::Notebook;
@@ -2364,4 +2365,311 @@ fn removing_a_stamp_that_is_not_there_changes_nothing() {
     let (_, fx) = room.edit(|txn, roots| schema::set_clean_run(txn, roots, None));
     assert!(!fx.changed && !room.is_dirty());
     assert!(fx.send.is_empty());
+}
+
+/// A room with code cells `a` and `b`, each with an output, a count, and
+/// metadata as a run through the room leaves it, and `execution_skipped`.
+fn room_that_ran() -> Room {
+    let cell = |id: &str| {
+        serde_json::json!({"cell_type": "code", "id": id, "source": "1", "execution_count": 1,
+            "outputs": [{"output_type": "stream", "name": "stdout", "text": "1\n"}],
+            "metadata": {"tags": ["t"], "ganymede": {"keep": 1, "ran_source_hash": "77"}}})
+    };
+    let nb = Notebook::from_value(serde_json::json!({
+        "nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [cell("a"), cell("b")]}))
+    .unwrap();
+    let mut room = Room::notebook_room(&nb, "x.ipynb");
+    room.edit(|txn, roots| {
+        for id in ["a", "b"] {
+            let cell = schema::find_cell(txn, roots, id).unwrap();
+            cell.insert(txn, "execution_skipped", "Cell changed while queued");
+        }
+    });
+    room
+}
+
+/// Apply `edit` on `client` and send the room the update it makes.
+fn client_edit(
+    room: &mut Room,
+    client: &Doc,
+    edit: impl FnOnce(&mut TransactionMut, &Roots),
+) -> ganymede_documents::Effects {
+    let before = client.transact().state_vector();
+    {
+        let roots = Roots::get(client);
+        let mut txn = client.transact_mut();
+        edit(&mut txn, &roots);
+    }
+    let update = client.transact().encode_state_as_update_v1(&before);
+    room.receive(1, &Message::Sync(SyncMessage::Update(update)).encode_v1())
+        .unwrap()
+}
+
+/// Cell `id`'s metadata, and whether it has `execution_skipped`.
+fn run_notes(doc: &Doc, id: &str) -> (serde_json::Value, bool) {
+    let roots = Roots::get(doc);
+    let txn = doc.transact();
+    let cell = schema::find_cell(&txn, &roots, id).unwrap();
+    let metadata = cell.get(&txn, "metadata").unwrap();
+    (
+        schema::out_to_json(&txn, &metadata),
+        cell.contains_key(&txn, "execution_skipped"),
+    )
+}
+
+fn kept() -> (serde_json::Value, bool) {
+    let m = serde_json::json!({"tags": ["t"], "ganymede": {"keep": 1, "ran_source_hash": "77"}});
+    (m, true)
+}
+
+fn cleared() -> (serde_json::Value, bool) {
+    let m = serde_json::json!({"tags": ["t"], "ganymede": {"keep": 1}});
+    (m, false)
+}
+
+#[test]
+fn a_client_run_removes_the_ran_source_hash_and_the_skip_note() {
+    let blank_count = |txn: &mut TransactionMut, roots: &Roots| {
+        let cell = schema::find_cell(txn, roots, "a").unwrap();
+        let null = schema::json_to_any(&serde_json::Value::Null);
+        cell.insert(txn, "execution_count", null);
+    };
+    let append = |txn: &mut TransactionMut, roots: &Roots| {
+        let cell = schema::find_cell(txn, roots, "a").unwrap();
+        let out = serde_json::json!({"output_type": "stream", "name": "stdout", "text": "2\n"});
+        schema::append_outputs(txn, &cell, vec![out]);
+    };
+    let clear = |txn: &mut TransactionMut, roots: &Roots| {
+        let cell = schema::find_cell(txn, roots, "a").unwrap();
+        schema::set_outputs(txn, &cell, Vec::new());
+    };
+    let replace = |txn: &mut TransactionMut, roots: &Roots| {
+        let cell = schema::find_cell(txn, roots, "a").unwrap();
+        cell.insert(txn, "outputs", ArrayPrelim::default());
+    };
+    type Edit<'a> = &'a dyn Fn(&mut TransactionMut, &Roots);
+    // The stream's text grows in place, under the output.
+    let edits: [(&str, Edit); 4] = [
+        ("count", &blank_count),
+        ("stream text", &append),
+        ("outputs emptied", &clear),
+        ("outputs replaced", &replace),
+    ];
+    for (what, edit) in edits {
+        let mut room = room_that_ran();
+        let (client, other) = (Doc::new(), Doc::new());
+        sync(&mut room, 1, &client);
+        sync(&mut room, 2, &other);
+        let fx = client_edit(&mut room, &client, edit);
+        assert!(fx.changed && room.is_dirty(), "{what}");
+        assert_eq!(run_notes(room.doc(), "a"), cleared(), "{what}");
+        assert_eq!(run_notes(room.doc(), "b"), kept(), "{what}: the other cell");
+        // Both clients are sent the removal.
+        for (to, frame) in &fx.send {
+            apply_frame(&other, frame);
+            if *to == Target::All {
+                apply_frame(&client, frame);
+            }
+        }
+        assert_eq!(run_notes(&client, "a"), cleared(), "{what}");
+        assert_eq!(run_notes(&other, "a"), cleared(), "{what}");
+    }
+}
+
+#[test]
+fn a_client_change_that_is_no_run_keeps_the_ran_source_hash() {
+    let mut room = room_that_ran();
+    let client = Doc::new();
+    sync(&mut room, 1, &client);
+    // The count it has, a state, and a cell that goes with its outputs.
+    client_edit(&mut room, &client, |txn, roots| {
+        let cell = schema::find_cell(txn, roots, "a").unwrap();
+        cell.insert(txn, "execution_count", 1);
+        cell.insert(txn, "execution_state", "running");
+    });
+    assert_eq!(run_notes(room.doc(), "a"), kept());
+    client_edit(&mut room, &client, |txn, roots| {
+        let cell = schema::find_cell(txn, roots, "a").unwrap();
+        schema::set_outputs(txn, &cell, Vec::new());
+        roots.cells.remove(txn, 0);
+    });
+    assert_eq!(run_notes(room.doc(), "b"), kept());
+    // A cell that comes back whole (an undo, a move) keeps its hash.
+    client_edit(&mut room, &client, |txn, roots| {
+        let cell = serde_json::json!({"cell_type": "code", "id": "a", "source": "1",
+            "execution_count": 1, "outputs": [], "metadata": kept().0});
+        schema::insert_cell(txn, &roots.cells, 0, cell);
+    });
+    assert_eq!(run_notes(room.doc(), "a").0, kept().0);
+}
+
+#[test]
+fn the_servers_own_edit_of_outputs_keeps_the_ran_source_hash() {
+    let mut room = room_that_ran();
+    let client = Doc::new();
+    sync(&mut room, 1, &client);
+    room.edit(|txn, roots| {
+        let cell = schema::find_cell(txn, roots, "a").unwrap();
+        schema::set_outputs(txn, &cell, Vec::new());
+        cell.insert(txn, "execution_count", 2);
+    });
+    assert_eq!(run_notes(room.doc(), "a"), kept());
+    // Nor does it count towards the next client update.
+    client_edit(&mut room, &client, |txn, roots| {
+        let cell = schema::find_cell(txn, roots, "b").unwrap();
+        cell.insert(txn, "execution_state", "running");
+    });
+    assert_eq!(run_notes(room.doc(), "a"), kept());
+}
+
+#[test]
+fn a_file_change_keeps_the_ran_source_hash_the_file_has() {
+    let mut room = room_that_ran();
+    let mut file = serde_json::to_value(room.notebook().unwrap().unwrap()).unwrap();
+    file["cells"][0]["outputs"] = serde_json::json!([]);
+    file["cells"][0]["execution_count"] = serde_json::json!(5);
+    room.reload(&Notebook::from_value(file).unwrap(), "h");
+    assert_eq!(run_notes(room.doc(), "a").0, kept().0);
+}
+
+#[test]
+fn an_edited_source_removes_the_skip_note_and_keeps_the_hash() {
+    let insert = |txn: &mut TransactionMut, roots: &Roots| {
+        let cell = schema::find_cell(txn, roots, "a").unwrap();
+        let Some(Out::YText(src)) = cell.get(txn, "source") else {
+            panic!()
+        };
+        src.insert(txn, 0, "x");
+    };
+    let edited = || (kept().0, false);
+    // By a client.
+    let mut room = room_that_ran();
+    let client = Doc::new();
+    sync(&mut room, 1, &client);
+    let fx = client_edit(&mut room, &client, insert);
+    assert_eq!(run_notes(room.doc(), "a"), edited());
+    assert_eq!(run_notes(room.doc(), "b"), kept(), "not the other cell's");
+    for (to, frame) in &fx.send {
+        if *to == Target::All {
+            apply_frame(&client, frame);
+        }
+    }
+    assert_eq!(run_notes(&client, "a"), edited());
+    // By the server (an agent's edit).
+    let mut room = room_that_ran();
+    let client = client_of(&room);
+    let (_, fx) = room.edit(insert);
+    assert_eq!(run_notes(room.doc(), "a"), edited());
+    assert_eq!(run_notes(room.doc(), "b"), kept());
+    for (_, frame) in &fx.send {
+        apply_frame(&client, frame);
+    }
+    assert_eq!(run_notes(&client, "a"), edited());
+    // By a change to the file, which leaves the room clean.
+    let mut room = room_that_ran();
+    let mut file = serde_json::to_value(room.notebook().unwrap().unwrap()).unwrap();
+    file["cells"][0]["source"] = serde_json::json!("x1");
+    let generation = room.generation();
+    room.saved(generation, "g");
+    room.reload(&Notebook::from_value(file).unwrap(), "h");
+    assert_eq!(run_notes(room.doc(), "a"), edited());
+    assert_eq!(run_notes(room.doc(), "b"), kept());
+    assert!(!room.is_dirty());
+    // By a change to the file while the room holds an unsaved edit, which
+    // merges (`merge_disk`) rather than reloading: the cell the file
+    // changed loses its skip note and keeps its hash, and the room's
+    // own edit keeps its cell's note.
+    let mut room = room_that_ran();
+    let client = Doc::new();
+    sync(&mut room, 1, &client);
+    let base = room.notebook().unwrap().unwrap();
+    room.saved(room.generation(), "g");
+    let fx = client_edit(&mut room, &client, |txn, roots| {
+        let cell = schema::find_cell(txn, roots, "b").unwrap();
+        let Some(Out::YMap(meta)) = cell.get(txn, "metadata") else {
+            panic!()
+        };
+        meta.insert(txn, "unsaved", 1);
+    });
+    assert!(fx.changed && room.is_dirty());
+    let mut file = serde_json::to_value(&base).unwrap();
+    file["cells"][0]["source"] = serde_json::json!("x1");
+    let (fx, conflicts) = room.merge_disk(&base, &Notebook::from_value(file).unwrap(), "h");
+    assert!(conflicts.is_empty());
+    assert_eq!(run_notes(room.doc(), "a"), edited());
+    assert_eq!(
+        run_notes(room.doc(), "b"),
+        (
+            serde_json::json!({"tags": ["t"], "unsaved": 1,
+                "ganymede": {"keep": 1, "ran_source_hash": "77"}}),
+            true
+        ),
+        "the room's own edit keeps its cell's note"
+    );
+    assert!(fx.changed && room.is_dirty());
+}
+
+/// Removing a skip note is the room's own edit, and the next no-op
+/// server edit must not count it as content to save.
+#[test]
+fn a_note_removed_by_the_room_is_not_content_to_save() {
+    let mut room = room_that_ran();
+    let mut file = serde_json::to_value(room.notebook().unwrap().unwrap()).unwrap();
+    file["cells"][0]["source"] = serde_json::json!("x1");
+    room.reload(&Notebook::from_value(file).unwrap(), "h");
+    assert_eq!(run_notes(room.doc(), "a"), (kept().0, false));
+    assert!(!room.is_dirty());
+    let (_, fx) = room.edit(|_, _| ());
+    assert!(!fx.changed && !room.is_dirty());
+}
+
+#[test]
+fn the_ran_source_hash_is_set_and_removed_in_plain_and_shared_metadata() {
+    let doc = Doc::new();
+    let roots = Roots::get(&doc);
+    let mut txn = doc.transact_mut();
+    let json = serde_json::json!({"tags": ["t"], "ganymede": {"keep": 1}});
+    let with_hash = serde_json::json!({"tags": ["t"],
+        "ganymede": {"keep": 1, "ran_source_hash": "77"}});
+    let cell = roots.cells.insert(&mut txn, 0, MapPrelim::default());
+    let metadata = |txn: &TransactionMut, cell: &MapRef| {
+        schema::out_to_json(txn, &cell.get(txn, "metadata").unwrap())
+    };
+
+    // Plain JSON: kept whole when the hash is written.
+    cell.insert(&mut txn, "metadata", schema::json_to_any(&json));
+    schema::set_ran_source_hash(&mut txn, &cell, "77");
+    assert_eq!(metadata(&txn, &cell), with_hash);
+    assert!(schema::clear_ran_source_hash(&mut txn, &cell));
+    assert_eq!(metadata(&txn, &cell), json);
+    assert!(!schema::clear_ran_source_hash(&mut txn, &cell));
+
+    // Plain JSON that has the hash.
+    cell.insert(&mut txn, "metadata", schema::json_to_any(&with_hash));
+    assert!(schema::clear_ran_source_hash(&mut txn, &cell));
+    assert_eq!(metadata(&txn, &cell), json);
+
+    // Shared maps. The `ganymede` it empties stays.
+    let meta = cell.insert(&mut txn, "metadata", MapPrelim::default());
+    let g = meta.insert(&mut txn, "ganymede", MapPrelim::default());
+    g.insert(&mut txn, "ran_source_hash", "77");
+    assert!(schema::clear_ran_source_hash(&mut txn, &cell));
+    assert_eq!(metadata(&txn, &cell), serde_json::json!({"ganymede": {}}));
+
+    // A `ganymede` that isn't an object is replaced when the hash is
+    // written, in plain and in shared metadata; clearing it finds nothing.
+    let only_hash = serde_json::json!({"ganymede": {"ran_source_hash": "77"}});
+    cell.insert(
+        &mut txn,
+        "metadata",
+        schema::json_to_any(&serde_json::json!({"ganymede": "x"})),
+    );
+    assert!(!schema::clear_ran_source_hash(&mut txn, &cell));
+    assert_eq!(metadata(&txn, &cell), serde_json::json!({"ganymede": "x"}));
+    schema::set_ran_source_hash(&mut txn, &cell, "77");
+    assert_eq!(metadata(&txn, &cell), only_hash);
+    let meta = cell.insert(&mut txn, "metadata", MapPrelim::default());
+    meta.insert(&mut txn, "ganymede", "x");
+    schema::set_ran_source_hash(&mut txn, &cell, "77");
+    assert_eq!(metadata(&txn, &cell), only_hash);
 }

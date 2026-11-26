@@ -298,6 +298,83 @@ ten seconds. A cell that fails stops the rest of its batch.
 
 ![Running cells into a room. A client such as nb-cli or ganymede mcp sends POST /api/kernels/{id}/execute with the document id and each cell's id and source hash (MurmurHash2, seed 0). Ganymede checks each cell's source in the room against its hash: if one changed it answers 409 source_mismatch, and if the previous request wasn't queued within ten seconds it answers 408, and nothing runs. Otherwise it clears the cells, queues them as one batch and answers 200 null. It sends the cells to the kernel one after another; a cell that fails stops the rest of the batch. As outputs arrive on iopub, Ganymede writes them and the execution count into the room, so every client sees them and autosave writes them to the file even with no client connected.](images/rooms/execute.svg)
 
+### A cell that changed while queued
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+A `source_hash` is checked twice: when the request arrives (the `409`
+above), and again when the cell's turn comes, since a batch can wait
+behind other runs. If the room's source then no longer has the hash, the
+cell is not run. It is skipped like a cell after a failure: the rest of
+its batch is skipped too, and the cell goes `idle` with no outputs and no
+new execution count. A guarded cell that was deleted, or is no longer a
+code cell, when its turn comes counts as changed: the batch stops and
+`skipped` lists it.
+
+The cell shows why in the room: `execution_skipped` is
+`"Cell changed while queued"`. Like `execution_by` it is in the room
+only and is never saved or returned by `GET /api/contents`. It is removed
+when the cell is queued again, when its source or type is edited (by a
+client, the server or a change to the file), and when a client runs the
+cell itself. The cells skipped after it don't get it,
+nor do cells skipped after a failure. A cell queued twice shows it only
+when its last queued run was skipped for a change, or because an earlier
+run of it in the same batch was. If that last run was skipped for another
+reason, such as a failure before it in a later request, there is no note.
+
+With `wait`, the answer lists these cells, in the order they were to run,
+and leaves the key out when there are none:
+
+```json
+{"finished": true, "cells": [...],
+ "skipped": [{"cell_id": "...", "error": "source_changed_while_queued",
+              "message": "Cell changed while queued"}]}
+```
+
+A cell with no `source_hash`, or chosen by tag or `"all"`, is not
+guarded: it runs the source it has at its turn, unsaved edits included.
+So do the MCP tools that run cells.
+
+A cell the server runs through the room records the hash of the source
+that ran in its metadata, saved with the notebook:
+
+```json
+{"metadata": {"ganymede": {"ran_source_hash": "1234567890"}}}
+```
+
+It is the same format as `source_hash`, and a cell edited while it ran
+keeps the hash of the source that ran. Outputs belong to an older source
+when `ran_source_hash` differs from the hash of the cell's current
+source. The cell's other metadata, and the other keys under its
+`ganymede`, are left alone, and the notebook's `clean_run` stamp stays:
+cell metadata doesn't change a run's fingerprint.
+
+The entry points that record the key are the room runs above, a
+notebooks run (`POST /api/notebooks/run`) and the host API: each
+records, on every cell it runs, the hash of that cell's source, and the
+copy a notebooks run saves drops the key from cells the run never
+started. `ganymede execute` records none, so its notebooks come out as
+`jupyter execute` writes them, except that it removes a stale key from
+the cells it runs, keeping the rest of the `ganymede` object and
+dropping an object the removal emptied. Tools outside Ganymede — nbconvert, papermill,
+VS Code, a plain `PUT` of the file — keep whatever key the notebook
+has, so the key says which source ran only when Ganymede did the last
+run.
+
+A client that runs a cell itself, such as
+JupyterLab, writes the outputs and the execution count into the room, and
+the server doesn't see which source they came from. So when a client's
+update changes a code cell's `execution_count` or outputs (clearing them
+too), the room removes the cell's `ran_source_hash`: a cell without the
+key says nothing about which source its outputs came from. A change to
+the file keeps what the file has. The hash is in the cell's metadata, not
+each output's, because stream and error outputs have no metadata, and a
+cell can run without any output. A cell the server clears without running
+it, such as one skipped after an earlier cell failed, or one whose outputs
+an MCP tool drops, loses the key too: only a run that ends puts it back.
+
 ### Who runs a cell
 
 A cell a run has queued shows `execution_state: running` in the room, and
