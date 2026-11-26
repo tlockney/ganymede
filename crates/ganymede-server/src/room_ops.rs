@@ -13,8 +13,13 @@ use ganymede_documents::Room;
 use serde_json::{json, Value};
 
 /// Why an edit is refused on a room another server owns (#272): its room
-/// would undo the edit and never save it.
-pub(crate) const READ_ONLY: &str = "the notebook is open in another server on this machine";
+/// would undo the edit and never save it. Names the cause, since it is
+/// almost always another Ganymede server on this machine — for example
+/// the Mac app's, whose Settings > Agent > MCP lets agents use its
+/// server — with the notebook open (#966).
+pub(crate) const READ_ONLY: &str = "the notebook is open in another Ganymede server \
+     on this machine (for example the Mac app, whose Settings > Agent > MCP \
+     lets agents use its server)";
 
 /// Whether `room` takes edits: false when another server owns its file.
 pub(crate) fn writable(room: &Room) -> bool {

@@ -532,15 +532,20 @@ Once the owner's
 room closes or its server exits, the other room takes the lock within a
 second and saves its own edits from then on.
 
-![Two servers on one notebook on the same machine. Server A opened a room on the file first, so it holds a lock in the runtime dir's ganymede-rooms folder, named for the file's path, while the room is open; its JupyterLab clients edit, and it saves and runs cells. Server B's room on the same file is read-only: it takes in A's saves through its watcher, never saves, undoes edits its clients send, refuses to run cells with 400, and its contents API reports the notebook as not writable. B checks the lock each second and takes it once A's room closes or A exits. Across machines, as with a synced folder, there is no lock and rooms merge through the file. An app that embeds the server takes no lock.](images/rooms/two-servers.svg)
+![Two servers on one notebook on the same machine. Server A opened a room on the file first, so it holds a lock in the runtime dir's ganymede-rooms folder, named for the file's path, while the room is open; its JupyterLab clients edit, and it saves and runs cells. Server B's room on the same file is read-only: it takes in A's saves through its watcher, never saves, undoes edits its clients send, refuses to run cells with 400, and its contents API reports the notebook as not writable. B checks the lock each second and takes it once A's room closes or A exits. Across machines, as with a synced folder, there is no lock and rooms merge through the file. Every server locks, an embedding app's included; only iOS, which has no runtime dir, takes no lock.](images/rooms/two-servers.svg)
 
 A room that was writable and finds another server owns its file now
 (after a rename, or once the file is reachable by a path another server
 locked) saves its edits before it turns read-only.
 
 Across machines, as with a notebook in a synced folder, there is no lock,
-and rooms merge through the file as described above. An app that embeds
-the server takes no lock.
+and rooms merge through the file as described above. Every server takes
+the lock, an embedding app's included; only iOS, which has no runtime
+dir, takes none.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
 
 ## Limits
 
