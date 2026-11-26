@@ -636,6 +636,11 @@ A spec's `"gateway": true` in `/api/kernelspecs` tells a client which.
 A kernel stays on the side it started on: a restart doesn't move it when
 the gateway's list has changed since. Before the gateway's first answer,
 a name both have is listed, and starts, as the local one.
+Without `--default-kernel` (`default_kernel`), `default` in
+`/api/kernelspecs` is the first spec in the order above: this machine's
+first until the gateway first answers with specs, and the
+gateway's first by name after that. So a new notebook's kernel can depend
+on when it was made; set `default_kernel` to pin it.
 [Other kernels](kernels.md#kernels-on-another-server) has the rest.
 
 Whenever a gateway is set, `/api/kernelspecs` adds a top-level `gateway`

@@ -275,6 +275,12 @@ client, which can show the two groups apart. A kernel stays on the side it
 started on, so a restart doesn't move it to the other machine when the
 gateway's list has changed since.
 
+Without `--default-kernel` (`default_kernel` in
+[`ganymede.toml`](reference.md#config-file)), the default kernel is the
+first in that order: this machine's first until the gateway first
+answers with specs, and the gateway's first by name after that. Set
+`default_kernel` to pin it.
+
 A gateway that is asleep or off the network doesn't empty the list: the
 local kernels stay, and the `gateway` object `/api/kernelspecs` carries
 whenever a gateway is set says it isn't answering, with the reason and without the URL's path or token.
