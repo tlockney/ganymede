@@ -450,8 +450,8 @@ What `ganymede serve` answers, beyond the examples above:
   `/lsp/status` and `/lsp/ws/{name}`; `jupyter-collaboration`'s
   `/api/collaboration` rooms with `/api/fileid/*`, and
   `jupyter-server-documents`' `/api/kernels/{id}/execute`, with Ganymede's
-  `wait`, room-source and `by` (who runs the cells) extensions ([Live editing and
-  document rooms](rooms.md)); `jupyter-resource-usage`'s `/api/metrics/v1`.
+  `wait`, room-source and `by` (who runs the cells) extensions
+  ([Live editing and document rooms](rooms.md)); `jupyter-resource-usage`'s `/api/metrics/v1`.
 - Ganymede's own: `/api/kernels/{id}/log`, `/api/notebooks/run`
   ([Run a notebook](#run-a-notebook),
   [Parameters and named results](reference.md#parameters-and-named-results)),
@@ -469,3 +469,19 @@ client offers it, and the legacy JSON framing otherwise. JSON bodies are
 parsed whatever their `Content-Type`, because `@jupyterlab/services`
 omits the header on some requests. [Security](security.md) has how
 requests are authenticated and which `Host` and `Origin` are accepted.
+
+### Execute checks the hash again before each run
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`/api/kernels/{id}/execute` checks a cell's `source_hash` again when the
+cell's turn comes, and skips a cell that changed while it was queued,
+with the rest of its batch. This differs from
+`jupyter-server-documents`, which runs the source the cell has then. The
+`wait` answer lists such cells under `skipped`, the room shows
+`execution_skipped` on them (in the room only, never saved), and a cell
+that ran has the hash of its source saved as
+`metadata.ganymede.ran_source_hash`. [A cell that changed while
+queued](rooms.md#a-cell-that-changed-while-queued) has the details.

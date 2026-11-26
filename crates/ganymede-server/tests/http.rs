@@ -4743,6 +4743,439 @@ fn code_cell(id: Option<&str>, src: &str, tags: &[&str]) -> Value {
     c
 }
 
+/// What the guarded-run tests share (#943): a kernel held on cell `s`
+/// (`sleep` for ten minutes) while a batch queues behind it, so the batch
+/// can be edited before its turn. `release` interrupts `s`.
+struct Held {
+    app: axum::Router,
+    kid: String,
+    doc: String,
+    sid: String,
+    watch: RoomWatch,
+}
+
+impl Held {
+    async fn new(dir: &std::path::Path, name: &str, cells: Vec<Value>) -> Held {
+        let app = mcp_app(dir);
+        let (kid, doc) = room_source_setup(&app, dir, name, 5, Value::Array(cells)).await;
+        let sid = mcp_connect(&app, "agent").await;
+        mcp_tool(&app, &sid, "notebook_open", json!({"path": name})).await;
+        let watch = RoomWatch::open(&app, name).await;
+        Held {
+            app,
+            kid,
+            doc,
+            sid,
+            watch,
+        }
+    }
+
+    async fn execute(&self, body: Value) -> (StatusCode, Value) {
+        let mut b = json!({"document_id": self.doc});
+        b.as_object_mut()
+            .unwrap()
+            .extend(body.as_object().unwrap().clone());
+        call(
+            &self.app,
+            "POST",
+            &format!("/api/kernels/{}/execute", self.kid),
+            Some(b),
+            Some(TOKEN),
+        )
+        .await
+    }
+
+    async fn edit(&self, id: &str, source: &str) {
+        let v = mcp_tool(
+            &self.app,
+            &self.sid,
+            "cell_edit",
+            json!({"id": id, "source": source}),
+        )
+        .await;
+        assert!(!mcp_text(&v).is_empty());
+    }
+
+    /// Interrupt the kernel until the held cell `s` ends: an interrupt
+    /// that comes before the cell starts is lost, so it is repeated.
+    async fn release(&mut self, held: &str) {
+        let url = format!("/api/kernels/{}/interrupt", self.kid);
+        for _ in 0..200 {
+            let (s, _) = call(&self.app, "POST", &url, None, Some(TOKEN)).await;
+            assert_eq!(s, StatusCode::NO_CONTENT);
+            let idle = tokio::time::timeout(
+                Duration::from_millis(50),
+                self.watch.until(held, "idle", None),
+            )
+            .await;
+            if idle.is_ok() {
+                return;
+            }
+        }
+        panic!("the held cell never ended");
+    }
+
+    /// Hold the kernel on `s`, queue `body` behind it and wait for it to
+    /// be queued, run `edits`, release the kernel and return the answer
+    /// to `body`.
+    async fn run_behind_hold(
+        &mut self,
+        first: &str,
+        body: Value,
+        edits: &[(&str, &str)],
+    ) -> (StatusCode, Value) {
+        let (s, v) = self.execute(json!({"cells": [{"cell_id": "s"}]})).await;
+        assert_eq!((s, v), (StatusCode::OK, Value::Null));
+        let queued = tokio::spawn({
+            let (app, kid, doc) = (self.app.clone(), self.kid.clone(), self.doc.clone());
+            async move {
+                let mut b = json!({"document_id": doc, "wait": 15});
+                b.as_object_mut()
+                    .unwrap()
+                    .extend(body.as_object().unwrap().clone());
+                call(
+                    &app,
+                    "POST",
+                    &format!("/api/kernels/{kid}/execute"),
+                    Some(b),
+                    Some(TOKEN),
+                )
+                .await
+            }
+        });
+        // Queued: the room shows the first cell running.
+        self.watch
+            .until(first, "running", Some("an API client"))
+            .await;
+        for (id, source) in edits {
+            self.edit(id, source).await;
+        }
+        self.release("s").await;
+        queued.await.unwrap()
+    }
+}
+
+fn hash_of(src: &str) -> String {
+    ganymede_documents::murmur2(src.as_bytes(), 0).to_string()
+}
+
+/// A guarded request whose cell changed while it waited is not run at its
+/// turn: the cell shows why in the room, `wait` lists it, and the cells
+/// after it don't run (#943).
+#[tokio::test]
+async fn execute_guarded_cell_changed_while_queued_is_not_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Held::new(
+        dir.path(),
+        "g.ipynb",
+        vec![
+            code_cell(Some("s"), "sleep 600000", &[]),
+            code_cell(Some("a"), "one", &[]),
+            code_cell(Some("b"), "two", &[]),
+            code_cell(Some("c"), "three", &[]),
+        ],
+    )
+    .await;
+    let guarded = |id: &str, src: &str| json!({"cell_id": id, "source_hash": hash_of(src)});
+    let (s, v) = h
+        .run_behind_hold(
+            "a",
+            json!({"cells": [guarded("a", "one"), guarded("b", "two"), guarded("c", "three")]}),
+            &[("b", "edited")],
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert_eq!(v["finished"], true, "{v:#}");
+    assert_eq!(
+        v["skipped"],
+        json!([{"cell_id": "b", "error": "source_changed_while_queued",
+                "message": "Cell changed while queued"}]),
+        "{v:#}"
+    );
+    let cells = v["cells"].as_array().unwrap();
+    assert!(cells[0]["outputs"].to_string().contains("one"), "{v:#}");
+    for i in [1, 2] {
+        assert_eq!(cells[i]["outputs"], json!([]), "{v:#}");
+        assert_eq!(cells[i]["execution_count"], Value::Null, "{v:#}");
+    }
+    assert_eq!(cells[1]["source"], "edited");
+    assert!(!v.to_string().contains("three\\n"), "{v:#}");
+    // The room says why b did not run, and says nothing of c, which was
+    // skipped behind it, or of a, which ran.
+    h.watch
+        .until_field("b", "execution_skipped", Some("Cell changed while queued"))
+        .await;
+    h.watch.until("b", "idle", None).await;
+    h.watch.until("c", "idle", None).await;
+    assert_eq!(h.watch.field("c", "execution_skipped"), None);
+    assert_eq!(h.watch.field("a", "execution_skipped"), None);
+    // It is not in the notebook the room answers with either.
+    let (_, nb) = call(
+        &h.app,
+        "GET",
+        "/api/contents/g.ipynb?content=1",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert!(!nb.to_string().contains("execution_skipped"), "{nb}");
+
+    // Queued again, the note goes, and the edited source runs.
+    let (s, v) = h
+        .execute(json!({"wait": 15, "cells": [guarded("b", "edited")]}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert!(v["cells"][0]["outputs"].to_string().contains("edited"));
+    assert!(v.get("skipped").is_none(), "{v:#}");
+    h.watch.until_field("b", "execution_skipped", None).await;
+}
+
+/// The same edit, with no hashes: the cell runs the source it has at its
+/// turn, as before (#943).
+#[tokio::test]
+async fn execute_unguarded_cell_changed_while_queued_runs_the_new_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Held::new(
+        dir.path(),
+        "u.ipynb",
+        vec![
+            code_cell(Some("s"), "sleep 600000", &[]),
+            code_cell(Some("a"), "one", &[]),
+            code_cell(Some("b"), "two", &[]),
+            code_cell(Some("c"), "three", &[]),
+        ],
+    )
+    .await;
+    let (s, v) = h
+        .run_behind_hold(
+            "a",
+            json!({"cells": [{"cell_id": "a"}, {"cell_id": "b"}, {"cell_id": "c"}]}),
+            &[("b", "edited")],
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert_eq!(v["finished"], true, "{v:#}");
+    assert!(v.get("skipped").is_none(), "{v:#}");
+    let out = |i: usize| v["cells"][i]["outputs"].to_string();
+    assert!(out(0).contains("one") && out(1).contains("edited") && out(2).contains("three"));
+    h.watch.until("c", "idle", None).await;
+    assert_eq!(h.watch.field("b", "execution_skipped"), None);
+}
+
+/// A cell edited while it runs keeps its outputs, and records the hash of
+/// the source that ran, not the edited one; the hash is saved (#943).
+#[tokio::test]
+async fn execute_records_the_hash_of_the_source_that_ran() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cell = code_cell(Some("s"), "sleep 600000", &[]);
+    cell["metadata"]["ganymede"] = json!({"keep": true});
+    let mut h = Held::new(dir.path(), "r.ipynb", vec![cell]).await;
+    let ran = hash_of("sleep 600000");
+    let running = tokio::spawn({
+        let (app, kid, doc) = (h.app.clone(), h.kid.clone(), h.doc.clone());
+        async move {
+            call(
+                &app,
+                "POST",
+                &format!("/api/kernels/{kid}/execute"),
+                Some(json!({"document_id": doc, "wait": 15,
+                            "cells": [{"cell_id": "s", "source_hash": ran}]})),
+                Some(TOKEN),
+            )
+            .await
+        }
+    });
+    // On the kernel: its source was read before it went busy.
+    let url = format!("/api/kernels/{}", h.kid);
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let (_, k) = call(&h.app, "GET", &url, None, Some(TOKEN)).await;
+        if k["execution_state"] == "busy" {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "the cell never ran");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    h.edit("s", "sleep 5").await;
+    h.release("s").await;
+    let (s, v) = running.await.unwrap();
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert!(v.get("skipped").is_none(), "{v:#}");
+    let cell = &v["cells"][0];
+    assert_eq!(cell["source"], "sleep 5", "{v:#}");
+    // The edit's own `ganymede` keys (`agent`) and the cell's stay.
+    let g = &cell["metadata"]["ganymede"];
+    assert_eq!(g["ran_source_hash"], hash_of("sleep 600000"), "{v:#}");
+    assert_eq!(g["keep"], true, "{v:#}");
+    assert!(g["agent"].is_object(), "{v:#}");
+    assert_ne!(
+        cell["metadata"]["ganymede"]["ran_source_hash"],
+        hash_of("sleep 5")
+    );
+    // Saved with the notebook.
+    let file = dir.path().join("r.ipynb");
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let text = std::fs::read_to_string(&file).unwrap_or_default();
+        if text.contains(&format!(
+            "\"ran_source_hash\": \"{}\"",
+            hash_of("sleep 600000")
+        )) {
+            assert!(text.contains("\"keep\": true"), "{text}");
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "never saved: {text}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// `cell_clear_outputs` drops the outputs, so the hash of the source that
+/// made them goes too, in the room and in the saved file (#943).
+#[tokio::test]
+async fn mcp_clearing_outputs_clears_the_ran_source_hash() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Held::new(
+        dir.path(),
+        "k.ipynb",
+        vec![
+            code_cell(Some("s"), "sleep 600000", &[]),
+            code_cell(Some("a"), "one", &[]),
+        ],
+    )
+    .await;
+    let (s, v) = h
+        .execute(json!({"wait": 15, "cells": [{"cell_id": "a"}]}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert_eq!(
+        v["cells"][0]["metadata"]["ganymede"]["ran_source_hash"],
+        hash_of("one"),
+        "{v:#}"
+    );
+    h.watch
+        .until_shows("the hash on a", |w| w.ran_hash("a").is_some())
+        .await;
+    let file = dir.path().join("k.ipynb");
+    let saved_hash = || {
+        let nb: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap_or_default())
+            .unwrap_or(Value::Null);
+        nb["cells"][1]["metadata"]["ganymede"]["ran_source_hash"].clone()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while saved_hash() != json!(hash_of("one")) {
+        assert!(std::time::Instant::now() < deadline, "never saved");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let out = mcp_text(&mcp_tool(&h.app, &h.sid, "cell_clear_outputs", json!({"id": "a"})).await);
+    assert!(!out.is_empty());
+    h.watch
+        .until_shows("no hash on a", |w| w.ran_hash("a").is_none())
+        .await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while saved_hash() != Value::Null {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the hash stayed in the file"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// A cell the kernel never acknowledged (no `execute_input`) records no
+/// hash, in the answer or the room (#943).
+#[tokio::test]
+async fn execute_a_cell_with_no_execute_input_records_no_hash() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Held::new(
+        dir.path(),
+        "q.ipynb",
+        vec![
+            code_cell(Some("s"), "sleep 600000", &[]),
+            code_cell(Some("q"), "quiet 1", &[]),
+            code_cell(Some("a"), "one", &[]),
+        ],
+    )
+    .await;
+    let (s, v) = h
+        .execute(json!({"wait": 15, "cells": [{"cell_id": "q"}, {"cell_id": "a"}]}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    let cells = v["cells"].as_array().unwrap();
+    assert!(
+        cells[0]["metadata"]["ganymede"]
+            .get("ran_source_hash")
+            .is_none(),
+        "{v:#}"
+    );
+    // A cell that was acknowledged does record it.
+    assert_eq!(
+        cells[1]["metadata"]["ganymede"]["ran_source_hash"],
+        hash_of("one"),
+        "{v:#}"
+    );
+    h.watch
+        .until_shows("the hash on a", |w| w.ran_hash("a").is_some())
+        .await;
+    assert_eq!(h.watch.ran_hash("q"), None);
+}
+
+/// A guarded cell deleted while queued ends the batch as a change: the
+/// cells after it don't run and `skipped` lists it (#943).
+#[tokio::test]
+async fn execute_guarded_cell_deleted_while_queued_stops_the_batch() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Held::new(
+        dir.path(),
+        "d.ipynb",
+        vec![
+            code_cell(Some("s"), "sleep 600000", &[]),
+            code_cell(Some("a"), "one", &[]),
+            code_cell(Some("b"), "two", &[]),
+        ],
+    )
+    .await;
+    let guarded = |id: &str, src: &str| json!({"cell_id": id, "source_hash": hash_of(src)});
+    let (s, v) = h.execute(json!({"cells": [{"cell_id": "s"}]})).await;
+    assert_eq!((s, v), (StatusCode::OK, Value::Null));
+    let queued = tokio::spawn({
+        let (app, kid, doc) = (h.app.clone(), h.kid.clone(), h.doc.clone());
+        let body = json!({"document_id": doc, "wait": 15,
+            "cells": [guarded("a", "one"), guarded("b", "two")]});
+        async move {
+            call(
+                &app,
+                "POST",
+                &format!("/api/kernels/{kid}/execute"),
+                Some(body),
+                Some(TOKEN),
+            )
+            .await
+        }
+    });
+    h.watch.until("a", "running", Some("an API client")).await;
+    let out = mcp_text(&mcp_tool(&h.app, &h.sid, "cell_delete", json!({"id": "a"})).await);
+    assert!(!out.is_empty());
+    h.release("s").await;
+    let (s, v) = queued.await.unwrap();
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert_eq!(v["finished"], true, "{v:#}");
+    let skipped = v["skipped"].as_array().expect("skipped");
+    assert_eq!(skipped.len(), 1, "{v:#}");
+    assert_eq!(skipped[0]["cell_id"], "a", "{v:#}");
+    assert_eq!(skipped[0]["error"], "source_changed_while_queued", "{v:#}");
+    h.watch.until("b", "idle", None).await;
+    let b = v["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "b")
+        .unwrap_or_else(|| panic!("b is in the answer: {v:#}"));
+    assert_eq!(b["source"], "two", "{v:#}");
+    assert_eq!(b["outputs"], json!([]), "{v:#}");
+    assert_eq!(b["execution_count"], Value::Null, "{v:#}");
+}
+
 /// An id with no hash runs the room's current source, edits not yet saved
 /// included; the file's hash no longer matches the room (#843).
 #[tokio::test]
@@ -5273,6 +5706,14 @@ impl RoomWatch {
 
     /// The cell's `(execution_state, execution_by)` in the synced room.
     fn shown(&self, id: &str) -> (Option<String>, Option<String>) {
+        (
+            self.field(id, "execution_state"),
+            self.field(id, "execution_by"),
+        )
+    }
+
+    /// A string field of the cell in the synced room.
+    fn field(&self, id: &str, key: &str) -> Option<String> {
         use ganymede_documents::schema::Roots;
         use ganymede_documents::yrs::{Any, Array, Map, Out, Transact};
         let roots = Roots::get(&self.doc);
@@ -5284,18 +5725,55 @@ impl RoomWatch {
             if !matches!(cell.get(&txn, "id"), Some(Out::Any(Any::String(s))) if &*s == id) {
                 continue;
             }
-            let text = |key: &str| match cell.get(&txn, key) {
+            return match cell.get(&txn, key) {
                 Some(Out::Any(Any::String(s))) => Some(s.to_string()),
                 _ => None,
             };
-            return (text("execution_state"), text("execution_by"));
         }
-        (None, None)
+        None
+    }
+
+    /// The cell's `metadata.ganymede.ran_source_hash` in the synced room.
+    fn ran_hash(&self, id: &str) -> Option<String> {
+        use ganymede_documents::schema::Roots;
+        use ganymede_documents::yrs::{Any, Array, Map, Out, Transact};
+        let roots = Roots::get(&self.doc);
+        let txn = self.doc.transact();
+        for i in 0..roots.cells.len(&txn) {
+            let Some(Out::YMap(cell)) = roots.cells.get(&txn, i) else {
+                continue;
+            };
+            if !matches!(cell.get(&txn, "id"), Some(Out::Any(Any::String(s))) if &*s == id) {
+                continue;
+            }
+            let meta = ganymede_documents::schema::out_to_json(&txn, &cell.get(&txn, "metadata")?);
+            return meta["ganymede"]["ran_source_hash"]
+                .as_str()
+                .map(str::to_string);
+        }
+        None
     }
 
     /// Follow the room until the cell shows `(state, by)`; the sequence of
     /// distinct values seen is not asserted, only that this one arrives.
     async fn until(&mut self, id: &str, state: &str, by: Option<&str>) {
+        let want = (Some(state.to_string()), by.map(str::to_string));
+        self.until_shows(&format!("({state}, {by:?}) of {id}"), |w| {
+            w.shown(id) == want
+        })
+        .await;
+    }
+
+    /// Follow the room until the cell's string field `key` is `want`.
+    async fn until_field(&mut self, id: &str, key: &str, want: Option<&str>) {
+        let want = want.map(str::to_string);
+        self.until_shows(&format!("{key} {want:?} of {id}"), |w| {
+            w.field(id, key) == want
+        })
+        .await;
+    }
+
+    async fn until_shows(&mut self, what: &str, shows: impl Fn(&RoomWatch) -> bool) {
         use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
         use ganymede_documents::yrs::updates::decoder::Decode;
         use ganymede_documents::yrs::updates::encoder::Encode;
@@ -5304,13 +5782,12 @@ impl RoomWatch {
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
-            let seen = self.shown(id);
-            if seen.0.as_deref() == Some(state) && seen.1.as_deref() == by {
+            if shows(self) {
                 return;
             }
             let msg = tokio::time::timeout_at(deadline, self.ws.next())
                 .await
-                .unwrap_or_else(|_| panic!("wanted ({state}, {by:?}), room has {seen:?}"))
+                .unwrap_or_else(|_| panic!("the room never showed {what}"))
                 .unwrap()
                 .unwrap();
             let TMsg::Binary(b) = msg else { continue };
@@ -10112,8 +10589,10 @@ async fn notebooks_run_saves_a_copy_under_runs() {
         std::fs::write(path, serde_json::to_string_pretty(&nb).unwrap()).unwrap();
     };
     write("reports/daily.ipynb", vec![code("a", "result total 42")]);
-    // The cell after the failure keeps an older run's output in the file.
-    let stale = json!({"cell_type": "code", "execution_count": 7, "id": "c", "metadata": {},
+    // The cell after the failure keeps an older run's output and hash in
+    // the file.
+    let stale = json!({"cell_type": "code", "execution_count": 7, "id": "c",
+        "metadata": {"ganymede": {"ran_source_hash": "old"}},
         "outputs": [{"output_type": "stream", "name": "stdout", "text": "older run"}],
         "source": "result second 2"});
     write(
@@ -10147,6 +10626,12 @@ async fn notebooks_run_saves_a_copy_under_runs() {
     let saved = read(&copy);
     assert_eq!(saved["cells"][0]["execution_count"], 1, "{saved:#}");
     assert!(!saved["cells"][0]["outputs"].as_array().unwrap().is_empty());
+    // The run records the hash of the source each cell ran.
+    assert_eq!(
+        saved["cells"][0]["metadata"]["ganymede"]["ran_source_hash"],
+        json!(hash_of("result total 42")),
+        "{saved:#}"
+    );
     assert_eq!(
         saved["metadata"]["ganymede"]["params"],
         json!({"day": "mon"})
@@ -10188,6 +10673,12 @@ async fn notebooks_run_saves_a_copy_under_runs() {
     );
     assert_eq!(saved["cells"][2]["outputs"], json!([]), "{saved:#}");
     assert_eq!(saved["cells"][2]["execution_count"], Value::Null);
+    // The cell the run never started loses the hash an older run left.
+    assert_eq!(
+        saved["cells"][2]["metadata"]["ganymede"]["ran_source_hash"],
+        Value::Null,
+        "{saved:#}"
+    );
 
     // Without save, nothing is written.
     let (_, v) = run(json!({"path": "reports/daily.ipynb"})).await;

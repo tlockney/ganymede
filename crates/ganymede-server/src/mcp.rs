@@ -2796,6 +2796,8 @@ impl Notebooks {
                         found = true;
                         if drop {
                             schema::set_outputs(txn, &cell, Vec::new());
+                            // Outputs gone: no source ran to give them.
+                            schema::clear_ran_source_hash(txn, &cell);
                         }
                         mark_dropped(txn, &cell, drop);
                     }
