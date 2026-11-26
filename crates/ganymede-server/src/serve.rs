@@ -1,6 +1,7 @@
 //! Running the server: flags, config, startup, and shutdown. Shared by
 //! `ganymede serve`, `ganymede mcp`, and the apps (`ganymede-ffi`).
 
+use crate::combined::Kernels;
 use crate::config::Config;
 use crate::AppState;
 use anyhow::{Context, Result};
@@ -89,6 +90,10 @@ pub struct ServeArgs {
         hide_env_values = true
     )]
     pub gateway_token: Option<String>,
+    /// What to call the gateway in /api/kernelspecs, such as the machine's
+    /// name. Default: the URL's host.
+    #[arg(long, value_name = "NAME")]
+    pub gateway_name: Option<String>,
     /// Prefix for a reverse proxy, e.g. `/jupyter`.
     #[arg(long)]
     pub base_url: Option<String>,
@@ -295,6 +300,9 @@ impl ServeArgs {
         if let Some(v) = cli.gateway_token {
             cfg.gateway_token = Some(v);
         }
+        if let Some(v) = cli.gateway_name {
+            cfg.gateway_name = Some(v);
+        }
         if let Some(v) = cli.config_dir {
             cfg.config_dir = Some(v);
         }
@@ -448,21 +456,44 @@ fn default_provisioner() -> Result<Arc<dyn Provisioner>> {
     anyhow::bail!("no kernel provisioner: built without `subprocess` and none given")
 }
 
-/// A kernelspec source, provisioner and transport factory.
-type Kernels = (
-    Arc<dyn KernelspecSource>,
-    Arc<dyn Provisioner>,
-    Arc<dyn TransportFactory>,
-);
+/// Where kernels run when `gateway_url` is set: the gateway's, and what
+/// `/api/kernelspecs` says about it.
+struct Remote {
+    kernels: Kernels,
+    /// The gateway's last refresh, for the API's `gateway`.
+    status: Option<Arc<dyn ganymede_api::GatewayStatus>>,
+}
 
 /// Whether `cfg` runs kernels on another server (`gateway_url` is set).
 pub fn gateway_configured(cfg: &Config) -> bool {
     cfg.gateway_url.as_deref().is_some_and(|u| !u.is_empty())
 }
 
-/// `gateway_url`'s kernels, refreshing its kernelspecs every minute.
+/// What `/api/kernelspecs` reports about the gateway: its name, which is
+/// `gateway_name` or else the URL's host (never its path, query or token),
+/// and whether its last refresh reached it.
 #[cfg(feature = "gateway")]
-fn gateway(cfg: &Config) -> Result<Option<Kernels>> {
+struct RemoteStatus {
+    gateway: Arc<ganymede_gateway::Gateway>,
+    name: String,
+}
+
+#[cfg(feature = "gateway")]
+impl ganymede_api::GatewayStatus for RemoteStatus {
+    fn gateway_status(&self) -> ganymede_api::GatewayModel {
+        let status = self.gateway.status();
+        ganymede_api::GatewayModel {
+            name: self.name.clone(),
+            reachable: status.reachable,
+            error: status.error,
+        }
+    }
+}
+
+/// `gateway_url`'s kernels, refreshing its kernelspecs every minute (every
+/// 15 seconds while it isn't answering).
+#[cfg(feature = "gateway")]
+fn gateway(cfg: &Config) -> Result<Option<Remote>> {
     let Some(url) = cfg
         .gateway_url
         .as_deref()
@@ -475,16 +506,52 @@ fn gateway(cfg: &Config) -> Result<Option<Kernels>> {
         cfg.gateway_token.clone(),
     )?);
     g.refresh_every(Duration::from_secs(60));
-    tracing::info!("kernels run on the gateway at {url}");
-    Ok(Some((g.clone(), g.clone(), g)))
+    let name = cfg
+        .gateway_name
+        .clone()
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| g.host().to_string());
+    let status = Arc::new(RemoteStatus {
+        gateway: g.clone(),
+        name,
+    });
+    // Without its query, which can hold the token.
+    tracing::info!(
+        "kernels run on the gateway at {}",
+        url.split('?').next().unwrap_or(url)
+    );
+    Ok(Some(Remote {
+        kernels: (g.clone(), g.clone(), g),
+        status: Some(status),
+    }))
 }
 
 #[cfg(not(feature = "gateway"))]
-fn gateway(cfg: &Config) -> Result<Option<Kernels>> {
+fn gateway(cfg: &Config) -> Result<Option<Remote>> {
     if gateway_configured(cfg) {
         anyhow::bail!("gateway_url is set, but this build has no `gateway` feature");
     }
     Ok(None)
+}
+
+/// This machine's own kernels, to list beside a gateway's: those an app
+/// supplies, else the build's defaults. None when this build can't run a
+/// kernel here at all (no `zmq` or `subprocess`, and no app to run one), so
+/// a build such as the iPad's lists only the gateway's, as before.
+fn local_kernels(startup: &Startup, cfg: &Config) -> Option<Kernels> {
+    let provisioner = match &startup.provisioner {
+        Some(p) => p.clone(),
+        None => default_provisioner().ok()?,
+    };
+    let transports = match &startup.transports {
+        Some(t) => t.clone(),
+        None => default_transports().ok()?,
+    };
+    let specs = match &startup.kernelspecs {
+        Some(s) => s.clone(),
+        None => Arc::new(FsKernelspecs::discover(cfg.kernelspec_roots.clone())),
+    };
+    Some((specs, provisioner, transports))
 }
 
 #[cfg(feature = "zmq")]
@@ -781,23 +848,36 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
         );
     }
 
-    let (specs, provisioner, transports) = match gateway(&cfg)? {
-        // An app's own kernels win over the config's gateway.
-        Some((k, p, t)) => (
-            startup.kernelspecs.unwrap_or(k),
-            startup.provisioner.unwrap_or(p),
-            startup.transports.unwrap_or(t),
-        ),
+    let remote = gateway(&cfg)?;
+    let gateway_status = remote.as_ref().and_then(|r| r.status.clone());
+    let (specs, provisioner, transports) = match remote {
+        Some(Remote { kernels, .. }) => match local_kernels(&startup, &cfg) {
+            // This machine runs kernels too: list the gateway's, then its own
+            // whose names the gateway lacks (#963). A gateway spec wins a
+            // name clash, so its kernel still runs there.
+            Some(local) => {
+                tracing::info!("listing this machine's kernels beside the gateway's");
+                let both = Arc::new(crate::combined::Combined::new(kernels, local));
+                (
+                    both.clone() as Arc<dyn KernelspecSource>,
+                    both.clone() as Arc<dyn Provisioner>,
+                    both as Arc<dyn TransportFactory>,
+                )
+            }
+            // No way to run a kernel here: the gateway's, as before.
+            None => kernels,
+        },
         None => (
-            startup
-                .kernelspecs
-                .unwrap_or_else(|| Arc::new(FsKernelspecs::discover(cfg.kernelspec_roots.clone()))),
-            match startup.provisioner {
-                Some(p) => p,
+            match &startup.kernelspecs {
+                Some(s) => s.clone(),
+                None => Arc::new(FsKernelspecs::discover(cfg.kernelspec_roots.clone())),
+            },
+            match &startup.provisioner {
+                Some(p) => p.clone(),
                 None => default_provisioner()?,
             },
-            match startup.transports {
-                Some(t) => t,
+            match &startup.transports {
+                Some(t) => t.clone(),
                 None => default_transports()?,
             },
         ),
@@ -828,6 +908,9 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
             ..Default::default()
         },
     ));
+    if let Some(status) = gateway_status {
+        kernels.set_gateway_status(status);
+    }
     let sessions = Arc::new(SessionManager::new(kernels.clone()));
     let fs_options = FsOptions {
         checkpoint_dir: cfg.checkpoint_dir.clone(),

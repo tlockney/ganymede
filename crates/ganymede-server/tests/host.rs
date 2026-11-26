@@ -65,6 +65,7 @@ fn state_with(
     let spec = Kernelspec {
         name: "fake".into(),
         resource_dir: root.into(),
+        gateway: false,
         argv: vec!["fake".into()],
         display_name: "Fake".into(),
         language: "fake".into(),

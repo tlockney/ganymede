@@ -87,6 +87,33 @@ its login cookie, or an allowed tailnet login, and anyone when auth is
 off. Those callers can already start kernels.
 `GET /api/kernelspecs/{name}` returns the same model for one kernelspec.
 
+When kernels run on a [gateway](reference.md#gateway), the answer has two
+more keys that `jupyter_server` doesn't send:
+
+> [!NOTE]
+> **Unreleased.** A build of `main` (HEAD) sends both keys; the latest
+> release sends neither.
+
+A spec for a kernel that runs on that server has `"gateway": true` beside
+`resource_dir`, and one for a kernel of this machine's leaves the key out.
+Beside `kernelspecs`, the answer says how the gateway is doing:
+
+```json
+{
+  "gateway": {
+    "name": "work-laptop",
+    "reachable": false,
+    "error": "gateway: error sending request"
+  }
+}
+```
+
+`name` is `--gateway-name` or the URL's host, never its path, query or
+token. `reachable` is false while the gateway doesn't answer, and `error`
+then says why, with the URL and token taken out. The kernelspecs are still
+the local ones and the last the gateway sent, so a client can say the
+remote kernels are missing rather than showing an empty list.
+
 ## Start a kernel
 
 ```http

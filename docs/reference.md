@@ -70,6 +70,7 @@ same name in snake case, except where the last column says otherwise.
 | `--labextensions-path` | Another directory of prebuilt JupyterLab extensions, searched first. Repeatable. | `labextensions_paths` |
 | `--config-dir` | Where frontend settings and workspaces are kept. Default: the Jupyter config dir (`$JUPYTER_CONFIG_DIR`, else `~/.jupyter`). | |
 | `--gateway-url`, `--gateway-token` | Run kernels on another server; see [Gateway](#gateway). | |
+| `--gateway-name` | What to call that server in `/api/kernelspecs`. Default: the URL's host. | `gateway_name` |
 | `--kernelspec-root` | As above. | `kernelspec_roots` |
 | `--startup-timeout` | As above. | `startup_timeout_secs` |
 | `-q`, `--quiet` | As above. | `quiet` |
@@ -373,6 +374,7 @@ trust_xheaders = false
 max_body_size = 536870912        # 512 MiB
 # gateway_url = "https://kernels.example.org"
 # gateway_token = "..."
+# gateway_name = "work-laptop"   # unset: the gateway URL's host
 terminals_enabled = true         # false: no /api/terminals
 terminal_shell = []              # empty: $SHELL -l, or powershell.exe on Windows
 mcp_enabled = false              # true: notebook tools for agents at /mcp
@@ -618,6 +620,29 @@ The token may be left out when the kernel server is a Ganymede server
 that lets this machine in by
 [tailnet identity](security.md#tailnet-identity): the gateway marks its
 requests as a program's (`Ganymede-Client`).
+
+> [!NOTE]
+> **Unreleased.** A build of `main` (HEAD) lists this machine's own
+> kernels beside the gateway's, and reports the gateway's status; the
+> latest release lists only the gateway's.
+
+This machine's own kernelspecs are listed beside the gateway's, so a
+kernel installed here runs here while the rest run there: the gateway's
+specs first, then every local one whose name (compared case-insensitively)
+the gateway doesn't have. A name both have is the gateway's, so a notebook
+whose kernel the server offers still runs there, as `--gateway-url` says.
+A spec's `"gateway": true` in `/api/kernelspecs` tells a client which.
+[Other kernels](kernels.md#kernels-on-another-server) has the rest.
+
+While the gateway doesn't answer, `/api/kernelspecs` still lists the local
+kernels and adds a top-level `gateway` object — `name`, `reachable`, and
+`error` saying why — so a client can say the remote kernels are missing
+rather than showing an empty list. `name` is `gateway_name` (`--gateway-name`
+or the config key), or else the URL's host: never its path, query or token,
+and `error` has them taken out too. The refresh retries every 15 seconds
+while the gateway is down, so one that was asleep is found again within
+that, and every minute while it answers. [List
+kernelspecs](api.md#list-kernelspecs) documents both keys.
 
 ## Server info file
 
