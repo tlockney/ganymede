@@ -50,7 +50,7 @@ What changed:
 - `reload` takes the room's notebook before `merge_disk` when the room is
   dirty and a recovery dir is set; when the merge reports conflicts it
   writes that snapshot as a `merge_conflict` copy (`detail` the conflicting
-  parts, `cells` the ids of "cell <id>" parts).
+  parts, `cells` the ids of "cell `<id>`" parts).
 - Room `state` map, room-only (`Room::set_save_state`, `set_recovery`,
   `state_value` in ganymede-documents): `save` (`saved` or `failed`),
   `save_error`, `recovery` (`{"id","at","reason","cells"}`). `save_room` is
