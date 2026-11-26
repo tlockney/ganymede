@@ -679,3 +679,46 @@ fn reports_the_servers_writes_to_the_app() {
     unsafe { ganymede_server_stop(server) };
     assert_eq!((released(&first), released(&second)), (1, 2), "stopped");
 }
+
+/// The server the app starts honours another process's room lock (#966):
+/// while one is held on a notebook, the app's server reports it as not
+/// writable, as a CLI server's does. (On iOS the app takes no locks.)
+#[cfg(not(target_os = "ios"))]
+#[test]
+fn the_apps_server_honours_another_servers_room_lock() {
+    use sha2::{Digest, Sha256};
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("a.ipynb"),
+        r#"{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}"#,
+    )
+    .unwrap();
+    let (server, url) = start_server(root.path(), "locks");
+    let writable = || {
+        let reply = get(&url, "/api/contents/a.ipynb?content=0");
+        assert_eq!(code(&reply), "200", "{reply}");
+        let body = &reply[reply.find("\r\n\r\n").unwrap() + 4..];
+        let model: serde_json::Value = serde_json::from_str(body).unwrap();
+        model["writable"].as_bool().unwrap()
+    };
+    assert!(writable(), "no other server owns it yet");
+
+    // Another server's room holds the lock, as room_lock.rs names it.
+    let canonical = root.path().join("a.ipynb").canonicalize().unwrap();
+    let dir = std::path::PathBuf::from(std::env::var_os("JUPYTER_RUNTIME_DIR").unwrap())
+        .join("ganymede-rooms");
+    std::fs::create_dir_all(&dir).unwrap();
+    let name = hex::encode(Sha256::digest(canonical.as_os_str().as_encoded_bytes()));
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(format!("{name}.lock")))
+        .unwrap();
+    lock.try_lock().unwrap();
+    assert!(!writable(), "another server owns it");
+
+    drop(lock);
+    assert!(writable(), "the other server let go");
+    unsafe { ganymede_server_stop(server) };
+}

@@ -107,6 +107,8 @@ async fn start_with(adjust: impl FnOnce(&mut Config), machines: Machines) -> Ser
                 let _ = url_tx.send(url.to_string());
             })),
             stop: Some(stop_rx),
+            // Locking isn't under test; keep lock files out of the real runtime dir.
+            room_locks: ganymede_server::serve::RoomLocks::Off,
             kernelspecs: Some(fakes.clone()),
             provisioner: Some(fakes.clone()),
             transports: Some(fakes),

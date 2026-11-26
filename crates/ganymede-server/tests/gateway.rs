@@ -84,6 +84,8 @@ async fn serve(cfg: Config, app: Option<Arc<App>>) -> (String, tokio::sync::mpsc
                 let _ = url_tx.send(url.to_string());
             })),
             stop: Some(stop_rx),
+            // Locking isn't under test; keep lock files out of the real runtime dir.
+            room_locks: ganymede_server::serve::RoomLocks::Off,
             kernelspecs: app.clone().map(|a| a as _),
             provisioner: app.clone().map(|a| a as _),
             transports: app.map(|a| a as _),

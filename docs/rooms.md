@@ -541,7 +541,9 @@ locked) saves its edits before it turns read-only.
 Across machines, as with a notebook in a synced folder, there is no lock,
 and rooms merge through the file as described above. Every server takes
 the lock, an embedding app's included; only iOS, which has no runtime
-dir, takes none.
+dir, takes none. Servers meet on the lock only when they see the same
+Jupyter runtime dir: a Mac app started from the Finder doesn't see a
+`JUPYTER_RUNTIME_DIR` or `JUPYTER_DATA_DIR` set in a shell profile.
 
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in

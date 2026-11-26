@@ -2365,9 +2365,8 @@ impl Notebooks {
         match r {
             Ok(r) => Ok(r),
             Err(Refused::ReadOnly) => Err(err(format!(
-                "{path} is open in another Ganymede server on this machine (for example \
-                 the Mac app, whose Settings > General > MCP lets agents use its server), \
-                 so it is read-only here",
+                "{path} is open in another Ganymede server on this machine, such as \
+                 the Mac app or a `ganymede serve`, so it is read-only here",
                 path = self.show(path)
             ))),
             Err(Refused::Unseen(id, token, cell)) => {
