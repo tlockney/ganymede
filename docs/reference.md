@@ -638,7 +638,7 @@ the gateway's list has changed since. Before the gateway's first answer,
 a name both have is listed, and starts, as the local one.
 Without `--default-kernel` (`default_kernel`), `default` in
 `/api/kernelspecs` is the first spec in the order above: this machine's
-first by name until the gateway first answers with specs, and the
+first until the gateway first answers with specs, and the
 gateway's first by name after that. So a new notebook's kernel can depend
 on when it was made; set `default_kernel` to pin it.
 [Other kernels](kernels.md#kernels-on-another-server) has the rest.
