@@ -51,6 +51,9 @@ pub(crate) struct Observed {
     before: Option<String>,
     /// The file's stamp right after the write ([`Observed::wrote`]).
     after: Option<String>,
+    /// Whether an app's function was set when the write began: only then
+    /// is the function told of it, though the events socket always is.
+    to_function: bool,
     observer: Arc<WriteObserver>,
 }
 
@@ -78,6 +81,7 @@ impl Observed {
             &self.path,
             self.before.as_deref(),
             self.after.as_deref(),
+            self.to_function,
         );
     }
 }
@@ -220,6 +224,7 @@ impl Stamps {
             before: ganymede_contents::file_stamp(&file),
             after: None,
             path: normalize_api_path(path),
+            to_function: observer.has_function(),
             file,
             observer: observer.clone(),
         })
@@ -2560,6 +2565,25 @@ mod tests {
         release.notify_one();
         save.await.unwrap();
         assert_eq!(*calls.lock().unwrap(), []);
+    }
+
+    /// The same with an events socket subscribed, so the save's stamp is
+    /// taken: the function set mid-save still hears nothing of it, while
+    /// the socket does (#978).
+    #[tokio::test]
+    async fn a_save_begun_with_no_function_is_not_reported_to_it_while_a_socket_listens() {
+        let observer = Arc::new(crate::write_observer::WriteObserver::new());
+        let mut events = observer.subscribe();
+        let (_dir, _collab, save, wrote, release) = gated_save(&observer).await;
+        wrote.notified().await;
+        let (f, calls) = recorder();
+        observer.set(Some(f));
+        release.notify_one();
+        save.await.unwrap();
+        assert_eq!(*calls.lock().unwrap(), []);
+        let event = events.try_recv().expect("the socket's event");
+        assert_eq!(event.path, "a.ipynb");
+        assert!(event.before.is_some());
     }
 
     /// A save that began with a function set, which is cleared before it

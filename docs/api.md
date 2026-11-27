@@ -281,8 +281,8 @@ Upgrade: websocket
  "__metadata_version__": 1,
  "__timestamp__": "2026-11-27T18:20:31.412Z",
  "path": "reports/package-stats.ipynb",
- "before": "18213:1764274831412000000:8614272",
- "after": "18290:1764274831926000000:8614272"}
+ "before": "18213:1795803630904000000:8614272",
+ "after": "18290:1795803631408000000:8614272"}
 ```
 
 The envelope is `jupyter_events`': the schema's id and versions, and when
@@ -296,8 +296,9 @@ is the write:
   list.
 - `before` and `after`: the file's `file_stamp`, just before the write
   and just after it, or `null` when it couldn't be read: `before` is
-  `null` for a file the write made. Join `path` with `root_dir` to find
-  the file.
+  `null` for a file the write made. To find the file on disk, join `path`
+  with the server's `root_dir`, from its `jpserver-<pid>.json` in the
+  Jupyter runtime directory.
 
 Reported are the writes a client makes through the contents API — a
 [save](#save-a-notebook), a copy to a named path, a checkpoint restore —
@@ -308,11 +309,15 @@ directory save. A rename is not reported, so a client that keys its
 answers by path loses them on a rename it didn't make itself, which fails
 safe.
 
-A client that falls behind — its socket not read while the server wrote —
-is closed with code `1011` and the reason `missed events`, rather than
-left with a view of the files that has gaps in it. Its view may be
-stale; reconnect and re-read what it depends on. Other clients on the
-same server are unaffected.
+Events start with the writes that begin after the socket opens; a write
+already under way then is not sent.
+
+A client that falls behind — the server wrote faster than it read — is
+closed with code `1011` and the reason `missed events`, rather than left
+with a view of the files that has gaps in it. One that takes no data at
+all for 10 seconds is dropped without a close frame. Either way its view
+may be stale: reconnect and re-read what it depends on. Other clients on
+the same server are unaffected.
 
 ## Download a file
 

@@ -963,13 +963,10 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
     if !cfg.language_servers.is_empty() && !LspManager::supported() {
         tracing::warn!("language servers are configured but cannot run on this platform");
     }
-    // Every server locks, an embedded app's too (#966): the first to
-    // open a room on a notebook owns it. Only iOS, with no runtime dir,
-    // locks nothing, which its app asks for through `room_locks`.
     // Every server reports its writes (#978): to an embedding app's
     // function when it gave one, and to any client of
-    // `/api/events/subscribe`, so the app's own server over there hears
-    // what its embedded one does. With neither listening nothing is
+    // `/api/events/subscribe`, so a client of a server it doesn't embed
+    // hears what an embedding app does. With neither listening nothing is
     // stamped before a write.
     let write_observer = match &startup.write_observer {
         Some(observer) => observer.clone(),
@@ -977,6 +974,9 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
     };
     let mut collab = crate::collab::Collab::new(file_ids(&root_dir), Some(root_dir.clone()))
         .with_write_observer(write_observer.clone());
+    // Every server locks, an embedded app's too (#966): the first to
+    // open a room on a notebook owns it. Only iOS, with no runtime dir,
+    // locks nothing, which its app asks for through `room_locks`.
     match startup.room_locks {
         RoomLocks::RuntimeDir => {
             collab = collab.with_room_locks(

@@ -108,8 +108,9 @@ async fn run(mut socket: WebSocket, mut client: ClientConnection) {
 /// file is sent, in `jupyter_events`' envelope
 /// ([`crate::write_observer::WriteEvent`]); nothing else is, so the socket
 /// is quiet while the server writes nothing. A client that falls behind
-/// is closed with 1011 `missed events`: its view of the files may be
-/// stale, and forgetting what it can't confirm fails safe.
+/// is closed with 1011 `missed events`, and one that takes no frame for
+/// [`EVENT_SEND_WAIT`] is dropped: its view of the files may be stale,
+/// and forgetting what it can't confirm fails safe.
 pub async fn events(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -131,28 +132,39 @@ async fn run_events(mut socket: WebSocket, mut writes: broadcast::Receiver<Write
                 Some(Ok(WsMessage::Close(_))) | None | Some(Err(_)) => break,
                 Some(Ok(_)) => {}
             },
-            write = writes.recv() => match write {
-                Ok(write) => {
-                    let text = write.envelope().to_string();
-                    if socket.send(WsMessage::Text(text.into())).await.is_err() {
-                        break;
-                    }
+            frame = next_event_frame(&mut writes) => {
+                let Some(frame) = frame else { break };
+                let closing = matches!(frame, WsMessage::Close(_));
+                // A client that takes no data for this long has stopped
+                // reading: drop it, and its subscription with it, rather
+                // than wait on it while the channel moves on without it.
+                match tokio::time::timeout(EVENT_SEND_WAIT, socket.send(frame)).await {
+                    Ok(Ok(())) if !closing => {}
+                    _ => break,
                 }
-                // Writes came faster than this client read them: say so,
-                // and close, rather than let it read events with a gap it
-                // can't tell about.
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    let _ = socket
-                        .send(WsMessage::Close(Some(axum::extract::ws::CloseFrame {
-                            code: 1011,
-                            reason: "missed events".into(),
-                        })))
-                        .await;
-                    break;
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
-            },
+            }
         }
+    }
+}
+
+/// How long the events socket waits for a client to take one frame before
+/// it drops the client (#978).
+const EVENT_SEND_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What the events socket sends next: the next write as a text frame in
+/// `jupyter_events`' envelope, or, when writes came faster than this
+/// client read them, a close with 1011 `missed events` rather than events
+/// with a gap it can't tell about. `None` once the channel is gone.
+async fn next_event_frame(writes: &mut broadcast::Receiver<WriteEvent>) -> Option<WsMessage> {
+    match writes.recv().await {
+        Ok(write) => Some(WsMessage::Text(write.envelope().to_string().into())),
+        Err(broadcast::error::RecvError::Lagged(_)) => {
+            Some(WsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                code: 1011,
+                reason: "missed events".into(),
+            })))
+        }
+        Err(broadcast::error::RecvError::Closed) => None,
     }
 }
 
@@ -273,4 +285,49 @@ async fn run_language_server(mut socket: WebSocket, mut client: ganymede_lsp::Ls
         }
     }
     tracing::debug!(server = client.server(), "language server websocket closed");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::write_observer::WriteObserver;
+    use std::path::Path;
+
+    fn path_of(frame: Option<WsMessage>) -> String {
+        let Some(WsMessage::Text(text)) = frame else {
+            panic!("expected an event, got {frame:?}")
+        };
+        let event: serde_json::Value = serde_json::from_str(text.as_str()).unwrap();
+        event["path"].as_str().unwrap().to_string()
+    }
+
+    /// A subscriber that falls behind is told so with 1011 `missed
+    /// events`, while one that keeps up gets every write (#978).
+    #[tokio::test]
+    async fn a_lagging_subscriber_is_closed_with_1011_and_others_get_every_write() {
+        let observer = WriteObserver::with_capacity(2);
+        let mut behind = observer.subscribe();
+        let mut reading = observer.subscribe();
+        for i in 0..5 {
+            let name = format!("{i}.ipynb");
+            observer.notify(Path::new("/root/x"), &name, None, Some("after"), false);
+            assert_eq!(path_of(next_event_frame(&mut reading).await), name);
+        }
+        match next_event_frame(&mut behind).await {
+            Some(WsMessage::Close(Some(frame))) => {
+                assert_eq!(frame.code, 1011);
+                assert_eq!(frame.reason.as_str(), "missed events");
+            }
+            other => panic!("expected a close, got {other:?}"),
+        }
+    }
+
+    /// The channel gone, there is nothing more to send.
+    #[tokio::test]
+    async fn no_frame_once_the_channel_is_gone() {
+        let observer = WriteObserver::new();
+        let mut writes = observer.subscribe();
+        drop(observer);
+        assert!(next_event_frame(&mut writes).await.is_none());
+    }
 }

@@ -1530,74 +1530,6 @@ async fn write_events_report_a_rooms_autosave_and_a_runs_output_save() {
     assert_ne!(event["before"], Value::Null);
 }
 
-/// A subscriber that falls behind is closed with 1011 `missed events`,
-/// while another on the same server gets every event (#978).
-#[tokio::test]
-async fn a_lagging_events_subscriber_is_closed_with_1011() {
-    use tokio_tungstenite::tungstenite::Message as TMsg;
-
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    // A path as long as a file's may be, so a few hundred writes of it
-    // fill the socket the client isn't reading before its events do.
-    let mut path = (0..4)
-        .map(|i| format!("{i:0<230}"))
-        .collect::<Vec<_>>()
-        .join("/");
-    path.push_str("/a.ipynb");
-    let file = root.join(&path);
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-    std::fs::write(&file, "{}").unwrap();
-    let app = build_router(reporting_state(
-        &root,
-        Arc::new(WriteObserver::with_capacity(8)),
-    ));
-    let (addr, mut reading) = events_socket(app.clone()).await;
-    // Connected, and not read until the writes are over.
-    let mut behind = connect_events(addr).await;
-
-    // Enough that the events fill the socket's buffers (the OS holds a
-    // few hundred kilobytes of them), so the server's sends to the client
-    // that isn't reading hold up its reader until it has missed some.
-    const WRITES: usize = 600;
-    let writing = {
-        let app = app.clone();
-        let url = format!("/api/contents/{path}");
-        tokio::spawn(async move {
-            for _ in 0..WRITES {
-                let body = json!({"type": "notebook",
-                                  "content": {"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}});
-                let (s, _) = call(&app, "PUT", &url, Some(body), Some(TOKEN)).await;
-                assert!(s.is_success(), "{s}");
-            }
-        })
-    };
-    // The reader keeps up: it would be closed too if it fell behind.
-    for i in 0..WRITES {
-        let event = next_write(&mut reading, EVENT_WAIT)
-            .await
-            .unwrap_or_else(|| panic!("event {i} of {WRITES}"));
-        assert_eq!(event["path"], json!(path));
-    }
-    writing.await.unwrap();
-
-    // The one that didn't read fell behind, and is told so: after the
-    // events it already had, it is closed with 1011 and a reason.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        let msg = tokio::time::timeout_at(deadline, behind.next())
-            .await
-            .expect("the lagging socket was not closed")
-            .unwrap()
-            .unwrap();
-        if let TMsg::Close(Some(frame)) = msg {
-            assert_eq!(u16::from(frame.code), 1011);
-            assert_eq!(frame.reason.as_str(), "missed events");
-            break;
-        }
-    }
-}
-
 // ----- JupyterLab --------------------------------------------------------------
 
 /// A miniature JupyterLab application directory with the packaged
@@ -3213,46 +3145,6 @@ async fn collaboration_room_syncs_saves_and_reloads() {
     .await
     .unwrap();
 
-    // Apply frames until `until` holds, answering the server's step 1.
-    async fn pump<S>(ws: &mut S, doc: &Doc, until: impl Fn(&Doc) -> bool) -> Vec<Vec<u8>>
-    where
-        S: futures::Stream<Item = Result<TMsg, tokio_tungstenite::tungstenite::Error>>
-            + futures::Sink<TMsg>
-            + Unpin,
-        <S as futures::Sink<TMsg>>::Error: std::fmt::Debug,
-    {
-        let mut raw = Vec::new();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        while !until(doc) {
-            let msg = tokio::time::timeout_at(deadline, ws.next())
-                .await
-                .expect("timed out waiting for the room")
-                .unwrap()
-                .unwrap();
-            let TMsg::Binary(b) = msg else { continue };
-            if b.first() == Some(&2) {
-                raw.push(b.to_vec());
-                continue;
-            }
-            match YMsg::decode_v1(&b) {
-                Ok(YMsg::Sync(SyncMessage::SyncStep1(sv))) => {
-                    let u = doc.transact().encode_state_as_update_v1(&sv);
-                    ws.send(TMsg::Binary(
-                        YMsg::Sync(SyncMessage::SyncStep2(u)).encode_v1().into(),
-                    ))
-                    .await
-                    .unwrap();
-                }
-                Ok(YMsg::Sync(SyncMessage::SyncStep2(u) | SyncMessage::Update(u))) => {
-                    doc.transact_mut()
-                        .apply_update(Update::decode_v1(&u).unwrap())
-                        .unwrap();
-                }
-                _ => {}
-            }
-        }
-        raw
-    }
     let source = |doc: &Doc| -> Option<String> {
         let roots = Roots::get(doc);
         let txn = doc.transact();

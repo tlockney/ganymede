@@ -10,6 +10,7 @@ use ganymede_kernel_host::{
 };
 use ganymede_server::config::Config;
 use ganymede_server::serve::{run_with, Startup};
+use ganymede_server::write_observer::WriteObserver;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -144,6 +145,18 @@ async fn embedded_server(
     tokio::sync::mpsc::Sender<()>,
     std::thread::JoinHandle<anyhow::Result<()>>,
 ) {
+    embedded_server_with(root, None).await
+}
+
+/// [`embedded_server`], with the app's write observer when it gives one.
+async fn embedded_server_with(
+    root: &std::path::Path,
+    write_observer: Option<Arc<WriteObserver>>,
+) -> (
+    String,
+    tokio::sync::mpsc::Sender<()>,
+    std::thread::JoinHandle<anyhow::Result<()>>,
+) {
     let cfg = Config {
         port: 0,
         token: Some("t".into()),
@@ -169,6 +182,7 @@ async fn embedded_server(
                 kernelspecs: Some(Arc::new(App)),
                 provisioner: Some(Arc::new(App)),
                 transports: Some(Arc::new(App)),
+                write_observer,
                 ..Default::default()
             };
             rt.block_on(run_with(cfg, startup))
@@ -441,5 +455,58 @@ async fn whois_needs_the_tailnet_address() {
         cfg.tailscale.whois = true;
         let e = run_with(cfg, Startup::default()).await.unwrap_err();
         assert!(e.to_string().contains("tailnet address"), "{ip}: {e}");
+    }
+}
+
+/// A server built by `run_with` sends its writes on the events socket,
+/// whether or not the app gave it a write observer, and an app's function
+/// set on the one it gave still hears them (#978).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_served_server_sends_its_writes_on_the_events_socket() {
+    use futures::StreamExt;
+    for given in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let observer = given.then(|| Arc::new(WriteObserver::new()));
+        let heard = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        if let Some(observer) = &observer {
+            let into = heard.clone();
+            observer.set(Some(Arc::new(move |p: &std::path::Path, _, _| {
+                into.lock().unwrap().push(p.display().to_string());
+            })));
+        }
+        let (addr, stop, server) = embedded_server_with(root.path(), observer).await;
+        let (mut ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://{addr}/api/events/subscribe?token=t"))
+                .await
+                .unwrap();
+        let (code, _) = call(
+            &addr,
+            "PUT",
+            "/api/contents/a.txt",
+            Some(json!({"type": "file", "format": "text", "content": "hi"})),
+        )
+        .await;
+        assert_eq!(code, 201, "given: {given}");
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(10), ws.next())
+            .await
+            .unwrap_or_else(|_| panic!("no event, given: {given}"))
+            .unwrap()
+            .unwrap();
+        let tokio_tungstenite::tungstenite::Message::Text(text) = msg else {
+            panic!("expected an event, got {msg:?}")
+        };
+        let event: Value = serde_json::from_str(text.as_str()).unwrap();
+        assert_eq!(event["path"], "a.txt", "given: {given}");
+        assert_eq!(
+            event["__schema__"],
+            ganymede_server::write_observer::WRITE_SCHEMA
+        );
+        if given {
+            let heard = heard.lock().unwrap();
+            assert_eq!(heard.len(), 1);
+            assert!(heard[0].ends_with("a.txt"), "{heard:?}");
+        }
+        stop.send(()).await.unwrap();
+        server.join().unwrap().unwrap();
     }
 }

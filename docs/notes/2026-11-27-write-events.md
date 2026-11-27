@@ -37,10 +37,23 @@ re-read the files it depends on.
 The tests drive it through the socket: a save made and remade through the
 contents API, a copy to a named path and a checkpoint restore each send
 one event with the right stamps, while a failed write, a directory save, a
-new untitled file, a rename and a delete send none; a room's autosave and a
-run's save of its outputs send theirs; and a client that doesn't read while
-a few hundred events go by is closed with 1011 while another client on the
-same server gets every one. That last one writes long paths, since the
-frames have to fill the socket's buffers before the server's send holds
-the reader up long enough to lag it. A unit test pins the rest: nothing is
-stamped before a write with neither a function set nor a subscriber.
+new untitled file, a rename and a delete send none; and a room's autosave
+and a run's save of its outputs send theirs. The lag is a unit test of the
+frame the socket sends next (`ws::next_event_frame`), on a channel of two:
+a subscriber that read nothing while five writes went by gets the 1011
+close, and one that read each gets all five. Driving it through a real
+socket first depended on the OS's buffers filling, which macOS's did and
+Linux's, several megabytes on loopback, did not. And a send to a client
+that stopped reading could wait forever, never polling the channel, so it
+never saw the lag; each send now has 10 seconds, after which the client
+is dropped and its subscription with it.
+
+A write that begins with no app function set is still not reported to one
+set before it ends, as before: `Observed` notes whether one was set when
+it took the stamp, since a socket's subscriber now makes that stamp be
+taken anyway. The event's timestamp is taken once per write, in `notify`,
+so every subscriber gets the same one. A test in `tests/embedded.rs`
+drives a server built by `run_with`, with and without the app's
+observer, to pin the wiring. A unit test pins the
+rest: nothing is stamped before a write with neither a function set nor a
+subscriber.

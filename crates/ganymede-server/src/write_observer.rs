@@ -50,20 +50,22 @@ pub struct WriteEvent {
     pub path: String,
     pub before: Option<String>,
     pub after: Option<String>,
+    /// When the write was reported, once for every subscriber.
+    pub at: jiff::Timestamp,
 }
 
 impl WriteEvent {
     /// The write in `jupyter_events`' envelope: its schema id and
-    /// versions, when it is sent, and its data. A client that doesn't
-    /// know the schema ignores it, as JupyterLab's event manager does.
-    /// The timestamp is RFC 3339 in UTC, as the server's own time crate,
-    /// `jiff`, writes it.
+    /// versions, when the write was reported, and its data. A client that
+    /// doesn't know the schema ignores it, as JupyterLab's event manager
+    /// does. The timestamp is RFC 3339 in UTC, as the server's own time
+    /// crate, `jiff`, writes it.
     pub fn envelope(&self) -> serde_json::Value {
         serde_json::json!({
             "__schema__": WRITE_SCHEMA,
             "__schema_version__": 1,
             "__metadata_version__": 1,
-            "__timestamp__": jiff::Timestamp::now().to_string(),
+            "__timestamp__": self.at.to_string(),
             "path": self.path,
             "before": self.before,
             "after": self.after,
@@ -134,27 +136,44 @@ impl WriteObserver {
     /// Whether a write is worth stamping before: a function is set to hear
     /// of it, or the events socket has a subscriber.
     pub(crate) fn is_set(&self) -> bool {
-        self.events.receiver_count() > 0
-            || self
-                .function
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_some()
+        self.events.receiver_count() > 0 || self.has_function()
     }
 
-    /// Calls the function with the write, if one is set, and sends the
-    /// event to the events socket. The function is cloned out of the lock
-    /// first, so it may set the observer. The caller's path turn is still
-    /// held while both run. `api` is the file's contents-API path, which
-    /// is what the event carries; the function keeps the canonical one.
-    pub(crate) fn notify(&self, path: &Path, api: &str, before: Option<&str>, after: Option<&str>) {
+    /// Whether a function is set now: a write that begins without one is
+    /// not reported to one set before it ends (#916), even when an events
+    /// socket's subscriber had its stamp taken.
+    pub(crate) fn has_function(&self) -> bool {
+        self.function
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+
+    /// Sends the event to the events socket, and calls the function with
+    /// the write if one is set and `to_function` (one was set when the
+    /// write began). The function is cloned out of the lock first, so it
+    /// may set the observer. The caller's path turn is still held while
+    /// both run. `api` is the file's contents-API path, which is what the
+    /// event carries; the function keeps the canonical one.
+    pub(crate) fn notify(
+        &self,
+        path: &Path,
+        api: &str,
+        before: Option<&str>,
+        after: Option<&str>,
+        to_function: bool,
+    ) {
         // Sent first, so an app's function holds up no events socket. The
         // error is a write no socket is subscribed to.
         let _ = self.events.send(WriteEvent {
             path: api.to_string(),
             before: before.map(str::to_string),
             after: after.map(str::to_string),
+            at: jiff::Timestamp::now(),
         });
+        if !to_function {
+            return;
+        }
         let f = self
             .function
             .read()
@@ -226,6 +245,7 @@ mod tests {
             "demo.ipynb",
             Some("before"),
             Some("after"),
+            true,
         );
         assert_eq!(*calls.lock().unwrap(), [Path::new("/root/demo.ipynb")]);
         let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
