@@ -1616,6 +1616,34 @@ mod tests {
         );
     }
 
+    /// A provisioner that keeps the startup timeout each launch was given.
+    struct SeesTimeout(Arc<Mutex<Vec<Option<Duration>>>>);
+    #[async_trait]
+    impl Provisioner for SeesTimeout {
+        async fn launch(
+            &self,
+            _spec: &Kernelspec,
+            opts: LaunchOptions,
+        ) -> ganymede_kernel_host::Result<LaunchedKernel> {
+            self.0.lock().unwrap().push(opts.startup_timeout);
+            Ok(in_process())
+        }
+    }
+
+    /// A launch carries the configured startup timeout, so a registered
+    /// kernel's start acknowledgement waits as long as any other start.
+    #[tokio::test]
+    async fn a_launch_carries_the_configured_startup_timeout() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        // `with_provisioner` configures 5 s, not the 60 s default.
+        let (m, _) = with_provisioner(
+            KernelManagerConfig::default(),
+            Arc::new(SeesTimeout(seen.clone())),
+        );
+        started(&m, Some("fake"), None).await.unwrap();
+        assert_eq!(*seen.lock().unwrap(), [Some(Duration::from_secs(5))]);
+    }
+
     /// A provisioner whose kernels' process is gone, counting its launches.
     struct GoneOnce(Arc<AtomicUsize>);
     #[async_trait]
