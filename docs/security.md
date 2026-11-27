@@ -350,10 +350,6 @@ app's own pages:
   carries this server's sandbox policy, whatever the route, not the
   machine's.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 The machine's token is held by the server and is never given to the page.
 A page the machine serves can run only in the sandbox; it can't act as the
 app's UI. A machine you mount is trusted with what the mount sends it: the

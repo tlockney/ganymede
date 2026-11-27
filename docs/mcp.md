@@ -45,10 +45,6 @@ themselves are unchanged: their paths start at the root.
    is read-only to the agent
    ([Rooms](rooms.md#two-servers-on-one-notebook)).
 
-   > [!NOTE]
-   > **Unreleased.** Available only from a build of `main` (HEAD), not
-   > in the latest release, where this server takes no lock.
-
 Start a shared server with:
 
 ```sh

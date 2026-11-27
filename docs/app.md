@@ -119,11 +119,9 @@ From ganymede-ui 0.17.1 on, a first open in the browser starts on
 - **Toolbar.** From ganymede-ui 0.17.1 on, the browser's toolbar has
   Run Cell with a run menu (Run All, restarts), Interrupt, Trust
   Notebook and Notebook Access when they apply, Share and a ⋯ menu, and
-  the status line under the title picks the kernel. Earlier releases,
-  including the one `ganymede ui install` takes by default (0.16.0),
+  the status line under the title picks the kernel. Earlier releases
   have Run, insert, kernel picker, interrupt and restart, Trust Notebook
-  and Download Notebook; `ganymede ui install --version 0.17.1` gets the
-  new one. The Mac, iPad and iPhone apps have their own toolbars:
+  and Download Notebook. The Mac, iPad and iPhone apps have their own toolbars:
   ganymede-ui's
   [apps guide](https://github.com/tlockney/ganymede-ui/blob/main/docs/apps.md)
   lists them.

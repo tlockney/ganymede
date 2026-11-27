@@ -260,7 +260,7 @@ And the [server flags](#server-flags).
 
 | Flag | Effect |
 | --- | --- |
-| `--version <VERSION>` | ganymede-ui version, exactly. Default `0.16.0`. |
+| `--version <VERSION>` | ganymede-ui version, exactly. Default `0.17.1`. |
 | `--force` | Reinstall if this version is already installed. |
 
 ### `ui list`
@@ -621,12 +621,6 @@ that lets this machine in by
 [tailnet identity](security.md#tailnet-identity): the gateway marks its
 requests as a program's (`Ganymede-Client`).
 
-> [!NOTE]
-> **Unreleased.** A build of `main` (HEAD) lists this machine's own
-> kernels beside the gateway's, reports the gateway's status, and takes
-> `--gateway-name` (`gateway_name`); the latest release lists only the
-> gateway's and refuses that flag and key.
-
 This machine's own kernelspecs are listed beside the gateway's, so a
 kernel installed here runs here while the rest run there: the gateway's
 specs first, then every local one whose name (compared case-insensitively)
@@ -665,7 +659,7 @@ given them.
 ```json
 {
   "base_url": "/",
-  "ganymede_version": "0.17.0",
+  "ganymede_version": "0.18.0",
   "hostname": "127.0.0.1",
   "password": false,
   "pid": 41237,

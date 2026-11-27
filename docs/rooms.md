@@ -545,10 +545,6 @@ dir, takes none. Servers meet on the lock only when they see the same
 Jupyter runtime dir: a Mac app started from the Finder doesn't see a
 `JUPYTER_RUNTIME_DIR` or `JUPYTER_DATA_DIR` set in a shell profile.
 
-> [!NOTE]
-> **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release.
-
 ## Limits
 
 - Notebooks only: a text file opened collaboratively fails to load.
