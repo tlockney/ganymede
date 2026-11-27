@@ -110,10 +110,22 @@ anywhere. **Ganymede server** with **Run kernels in this page** keeps
 notebooks on the server and still runs kernels in the page. The apps
 don't use it: they run their kernel as a kernel of their server.
 
+From ganymede-ui 0.17.1 on, a first open in the browser starts on
+**Try a Notebook** (a sample in this browser), **Open a Notebook…** and
+**Connect to a Server…**, which opens the connect sheet.
+
 ## Using it
 
-- **Toolbar.** Run, insert, kernel picker, interrupt and restart, Trust
-  Notebook, and Download Notebook.
+- **Toolbar.** From ganymede-ui 0.17.1 on, the browser's toolbar has
+  Run Cell with a run menu (Run All, restarts), Interrupt, Trust
+  Notebook and Notebook Access when they apply, Share and a ⋯ menu, and
+  the status line under the title picks the kernel. Earlier releases
+  have Run, insert, kernel picker, interrupt and restart, Trust Notebook
+  and Download Notebook. The Mac, iPad and iPhone apps have their own toolbars:
+  ganymede-ui's
+  [apps guide](https://github.com/tlockney/ganymede-ui/blob/main/docs/apps.md)
+  lists them.
+
 - **Shortcuts.** JupyterLab's defaults. Press H in command mode, or Help ›
   Keyboard Shortcuts on the Mac, for the list; bindings can be changed
   there and are kept in the browser.

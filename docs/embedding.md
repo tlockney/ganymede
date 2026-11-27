@@ -17,7 +17,7 @@ design is on [The iPad use case](ipados.md).
 ![Three ways to embed Ganymede: a Rust app calling the engine in-process; an app whose web view talks HTTP to the server that ganymede-ffi runs on loopback; and a wasm or iOS build with zmq and subprocess off, where the kernel sits behind an in-process transport.](images/architecture/embedding.svg)
 
 The crates are not on crates.io, so depend on them from git:
-`ganymede-engine = { git = "https://github.com/tlockney/ganymede", tag = "v0.16.0" }`.
+`ganymede-engine = { git = "https://github.com/tlockney/ganymede", tag = "v0.18.0" }`.
 
 ## The engine in a Rust app
 
@@ -403,9 +403,17 @@ or a NUL is a 400:
   file name, nothing deeper)
 - `api/terminals`, and `terminals/websocket/{name}`, the terminal's socket
 - `api/notebooks/run`, `api/metrics/v1/kernel_usage`, `api/events/subscribe`
+- `api/host/grants`, and everything below it: a notebook's access settings
+  (`GET` to show it, `PUT` to set it, `DELETE` to remove it)
 
-`mcp`, `api/host/*` and everything else on the machine are never reachable
-this way.
+`mcp`, the rest of `api/host` and everything else on the machine are never
+reachable this way. The rest of `api/host` is the cells' own host API, which
+a machine's kernels call on the machine itself, not through this one. A
+notebook's access settings add nothing to what the mount already does: it
+forwards `api/kernels`, `api/terminals` and `api/notebooks/run` with the
+machine's token, so a page that may call the mount can already run code
+there, and a page the machine serves holds no token and runs in the sandbox,
+so a notebook can't change its own grant through the mount.
 
 A forwarded `api/kernelspecs` answer is the machine's own: its
 `resources` are paths on the machine (`/kernelspecs/{name}/logo-64x64.png`
@@ -506,6 +514,20 @@ survives the server.
 From Rust, `ganymede_server::write_observer::WriteObserver` is the same
 thing: keep one, pass it as `Startup::write_observer`, and call `set` with
 a closure taking the path and the two stamps.
+
+### Two servers on one notebook
+
+An embedded server's rooms lock their notebooks as every Ganymede server's
+do ([Rooms](rooms.md#two-servers-on-one-notebook)): the first server on the
+machine with a room open on a file owns it, and another server's room on it
+is read-only. The locks are files in the Jupyter runtime dir's
+`ganymede-rooms/`, so the app and the CLI must see the same
+`JUPYTER_RUNTIME_DIR` (or `JUPYTER_DATA_DIR`) for them to meet. An app
+started from the Finder doesn't see variables set in a shell profile.
+
+ganymede-ffi turns locking off on iOS, which has no shared runtime dir. From
+Rust, `Startup::room_locks` decides it: `RoomLocks::RuntimeDir`, the
+default, or `RoomLocks::Off`, which an embedder on iOS sets itself.
 
 ## Remote kernels with ganymede-gateway
 

@@ -39,9 +39,43 @@ const V1_PROTOCOL: &str = "v1.kernel.websocket.jupyter.org";
 /// it marks a program's request, which no web page can send.
 const CLIENT_HEADER: (&str, &str) = ("Ganymede-Client", "ganymede-gateway");
 
+/// How soon a refresh retries after one failed, so a gateway that was
+/// asleep or off the network shows up again without waiting a minute.
+const RETRY: Duration = Duration::from_secs(15);
+
 /// Errors from the remote server, in kernel-host's error type.
 fn remote(what: impl std::fmt::Display) -> Error {
     Error::Io(std::io::Error::other(format!("gateway: {what}")))
+}
+
+/// An error and its causes, outermost first: reqwest's own message leaves
+/// out why a request failed (refused, DNS, timeout, TLS), which its
+/// sources say.
+fn causes(e: &dyn std::error::Error) -> String {
+    let mut text = e.to_string();
+    let mut source = e.source();
+    while let Some(cause) = source {
+        let more = cause.to_string();
+        if !text.contains(&more) {
+            text.push_str(": ");
+            text.push_str(&more);
+        }
+        source = cause.source();
+    }
+    text
+}
+
+/// How much of a remote's error body an error keeps: its first line, cut
+/// to [`BRIEF`] characters. A proxy or captive portal may answer with a
+/// whole HTML page, which `/api/kernelspecs` would otherwise carry.
+const BRIEF: usize = 200;
+
+fn brief(body: &str) -> String {
+    let line = body.trim().lines().next().unwrap_or_default().trim_end();
+    match line.char_indices().nth(BRIEF) {
+        Some((i, _)) => format!("{}…", &line[..i]),
+        None => line.to_string(),
+    }
 }
 
 /// A remote Jupyter server's kernels.
@@ -56,10 +90,25 @@ struct Inner {
     http: reqwest::Client,
     tls: Arc<rustls::ClientConfig>,
     specs: RwLock<Vec<Kernelspec>>,
+    /// The last [`Gateway::refresh`]'s outcome.
+    status: RwLock<Status>,
     /// Remote kernel ids by the address of the process handle in the
     /// `LaunchedKernel` that [`Provisioner::launch`] returned, which is how
     /// [`TransportFactory::connect`] finds the kernel to connect to.
     kernels: Mutex<HashMap<usize, String>>,
+}
+
+/// What the last [`Gateway::refresh`] found: whether it reached the server
+/// and read its kernelspecs, or why it didn't, and when.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Status {
+    /// False until a refresh succeeds, and after one fails.
+    pub reachable: bool,
+    /// Why the last refresh failed, as it failed; taken out of the URL and
+    /// token, since the API reports it. None while reachable.
+    pub error: Option<String>,
+    /// When the last refresh ran; none before the first.
+    pub at: Option<std::time::SystemTime>,
 }
 
 fn handle_key(process: &Arc<dyn KernelProcess>) -> usize {
@@ -92,33 +141,47 @@ impl Gateway {
                 http,
                 tls,
                 specs: RwLock::new(Vec::new()),
+                status: RwLock::new(Status::default()),
                 kernels: Mutex::new(HashMap::new()),
             }),
         })
     }
 
     /// Fetches the remote kernelspecs into the cache [`KernelspecSource::list`]
-    /// reads. Until the first success the list is empty.
+    /// reads. Until the first success the list is empty. The outcome is kept
+    /// in [`Gateway::status`], including the error a failure is, so the API
+    /// can say the gateway isn't answering.
     pub async fn refresh(&self) -> Result<()> {
-        let v: Value = self.inner.get("api/kernelspecs").await?;
-        let mut specs = Vec::new();
-        if let Some(map) = v.get("kernelspecs").and_then(Value::as_object) {
-            for (name, entry) in map {
-                let Some(spec) = entry.get("spec") else {
-                    continue;
-                };
-                match serde_json::from_value::<Kernelspec>(spec.clone()) {
-                    Ok(mut spec) => {
-                        spec.name = name.clone();
-                        specs.push(spec);
-                    }
-                    Err(e) => tracing::warn!("gateway kernelspec {name}: {e}"),
+        let outcome = self.inner.fetch_specs().await;
+        let status = match &outcome {
+            Ok(specs) => {
+                *self.inner.specs.write().unwrap() = specs.clone();
+                Status {
+                    reachable: true,
+                    error: None,
+                    at: Some(std::time::SystemTime::now()),
                 }
             }
-        }
-        specs.sort_by(|a, b| a.name.cmp(&b.name));
-        *self.inner.specs.write().unwrap() = specs;
-        Ok(())
+            Err(e) => Status {
+                reachable: false,
+                error: Some(self.inner.scrub(&e.to_string())),
+                at: Some(std::time::SystemTime::now()),
+            },
+        };
+        *self.inner.status.write().unwrap() = status;
+        outcome.map(drop)
+    }
+
+    /// The last refresh's outcome. Never refreshed: unreachable, with no
+    /// error, and no time.
+    pub fn status(&self) -> Status {
+        self.inner.status.read().unwrap().clone()
+    }
+
+    /// The gateway's host, for naming it in the API: never the URL's path,
+    /// query or token.
+    pub fn host(&self) -> &str {
+        self.inner.base.host_str().unwrap_or_default()
     }
 
     /// The ids of the kernels running on the remote server, whoever
@@ -134,19 +197,35 @@ impl Gateway {
             .unwrap_or_default())
     }
 
-    /// Calls [`Gateway::refresh`] now and then every `every`, logging
-    /// failures, for as long as the gateway exists.
+    /// Calls [`Gateway::refresh`] now and then every `every` while it
+    /// answers, and every 15 seconds (`RETRY`) while it doesn't, logging failures, for
+    /// as long as the gateway exists. A gateway that comes back is found
+    /// within 15 seconds rather than `every`.
     pub fn refresh_every(&self, every: Duration) {
         let weak = Arc::downgrade(&self.inner);
         tokio::spawn(async move {
             loop {
                 let Some(inner) = weak.upgrade() else { return };
-                if let Err(e) = (Gateway { inner }).refresh().await {
-                    tracing::warn!("{e}");
-                }
-                tokio::time::sleep(every).await;
+                let reachable = match (Gateway { inner }).refresh().await {
+                    Ok(()) => true,
+                    Err(e) => {
+                        tracing::warn!("{e}");
+                        false
+                    }
+                };
+                tokio::time::sleep(next_refresh(reachable, every)).await;
             }
         });
+    }
+}
+
+/// How long [`Gateway::refresh_every`] waits after a refresh: `every` while
+/// the gateway answers, at most [`RETRY`] while it doesn't.
+fn next_refresh(reachable: bool, every: Duration) -> Duration {
+    if reachable {
+        every
+    } else {
+        every.min(RETRY)
     }
 }
 
@@ -178,7 +257,7 @@ impl Inner {
     }
 
     async fn send(&self, req: reqwest::RequestBuilder) -> Result<reqwest::Response> {
-        let resp = req.send().await.map_err(remote)?;
+        let resp = req.send().await.map_err(|e| remote(causes(&e)))?;
         let status = resp.status();
         if status.is_success() {
             return Ok(resp);
@@ -189,12 +268,55 @@ impl Inner {
             .ok()
             .and_then(|v| v.get("message").and_then(Value::as_str).map(String::from))
             .unwrap_or(body);
-        Err(remote(format!("{url}: {status} {reason}")))
+        Err(remote(format!("{url}: {status} {}", brief(&reason))))
     }
 
     async fn get(&self, path: &str) -> Result<Value> {
         let resp = self.send(self.request(reqwest::Method::GET, path)?).await?;
         resp.json().await.map_err(remote)
+    }
+
+    /// The remote kernelspecs, each marked as the gateway's.
+    async fn fetch_specs(&self) -> Result<Vec<Kernelspec>> {
+        let v: Value = self.get("api/kernelspecs").await?;
+
+        let mut specs = Vec::new();
+        if let Some(map) = v.get("kernelspecs").and_then(Value::as_object) {
+            for (name, entry) in map {
+                let Some(spec) = entry.get("spec") else {
+                    continue;
+                };
+                match serde_json::from_value::<Kernelspec>(spec.clone()) {
+                    Ok(mut spec) => {
+                        spec.name = name.clone();
+                        spec.gateway = true;
+                        specs.push(spec);
+                    }
+                    Err(e) => tracing::warn!("gateway kernelspec {name}: {e}"),
+                }
+            }
+        }
+        specs.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(specs)
+    }
+
+    /// `text` with the gateway's URL and token taken out: the API reports a
+    /// failed refresh's error, and neither belongs in it.
+    fn scrub(&self, text: &str) -> String {
+        let mut out = text.to_string();
+        let mut secrets = vec![self.base.as_str().trim_end_matches('/')];
+        if self.base.path() != "/" {
+            secrets.push(self.base.path().trim_end_matches('/'));
+        }
+        if let Some(t) = &self.token {
+            secrets.push(t);
+        }
+        for secret in secrets {
+            if !secret.is_empty() {
+                out = out.replace(secret, "");
+            }
+        }
+        out
     }
 }
 
@@ -450,5 +572,155 @@ impl TransportSink for WebSocketSink {
 
     async fn close(&self) {
         let _ = self.out.send(WsMessage::Close(None)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// A stand-in for a gateway that answers 503 until `answering` is set,
+    /// then serves one kernelspec: a server asleep and then awake, without
+    /// a port race with a real one. Its address.
+    async fn stub() -> (String, Arc<AtomicBool>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let answering = Arc::new(AtomicBool::new(false));
+        let up = answering.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let up = up.clone();
+                tokio::spawn(async move {
+                    // The whole request head, which may come in more than
+                    // one read.
+                    let mut head = Vec::new();
+                    let mut buf = [0u8; 4096];
+                    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match socket.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => head.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                    let request = String::from_utf8_lossy(&head);
+                    // Echo the request's Authorization header in the error,
+                    // as a careless server might, so `scrub` has a token
+                    // to take out.
+                    let auth = request
+                        .lines()
+                        .find(|l| l.to_ascii_lowercase().starts_with("authorization:"))
+                        .unwrap_or("")
+                        .to_string();
+                    let (status, body) = if up.load(Ordering::SeqCst) {
+                        let body = serde_json::json!({
+                            "default": "fake",
+                            "kernelspecs": {
+                                "fake": {"spec": {
+                                    "argv": [],
+                                    "display_name": "Remote fake",
+                                    "language": "fake",
+                                }},
+                            },
+                        });
+                        ("200 OK", body.to_string())
+                    } else {
+                        let body = serde_json::json!({"message": format!("asleep {auth}")});
+                        ("503 Service Unavailable", body.to_string())
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        (addr.to_string(), answering)
+    }
+
+    #[tokio::test]
+    async fn status_says_when_the_gateway_isnt_answering_and_when_it_is() {
+        let (addr, answering) = stub().await;
+        let gateway = Gateway::new(
+            &format!("http://{addr}/secret-base/"),
+            Some("s3cret".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            gateway.status(),
+            Status::default(),
+            "nothing before the first refresh"
+        );
+
+        gateway.refresh().await.unwrap_err();
+        let status = gateway.status();
+        assert!(!status.reachable);
+        let error = status.error.clone().unwrap();
+        assert!(error.contains("asleep"), "{error}");
+        // The stub echoes the Authorization header, so the token is in
+        // the answer and `scrub` must take it out.
+        assert!(
+            error.contains("token"),
+            "the stub echoed the header: {error}"
+        );
+        // Neither the URL's path nor the token is reported.
+        assert!(!error.contains("secret-base"), "{error}");
+        assert!(!error.contains("s3cret"), "{error}");
+        assert!(status.at.is_some());
+        // A failed refresh keeps the last kernelspecs there were.
+        assert!(gateway.list().unwrap().is_empty());
+
+        answering.store(true, Ordering::SeqCst);
+        gateway.refresh().await.unwrap();
+        let status = gateway.status();
+        assert!(status.reachable);
+        assert_eq!(status.error, None);
+        let specs = gateway.list().unwrap();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].name, "fake");
+        assert!(specs[0].gateway, "a gateway's spec says so");
+        // The host alone: no port, path, query or token.
+        assert_eq!(gateway.host(), addr.split(':').next().unwrap());
+    }
+
+    #[test]
+    fn refreshes_sooner_while_the_gateway_isnt_answering() {
+        let minute = Duration::from_secs(60);
+        assert_eq!(next_refresh(true, minute), minute);
+        assert_eq!(next_refresh(false, minute), RETRY);
+        assert!(RETRY < minute);
+        // Never slower than asked for.
+        assert_eq!(
+            next_refresh(false, Duration::from_secs(5)),
+            Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn a_remotes_error_body_is_cut_to_its_first_line() {
+        assert_eq!(brief("  asleep \n<html>...</html>"), "asleep");
+        let long = "x".repeat(BRIEF + 50);
+        let cut = brief(&long);
+        assert_eq!(cut.chars().count(), BRIEF + 1);
+        assert!(cut.ends_with('…'));
+        assert_eq!(brief(""), "");
+    }
+
+    #[tokio::test]
+    async fn a_gateway_that_isnt_there_is_unreachable() {
+        // Port 1 on loopback: nothing listens, and connecting is refused.
+        let gateway = Gateway::new("http://127.0.0.1:1/", None).unwrap();
+        assert!(gateway.refresh().await.is_err());
+        let status = gateway.status();
+        assert!(!status.reachable);
+        let error = status.error.unwrap();
+        // Says why, not only that the request failed.
+        assert!(error.to_lowercase().contains("connect"), "{error}");
     }
 }

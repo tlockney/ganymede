@@ -71,6 +71,10 @@ pub struct Config {
     pub gateway_url: Option<String>,
     /// The gateway server's token (`GatewayClient.auth_token`).
     pub gateway_token: Option<String>,
+    /// What to call the gateway in `/api/kernelspecs`, such as the
+    /// machine's name. Defaults to the host in `gateway_url`; the URL's
+    /// path, query and token are never reported.
+    pub gateway_name: Option<String>,
     /// Seconds a new kernel has to answer.
     pub startup_timeout_secs: u64,
     /// Discard kernel processes' own stdout and stderr (not cell output,
@@ -160,6 +164,7 @@ impl Default for Config {
             kernel_restart_limit: 5,
             gateway_url: None,
             gateway_token: None,
+            gateway_name: None,
             startup_timeout_secs: 60,
             quiet: false,
             allow_origins: vec![],

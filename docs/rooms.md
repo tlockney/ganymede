@@ -49,12 +49,14 @@ cell:
   count, and each metadata key merge separately. A source edit in the room
   survives an agent running that cell on disk.
 - Where both changed the same part, or one deleted a cell the other
-  changed, the file on disk wins that part, and the server logs the cell.
+  changed, the file on disk wins that part, and the server keeps the
+  room's version in a [recovery copy](#saving-and-recovery) and logs the
+  cell.
 - Notebook metadata merges key by key the same way.
 - Notebooks older than nbformat 4.5 have no cell ids, so for them the file
   wins outright, as in `jupyter-collaboration`.
 
-![Merging a file change into a room with unsaved edits, cell by cell. A cell only the room edited keeps the room's source. A cell only the file changed, for example with new outputs, takes the file's version. A cell the room edited and another program ran keeps the room's source and takes the file's outputs and execution count. A cell both edited in the same part, or one deleted while the other changed it, takes the file's version and the server logs the cell. A cell the file added is added. Source, outputs with execution count, and each metadata key merge separately; notebook metadata merges key by key. Notebooks before nbformat 4.5 have no cell ids, so the file wins outright. The room saves the merge at once.](images/rooms/merge.svg)
+![Merging a file change into a room with unsaved edits, cell by cell. A cell only the room edited keeps the room's source. A cell only the file changed, for example with new outputs, takes the file's version. A cell the room edited and another program ran keeps the room's source and takes the file's outputs and execution count. A cell both edited in the same part, or one deleted while the other changed it, takes the file's version, and the server keeps the room's notebook in a recovery copy and logs the cell. A cell the file added is added. Source, outputs with execution count, and each metadata key merge separately; notebook metadata merges key by key. Notebooks before nbformat 4.5 have no cell ids, so the file wins outright. The room saves the merge at once.](images/rooms/merge.svg)
 
 After taking in a change from the file, the room saves its own edits at
 once. A client's explicit save whose merge lets the file win a cell the
@@ -78,6 +80,106 @@ again through the server, or someone trusts the notebook (`ganymede
 trust`, or Trust Notebook in a frontend), which holds with the room
 open. A client that writes back the very outputs the unsigned file had
 doesn't make them trusted.
+
+## Saving and recovery
+
+A room with no clients is saved and closed a minute after the last one
+leaves. It never closes holding edits the file doesn't have unless a
+recovery copy of them is on disk, except in the cases below.
+
+**Save state.** The room's `state` map, which clients can read and watch
+next to `dirty` and `hash`, says whether the edits reached the file:
+
+| Key | Value |
+|---|---|
+| `save` | `"saved"` when the file has the room's edits, `"failed"` when a save of them failed, when they can't be saved because another server owns the file, or when edits were lost to the file without a copy (see below). The room opens `"saved"`. |
+| `save_error` | Why, while `save` is `"failed"`; removed when a save succeeds, or when the room takes the file's version. |
+| `recovery` | `{"id", "at", "reason", "cells"}` of the newest recovery copy of this notebook (see below), when there is one. When that copy is discarded or pushed out, it is the next newest, or none. |
+
+These keys exist only in the room. A save writes the notebook, never the
+`state` map. A client can show **Save needs attention** while `save` is
+`"failed"` or `recovery` is set. When another server sharing the data
+directory discards or prunes a copy, the room keeps naming it until a
+`GET` of that id answers `404`, which also moves `recovery` on; so read
+the copy before trusting `recovery`.
+
+**Recovery copies.** The server keeps a copy of the room's notebook, as
+a save would write it, when edits would otherwise be lost:
+
+| `reason` | When |
+|---|---|
+| `save_failed` | The room is empty and its saves have failed ten times in a row (about five minutes of retries), so it gives up; or the server stops and the last save fails. `detail` is the last error. |
+| `file_gone` | The room's file was deleted, so its edits have nowhere to go. |
+| `read_only` | The room is empty, or the server stops, and the room is read-only because [another server owns the file](#two-servers-on-one-notebook), so it can't save its edits. |
+| `merge_conflict` | The file changed the same part the room's unsaved edits did, so the file won it. The copy is the room's notebook as it was before the merge; `detail` and `cells` say which parts and cells. |
+
+A room that can't write its copy stays open and tries again on its next
+cleanup, instead of closing. In three cases the room closes even when its
+copy can't be written, and the server logs an error:
+
+- The file was deleted through the contents API, or the open room noticed
+  that it was gone and dropped its file id. (When the cleanup of an empty
+  room is first to find it gone, the room stays open until it has its
+  copy.)
+- The room's content is not a notebook, so there is nothing to copy.
+- The server is stopping.
+
+Edits that lose a merge and can't be copied keep `save` at `"failed"`,
+with the reason in `save_error`, through later merges and good saves. The
+room tries again to write the copy at each save and before it closes. It
+ends when the copy is written, or when a client explicitly saves the room
+as it is. A room that wasn't a notebook when the file replaced it has
+nothing to copy, and says so until a client saves.
+
+A server with no data directory, or that can't make `recovery` in it when
+it starts (it logs a warning), keeps no copies, and its rooms close
+without them. On iPad and iPhone the data directory is under the app's
+own container (`Library/Application Support/ganymede`), so the apps keep
+copies there too; [#957](https://github.com/tlockney/ganymede/issues/957)
+tracks checking that on a device.
+
+Copies live in `recovery` under the Ganymede data directory (`ganymede
+info` shows it as `data_dir`), not beside the notebook, so they survive a
+reboot. Each root directory has its own directory there, named by the
+SHA-256 of its path, and that is where a server writes its copies. A
+server finds copies by their file, not by which directory they are in,
+so it sees every copy of a notebook under its root, at the path relative
+to that root: a copy kept by a server rooted at a project is listed, read
+and discarded by one rooted at the folder around it, and a root that
+holds none of the file's path sees none of its copies. The exception is
+a copy whose file is under a hidden directory of the root, which the
+contents API doesn't serve either: it is not seen. The server that kept
+the copy still sees it at the path it saved it under, when that path
+resolves to the same file (through a symlink inside its root to a hidden
+directory, say); another root does not. Each copy is a `<id>.ipynb` and
+a `<id>.json` with the `path`,
+the file's absolute path (`file`, which the routes leave out), `at` (UTC),
+`reason`, `detail`, `cells` and the notebook's file name. At most 20
+copies are kept for one notebook path and 200 MB for one root; a write that
+goes over deletes the oldest first, and the server logs each. A copy stays
+until it is discarded or pushed out by those limits. A room that opens on
+a path with copies puts the newest one's summary in `state.recovery`.
+Copies are filed under the path they were made for, so a notebook renamed
+afterwards doesn't list its earlier ones.
+
+Three routes, with the same credentials as the other `/api/collaboration`
+routes, list, read and discard copies. An `id` is the 25 characters the
+server made (`[0-9a-f]`, one `-`); an id with other characters gets `400`,
+and an unknown one `404`. A server with no recovery directory answers `404`.
+
+- `GET /api/collaboration/recovery?path=<api path>` lists the copies of
+  that notebook, newest first, without their notebooks:
+  `{"copies": [{"id", "path", "at", "reason", "detail", "cells",
+  "notebook"}]}`. `path` is required.
+- `GET /api/collaboration/recovery/<id>` returns the same fields for one
+  copy, with the notebook as JSON in `content`.
+- `DELETE /api/collaboration/recovery/<id>` discards the copy and answers
+  `204`. A room whose `state.recovery` names it names the next newest copy
+  of that path, or removes the key when none is left.
+
+There is no restore route. A client restores by taking `content` and
+writing it with the contents API or into the room, then discards the
+copy.
 
 ## Connections
 
@@ -186,6 +288,79 @@ client hashed it, and `408` if `previous_request_id` wasn't queued within
 ten seconds. A cell that fails stops the rest of its batch.
 
 ![Running cells into a room. A client such as nb-cli or ganymede mcp sends POST /api/kernels/{id}/execute with the document id and each cell's id and source hash (MurmurHash2, seed 0). Ganymede checks each cell's source in the room against its hash: if one changed it answers 409 source_mismatch, and if the previous request wasn't queued within ten seconds it answers 408, and nothing runs. Otherwise it clears the cells, queues them as one batch and answers 200 null. It sends the cells to the kernel one after another; a cell that fails stops the rest of the batch. As outputs arrive on iopub, Ganymede writes them and the execution count into the room, so every client sees them and autosave writes them to the file even with no client connected.](images/rooms/execute.svg)
+
+### A cell that changed while queued
+
+A `source_hash` is checked twice: when the request arrives (the `409`
+above), and again when the cell's turn comes, since a batch can wait
+behind other runs. If the room's source then no longer has the hash, the
+cell is not run. It is skipped like a cell after a failure: the rest of
+its batch is skipped too, and the cell goes `idle` with no outputs and no
+new execution count. A guarded cell that was deleted, or is no longer a
+code cell, when its turn comes counts as changed: the batch stops and
+`skipped` lists it.
+
+The cell shows why in the room: `execution_skipped` is
+`"Cell changed while queued"`. Like `execution_by` it is in the room
+only and is never saved or returned by `GET /api/contents`. It is removed
+when the cell is queued again, when its source or type is edited (by a
+client, the server or a change to the file), and when a client runs the
+cell itself. The cells skipped after it don't get it,
+nor do cells skipped after a failure. A cell queued twice shows it only
+when its last queued run was skipped for a change, or because an earlier
+run of it in the same batch was. If that last run was skipped for another
+reason, such as a failure before it in a later request, there is no note.
+
+With `wait`, the answer lists these cells, in the order they were to run,
+and leaves the key out when there are none:
+
+```json
+{"finished": true, "cells": [...],
+ "skipped": [{"cell_id": "...", "error": "source_changed_while_queued",
+              "message": "Cell changed while queued"}]}
+```
+
+A cell with no `source_hash`, or chosen by tag or `"all"`, is not
+guarded: it runs the source it has at its turn, unsaved edits included.
+So do the MCP tools that run cells.
+
+A cell the server runs through the room records the hash of the source
+that ran in its metadata, saved with the notebook:
+
+```json
+{"metadata": {"ganymede": {"ran_source_hash": "1234567890"}}}
+```
+
+It is the same format as `source_hash`, and a cell edited while it ran
+keeps the hash of the source that ran. Outputs belong to an older source
+when `ran_source_hash` differs from the hash of the cell's current
+source. The cell's other metadata, and the other keys under its
+`ganymede`, are left alone, and the notebook's `clean_run` stamp stays:
+cell metadata doesn't change a run's fingerprint.
+
+The entry points that record the key are the room runs above, a
+notebooks run (`POST /api/notebooks/run`) and the host API: each
+records, on every cell it runs, the hash of that cell's source, and the
+copy a notebooks run saves drops the key from cells the run never
+started. `ganymede execute` records none, so its notebooks come out as
+`jupyter execute` writes them, except that it removes a stale key from
+the cells it runs, keeping the rest of the `ganymede` object and
+dropping an object the removal emptied. Tools outside Ganymede — nbconvert, papermill,
+VS Code, a plain `PUT` of the file — keep whatever key the notebook
+has, so the key says which source ran only when Ganymede did the last
+run.
+
+A client that runs a cell itself, such as
+JupyterLab, writes the outputs and the execution count into the room, and
+the server doesn't see which source they came from. So when a client's
+update changes a code cell's `execution_count` or outputs (clearing them
+too), the room removes the cell's `ran_source_hash`: a cell without the
+key says nothing about which source its outputs came from. A change to
+the file keeps what the file has. The hash is in the cell's metadata, not
+each output's, because stream and error outputs have no metadata, and a
+cell can run without any output. A cell the server clears without running
+it, such as one skipped after an earlier cell failed, or one whose outputs
+an MCP tool drops, loses the key too: only a run that ends puts it back.
 
 ### Who runs a cell
 
@@ -375,15 +550,18 @@ Once the owner's
 room closes or its server exits, the other room takes the lock within a
 second and saves its own edits from then on.
 
-![Two servers on one notebook on the same machine. Server A opened a room on the file first, so it holds a lock in the runtime dir's ganymede-rooms folder, named for the file's path, while the room is open; its JupyterLab clients edit, and it saves and runs cells. Server B's room on the same file is read-only: it takes in A's saves through its watcher, never saves, undoes edits its clients send, refuses to run cells with 400, and its contents API reports the notebook as not writable. B checks the lock each second and takes it once A's room closes or A exits. Across machines, as with a synced folder, there is no lock and rooms merge through the file. An app that embeds the server takes no lock.](images/rooms/two-servers.svg)
+![Two servers on one notebook on the same machine. Server A opened a room on the file first, so it holds a lock in the runtime dir's ganymede-rooms folder, named for the file's path, while the room is open; its JupyterLab clients edit, and it saves and runs cells. Server B's room on the same file is read-only: it takes in A's saves through its watcher, never saves, undoes edits its clients send, refuses to run cells with 400, and its contents API reports the notebook as not writable. B checks the lock each second and takes it once A's room closes or A exits. Across machines, as with a synced folder, there is no lock and rooms merge through the file. Every server locks, an embedding app's included; only iOS, which has no runtime dir, takes no lock.](images/rooms/two-servers.svg)
 
 A room that was writable and finds another server owns its file now
 (after a rename, or once the file is reachable by a path another server
 locked) saves its edits before it turns read-only.
 
 Across machines, as with a notebook in a synced folder, there is no lock,
-and rooms merge through the file as described above. An app that embeds
-the server takes no lock.
+and rooms merge through the file as described above. Every server takes
+the lock, an embedding app's included; only iOS, which has no runtime
+dir, takes none. Servers meet on the lock only when they see the same
+Jupyter runtime dir: a Mac app started from the Finder doesn't see a
+`JUPYTER_RUNTIME_DIR` or `JUPYTER_DATA_DIR` set in a shell profile.
 
 ## Limits
 

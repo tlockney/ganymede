@@ -107,6 +107,8 @@ async fn start_with(adjust: impl FnOnce(&mut Config), machines: Machines) -> Ser
                 let _ = url_tx.send(url.to_string());
             })),
             stop: Some(stop_rx),
+            // Locking isn't under test; keep lock files out of the real runtime dir.
+            room_locks: ganymede_server::serve::RoomLocks::Off,
             kernelspecs: Some(fakes.clone()),
             provisioner: Some(fakes.clone()),
             transports: Some(fakes),
@@ -470,6 +472,7 @@ async fn only_the_allowlist_is_forwarded() {
         "api/events/subscribe",
         "nbconvert/html/a.ipynb",
         "kernelspecs/python3/logo-64x64.png",
+        "api/host/grants/a.ipynb",
     ] {
         let resp = get(&local, &format!("/machines/m/{path}"))
             .send()
@@ -478,12 +481,15 @@ async fn only_the_allowlist_is_forwarded() {
         assert_eq!(resp.status(), 200, "{path}");
     }
     let n = seen(&log).len();
-    assert_eq!(n, 14);
+    assert_eq!(n, 15);
     // None of these does.
     for path in [
         "mcp",
         "mcp/",
-        "api/host/grants/a.ipynb",
+        "api/host",
+        "api/host/",
+        "api/host/x",
+        "api/host/grantsx",
         "api/config/x",
         "api/",
         "lab",
@@ -521,6 +527,52 @@ async fn only_the_allowlist_is_forwarded() {
         );
     }
     assert_eq!(seen(&log).len(), n, "{:?}", seen(&log));
+}
+
+/// The one part of `api/host` the mount forwards is a notebook's access
+/// settings (#972): a GET and a PUT reach the machine as they are, so the
+/// apps can show and change a grant. The rest of `api/host` is the cells'
+/// own host API, and stays unreachable.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notebooks_grant_is_forwarded_and_the_rest_of_the_host_api_is_not() {
+    let (addr, log) = stand_in().await;
+    let local = start(|_| {}).await;
+    local
+        .machines
+        .add("m", &format!("http://{addr}/"), None)
+        .unwrap();
+    let grant = "/machines/m/api/host/grants/a.ipynb";
+    let resp = get(&local, grant).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = r#"{"read":["data/"]}"#;
+    let resp = request(&local, reqwest::Method::PUT, grant)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let all = seen(&log);
+    let sent: Vec<(&str, &str)> = all
+        .iter()
+        .map(|s| (s.method.as_str(), s.uri.as_str()))
+        .collect();
+    assert_eq!(
+        sent,
+        [
+            ("GET", "/api/host/grants/a.ipynb"),
+            ("PUT", "/api/host/grants/a.ipynb")
+        ]
+    );
+    assert_eq!(all[1].body, body.as_bytes());
+    for path in ["api/host", "api/host/", "api/host/x", "api/host/grantsx"] {
+        let resp = get(&local, &format!("/machines/m/{path}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404, "{path}");
+    }
+    assert_eq!(seen(&log).len(), 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]

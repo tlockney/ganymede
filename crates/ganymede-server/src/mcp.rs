@@ -2367,7 +2367,8 @@ impl Notebooks {
         match r {
             Ok(r) => Ok(r),
             Err(Refused::ReadOnly) => Err(err(format!(
-                "{path} is open in another server on this machine, so it is read-only here",
+                "{path} is open in another Ganymede server on this machine, such as \
+                 the Mac app or a `ganymede serve`, so it is read-only here",
                 path = self.show(path)
             ))),
             Err(Refused::Unseen(id, token, cell)) => {
@@ -2798,6 +2799,8 @@ impl Notebooks {
                         found = true;
                         if drop {
                             schema::set_outputs(txn, &cell, Vec::new());
+                            // Outputs gone: no source ran to give them.
+                            schema::clear_ran_source_hash(txn, &cell);
                         }
                         mark_dropped(txn, &cell, drop);
                     }

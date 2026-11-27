@@ -251,6 +251,40 @@ ganymede kernelspec install path/to/spec --name NAME
 It copies the directory into the user data directory (`--prefix PREFIX`
 puts it under `PREFIX/share/jupyter` instead).
 
+## Kernels on another server
+
+With `--gateway-url` (`gateway_url` in
+[`ganymede.toml`](reference.md#gateway)), kernels run on another Jupyter or
+Ganymede server while notebooks and files stay on this machine. This
+machine's own kernelspecs are listed beside that server's, so a kernel
+installed here runs here and the rest run there:
+
+```sh
+ganymede serve --root-dir . --gateway-url https://kernels.example.org
+```
+
+The gateway's specs come first, then every local spec whose name (compared
+case-insensitively) the gateway doesn't have, so a name both have is the
+gateway's and its kernel runs there. A spec's `"gateway": true` in
+[`/api/kernelspecs`](api.md#list-kernelspecs) says the same thing to a
+client, which can show the two groups apart. A kernel stays on the side it
+started on, so a restart doesn't move it to the other machine when the
+gateway's list has changed since.
+
+Without `--default-kernel` (`default_kernel` in
+[`ganymede.toml`](reference.md#config-file)), the default kernel is the
+first in that order: this machine's first until the gateway first
+answers with specs, and the gateway's first by name after that. Set
+`default_kernel` to pin it.
+
+A gateway that is asleep or off the network doesn't empty the list: the
+local kernels stay, and the `gateway` object `/api/kernelspecs` carries
+whenever a gateway is set says it isn't answering, with the reason and without the URL's path or token.
+Starting a kernel from the remote list fails while it is out; the local
+kernels still start. The server retries every 15 seconds while the
+gateway is down, so the remote kernels come back on their own once it
+answers again.
+
 ## More kernels
 
 Each kernel below ships its own kernelspec. Ganymede is tested on

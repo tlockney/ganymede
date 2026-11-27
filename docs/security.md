@@ -332,6 +332,14 @@ app's own pages:
   has `..`, an encoded or raw slash or backslash, an empty segment or a
   NUL, so a page can't name `mcp` or `api/host` on the machine by
   climbing out of an allowed path.
+- The one part of `api/host` the allowlist has is `api/host/grants`, a
+  notebook's access settings. It adds nothing: the mount already forwards
+  `api/kernels`, `api/terminals` and `api/notebooks/run` with the
+  machine's token, so a page that may call the mount can already run code
+  on the machine. The rest of `api/host` is the cells' own host API, which
+  a machine's kernels call on the machine, and stays refused. A machine's
+  own pages hold no token and run in the sandbox, so a notebook there
+  can't set its own grant through the mount.
 - The page's `Cookie`, token, `Origin`, `Referer` and `_xsrf` are removed
   before forwarding, so no local credential reaches the machine (and its
   tailnet `same_origin` check passes).

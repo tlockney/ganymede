@@ -28,6 +28,11 @@ pub struct Kernelspec {
     pub name: String,
     #[serde(skip)]
     pub resource_dir: PathBuf,
+    /// Listed by a gateway, so its kernels run on the remote server. Set by
+    /// the source that lists it, not read from `kernel.json`, and left out
+    /// of the spec as a gateway or an app sends it.
+    #[serde(skip)]
+    pub gateway: bool,
     pub argv: Vec<String>,
     /// Defaults to `""` when absent, as in `jupyter_client.KernelSpec`.
     #[serde(default)]

@@ -74,6 +74,7 @@ fn state_specs(
     let spec = Kernelspec {
         name: "fake".into(),
         resource_dir: root.into(),
+        gateway: false,
         argv: vec!["fake".into()],
         display_name: "Fake".into(),
         language: "fake".into(),
@@ -4743,6 +4744,439 @@ fn code_cell(id: Option<&str>, src: &str, tags: &[&str]) -> Value {
     c
 }
 
+/// What the guarded-run tests share (#943): a kernel held on cell `s`
+/// (`sleep` for ten minutes) while a batch queues behind it, so the batch
+/// can be edited before its turn. `release` interrupts `s`.
+struct Held {
+    app: axum::Router,
+    kid: String,
+    doc: String,
+    sid: String,
+    watch: RoomWatch,
+}
+
+impl Held {
+    async fn new(dir: &std::path::Path, name: &str, cells: Vec<Value>) -> Held {
+        let app = mcp_app(dir);
+        let (kid, doc) = room_source_setup(&app, dir, name, 5, Value::Array(cells)).await;
+        let sid = mcp_connect(&app, "agent").await;
+        mcp_tool(&app, &sid, "notebook_open", json!({"path": name})).await;
+        let watch = RoomWatch::open(&app, name).await;
+        Held {
+            app,
+            kid,
+            doc,
+            sid,
+            watch,
+        }
+    }
+
+    async fn execute(&self, body: Value) -> (StatusCode, Value) {
+        let mut b = json!({"document_id": self.doc});
+        b.as_object_mut()
+            .unwrap()
+            .extend(body.as_object().unwrap().clone());
+        call(
+            &self.app,
+            "POST",
+            &format!("/api/kernels/{}/execute", self.kid),
+            Some(b),
+            Some(TOKEN),
+        )
+        .await
+    }
+
+    async fn edit(&self, id: &str, source: &str) {
+        let v = mcp_tool(
+            &self.app,
+            &self.sid,
+            "cell_edit",
+            json!({"id": id, "source": source}),
+        )
+        .await;
+        assert!(!mcp_text(&v).is_empty());
+    }
+
+    /// Interrupt the kernel until the held cell `s` ends: an interrupt
+    /// that comes before the cell starts is lost, so it is repeated.
+    async fn release(&mut self, held: &str) {
+        let url = format!("/api/kernels/{}/interrupt", self.kid);
+        for _ in 0..200 {
+            let (s, _) = call(&self.app, "POST", &url, None, Some(TOKEN)).await;
+            assert_eq!(s, StatusCode::NO_CONTENT);
+            let idle = tokio::time::timeout(
+                Duration::from_millis(50),
+                self.watch.until(held, "idle", None),
+            )
+            .await;
+            if idle.is_ok() {
+                return;
+            }
+        }
+        panic!("the held cell never ended");
+    }
+
+    /// Hold the kernel on `s`, queue `body` behind it and wait for it to
+    /// be queued, run `edits`, release the kernel and return the answer
+    /// to `body`.
+    async fn run_behind_hold(
+        &mut self,
+        first: &str,
+        body: Value,
+        edits: &[(&str, &str)],
+    ) -> (StatusCode, Value) {
+        let (s, v) = self.execute(json!({"cells": [{"cell_id": "s"}]})).await;
+        assert_eq!((s, v), (StatusCode::OK, Value::Null));
+        let queued = tokio::spawn({
+            let (app, kid, doc) = (self.app.clone(), self.kid.clone(), self.doc.clone());
+            async move {
+                let mut b = json!({"document_id": doc, "wait": 15});
+                b.as_object_mut()
+                    .unwrap()
+                    .extend(body.as_object().unwrap().clone());
+                call(
+                    &app,
+                    "POST",
+                    &format!("/api/kernels/{kid}/execute"),
+                    Some(b),
+                    Some(TOKEN),
+                )
+                .await
+            }
+        });
+        // Queued: the room shows the first cell running.
+        self.watch
+            .until(first, "running", Some("an API client"))
+            .await;
+        for (id, source) in edits {
+            self.edit(id, source).await;
+        }
+        self.release("s").await;
+        queued.await.unwrap()
+    }
+}
+
+fn hash_of(src: &str) -> String {
+    ganymede_documents::murmur2(src.as_bytes(), 0).to_string()
+}
+
+/// A guarded request whose cell changed while it waited is not run at its
+/// turn: the cell shows why in the room, `wait` lists it, and the cells
+/// after it don't run (#943).
+#[tokio::test]
+async fn execute_guarded_cell_changed_while_queued_is_not_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Held::new(
+        dir.path(),
+        "g.ipynb",
+        vec![
+            code_cell(Some("s"), "sleep 600000", &[]),
+            code_cell(Some("a"), "one", &[]),
+            code_cell(Some("b"), "two", &[]),
+            code_cell(Some("c"), "three", &[]),
+        ],
+    )
+    .await;
+    let guarded = |id: &str, src: &str| json!({"cell_id": id, "source_hash": hash_of(src)});
+    let (s, v) = h
+        .run_behind_hold(
+            "a",
+            json!({"cells": [guarded("a", "one"), guarded("b", "two"), guarded("c", "three")]}),
+            &[("b", "edited")],
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert_eq!(v["finished"], true, "{v:#}");
+    assert_eq!(
+        v["skipped"],
+        json!([{"cell_id": "b", "error": "source_changed_while_queued",
+                "message": "Cell changed while queued"}]),
+        "{v:#}"
+    );
+    let cells = v["cells"].as_array().unwrap();
+    assert!(cells[0]["outputs"].to_string().contains("one"), "{v:#}");
+    for i in [1, 2] {
+        assert_eq!(cells[i]["outputs"], json!([]), "{v:#}");
+        assert_eq!(cells[i]["execution_count"], Value::Null, "{v:#}");
+    }
+    assert_eq!(cells[1]["source"], "edited");
+    assert!(!v.to_string().contains("three\\n"), "{v:#}");
+    // The room says why b did not run, and says nothing of c, which was
+    // skipped behind it, or of a, which ran.
+    h.watch
+        .until_field("b", "execution_skipped", Some("Cell changed while queued"))
+        .await;
+    h.watch.until("b", "idle", None).await;
+    h.watch.until("c", "idle", None).await;
+    assert_eq!(h.watch.field("c", "execution_skipped"), None);
+    assert_eq!(h.watch.field("a", "execution_skipped"), None);
+    // It is not in the notebook the room answers with either.
+    let (_, nb) = call(
+        &h.app,
+        "GET",
+        "/api/contents/g.ipynb?content=1",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert!(!nb.to_string().contains("execution_skipped"), "{nb}");
+
+    // Queued again, the note goes, and the edited source runs.
+    let (s, v) = h
+        .execute(json!({"wait": 15, "cells": [guarded("b", "edited")]}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert!(v["cells"][0]["outputs"].to_string().contains("edited"));
+    assert!(v.get("skipped").is_none(), "{v:#}");
+    h.watch.until_field("b", "execution_skipped", None).await;
+}
+
+/// The same edit, with no hashes: the cell runs the source it has at its
+/// turn, as before (#943).
+#[tokio::test]
+async fn execute_unguarded_cell_changed_while_queued_runs_the_new_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Held::new(
+        dir.path(),
+        "u.ipynb",
+        vec![
+            code_cell(Some("s"), "sleep 600000", &[]),
+            code_cell(Some("a"), "one", &[]),
+            code_cell(Some("b"), "two", &[]),
+            code_cell(Some("c"), "three", &[]),
+        ],
+    )
+    .await;
+    let (s, v) = h
+        .run_behind_hold(
+            "a",
+            json!({"cells": [{"cell_id": "a"}, {"cell_id": "b"}, {"cell_id": "c"}]}),
+            &[("b", "edited")],
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert_eq!(v["finished"], true, "{v:#}");
+    assert!(v.get("skipped").is_none(), "{v:#}");
+    let out = |i: usize| v["cells"][i]["outputs"].to_string();
+    assert!(out(0).contains("one") && out(1).contains("edited") && out(2).contains("three"));
+    h.watch.until("c", "idle", None).await;
+    assert_eq!(h.watch.field("b", "execution_skipped"), None);
+}
+
+/// A cell edited while it runs keeps its outputs, and records the hash of
+/// the source that ran, not the edited one; the hash is saved (#943).
+#[tokio::test]
+async fn execute_records_the_hash_of_the_source_that_ran() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cell = code_cell(Some("s"), "sleep 600000", &[]);
+    cell["metadata"]["ganymede"] = json!({"keep": true});
+    let mut h = Held::new(dir.path(), "r.ipynb", vec![cell]).await;
+    let ran = hash_of("sleep 600000");
+    let running = tokio::spawn({
+        let (app, kid, doc) = (h.app.clone(), h.kid.clone(), h.doc.clone());
+        async move {
+            call(
+                &app,
+                "POST",
+                &format!("/api/kernels/{kid}/execute"),
+                Some(json!({"document_id": doc, "wait": 15,
+                            "cells": [{"cell_id": "s", "source_hash": ran}]})),
+                Some(TOKEN),
+            )
+            .await
+        }
+    });
+    // On the kernel: its source was read before it went busy.
+    let url = format!("/api/kernels/{}", h.kid);
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let (_, k) = call(&h.app, "GET", &url, None, Some(TOKEN)).await;
+        if k["execution_state"] == "busy" {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "the cell never ran");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    h.edit("s", "sleep 5").await;
+    h.release("s").await;
+    let (s, v) = running.await.unwrap();
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert!(v.get("skipped").is_none(), "{v:#}");
+    let cell = &v["cells"][0];
+    assert_eq!(cell["source"], "sleep 5", "{v:#}");
+    // The edit's own `ganymede` keys (`agent`) and the cell's stay.
+    let g = &cell["metadata"]["ganymede"];
+    assert_eq!(g["ran_source_hash"], hash_of("sleep 600000"), "{v:#}");
+    assert_eq!(g["keep"], true, "{v:#}");
+    assert!(g["agent"].is_object(), "{v:#}");
+    assert_ne!(
+        cell["metadata"]["ganymede"]["ran_source_hash"],
+        hash_of("sleep 5")
+    );
+    // Saved with the notebook.
+    let file = dir.path().join("r.ipynb");
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let text = std::fs::read_to_string(&file).unwrap_or_default();
+        if text.contains(&format!(
+            "\"ran_source_hash\": \"{}\"",
+            hash_of("sleep 600000")
+        )) {
+            assert!(text.contains("\"keep\": true"), "{text}");
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "never saved: {text}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// `cell_clear_outputs` drops the outputs, so the hash of the source that
+/// made them goes too, in the room and in the saved file (#943).
+#[tokio::test]
+async fn mcp_clearing_outputs_clears_the_ran_source_hash() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Held::new(
+        dir.path(),
+        "k.ipynb",
+        vec![
+            code_cell(Some("s"), "sleep 600000", &[]),
+            code_cell(Some("a"), "one", &[]),
+        ],
+    )
+    .await;
+    let (s, v) = h
+        .execute(json!({"wait": 15, "cells": [{"cell_id": "a"}]}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert_eq!(
+        v["cells"][0]["metadata"]["ganymede"]["ran_source_hash"],
+        hash_of("one"),
+        "{v:#}"
+    );
+    h.watch
+        .until_shows("the hash on a", |w| w.ran_hash("a").is_some())
+        .await;
+    let file = dir.path().join("k.ipynb");
+    let saved_hash = || {
+        let nb: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap_or_default())
+            .unwrap_or(Value::Null);
+        nb["cells"][1]["metadata"]["ganymede"]["ran_source_hash"].clone()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while saved_hash() != json!(hash_of("one")) {
+        assert!(std::time::Instant::now() < deadline, "never saved");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let out = mcp_text(&mcp_tool(&h.app, &h.sid, "cell_clear_outputs", json!({"id": "a"})).await);
+    assert!(!out.is_empty());
+    h.watch
+        .until_shows("no hash on a", |w| w.ran_hash("a").is_none())
+        .await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while saved_hash() != Value::Null {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the hash stayed in the file"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// A cell the kernel never acknowledged (no `execute_input`) records no
+/// hash, in the answer or the room (#943).
+#[tokio::test]
+async fn execute_a_cell_with_no_execute_input_records_no_hash() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Held::new(
+        dir.path(),
+        "q.ipynb",
+        vec![
+            code_cell(Some("s"), "sleep 600000", &[]),
+            code_cell(Some("q"), "quiet 1", &[]),
+            code_cell(Some("a"), "one", &[]),
+        ],
+    )
+    .await;
+    let (s, v) = h
+        .execute(json!({"wait": 15, "cells": [{"cell_id": "q"}, {"cell_id": "a"}]}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    let cells = v["cells"].as_array().unwrap();
+    assert!(
+        cells[0]["metadata"]["ganymede"]
+            .get("ran_source_hash")
+            .is_none(),
+        "{v:#}"
+    );
+    // A cell that was acknowledged does record it.
+    assert_eq!(
+        cells[1]["metadata"]["ganymede"]["ran_source_hash"],
+        hash_of("one"),
+        "{v:#}"
+    );
+    h.watch
+        .until_shows("the hash on a", |w| w.ran_hash("a").is_some())
+        .await;
+    assert_eq!(h.watch.ran_hash("q"), None);
+}
+
+/// A guarded cell deleted while queued ends the batch as a change: the
+/// cells after it don't run and `skipped` lists it (#943).
+#[tokio::test]
+async fn execute_guarded_cell_deleted_while_queued_stops_the_batch() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Held::new(
+        dir.path(),
+        "d.ipynb",
+        vec![
+            code_cell(Some("s"), "sleep 600000", &[]),
+            code_cell(Some("a"), "one", &[]),
+            code_cell(Some("b"), "two", &[]),
+        ],
+    )
+    .await;
+    let guarded = |id: &str, src: &str| json!({"cell_id": id, "source_hash": hash_of(src)});
+    let (s, v) = h.execute(json!({"cells": [{"cell_id": "s"}]})).await;
+    assert_eq!((s, v), (StatusCode::OK, Value::Null));
+    let queued = tokio::spawn({
+        let (app, kid, doc) = (h.app.clone(), h.kid.clone(), h.doc.clone());
+        let body = json!({"document_id": doc, "wait": 15,
+            "cells": [guarded("a", "one"), guarded("b", "two")]});
+        async move {
+            call(
+                &app,
+                "POST",
+                &format!("/api/kernels/{kid}/execute"),
+                Some(body),
+                Some(TOKEN),
+            )
+            .await
+        }
+    });
+    h.watch.until("a", "running", Some("an API client")).await;
+    let out = mcp_text(&mcp_tool(&h.app, &h.sid, "cell_delete", json!({"id": "a"})).await);
+    assert!(!out.is_empty());
+    h.release("s").await;
+    let (s, v) = queued.await.unwrap();
+    assert_eq!(s, StatusCode::OK, "{v:#}");
+    assert_eq!(v["finished"], true, "{v:#}");
+    let skipped = v["skipped"].as_array().expect("skipped");
+    assert_eq!(skipped.len(), 1, "{v:#}");
+    assert_eq!(skipped[0]["cell_id"], "a", "{v:#}");
+    assert_eq!(skipped[0]["error"], "source_changed_while_queued", "{v:#}");
+    h.watch.until("b", "idle", None).await;
+    let b = v["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "b")
+        .unwrap_or_else(|| panic!("b is in the answer: {v:#}"));
+    assert_eq!(b["source"], "two", "{v:#}");
+    assert_eq!(b["outputs"], json!([]), "{v:#}");
+    assert_eq!(b["execution_count"], Value::Null, "{v:#}");
+}
+
 /// An id with no hash runs the room's current source, edits not yet saved
 /// included; the file's hash no longer matches the room (#843).
 #[tokio::test]
@@ -5273,6 +5707,14 @@ impl RoomWatch {
 
     /// The cell's `(execution_state, execution_by)` in the synced room.
     fn shown(&self, id: &str) -> (Option<String>, Option<String>) {
+        (
+            self.field(id, "execution_state"),
+            self.field(id, "execution_by"),
+        )
+    }
+
+    /// A string field of the cell in the synced room.
+    fn field(&self, id: &str, key: &str) -> Option<String> {
         use ganymede_documents::schema::Roots;
         use ganymede_documents::yrs::{Any, Array, Map, Out, Transact};
         let roots = Roots::get(&self.doc);
@@ -5284,18 +5726,55 @@ impl RoomWatch {
             if !matches!(cell.get(&txn, "id"), Some(Out::Any(Any::String(s))) if &*s == id) {
                 continue;
             }
-            let text = |key: &str| match cell.get(&txn, key) {
+            return match cell.get(&txn, key) {
                 Some(Out::Any(Any::String(s))) => Some(s.to_string()),
                 _ => None,
             };
-            return (text("execution_state"), text("execution_by"));
         }
-        (None, None)
+        None
+    }
+
+    /// The cell's `metadata.ganymede.ran_source_hash` in the synced room.
+    fn ran_hash(&self, id: &str) -> Option<String> {
+        use ganymede_documents::schema::Roots;
+        use ganymede_documents::yrs::{Any, Array, Map, Out, Transact};
+        let roots = Roots::get(&self.doc);
+        let txn = self.doc.transact();
+        for i in 0..roots.cells.len(&txn) {
+            let Some(Out::YMap(cell)) = roots.cells.get(&txn, i) else {
+                continue;
+            };
+            if !matches!(cell.get(&txn, "id"), Some(Out::Any(Any::String(s))) if &*s == id) {
+                continue;
+            }
+            let meta = ganymede_documents::schema::out_to_json(&txn, &cell.get(&txn, "metadata")?);
+            return meta["ganymede"]["ran_source_hash"]
+                .as_str()
+                .map(str::to_string);
+        }
+        None
     }
 
     /// Follow the room until the cell shows `(state, by)`; the sequence of
     /// distinct values seen is not asserted, only that this one arrives.
     async fn until(&mut self, id: &str, state: &str, by: Option<&str>) {
+        let want = (Some(state.to_string()), by.map(str::to_string));
+        self.until_shows(&format!("({state}, {by:?}) of {id}"), |w| {
+            w.shown(id) == want
+        })
+        .await;
+    }
+
+    /// Follow the room until the cell's string field `key` is `want`.
+    async fn until_field(&mut self, id: &str, key: &str, want: Option<&str>) {
+        let want = want.map(str::to_string);
+        self.until_shows(&format!("{key} {want:?} of {id}"), |w| {
+            w.field(id, key) == want
+        })
+        .await;
+    }
+
+    async fn until_shows(&mut self, what: &str, shows: impl Fn(&RoomWatch) -> bool) {
         use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
         use ganymede_documents::yrs::updates::decoder::Decode;
         use ganymede_documents::yrs::updates::encoder::Encode;
@@ -5304,13 +5783,12 @@ impl RoomWatch {
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
-            let seen = self.shown(id);
-            if seen.0.as_deref() == Some(state) && seen.1.as_deref() == by {
+            if shows(self) {
                 return;
             }
             let msg = tokio::time::timeout_at(deadline, self.ws.next())
                 .await
-                .unwrap_or_else(|_| panic!("wanted ({state}, {by:?}), room has {seen:?}"))
+                .unwrap_or_else(|_| panic!("the room never showed {what}"))
                 .unwrap()
                 .unwrap();
             let TMsg::Binary(b) = msg else { continue };
@@ -10162,8 +10640,10 @@ async fn notebooks_run_saves_a_copy_under_runs() {
         std::fs::write(path, serde_json::to_string_pretty(&nb).unwrap()).unwrap();
     };
     write("reports/daily.ipynb", vec![code("a", "result total 42")]);
-    // The cell after the failure keeps an older run's output in the file.
-    let stale = json!({"cell_type": "code", "execution_count": 7, "id": "c", "metadata": {},
+    // The cell after the failure keeps an older run's output and hash in
+    // the file.
+    let stale = json!({"cell_type": "code", "execution_count": 7, "id": "c",
+        "metadata": {"ganymede": {"ran_source_hash": "old"}},
         "outputs": [{"output_type": "stream", "name": "stdout", "text": "older run"}],
         "source": "result second 2"});
     write(
@@ -10197,6 +10677,12 @@ async fn notebooks_run_saves_a_copy_under_runs() {
     let saved = read(&copy);
     assert_eq!(saved["cells"][0]["execution_count"], 1, "{saved:#}");
     assert!(!saved["cells"][0]["outputs"].as_array().unwrap().is_empty());
+    // The run records the hash of the source each cell ran.
+    assert_eq!(
+        saved["cells"][0]["metadata"]["ganymede"]["ran_source_hash"],
+        json!(hash_of("result total 42")),
+        "{saved:#}"
+    );
     assert_eq!(
         saved["metadata"]["ganymede"]["params"],
         json!({"day": "mon"})
@@ -10238,6 +10724,12 @@ async fn notebooks_run_saves_a_copy_under_runs() {
     );
     assert_eq!(saved["cells"][2]["outputs"], json!([]), "{saved:#}");
     assert_eq!(saved["cells"][2]["execution_count"], Value::Null);
+    // The cell the run never started loses the hash an older run left.
+    assert_eq!(
+        saved["cells"][2]["metadata"]["ganymede"]["ran_source_hash"],
+        Value::Null,
+        "{saved:#}"
+    );
 
     // Without save, nothing is written.
     let (_, v) = run(json!({"path": "reports/daily.ipynb"})).await;
@@ -10622,6 +11114,412 @@ async fn collaboration_rooms_needs_the_same_auth_as_the_other_routes() {
     // Only a GET: the list takes no writes.
     let (s, _) = call(&app, "PUT", "/api/collaboration/rooms", None, Some(TOKEN)).await;
     assert_eq!(s, StatusCode::METHOD_NOT_ALLOWED);
+}
+
+/// The part of recovery dir `recovery` that a server on `root` uses.
+fn recovery_of(recovery: &std::path::Path, root: &std::path::Path) -> std::path::PathBuf {
+    use sha2::Digest;
+    let root = root.canonicalize().unwrap();
+    let key = sha2::Sha256::digest(root.as_os_str().as_encoded_bytes());
+    recovery.join(hex::encode(key))
+}
+
+/// A recovery copy `id` of `path` under `root`, written to its dir as the
+/// server does. The copy's `file` says which root holds it, which is how
+/// a server finds copies across roots (#945).
+fn recovery_copy(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    id: &str,
+    path: &str,
+    reason: &str,
+    source: &str,
+) {
+    std::fs::create_dir_all(dir).unwrap();
+    let nb = json!({"cells": [{"cell_type": "markdown", "id": "a", "metadata": {}, "source": source}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5});
+    std::fs::write(dir.join(format!("{id}.ipynb")), nb.to_string()).unwrap();
+    let meta = json!({"path": path, "at": "2026-11-25T10:00:00Z", "reason": reason,
+        "file": root.canonicalize().unwrap().join(path), "detail": "cell a", "cells": ["a"],
+        "notebook": format!("{id}.ipynb")});
+    std::fs::write(dir.join(format!("{id}.json")), meta.to_string()).unwrap();
+}
+
+const OLD_COPY: &str = "0000000000000001-aaaaaaaa";
+const NEW_COPY: &str = "0000000000000002-bbbbbbbb";
+const GONE_COPY: &str = "0000000000000000-cccccccc";
+
+fn recovery_app(root: &std::path::Path, recovery: &std::path::Path) -> axum::Router {
+    let mut st = state(root);
+    st.collab = Arc::new(
+        ganymede_server::collab::Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            root.canonicalize().ok(),
+        )
+        .with_recovery_dir(recovery.to_path_buf()),
+    );
+    build_router(st)
+}
+
+/// The recovery routes list, return and discard copies, and take only
+/// ids the server makes (#945).
+#[tokio::test]
+async fn collaboration_recovery_lists_returns_and_discards_copies() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let all = data.path().join("recovery");
+    let rec = recovery_of(&all, dir.path());
+    recovery_copy(dir.path(), &rec, OLD_COPY, "a.ipynb", "save_failed", "old");
+    recovery_copy(
+        dir.path(),
+        &rec,
+        NEW_COPY,
+        "a.ipynb",
+        "merge_conflict",
+        "new",
+    );
+    recovery_copy(
+        dir.path(),
+        &rec,
+        "0000000000000003-cccccccc",
+        "b.ipynb",
+        "file_gone",
+        "b",
+    );
+    let app = recovery_app(dir.path(), &all);
+
+    let (s, v) = call(
+        &app,
+        "GET",
+        "/api/collaboration/recovery?path=a.ipynb",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let ids: Vec<&str> = v["copies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, [NEW_COPY, OLD_COPY], "newest first, only this path's");
+    assert_eq!(v["copies"][0]["reason"], "merge_conflict");
+    assert!(v["copies"][0].get("content").is_none(), "metadata only");
+    assert!(v["copies"][0].get("file").is_none(), "no server path");
+    let (s, _) = call(
+        &app,
+        "GET",
+        "/api/collaboration/recovery",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    let (s, v) = call(
+        &app,
+        "GET",
+        &format!("/api/collaboration/recovery/{NEW_COPY}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["path"], "a.ipynb");
+    assert!(v.get("file").is_none(), "no server path");
+    assert_eq!(v["content"]["cells"][0]["source"], "new");
+
+    // Ids that are not the server's are refused before any file is named.
+    for bad in [
+        "..",
+        "..%2F..%2Fetc%2Fpasswd",
+        "a%2Fb",
+        "%2e%2e",
+        "ABCDEFABCDEFABCD-ABCDEFAB",
+        "0000000000000001-aaaaaaa.json",
+        "x%20y",
+    ] {
+        for method in ["GET", "DELETE"] {
+            let (s, _) = call(
+                &app,
+                method,
+                &format!("/api/collaboration/recovery/{bad}"),
+                None,
+                Some(TOKEN),
+            )
+            .await;
+            assert_eq!(s, StatusCode::BAD_REQUEST, "{method} {bad}");
+        }
+    }
+    let (s, _) = call(
+        &app,
+        "GET",
+        "/api/collaboration/recovery/a/b",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = call(
+        &app,
+        "GET",
+        "/api/collaboration/recovery/0000000000000009-dddddddd",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    let (s, _) = call(
+        &app,
+        "DELETE",
+        &format!("/api/collaboration/recovery/{OLD_COPY}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    assert!(!rec.join(format!("{OLD_COPY}.ipynb")).exists());
+    assert!(!rec.join(format!("{OLD_COPY}.json")).exists());
+    assert!(rec.join(format!("{NEW_COPY}.json")).exists());
+    let (s, _) = call(
+        &app,
+        "DELETE",
+        &format!("/api/collaboration/recovery/{OLD_COPY}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = call(
+        &app,
+        "GET",
+        &format!("/api/collaboration/recovery/{OLD_COPY}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+/// The recovery routes need what `/api/contents` needs, and a server
+/// with no recovery dir answers 404.
+#[tokio::test]
+async fn collaboration_recovery_needs_the_same_auth_as_contents() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let all = data.path().join("recovery");
+    let rec = recovery_of(&all, dir.path());
+    recovery_copy(dir.path(), &rec, NEW_COPY, "a.ipynb", "save_failed", "new");
+    let app = recovery_app(dir.path(), &all);
+    let (contents, _) = call(&app, "GET", "/api/contents", None, None).await;
+    assert_eq!(contents, StatusCode::FORBIDDEN);
+    for (method, uri) in [
+        (
+            "GET",
+            "/api/collaboration/recovery?path=a.ipynb".to_string(),
+        ),
+        ("GET", format!("/api/collaboration/recovery/{NEW_COPY}")),
+        ("DELETE", format!("/api/collaboration/recovery/{NEW_COPY}")),
+    ] {
+        let (s, _) = call(&app, method, &uri, None, None).await;
+        assert_eq!(s, contents, "{method} {uri} without a token");
+        let (s, _) = call(&app, method, &uri, None, Some("wrong")).await;
+        assert_eq!(s, contents, "{method} {uri} with a wrong token");
+    }
+    assert!(
+        rec.join(format!("{NEW_COPY}.json")).exists(),
+        "an unauthenticated delete deleted"
+    );
+
+    let bare = build_router(state(dir.path()));
+    let (s, _) = call(
+        &bare,
+        "GET",
+        "/api/collaboration/recovery?path=a.ipynb",
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+/// A room names its notebook's newest recovery copy in `state.recovery`
+/// when it opens, and stops when the copy is discarded (#945).
+#[tokio::test]
+async fn collaboration_room_names_its_recovery_copy_until_it_is_discarded() {
+    use ganymede_documents::schema::Roots;
+    use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
+    use ganymede_documents::yrs::updates::decoder::Decode;
+    use ganymede_documents::yrs::updates::encoder::Encode;
+    use ganymede_documents::yrs::{Doc, Map, Out, ReadTxn, Transact, Update};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("a.ipynb"),
+        json!({"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}).to_string(),
+    )
+    .unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let all = data.path().join("recovery");
+    let rec = recovery_of(&all, dir.path());
+    recovery_copy(dir.path(), &rec, OLD_COPY, "a.ipynb", "save_failed", "old");
+    recovery_copy(
+        dir.path(),
+        &rec,
+        NEW_COPY,
+        "a.ipynb",
+        "merge_conflict",
+        "new",
+    );
+    recovery_copy(dir.path(), &rec, GONE_COPY, "a.ipynb", "file_gone", "gone");
+    let app = recovery_app(dir.path(), &all);
+    let (s, v) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/a.ipynb",
+        Some(json!({"format": "json", "type": "notebook"})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let served = app.clone();
+    tokio::spawn(async move { axum::serve(listener, served).await.unwrap() });
+    let mut req = format!(
+        "ws://{addr}/api/collaboration/room/json:notebook:{}?sessionId={}",
+        v["fileId"].as_str().unwrap(),
+        v["sessionId"].as_str().unwrap()
+    )
+    .into_client_request()
+    .unwrap();
+    req.headers_mut()
+        .insert("Authorization", format!("token {TOKEN}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let doc = Doc::new();
+    let roots = Roots::get(&doc);
+    ws.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::SyncStep1(doc.transact().state_vector()))
+            .encode_v1()
+            .into(),
+    ))
+    .await
+    .unwrap();
+    // The recovery summary's id in the client's copy of the state map.
+    let recovery_id = |doc: &Doc| -> Option<String> {
+        let txn = doc.transact();
+        let Some(Out::Any(any)) = roots.state.get(&txn, "recovery") else {
+            return None;
+        };
+        let v = ganymede_documents::schema::any_to_json(&any);
+        Some(v["id"].as_str().unwrap().to_string())
+    };
+    async fn next<S>(ws: &mut S, doc: &Doc)
+    where
+        S: futures::Stream<Item = Result<TMsg, tokio_tungstenite::tungstenite::Error>> + Unpin,
+    {
+        let msg = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .expect("timed out waiting for the room")
+            .unwrap()
+            .unwrap();
+        let TMsg::Binary(b) = msg else { return };
+        if let Ok(YMsg::Sync(SyncMessage::SyncStep2(u) | SyncMessage::Update(u))) =
+            YMsg::decode_v1(&b)
+        {
+            doc.transact_mut()
+                .apply_update(Update::decode_v1(&u).unwrap())
+                .unwrap();
+        }
+    }
+    while recovery_id(&doc).is_none() {
+        next(&mut ws, &doc).await;
+    }
+    assert_eq!(recovery_id(&doc).as_deref(), Some(NEW_COPY));
+    let summary = {
+        let txn = doc.transact();
+        let Some(Out::Any(any)) = roots.state.get(&txn, "recovery") else {
+            panic!()
+        };
+        ganymede_documents::schema::any_to_json(&any)
+    };
+    assert_eq!(
+        (summary["reason"].as_str(), &summary["cells"]),
+        (Some("merge_conflict"), &json!(["a"]))
+    );
+
+    // A copy another server on the same root discarded or pruned is gone
+    // from the store while this server's room still names it: reading it
+    // answers 404 and the room takes the newest copy of its path left.
+    for name in [format!("{NEW_COPY}.json"), format!("{NEW_COPY}.ipynb")] {
+        std::fs::remove_file(rec.join(name)).unwrap();
+    }
+    let (s, _) = call(
+        &app,
+        "GET",
+        &format!("/api/collaboration/recovery/{NEW_COPY}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    while recovery_id(&doc).as_deref() != Some(OLD_COPY) {
+        next(&mut ws, &doc).await;
+    }
+    // Discarding the one left by the route names the oldest.
+    let (s, _) = call(
+        &app,
+        "DELETE",
+        &format!("/api/collaboration/recovery/{OLD_COPY}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    while recovery_id(&doc).as_deref() != Some(GONE_COPY) {
+        next(&mut ws, &doc).await;
+    }
+    // A read that finds none left clears the name.
+    for name in [format!("{GONE_COPY}.json"), format!("{GONE_COPY}.ipynb")] {
+        std::fs::remove_file(rec.join(name)).unwrap();
+    }
+    let (s, _) = call(
+        &app,
+        "GET",
+        &format!("/api/collaboration/recovery/{GONE_COPY}"),
+        None,
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    while recovery_id(&doc).is_some() {
+        next(&mut ws, &doc).await;
+    }
+}
+
+/// Servers on two roots share a recovery dir and not their copies, the
+/// same relative path included (#945).
+#[tokio::test]
+async fn collaboration_recovery_is_per_root() {
+    let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let data = tempfile::tempdir().unwrap();
+    let rec = recovery_of(data.path(), one.path());
+    recovery_copy(one.path(), &rec, NEW_COPY, "a.ipynb", "save_failed", "new");
+    let uri = format!("/api/collaboration/recovery/{NEW_COPY}");
+    let other = recovery_app(two.path(), data.path());
+    let list = "/api/collaboration/recovery?path=a.ipynb";
+    let (s, v) = call(&other, "GET", list, None, Some(TOKEN)).await;
+    assert_eq!((s, &v["copies"]), (StatusCode::OK, &json!([])));
+    for method in ["GET", "DELETE"] {
+        let (s, _) = call(&other, method, &uri, None, Some(TOKEN)).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{method}");
+    }
+    let mine = recovery_app(one.path(), data.path());
+    let (s, v) = call(&mine, "GET", &uri, None, Some(TOKEN)).await;
+    assert_eq!((s, v["path"].as_str()), (StatusCode::OK, Some("a.ipynb")));
 }
 
 // ----- tailnet identity (#816) ------------------------------------------------

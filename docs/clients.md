@@ -85,6 +85,11 @@ can land at a stale index, and it drops `execute_result` outputs it
 reads from a room ([#296](https://github.com/tlockney/ganymede/issues/296));
 see [Agents with nb-cli](agents.md#connect-nb-cli).
 
+A client that sends each cell's `source_hash` without `wait`, as nb-cli
+does, gets no error for a cell that [changed while
+queued](rooms.md#a-cell-that-changed-while-queued): it sees the cell go
+idle with no outputs, unless it reads `execution_skipped` in the room.
+
 ### Embeddable / libraries
 
 | Client | Maintained | Talks to | Against Ganymede |

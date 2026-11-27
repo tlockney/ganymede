@@ -87,6 +87,30 @@ its login cookie, or an allowed tailnet login, and anyone when auth is
 off. Those callers can already start kernels.
 `GET /api/kernelspecs/{name}` returns the same model for one kernelspec.
 
+When kernels run on a [gateway](reference.md#gateway), the answer has two
+more keys that `jupyter_server` doesn't send:
+
+A spec for a kernel that runs on that server has `"gateway": true` beside
+`resource_dir`, and one for a kernel of this machine's leaves the key out.
+Beside `kernelspecs`, the answer says how the gateway is doing:
+
+```json
+{
+  "gateway": {
+    "name": "work-laptop",
+    "reachable": false,
+    "error": "gateway: error sending request"
+  }
+}
+```
+
+`name` is `--gateway-name` or the URL's host, never its path, query or
+token. `reachable` is false while the gateway doesn't answer, and `error`
+then says why, with the URL and token taken out. Before the server's first
+refresh ends, `reachable` is false and `error` is null: not checked yet. The kernelspecs are still
+the local ones and the last the gateway sent, so a client can say the
+remote kernels are missing rather than showing an empty list.
+
 ## Start a kernel
 
 ```http
@@ -450,13 +474,16 @@ What `ganymede serve` answers, beyond the examples above:
   `/lsp/status` and `/lsp/ws/{name}`; `jupyter-collaboration`'s
   `/api/collaboration` rooms with `/api/fileid/*`, and
   `jupyter-server-documents`' `/api/kernels/{id}/execute`, with Ganymede's
-  `wait`, room-source and `by` (who runs the cells) extensions ([Live editing and
-  document rooms](rooms.md)); `jupyter-resource-usage`'s `/api/metrics/v1`.
+  `wait`, room-source and `by` (who runs the cells) extensions
+  ([Live editing and document rooms](rooms.md)); `jupyter-resource-usage`'s `/api/metrics/v1`.
 - Ganymede's own: `/api/kernels/{id}/log`, `/api/notebooks/run`
   ([Run a notebook](#run-a-notebook),
   [Parameters and named results](reference.md#parameters-and-named-results)),
   `/api/collaboration/rooms`, which lists the open rooms ([Listing open
   rooms](rooms.md#listing-open-rooms)),
+  `/api/collaboration/recovery`, which lists, returns and discards the
+  copies of edits a room could not save ([Saving and
+  recovery](rooms.md#saving-and-recovery)),
   `/api/host/grants/{path}` ([Grant a notebook access](#grant-a-notebook-access),
   [The host API](reference.md#the-host-api)),
   and `/mcp` with `--mcp` ([Agents over MCP](mcp.md)).
@@ -469,3 +496,15 @@ client offers it, and the legacy JSON framing otherwise. JSON bodies are
 parsed whatever their `Content-Type`, because `@jupyterlab/services`
 omits the header on some requests. [Security](security.md) has how
 requests are authenticated and which `Host` and `Origin` are accepted.
+
+### Execute checks the hash again before each run
+
+`/api/kernels/{id}/execute` checks a cell's `source_hash` again when the
+cell's turn comes, and skips a cell that changed while it was queued,
+with the rest of its batch. This differs from
+`jupyter-server-documents`, which runs the source the cell has then. The
+`wait` answer lists such cells under `skipped`, the room shows
+`execution_skipped` on them (in the room only, never saved), and a cell
+that ran has the hash of its source saved as
+`metadata.ganymede.ran_source_hash`. [A cell that changed while
+queued](rooms.md#a-cell-that-changed-while-queued) has the details.

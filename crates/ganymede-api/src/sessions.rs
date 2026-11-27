@@ -425,6 +425,7 @@ mod tests {
         Kernelspec {
             name: name.into(),
             resource_dir: "/nonexistent".into(),
+            gateway: false,
             argv: vec!["fake".into()],
             display_name: format!("Fake {name}"),
             language: "fake".into(),

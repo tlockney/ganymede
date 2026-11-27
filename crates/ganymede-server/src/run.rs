@@ -248,6 +248,8 @@ pub async fn run_notebook(
     let opts = Options {
         // As `ganymede execute`: a cell that asks for input fails.
         allow_stdin: false,
+        // The run names the source each cell ran, as a room run does.
+        record_source_hash: true,
         ..Default::default()
     };
     // Cells this run started: only their outputs are its results. A cell
@@ -301,14 +303,16 @@ pub async fn run_notebook(
         answer["error"] = e.into();
     }
     // A failed run is kept too: its copy shows where it stopped. Cells
-    // the run never started lose what an older run saved in them, so
-    // the copy holds only this run's outputs (and results).
+    // the run never started lose what an older run saved in them —
+    // outputs, count, and `ran_source_hash` — so the copy holds only
+    // this run's outputs (and results).
     if request.save_copy {
         for (i, cell) in nb.cells.iter_mut().enumerate() {
             if let Cell::Code(c) = cell {
                 if !ran.contains(&i) {
                     c.outputs.clear();
                     c.execution_count = None;
+                    ganymede_exec::clear_ran_source_hash(c);
                 }
             }
         }

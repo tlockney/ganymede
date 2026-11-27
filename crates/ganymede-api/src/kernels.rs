@@ -2,7 +2,8 @@
 
 use crate::kernel_log::{KernelLog, KernelLogModel};
 use crate::{
-    now_iso, ApiError, KernelModel, KernelspecModel, KernelspecSpec, KernelspecsModel, Result,
+    now_iso, ApiError, GatewayModel, KernelModel, KernelspecModel, KernelspecSpec,
+    KernelspecsModel, Result,
 };
 use ganymede_kernel_host::protocol::{Channel, Header, Message};
 use ganymede_kernel_host::{
@@ -473,6 +474,9 @@ struct Core {
     /// What answers the host API, and the version `hello` reports. Unset,
     /// kernels get no host comm.
     host: OnceLock<(std::sync::Weak<dyn ganymede_host::Responder>, String)>,
+    /// What `/api/kernelspecs` says about the gateway. Unset, the answer
+    /// has no `gateway` key.
+    gateway: OnceLock<Arc<dyn GatewayStatus>>,
 }
 
 /// Logs kept for kernels that have been shut down or left dead.
@@ -503,6 +507,13 @@ impl Core {
     }
 }
 
+/// Where `/api/kernelspecs` finds the gateway's status, from the gateway's
+/// last refresh. The server that runs kernels on one supplies it; without
+/// one the answer has no `gateway` key.
+pub trait GatewayStatus: Send + Sync {
+    fn gateway_status(&self) -> GatewayModel;
+}
+
 pub struct KernelManager {
     specs: Arc<dyn KernelspecSource>,
     core: Arc<Core>,
@@ -525,6 +536,7 @@ impl KernelManager {
                 config,
                 ended: Mutex::default(),
                 host: OnceLock::new(),
+                gateway: OnceLock::new(),
             }),
             started: now_iso(),
         }
@@ -532,6 +544,13 @@ impl KernelManager {
 
     pub fn config(&self) -> &KernelManagerConfig {
         &self.core.config
+    }
+
+    /// Report `status` as the gateway's in `/api/kernelspecs`, beside the
+    /// kernelspecs. Set once, by the server that runs kernels on one; a
+    /// second call is ignored.
+    pub fn set_gateway_status(&self, status: Arc<dyn GatewayStatus>) {
+        let _ = self.core.gateway.set(status);
     }
 
     /// Answer the host API (`docs/host-api.md`) for kernels booted from
@@ -563,6 +582,11 @@ impl KernelManager {
                 .into_iter()
                 .map(|s| (s.name.clone(), spec_model(&s, &self.core.config.base_url)))
                 .collect(),
+            gateway: self
+                .core
+                .gateway
+                .get()
+                .map(|status| status.gateway_status()),
         })
     }
 
@@ -1297,6 +1321,7 @@ fn spec_model(s: &Kernelspec, base_url: &str) -> KernelspecModel {
         resources: spec_resources(s, base_url),
         resource_dir: (!s.resource_dir.as_os_str().is_empty())
             .then(|| s.resource_dir.to_string_lossy().into_owned()),
+        gateway: s.gateway,
     }
 }
 

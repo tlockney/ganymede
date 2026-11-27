@@ -40,8 +40,23 @@ fn request(url: &str, method: &str, path: &str, body: &str) -> String {
 /// A well-formed iopub status message.
 const STATUS: &std::ffi::CStr = c"{\"header\": {\"msg_id\": \"m\", \"msg_type\": \"status\", \"username\": \"\", \"session\": \"s\", \"date\": \"2026-01-01T00:00:00Z\", \"version\": \"5.3\"}, \"parent_header\": {}, \"metadata\": {}, \"content\": {\"execution_state\": \"idle\"}}";
 
+/// The Jupyter runtime dir for this test run's servers: a temp dir, set
+/// once before any of them starts, so their rooms lock there and not in
+/// the real one (`~/Library/Jupyter/runtime`). The servers run in this
+/// process, so the var can't be set per server as the CLI tests set it
+/// per command; set once and never changed, parallel tests can't race
+/// it. Kept, not deleted: the locks outlive the call that set it.
+fn temp_runtime_dir() {
+    static RUNTIME_DIR: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    RUNTIME_DIR.get_or_init(|| {
+        let dir = tempfile::tempdir().expect("a temp runtime dir");
+        std::env::set_var("JUPYTER_RUNTIME_DIR", dir.keep());
+    });
+}
+
 #[test]
 fn starts_serves_and_stops() {
+    temp_runtime_dir();
     let root = tempfile::tempdir().unwrap();
     let cfg = CString::new(format!(
         r#"{{"root_dir": {:?}, "cookie_secret_file": {:?}}}"#,
@@ -70,6 +85,7 @@ fn starts_serves_and_stops() {
 
 #[test]
 fn failure_returns_null_and_a_message() {
+    temp_runtime_dir();
     let cfg = CString::new(r#"{"root_dir": "/no/such/dir"}"#).unwrap();
     let mut err: *mut c_char = std::ptr::null_mut();
     let server = unsafe { ganymede_server_start(cfg.as_ptr(), &mut err) };
@@ -86,6 +102,7 @@ fn failure_returns_null_and_a_message() {
 #[cfg(not(all(feature = "zmq", feature = "subprocess")))]
 #[test]
 fn starts_with_no_kernels_without_processes() {
+    temp_runtime_dir();
     let root = tempfile::tempdir().unwrap();
     let cfg = CString::new(format!(
         r#"{{"root_dir": {:?}, "cookie_secret_file": {:?}}}"#,
@@ -220,6 +237,7 @@ fn eventually(what: &str, mut ok: impl FnMut() -> bool) {
 
 #[test]
 fn runs_a_kernel_the_app_registers() {
+    temp_runtime_dir();
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("a.ipynb"), "").unwrap();
     let cfg = CString::new(format!(
@@ -332,6 +350,7 @@ fn runs_a_kernel_the_app_registers() {
 /// the fourth leaves it dead (#844).
 #[test]
 fn a_kernel_the_platform_keeps_ending_is_left_dead() {
+    temp_runtime_dir();
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("a.ipynb"), "").unwrap();
     let cfg = CString::new(format!(
@@ -394,6 +413,7 @@ fn a_kernel_the_platform_keeps_ending_is_left_dead() {
 
 /// A server started through the C ABI, its URL and its token.
 fn start_server(root: &std::path::Path, name: &str) -> (*mut GanymedeServer, String) {
+    temp_runtime_dir();
     let cfg = CString::new(format!(
         r#"{{"root_dir": {:?}, "cookie_secret_file": {:?}, "notary_dir": {:?}}}"#,
         root,
@@ -658,4 +678,47 @@ fn reports_the_servers_writes_to_the_app() {
     assert_eq!(released(&second), 1);
     unsafe { ganymede_server_stop(server) };
     assert_eq!((released(&first), released(&second)), (1, 2), "stopped");
+}
+
+/// The server the app starts honours another process's room lock (#966):
+/// while one is held on a notebook, the app's server reports it as not
+/// writable, as a CLI server's does. (On iOS the app takes no locks.)
+#[cfg(not(target_os = "ios"))]
+#[test]
+fn the_apps_server_honours_another_servers_room_lock() {
+    use sha2::{Digest, Sha256};
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("a.ipynb"),
+        r#"{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}"#,
+    )
+    .unwrap();
+    let (server, url) = start_server(root.path(), "locks");
+    let writable = || {
+        let reply = get(&url, "/api/contents/a.ipynb?content=0");
+        assert_eq!(code(&reply), "200", "{reply}");
+        let body = &reply[reply.find("\r\n\r\n").unwrap() + 4..];
+        let model: serde_json::Value = serde_json::from_str(body).unwrap();
+        model["writable"].as_bool().unwrap()
+    };
+    assert!(writable(), "no other server owns it yet");
+
+    // Another server's room holds the lock, as room_lock.rs names it.
+    let canonical = root.path().join("a.ipynb").canonicalize().unwrap();
+    let dir = std::path::PathBuf::from(std::env::var_os("JUPYTER_RUNTIME_DIR").unwrap())
+        .join("ganymede-rooms");
+    std::fs::create_dir_all(&dir).unwrap();
+    let name = hex::encode(Sha256::digest(canonical.as_os_str().as_encoded_bytes()));
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(format!("{name}.lock")))
+        .unwrap();
+    lock.try_lock().unwrap();
+    assert!(!writable(), "another server owns it");
+
+    drop(lock);
+    assert!(writable(), "the other server let go");
+    unsafe { ganymede_server_stop(server) };
 }

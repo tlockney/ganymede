@@ -20,6 +20,13 @@ who changed a cell. Other clients with that notebook open there (an
 agent, JupyterLab) see it too. It never goes to a remote server, and
 iPad and iPhone send none.
 
+> [!NOTE]
+> **Unreleased in ganymede-ui.** Available only from a build of
+> ganymede-ui's `main`, not in its latest release: the Mac app also gives
+> the name to a connected machine's notebooks while that machine's "Show
+> my name in this machine's notebooks" setting is on, which it is by
+> default (ganymede-ui#846).
+
 From ganymede-ui 0.7.0 on, the Mac app checks for a newer release once a
 day, on by default: it
 downloads the release feed from GitHub

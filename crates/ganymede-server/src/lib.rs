@@ -9,6 +9,7 @@
 
 pub mod auth;
 pub mod collab;
+pub mod combined;
 pub mod config;
 pub mod execute;
 pub mod folder;
@@ -18,6 +19,7 @@ pub mod mcp;
 pub mod metrics;
 pub mod mount;
 mod path_locks;
+pub(crate) mod recovery;
 pub(crate) mod room_lock;
 mod room_ops;
 pub mod routes;

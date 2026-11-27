@@ -389,18 +389,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chrono"
-version = "0.4.45"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
-dependencies = [
- "iana-time-zone",
- "num-traits",
- "serde",
- "windows-link",
-]
-
-[[package]]
 name = "clap"
 version = "4.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1070,7 +1058,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-api"
-version = "0.16.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -1089,7 +1077,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-cli"
-version = "0.16.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1122,7 +1110,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-contents"
-version = "0.16.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1146,7 +1134,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-documents"
-version = "0.16.0"
+version = "0.18.0"
 dependencies = [
  "ganymede-nbformat",
  "serde_json",
@@ -1158,7 +1146,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-engine"
-version = "0.16.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "ganymede-exec",
@@ -1174,7 +1162,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-exec"
-version = "0.16.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1189,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-ffi"
-version = "0.16.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1197,7 +1185,9 @@ dependencies = [
  "ganymede-api",
  "ganymede-kernel-host",
  "ganymede-server",
+ "hex",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "tracing",
@@ -1205,7 +1195,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-gateway"
-version = "0.16.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1228,7 +1218,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-host"
-version = "0.16.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "ganymede-kernel-host",
@@ -1242,7 +1232,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-kernel-host"
-version = "0.16.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1264,7 +1254,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-lsp"
-version = "0.16.0"
+version = "0.18.0"
 dependencies = [
  "ganymede-kernel-host",
  "jiff",
@@ -1280,7 +1270,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-nbformat"
-version = "0.16.0"
+version = "0.18.0"
 dependencies = [
  "base64 0.23.1",
  "pulldown-cmark",
@@ -1293,7 +1283,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-protocol"
-version = "0.16.0"
+version = "0.18.0"
 dependencies = [
  "bytes",
  "hex",
@@ -1308,7 +1298,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-server"
-version = "0.16.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1356,7 +1346,7 @@ dependencies = [
 
 [[package]]
 name = "ganymede-terminals"
-version = "0.16.0"
+version = "0.18.0"
 dependencies = [
  "jiff",
  "portable-pty",
@@ -1604,30 +1594,6 @@ dependencies = [
  "tokio",
  "tower-service",
  "tracing",
-]
-
-[[package]]
-name = "iana-time-zone"
-version = "0.1.65"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e31bc9ad994ba00e440a8aa5c9ef0ec67d5cb5e5cb0cc7f8b744a35b389cc470"
-dependencies = [
- "android_system_properties",
- "core-foundation-sys",
- "iana-time-zone-haiku",
- "js-sys",
- "log",
- "wasm-bindgen",
- "windows-core",
-]
-
-[[package]]
-name = "iana-time-zone-haiku"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
-dependencies = [
- "cc",
 ]
 
 [[package]]
@@ -2896,19 +2862,19 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.11.0"
+version = "3.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "391f153431ab68664d946513ea0cb3edbca78eaf99c5a983036cacab6220d85b"
+checksum = "fc4fa9a7558c480e1817c0f02e9a73782001ac1f47fb9d26cc073915963282ea"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
  "bytes",
- "chrono",
  "futures",
  "http",
  "http-body",
  "http-body-util",
  "indexmap",
+ "jiff",
  "libc",
  "pastey",
  "percent-encoding",
@@ -2933,9 +2899,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp-macros"
-version = "3.11.0"
+version = "3.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3598e3f36f4af2b5219b133baf7d97a2197039225adc3d4acf3dd8805b5a2aef"
+checksum = "43c1bf063ba32333267a8bc282ec33ae0edf56bf74890118cb0c7bf910a7a1c0"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -3155,7 +3121,6 @@ version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab508826f74a77ca9d5aba6ff19b522583ee3eaf28a19384ff3d0e5835fadf6e"
 dependencies = [
- "chrono",
  "dyn-clone",
  "ref-cast",
  "schemars_derive",

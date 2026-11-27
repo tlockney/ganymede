@@ -70,6 +70,7 @@ same name in snake case, except where the last column says otherwise.
 | `--labextensions-path` | Another directory of prebuilt JupyterLab extensions, searched first. Repeatable. | `labextensions_paths` |
 | `--config-dir` | Where frontend settings and workspaces are kept. Default: the Jupyter config dir (`$JUPYTER_CONFIG_DIR`, else `~/.jupyter`). | |
 | `--gateway-url`, `--gateway-token` | Run kernels on another server; see [Gateway](#gateway). | |
+| `--gateway-name` | What to call that server in `/api/kernelspecs`. Default: the URL's host. | `gateway_name` |
 | `--kernelspec-root` | As above. | `kernelspec_roots` |
 | `--startup-timeout` | As above. | `startup_timeout_secs` |
 | `-q`, `--quiet` | As above. | `quiet` |
@@ -259,7 +260,7 @@ And the [server flags](#server-flags).
 
 | Flag | Effect |
 | --- | --- |
-| `--version <VERSION>` | ganymede-ui version, exactly. Default `0.15.0`. |
+| `--version <VERSION>` | ganymede-ui version, exactly. Default `0.17.1`. |
 | `--force` | Reinstall if this version is already installed. |
 
 ### `ui list`
@@ -373,6 +374,7 @@ trust_xheaders = false
 max_body_size = 536870912        # 512 MiB
 # gateway_url = "https://kernels.example.org"
 # gateway_token = "..."
+# gateway_name = "work-laptop"   # unset: the gateway URL's host
 terminals_enabled = true         # false: no /api/terminals
 terminal_shell = []              # empty: $SHELL -l, or powershell.exe on Windows
 mcp_enabled = false              # true: notebook tools for agents at /mcp
@@ -609,8 +611,8 @@ ganymede serve --root-dir . \
 
 ![Running kernels on another server. On your machine, a frontend talks to ganymede serve started with --gateway-url, which answers contents, sessions and trust from the notebook folder. For kernelspecs and kernels it calls the kernel server's REST API (kernelspecs, start, interrupt, restart, shut down) and relays each kernel's messages over its websocket. The kernel server, jupyter server or ganymede serve, runs the kernel processes over ZeroMQ.](images/architecture/gateway.svg)
 
-Kernelspecs come from that server (`/api/kernelspecs`, refreshed every
-minute); starting, interrupting, restarting and shutting down a kernel go
+Kernelspecs come from that server's `/api/kernelspecs` (how often is
+below); starting, interrupting, restarting and shutting down a kernel go
 through its REST API, and kernel messages through its websocket. HTTPS is
 checked against the system's trust store.
 
@@ -618,6 +620,33 @@ The token may be left out when the kernel server is a Ganymede server
 that lets this machine in by
 [tailnet identity](security.md#tailnet-identity): the gateway marks its
 requests as a program's (`Ganymede-Client`).
+
+This machine's own kernelspecs are listed beside the gateway's, so a
+kernel installed here runs here while the rest run there: the gateway's
+specs first, then every local one whose name (compared case-insensitively)
+the gateway doesn't have. A name both have is the gateway's, so a notebook
+whose kernel the server offers still runs there, as `--gateway-url` says.
+A spec's `"gateway": true` in `/api/kernelspecs` tells a client which.
+A kernel stays on the side it started on: a restart doesn't move it when
+the gateway's list has changed since. Before the gateway's first answer,
+a name both have is listed, and starts, as the local one.
+Without `--default-kernel` (`default_kernel`), `default` in
+`/api/kernelspecs` is the first spec in the order above: this machine's
+first until the gateway first answers with specs, and the
+gateway's first by name after that. So a new notebook's kernel can depend
+on when it was made; set `default_kernel` to pin it.
+[Other kernels](kernels.md#kernels-on-another-server) has the rest.
+
+Whenever a gateway is set, `/api/kernelspecs` adds a top-level `gateway`
+object: `name`, `reachable`, and `error` saying why it doesn't answer.
+While it doesn't, the local kernels are still listed, so a client can say the remote kernels are missing
+rather than showing an empty list. `name` is `gateway_name` (`--gateway-name`
+or the config key), or else the URL's host: never its path, query or token,
+and `error` has them taken out too. The refresh retries every 15 seconds
+while the gateway is down, so one that was asleep is found again within
+that, and every minute while it answers. Before the first refresh ends,
+`reachable` is false and `error` is null: not checked yet. [List
+kernelspecs](api.md#list-kernelspecs) documents both keys.
 
 ## Server info file
 
@@ -630,7 +659,7 @@ given them.
 ```json
 {
   "base_url": "/",
-  "ganymede_version": "0.16.0",
+  "ganymede_version": "0.18.0",
   "hostname": "127.0.0.1",
   "password": false,
   "pid": 41237,
@@ -677,7 +706,7 @@ access-denied page; `--no-redirect-file` opens the URL itself instead, as
 | `JUPYTER_PATH` | More data dirs to search for kernelspecs, first. |
 | `JUPYTER_RUNTIME_DIR` | Where connection files, the cookie secret and the [server info file](#server-info-file) go. Default: `runtime/` in the data dir. |
 | `JUPYTER_GATEWAY_URL`, `JUPYTER_GATEWAY_AUTH_TOKEN` | `--gateway-url` and `--gateway-token` when not given. |
-| `GANYMEDE_DATA_DIR` | Where `lab install` and `ui install` put what they download. |
+| `GANYMEDE_DATA_DIR` | Where `lab install` and `ui install` put what they download, and where rooms keep [recovery copies](rooms.md#saving-and-recovery). |
 | `GANYMEDE_PYPI_URL`, `GANYMEDE_PYPI_HOSTS` | A PyPI mirror, and more hosts allowed to serve wheels; see [What a download trusts](frontends.md#what-a-download-trusts). |
 | `GANYMEDE_UI_URL` | A mirror of ganymede-ui's release downloads. |
 | `GANYMEDE_DOWNLOAD_BASE` | A mirror of Ganymede's release downloads, for `update` and install.sh. |
