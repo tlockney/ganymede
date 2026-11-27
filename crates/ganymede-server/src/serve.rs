@@ -1282,6 +1282,32 @@ mod tests {
         assert_eq!(cfg.token, None);
     }
 
+    #[test]
+    fn root_dir_is_the_home_default_and_the_config_and_flag_override_it() {
+        use crate::config::default_root_dir;
+        let cfg = ServeArgs::default().into_config_with(None).unwrap();
+        assert_eq!(cfg.root_dir, default_root_dir());
+
+        // A config file without `root_dir` gets the default too.
+        let (_d, bare) = config_file("port = 0\n");
+        let cfg = ServeArgs::default().into_config_with(Some(bare)).unwrap();
+        assert_eq!(cfg.root_dir, default_root_dir());
+
+        let (_d, path) = config_file("root_dir = \"/x\"\n");
+        let cfg = ServeArgs::default()
+            .into_config_with(Some(path.clone()))
+            .unwrap();
+        assert_eq!(cfg.root_dir, PathBuf::from("/x"));
+
+        let cfg = ServeArgs {
+            root_dir: Some("/y".into()),
+            ..Default::default()
+        }
+        .into_config_with(Some(path))
+        .unwrap();
+        assert_eq!(cfg.root_dir, PathBuf::from("/y"));
+    }
+
     /// `--base-url jupyter` panicked at startup: the router was nested
     /// at a path without a leading slash.
     #[test]

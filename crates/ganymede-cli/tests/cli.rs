@@ -771,6 +771,68 @@ fn serve_writes_a_server_info_file_while_running() {
     assert!(!open.exists(), "removed on exit");
 }
 
+/// Without `--root-dir` or `root_dir`, the server serves the home
+/// directory, not the directory it was started in (a launchd or systemd
+/// service starts in `/`), and says so in its server info.
+#[cfg(unix)]
+#[test]
+fn serve_defaults_to_the_home_directory() {
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let runtime = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("in-home.txt"), "h").unwrap();
+    std::fs::write(cwd.path().join("in-cwd.txt"), "c").unwrap();
+    let mut child = ganymede(&["serve", "--port", "0", "--token", "secret"])
+        .current_dir(cwd.path())
+        .env("HOME", home.path())
+        .env("JUPYTER_CONFIG_DIR", state.path().join("jupyter"))
+        .env("GANYMEDE_CONFIG_DIR", state.path().join("ganymede"))
+        .env("JUPYTER_RUNTIME_DIR", runtime.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let base = line.trim().split('?').next().unwrap().to_string();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let r = reqwest::Client::new()
+            .get(format!("{base}api/contents"))
+            .header("Authorization", "token secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let v: serde_json::Value = r.json().await.unwrap();
+        let names: Vec<&str> = v["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"in-home.txt"), "{names:?}");
+        assert!(!names.contains(&"in-cwd.txt"), "{names:?}");
+    });
+
+    let file = runtime.path().join(format!("jpserver-{}.json", child.id()));
+    let info: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&file).expect("jpserver file")).unwrap();
+    assert_eq!(
+        info["root_dir"],
+        home.path().canonicalize().unwrap().to_str().unwrap()
+    );
+
+    unsafe {
+        kill(child.id() as i32, 15);
+    }
+    assert!(child.wait().unwrap().success(), "clean exit on SIGTERM");
+}
+
 extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
 }

@@ -39,6 +39,8 @@ fn lab_serves_installed_bundle_and_logs_in() {
 
     let mut child = KillOnDrop(
         ganymede(&["lab", "--no-browser", "--port", &port.to_string()])
+            .arg("--root-dir")
+            .arg(root.path())
             .current_dir(root.path())
             .env("GANYMEDE_DATA_DIR", data.path())
             .env("JUPYTER_CONFIG_DIR", state.path().join("config"))

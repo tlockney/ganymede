@@ -16,7 +16,9 @@ pub struct Config {
     /// stay logged in across restarts. Defaults to `jupyter_cookie_secret`
     /// in the Jupyter runtime dir, the file `jupyter_server` uses.
     pub cookie_secret_file: Option<PathBuf>,
-    /// Contents root. Defaults to the current directory.
+    /// Contents root. Defaults to the home directory of the user running
+    /// the server, or the current directory when there is none
+    /// ([`default_root_dir`]).
     pub root_dir: PathBuf,
     /// Checkpoints outside the root, for synced folders.
     pub checkpoint_dir: Option<PathBuf>,
@@ -141,6 +143,31 @@ pub struct Config {
     pub tailscale: crate::tailscale::TailscaleConfig,
 }
 
+/// The server's root when neither `--root-dir` nor `root_dir` is set:
+/// `home` when it is a directory, else `cwd`, else `.`.
+fn default_root_dir_from(home: Option<PathBuf>, cwd: Option<PathBuf>) -> PathBuf {
+    home.filter(|h| h.is_dir())
+        .or(cwd)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// The server's root when neither `--root-dir` nor `root_dir` is set: the
+/// home directory of the user running the server, so a server started
+/// from `/` by launchd or systemd does not expose the whole disk. Without
+/// a home directory it is the current directory, with a warning.
+pub fn default_root_dir() -> PathBuf {
+    let home = dirs::home_dir();
+    let cwd = std::env::current_dir().ok();
+    let root = default_root_dir_from(home.clone(), cwd);
+    if home.as_ref() != Some(&root) {
+        tracing::warn!(
+            "no home directory; serving the current directory {}",
+            root.display()
+        );
+    }
+    root
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -148,7 +175,7 @@ impl Default for Config {
             port: 8888,
             token: None,
             cookie_secret_file: None,
-            root_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            root_dir: default_root_dir(),
             checkpoint_dir: None,
             notary_dir: None,
             static_dir: None,
@@ -219,7 +246,43 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::Config;
+    use super::{default_root_dir_from, Config};
+    use std::path::PathBuf;
+
+    #[test]
+    fn default_root_is_home_when_it_is_a_directory() {
+        let home = tempfile::tempdir().unwrap();
+        let got = default_root_dir_from(Some(home.path().into()), Some("/cwd".into()));
+        assert_eq!(got, home.path());
+    }
+
+    #[test]
+    fn default_root_is_cwd_without_a_usable_home() {
+        let cwd = Some(PathBuf::from("/cwd"));
+        assert_eq!(
+            default_root_dir_from(None, cwd.clone()),
+            PathBuf::from("/cwd")
+        );
+        let home = tempfile::tempdir().unwrap();
+        let gone = home.path().join("missing");
+        assert_eq!(
+            default_root_dir_from(Some(gone), cwd),
+            PathBuf::from("/cwd")
+        );
+        assert_eq!(default_root_dir_from(None, None), PathBuf::from("."));
+    }
+
+    #[test]
+    fn a_config_without_root_dir_gets_the_default_and_one_with_it_keeps_it() {
+        assert_eq!(
+            Config::from_toml("port = 0\n").unwrap().root_dir,
+            super::default_root_dir()
+        );
+        assert_eq!(
+            Config::from_toml("root_dir = \"/x\"\n").unwrap().root_dir,
+            PathBuf::from("/x")
+        );
+    }
 
     #[test]
     fn toml_sets_keys_and_defaults_the_rest() {
