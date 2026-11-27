@@ -92,9 +92,11 @@ type Fallback = (
     Arc<dyn TransportFactory>,
 );
 
-/// Kernelspecs the app registered, listed after the fallback's (so the
-/// fallback's first stays the default kernel) and in place of one of the
-/// same name, and the kernels started from them.
+/// Kernelspecs the app and its kernel providers registered, and the
+/// kernels started from them. An app's are listed after the fallback's,
+/// and in place of a namesake there, so the fallback's first stays the
+/// default kernel; a provider's go after everything else and never in
+/// place of one of the fallback's.
 #[derive(Default)]
 pub struct RegisteredKernels {
     state: Arc<Mutex<State>>,
@@ -109,6 +111,13 @@ struct State {
     /// Launched and not yet connected, by the address of the launch's
     /// process handle, which is how `connect` tells its own launches.
     unconnected: HashMap<usize, Arc<Running>>,
+    /// The kernelspec name each kernel a provider started came from, and
+    /// that provider, by kernel id (#983): one of those is launched
+    /// through its provider again, or not at all, never through the
+    /// fallback. Kept when the host stops the kernel, as a restart stops
+    /// it before launching it again, and dropped when `end_all_from`
+    /// forgets the provider.
+    provider_runs: HashMap<String, (String, Arc<dyn AppKernel>)>,
 }
 
 /// One registered kernel's run.
@@ -229,6 +238,9 @@ impl RegisteredKernels {
             }
         }
         state.unconnected.retain(|_, r| !Arc::ptr_eq(&r.app, app));
+        // With nothing left to run them again, where they were started
+        // from goes too, the host's stopped ones included.
+        state.provider_runs.retain(|_, (_, a)| !Arc::ptr_eq(a, app));
         state.specs.retain(|(_, a, _)| !Arc::ptr_eq(a, app));
         ended
     }
@@ -241,6 +253,14 @@ impl RegisteredKernels {
         state
             .unconnected
             .remove(&(Arc::as_ptr(process) as *const () as usize));
+    }
+
+    /// The kernelspec name kernel `kernel_id` was started from, when a
+    /// provider started it.
+    fn provider_run(&self, kernel_id: Option<&str>) -> Option<String> {
+        let id = kernel_id?;
+        let state = self.state.lock().unwrap();
+        state.provider_runs.get(id).map(|(name, _)| name.clone())
     }
 
     /// A message from kernel `kernel_id`. Never blocks.
@@ -331,15 +351,28 @@ impl KernelspecSource for RegisteredKernels {
 #[async_trait]
 impl Provisioner for RegisteredKernels {
     async fn launch(&self, spec: &Kernelspec, opts: LaunchOptions) -> Result<LaunchedKernel> {
-        let mut mine = self.registered(&spec.name);
-        // A name the fallback lists goes to the fallback, even when a
-        // provider registered it: the fallback's is the one installed.
-        if let Some((_, _, Origin::Provider)) = mine {
-            if self.fallback_lists(&spec.name)? {
-                mine = None;
+        let mine = match self.provider_run(opts.kernel_id.as_deref()) {
+            // A kernel a provider started stays its provider's: launched
+            // again under the name it started from, or not at all. Neither
+            // the fallback nor another origin's spec of that name would run
+            // what the kernel was.
+            Some(name) => match self.registered(&name) {
+                Some((spec, app, Origin::Provider)) => Some((spec, app, Origin::Provider)),
+                _ => return Err(Error::NoSuchKernelspec(name)),
+            },
+            None => {
+                let mut mine = self.registered(&spec.name);
+                // A name the fallback lists goes to the fallback, even when a
+                // provider registered it: the fallback's is the one installed.
+                if let Some((_, _, Origin::Provider)) = mine {
+                    if self.fallback_lists(&spec.name)? {
+                        mine = None;
+                    }
+                }
+                mine
             }
-        }
-        let Some((spec, app, _)) = mine else {
+        };
+        let Some((spec, app, origin)) = mine else {
             return match self.fallback.get() {
                 Some((_, p, _)) => p.launch(spec, opts).await,
                 None => Err(Error::NoSuchKernelspec(spec.name.clone())),
@@ -371,8 +404,18 @@ impl Provisioner for RegisteredKernels {
             state
                 .unconnected
                 .insert(Arc::as_ptr(&process) as *const () as usize, running);
+            if origin == Origin::Provider {
+                state
+                    .provider_runs
+                    .insert(id.clone(), (spec.name.clone(), app.clone()));
+            }
         }
+        // From here the launch can be dropped while it waits for the app,
+        // as when the client that asked for the kernel disconnects. The
+        // guard then stops what nobody would connect.
+        let mut guard = AbandonOnDrop::new(self, &id, process.clone());
         if let Err(e) = app.start(&id, &spec, &opts) {
+            guard.disarm();
             self.abandon(&id, &process);
             return Err(Error::Registration(format!(
                 "the app could not start kernel {id}: {e}"
@@ -381,9 +424,11 @@ impl Provisioner for RegisteredKernels {
         // An app that finishes the start later says how it went. No retry:
         // the app knows its own start failed.
         if let Some(ack) = app.started(&id) {
-            match tokio::time::timeout(START_ACK_WAIT, ack).await {
+            let wait = opts.startup_timeout.unwrap_or(START_ACK_WAIT);
+            match tokio::time::timeout(wait, ack).await {
                 Ok(Ok(Ok(()))) => {}
                 Ok(Ok(Err(e))) => {
+                    guard.disarm();
                     self.abandon(&id, &process);
                     return Err(Error::Registration(format!(
                         "the app could not start kernel {id}: {e}"
@@ -391,21 +436,23 @@ impl Provisioner for RegisteredKernels {
                 }
                 Ok(Err(_)) => {
                     // The sender went away, so no answer is coming.
+                    guard.disarm();
                     self.abandon(&id, &process);
                     return Err(Error::Registration(format!(
                         "the app did not say whether kernel {id} started"
                     )));
                 }
+                // No answer: the guard forgets the launch and stops the
+                // kernel, once.
                 Err(_) => {
-                    self.abandon(&id, &process);
-                    app.stop(&id);
                     return Err(Error::Registration(format!(
                         "the app did not start kernel {id} within {}s",
-                        START_ACK_WAIT.as_secs()
+                        wait.as_secs()
                     )));
                 }
             }
         }
+        guard.disarm();
         Ok(LaunchedKernel {
             connection: None,
             connection_file: None,
@@ -415,9 +462,47 @@ impl Provisioner for RegisteredKernels {
     }
 }
 
+/// Abandons a launch dropped before it finished: cancelled while it waited
+/// for the app's acknowledgement, as when the client that asked for the
+/// kernel goes away. Left alone, the run would stay listed and
+/// unconnected, and the app's kernel would run with nobody to stop it.
+struct AbandonOnDrop<'a> {
+    host: &'a RegisteredKernels,
+    id: &'a str,
+    process: Arc<Process>,
+    armed: bool,
+}
+
+impl<'a> AbandonOnDrop<'a> {
+    fn new(host: &'a RegisteredKernels, id: &'a str, process: Arc<Process>) -> Self {
+        AbandonOnDrop {
+            host,
+            id,
+            process,
+            armed: true,
+        }
+    }
+
+    /// The launch finished, so its failure is already handled.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for AbandonOnDrop<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.host.abandon(self.id, &self.process);
+        self.process.run.app.stop(self.id);
+    }
+}
+
 /// How long a start waits for an app that finishes it later to say how it
 /// went: a provider answers `started` after the fact (#983), and one that
-/// never does is no use to anyone.
+/// never does is no use to anyone. [`LaunchOptions::startup_timeout`]
+/// overrides it.
 const START_ACK_WAIT: Duration = Duration::from_secs(60);
 
 /// How many messages from the app wait for the session at most, past the
@@ -507,6 +592,8 @@ impl KernelProcess for Process {
             let mut state = state.lock().unwrap();
             state.unconnected.remove(&(self as *const Self as usize));
             // Only this run's entry: a restart may already hold the id.
+            // Its provider run stays: a restart kills the old run before
+            // it launches again under the same id (#984).
             if state
                 .running
                 .get(&self.run.id)
@@ -823,6 +910,95 @@ mod tests {
         assert_eq!(theirs.starts.load(Ordering::SeqCst), 0);
     }
 
+    /// A kernel a provider started is never launched through the fallback,
+    /// even once the provider has unregistered the name it started from: a
+    /// name a connection registered and then lost is not the fallback's
+    /// (docs/kernel-provider.md). A launch of that name with a new id is,
+    /// as before.
+    #[tokio::test]
+    async fn a_provider_kernel_is_not_relaunched_through_the_fallback() {
+        let host = Arc::new(RegisteredKernels::new());
+        let theirs = provider(&host, "app");
+        let first = host
+            .launch(
+                &spec("app"),
+                LaunchOptions {
+                    kernel_id: Some("k1".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(host.unregister("app"));
+        host.set_fallback(
+            Arc::new(StaticSpecs(vec![spec("app")])),
+            Arc::new(Never),
+            Arc::new(Never),
+        );
+        let e = host
+            .launch(
+                &spec("app"),
+                LaunchOptions {
+                    kernel_id: Some("k1".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            matches!(&e, Error::NoSuchKernelspec(name) if name == "app"),
+            "the fallback must not stand in for the provider: {e}"
+        );
+        assert_eq!(
+            theirs.starts.load(Ordering::SeqCst),
+            1,
+            "the provider is not called again either"
+        );
+        assert!(first.process.is_alive(), "the failed launch left it alone");
+        // No provider started this one, so the fallback takes it.
+        let e = host
+            .launch(&spec("app"), LaunchOptions::default())
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(e, Error::Unsupported("never")), "{e}");
+    }
+
+    /// A restart stops the old run before it launches again under the same
+    /// id, and the relaunch still goes to the provider or nowhere.
+    #[tokio::test]
+    async fn a_restarted_provider_kernel_is_not_relaunched_through_the_fallback() {
+        let host = Arc::new(RegisteredKernels::new());
+        let theirs = provider(&host, "app");
+        let k1 = || LaunchOptions {
+            kernel_id: Some("k1".into()),
+            ..Default::default()
+        };
+        let first = host.launch(&spec("app"), k1()).await.unwrap();
+        // As a restart's shutdown does, before the relaunch.
+        first.process.kill().await.unwrap();
+        let again = host.launch(&spec("app"), k1()).await.unwrap();
+        assert_eq!(theirs.starts.load(Ordering::SeqCst), 2);
+        again.process.kill().await.unwrap();
+        assert!(host.unregister("app"));
+        host.set_fallback(
+            Arc::new(StaticSpecs(vec![spec("app")])),
+            Arc::new(Never),
+            Arc::new(Never),
+        );
+        let e = host.launch(&spec("app"), k1()).await.err().unwrap();
+        assert!(
+            matches!(&e, Error::NoSuchKernelspec(name) if name == "app"),
+            "the fallback must not stand in for the provider: {e}"
+        );
+        // Once the provider's connection closes, its kernels are forgotten,
+        // even after it unregistered the name.
+        let app: Arc<dyn AppKernel> = theirs.clone();
+        host.end_all_from(&app, Ended::Gone);
+        assert!(host.state.lock().unwrap().provider_runs.is_empty());
+    }
+
     #[tokio::test]
     async fn an_unregistered_name_goes_to_the_fallback() {
         let (host, fake) = host();
@@ -980,6 +1156,85 @@ mod tests {
         );
     }
 
+    /// The launch waits for the app's acknowledgement for as long as its
+    /// `startup_timeout` says, not the host's fallback.
+    #[tokio::test(start_paused = true)]
+    async fn a_deferred_start_times_out_at_its_startup_timeout() {
+        let (host, app) = deferred_host();
+        let start = tokio::time::Instant::now();
+        let e = tokio::time::timeout(
+            Duration::from_secs(7),
+            host.launch(
+                &spec("app"),
+                LaunchOptions {
+                    kernel_id: Some("k1".into()),
+                    startup_timeout: Some(Duration::from_secs(5)),
+                    ..Default::default()
+                },
+            ),
+        )
+        .await
+        .expect("the launch gives up at 5s, not at 60s")
+        .err()
+        .unwrap();
+        assert_eq!(start.elapsed(), Duration::from_secs(5));
+        assert!(e.to_string().contains("within 5s"), "{e}");
+        assert!(host.state.lock().unwrap().running.is_empty());
+        assert!(host.state.lock().unwrap().unconnected.is_empty());
+        assert_eq!(
+            app.stops.load(Ordering::SeqCst),
+            1,
+            "a start that timed out is stopped"
+        );
+    }
+
+    /// A launch dropped while it waits for the app to answer, as a client
+    /// disconnecting drops it, leaves no run behind and stops the kernel
+    /// the app started.
+    #[tokio::test]
+    async fn a_launch_dropped_while_waiting_for_its_ack_leaves_nothing_and_stops() {
+        let (host, app) = deferred_host();
+        let launching = launch_k1(&host);
+        // Kept, so the launch is waiting for an answer and not for a
+        // sender: dropping it would take the other path.
+        let _held = ack(&app).await;
+        launching.abort();
+        let joined = launching.await;
+        assert!(
+            matches!(joined, Err(e) if e.is_cancelled()),
+            "the launch ran on"
+        );
+        assert!(host.state.lock().unwrap().running.is_empty());
+        assert!(host.state.lock().unwrap().unconnected.is_empty());
+        assert_eq!(
+            app.stops.load(Ordering::SeqCst),
+            1,
+            "a kernel nobody will connect is stopped"
+        );
+    }
+
+    /// The app dropped the sender it would have answered with, so no
+    /// answer is coming: the start fails and leaves nothing behind.
+    #[tokio::test]
+    async fn a_deferred_start_whose_sender_is_dropped_fails_and_leaves_nothing() {
+        let (host, app) = deferred_host();
+        let launching = launch_k1(&host);
+        drop(ack(&app).await);
+        let e = launching.await.unwrap().err().unwrap();
+        assert!(
+            e.to_string()
+                .contains("did not say whether kernel k1 started"),
+            "{e}"
+        );
+        assert!(host.state.lock().unwrap().running.is_empty());
+        assert!(host.state.lock().unwrap().unconnected.is_empty());
+        assert_eq!(
+            app.stops.load(Ordering::SeqCst),
+            0,
+            "a start that never happened is not stopped"
+        );
+    }
+
     #[tokio::test]
     async fn end_all_from_ends_only_that_apps_kernels_and_unregisters_its_specs() {
         let (host, fake) = host();
@@ -1009,6 +1264,28 @@ mod tests {
             0,
             "nothing left to end"
         );
+    }
+
+    /// `end_all_from` clears a kernel whose launch never connected too, so
+    /// no later `connect` finds it, and the app's kernel is over.
+    #[tokio::test]
+    async fn end_all_from_clears_a_launch_that_never_connected() {
+        let host = Arc::new(RegisteredKernels::new());
+        let app: Arc<dyn AppKernel> = provider(&host, "b");
+        let launched = host
+            .launch(
+                &spec("b"),
+                LaunchOptions {
+                    kernel_id: Some("k2".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(host.state.lock().unwrap().unconnected.len(), 1);
+        assert_eq!(host.end_all_from(&app, Ended::Gone), 1);
+        assert!(host.state.lock().unwrap().unconnected.is_empty());
+        assert!(!launched.process.is_alive());
     }
 
     struct StaticSpecs(Vec<Kernelspec>);

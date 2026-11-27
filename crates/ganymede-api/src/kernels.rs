@@ -1316,6 +1316,9 @@ impl Core {
                     // A server runs many kernels on one stderr.
                     prefix_output: true,
                     output: Some(log.output()),
+                    // A registered kernel's start waits as long as any
+                    // other: the configured startup timeout (docs/in-app-kernel.md).
+                    startup_timeout: Some(self.config.startup_timeout),
                 },
             )
             .await?;

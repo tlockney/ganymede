@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 #[cfg(feature = "subprocess")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::watch;
 
 /// A running kernel's process, or whatever stands in for one.
@@ -124,6 +125,12 @@ pub struct LaunchOptions {
     /// lines about the process's start and exit. Provisioners without a
     /// process ignore it.
     pub output: Option<KernelOutput>,
+    /// How long the launch waits for a kernel whose start finishes later
+    /// to say how it went. A registered kernel's launch waits this long for
+    /// the app's acknowledgement (see
+    /// [`AppKernel::started`](crate::registered::AppKernel::started)), or a
+    /// minute when unset. A provisioner that starts a process ignores it.
+    pub startup_timeout: Option<Duration>,
 }
 
 #[async_trait]
