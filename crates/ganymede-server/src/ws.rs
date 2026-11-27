@@ -109,7 +109,7 @@ async fn run(mut socket: WebSocket, mut client: ClientConnection) {
 /// ([`crate::write_observer::WriteEvent`]); nothing else is, so the socket
 /// is quiet while the server writes nothing. A client that falls behind
 /// is closed with 1011 `missed events`, and one that takes no frame for
-/// [`EVENT_SEND_WAIT`] is dropped: its view of the files may be stale,
+/// ten seconds is dropped: its view of the files may be stale,
 /// and forgetting what it can't confirm fails safe.
 pub async fn events(
     ws: WebSocketUpgrade,
