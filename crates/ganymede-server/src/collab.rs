@@ -2029,6 +2029,11 @@ async fn run_room(
     tracing::info!(room = %room_id, path = ?path, watched = watch.is_some(), read_only = room.is_read_only(), "room opened");
 
     let mut last_edit: Option<Instant> = None;
+    // A stamp the file's cells don't match leaves the room, which stays
+    // saved: opening a file never writes it, and the next save drops the
+    // stamp (#944).
+    let fx = room.forget_unfit_clean_run();
+    dispatch(&clients, fx.send);
     // Saves that failed in a row, for the retry's backoff.
     let mut save_failures = 0;
     // The generation of the room's content a recovery copy was kept for
@@ -2124,7 +2129,7 @@ async fn run_room(
                         // get the new one: save first (#437).
                         save_before_relock(contents.as_ref(), &mut room, d, &clients, &mut last_edit, &mut save_failures).await;
                         drop(lock.take());
-                        lock_retry = take_lock(&collab, &room_id, &d.path, &mut room, &mut lock);
+                        lock_retry = relock(&collab, &room_id, &d.path, &mut room, &mut lock, &clients);
                     }
                     Cmd::Removed(gone) => {
                         let Some(d) = disk.as_mut() else { continue };
@@ -2213,7 +2218,7 @@ async fn run_room(
                     // A room writable without the lock may find another
                     // server owns the file now: save first (#437).
                     save_before_relock(contents.as_ref(), &mut room, d, &clients, &mut last_edit, &mut save_failures).await;
-                    lock_retry = take_lock(&collab, &room_id, &d.path, &mut room, &mut lock);
+                    lock_retry = relock(&collab, &room_id, &d.path, &mut room, &mut lock, &clients);
                 }
                 let poll_every = if watch.is_some() { WATCHED_POLL_INTERVAL } else { POLL_INTERVAL };
                 let settled = disk_event.is_some_and(|t| t.elapsed() >= DEBOUNCE);
@@ -2365,6 +2370,24 @@ fn take_lock(
         ),
         (true, false) => tracing::info!(room = %room_id, "{path} is this room's to save now"),
         _ => {}
+    }
+    retry
+}
+
+/// [`take_lock`] for a room that is open: one that turns writable checks
+/// its stamp as a room does on opening (#944).
+fn relock(
+    collab: &Collab,
+    room_id: &str,
+    path: &str,
+    room: &mut Room,
+    lock: &mut Option<crate::room_lock::RoomLock>,
+    clients: &HashMap<ConnId, ClientTx>,
+) -> bool {
+    let was_read_only = room.is_read_only();
+    let retry = take_lock(collab, room_id, path, room, lock);
+    if was_read_only && !room.is_read_only() {
+        dispatch(clients, room.forget_unfit_clean_run().send);
     }
     retry
 }
@@ -2977,6 +3000,46 @@ mod lock_tests {
         let other = Collab::new(FileIds::in_memory(), dir.path().canonicalize().ok())
             .with_room_locks(dir.path().join("locks"));
         assert!(other.owned_elsewhere("a.ipynb"));
+    }
+
+    /// A read-only room that turns writable checks its stamp as a room
+    /// does on opening: it leaves the room, which stays saved (#944).
+    #[test]
+    fn a_room_that_turns_writable_forgets_a_stamp_that_does_not_fit() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.ipynb"), "{}").unwrap();
+        let locks = dir.path().join("locks");
+        let root = dir.path().canonicalize().ok();
+        let other = Collab::new(FileIds::in_memory(), root.clone()).with_room_locks(locks.clone());
+        let crate::room_lock::Acquire::Held(theirs) = other.acquire("a.ipynb") else {
+            panic!("the other server owns it")
+        };
+        let collab = Collab::new(FileIds::in_memory(), root).with_room_locks(locks);
+        let nb = Notebook::from_value(json!({"cells": [], "metadata": {"ganymede": {
+            "clean_run": {"at": "t", "by": "b", "kernel": "k", "fingerprint": "v1:deadbeef"}}},
+            "nbformat": 4, "nbformat_minor": 5}))
+        .unwrap();
+        let mut room = Room::notebook_room(&nb, "a.ipynb");
+        let (mut lock, clients) = (None, HashMap::new());
+        assert!(relock(
+            &collab, "r", "a.ipynb", &mut room, &mut lock, &clients
+        ));
+        assert!(room.is_read_only());
+        let stamped = |room: &Room| {
+            room.notebook()
+                .unwrap()
+                .unwrap()
+                .to_file_string()
+                .contains("clean_run")
+        };
+        assert!(stamped(&room), "a read-only room leaves it");
+
+        drop(theirs);
+        assert!(!relock(
+            &collab, "r", "a.ipynb", &mut room, &mut lock, &clients
+        ));
+        assert!(!room.is_read_only());
+        assert!(!stamped(&room) && !room.is_dirty());
     }
 
     /// A writable room that finds another server owns its file now saves
@@ -4610,6 +4673,168 @@ mod recovery_tests {
         assert!(on_disk.contains("keep") && !on_disk.contains("typed here"));
         fx.until(100, "the room retired", |fx| fx.collab.open_rooms() == 0)
             .await;
+    }
+
+    /// A room opened on a file whose `clean_run` stamp doesn't fit its
+    /// cells forgets the stamp but stays saved: no autosave writes the
+    /// file, `state.dirty` is false, and the next real save has no stamp
+    /// (#944).
+    #[tokio::test(start_paused = true)]
+    async fn opening_a_file_with_an_unfit_stamp_does_not_write_it() {
+        let fx = Fixture::new(false).await;
+        let file = fx.dir.path().join("a.ipynb");
+        let stamped = r#"{"cells":[{"cell_type":"markdown","id":"a","metadata":{},"source":"keep"}],"metadata":{"ganymede":{"other":1,"clean_run":{"at":"t","by":"b","kernel":"k"}}},"nbformat":4,"nbformat_minor":5}"#;
+        std::fs::write(&file, stamped).unwrap();
+        let (tx, mut rx) = fx.join(1).await;
+        // A client joins and sends its state (sync step 2): that doesn't
+        // make the room unsaved either.
+        let doc = ganymede_documents::yrs::Doc::new();
+        client::sync(&tx, &mut rx, 1, &doc).await;
+        let held = || {
+            with_notebook(&fx.collab, &fx.contents, &fx.room_id, |room| {
+                let nb = room.notebook().unwrap().unwrap();
+                ((nb.to_file_string(), room.is_dirty()), Default::default())
+            })
+        };
+        let (room_text, dirty) = held().await.unwrap();
+        assert!(!room_text.contains("clean_run"), "{room_text}");
+        assert!(room_text.contains("\"other\""), "the rest stays");
+        assert!(!dirty);
+        assert_eq!(fx.state("dirty").await, Some(json!(false)));
+        // Well past the autosave delay: the file is as it was.
+        tokio::time::sleep(SAVE_DELAY * 10).await;
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), stamped);
+        assert_eq!(fx.state("dirty").await, Some(json!(false)));
+        // A real edit saves the file without the stamp.
+        fx.type_into_a("typed here").await;
+        fx.until(30, "the save", |_| {
+            std::fs::read_to_string(&file)
+                .unwrap()
+                .contains("typed here")
+        })
+        .await;
+        let saved = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            !saved.contains("clean_run") && saved.contains("\"other\""),
+            "{saved}"
+        );
+    }
+
+    /// A directory holding `a.ipynb` with a stamp that doesn't fit its
+    /// cells, a server on it, and another server holding the lock of
+    /// `a.ipynb`, so a room opened here is read-only.
+    struct Locked {
+        dir: tempfile::TempDir,
+        collab: Arc<Collab>,
+        contents: Arc<dyn Contents>,
+        theirs: Option<crate::room_lock::RoomLock>,
+        text: String,
+    }
+
+    impl Locked {
+        const STAMPED: &'static str = r#"{"cells":[{"cell_type":"markdown","id":"a","metadata":{},"source":"keep"}],"metadata":{"ganymede":{"other":1,"clean_run":{"at":"t","by":"b","kernel":"k"}}},"nbformat":4,"nbformat_minor":5}"#;
+
+        fn new() -> Locked {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("a.ipynb"), Self::STAMPED).unwrap();
+            let root = dir.path().canonicalize().ok();
+            let locks = dir.path().join("locks");
+            let other =
+                Collab::new(FileIds::in_memory(), root.clone()).with_room_locks(locks.clone());
+            let crate::room_lock::Acquire::Held(theirs) = other.acquire("a.ipynb") else {
+                panic!("the other server owns it")
+            };
+            let collab = Arc::new(Collab::new(FileIds::in_memory(), root).with_room_locks(locks));
+            let contents: Arc<dyn Contents> =
+                Arc::new(FsContents::new(dir.path(), Default::default()).unwrap());
+            Locked {
+                dir,
+                collab,
+                contents,
+                theirs: Some(theirs),
+                text: Self::STAMPED.to_string(),
+            }
+        }
+
+        /// Open a room on `a.ipynb`, read-only: the stamp stays.
+        async fn open(&self) -> (String, mpsc::UnboundedSender<Cmd>, mpsc::Receiver<Out>) {
+            let id = notebook_room_id(&self.collab, &self.contents, "a.ipynb")
+                .await
+                .unwrap();
+            let (out, rx, _) = ClientTx::new(usize::MAX);
+            let tx = send_to_notebook_room(
+                &self.collab,
+                &self.contents,
+                &id,
+                Cmd::Join(1, out, Some("me".into()), Listing::Person),
+            )
+            .await
+            .unwrap();
+            (id, tx, rx)
+        }
+
+        /// The room's (read-only, has the stamp, dirty, `state.dirty`).
+        async fn room(&self, id: &str) -> (bool, bool, bool, Option<Value>) {
+            with_notebook(&self.collab, &self.contents, id, |room| {
+                let nb = room.notebook().unwrap().unwrap();
+                let held = nb.to_file_string().contains("clean_run");
+                (
+                    (
+                        room.is_read_only(),
+                        held,
+                        room.is_dirty(),
+                        room.state_value("dirty"),
+                    ),
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap()
+        }
+
+        /// The file at `path` is as it was written, well after the room's
+        /// autosave delay.
+        async fn unchanged(&self, path: &str) {
+            tokio::time::sleep(SAVE_DELAY * 10).await;
+            let on_disk = std::fs::read_to_string(self.dir.path().join(path)).unwrap();
+            assert_eq!(on_disk, self.text);
+        }
+    }
+
+    /// A room read-only because another server holds its file's lock keeps
+    /// the stamp; when that server lets go, the room's retry takes the lock
+    /// and forgets the stamp without saving (#944).
+    #[tokio::test(start_paused = true)]
+    async fn a_room_whose_lock_retry_succeeds_forgets_an_unfit_stamp_without_saving() {
+        let mut fx = Locked::new();
+        let (id, _tx, _rx) = fx.open().await;
+        assert_eq!(fx.room(&id).await, (true, true, false, Some(json!(false))));
+        fx.unchanged("a.ipynb").await;
+        fx.theirs = None;
+        // Past the retry's interval.
+        tokio::time::sleep(POLL_INTERVAL * 3).await;
+        assert_eq!(
+            fx.room(&id).await,
+            (false, false, false, Some(json!(false)))
+        );
+        fx.unchanged("a.ipynb").await;
+    }
+
+    /// A read-only room whose file is moved to a path nobody holds takes
+    /// that path's lock and forgets the stamp without saving (#944).
+    #[tokio::test(start_paused = true)]
+    async fn a_moved_room_that_turns_writable_forgets_an_unfit_stamp_without_saving() {
+        let fx = Locked::new();
+        let (id, _tx, _rx) = fx.open().await;
+        assert_eq!(fx.room(&id).await, (true, true, false, Some(json!(false))));
+        std::fs::rename(fx.dir.path().join("a.ipynb"), fx.dir.path().join("b.ipynb")).unwrap();
+        fx.collab.moved("a.ipynb", "b.ipynb").await;
+        // No time has passed: the move did it, not the retry.
+        assert_eq!(
+            fx.room(&id).await,
+            (false, false, false, Some(json!(false)))
+        );
+        fx.unchanged("b.ipynb").await;
     }
 
     /// The file is deleted under a room with unsaved edits.

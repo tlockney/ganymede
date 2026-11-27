@@ -340,7 +340,7 @@ cell metadata doesn't change a run's fingerprint.
 
 The entry points that record the key are the room runs above, a
 notebooks run (`POST /api/notebooks/run`) and the host API: each
-records, on every cell it runs, the hash of that cell's source, and the
+records, on every cell the kernel takes up, the hash of that cell's source, and the
 copy a notebooks run saves drops the key from cells the run never
 started. `ganymede execute` records none, so its notebooks come out as
 `jupyter execute` writes them, except that it removes a stale key from
@@ -404,7 +404,7 @@ execute body, with `wait` and the cell selectors.
 
 A notebook that was last run top to bottom on a fresh kernel carries
 `metadata.ganymede.clean_run` in its notebook metadata, so a reader (the
-journal view's "reproduced from a clean kernel" stamp) can tell:
+journal view's "Ran from a fresh kernel" badge) can tell:
 
 ```json
 {"metadata": {"ganymede": {"clean_run": {
@@ -416,7 +416,59 @@ when it connected (cleaned like the [names in the room](#who-runs-a-cell)).
 `kernel` is the name of the kernelspec the kernel ran. Other keys under
 `metadata.ganymede` are left alone.
 
-Only the MCP tool `notebook_run_all` sets it, and only when the run
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+The stamp also carries a `fingerprint` of the cells the run read, so that
+a notebook edited while no room was open for it doesn't keep a stamp that
+no longer holds. The badge means "Ran from a fresh kernel", of cells with
+that fingerprint:
+
+```json
+{"metadata": {"ganymede": {"clean_run": {
+  "at": "2026-11-20T18:04:12.331Z", "by": "Claude Code", "kernel": "python3",
+  "fingerprint": "v1:250ab6e8"}}}}
+```
+
+The fingerprint covers every cell's type and source, in order, and
+nothing else: not outputs, execution counts, cell ids or metadata. So
+clearing a notebook's outputs alone keeps the stamp (in an open room, a
+clear that also blanks execution counts removes it, as described below),
+and a changed source, a changed cell type or a reordering does not. It is `v1:` and eight
+lowercase hex digits of the MurmurHash2 (seed 0) of one byte string: for
+each cell, in order, `{type_len}:{cell_type}{source_len}:{source}` and a
+newline, where `cell_type` is the cell's `cell_type` as written (`code`,
+`markdown`, `raw`), `source` is its source with the lines of a list
+joined (no separator added), and both lengths are in UTF-8 bytes. The
+lengths mean no two layouts of cells give the same bytes. A cell of a
+type Ganymede doesn't know counts with its raw `source`, read the same
+way, and an empty one if it has none.
+
+A room checks the stamp whenever it takes content from the file, and
+removes it when its `fingerprint` is missing (as older versions wrote),
+isn't of the form `v<digits>:` and more, or is a `v1:` one that doesn't
+match the cells. Only a fingerprint with a real `v<digits>:` prefix of
+another version is left alone: this code can't say it is stale. A
+reader must treat it as not current, as it must a stamp it can't verify.
+A `GET` of the file, even with a room open, returns the file's stamp
+unchecked until the room next saves, so a reader computes the
+fingerprint itself and compares it. A read-only room, whose file another
+process owns, leaves the stamp as the file has it, and checks it if it
+becomes writable.
+
+The fingerprint check differs between opening and the file changing. When
+a room opens a file (or a read-only one becomes writable), a stamp that
+fails the check leaves the room only: opening never writes the file, so
+a viewer or a read-only agent causes no write, the room is saved
+(`state.dirty` is false) and the file keeps the stamp until the next
+save, which doesn't write it. When the file changes on disk (a reload, or
+a merge into unsaved edits), the removal is an edit by the server like
+the others above: every client sees it and the room is unsaved, so the
+file is rewritten without the stamp. A stamp that matches is kept,
+whatever the outputs and counts.
+
+Only the MCP tool `notebook_run_all` sets the stamp, and only when the run
 
 - restarted the kernel (`restart` is true, the default),
 - finished before its `timeout`,
@@ -453,14 +505,15 @@ until it is saved.
 The same holds for a change that comes in through the file while a room
 is open, such as a `PUT /api/contents` from an editor or `nb-cli`: if it
 changes those things and the file still has the stamp the room had, the
-room drops the stamp and saves the file without it. A file that carries
-a different stamp, or a change that leaves the run standing, leaves the
-stamp as the file has it.
+room drops the stamp and saves the file without it. A change that leaves
+the run standing leaves the stamp as the file has it, and so does a file
+that carries a different stamp, unless that stamp's `fingerprint` doesn't
+match the file's cells (see the fingerprint check above), which removes
+it the same way.
 
 The stamp is saved with the notebook, unlike `execution_by`. A file that
-holds one opens with it, and it stays until a change above removes it.
-Nothing checks it against the cells of a file when a room opens: one
-edited while no room was open for it keeps a stamp that no longer holds.
+holds one opens with it, and it stays until a change above removes it or
+the fingerprint check does.
 
 ### Waiting for the cells
 

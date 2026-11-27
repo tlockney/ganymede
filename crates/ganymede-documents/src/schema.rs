@@ -27,7 +27,7 @@
 //! - Top-level fields other than `cells`, `metadata`, `nbformat` and
 //!   `nbformat_minor` are kept in `meta`, which `jupyter_ydoc` drops.
 
-use ganymede_nbformat::Notebook;
+use ganymede_nbformat::{Cell, Notebook};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -457,6 +457,83 @@ fn stream_growth<T: ReadTxn>(txn: &T, old: &MapRef, new: &Value) -> Option<Strin
         v
     };
     (strip(&old) == through_yjs(&strip(new))).then(|| added.to_string())
+}
+
+/// A fingerprint of what a clean run read: every cell's type and source,
+/// in order, and nothing else (no outputs, ids, counts or metadata).
+/// `"v1:"` and eight lowercase hex digits of [`crate::murmur2`] (seed 0)
+/// over each cell as `{len}:{cell_type}{len}:{source}\n`, lengths in UTF-8
+/// bytes, so no two layouts of cells give the same bytes. A source held as
+/// lines is joined. A cell this crate cannot type reads its source from
+/// the raw `source` (a string, or an array of strings joined).
+pub fn source_fingerprint(nb: &Notebook) -> String {
+    let mut bytes = Vec::new();
+    for cell in &nb.cells {
+        let cell_type = cell.cell_type().unwrap_or("");
+        let source: std::borrow::Cow<str> = match cell {
+            Cell::Unknown(v) => match v.get("source") {
+                Some(Value::String(s)) => s.as_str().into(),
+                Some(Value::Array(lines)) => lines
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<String>()
+                    .into(),
+                _ => "".into(),
+            },
+            _ => cell.source().map_or("", |s| s.as_str()).into(),
+        };
+        bytes.extend_from_slice(
+            format!("{}:{cell_type}{}:{source}\n", cell_type.len(), source.len()).as_bytes(),
+        );
+    }
+    format!("v1:{:08x}", crate::murmur2(&bytes, 0))
+}
+
+/// What a notebook's `clean_run` stamp says about its current cells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanRun {
+    /// No stamp.
+    None,
+    /// The stamp's fingerprint matches the cells.
+    Current,
+    /// The stamp has no fingerprint (as older versions wrote), one that is
+    /// not of the form `v<digits>:...`, or a `v1:` one that doesn't match
+    /// the cells.
+    Stale,
+    /// The stamp's fingerprint is `v<digits>:` of a version other than 1,
+    /// which this code doesn't know, so it can't say whether the cells
+    /// match. Treat it as not current.
+    Unverified,
+}
+
+/// Whether `nb`'s `metadata.ganymede.clean_run` stamp still describes its
+/// cells (see [`source_fingerprint`]).
+pub fn clean_run_status(nb: &Notebook) -> CleanRun {
+    let Some(stamp) = nb.metadata.get("ganymede").and_then(|g| g.get("clean_run")) else {
+        return CleanRun::None;
+    };
+    match stamp.get("fingerprint").and_then(Value::as_str) {
+        Some(f) if f.starts_with("v1:") => {
+            if f == source_fingerprint(nb) {
+                CleanRun::Current
+            } else {
+                CleanRun::Stale
+            }
+        }
+        // Only a real `v<digits>:` prefix of another version is one this
+        // code may just not know; anything else is no fingerprint.
+        Some(f) if unknown_version(f) => CleanRun::Unverified,
+        Some(_) | None => CleanRun::Stale,
+    }
+}
+
+/// Whether `fingerprint` starts `v<digits>:` with a version other than 1.
+fn unknown_version(fingerprint: &str) -> bool {
+    let Some((version, _)) = fingerprint.split_once(':') else {
+        return false;
+    };
+    let digits = version.strip_prefix('v').unwrap_or("");
+    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) && digits != "1"
 }
 
 /// The notebook's `metadata.ganymede.clean_run` stamp, if it has one.

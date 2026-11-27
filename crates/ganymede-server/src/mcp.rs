@@ -1165,7 +1165,7 @@ impl Notebooks {
     }
 
     #[tool(
-        description = "Run every code cell in order, after restarting the kernel unless `restart: false`, and return the notebook. A run that restarted, finished and ran every cell with no error stamps the notebook `metadata.ganymede.clean_run` (when, by whom, on which kernel); any other run removes the stamp, and so does a later edit of a cell or a run that changes a cell's execution_count (a run in JupyterLab or the apps does, as they blank the count when a cell starts; only re-running the cells from the top after a restart through the server's execute endpoint or these tools gives the same counts and leaves it)."
+        description = "Run every code cell in order, after restarting the kernel unless `restart: false`, and return the notebook. A run that restarted, finished and ran every cell with no error stamps the notebook `metadata.ganymede.clean_run` (when, by whom, on which kernel, and a fingerprint of the cells' types and sources); any other run removes the stamp, and so does a later edit of a cell or a run that changes a cell's execution_count (a run in JupyterLab or the apps does, as they blank the count when a cell starts; only re-running the cells from the top after a restart through the server's execute endpoint or these tools gives the same counts and leaves it)."
     )]
     async fn notebook_run_all(
         &self,
@@ -1813,8 +1813,10 @@ fn clean_run_edit(
 ) -> ((), Effects) {
     let stamp = run.and_then(|(layout, kernel)| {
         let nb = room.notebook_with_ids()?.ok()?;
-        (run_layout(&nb, true) == layout)
-            .then(|| json!({"at": room_ops::now(), "by": by, "kernel": kernel}))
+        (run_layout(&nb, true) == layout).then(|| {
+            json!({"at": room_ops::now(), "by": by, "kernel": kernel,
+                    "fingerprint": schema::source_fingerprint(&nb)})
+        })
     });
     room.edit(|txn, roots| schema::set_clean_run(txn, roots, stamp))
 }
