@@ -2,6 +2,7 @@
 //! v1 subprotocol when the client offers it and legacy JSON otherwise.
 
 use crate::routes::{origin_allowed, HttpError};
+use crate::write_observer::WriteEvent;
 use crate::AppState;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
@@ -9,6 +10,7 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use ganymede_api::ClientConnection;
 use ganymede_protocol::ws::{legacy, v1};
+use tokio::sync::broadcast;
 
 #[derive(serde::Deserialize)]
 pub struct ChannelsQuery {
@@ -102,8 +104,13 @@ async fn run(mut socket: WebSocket, mut client: ClientConnection) {
 }
 
 /// `/api/events/subscribe`: `jupyter_events`' stream of server events.
-/// JupyterLab keeps one open. This server emits no events, so the socket
-/// stays quiet until the client closes it.
+/// JupyterLab keeps one open. One event per write the server makes of a
+/// file is sent, in `jupyter_events`' envelope
+/// ([`crate::write_observer::WriteEvent`]); nothing else is, so the socket
+/// is quiet while the server writes nothing. A client that falls behind
+/// is closed with 1011 `missed events`, and one that takes no frame for
+/// ten seconds is dropped: its view of the files may be stale,
+/// and forgetting what it can't confirm fails safe.
 pub async fn events(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -112,13 +119,64 @@ pub async fn events(
     if !origin_allowed(&state, &headers) {
         return HttpError(403, "origin not allowed".into()).into_response();
     }
-    ws.on_upgrade(|mut socket| async move {
-        while let Some(Ok(msg)) = socket.recv().await {
-            if matches!(msg, WsMessage::Close(_)) {
-                break;
+    // Taken before the upgrade, so a write between the request and it is
+    // not missed.
+    let writes = state.write_observer.subscribe();
+    ws.on_upgrade(move |socket| run_events(socket, writes, EVENT_SEND_WAIT))
+}
+
+/// Sends `writes` to `socket` until either ends. A client that takes no
+/// frame within `send_wait` has stopped reading and is dropped, with its
+/// subscription. Over any socket, so a test can give it one that never
+/// takes a frame.
+async fn run_events<S, E>(
+    mut socket: S,
+    mut writes: broadcast::Receiver<WriteEvent>,
+    send_wait: std::time::Duration,
+) where
+    S: futures::Stream<Item = Result<WsMessage, E>> + futures::Sink<WsMessage> + Unpin,
+{
+    use futures::{SinkExt, StreamExt};
+    loop {
+        tokio::select! {
+            incoming = socket.next() => match incoming {
+                Some(Ok(WsMessage::Close(_))) | None | Some(Err(_)) => break,
+                Some(Ok(_)) => {}
+            },
+            frame = next_event_frame(&mut writes) => {
+                let Some(frame) = frame else { break };
+                let closing = matches!(frame, WsMessage::Close(_));
+                // A client that takes no data for this long has stopped
+                // reading: drop it, and its subscription with it, rather
+                // than wait on it while the channel moves on without it.
+                match tokio::time::timeout(send_wait, socket.send(frame)).await {
+                    Ok(Ok(())) if !closing => {}
+                    _ => break,
+                }
             }
         }
-    })
+    }
+}
+
+/// How long the events socket waits for a client to take one frame before
+/// it drops the client (#978).
+const EVENT_SEND_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What the events socket sends next: the next write as a text frame in
+/// `jupyter_events`' envelope, or, when writes came faster than this
+/// client read them, a close with 1011 `missed events` rather than events
+/// with a gap it can't tell about. `None` once the channel is gone.
+async fn next_event_frame(writes: &mut broadcast::Receiver<WriteEvent>) -> Option<WsMessage> {
+    match writes.recv().await {
+        Ok(write) => Some(WsMessage::Text(write.envelope().to_string().into())),
+        Err(broadcast::error::RecvError::Lagged(_)) => {
+            Some(WsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                code: 1011,
+                reason: "missed events".into(),
+            })))
+        }
+        Err(broadcast::error::RecvError::Closed) => None,
+    }
 }
 
 /// `/terminals/websocket/{name}`: terminado's protocol, JSON arrays in text
@@ -238,4 +296,107 @@ async fn run_language_server(mut socket: WebSocket, mut client: ganymede_lsp::Ls
         }
     }
     tracing::debug!(server = client.server(), "language server websocket closed");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::write_observer::WriteObserver;
+    use std::path::Path;
+
+    fn path_of(frame: Option<WsMessage>) -> String {
+        let Some(WsMessage::Text(text)) = frame else {
+            panic!("expected an event, got {frame:?}")
+        };
+        let event: serde_json::Value = serde_json::from_str(text.as_str()).unwrap();
+        event["path"].as_str().unwrap().to_string()
+    }
+
+    /// A subscriber that falls behind is told so with 1011 `missed
+    /// events`, while one that keeps up gets every write (#978).
+    #[tokio::test]
+    async fn a_lagging_subscriber_is_closed_with_1011_and_others_get_every_write() {
+        let observer = WriteObserver::with_capacity(2);
+        let mut behind = observer.subscribe();
+        let mut reading = observer.subscribe();
+        for i in 0..5 {
+            let name = format!("{i}.ipynb");
+            observer.notify(Path::new("/root/x"), &name, None, Some("after"), false);
+            assert_eq!(path_of(next_event_frame(&mut reading).await), name);
+        }
+        match next_event_frame(&mut behind).await {
+            Some(WsMessage::Close(Some(frame))) => {
+                assert_eq!(frame.code, 1011);
+                assert_eq!(frame.reason.as_str(), "missed events");
+            }
+            other => panic!("expected a close, got {other:?}"),
+        }
+    }
+
+    /// A socket that never takes a frame and never sends one.
+    struct Stuck;
+
+    impl futures::Stream for Stuck {
+        type Item = Result<WsMessage, ()>;
+        fn poll_next(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl futures::Sink<WsMessage> for Stuck {
+        type Error = ();
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), ()>> {
+            std::task::Poll::Pending
+        }
+        fn start_send(self: std::pin::Pin<&mut Self>, _: WsMessage) -> Result<(), ()> {
+            Ok(())
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), ()>> {
+            std::task::Poll::Pending
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), ()>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    /// A client that stops taking frames is dropped once a send has waited
+    /// its time, and its subscription goes with it, so writes stop being
+    /// stamped for it (#978).
+    #[tokio::test]
+    async fn a_client_that_takes_no_frame_is_dropped_with_its_subscription() {
+        let observer = WriteObserver::new();
+        let writes = observer.subscribe();
+        let run = tokio::spawn(run_events(
+            Stuck,
+            writes,
+            std::time::Duration::from_millis(50),
+        ));
+        observer.notify(Path::new("/root/x"), "a.ipynb", None, Some("after"), false);
+        tokio::time::timeout(std::time::Duration::from_secs(10), run)
+            .await
+            .expect("the stuck client was not dropped")
+            .unwrap();
+        assert!(!observer.is_set(), "its subscription is gone");
+    }
+
+    /// The channel gone, there is nothing more to send.
+    #[tokio::test]
+    async fn no_frame_once_the_channel_is_gone() {
+        let observer = WriteObserver::new();
+        let mut writes = observer.subscribe();
+        drop(observer);
+        assert!(next_event_frame(&mut writes).await.is_none());
+    }
 }

@@ -114,6 +114,7 @@ fn state_with(
         static_headers: Arc::new([]),
         frame_ancestors: ganymede_server::frame_ancestors_directive("'self'").unwrap(),
         collab,
+        write_observer: Default::default(),
         terminals: None,
         lsp: None,
         mcp: None,

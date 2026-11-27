@@ -257,6 +257,70 @@ HTTP/1.1 412 Precondition Failed
 [Saving a notebook](architecture.md#saving-a-notebook) draws the whole
 path.
 
+## Hear of a write
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+A client that keeps answers per notebook file (a link's "always allow", a
+folder grant) has to forget them when something else replaces the file,
+and keep them when the server writes it. `/api/events/subscribe` carries
+one event per write the server makes, so a client of a `ganymede serve`
+hears what an app embedding the server hears from its
+[write observer](embedding.md#seeing-the-servers-own-writes):
+
+```http
+GET /api/events/subscribe
+Upgrade: websocket
+```
+
+```json
+{"__schema__": "https://ganymede-server.com/events/write/v1",
+ "__schema_version__": 1,
+ "__metadata_version__": 1,
+ "__timestamp__": "2026-11-27T18:20:31.412Z",
+ "path": "reports/package-stats.ipynb",
+ "before": "18213:1795803630904000000:8614272",
+ "after": "18290:1795803631408000000:8614272"}
+```
+
+The envelope is `jupyter_events`': the schema's id and versions, and when
+the event was sent, RFC 3339 in UTC. A client that doesn't know the
+schema ignores the event, as JupyterLab's event manager does. The data
+is the write:
+
+- `path`: the file's contents-API path, as the write named it, relative
+  to the server's root and `/`-separated. It is never canonical or
+  absolute, so the event tells a client nothing it could not already
+  list.
+- `before` and `after`: the file's `file_stamp`, just before the write
+  and just after it, or `null` when it couldn't be read: `before` is
+  `null` for a file the write made. To find the file on disk, join `path`
+  with the server's `root_dir`, from its `jpserver-<pid>.json` in the
+  Jupyter runtime directory.
+
+Reported are the writes a client makes through the contents API — a
+[save](#save-a-notebook), a copy to a named path, a checkpoint restore —
+and the ones that write with no request behind them: a room's autosave, a
+run saving its outputs, MCP. Nothing is sent for a write that failed, for
+a copy into a directory, a new untitled file, a rename, a delete, or a
+directory save. A rename is not reported, so a client that keys its
+answers by path loses them on a rename it didn't make itself, which fails
+safe.
+
+Events start with the socket: a write that begins after it opens is
+sent. A write already under way then is sent only if something was
+listening when it began (another client of this socket, or an embedding
+app's observer), so a client can't count on it.
+
+A client that falls behind — the server wrote faster than it read — is
+closed with code `1011` and the reason `missed events`, rather than left
+with a view of the files that has gaps in it. One that takes no data at
+all for 10 seconds is dropped without a close frame. Either way its view
+may be stale: reconnect and re-read what it depends on. Other clients on
+the same server are unaffected.
+
 ## Download a file
 
 ```http
@@ -462,7 +526,8 @@ line.
 What `ganymede serve` answers, beyond the examples above:
 
 - `jupyter_server`'s: `/api` (public), `/api/status`, `/api/me`,
-  `/api/config/{section}`, `/api/nbconvert`, `/api/events/subscribe`,
+  `/api/config/{section}`, `/api/nbconvert`, `/api/events/subscribe`
+  ([Hear of a write](#hear-of-a-write)),
   `/login`, `/logout`, `/api/kernelspecs[/{name}]`,
   `/kernelspecs/{name}/{file}`, `/api/kernels` with `interrupt`,
   `restart` and the `channels` websocket, `/api/sessions`,
