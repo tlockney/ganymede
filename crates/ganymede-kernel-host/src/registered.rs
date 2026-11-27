@@ -247,20 +247,29 @@ impl RegisteredKernels {
 
     /// Forgets a launch whose start failed or timed out: no kernel to
     /// find, and no pending connection.
+    /// Only this launch's run: a later launch may already hold the id. Its
+    /// provider run, if any, stays, so a failed restart is still never
+    /// relaunched through the fallback.
     fn abandon(&self, kernel_id: &str, process: &Arc<Process>) {
         let mut state = self.state.lock().unwrap();
-        state.running.remove(kernel_id);
+        if state
+            .running
+            .get(kernel_id)
+            .is_some_and(|r| Arc::ptr_eq(r, &process.run))
+        {
+            state.running.remove(kernel_id);
+        }
         state
             .unconnected
             .remove(&(Arc::as_ptr(process) as *const () as usize));
     }
 
-    /// The kernelspec name kernel `kernel_id` was started from, when a
-    /// provider started it.
-    fn provider_run(&self, kernel_id: Option<&str>) -> Option<String> {
+    /// The kernelspec name kernel `kernel_id` was started from, and the
+    /// provider that started it, when a provider did.
+    fn provider_run(&self, kernel_id: Option<&str>) -> Option<(String, Arc<dyn AppKernel>)> {
         let id = kernel_id?;
         let state = self.state.lock().unwrap();
-        state.provider_runs.get(id).map(|(name, _)| name.clone())
+        state.provider_runs.get(id).cloned()
     }
 
     /// A message from kernel `kernel_id`. Never blocks.
@@ -355,9 +364,12 @@ impl Provisioner for RegisteredKernels {
             // A kernel a provider started stays its provider's: launched
             // again under the name it started from, or not at all. Neither
             // the fallback nor another origin's spec of that name would run
-            // what the kernel was.
-            Some(name) => match self.registered(&name) {
-                Some((spec, app, Origin::Provider)) => Some((spec, app, Origin::Provider)),
+            // what the kernel was, and another provider that registered the
+            // name since must never get a kernel id from this connection.
+            Some((name, started_by)) => match self.registered(&name) {
+                Some((spec, app, Origin::Provider)) if Arc::ptr_eq(&app, &started_by) => {
+                    Some((spec, app, Origin::Provider))
+                }
                 _ => return Err(Error::NoSuchKernelspec(name)),
             },
             None => {
@@ -963,6 +975,34 @@ mod tests {
             .err()
             .unwrap();
         assert!(matches!(e, Error::Unsupported("never")), "{e}");
+    }
+
+    /// A kernel one provider started is never relaunched through another
+    /// provider that registered the same name after the first let it go.
+    #[tokio::test]
+    async fn a_provider_kernel_is_not_relaunched_through_another_provider() {
+        let host = Arc::new(RegisteredKernels::new());
+        let a = provider(&host, "app");
+        let k1 = || LaunchOptions {
+            kernel_id: Some("k1".into()),
+            ..Default::default()
+        };
+        let first = host.launch(&spec("app"), k1()).await.unwrap();
+        first.process.kill().await.unwrap();
+        assert!(host.unregister("app"));
+        let b = provider(&host, "app");
+        let e = host.launch(&spec("app"), k1()).await.err().unwrap();
+        assert!(
+            matches!(&e, Error::NoSuchKernelspec(name) if name == "app"),
+            "another provider must not get this kernel: {e}"
+        );
+        assert_eq!(b.starts.load(Ordering::SeqCst), 0);
+        assert_eq!(a.starts.load(Ordering::SeqCst), 1);
+        // A new kernel of that name is the new provider's, as any is.
+        host.launch(&spec("app"), LaunchOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(b.starts.load(Ordering::SeqCst), 1);
     }
 
     /// A restart stops the old run before it launches again under the same
