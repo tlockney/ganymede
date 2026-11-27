@@ -8,3 +8,9 @@ was out; chapter 11 of the book (site/book/index.html, "Which
 backend") still ended at the connect sheet. It now ends at the start
 screen, with Connect to a Server… opening the sheet. No Unreleased
 note: the change is in ganymede-ui's latest release.
+
+The line also says that a saved connection that fails opens the connect
+sheet with its error (`App.tsx`'s connect `.catch`). The book is
+generated from the code architecture primer: its chapter 11 "Which
+backend" line needs the same change before the next rebuild, or the
+rebuild brings back the old text.
