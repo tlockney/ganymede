@@ -90,10 +90,6 @@ off. Those callers can already start kernels.
 When kernels run on a [gateway](reference.md#gateway), the answer has two
 more keys that `jupyter_server` doesn't send:
 
-> [!NOTE]
-> **Unreleased.** A build of `main` (HEAD) sends both keys; the latest
-> release sends neither.
-
 A spec for a kernel that runs on that server has `"gateway": true` beside
 `resource_dir`, and one for a kernel of this machine's leaves the key out.
 Beside `kernelspecs`, the answer says how the gateway is doing:

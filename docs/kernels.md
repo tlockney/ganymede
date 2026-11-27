@@ -263,10 +263,6 @@ installed here runs here and the rest run there:
 ganymede serve --root-dir . --gateway-url https://kernels.example.org
 ```
 
-> [!NOTE]
-> **Unreleased.** A build of `main` (HEAD) lists this machine's kernels
-> beside the gateway's; the latest release lists only the gateway's.
-
 The gateway's specs come first, then every local spec whose name (compared
 case-insensitively) the gateway doesn't have, so a name both have is the
 gateway's and its kernel runs there. A spec's `"gateway": true` in
