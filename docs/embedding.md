@@ -515,6 +515,11 @@ From Rust, `ganymede_server::write_observer::WriteObserver` is the same
 thing: keep one, pass it as `Startup::write_observer`, and call `set` with
 a closure taking the path and the two stamps.
 
+A client that doesn't embed the server — one talking to `ganymede serve`
+or This Mac's own server over the API — hears the same writes on
+`/api/events/subscribe` ([Hear of a write](api.md#hear-of-a-write)),
+one event per write.
+
 ### Two servers on one notebook
 
 An embedded server's rooms lock their notebooks as every Ganymede server's

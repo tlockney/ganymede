@@ -45,6 +45,9 @@ pub(crate) struct Stamps {
 /// the write ([`Stamps::observe`]).
 pub(crate) struct Observed {
     file: PathBuf,
+    /// The file's contents-API path, as the write named it: what the
+    /// events socket reports ([`crate::write_observer::WriteEvent`]).
+    path: String,
     before: Option<String>,
     /// The file's stamp right after the write ([`Observed::wrote`]).
     after: Option<String>,
@@ -59,9 +62,10 @@ impl Observed {
     }
 
     /// Reports the write with the stamp [`Observed::wrote`] took, and the
-    /// file's canonical path (links resolved). Called once the file is
-    /// restamped, inside the turn. Nothing is reported when the path is
-    /// not a regular file now (a directory save), or cannot be resolved.
+    /// file's canonical path (links resolved) and contents-API path. Called
+    /// once the file is restamped, inside the turn. Nothing is reported
+    /// when the path is not a regular file now (a directory save), or
+    /// cannot be resolved.
     pub(crate) fn done(self) {
         if !self.file.is_file() {
             return;
@@ -69,8 +73,12 @@ impl Observed {
         let Ok(file) = std::fs::canonicalize(&self.file) else {
             return;
         };
-        self.observer
-            .notify(&file, self.before.as_deref(), self.after.as_deref());
+        self.observer.notify(
+            &file,
+            &self.path,
+            self.before.as_deref(),
+            self.after.as_deref(),
+        );
     }
 }
 
@@ -200,9 +208,10 @@ impl Stamps {
     }
 
     /// Starts watching the write of the file at `path`, inside its turn
-    /// and before it is written: takes its stamp as it is. `None` when no
-    /// function is set, or the contents are not a local directory, and
-    /// then the write is not reported and no stamp is read.
+    /// and before it is written: takes its stamp as it is. `None` when
+    /// nothing is listening (no function is set and no events socket is
+    /// subscribed), or the contents are not a local directory, and then
+    /// the write is not reported and no stamp is read.
     pub(crate) fn observe(&self, path: &str) -> Option<Observed> {
         let observer = self.observer.as_ref().filter(|o| o.is_set())?;
         let root = self.root.as_deref()?;
@@ -210,6 +219,7 @@ impl Stamps {
         Some(Observed {
             before: ganymede_contents::file_stamp(&file),
             after: None,
+            path: normalize_api_path(path),
             file,
             observer: observer.clone(),
         })
@@ -2677,6 +2687,27 @@ mod tests {
             })
         })
         .await;
+    }
+
+    /// A write is stamped beforehand only while someone is listening: an
+    /// events socket's subscriber, or an app's function (#978).
+    #[test]
+    fn nothing_is_stamped_without_a_listener() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.ipynb"), "{}").unwrap();
+        let observer = Arc::new(crate::write_observer::WriteObserver::new());
+        let stamps = Stamps::new(Some(dir.path().to_path_buf())).with_observer(observer.clone());
+        assert!(stamps.observe("a.ipynb").is_none(), "no listener");
+        let events = observer.subscribe();
+        let watched = stamps.observe("a.ipynb").expect("a stamp for the socket");
+        assert!(watched.before.is_some());
+        assert_eq!(watched.path, "a.ipynb");
+        drop(events);
+        assert!(stamps.observe("a.ipynb").is_none(), "no listener again");
+        observer.set(Some(Arc::new(
+            |_: &std::path::Path, _: Option<&str>, _: Option<&str>| {},
+        )));
+        assert!(stamps.observe("a.ipynb").is_some(), "a function listens");
     }
 
     /// A checkpoint restore is a write of the file, and is reported.

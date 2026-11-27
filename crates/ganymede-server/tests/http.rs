@@ -18,6 +18,7 @@ use ganymede_kernel_host::{
     attach, in_process_pair, KernelTransport, Kernelspec, LaunchOptions, LaunchedKernel,
     Provisioner,
 };
+use ganymede_server::write_observer::WriteObserver;
 use ganymede_server::{build_router, AppState};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -123,6 +124,7 @@ fn state_specs(
             ganymede_contents::FileIds::in_memory(),
             root.canonicalize().ok(),
         )),
+        write_observer: Default::default(),
         terminals: None,
         lsp: None,
         mcp: None,
@@ -1119,6 +1121,481 @@ async fn events_websocket_accepts_authenticated_clients() {
             .await
             .unwrap();
     ws.close(None).await.unwrap();
+}
+
+// ----- Write events (#978) -----------------------------------------------------
+
+/// A state that reports its writes, as `serve` builds one: the stamped
+/// contents of its own collab, and the observer its events socket reads.
+fn reporting_state(root: &std::path::Path, observer: Arc<WriteObserver>) -> AppState {
+    let root = root.canonicalize().unwrap();
+    let mut st = state(&root);
+    let collab = Arc::new(
+        ganymede_server::collab::Collab::new(
+            ganymede_contents::FileIds::in_memory(),
+            Some(root.clone()),
+        )
+        .with_write_observer(observer.clone()),
+    );
+    st.contents = collab.stamping(Arc::new(
+        FsContents::new(&root, FsOptions::default()).unwrap(),
+    ));
+    st.collab = collab;
+    st.write_observer = observer;
+    st
+}
+
+type Events =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Serves `app` on a port of its own, and connects an events socket to it.
+async fn events_socket(app: axum::Router) -> (std::net::SocketAddr, Events) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (addr, connect_events(addr).await)
+}
+
+async fn connect_events(addr: std::net::SocketAddr) -> Events {
+    let (ws, _) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/api/events/subscribe?token={TOKEN}"))
+            .await
+            .unwrap();
+    ws
+}
+
+const EVENT_WAIT: Duration = Duration::from_secs(10);
+/// How long a write that reports nothing is given to report something.
+const QUIET: Duration = Duration::from_millis(300);
+
+/// The next write event on `ws`. Fails when the socket closes, which no
+/// event of the server's should do, and gives up after `wait`.
+async fn next_write(ws: &mut Events, wait: Duration) -> Option<Value> {
+    let msg = tokio::time::timeout(wait, ws.next())
+        .await
+        .ok()?
+        .unwrap()
+        .unwrap();
+    match msg {
+        tokio_tungstenite::tungstenite::Message::Text(t) => {
+            Some(serde_json::from_str(t.as_str()).unwrap())
+        }
+        other => panic!("expected an event, got {other:?}"),
+    }
+}
+
+/// Whether no write event comes within [`QUIET`].
+async fn no_write(ws: &mut Events) {
+    assert!(next_write(ws, QUIET).await.is_none(), "an event was sent");
+}
+
+/// One event per write the server makes of a file, with the file's
+/// contents-API path and its stamps around the write, and none for the
+/// writes that are not reported (#978).
+#[tokio::test]
+async fn write_events_report_saves_and_copies_but_not_the_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let app = build_router(reporting_state(&root, Default::default()));
+    let (_addr, mut ws) = events_socket(app.clone()).await;
+    let t = Some(TOKEN);
+    let stamp = |p: &str| ganymede_contents::file_stamp(&root.join(p));
+    let notebook = || {
+        json!({"type": "notebook",
+               "content": {"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}})
+    };
+    let save = |path: &'static str| {
+        let app = app.clone();
+        let body = notebook();
+        async move { call(&app, "PUT", path, Some(body), Some(TOKEN)).await }
+    };
+
+    // A new file has no stamp before the write.
+    assert_eq!(
+        save("/api/contents/demo.ipynb").await.0,
+        StatusCode::CREATED
+    );
+    let event = next_write(&mut ws, EVENT_WAIT)
+        .await
+        .expect("a write event");
+    assert_eq!(
+        event["__schema__"],
+        ganymede_server::write_observer::WRITE_SCHEMA
+    );
+    assert_eq!(event["__schema_version__"], 1);
+    assert_eq!(event["__metadata_version__"], 1);
+    let at = event["__timestamp__"].as_str().unwrap();
+    assert!(at.ends_with('Z'), "UTC: {at}");
+    assert!(at.parse::<jiff::Timestamp>().is_ok(), "RFC 3339: {at}");
+    assert_eq!(event["path"], "demo.ipynb");
+    assert_eq!(event["before"], Value::Null);
+    let first = stamp("demo.ipynb").unwrap();
+    assert_eq!(event["after"], json!(first));
+
+    // A save of an existing file: from its stamp to the next.
+    assert_eq!(save("/api/contents/demo.ipynb").await.0, StatusCode::OK);
+    let event = next_write(&mut ws, EVENT_WAIT)
+        .await
+        .expect("the save's event");
+    assert_eq!(event["path"], "demo.ipynb");
+    assert_eq!(event["before"], json!(first));
+    let second = stamp("demo.ipynb").unwrap();
+    assert_ne!(second, first);
+    assert_eq!(event["after"], json!(second));
+
+    // A save that fails is not reported.
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/api/contents/demo.ipynb")
+        .header(header::AUTHORIZATION, format!("token {TOKEN}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::IF_MATCH, "\"not the hash\"")
+        .body(Body::from(notebook().to_string()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
+    no_write(&mut ws).await;
+
+    // A directory save, a new untitled file, a rename and a delete are
+    // not reported either.
+    let (s, _) = call(
+        &app,
+        "PUT",
+        "/api/contents/sub",
+        Some(json!({"type": "directory"})),
+        t,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    no_write(&mut ws).await;
+    let (s, made) = call(&app, "POST", "/api/contents/sub", Some(json!({})), t).await;
+    assert_eq!(
+        (s, made["path"].as_str()),
+        (StatusCode::CREATED, Some("sub/Untitled.ipynb"))
+    );
+    no_write(&mut ws).await;
+
+    // A copy to a named path is a write of the destination.
+    let (s, copied) = call(
+        &app,
+        "POST",
+        "/api/contents/sub/copy.ipynb",
+        Some(json!({"copy_from": "demo.ipynb"})),
+        t,
+    )
+    .await;
+    assert_eq!(
+        (s, copied["path"].as_str()),
+        (StatusCode::CREATED, Some("sub/copy.ipynb"))
+    );
+    let event = next_write(&mut ws, EVENT_WAIT)
+        .await
+        .expect("the copy's event");
+    assert_eq!(event["path"], "sub/copy.ipynb");
+    assert_eq!(event["before"], Value::Null);
+    assert_eq!(event["after"], json!(stamp("sub/copy.ipynb").unwrap()));
+
+    // A checkpoint restore is a write of the file it restores.
+    let (s, cp) = call(
+        &app,
+        "POST",
+        "/api/contents/demo.ipynb/checkpoints",
+        None,
+        t,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    no_write(&mut ws).await;
+    std::fs::write(root.join("demo.ipynb"), "{\"outside\": true}").unwrap();
+    let changed = stamp("demo.ipynb").unwrap();
+    let (s, _) = call(
+        &app,
+        "POST",
+        &format!(
+            "/api/contents/demo.ipynb/checkpoints/{}",
+            cp["id"].as_str().unwrap()
+        ),
+        None,
+        t,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let event = next_write(&mut ws, EVENT_WAIT)
+        .await
+        .expect("the restore's event");
+    assert_eq!(event["path"], "demo.ipynb");
+    assert_eq!(event["before"], json!(changed));
+    assert_eq!(event["after"], json!(stamp("demo.ipynb").unwrap()));
+
+    // A rename and a delete report nothing: an app that keys its answers
+    // by path is left to fail safe on a rename it did not make.
+    let (s, _) = call(
+        &app,
+        "PATCH",
+        "/api/contents/sub/copy.ipynb",
+        Some(json!({"path": "sub/moved.ipynb"})),
+        t,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    no_write(&mut ws).await;
+    let (s, _) = call(&app, "DELETE", "/api/contents/sub/moved.ipynb", None, t).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    no_write(&mut ws).await;
+}
+
+/// The notebook's cell source, as the room's document has it.
+fn cell_source(doc: &ganymede_documents::yrs::Doc) -> Option<String> {
+    use ganymede_documents::schema::Roots;
+    use ganymede_documents::yrs::{Array, GetString, Map, Out, Transact};
+    let roots = Roots::get(doc);
+    let txn = doc.transact();
+    let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+        return None;
+    };
+    let Some(Out::YText(t)) = cell.get(&txn, "source") else {
+        return None;
+    };
+    Some(t.get_string(&txn))
+}
+
+/// Applies the room's frames to `doc` until `until` holds, answering its
+/// sync step 1. The frames the room itself answers with are returned.
+async fn pump<S>(
+    ws: &mut S,
+    doc: &ganymede_documents::yrs::Doc,
+    until: impl Fn(&ganymede_documents::yrs::Doc) -> bool,
+) -> Vec<Vec<u8>>
+where
+    S: futures::Stream<
+            Item = Result<
+                tokio_tungstenite::tungstenite::Message,
+                tokio_tungstenite::tungstenite::Error,
+            >,
+        > + futures::Sink<tokio_tungstenite::tungstenite::Message>
+        + Unpin,
+    <S as futures::Sink<tokio_tungstenite::tungstenite::Message>>::Error: std::fmt::Debug,
+{
+    use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
+    use ganymede_documents::yrs::updates::decoder::Decode;
+    use ganymede_documents::yrs::updates::encoder::Encode;
+    use ganymede_documents::yrs::{ReadTxn, Transact, Update};
+    use tokio_tungstenite::tungstenite::Message as TMsg;
+
+    let mut raw = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !until(doc) {
+        let msg = tokio::time::timeout_at(deadline, ws.next())
+            .await
+            .expect("timed out waiting for the room")
+            .unwrap()
+            .unwrap();
+        let TMsg::Binary(b) = msg else { continue };
+        if b.first() == Some(&2) {
+            raw.push(b.to_vec());
+            continue;
+        }
+        match YMsg::decode_v1(&b) {
+            Ok(YMsg::Sync(SyncMessage::SyncStep1(sv))) => {
+                let u = doc.transact().encode_state_as_update_v1(&sv);
+                ws.send(TMsg::Binary(
+                    YMsg::Sync(SyncMessage::SyncStep2(u)).encode_v1().into(),
+                ))
+                .await
+                .unwrap();
+            }
+            Ok(YMsg::Sync(SyncMessage::SyncStep2(u) | SyncMessage::Update(u))) => {
+                doc.transact_mut()
+                    .apply_update(Update::decode_v1(&u).unwrap())
+                    .unwrap();
+            }
+            _ => {}
+        }
+    }
+    raw
+}
+
+/// A room's autosave and a run's save of the notebook's outputs are
+/// writes of the file like any other (#978).
+#[tokio::test]
+async fn write_events_report_a_rooms_autosave_and_a_runs_output_save() {
+    use ganymede_documents::schema::Roots;
+    use ganymede_documents::yrs::sync::{Message as YMsg, SyncMessage};
+    use ganymede_documents::yrs::updates::encoder::Encode;
+    use ganymede_documents::yrs::{Array, Doc, Map, Out, ReadTxn, Text, Transact};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TMsg};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let file = root.join("auto.ipynb");
+    let nb = json!({
+        "cells": [{"cell_type": "code", "execution_count": null, "id": "a",
+                   "metadata": {}, "outputs": [], "source": "hello"}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5
+    });
+    std::fs::write(&file, serde_json::to_string_pretty(&nb).unwrap()).unwrap();
+    let app = build_router(reporting_state(&root, Default::default()));
+    let (addr, mut events) = events_socket(app.clone()).await;
+    let t = Some(TOKEN);
+    let (s, session) = call(
+        &app,
+        "PUT",
+        "/api/collaboration/session/auto.ipynb",
+        Some(json!({"format": "json", "type": "notebook"})),
+        t,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+
+    let mut req = format!(
+        "ws://{addr}/api/collaboration/room/json:notebook:{}?sessionId={}",
+        session["fileId"].as_str().unwrap(),
+        session["sessionId"].as_str().unwrap()
+    )
+    .into_client_request()
+    .unwrap();
+    req.headers_mut()
+        .insert("Authorization", format!("token {TOKEN}").parse().unwrap());
+    let (mut room, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let doc = Doc::new();
+    let roots = Roots::get(&doc);
+    let sv = doc.transact().state_vector();
+    room.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::SyncStep1(sv)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+    pump(&mut room, &doc, |d| cell_source(d).is_some()).await;
+    assert_eq!(cell_source(&doc).as_deref(), Some("hello"));
+
+    // An edit: the room saves it a second later, and the socket hears of
+    // the write.
+    let before = doc.transact().state_vector();
+    {
+        let mut txn = doc.transact_mut();
+        let Some(Out::YMap(cell)) = roots.cells.get(&txn, 0) else {
+            panic!("no first cell")
+        };
+        let Some(Out::YText(source)) = cell.get(&txn, "source") else {
+            panic!("no source")
+        };
+        source.insert(&mut txn, 5, "!");
+    }
+    let update = doc.transact().encode_state_as_update_v1(&before);
+    room.send(TMsg::Binary(
+        YMsg::Sync(SyncMessage::Update(update)).encode_v1().into(),
+    ))
+    .await
+    .unwrap();
+    let event = next_write(&mut events, EVENT_WAIT)
+        .await
+        .expect("the autosave's event");
+    assert_eq!(event["path"], "auto.ipynb");
+    assert!(std::fs::read_to_string(&file).unwrap().contains("hello!"));
+    assert_eq!(
+        event["after"],
+        json!(ganymede_contents::file_stamp(&file).unwrap())
+    );
+
+    // A run's output save: the cell runs, the room writes the notebook
+    // with its output, and the socket hears of that write too.
+    let (_, kernel) = call(&app, "POST", "/api/kernels", Some(json!({})), t).await;
+    let kid = kernel["id"].as_str().unwrap().to_string();
+    let document = format!("json:notebook:{}", session["fileId"].as_str().unwrap());
+    let hash = ganymede_documents::murmur2(b"hello!", 0).to_string();
+    let (s, _) = call(
+        &app,
+        "POST",
+        &format!("/api/kernels/{kid}/execute"),
+        Some(json!({"document_id": document, "cells": [{"cell_id": "a", "source_hash": hash}]})),
+        t,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let mut saved = None;
+    while saved.is_none() && std::time::Instant::now() < deadline {
+        let Some(event) = next_write(&mut events, Duration::from_secs(1)).await else {
+            continue;
+        };
+        let text = std::fs::read_to_string(&file).unwrap();
+        if text.contains("execution_count\": 1")
+            && event["after"] == json!(ganymede_contents::file_stamp(&file).unwrap())
+        {
+            saved = Some(event);
+        }
+    }
+    let event = saved.expect("no event for the run's save");
+    assert_eq!(event["path"], "auto.ipynb");
+    assert_ne!(event["before"], Value::Null);
+}
+
+/// A subscriber that falls behind is closed with 1011 `missed events`,
+/// while another on the same server gets every event (#978).
+#[tokio::test]
+async fn a_lagging_events_subscriber_is_closed_with_1011() {
+    use tokio_tungstenite::tungstenite::Message as TMsg;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    // A path as long as a file's may be, so a few hundred writes of it
+    // fill the socket the client isn't reading before its events do.
+    let mut path = (0..4)
+        .map(|i| format!("{i:0<230}"))
+        .collect::<Vec<_>>()
+        .join("/");
+    path.push_str("/a.ipynb");
+    let file = root.join(&path);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "{}").unwrap();
+    let app = build_router(reporting_state(
+        &root,
+        Arc::new(WriteObserver::with_capacity(8)),
+    ));
+    let (addr, mut reading) = events_socket(app.clone()).await;
+    // Connected, and not read until the writes are over.
+    let mut behind = connect_events(addr).await;
+
+    // Enough that the events fill the socket's buffers (the OS holds a
+    // few hundred kilobytes of them), so the server's sends to the client
+    // that isn't reading hold up its reader until it has missed some.
+    const WRITES: usize = 600;
+    let writing = {
+        let app = app.clone();
+        let url = format!("/api/contents/{path}");
+        tokio::spawn(async move {
+            for _ in 0..WRITES {
+                let body = json!({"type": "notebook",
+                                  "content": {"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}});
+                let (s, _) = call(&app, "PUT", &url, Some(body), Some(TOKEN)).await;
+                assert!(s.is_success(), "{s}");
+            }
+        })
+    };
+    // The reader keeps up: it would be closed too if it fell behind.
+    for i in 0..WRITES {
+        let event = next_write(&mut reading, EVENT_WAIT)
+            .await
+            .unwrap_or_else(|| panic!("event {i} of {WRITES}"));
+        assert_eq!(event["path"], json!(path));
+    }
+    writing.await.unwrap();
+
+    // The one that didn't read fell behind, and is told so: after the
+    // events it already had, it is closed with 1011 and a reason.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let msg = tokio::time::timeout_at(deadline, behind.next())
+            .await
+            .expect("the lagging socket was not closed")
+            .unwrap()
+            .unwrap();
+        if let TMsg::Close(Some(frame)) = msg {
+            assert_eq!(u16::from(frame.code), 1011);
+            assert_eq!(frame.reason.as_str(), "missed events");
+            break;
+        }
+    }
 }
 
 // ----- JupyterLab --------------------------------------------------------------

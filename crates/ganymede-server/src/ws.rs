@@ -2,6 +2,7 @@
 //! v1 subprotocol when the client offers it and legacy JSON otherwise.
 
 use crate::routes::{origin_allowed, HttpError};
+use crate::write_observer::WriteEvent;
 use crate::AppState;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
@@ -9,6 +10,7 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use ganymede_api::ClientConnection;
 use ganymede_protocol::ws::{legacy, v1};
+use tokio::sync::broadcast;
 
 #[derive(serde::Deserialize)]
 pub struct ChannelsQuery {
@@ -102,8 +104,12 @@ async fn run(mut socket: WebSocket, mut client: ClientConnection) {
 }
 
 /// `/api/events/subscribe`: `jupyter_events`' stream of server events.
-/// JupyterLab keeps one open. This server emits no events, so the socket
-/// stays quiet until the client closes it.
+/// JupyterLab keeps one open. One event per write the server makes of a
+/// file is sent, in `jupyter_events`' envelope
+/// ([`crate::write_observer::WriteEvent`]); nothing else is, so the socket
+/// is quiet while the server writes nothing. A client that falls behind
+/// is closed with 1011 `missed events`: its view of the files may be
+/// stale, and forgetting what it can't confirm fails safe.
 pub async fn events(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -112,13 +118,42 @@ pub async fn events(
     if !origin_allowed(&state, &headers) {
         return HttpError(403, "origin not allowed".into()).into_response();
     }
-    ws.on_upgrade(|mut socket| async move {
-        while let Some(Ok(msg)) = socket.recv().await {
-            if matches!(msg, WsMessage::Close(_)) {
-                break;
-            }
+    // Taken before the upgrade, so a write between the request and it is
+    // not missed.
+    let writes = state.write_observer.subscribe();
+    ws.on_upgrade(move |socket| run_events(socket, writes))
+}
+
+async fn run_events(mut socket: WebSocket, mut writes: broadcast::Receiver<WriteEvent>) {
+    loop {
+        tokio::select! {
+            incoming = socket.recv() => match incoming {
+                Some(Ok(WsMessage::Close(_))) | None | Some(Err(_)) => break,
+                Some(Ok(_)) => {}
+            },
+            write = writes.recv() => match write {
+                Ok(write) => {
+                    let text = write.envelope().to_string();
+                    if socket.send(WsMessage::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
+                // Writes came faster than this client read them: say so,
+                // and close, rather than let it read events with a gap it
+                // can't tell about.
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    let _ = socket
+                        .send(WsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                            code: 1011,
+                            reason: "missed events".into(),
+                        })))
+                        .await;
+                    break;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
         }
-    })
+    }
 }
 
 /// `/terminals/websocket/{name}`: terminado's protocol, JSON arrays in text

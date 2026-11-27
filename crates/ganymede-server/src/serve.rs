@@ -685,6 +685,9 @@ impl LocalHost {
             static_headers: Arc::new([]),
             frame_ancestors: crate::frame_ancestors_directive("'self'")?,
             collab,
+            // The host API has no events socket: nothing subscribes, and
+            // writes are reported to no one.
+            write_observer: Default::default(),
             terminals: None,
             lsp: None,
             mcp: None,
@@ -963,10 +966,17 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
     // Every server locks, an embedded app's too (#966): the first to
     // open a room on a notebook owns it. Only iOS, with no runtime dir,
     // locks nothing, which its app asks for through `room_locks`.
-    let mut collab = crate::collab::Collab::new(file_ids(&root_dir), Some(root_dir.clone()));
-    if let Some(observer) = &startup.write_observer {
-        collab = collab.with_write_observer(observer.clone());
-    }
+    // Every server reports its writes (#978): to an embedding app's
+    // function when it gave one, and to any client of
+    // `/api/events/subscribe`, so the app's own server over there hears
+    // what its embedded one does. With neither listening nothing is
+    // stamped before a write.
+    let write_observer = match &startup.write_observer {
+        Some(observer) => observer.clone(),
+        None => Arc::new(crate::write_observer::WriteObserver::new()),
+    };
+    let mut collab = crate::collab::Collab::new(file_ids(&root_dir), Some(root_dir.clone()))
+        .with_write_observer(write_observer.clone());
     match startup.room_locks {
         RoomLocks::RuntimeDir => {
             collab = collab.with_room_locks(
@@ -1004,6 +1014,7 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
         frame_ancestors: frame_ancestors.clone(),
         lab: lab.map(Arc::new),
         collab: state_collab.clone(),
+        write_observer: write_observer.clone(),
         terminals: terminals.clone(),
         lsp: lsp.clone(),
         mcp: cfg.mcp_enabled.then(|| {

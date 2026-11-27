@@ -96,6 +96,10 @@ pub struct AppState {
     pub frame_ancestors: axum::http::HeaderValue,
     /// Document rooms behind `/api/collaboration`.
     pub collab: Arc<collab::Collab>,
+    /// The server's writes of its files, reported to an embedding app's
+    /// function ([`write_observer`]) and to clients of
+    /// `/api/events/subscribe`.
+    pub write_observer: Arc<write_observer::WriteObserver>,
     /// `/api/terminals`; `None` when `terminals_enabled` is off or the
     /// platform cannot start processes (iOS).
     pub terminals: Option<Arc<ganymede_terminals::TerminalManager>>,
