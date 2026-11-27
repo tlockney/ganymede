@@ -496,11 +496,13 @@ pub enum CleanRun {
     None,
     /// The stamp's fingerprint matches the cells.
     Current,
-    /// The stamp has no fingerprint (as older versions wrote), or a `v1:`
-    /// one that doesn't match the cells.
+    /// The stamp has no fingerprint (as older versions wrote), one that is
+    /// not of the form `v<digits>:...`, or a `v1:` one that doesn't match
+    /// the cells.
     Stale,
-    /// The stamp's fingerprint is of a version this code doesn't know, so
-    /// it can't say whether the cells match.
+    /// The stamp's fingerprint is `v<digits>:` of a version other than 1,
+    /// which this code doesn't know, so it can't say whether the cells
+    /// match. Treat it as not current.
     Unverified,
 }
 
@@ -518,9 +520,20 @@ pub fn clean_run_status(nb: &Notebook) -> CleanRun {
                 CleanRun::Stale
             }
         }
-        Some(_) => CleanRun::Unverified,
-        None => CleanRun::Stale,
+        // Only a real `v<digits>:` prefix of another version is one this
+        // code may just not know; anything else is no fingerprint.
+        Some(f) if unknown_version(f) => CleanRun::Unverified,
+        Some(_) | None => CleanRun::Stale,
     }
+}
+
+/// Whether `fingerprint` starts `v<digits>:` with a version other than 1.
+fn unknown_version(fingerprint: &str) -> bool {
+    let Some((version, _)) = fingerprint.split_once(':') else {
+        return false;
+    };
+    let digits = version.strip_prefix('v').unwrap_or("");
+    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) && digits != "1"
 }
 
 /// The notebook's `metadata.ganymede.clean_run` stamp, if it has one.

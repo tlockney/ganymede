@@ -14,14 +14,18 @@ What changed:
   same bytes. A cell the crate can't type (`Cell::Unknown`) counts with its
   raw `source`, a string or an array of strings joined. No new dependency.
 - `schema::clean_run_status` and `schema::CleanRun` tell what a stamp says
-  about the cells: `None`, `Current`, `Stale` (no fingerprint, or a `v1:`
-  one that doesn't match) and `Unverified` (a version prefix this code
-  doesn't know, which is left alone, never reported as current). Nothing
-  else reads them yet.
+  about the cells: `None`, `Current`, `Stale` (no fingerprint, one that
+  isn't `v<digits>:`, or a `v1:` one that doesn't match) and `Unverified`
+  (a real `v<digits>:` prefix of a version other than 1, which is left
+  alone, never reported as current; the docs tell readers to treat it as
+  not current). Nothing else reads them yet.
+- The `notebook_run_all` description now says the stamp carries a
+  fingerprint of the cells (`docs/mcp-tools.md` regenerated).
 - `clean_run_edit` in `mcp.rs` writes `fingerprint` into the stamp from the
   notebook it already checks.
 - Opening never writes the file. `Room::forget_unfit_clean_run` removes a
-  stale stamp from the room only: no `last_edit`, the saved generation and
+  stale stamp from the room only (and resets the room's change flag, so a
+  client's sync step 2 afterwards doesn't make it dirty): no `last_edit`, the saved generation and
   the baseline agree it is clean, so there is no autosave and
   `state.dirty` stays false. The file loses the stamp with the next real
   save. `run_room` calls it once the file is open, and a new `relock`
@@ -34,8 +38,10 @@ What changed:
   it also covers execution counts.
 - `docs/rooms.md` describes the field, the exact byte layout (so a reader
   outside a room can compute it), the opening and reload behaviour and the
-  badge's wording, with the unreleased note before the field. The
-  `notebook_run_all` tool description stays right and is unchanged.
+  badge's wording, with the unreleased note before the field. It says a
+  `GET` of the file returns the stamp unchecked until the room next saves,
+  and that clearing outputs alone keeps the stamp (a clear that also
+  blanks counts removes it in an open room).
 
 Post-merge nits (main moved to 0.18.0 with #959 and #960):
 
@@ -57,12 +63,21 @@ Tests:
 - `a_forgotten_stamp_is_not_in_the_baseline`: a read-only room that
   restores its baseline after a refused edit doesn't bring the stamp back.
 - `an_unverified_stamp_is_dropped_on_open_only_without_a_fingerprint`: no
-  fingerprint and a wrong `v1:` go; `v2:` and an empty one stay.
+  fingerprint, a wrong `v1:`, an empty string and junk (`abc`, `v:`, `vx:`,
+  `1:`) go; `v2:` and `v10:` stay.
 - `a_matching_stamp_survives_open_and_outputs_are_not_covered`: outputs
   and counts changed in the file keep the stamp.
 - `clean_run_status_tells_stale_from_current`.
 - `a_stamp_in_a_reloaded_or_merged_file_is_kept_only_when_it_fits_the_file`:
   `reload` and `merge_disk`, a fitting and a wrong fingerprint.
+- `a_client_joining_after_the_stamp_was_forgotten_leaves_the_room_saved`
+  (the change flag) and
+  `forgetting_a_stamp_keeps_a_room_with_unsaved_edits_unsaved` (the
+  `clean` guard).
+- `a_room_whose_lock_retry_succeeds_forgets_an_unfit_stamp_without_saving`
+  and `a_moved_room_that_turns_writable_forgets_an_unfit_stamp_without_saving`
+  (collab, `run_room` with another server holding the lock; each fails with
+  its `relock` call site back to `take_lock`).
 - `a_read_only_room_leaves_a_stamp_that_does_not_fit`: also checks it when
   the room turns writable.
 - `the_source_fingerprint_is_stable` (a hard-coded value, checked against a
@@ -70,7 +85,7 @@ Tests:
   `the_source_fingerprint_has_no_concatenation_collisions` (one cell
   `a\ncodeb` against the cells `a` and `b`, which only the length prefixes
   separate) and `the_source_fingerprint_reads_an_unknown_cells_source`.
-- `opening_a_file_with_an_unfit_stamp_does_not_write_it` (collab): the
+- `opening_a_file_with_an_unfit_stamp_does_not_write_it` (collab, with a client syncing): the
   room's stamp is gone, `state.dirty` is false, the file is unchanged well
   past the autosave delay, and a real edit saves it without the stamp.
 - `a_room_that_turns_writable_forgets_a_stamp_that_does_not_fit` (collab,

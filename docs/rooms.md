@@ -433,8 +433,9 @@ that fingerprint:
 
 The fingerprint covers every cell's type and source, in order, and
 nothing else: not outputs, execution counts, cell ids or metadata. So
-clearing a notebook's outputs keeps the stamp, and a changed source, a
-changed cell type or a reordering does not. It is `v1:` and eight
+clearing a notebook's outputs alone keeps the stamp (in an open room, a
+clear that also blanks execution counts removes it, as described below),
+and a changed source, a changed cell type or a reordering does not. It is `v1:` and eight
 lowercase hex digits of the MurmurHash2 (seed 0) of one byte string: for
 each cell, in order, `{type_len}:{cell_type}{source_len}:{source}` and a
 newline, where `cell_type` is the cell's `cell_type` as written (`code`,
@@ -445,13 +446,16 @@ type Ganymede doesn't know counts with its raw `source`, read the same
 way, and an empty one if it has none.
 
 A room checks the stamp whenever it takes content from the file, and
-removes it when its `fingerprint` is missing (as older versions wrote) or
-is a `v1:` one that doesn't match the cells. A fingerprint with another
-version prefix is left alone: this code can't say it is stale. A reader
-outside a room, such as a `GET` of a file with no room open, doesn't get
-that check, and should compute the fingerprint itself and compare it.
-A read-only room, whose file another process owns, leaves the stamp as
-the file has it, and checks it if it becomes writable.
+removes it when its `fingerprint` is missing (as older versions wrote),
+isn't of the form `v<digits>:` and more, or is a `v1:` one that doesn't
+match the cells. Only a fingerprint with a real `v<digits>:` prefix of
+another version is left alone: this code can't say it is stale. A
+reader must treat it as not current, as it must a stamp it can't verify.
+A `GET` of the file, even with a room open, returns the file's stamp
+unchecked until the room next saves, so a reader computes the
+fingerprint itself and compares it. A read-only room, whose file another
+process owns, leaves the stamp as the file has it, and checks it if it
+becomes writable.
 
 The fingerprint check differs between opening and the file changing. When
 a room opens a file (or a read-only one becomes writable), a stamp that

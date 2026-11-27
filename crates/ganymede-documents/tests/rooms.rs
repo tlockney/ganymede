@@ -2475,16 +2475,21 @@ fn a_forgotten_stamp_is_not_in_the_baseline() {
     assert_eq!(stamp_of(&room), None);
 }
 
-/// A stamp with no fingerprint, as older versions wrote, is not a clean
-/// run and goes. One of a version this code doesn't know stays: it can't
-/// say it is stale.
+/// A stamp with no fingerprint, as older versions wrote, or one that isn't
+/// a version at all, is not a clean run and goes. One with a real prefix of
+/// a version this code doesn't know stays: it can't say it is stale.
 #[test]
 fn an_unverified_stamp_is_dropped_on_open_only_without_a_fingerprint() {
     for (f, dropped) in [
         (None, true),
         (Some("v1:00000000"), true),
         (Some("v2:00000000"), false),
-        (Some(""), false),
+        (Some("v10:abc"), false),
+        (Some(""), true),
+        (Some("abc"), true),
+        (Some("v:00000000"), true),
+        (Some("vx:00000000"), true),
+        (Some("1:00000000"), true),
     ] {
         let nb = fingerprinted_file(Some(f), |_| {});
         let status = if dropped {
@@ -2499,6 +2504,44 @@ fn an_unverified_stamp_is_dropped_on_open_only_without_a_fingerprint() {
         assert_eq!(fx.send.is_empty(), !dropped, "{f:?}");
         assert!(!fx.changed && !room.is_dirty(), "{f:?}");
     }
+}
+
+/// A client that joins after the room forgot the stamp and sends its
+/// state (sync step 2) doesn't make the room dirty: the removal's change
+/// flag was reset, so the host doesn't save the file.
+#[test]
+fn a_client_joining_after_the_stamp_was_forgotten_leaves_the_room_saved() {
+    let nb = fingerprinted_file(None, FINGERPRINT_STALE[0].1);
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.forget_unfit_clean_run();
+    let client = Doc::new();
+    let mut changed = false;
+    for (_, frame) in room.connect(1).send {
+        if let Ok(Message::Sync(SyncMessage::SyncStep1(sv))) = Message::decode_v1(&frame) {
+            let update = client.transact().encode_state_as_update_v1(&sv);
+            let step2 = Message::Sync(SyncMessage::SyncStep2(update)).encode_v1();
+            changed |= room.receive(1, &step2).unwrap().changed;
+        }
+    }
+    assert!(!changed && !room.is_dirty());
+    assert_eq!(room.state_value("dirty"), Some(false.into()));
+}
+
+/// A room with unsaved edits stays unsaved when it forgets a stamp.
+#[test]
+fn forgetting_a_stamp_keeps_a_room_with_unsaved_edits_unsaved() {
+    let nb = fingerprinted_file(None, FINGERPRINT_STALE[0].1);
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    room.edit(|txn, roots| {
+        let Some(Out::YMap(meta)) = roots.meta.get(txn, "metadata") else {
+            panic!()
+        };
+        meta.insert(txn, "mine", true);
+    });
+    assert!(room.is_dirty());
+    room.forget_unfit_clean_run();
+    assert_eq!(stamp_of(&room), None);
+    assert!(room.is_dirty());
 }
 
 /// A fingerprint that matches survives, and clearing the outputs in the

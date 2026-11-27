@@ -4685,7 +4685,11 @@ mod recovery_tests {
         let file = fx.dir.path().join("a.ipynb");
         let stamped = r#"{"cells":[{"cell_type":"markdown","id":"a","metadata":{},"source":"keep"}],"metadata":{"ganymede":{"other":1,"clean_run":{"at":"t","by":"b","kernel":"k"}}},"nbformat":4,"nbformat_minor":5}"#;
         std::fs::write(&file, stamped).unwrap();
-        let (_tx, _rx) = fx.join(1).await;
+        let (tx, mut rx) = fx.join(1).await;
+        // A client joins and sends its state (sync step 2): that doesn't
+        // make the room unsaved either.
+        let doc = ganymede_documents::yrs::Doc::new();
+        client::sync(&tx, &mut rx, 1, &doc).await;
         let held = || {
             with_notebook(&fx.collab, &fx.contents, &fx.room_id, |room| {
                 let nb = room.notebook().unwrap().unwrap();
@@ -4714,6 +4718,123 @@ mod recovery_tests {
             !saved.contains("clean_run") && saved.contains("\"other\""),
             "{saved}"
         );
+    }
+
+    /// A directory holding `a.ipynb` with a stamp that doesn't fit its
+    /// cells, a server on it, and another server holding the lock of
+    /// `a.ipynb`, so a room opened here is read-only.
+    struct Locked {
+        dir: tempfile::TempDir,
+        collab: Arc<Collab>,
+        contents: Arc<dyn Contents>,
+        theirs: Option<crate::room_lock::RoomLock>,
+        text: String,
+    }
+
+    impl Locked {
+        const STAMPED: &'static str = r#"{"cells":[{"cell_type":"markdown","id":"a","metadata":{},"source":"keep"}],"metadata":{"ganymede":{"other":1,"clean_run":{"at":"t","by":"b","kernel":"k"}}},"nbformat":4,"nbformat_minor":5}"#;
+
+        fn new() -> Locked {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("a.ipynb"), Self::STAMPED).unwrap();
+            let root = dir.path().canonicalize().ok();
+            let locks = dir.path().join("locks");
+            let other =
+                Collab::new(FileIds::in_memory(), root.clone()).with_room_locks(locks.clone());
+            let crate::room_lock::Acquire::Held(theirs) = other.acquire("a.ipynb") else {
+                panic!("the other server owns it")
+            };
+            let collab = Arc::new(Collab::new(FileIds::in_memory(), root).with_room_locks(locks));
+            let contents: Arc<dyn Contents> =
+                Arc::new(FsContents::new(dir.path(), Default::default()).unwrap());
+            Locked {
+                dir,
+                collab,
+                contents,
+                theirs: Some(theirs),
+                text: Self::STAMPED.to_string(),
+            }
+        }
+
+        /// Open a room on `a.ipynb`, read-only: the stamp stays.
+        async fn open(&self) -> (String, mpsc::UnboundedSender<Cmd>, mpsc::Receiver<Out>) {
+            let id = notebook_room_id(&self.collab, &self.contents, "a.ipynb")
+                .await
+                .unwrap();
+            let (out, rx, _) = ClientTx::new(usize::MAX);
+            let tx = send_to_notebook_room(
+                &self.collab,
+                &self.contents,
+                &id,
+                Cmd::Join(1, out, Some("me".into()), Listing::Person),
+            )
+            .await
+            .unwrap();
+            (id, tx, rx)
+        }
+
+        /// The room's (read-only, has the stamp, dirty, `state.dirty`).
+        async fn room(&self, id: &str) -> (bool, bool, bool, Option<Value>) {
+            with_notebook(&self.collab, &self.contents, id, |room| {
+                let nb = room.notebook().unwrap().unwrap();
+                let held = nb.to_file_string().contains("clean_run");
+                (
+                    (
+                        room.is_read_only(),
+                        held,
+                        room.is_dirty(),
+                        room.state_value("dirty"),
+                    ),
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap()
+        }
+
+        /// The file at `path` is as it was written, well after the room's
+        /// autosave delay.
+        async fn unchanged(&self, path: &str) {
+            tokio::time::sleep(SAVE_DELAY * 10).await;
+            let on_disk = std::fs::read_to_string(self.dir.path().join(path)).unwrap();
+            assert_eq!(on_disk, self.text);
+        }
+    }
+
+    /// A room read-only because another server holds its file's lock keeps
+    /// the stamp; when that server lets go, the room's retry takes the lock
+    /// and forgets the stamp without saving (#944).
+    #[tokio::test(start_paused = true)]
+    async fn a_room_whose_lock_retry_succeeds_forgets_an_unfit_stamp_without_saving() {
+        let mut fx = Locked::new();
+        let (id, _tx, _rx) = fx.open().await;
+        assert_eq!(fx.room(&id).await, (true, true, false, Some(json!(false))));
+        fx.unchanged("a.ipynb").await;
+        fx.theirs = None;
+        // Past the retry's interval.
+        tokio::time::sleep(POLL_INTERVAL * 3).await;
+        assert_eq!(
+            fx.room(&id).await,
+            (false, false, false, Some(json!(false)))
+        );
+        fx.unchanged("a.ipynb").await;
+    }
+
+    /// A read-only room whose file is moved to a path nobody holds takes
+    /// that path's lock and forgets the stamp without saving (#944).
+    #[tokio::test(start_paused = true)]
+    async fn a_moved_room_that_turns_writable_forgets_an_unfit_stamp_without_saving() {
+        let fx = Locked::new();
+        let (id, _tx, _rx) = fx.open().await;
+        assert_eq!(fx.room(&id).await, (true, true, false, Some(json!(false))));
+        std::fs::rename(fx.dir.path().join("a.ipynb"), fx.dir.path().join("b.ipynb")).unwrap();
+        fx.collab.moved("a.ipynb", "b.ipynb").await;
+        // No time has passed: the move did it, not the retry.
+        assert_eq!(
+            fx.room(&id).await,
+            (false, false, false, Some(json!(false)))
+        );
+        fx.unchanged("b.ipynb").await;
     }
 
     /// The file is deleted under a room with unsaved edits.
