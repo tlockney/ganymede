@@ -9,7 +9,7 @@ use ganymede_documents::yrs::{
     Transact, TransactionMut, Update,
 };
 use ganymede_documents::{Room, SaveStatus, Target};
-use ganymede_nbformat::Notebook;
+use ganymede_nbformat::{Cell, Notebook};
 use std::path::PathBuf;
 
 fn fixture(name: &str) -> String {
@@ -2414,8 +2414,9 @@ const FINGERPRINT_STALE: [(&str, FileChange); 3] = [
 ];
 
 /// Save a stamped room, close it, change the file with no room open and
-/// open a room on it: the stamp is gone, the room is unsaved so the file
-/// is rewritten without it, and the file's other metadata stays.
+/// open a room on it: the stamp is gone from the room, which stays saved
+/// (opening never writes the file), and the next real save has no stamp
+/// and keeps the file's other metadata.
 #[test]
 fn a_room_opened_on_a_file_changed_since_the_stamp_drops_the_stamp() {
     for (name, change) in FINGERPRINT_STALE {
@@ -2428,9 +2429,22 @@ fn a_room_opened_on_a_file_changed_since_the_stamp_drops_the_stamp() {
         let nb = Notebook::from_value(saved).unwrap();
         let mut reopened = Room::notebook_room(&nb, "n.ipynb");
         assert!(stamp_of(&reopened).is_some(), "{name}: as the file has it");
-        let fx = reopened.clear_unfit_clean_run();
+        let fx = reopened.forget_unfit_clean_run();
         assert_eq!(stamp_of(&reopened), None, "{name}");
-        assert!(fx.changed && reopened.is_dirty(), "{name}");
+        assert!(
+            !fx.changed && !fx.send.is_empty(),
+            "{name}: sent, not saved"
+        );
+        assert!(!reopened.is_dirty(), "{name}");
+        assert_eq!(reopened.state_value("dirty"), Some(false.into()), "{name}");
+        // A later edit and save writes no stamp.
+        reopened.edit(|txn, roots| {
+            let Some(Out::YMap(meta)) = roots.meta.get(txn, "metadata") else {
+                panic!()
+            };
+            meta.insert(txn, "mine", true);
+        });
+        assert!(reopened.is_dirty(), "{name}");
         let after = reopened.notebook().unwrap().unwrap();
         assert!(!after.to_file_string().contains("clean_run"), "{name}");
         assert_eq!(
@@ -2440,17 +2454,50 @@ fn a_room_opened_on_a_file_changed_since_the_stamp_drops_the_stamp() {
     }
 }
 
-/// A stamp with no fingerprint, as older versions wrote, or one of a
-/// version this code doesn't know, is not a clean run.
+/// The room's baseline (what a read-only room puts back after a refused
+/// edit) doesn't hold the stamp the room forgot.
 #[test]
-fn an_unverified_stamp_is_dropped_on_open() {
-    for f in [None, Some("v2:00000000"), Some("")] {
+fn a_forgotten_stamp_is_not_in_the_baseline() {
+    let nb = fingerprinted_file(None, FINGERPRINT_STALE[0].1);
+    let mut room = Room::notebook_room(&nb, "n.ipynb");
+    let client = Doc::new();
+    sync(&mut room, 1, &client);
+    room.forget_unfit_clean_run();
+    assert_eq!(stamp_of(&room), None);
+    room.set_read_only(true);
+    client_change(&mut room, &client, |txn, roots| {
+        roots.state.insert(txn, "x", 1);
+        let Some(Out::YMap(meta)) = roots.meta.get(txn, "metadata") else {
+            panic!()
+        };
+        meta.insert(txn, "mine", true);
+    });
+    assert_eq!(stamp_of(&room), None);
+}
+
+/// A stamp with no fingerprint, as older versions wrote, is not a clean
+/// run and goes. One of a version this code doesn't know stays: it can't
+/// say it is stale.
+#[test]
+fn an_unverified_stamp_is_dropped_on_open_only_without_a_fingerprint() {
+    for (f, dropped) in [
+        (None, true),
+        (Some("v1:00000000"), true),
+        (Some("v2:00000000"), false),
+        (Some(""), false),
+    ] {
         let nb = fingerprinted_file(Some(f), |_| {});
-        assert_eq!(schema::clean_run_status(&nb), schema::CleanRun::Unverified);
+        let status = if dropped {
+            schema::CleanRun::Stale
+        } else {
+            schema::CleanRun::Unverified
+        };
+        assert_eq!(schema::clean_run_status(&nb), status, "{f:?}");
         let mut room = Room::notebook_room(&nb, "n.ipynb");
-        let fx = room.clear_unfit_clean_run();
-        assert_eq!(stamp_of(&room), None, "{f:?}");
-        assert!(fx.changed && room.is_dirty(), "{f:?}");
+        let fx = room.forget_unfit_clean_run();
+        assert_eq!(stamp_of(&room).is_none(), dropped, "{f:?}");
+        assert_eq!(fx.send.is_empty(), !dropped, "{f:?}");
+        assert!(!fx.changed && !room.is_dirty(), "{f:?}");
     }
 }
 
@@ -2477,7 +2524,7 @@ fn a_matching_stamp_survives_open_and_outputs_are_not_covered() {
             "{name}"
         );
         let mut room = Room::notebook_room(&nb, "n.ipynb");
-        let fx = room.clear_unfit_clean_run();
+        let fx = room.forget_unfit_clean_run();
         assert_eq!(stamp_of(&room), Some(stamp()), "{name}");
         assert!(!fx.changed && !room.is_dirty(), "{name}");
     }
@@ -2542,8 +2589,13 @@ fn a_read_only_room_leaves_a_stamp_that_does_not_fit() {
     let stale = fingerprinted_file(None, FINGERPRINT_STALE[0].1);
     let mut room = Room::notebook_room(&stale, "n.ipynb");
     room.set_read_only(true);
-    let fx = room.clear_unfit_clean_run();
+    let fx = room.forget_unfit_clean_run();
     assert!(stamp_of(&room).is_some() && !fx.changed && !room.is_dirty());
+    // It turns writable (the other process let go): the same check as on
+    // open, which leaves the room saved.
+    room.set_read_only(false);
+    let fx = room.forget_unfit_clean_run();
+    assert!(stamp_of(&room).is_none() && !fx.changed && !room.is_dirty());
     let base = stamped_file(|_| {});
     let mut room = Room::notebook_room(&base, "n.ipynb");
     room.set_read_only(true);
@@ -2553,29 +2605,58 @@ fn a_read_only_room_leaves_a_stamp_that_does_not_fit() {
     assert!(stamp_of(&room).is_some() && !room.is_dirty());
 }
 
+/// A notebook of code cells with `sources`, one cell each.
+fn code_cells(sources: &[&str]) -> Notebook {
+    let mut nb = Notebook::new();
+    nb.cells = sources
+        .iter()
+        .enumerate()
+        .map(|(i, src)| {
+            serde_json::from_value(serde_json::json!(
+                {"cell_type": "code", "id": format!("c{i}"), "metadata": {},
+                 "execution_count": null, "outputs": [], "source": src}))
+            .unwrap()
+        })
+        .collect();
+    nb
+}
+
 /// The fingerprint is a fixed function of the cells' types, sources and
 /// order: this value changes only if the algorithm does.
 #[test]
-fn the_source_fingerprint_is_stable_and_has_no_concatenation_collisions() {
+fn the_source_fingerprint_is_stable() {
     let nb = Notebook::from_str(CLEAN_RUN_NB).unwrap();
     assert_eq!(schema::source_fingerprint(&nb), "v1:250ab6e8");
-    let two = |a: &str, b: &str| {
+    let print = |s: &[&str]| schema::source_fingerprint(&code_cells(s));
+    assert_eq!(print(&["a", "b"]), print(&["a", "b"]));
+    assert_ne!(print(&["a", "b"]), print(&["b", "a"]));
+}
+
+/// Only the length prefixes tell one cell `a\ncodeb` from the cells `a` and
+/// `b`: without them both are the bytes `codea\ncodeb\n`.
+#[test]
+fn the_source_fingerprint_has_no_concatenation_collisions() {
+    let print = |s: &[&str]| schema::source_fingerprint(&code_cells(s));
+    assert_ne!(print(&["a\ncodeb"]), print(&["a", "b"]));
+}
+
+/// A cell this crate cannot type counts with the source it holds, as a
+/// string or as lines; one with none counts as empty.
+#[test]
+fn the_source_fingerprint_reads_an_unknown_cells_source() {
+    let with = |source: serde_json::Value| {
         let mut nb = Notebook::new();
-        nb.cells = ["a", "b"]
-            .iter()
-            .zip([a, b])
-            .map(|(id, src)| {
-                serde_json::from_value(serde_json::json!(
-                    {"cell_type": "code", "id": id, "metadata": {},
-                     "execution_count": null, "outputs": [], "source": src}))
-                .unwrap()
-            })
-            .collect();
+        let mut cell = serde_json::json!({"cell_type": "heading", "metadata": {}});
+        if !source.is_null() {
+            cell["source"] = source;
+        }
+        nb.cells = vec![Cell::Unknown(cell)];
         schema::source_fingerprint(&nb)
     };
-    assert_ne!(two("ab", "c"), two("a", "bc"));
-    assert_eq!(two("a", "b"), two("a", "b"));
-    assert_ne!(two("a", "b"), two("b", "a"));
+    let text = with("# a\nb".into());
+    assert_ne!(text, with("# a\nc".into()), "the source counts");
+    assert_ne!(text, with(serde_json::Value::Null));
+    assert_eq!(text, with(serde_json::json!(["# a\n", "b"])), "lines join");
 }
 
 /// A room with code cells `a` and `b`, each with an output, a count, and

@@ -5952,6 +5952,17 @@ fn old_stamp() -> Value {
     json!({"at": "2020-01-01T00:00:00.000Z", "by": "old", "kernel": "fake"})
 }
 
+/// `old_stamp` with the fingerprint of `cells`, so it fits them: a room
+/// opened on the file keeps it for the run to remove (#944).
+fn old_stamp_for(cells: &[Value]) -> Value {
+    let nb = clean_run_notebook(cells.to_vec(), None);
+    let mut stamp = old_stamp();
+    stamp["fingerprint"] = json!(ganymede_documents::schema::source_fingerprint(
+        &ganymede_nbformat::Notebook::from_value(nb).unwrap()
+    ));
+    stamp
+}
+
 /// `notebook_run_all` after a restart that runs every cell without an error
 /// stamps the notebook with who, when and on which kernel, and the stamp is
 /// saved with it. A later edit of a cell clears it (#898).
@@ -6005,10 +6016,11 @@ async fn mcp_run_all_stamps_a_clean_run_and_an_edit_clears_it() {
     assert_eq!(saved["metadata"]["kernelspec"]["name"], "fake");
 }
 
-/// A room that opens a file whose stamp doesn't describe its cells removes
-/// the stamp and saves the file without it (#944). The stamp of a file
-/// that was edited after the run, and one without a fingerprint (older
-/// versions), go; one that matches stays.
+/// A room that opens a file whose stamp doesn't describe its cells forgets
+/// the stamp, and the next save has none (#944; that opening writes
+/// nothing is `opening_a_file_with_an_unfit_stamp_does_not_write_it`).
+/// The stamp of a file that was edited after the run, and one without a
+/// fingerprint (older versions), go; one that matches stays.
 #[tokio::test]
 async fn opening_a_notebook_drops_a_clean_run_stamp_that_does_not_fit_its_cells() {
     let fingerprint = |cells: &[Value]| {
@@ -6037,9 +6049,9 @@ async fn opening_a_notebook_drops_a_clean_run_stamp_that_does_not_fit_its_cells(
         .unwrap();
         let sid = mcp_connect(&app, "Claude Test").await;
         mcp_tool(&app, &sid, "notebook_open", json!({"path": "n.ipynb"})).await;
+        // An edit that leaves the run standing makes the room save.
+        mcp_tool(&app, &sid, "cell_clear_outputs", json!({"id": "a"})).await;
         if kept {
-            // Make the room save: an edit that leaves the run standing.
-            mcp_tool(&app, &sid, "cell_clear_outputs", json!({"id": "a"})).await;
             let saved = saved_notebook(&file, |_| true).await;
             assert_eq!(saved["metadata"]["ganymede"]["clean_run"], stamp, "{name}");
         } else {
@@ -6135,9 +6147,10 @@ async fn mcp_run_all_that_is_not_clean_leaves_no_stamp() {
         let dir = tempfile::tempdir().unwrap();
         let app = mcp_app(dir.path());
         let file = dir.path().join("n.ipynb");
+        let stamp = old_stamp_for(&cells);
         std::fs::write(
             &file,
-            clean_run_notebook(cells, Some(old_stamp())).to_string(),
+            clean_run_notebook(cells, Some(stamp.clone())).to_string(),
         )
         .unwrap();
         let sid = mcp_connect(&app, "Claude Test").await;
@@ -6147,7 +6160,7 @@ async fn mcp_run_all_that_is_not_clean_leaves_no_stamp() {
         }
         mcp_text(&mcp_tool(&app, &sid, "notebook_run_all", args).await);
         // The old stamp is gone and no new one came, with the run saved.
-        let saved = saved_clean_run(&file, |s| s != &Some(old_stamp())).await;
+        let saved = saved_clean_run(&file, |s| s != &Some(stamp.clone())).await;
         assert!(
             saved["metadata"]["ganymede"].get("clean_run").is_none(),
             "{name}: {saved}"
@@ -6209,7 +6222,7 @@ async fn mcp_run_all_disturbed_while_running_leaves_no_stamp() {
         // The old stamp is there to be removed, and counts as before.
         std::fs::write(
             &file,
-            clean_run_notebook(cells(), Some(old_stamp())).to_string(),
+            clean_run_notebook(cells(), Some(old_stamp_for(&cells()))).to_string(),
         )
         .unwrap();
         let mut watch = RoomWatch::open(&app, "n.ipynb").await;
@@ -6234,7 +6247,7 @@ async fn mcp_run_all_disturbed_while_running_leaves_no_stamp() {
                 .as_array()
                 .and_then(|c| c.iter().find(|c| c["id"] == "c"));
             last.is_some_and(|c| c["outputs"].as_array().is_some_and(|o| !o.is_empty()))
-                && nb.pointer("/metadata/ganymede/clean_run") != Some(&old_stamp())
+                && nb.pointer("/metadata/ganymede/clean_run") != Some(&old_stamp_for(&cells()))
         })
         .await;
         assert!(

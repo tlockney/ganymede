@@ -825,36 +825,72 @@ impl Room {
         }
     }
 
-    /// Remove the `clean_run` stamp when it doesn't describe the room's
-    /// cells ([`schema::clean_run_status`] is stale or unverified): a
-    /// server edit that leaves the room unsaved. A host calls this once a
-    /// room has opened a file; `reload` and `merge_disk` do it for the
-    /// files they take. A read-only room is left alone, its owner decides.
-    pub fn clear_unfit_clean_run(&mut self) -> Effects {
+    /// Remove the room's `clean_run` stamp when its fingerprint is missing
+    /// or doesn't match the cells ([`schema::clean_run_status`] is
+    /// `Stale`). A stamp of a fingerprint version this code doesn't know,
+    /// and any stamp in a read-only room (its owner decides), stay.
+    /// Returns whether the stamp went. Doesn't touch the generation or
+    /// send anything.
+    fn remove_unfit_clean_run(&mut self) -> bool {
         if self.read_only {
-            return Effects::default();
+            return false;
         }
         let Some(Ok(nb)) = self.notebook() else {
-            return Effects::default();
+            return false;
         };
-        if !matches!(
-            schema::clean_run_status(&nb),
-            schema::CleanRun::Stale | schema::CleanRun::Unverified
-        ) {
-            return Effects::default();
+        if schema::clean_run_status(&nb) != schema::CleanRun::Stale {
+            return false;
         }
         let Some(roots) = self.roots.clone() else {
-            return Effects::default();
+            return false;
         };
         {
             let mut txn = self.awareness.doc().transact_mut();
             schema::set_clean_run(&mut txn, &roots, None);
         }
         self.content_changed.store(false, Ordering::Relaxed);
+        true
+    }
+
+    /// After the file's content went into the room by `reload` or
+    /// `merge_disk`: remove a stamp that doesn't fit the cells (see
+    /// `remove_unfit_clean_run`) as a server edit that leaves the room
+    /// unsaved, so the file is rewritten without it.
+    fn clear_unfit_clean_run(&mut self) -> Effects {
+        if !self.remove_unfit_clean_run() {
+            return Effects::default();
+        }
         self.generation += 1;
         let mut fx = self.broadcast_own();
         fx.changed = true;
         fx
+    }
+
+    /// A host calls this when a room has opened a file, and when a
+    /// read-only room becomes writable: remove a stamp that doesn't fit the
+    /// cells from the room only. The room stays saved (no autosave, and
+    /// `state.dirty` stays false) and the file keeps the stamp until the
+    /// next save, which doesn't write it, so opening a file never writes
+    /// it. Does nothing in a read-only room. A room with unsaved edits stays
+    /// unsaved.
+    pub fn forget_unfit_clean_run(&mut self) -> Effects {
+        let clean = !self.is_dirty();
+        if !self.remove_unfit_clean_run() {
+            return Effects::default();
+        }
+        self.generation += 1;
+        if clean {
+            self.saved_generation = self.generation;
+            if let Some(g) = self
+                .baseline
+                .as_mut()
+                .and_then(|b| b.pointer_mut("/metadata/ganymede"))
+                .and_then(Value::as_object_mut)
+            {
+                g.remove("clean_run");
+            }
+        }
+        self.broadcast_own()
     }
 
     /// The file changed on disk: make the document match it, granularly

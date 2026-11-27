@@ -27,7 +27,7 @@
 //! - Top-level fields other than `cells`, `metadata`, `nbformat` and
 //!   `nbformat_minor` are kept in `meta`, which `jupyter_ydoc` drops.
 
-use ganymede_nbformat::Notebook;
+use ganymede_nbformat::{Cell, Notebook};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -461,14 +461,27 @@ fn stream_growth<T: ReadTxn>(txn: &T, old: &MapRef, new: &Value) -> Option<Strin
 
 /// A fingerprint of what a clean run read: every cell's type and source,
 /// in order, and nothing else (no outputs, ids, counts or metadata).
-/// `"v1:"` and eight hex digits of [`crate::murmur2`] (seed 0) over each
-/// cell as `{len}:{cell_type}{len}:{source}\n`, lengths in bytes, so no two
-/// layouts of cells give the same bytes.
+/// `"v1:"` and eight lowercase hex digits of [`crate::murmur2`] (seed 0)
+/// over each cell as `{len}:{cell_type}{len}:{source}\n`, lengths in UTF-8
+/// bytes, so no two layouts of cells give the same bytes. A source held as
+/// lines is joined. A cell this crate cannot type reads its source from
+/// the raw `source` (a string, or an array of strings joined).
 pub fn source_fingerprint(nb: &Notebook) -> String {
     let mut bytes = Vec::new();
     for cell in &nb.cells {
         let cell_type = cell.cell_type().unwrap_or("");
-        let source = cell.source().map_or("", |s| s.as_str());
+        let source: std::borrow::Cow<str> = match cell {
+            Cell::Unknown(v) => match v.get("source") {
+                Some(Value::String(s)) => s.as_str().into(),
+                Some(Value::Array(lines)) => lines
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<String>()
+                    .into(),
+                _ => "".into(),
+            },
+            _ => cell.source().map_or("", |s| s.as_str()).into(),
+        };
         bytes.extend_from_slice(
             format!("{}:{cell_type}{}:{source}\n", cell_type.len(), source.len()).as_bytes(),
         );
@@ -483,10 +496,11 @@ pub enum CleanRun {
     None,
     /// The stamp's fingerprint matches the cells.
     Current,
-    /// The stamp's fingerprint doesn't match the cells.
+    /// The stamp has no fingerprint (as older versions wrote), or a `v1:`
+    /// one that doesn't match the cells.
     Stale,
-    /// The stamp has no fingerprint, or one of a version this code doesn't
-    /// know (as older versions wrote).
+    /// The stamp's fingerprint is of a version this code doesn't know, so
+    /// it can't say whether the cells match.
     Unverified,
 }
 
@@ -504,7 +518,8 @@ pub fn clean_run_status(nb: &Notebook) -> CleanRun {
                 CleanRun::Stale
             }
         }
-        _ => CleanRun::Unverified,
+        Some(_) => CleanRun::Unverified,
+        None => CleanRun::Stale,
     }
 }
 
