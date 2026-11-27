@@ -350,7 +350,7 @@ mod tests {
         Provisioner,
     };
     use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -1527,6 +1527,162 @@ mod tests {
         let lost = Arc::new(AtomicBool::new(true));
         let (m, _) = with_provisioner(config, Arc::new(LostProvisioner(lost.clone())));
         (m, lost)
+    }
+
+    /// A process that says nothing is left to run it again: the provider
+    /// that ran it went away (#983).
+    struct GoneProcess(Arc<dyn ganymede_kernel_host::KernelProcess>);
+    #[async_trait]
+    impl ganymede_kernel_host::KernelProcess for GoneProcess {
+        // A pid, so the kernel's log is kept once it is left dead.
+        fn pid(&self) -> Option<u32> {
+            Some(1)
+        }
+        async fn interrupt(&self) -> ganymede_kernel_host::Result<()> {
+            self.0.interrupt().await
+        }
+        async fn terminate(&self) -> ganymede_kernel_host::Result<()> {
+            self.0.terminate().await
+        }
+        async fn kill(&self) -> ganymede_kernel_host::Result<()> {
+            self.0.kill().await
+        }
+        async fn wait(&self) -> Option<i32> {
+            self.0.wait().await
+        }
+        fn is_alive(&self) -> bool {
+            self.0.is_alive()
+        }
+        fn kill_now(&self) {
+            self.0.kill_now()
+        }
+        fn exit_reason(&self) -> Option<&'static str> {
+            Some("lost")
+        }
+        fn restartable(&self) -> bool {
+            false
+        }
+    }
+
+    struct GoneProvisioner;
+    #[async_trait]
+    impl Provisioner for GoneProvisioner {
+        async fn launch(
+            &self,
+            _spec: &Kernelspec,
+            _opts: LaunchOptions,
+        ) -> ganymede_kernel_host::Result<LaunchedKernel> {
+            let mut launched = in_process();
+            launched.process = Arc::new(GoneProcess(launched.process.clone()));
+            Ok(launched)
+        }
+    }
+
+    /// A kernel whose process went away is dead with reason `lost` at
+    /// once, whatever the restart limits say: nothing is left to run it.
+    #[tokio::test]
+    async fn a_kernel_whose_process_is_gone_is_dead_with_no_restart() {
+        let (m, _) = with_provisioner(KernelManagerConfig::default(), Arc::new(GoneProvisioner));
+        let k = started(&m, Some("fake"), None).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        let cell = run(&mut c, "die").await;
+        let got = until_none(&mut c).await;
+        assert!(
+            !statuses(&got).contains(&"restarting".to_string()),
+            "{:?}",
+            statuses(&got)
+        );
+        let last = got
+            .iter()
+            .rev()
+            .find(|(ch, m)| *ch == Channel::IoPub && m.msg_type() == "status")
+            .unwrap();
+        assert_eq!(last.1.content["execution_state"], "dead");
+        assert_eq!(last.1.content["reason"], "lost");
+        let reply = got
+            .iter()
+            .find(|(ch, m)| *ch == Channel::Shell && m.parent_id() == Some(cell.as_str()))
+            .expect("the cell is answered");
+        assert!(reply.1.content["evalue"]
+            .as_str()
+            .unwrap()
+            .contains("went away"));
+        assert!(m.list().is_empty());
+        let log = m.log(&k.id, None, 100).unwrap();
+        assert!(
+            log.lines.iter().any(|l| l.text.contains("went away")),
+            "{:?}",
+            log.lines
+        );
+    }
+
+    /// A provisioner that keeps the startup timeout each launch was given.
+    struct SeesTimeout(Arc<Mutex<Vec<Option<Duration>>>>);
+    #[async_trait]
+    impl Provisioner for SeesTimeout {
+        async fn launch(
+            &self,
+            _spec: &Kernelspec,
+            opts: LaunchOptions,
+        ) -> ganymede_kernel_host::Result<LaunchedKernel> {
+            self.0.lock().unwrap().push(opts.startup_timeout);
+            Ok(in_process())
+        }
+    }
+
+    /// A launch carries the configured startup timeout, so a registered
+    /// kernel's start acknowledgement waits as long as any other start.
+    #[tokio::test]
+    async fn a_launch_carries_the_configured_startup_timeout() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        // `with_provisioner` configures 5 s, not the 60 s default.
+        let (m, _) = with_provisioner(
+            KernelManagerConfig::default(),
+            Arc::new(SeesTimeout(seen.clone())),
+        );
+        started(&m, Some("fake"), None).await.unwrap();
+        assert_eq!(*seen.lock().unwrap(), [Some(Duration::from_secs(5))]);
+    }
+
+    /// A provisioner whose kernels' process is gone, counting its launches.
+    struct GoneOnce(Arc<AtomicUsize>);
+    #[async_trait]
+    impl Provisioner for GoneOnce {
+        async fn launch(
+            &self,
+            _spec: &Kernelspec,
+            _opts: LaunchOptions,
+        ) -> ganymede_kernel_host::Result<LaunchedKernel> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            let mut launched = in_process();
+            launched.process = Arc::new(GoneProcess(launched.process.clone()));
+            Ok(launched)
+        }
+    }
+
+    /// A kernel whose process is gone, dead before it ever answered: the
+    /// start fails and is not launched again, as nothing could run it.
+    #[tokio::test]
+    async fn a_gone_kernel_that_dies_before_it_answers_is_not_launched_again() {
+        let launches = Arc::new(AtomicUsize::new(0));
+        let (m, t) = with_provisioner(
+            KernelManagerConfig::default(),
+            Arc::new(GoneOnce(launches.clone())),
+        );
+        t.script.lock().unwrap().push_back(Launch::Die);
+        let e = started(&m, Some("fake"), None).await.unwrap_err();
+        assert_eq!(e.status, 404);
+        assert!(
+            e.message.contains("did not start: kernel died"),
+            "{}",
+            e.message
+        );
+        assert_eq!(
+            launches.load(Ordering::SeqCst),
+            1,
+            "nothing is left to retry it with"
+        );
+        assert!(m.list().is_empty());
     }
 
     async fn until_idle(m: &KernelManager, id: &str) {

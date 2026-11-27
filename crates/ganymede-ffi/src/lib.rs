@@ -39,8 +39,8 @@ use async_trait::async_trait;
 use ganymede_api::StaticKernelspecs;
 use ganymede_kernel_host::protocol::{Channel, Message};
 use ganymede_kernel_host::{
-    AppKernel, Ended, Kernelspec, LaunchOptions, LaunchedKernel, Provisioner, RegisteredKernels,
-    TransportFactory,
+    AppKernel, Ended, Kernelspec, LaunchOptions, LaunchedKernel, Origin, Provisioner,
+    RegisteredKernels, TransportFactory,
 };
 use ganymede_server::config::Config;
 use ganymede_server::mount::Machines;
@@ -649,7 +649,7 @@ fn register(
     let mut spec: Kernelspec = serde_json::from_value(value)?;
     spec.name = name;
     let (ctx, release) = (cb.ctx, cb.release);
-    server.registered.register(spec, || {
+    server.registered.register(spec, Origin::App, || {
         Arc::new(CKernel {
             ctx,
             start,
