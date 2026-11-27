@@ -25,8 +25,13 @@ stdin, and running cells.
 Ganymede serves JupyterLab's own static bundle, so no `jupyter lab`
 process is needed, only its files. `ganymede lab install` downloads them
 from PyPI's `jupyterlab` wheel (no Python involved) and checks its SHA-256;
-`ganymede lab` then serves the newest installed version in the current
-directory, like `jupyter lab`:
+`ganymede lab` then serves the newest installed version, with your home
+directory as the root unless you pass `--root-dir`:
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. The latest release serves the current directory, like
+> `jupyter lab`.
 
 ```sh
 ganymede lab install                    # JupyterLab 4.6.6; --version picks another

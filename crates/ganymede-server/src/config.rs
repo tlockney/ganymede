@@ -154,18 +154,28 @@ fn default_root_dir_from(home: Option<PathBuf>, cwd: Option<PathBuf>) -> PathBuf
 /// The server's root when neither `--root-dir` nor `root_dir` is set: the
 /// home directory of the user running the server, so a server started
 /// from `/` by launchd or systemd does not expose the whole disk. Without
-/// a home directory it is the current directory, with a warning.
+/// a home directory it is the current directory.
 pub fn default_root_dir() -> PathBuf {
-    let home = dirs::home_dir();
-    let cwd = std::env::current_dir().ok();
-    let root = default_root_dir_from(home.clone(), cwd);
-    if home.as_ref() != Some(&root) {
+    default_root_dir_from(dirs::home_dir(), std::env::current_dir().ok())
+}
+
+/// Whether to warn that the default root fell back to the current
+/// directory: only when the default is in use (`root_set` is false) and
+/// `home` is missing or not a directory.
+fn home_fallback_warning(root_set: bool, home: Option<&std::path::Path>) -> bool {
+    !root_set && !home.is_some_and(|h| h.is_dir())
+}
+
+/// Logs a warning when the default root is in use and it is the current
+/// directory for want of a home directory. `root_set` is whether
+/// `--root-dir` or the config file's `root_dir` set the root.
+pub fn warn_if_no_home(root_set: bool) {
+    if home_fallback_warning(root_set, dirs::home_dir().as_deref()) {
         tracing::warn!(
             "no home directory; serving the current directory {}",
-            root.display()
+            default_root_dir().display()
         );
     }
-    root
 }
 
 impl Default for Config {
@@ -246,7 +256,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_root_dir_from, Config};
+    use super::{default_root_dir_from, home_fallback_warning, Config};
     use std::path::PathBuf;
 
     #[test]
@@ -270,6 +280,20 @@ mod tests {
             PathBuf::from("/cwd")
         );
         assert_eq!(default_root_dir_from(None, None), PathBuf::from("."));
+    }
+
+    #[test]
+    fn the_no_home_warning_is_only_for_the_default_root() {
+        let home = tempfile::tempdir().unwrap();
+        let gone = home.path().join("missing");
+        // The default root is in use and there is no home: warn.
+        assert!(home_fallback_warning(false, None));
+        assert!(home_fallback_warning(false, Some(&gone)));
+        // A home directory: nothing to warn about.
+        assert!(!home_fallback_warning(false, Some(home.path())));
+        // `--root-dir` or `root_dir` set the root: never warn.
+        assert!(!home_fallback_warning(true, None));
+        assert!(!home_fallback_warning(true, Some(&gone)));
     }
 
     #[test]

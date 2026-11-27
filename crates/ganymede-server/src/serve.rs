@@ -40,8 +40,8 @@ pub struct ServeArgs {
     /// Auth token. Pass an empty string to disable auth.
     #[arg(long)]
     pub token: Option<String>,
-    /// Directory served as the contents root. Default: the current
-    /// directory.
+    /// Directory served as the contents root. Default: your home
+    /// directory (the current directory if there is none).
     #[arg(long)]
     pub root_dir: Option<PathBuf>,
     /// Directory with the notebook-signing key and trusted signatures;
@@ -253,17 +253,22 @@ impl ServeArgs {
     pub fn into_config_with(self, default: Option<PathBuf>) -> Result<Config> {
         let cli = self;
         let path = cli.config.clone().or(default);
+        let mut file_sets_root = false;
         let mut cfg = match &path {
             Some(p) => {
                 tracing::info!("reading config from {}", p.display());
-                Config::from_toml(
-                    &std::fs::read_to_string(p)
-                        .with_context(|| format!("reading {}", p.display()))?,
-                )
-                .with_context(|| format!("config file {}", p.display()))?
+                let text = std::fs::read_to_string(p)
+                    .with_context(|| format!("reading {}", p.display()))?;
+                let cfg = Config::from_toml(&text)
+                    .with_context(|| format!("config file {}", p.display()))?;
+                file_sets_root = text
+                    .parse::<toml::Table>()
+                    .is_ok_and(|t| t.contains_key("root_dir"));
+                cfg
             }
             None => Config::default(),
         };
+        crate::config::warn_if_no_home(file_sets_root || cli.root_dir.is_some());
         if let Some(v) = cli.ip {
             cfg.ip = v;
         }

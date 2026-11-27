@@ -148,12 +148,17 @@ versions and checks their wheels' SHA-256, as it does for JupyterLab.
 
 ## 5. Start JupyterLab
 
-Run it in the directory that holds, or will hold, your notebooks:
+Point it at the directory that holds, or will hold, your notebooks:
 
 ```sh
 mkdir -p ~/notebooks && cd ~/notebooks
-ganymede lab
+ganymede lab --root-dir .
 ```
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. Without `--root-dir`, `ganymede lab` serves your home
+> directory; the latest release serves the current directory.
 
 It prints a URL such as
 `http://127.0.0.1:8888/lab?token=2adb019db80b4948942534432a839642` and
@@ -193,7 +198,7 @@ page and without opening a browser:
 
 ```sh
 cd ~/notebooks
-ganymede serve
+ganymede serve --root-dir .
 ```
 
 It prints a URL such as `http://127.0.0.1:8888/?token=…`. In VS Code,

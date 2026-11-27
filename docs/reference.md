@@ -51,7 +51,7 @@ same name in snake case, except where the last column says otherwise.
 
 | Flag | Effect | Config key |
 | --- | --- | --- |
-| `--root-dir` | Where notebooks and files are served from. Default: your home directory (the current directory if there is none). `jupyter_server` defaults to the current directory. | |
+| `--root-dir` | Where notebooks and files are served from. Default: your home directory (the current directory if there is none). `jupyter_server` defaults to the current directory. A project outside the home directory needs `--root-dir`. | |
 | `--ip` | Address to listen on. Default `127.0.0.1`; a non-loopback address also turns on `--allow-remote-access`. | |
 | `--port` | Default 8888. `0` picks a free port. `lab` and `ui` try up to 50 more while it is taken. | |
 | `--token` | The auth token. Unset generates one; an empty string disables auth. | |
@@ -494,8 +494,16 @@ ganymede grant --revoke downloaded.ipynb          # back to the defaults
 `[host] read` for it, so it can narrow the default or widen it; `run=PATH`
 does the same for `[host] run`. Revoking every read path leaves the
 notebook only itself; `--revoke NOTEBOOK read` (or `run`) goes back to
-the default. `--root-dir` names the server's root when it
-isn't the current directory, since grants are kept per root.
+the default. Grants are kept per root, so `grant`'s root must be the
+server's. `grant` uses the current directory; `--root-dir` names another.
+A server started without `--root-dir` serves your home directory, so a
+grant made in a project directory doesn't reach it: use
+`ganymede grant --root-dir ~ …`, or start the server with `--root-dir .`.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. The latest release's default server root is the
+> current directory, the same as `grant`'s.
 
 Clients such as the apps set the same grants over HTTP, with the
 server's token:

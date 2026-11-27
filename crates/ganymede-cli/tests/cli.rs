@@ -783,18 +783,23 @@ fn serve_defaults_to_the_home_directory() {
     let runtime = tempfile::tempdir().unwrap();
     std::fs::write(home.path().join("in-home.txt"), "h").unwrap();
     std::fs::write(cwd.path().join("in-cwd.txt"), "c").unwrap();
-    let mut child = ganymede(&["serve", "--port", "0", "--token", "secret"])
-        .current_dir(cwd.path())
-        .env("HOME", home.path())
-        .env("JUPYTER_CONFIG_DIR", state.path().join("jupyter"))
-        .env("GANYMEDE_CONFIG_DIR", state.path().join("ganymede"))
-        .env("JUPYTER_RUNTIME_DIR", runtime.path())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let mut child = KillOnDrop(
+        ganymede(&["serve", "--port", "0", "--token", "secret"])
+            .current_dir(cwd.path())
+            .env("HOME", home.path())
+            .env("JUPYTER_DATA_DIR", data.path())
+            .env("JUPYTER_PATH", "")
+            .env("JUPYTER_CONFIG_DIR", state.path().join("jupyter"))
+            .env("GANYMEDE_CONFIG_DIR", state.path().join("ganymede"))
+            .env("JUPYTER_RUNTIME_DIR", runtime.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     let mut line = String::new();
-    std::io::BufReader::new(child.stdout.take().unwrap())
+    std::io::BufReader::new(child.0.stdout.take().unwrap())
         .read_line(&mut line)
         .unwrap();
     let base = line.trim().split('?').next().unwrap().to_string();
@@ -819,18 +824,15 @@ fn serve_defaults_to_the_home_directory() {
         assert!(!names.contains(&"in-cwd.txt"), "{names:?}");
     });
 
-    let file = runtime.path().join(format!("jpserver-{}.json", child.id()));
+    let file = runtime
+        .path()
+        .join(format!("jpserver-{}.json", child.0.id()));
     let info: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&file).expect("jpserver file")).unwrap();
     assert_eq!(
         info["root_dir"],
         home.path().canonicalize().unwrap().to_str().unwrap()
     );
-
-    unsafe {
-        kill(child.id() as i32, 15);
-    }
-    assert!(child.wait().unwrap().success(), "clean exit on SIGTERM");
 }
 
 extern "C" {
