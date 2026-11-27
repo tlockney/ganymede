@@ -9,7 +9,10 @@
 //! root, whichever root's dir it is in: a copy written by a server rooted
 //! at a project is also listed, read and discarded by one rooted at the
 //! folder around it, at the path relative to that root. A root that holds
-//! none of the copy's file doesn't see it.
+//! none of the copy's file doesn't see it, and neither does one whose
+//! path to the file goes through a hidden directory (the contents API
+//! refuses such a path), unless the copy's saved path reaches the file
+//! through a symlink inside the root.
 //!
 //! A copy is two files in a root's dir, `<id>.ipynb` (the notebook as
 //! a save would write it) and `<id>.json` (its [`Meta`]). Ids are made of
@@ -109,7 +112,9 @@ impl Store {
     /// `meta` as this server sees it: the copy's `file` is under this
     /// root, and `path` is the file's path relative to it. `None` when
     /// the root holds neither the file nor any root at all, or the copy
-    /// says no file.
+    /// says no file, or the file's path under the root goes through a
+    /// hidden directory and the copy's saved path doesn't reach the file
+    /// through a symlink inside the root.
     fn claimed(&self, meta: Meta) -> Option<Meta> {
         let root = self.root.as_ref()?;
         let file = meta.file.as_deref()?;
@@ -617,6 +622,25 @@ mod tests {
         assert!(read(&above, &meta.id).unwrap().is_none());
         assert!(!discard(&above, &meta.id).unwrap());
         assert_eq!(list(&inner, "a.ipynb").unwrap().len(), 1);
+    }
+
+    /// A copy whose file is under a hidden dir of the root and whose saved
+    /// path names that hidden dir (no symlink) is not seen from the root
+    /// either: the saved path is as hidden as the file's.
+    #[test]
+    fn a_copy_saved_under_a_hidden_dir_of_the_root_is_not_seen() {
+        let data = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root_path.join(".x")).unwrap();
+        let rec = data.path().join("recovery");
+        make_dir(&rec).unwrap();
+        let store = Store::new(&rec, Some(&root_path));
+        let meta = write(&store, ".x/a.ipynb", &nb("x"), Reason::SaveFailed, "", &[])
+            .unwrap()
+            .0;
+        assert!(list(&store, ".x/a.ipynb").unwrap().is_empty());
+        assert!(read(&store, &meta.id).unwrap().is_none());
     }
 
     /// A notebook served through a symlink inside the root that points at
