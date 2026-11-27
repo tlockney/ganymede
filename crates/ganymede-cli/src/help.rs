@@ -37,7 +37,7 @@ const EXAMPLES: &[(&str, &str)] = &[
         "ganymede execute nb.ipynb --inplace",
         "run a notebook and save its outputs",
     ),
-    ("ganymede lab", "serve JupyterLab here and open it"),
+    ("ganymede lab", "serve JupyterLab and open it"),
     ("ganymede kernelspec list", "list the kernels you can use"),
 ];
 

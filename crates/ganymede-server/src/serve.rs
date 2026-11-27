@@ -253,7 +253,7 @@ impl ServeArgs {
     pub fn into_config_with(self, default: Option<PathBuf>) -> Result<Config> {
         let cli = self;
         let path = cli.config.clone().or(default);
-        let mut file_sets_root = false;
+        let mut file_text = None;
         let mut cfg = match &path {
             Some(p) => {
                 tracing::info!("reading config from {}", p.display());
@@ -261,14 +261,15 @@ impl ServeArgs {
                     .with_context(|| format!("reading {}", p.display()))?;
                 let cfg = Config::from_toml(&text)
                     .with_context(|| format!("config file {}", p.display()))?;
-                file_sets_root = text
-                    .parse::<toml::Table>()
-                    .is_ok_and(|t| t.contains_key("root_dir"));
+                file_text = Some(text);
                 cfg
             }
             None => Config::default(),
         };
-        crate::config::warn_if_no_home(file_sets_root || cli.root_dir.is_some());
+        crate::config::warn_if_no_home(crate::config::root_is_set(
+            cli.root_dir.as_deref(),
+            file_text.as_deref(),
+        ));
         if let Some(v) = cli.ip {
             cfg.ip = v;
         }

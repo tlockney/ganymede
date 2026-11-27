@@ -48,7 +48,7 @@ themselves are unchanged: their paths start at the root.
 Start a shared server with:
 
 ```sh
-ganymede serve --mcp
+ganymede serve --mcp --root-dir .
 ```
 
 `--mcp` (config key `mcp_enabled`) serves the same tools over

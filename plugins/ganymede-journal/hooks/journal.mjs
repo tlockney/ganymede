@@ -153,7 +153,7 @@ export function handle(event, input, env = process.env) {
         lines.push(
           "Ganymede: no server is running for this directory, or `ganymede` isn't installed. " +
             "The ganymede tools start a server when first used. For a person to watch the " +
-            "notebook live, run `ganymede serve --mcp` here.",
+            "notebook live, run `ganymede serve --mcp --root-dir .` here.",
         );
       } else {
         lines.push(`Ganymede: a server is running for this directory. Kernels:\n${kernels.trim()}`);

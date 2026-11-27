@@ -771,30 +771,38 @@ fn serve_writes_a_server_info_file_while_running() {
     assert!(!open.exists(), "removed on exit");
 }
 
-/// Without `--root-dir` or `root_dir`, the server serves the home
-/// directory, not the directory it was started in (a launchd or systemd
-/// service starts in `/`), and says so in its server info.
+/// What `serve` did: the names `GET /api/contents` listed, the `root_dir`
+/// in its server info, and its stderr.
 #[cfg(unix)]
-#[test]
-fn serve_defaults_to_the_home_directory() {
-    let home = tempfile::tempdir().unwrap();
-    let cwd = tempfile::tempdir().unwrap();
+struct Served {
+    names: Vec<String>,
+    root_dir: String,
+    stderr: String,
+}
+
+/// Starts `serve` in `cwd` with `HOME` set to `home` and `extra` flags.
+#[cfg(unix)]
+fn serve_listing(
+    home: &std::path::Path,
+    cwd: &std::path::Path,
+    extra: &[&std::ffi::OsStr],
+) -> Served {
     let state = tempfile::tempdir().unwrap();
     let runtime = tempfile::tempdir().unwrap();
-    std::fs::write(home.path().join("in-home.txt"), "h").unwrap();
-    std::fs::write(cwd.path().join("in-cwd.txt"), "c").unwrap();
     let data = tempfile::tempdir().unwrap();
+    let err_path = state.path().join("stderr.log");
     let mut child = KillOnDrop(
         ganymede(&["serve", "--port", "0", "--token", "secret"])
-            .current_dir(cwd.path())
-            .env("HOME", home.path())
+            .args(extra)
+            .current_dir(cwd)
+            .env("HOME", home)
             .env("JUPYTER_DATA_DIR", data.path())
             .env("JUPYTER_PATH", "")
             .env("JUPYTER_CONFIG_DIR", state.path().join("jupyter"))
             .env("GANYMEDE_CONFIG_DIR", state.path().join("ganymede"))
             .env("JUPYTER_RUNTIME_DIR", runtime.path())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(std::fs::File::create(&err_path).unwrap())
             .spawn()
             .unwrap(),
     );
@@ -803,9 +811,8 @@ fn serve_defaults_to_the_home_directory() {
         .read_line(&mut line)
         .unwrap();
     let base = line.trim().split('?').next().unwrap().to_string();
-
     let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
+    let names = rt.block_on(async {
         let r = reqwest::Client::new()
             .get(format!("{base}api/contents"))
             .header("Authorization", "token secret")
@@ -814,25 +821,83 @@ fn serve_defaults_to_the_home_directory() {
             .unwrap();
         assert_eq!(r.status(), 200);
         let v: serde_json::Value = r.json().await.unwrap();
-        let names: Vec<&str> = v["content"]
+        v["content"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|e| e["name"].as_str().unwrap())
-            .collect();
-        assert!(names.contains(&"in-home.txt"), "{names:?}");
-        assert!(!names.contains(&"in-cwd.txt"), "{names:?}");
+            .map(|e| e["name"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
     });
-
     let file = runtime
         .path()
         .join(format!("jpserver-{}.json", child.0.id()));
     let info: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&file).expect("jpserver file")).unwrap();
-    assert_eq!(
-        info["root_dir"],
-        home.path().canonicalize().unwrap().to_str().unwrap()
+    Served {
+        names,
+        root_dir: info["root_dir"].as_str().unwrap().to_string(),
+        stderr: std::fs::read_to_string(&err_path).unwrap(),
+    }
+}
+
+#[cfg(unix)]
+fn canonical(p: &std::path::Path) -> String {
+    p.canonicalize().unwrap().to_str().unwrap().to_string()
+}
+
+/// Without `--root-dir` or `root_dir`, the server serves the home
+/// directory, not the directory it was started in (a launchd or systemd
+/// service starts in `/`), and says so in its server info.
+#[cfg(unix)]
+#[test]
+fn serve_defaults_to_the_home_directory() {
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("in-home.txt"), "h").unwrap();
+    std::fs::write(cwd.path().join("in-cwd.txt"), "c").unwrap();
+    let s = serve_listing(home.path(), cwd.path(), &[]);
+    assert!(
+        s.names.contains(&"in-home.txt".to_string()),
+        "{:?}",
+        s.names
     );
+    assert!(
+        !s.names.contains(&"in-cwd.txt".to_string()),
+        "{:?}",
+        s.names
+    );
+    assert_eq!(s.root_dir, canonical(home.path()));
+    assert!(!s.stderr.contains("no home directory"), "{}", s.stderr);
+}
+
+/// With no usable home directory the server serves the current directory
+/// and logs why; `--root-dir` sets the root and logs nothing of the kind.
+#[cfg(unix)]
+#[test]
+fn serve_without_a_home_serves_the_current_directory_and_says_so() {
+    let scratch = tempfile::tempdir().unwrap();
+    let missing = scratch.path().join("missing");
+    let cwd = tempfile::tempdir().unwrap();
+    std::fs::write(cwd.path().join("in-cwd.txt"), "c").unwrap();
+    let s = serve_listing(&missing, cwd.path(), &[]);
+    assert!(s.names.contains(&"in-cwd.txt".to_string()), "{:?}", s.names);
+    assert_eq!(s.root_dir, canonical(cwd.path()));
+    assert!(s.stderr.contains("no home directory"), "{}", s.stderr);
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("in-root.txt"), "r").unwrap();
+    let s = serve_listing(
+        &missing,
+        cwd.path(),
+        &["--root-dir".as_ref(), root.path().as_os_str()],
+    );
+    assert!(
+        s.names.contains(&"in-root.txt".to_string()),
+        "{:?}",
+        s.names
+    );
+    assert_eq!(s.root_dir, canonical(root.path()));
+    assert!(!s.stderr.contains("no home directory"), "{}", s.stderr);
 }
 
 extern "C" {

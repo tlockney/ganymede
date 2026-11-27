@@ -146,7 +146,7 @@ pub struct Config {
 /// The server's root when neither `--root-dir` nor `root_dir` is set:
 /// `home` when it is a directory, else `cwd`, else `.`.
 fn default_root_dir_from(home: Option<PathBuf>, cwd: Option<PathBuf>) -> PathBuf {
-    home.filter(|h| h.is_dir())
+    usable_home(home)
         .or(cwd)
         .unwrap_or_else(|| PathBuf::from("."))
 }
@@ -159,18 +159,33 @@ pub fn default_root_dir() -> PathBuf {
     default_root_dir_from(dirs::home_dir(), std::env::current_dir().ok())
 }
 
+/// `home` when it is a directory.
+fn usable_home(home: Option<PathBuf>) -> Option<PathBuf> {
+    home.filter(|h| h.is_dir())
+}
+
+/// Whether `--root-dir` (`cli_root`) or the config file's text (`file`,
+/// if one is read) sets the root, so the default is not used.
+pub fn root_is_set(cli_root: Option<&std::path::Path>, file: Option<&str>) -> bool {
+    cli_root.is_some()
+        || file.is_some_and(|t| {
+            t.parse::<toml::Table>()
+                .is_ok_and(|t| t.contains_key("root_dir"))
+        })
+}
+
 /// Whether to warn that the default root fell back to the current
 /// directory: only when the default is in use (`root_set` is false) and
 /// `home` is missing or not a directory.
-fn home_fallback_warning(root_set: bool, home: Option<&std::path::Path>) -> bool {
-    !root_set && !home.is_some_and(|h| h.is_dir())
+fn home_fallback_warning(root_set: bool, home: Option<PathBuf>) -> bool {
+    !root_set && usable_home(home).is_none()
 }
 
 /// Logs a warning when the default root is in use and it is the current
 /// directory for want of a home directory. `root_set` is whether
 /// `--root-dir` or the config file's `root_dir` set the root.
 pub fn warn_if_no_home(root_set: bool) {
-    if home_fallback_warning(root_set, dirs::home_dir().as_deref()) {
+    if home_fallback_warning(root_set, dirs::home_dir()) {
         tracing::warn!(
             "no home directory; serving the current directory {}",
             default_root_dir().display()
@@ -256,7 +271,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_root_dir_from, home_fallback_warning, Config};
+    use super::{default_root_dir_from, home_fallback_warning, root_is_set, Config};
     use std::path::PathBuf;
 
     #[test]
@@ -288,12 +303,23 @@ mod tests {
         let gone = home.path().join("missing");
         // The default root is in use and there is no home: warn.
         assert!(home_fallback_warning(false, None));
-        assert!(home_fallback_warning(false, Some(&gone)));
+        assert!(home_fallback_warning(false, Some(gone.clone())));
         // A home directory: nothing to warn about.
-        assert!(!home_fallback_warning(false, Some(home.path())));
+        assert!(!home_fallback_warning(false, Some(home.path().into())));
         // `--root-dir` or `root_dir` set the root: never warn.
         assert!(!home_fallback_warning(true, None));
-        assert!(!home_fallback_warning(true, Some(&gone)));
+        assert!(!home_fallback_warning(true, Some(gone)));
+    }
+
+    #[test]
+    fn the_root_is_set_by_the_flag_or_the_file_key() {
+        use std::path::Path;
+        assert!(!root_is_set(None, None));
+        assert!(!root_is_set(None, Some("port = 0\n")));
+        assert!(!root_is_set(None, Some("# root_dir = \"/x\"\n")));
+        assert!(root_is_set(None, Some("port = 0\nroot_dir = \"/x\"\n")));
+        assert!(root_is_set(Some(Path::new("/y")), None));
+        assert!(root_is_set(Some(Path::new("/y")), Some("port = 0\n")));
     }
 
     #[test]

@@ -533,7 +533,7 @@ amd64 and arm64:
 docker run --rm -p 8888:8888 -v "$PWD:/notebooks" ghcr.io/tlockney/ganymede
 ```
 
-It runs `ganymede lab` on port 8888 in `/notebooks`, here the current
+It runs `ganymede lab --root-dir /notebooks` on port 8888, so it serves `/notebooks`, here the current
 directory. Open the URL it prints with `127.0.0.1` in place of
 `0.0.0.0`. The server runs as uid 1000, so on Linux the mounted
 directory must be writable by that user. Without `-v`, notebooks go
