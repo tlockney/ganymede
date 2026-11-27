@@ -122,13 +122,24 @@ pub async fn events(
     // Taken before the upgrade, so a write between the request and it is
     // not missed.
     let writes = state.write_observer.subscribe();
-    ws.on_upgrade(move |socket| run_events(socket, writes))
+    ws.on_upgrade(move |socket| run_events(socket, writes, EVENT_SEND_WAIT))
 }
 
-async fn run_events(mut socket: WebSocket, mut writes: broadcast::Receiver<WriteEvent>) {
+/// Sends `writes` to `socket` until either ends. A client that takes no
+/// frame within `send_wait` has stopped reading and is dropped, with its
+/// subscription. Over any socket, so a test can give it one that never
+/// takes a frame.
+async fn run_events<S, E>(
+    mut socket: S,
+    mut writes: broadcast::Receiver<WriteEvent>,
+    send_wait: std::time::Duration,
+) where
+    S: futures::Stream<Item = Result<WsMessage, E>> + futures::Sink<WsMessage> + Unpin,
+{
+    use futures::{SinkExt, StreamExt};
     loop {
         tokio::select! {
-            incoming = socket.recv() => match incoming {
+            incoming = socket.next() => match incoming {
                 Some(Ok(WsMessage::Close(_))) | None | Some(Err(_)) => break,
                 Some(Ok(_)) => {}
             },
@@ -138,7 +149,7 @@ async fn run_events(mut socket: WebSocket, mut writes: broadcast::Receiver<Write
                 // A client that takes no data for this long has stopped
                 // reading: drop it, and its subscription with it, rather
                 // than wait on it while the channel moves on without it.
-                match tokio::time::timeout(EVENT_SEND_WAIT, socket.send(frame)).await {
+                match tokio::time::timeout(send_wait, socket.send(frame)).await {
                     Ok(Ok(())) if !closing => {}
                     _ => break,
                 }
@@ -320,6 +331,64 @@ mod tests {
             }
             other => panic!("expected a close, got {other:?}"),
         }
+    }
+
+    /// A socket that never takes a frame and never sends one.
+    struct Stuck;
+
+    impl futures::Stream for Stuck {
+        type Item = Result<WsMessage, ()>;
+        fn poll_next(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl futures::Sink<WsMessage> for Stuck {
+        type Error = ();
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), ()>> {
+            std::task::Poll::Pending
+        }
+        fn start_send(self: std::pin::Pin<&mut Self>, _: WsMessage) -> Result<(), ()> {
+            Ok(())
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), ()>> {
+            std::task::Poll::Pending
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), ()>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    /// A client that stops taking frames is dropped once a send has waited
+    /// its time, and its subscription goes with it, so writes stop being
+    /// stamped for it (#978).
+    #[tokio::test]
+    async fn a_client_that_takes_no_frame_is_dropped_with_its_subscription() {
+        let observer = WriteObserver::new();
+        let writes = observer.subscribe();
+        let run = tokio::spawn(run_events(
+            Stuck,
+            writes,
+            std::time::Duration::from_millis(50),
+        ));
+        observer.notify(Path::new("/root/x"), "a.ipynb", None, Some("after"), false);
+        tokio::time::timeout(std::time::Duration::from_secs(10), run)
+            .await
+            .expect("the stuck client was not dropped")
+            .unwrap();
+        assert!(!observer.is_set(), "its subscription is gone");
     }
 
     /// The channel gone, there is nothing more to send.

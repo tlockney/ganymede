@@ -309,8 +309,10 @@ directory save. A rename is not reported, so a client that keys its
 answers by path loses them on a rename it didn't make itself, which fails
 safe.
 
-Events start with the writes that begin after the socket opens; a write
-already under way then is not sent.
+Events start with the socket: a write that begins after it opens is
+sent. A write already under way then is sent only if something was
+listening when it began (another client of this socket, or an embedding
+app's observer), so a client can't count on it.
 
 A client that falls behind — the server wrote faster than it read — is
 closed with code `1011` and the reason `missed events`, rather than left
