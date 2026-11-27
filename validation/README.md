@@ -12,8 +12,9 @@ the [development log](../docs/notes.md), one file per entry in
 ```
 npm install
 # JupyterLab 4 in headless Chromium. Serve it first: `ganymede lab
-# install`, then `ganymede serve --token tok`, or another bundle with
-#   ganymede serve --static-dir <prefix>/share/jupyter/lab/static \
+# install`, then `ganymede serve --root-dir <scratch dir> --token tok`, or another bundle with
+#   ganymede serve --root-dir <scratch dir> \
+#     --static-dir <prefix>/share/jupyter/lab/static \
 #     --labextensions-path <prefix>/share/jupyter/labextensions --token tok
 node jupyterlab.mjs http://127.0.0.1:8888 tok <kernel> out/lab.json
 # The URL `ganymede lab` printed logs in: lands on /lab with the cookie.

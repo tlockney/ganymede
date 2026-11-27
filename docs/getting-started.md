@@ -172,12 +172,18 @@ the command ends.
 
 ## Serve notebooks to a frontend
 
-In the directory with your notebooks, as with `jupyter lab`:
+Pass the directory with your notebooks as `--root-dir`; without it, the
+server serves your home directory.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. The latest release serves the current directory, as
+> `jupyter lab` does, and `--root-dir .` does the same on both.
 
 ```sh
 ganymede lab install     # once: JupyterLab's frontend, from PyPI, no Python
-ganymede lab             # JupyterLab, opened in the browser
-ganymede serve           # the same server for VS Code and other clients
+ganymede lab --root-dir ~/notebooks     # JupyterLab, opened in the browser
+ganymede serve --root-dir ~/notebooks   # the same server for VS Code and other clients
 ```
 
 `serve` prints the URL, with its token, as the only line on stdout.

@@ -90,4 +90,4 @@ RUN useradd --create-home --uid 1000 ganymede \
 USER ganymede
 WORKDIR /notebooks
 EXPOSE 8888
-CMD ["ganymede", "lab", "--no-browser", "--ip", "0.0.0.0", "--port", "8888"]
+CMD ["ganymede", "lab", "--no-browser", "--root-dir", "/notebooks", "--ip", "0.0.0.0", "--port", "8888"]

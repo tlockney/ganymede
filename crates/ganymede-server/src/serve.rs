@@ -40,8 +40,8 @@ pub struct ServeArgs {
     /// Auth token. Pass an empty string to disable auth.
     #[arg(long)]
     pub token: Option<String>,
-    /// Directory served as the contents root. Default: the current
-    /// directory.
+    /// Directory served as the contents root. Default: your home
+    /// directory (the current directory if there is none).
     #[arg(long)]
     pub root_dir: Option<PathBuf>,
     /// Directory with the notebook-signing key and trusted signatures;
@@ -253,17 +253,23 @@ impl ServeArgs {
     pub fn into_config_with(self, default: Option<PathBuf>) -> Result<Config> {
         let cli = self;
         let path = cli.config.clone().or(default);
+        let mut file_text = None;
         let mut cfg = match &path {
             Some(p) => {
                 tracing::info!("reading config from {}", p.display());
-                Config::from_toml(
-                    &std::fs::read_to_string(p)
-                        .with_context(|| format!("reading {}", p.display()))?,
-                )
-                .with_context(|| format!("config file {}", p.display()))?
+                let text = std::fs::read_to_string(p)
+                    .with_context(|| format!("reading {}", p.display()))?;
+                let cfg = Config::from_toml(&text)
+                    .with_context(|| format!("config file {}", p.display()))?;
+                file_text = Some(text);
+                cfg
             }
             None => Config::default(),
         };
+        crate::config::warn_if_no_home(crate::config::root_is_set(
+            cli.root_dir.as_deref(),
+            file_text.as_deref(),
+        ));
         if let Some(v) = cli.ip {
             cfg.ip = v;
         }
@@ -1280,6 +1286,32 @@ mod tests {
         let cfg = ServeArgs::default().into_config_with(None).unwrap();
         assert_eq!((cfg.ip.as_str(), cfg.port), ("127.0.0.1", 8888));
         assert_eq!(cfg.token, None);
+    }
+
+    #[test]
+    fn root_dir_is_the_home_default_and_the_config_and_flag_override_it() {
+        use crate::config::default_root_dir;
+        let cfg = ServeArgs::default().into_config_with(None).unwrap();
+        assert_eq!(cfg.root_dir, default_root_dir());
+
+        // A config file without `root_dir` gets the default too.
+        let (_d, bare) = config_file("port = 0\n");
+        let cfg = ServeArgs::default().into_config_with(Some(bare)).unwrap();
+        assert_eq!(cfg.root_dir, default_root_dir());
+
+        let (_d, path) = config_file("root_dir = \"/x\"\n");
+        let cfg = ServeArgs::default()
+            .into_config_with(Some(path.clone()))
+            .unwrap();
+        assert_eq!(cfg.root_dir, PathBuf::from("/x"));
+
+        let cfg = ServeArgs {
+            root_dir: Some("/y".into()),
+            ..Default::default()
+        }
+        .into_config_with(Some(path))
+        .unwrap();
+        assert_eq!(cfg.root_dir, PathBuf::from("/y"));
     }
 
     /// `--base-url jupyter` panicked at startup: the router was nested

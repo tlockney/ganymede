@@ -202,10 +202,10 @@ enum Cmd {
         #[arg(long, value_name = "DIR")]
         notary_dir: Option<PathBuf>,
     },
-    /// Serve JupyterLab here and open it; install and remove its builds.
+    /// Serve JupyterLab and open it; install and remove its builds.
     ///
-    /// With no subcommand, serves the current directory with JupyterLab
-    /// and opens it in the browser. The subcommands install, list, and
+    /// With no subcommand, serves your home directory (or --root-dir) with
+    /// JupyterLab and opens it in the browser. The subcommands install, list, and
     /// remove JupyterLab's frontend and its extensions.
     #[command(args_conflicts_with_subcommands = true)]
     Lab {
@@ -214,10 +214,11 @@ enum Cmd {
         #[command(flatten)]
         start: Box<lab_start::StartArgs>,
     },
-    /// Serve ganymede-ui here and open it; install and remove its builds.
+    /// Serve ganymede-ui and open it; install and remove its builds.
     ///
     /// ganymede-ui is Ganymede's own notebook app. With no subcommand,
-    /// serves the current directory with it and opens it in the browser.
+    /// serves your home directory (or --root-dir) with it and opens it in
+    /// the browser.
     /// The subcommands install, list, and remove it.
     #[command(args_conflicts_with_subcommands = true)]
     Ui {

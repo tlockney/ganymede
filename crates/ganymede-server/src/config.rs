@@ -16,7 +16,9 @@ pub struct Config {
     /// stay logged in across restarts. Defaults to `jupyter_cookie_secret`
     /// in the Jupyter runtime dir, the file `jupyter_server` uses.
     pub cookie_secret_file: Option<PathBuf>,
-    /// Contents root. Defaults to the current directory.
+    /// Contents root. Defaults to the home directory of the user running
+    /// the server, or the current directory when there is none
+    /// ([`default_root_dir`]).
     pub root_dir: PathBuf,
     /// Checkpoints outside the root, for synced folders.
     pub checkpoint_dir: Option<PathBuf>,
@@ -141,6 +143,56 @@ pub struct Config {
     pub tailscale: crate::tailscale::TailscaleConfig,
 }
 
+/// The server's root when neither `--root-dir` nor `root_dir` is set:
+/// `home` when it is a directory, else `cwd`, else `.`.
+fn default_root_dir_from(home: Option<PathBuf>, cwd: Option<PathBuf>) -> PathBuf {
+    usable_home(home)
+        .or(cwd)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// The server's root when neither `--root-dir` nor `root_dir` is set: the
+/// home directory of the user running the server, so a server started
+/// from `/` by launchd or systemd does not expose the whole disk. Without
+/// a home directory it is the current directory.
+pub fn default_root_dir() -> PathBuf {
+    default_root_dir_from(dirs::home_dir(), std::env::current_dir().ok())
+}
+
+/// `home` when it is a directory.
+fn usable_home(home: Option<PathBuf>) -> Option<PathBuf> {
+    home.filter(|h| h.is_dir())
+}
+
+/// Whether `--root-dir` (`cli_root`) or the config file's text (`file`,
+/// if one is read) sets the root, so the default is not used.
+pub fn root_is_set(cli_root: Option<&std::path::Path>, file: Option<&str>) -> bool {
+    cli_root.is_some()
+        || file.is_some_and(|t| {
+            t.parse::<toml::Table>()
+                .is_ok_and(|t| t.contains_key("root_dir"))
+        })
+}
+
+/// Whether to warn that the default root fell back to the current
+/// directory: only when the default is in use (`root_set` is false) and
+/// `home` is missing or not a directory.
+fn home_fallback_warning(root_set: bool, home: Option<PathBuf>) -> bool {
+    !root_set && usable_home(home).is_none()
+}
+
+/// Logs a warning when the default root is in use and it is the current
+/// directory for want of a home directory. `root_set` is whether
+/// `--root-dir` or the config file's `root_dir` set the root.
+pub fn warn_if_no_home(root_set: bool) {
+    if home_fallback_warning(root_set, dirs::home_dir()) {
+        tracing::warn!(
+            "no home directory; serving the current directory {}",
+            default_root_dir().display()
+        );
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -148,7 +200,7 @@ impl Default for Config {
             port: 8888,
             token: None,
             cookie_secret_file: None,
-            root_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            root_dir: default_root_dir(),
             checkpoint_dir: None,
             notary_dir: None,
             static_dir: None,
@@ -219,7 +271,68 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::Config;
+    use super::{default_root_dir_from, home_fallback_warning, root_is_set, Config};
+    use std::path::PathBuf;
+
+    #[test]
+    fn default_root_is_home_when_it_is_a_directory() {
+        let home = tempfile::tempdir().unwrap();
+        let got = default_root_dir_from(Some(home.path().into()), Some("/cwd".into()));
+        assert_eq!(got, home.path());
+    }
+
+    #[test]
+    fn default_root_is_cwd_without_a_usable_home() {
+        let cwd = Some(PathBuf::from("/cwd"));
+        assert_eq!(
+            default_root_dir_from(None, cwd.clone()),
+            PathBuf::from("/cwd")
+        );
+        let home = tempfile::tempdir().unwrap();
+        let gone = home.path().join("missing");
+        assert_eq!(
+            default_root_dir_from(Some(gone), cwd),
+            PathBuf::from("/cwd")
+        );
+        assert_eq!(default_root_dir_from(None, None), PathBuf::from("."));
+    }
+
+    #[test]
+    fn the_no_home_warning_is_only_for_the_default_root() {
+        let home = tempfile::tempdir().unwrap();
+        let gone = home.path().join("missing");
+        // The default root is in use and there is no home: warn.
+        assert!(home_fallback_warning(false, None));
+        assert!(home_fallback_warning(false, Some(gone.clone())));
+        // A home directory: nothing to warn about.
+        assert!(!home_fallback_warning(false, Some(home.path().into())));
+        // `--root-dir` or `root_dir` set the root: never warn.
+        assert!(!home_fallback_warning(true, None));
+        assert!(!home_fallback_warning(true, Some(gone)));
+    }
+
+    #[test]
+    fn the_root_is_set_by_the_flag_or_the_file_key() {
+        use std::path::Path;
+        assert!(!root_is_set(None, None));
+        assert!(!root_is_set(None, Some("port = 0\n")));
+        assert!(!root_is_set(None, Some("# root_dir = \"/x\"\n")));
+        assert!(root_is_set(None, Some("port = 0\nroot_dir = \"/x\"\n")));
+        assert!(root_is_set(Some(Path::new("/y")), None));
+        assert!(root_is_set(Some(Path::new("/y")), Some("port = 0\n")));
+    }
+
+    #[test]
+    fn a_config_without_root_dir_gets_the_default_and_one_with_it_keeps_it() {
+        assert_eq!(
+            Config::from_toml("port = 0\n").unwrap().root_dir,
+            super::default_root_dir()
+        );
+        assert_eq!(
+            Config::from_toml("root_dir = \"/x\"\n").unwrap().root_dir,
+            PathBuf::from("/x")
+        );
+    }
 
     #[test]
     fn toml_sets_keys_and_defaults_the_rest() {
