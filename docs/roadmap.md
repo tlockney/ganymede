@@ -135,7 +135,12 @@ In order of priority.
    Next:
    - device APIs (ganymede-ui's [`packages/device`](https://github.com/tlockney/ganymede-ui/tree/main/packages/device));
    - automation: Shortcuts, links, MCP from the Mac app, Spotlight
-     ([ganymede-ui#301](https://github.com/tlockney/ganymede-ui/issues/301)).
+     ([ganymede-ui#301](https://github.com/tlockney/ganymede-ui/issues/301));
+   - one engine per Mac: a background `ganymede serve` the app opens local
+     notebooks through
+     ([#965](https://github.com/tlockney/ganymede/issues/965)), with the
+     in-app kernel registered over a socket
+     ([Kernel providers](kernel-provider.md), proposed).
 3. **A person and an agent in one live notebook.** The apps open
    notebooks through rooms (done, above). The app's journal view, which
    shows the agent's journal as it is written

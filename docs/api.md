@@ -311,7 +311,7 @@ safe.
 
 Events start with the socket: a write that begins after it opens is
 sent. A write already under way then is sent only if something was
-listening when it began (another client of this socket, or an embedding
+listening when it began (another client of this route, or an embedding
 app's observer), so a client can't count on it.
 
 A client that falls behind — the server wrote faster than it read — is
