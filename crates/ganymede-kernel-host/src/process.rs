@@ -36,6 +36,13 @@ pub trait KernelProcess: Send + Sync {
     fn exit_reason(&self) -> Option<&'static str> {
         None
     }
+    /// Whether the host may start the kernel again after it ends. False
+    /// for one whose process is gone for good, such as a kernel provider
+    /// whose connection closed ([`crate::registered::Ended::Gone`]):
+    /// nothing is left to run it. True by default.
+    fn restartable(&self) -> bool {
+        true
+    }
 }
 
 pub struct LaunchedKernel {

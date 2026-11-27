@@ -40,7 +40,7 @@ pub use process::{
     attach, in_process, KernelOutput, KernelProcess, LaunchOptions, LaunchedKernel, OutputSource,
     Provisioner,
 };
-pub use registered::{AppKernel, Ended, RegisteredKernels};
+pub use registered::{AppKernel, Ended, Origin, RegisteredKernels};
 pub use session::{Execution, Heartbeat, KernelSession, SoFar};
 pub use transport::{
     in_process_pair, KernelSide, KernelTransport, TransportFactory, TransportSink,

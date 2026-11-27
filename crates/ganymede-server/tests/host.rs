@@ -121,6 +121,7 @@ fn state_with(
         metrics: Default::default(),
         host: Default::default(),
         machines: Default::default(),
+        registered: None,
     }
 }
 

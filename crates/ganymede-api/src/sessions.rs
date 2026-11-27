@@ -1529,6 +1529,93 @@ mod tests {
         (m, lost)
     }
 
+    /// A process that says nothing is left to run it again: the provider
+    /// that ran it went away (#983).
+    struct GoneProcess(Arc<dyn ganymede_kernel_host::KernelProcess>);
+    #[async_trait]
+    impl ganymede_kernel_host::KernelProcess for GoneProcess {
+        // A pid, so the kernel's log is kept once it is left dead.
+        fn pid(&self) -> Option<u32> {
+            Some(1)
+        }
+        async fn interrupt(&self) -> ganymede_kernel_host::Result<()> {
+            self.0.interrupt().await
+        }
+        async fn terminate(&self) -> ganymede_kernel_host::Result<()> {
+            self.0.terminate().await
+        }
+        async fn kill(&self) -> ganymede_kernel_host::Result<()> {
+            self.0.kill().await
+        }
+        async fn wait(&self) -> Option<i32> {
+            self.0.wait().await
+        }
+        fn is_alive(&self) -> bool {
+            self.0.is_alive()
+        }
+        fn kill_now(&self) {
+            self.0.kill_now()
+        }
+        fn exit_reason(&self) -> Option<&'static str> {
+            Some("lost")
+        }
+        fn restartable(&self) -> bool {
+            false
+        }
+    }
+
+    struct GoneProvisioner;
+    #[async_trait]
+    impl Provisioner for GoneProvisioner {
+        async fn launch(
+            &self,
+            _spec: &Kernelspec,
+            _opts: LaunchOptions,
+        ) -> ganymede_kernel_host::Result<LaunchedKernel> {
+            let mut launched = in_process();
+            launched.process = Arc::new(GoneProcess(launched.process.clone()));
+            Ok(launched)
+        }
+    }
+
+    /// A kernel whose process went away is dead with reason `lost` at
+    /// once, whatever the restart limits say: nothing is left to run it.
+    #[tokio::test]
+    async fn a_kernel_whose_process_is_gone_is_dead_with_no_restart() {
+        let (m, _) = with_provisioner(KernelManagerConfig::default(), Arc::new(GoneProvisioner));
+        let k = started(&m, Some("fake"), None).await.unwrap();
+        let mut c = m.connect_client(&k.id).unwrap();
+        let cell = run(&mut c, "die").await;
+        let got = until_none(&mut c).await;
+        assert!(
+            !statuses(&got).contains(&"restarting".to_string()),
+            "{:?}",
+            statuses(&got)
+        );
+        let last = got
+            .iter()
+            .rev()
+            .find(|(ch, m)| *ch == Channel::IoPub && m.msg_type() == "status")
+            .unwrap();
+        assert_eq!(last.1.content["execution_state"], "dead");
+        assert_eq!(last.1.content["reason"], "lost");
+        let reply = got
+            .iter()
+            .find(|(ch, m)| *ch == Channel::Shell && m.parent_id() == Some(cell.as_str()))
+            .expect("the cell is answered");
+        assert!(reply.1.content["evalue"]
+            .as_str()
+            .unwrap()
+            .contains("went away"));
+        assert!(m.list().is_empty());
+        let log = m.log(&k.id, None, 100).unwrap();
+        assert!(
+            log.lines.iter().any(|l| l.text.contains("went away")),
+            "{:?}",
+            log.lines
+        );
+    }
+
     async fn until_idle(m: &KernelManager, id: &str) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         while m.model(id).unwrap().execution_state != "idle" {

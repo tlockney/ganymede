@@ -694,6 +694,7 @@ impl LocalHost {
             metrics: Default::default(),
             host: Arc::new(cfg.host.clone()),
             machines: Default::default(),
+            registered: None,
         };
         let api = Arc::new(crate::host::HostApi::new(state.clone(), &cfg.host));
         let responder: Arc<dyn ganymede_host::Responder> = api.clone();
@@ -907,17 +908,19 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
             },
         ),
     };
-    let (specs, provisioner, transports) = match startup.registered {
-        Some(r) => {
-            r.set_fallback(specs, provisioner, transports);
-            (
-                r.clone() as Arc<dyn KernelspecSource>,
-                r.clone() as Arc<dyn Provisioner>,
-                r as Arc<dyn TransportFactory>,
-            )
-        }
-        None => (specs, provisioner, transports),
-    };
+    // A server with no embedding app still keeps a registered set, in
+    // front of its own kernels, so a kernel provider has somewhere to
+    // register its specs when the socket lands (#983). Nothing registered
+    // lists and launches as the fallback alone.
+    let registered = startup
+        .registered
+        .unwrap_or_else(|| Arc::new(RegisteredKernels::new()));
+    registered.set_fallback(specs, provisioner, transports);
+    let (specs, provisioner, transports) = (
+        registered.clone() as Arc<dyn KernelspecSource>,
+        registered.clone() as Arc<dyn Provisioner>,
+        registered.clone() as Arc<dyn TransportFactory>,
+    );
     let kernels = Arc::new(KernelManager::new(
         specs,
         provisioner,
@@ -1031,6 +1034,7 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
         metrics: Default::default(),
         host: Arc::new(cfg.host.clone()),
         machines: startup.machines.clone().unwrap_or_default(),
+        registered: Some(registered),
     };
 
     // Kept here for as long as the server runs: the manager holds it

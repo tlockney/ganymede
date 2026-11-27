@@ -39,6 +39,10 @@ const LOST_TEXT: &str = "The system ended the kernel, and it is being restarted.
 const LOST_OFF_TEXT: &str =
     "The system ended the kernel; restarts are off, so it was not restarted.";
 
+/// The cell error when the process that ran the kernel is gone for good,
+/// so nothing is left to run it again (#983).
+const GONE_TEXT: &str = "The process that ran the kernel went away; it was not restarted.";
+
 /// Restarts in a row, each within a window of the last.
 #[derive(Default)]
 struct RestartCount {
@@ -1011,16 +1015,31 @@ impl Core {
         }
         // An app's kernel that the platform ended, as iOS ends a suspended
         // app's web content (docs/in-app-kernel.md).
-        let lost = kernel
-            .launched
-            .lock()
-            .unwrap()
-            .as_ref()
-            .and_then(|l| l.process.exit_reason())
-            == Some("lost");
+        let (lost, restartable) =
+            kernel
+                .launched
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map_or((false, true), |l| {
+                    (
+                        l.process.exit_reason() == Some("lost"),
+                        l.process.restartable(),
+                    )
+                });
         let reason = lost.then_some("lost");
         let now = tokio::time::Instant::now();
         let limit = self.config.restart_limit;
+        if !restartable {
+            // A provider that went away leaves nothing to run it again
+            // (#983), so it is dead at once, whatever the limits say.
+            kernel
+                .log
+                .host("the process that ran the kernel went away; it is not restarted");
+            kernel.answer_for_crashed_kernel(GONE_TEXT);
+            kernel.remove_dead(&self, reason);
+            return;
+        }
         if limit == 0 {
             kernel.log.host("the kernel died; restarts are off");
             kernel.answer_for_crashed_kernel(if lost {
@@ -1146,16 +1165,24 @@ impl Core {
             let _ = session.shutdown(false, Duration::from_millis(200)).await;
             // Kept if the next relaunch fails to start: the last attempt
             // that ran was ended by the platform, so the death is `lost`.
-            lost = kernel
-                .launched
-                .lock()
-                .unwrap()
-                .take()
-                .is_some_and(|l| l.process.exit_reason() == Some("lost"));
-            let retry = matches!(
-                e,
-                HostError::KernelDied | HostError::Timeout(_) | HostError::SendTimeout
-            );
+            let (was_lost, can_restart) =
+                kernel
+                    .launched
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .map_or((false, true), |l| {
+                        (
+                            l.process.exit_reason() == Some("lost"),
+                            l.process.restartable(),
+                        )
+                    });
+            lost = was_lost;
+            let retry = can_restart
+                && matches!(
+                    e,
+                    HostError::KernelDied | HostError::Timeout(_) | HostError::SendTimeout
+                );
             if !retry || attempt == START_ATTEMPTS {
                 break Err(e.into());
             }

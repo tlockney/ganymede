@@ -100,6 +100,9 @@ async fn serves_the_apps_kernels() {
     let (code, specs) = call(addr, "GET", "/api/kernelspecs", None).await;
     assert_eq!(code, 200);
     assert_eq!(specs["default"], "local", "{specs}");
+    // With nothing registered, the server's own kernels and no others.
+    let names: Vec<&String> = specs["kernelspecs"].as_object().unwrap().keys().collect();
+    assert_eq!(names, ["local"], "{specs}");
     // A registered kernel has no directory, so the key is left out.
     let local = specs["kernelspecs"]["local"].as_object().unwrap();
     assert!(!local.contains_key("resource_dir"), "{specs}");

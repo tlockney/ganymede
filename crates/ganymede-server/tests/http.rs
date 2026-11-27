@@ -131,6 +131,7 @@ fn state_specs(
         metrics: Default::default(),
         host: Default::default(),
         machines: Default::default(),
+        registered: None,
     }
 }
 

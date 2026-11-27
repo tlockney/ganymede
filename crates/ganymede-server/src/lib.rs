@@ -116,6 +116,10 @@ pub struct AppState {
     /// Machines mounted under `/machines/{id}/`; none until an embedding
     /// app adds one. See [`mount`].
     pub machines: Arc<mount::Machines>,
+    /// The kernels an embedding app registered or a kernel provider will.
+    /// `serve` always builds one, in front of its own kernels, so the
+    /// kernel provider socket (#983) has somewhere to register its specs.
+    pub registered: Option<Arc<ganymede_kernel_host::RegisteredKernels>>,
 }
 
 /// The API router, login pages, and JupyterLab or generic static assets
