@@ -44,7 +44,7 @@
 //! saved with the notebook. Only these runs write it: room runs
 //! (this module), `POST /api/notebooks/run` and the host API. A client
 //! update that sets a cell's `execution_count` to another value, or
-//! leaves its outputs empty, is the client running or clearing it, and
+//! empties outputs it had, is the client running or clearing it, and
 //! the room removes it (and `execution_skipped`), since the server
 //! doesn't see what source ran. An update that only adds to or rewrites
 //! outputs that stay non-empty, as a client echoing a server run's

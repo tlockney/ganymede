@@ -355,13 +355,14 @@ JupyterLab, writes the outputs and the execution count into the room, and
 the server doesn't see which source they came from. So when a client's
 update sets a code cell's `execution_count` to another value (null
 included: JupyterLab does that when a run starts and on Clear Outputs),
-or leaves its outputs empty (cleared, or replaced with an empty list),
-the room removes the cell's `ran_source_hash`: a cell without the key
+or empties outputs it had (cleared, replaced with an empty list, or
+removed), the room removes the cell's `ran_source_hash`: a cell without the key
 says nothing about which source its outputs came from. An update that
 only adds an output, grows a stream's text, or replaces the outputs with
-a non-empty list keeps the key: a client echoing the outputs of a server
-run, as JupyterLab and the apps do when they normalise or merge them,
-did not run anything. A change to the file keeps what the file has. The
+a non-empty list keeps the key, as does writing an empty list over a
+cell that had no output: a client that echoes the outputs of a server
+run did not run anything. Neither JupyterLab 4.6 nor the apps are known
+to do that; the rule guards against a client that does. A change to the file keeps what the file has. The
 hash is in the cell's metadata, not each output's, because stream and
 error outputs have no metadata, and a cell can run without any output. A
 cell the server clears without running it, such as one skipped after an

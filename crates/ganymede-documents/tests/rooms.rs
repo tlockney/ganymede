@@ -2792,8 +2792,17 @@ fn a_client_run_removes_the_ran_source_hash_and_the_skip_note() {
         let null = schema::json_to_any(&serde_json::Value::Null);
         cell.insert(txn, "execution_count", null);
     };
+    // Replaced with a plain empty list, and removed.
+    let replace_plain = |txn: &mut TransactionMut, roots: &Roots| {
+        let cell = schema::find_cell(txn, roots, "a").unwrap();
+        cell.insert(txn, "outputs", schema::json_to_any(&serde_json::json!([])));
+    };
+    let remove = |txn: &mut TransactionMut, roots: &Roots| {
+        let cell = schema::find_cell(txn, roots, "a").unwrap();
+        cell.remove(txn, "outputs");
+    };
     type Edit<'a> = &'a dyn Fn(&mut TransactionMut, &Roots);
-    let edits: [(&str, Edit); 5] = [
+    let edits: [(&str, Edit); 7] = [
         ("count", &blank_count),
         ("outputs emptied", &clear),
         (
@@ -2805,6 +2814,8 @@ fn a_client_run_removes_the_ran_source_hash_and_the_skip_note() {
             "outputs emptied then one appended, count cleared",
             &clear_then_append,
         ),
+        ("outputs replaced with a plain empty list", &replace_plain),
+        ("outputs removed", &remove),
     ];
     for (what, edit) in edits {
         let mut room = room_that_ran();
@@ -2873,6 +2884,35 @@ fn a_client_that_echoes_outputs_keeps_the_ran_source_hash() {
         assert_eq!(run_notes(room.doc(), "a"), kept(), "{what}");
         assert_eq!(run_notes(room.doc(), "b"), kept(), "{what}: the other cell");
     }
+}
+
+/// A server run with no output: a client writing its empty outputs back
+/// emptied nothing, so the hash stays; a client that runs it (the count)
+/// still removes it.
+#[test]
+fn a_client_that_echoes_no_outputs_keeps_the_ran_source_hash() {
+    let empty = |room: &mut Room| {
+        room.edit(|txn, roots| {
+            let cell = schema::find_cell(txn, roots, "a").unwrap();
+            schema::set_outputs(txn, &cell, Vec::new());
+        });
+    };
+    let mut room = room_that_ran();
+    empty(&mut room);
+    let client = Doc::new();
+    sync(&mut room, 1, &client);
+    client_edit(&mut room, &client, |txn, roots| {
+        let cell = schema::find_cell(txn, roots, "a").unwrap();
+        cell.insert(txn, "outputs", schema::json_to_any(&serde_json::json!([])));
+    });
+    assert_eq!(run_notes(room.doc(), "a"), kept());
+    client_edit(&mut room, &client, |txn, roots| {
+        let cell = schema::find_cell(txn, roots, "a").unwrap();
+        cell.insert(txn, "outputs", ArrayPrelim::default());
+        let null = schema::json_to_any(&serde_json::Value::Null);
+        cell.insert(txn, "execution_count", null);
+    });
+    assert_eq!(run_notes(room.doc(), "a"), cleared());
 }
 
 #[test]

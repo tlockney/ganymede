@@ -4,9 +4,10 @@ Since #943 the room removed `metadata.ganymede.ran_source_hash` from a
 code cell whenever a client's update touched the cell's `outputs` (any
 change: an append, a stream's text growing, a replacement) or its
 `execution_count`. A client that writes outputs back after a server run,
-as JupyterLab or the apps do when they normalise or merge stream
-outputs, made server runs lose the key as soon as that client looked at
-them — though the client ran nothing. The risk is quiet: a notebook
+normalising or merging stream outputs, would make server runs lose the
+key as soon as that client looked at them, though it ran nothing. No
+such client is known today (JupyterLab 4.6.6 doesn't, see below, and the
+apps' room code doesn't write outputs back); the rule guards against one. The risk is quiet: a notebook
 whose outputs look stale in one client, and fine in every other.
 
 The rule is narrowed. A client update counts as the client running or
@@ -29,8 +30,12 @@ counts only when the cell's `outputs` in the transaction is now empty
 (`outputs_empty`: missing, a `YArray` of length 0, or an empty
 `Any::Array`). Reading the observed change and the end state, rather
 than comparing outputs before and after, keeps a keystroke's cost
-independent of the outputs' size. `clear_run_notes` is unchanged: what
-counts as a run is `rerun_cell`'s call.
+independent of the outputs' size. Emptying counts only for a cell
+whose outputs weren't empty before the update (`Room::cells_with_outputs`,
+taken with the other before-update snapshot in `receive`): a client
+writing `[]` back over a server run that printed nothing emptied
+nothing. `rerun_cell` says which way it found a cell (the count, or
+emptied outputs), and only the second is filtered.
 
 Tests (`crates/ganymede-documents/tests/rooms.rs`):
 
@@ -43,6 +48,11 @@ Tests (`crates/ganymede-documents/tests/rooms.rs`):
   stream, outputs replaced with the list the cell has, replaced with a
   merged stream, and the count it has with an append in the same
   transaction.
+- `a_client_that_echoes_no_outputs_keeps_the_ran_source_hash`: a server
+  run with no output, a client writing `[]` back (kept), then the client
+  running it (removed).
+- The removal cases also cover outputs replaced with a plain empty list
+  and the `outputs` key removed.
 - `a_client_change_that_is_no_run_keeps_the_ran_source_hash`,
   `the_servers_own_edit_of_outputs_keeps_the_ran_source_hash`,
   `a_file_change_keeps_the_ran_source_hash_the_file_has`: unchanged.
