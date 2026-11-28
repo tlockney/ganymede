@@ -793,12 +793,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             let cfg = server_config(*args, &cli.kernelspec_root, cli.startup_timeout, cli.quiet)?;
             // The update check is `check_for_updates`' to turn on (#956);
             // the server only gets a way to make it.
-            let startup = ganymede_server::serve::Startup {
-                update_check: Some(Arc::new(update::latest_release)),
-                running_version: Some(env!("GANYMEDE_VERSION").to_string()),
-                ..Default::default()
-            };
-            ganymede_server::serve::run_with(cfg, startup).await?;
+            ganymede_server::serve::run_with(cfg, update::server_startup()).await?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Mcp(args) => {

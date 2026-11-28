@@ -1182,8 +1182,10 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
         f(&url, info_files.as_ref().and_then(|f| f.open_html()));
     }
 
-    // The update check (#956) starts once the server is up, and stops with
-    // it: nothing is asked of anyone after the server stops serving.
+    // The update check (#956) starts once the server is up and is aborted
+    // when it stops serving, so no new check starts after that. A request
+    // already in flight (a blocking thread, with its retries) runs out on
+    // its own; the process usually exits first.
     let update_task = update.start();
 
     serve_until(listener, app, stop, DRAIN_TIMEOUT).await?;

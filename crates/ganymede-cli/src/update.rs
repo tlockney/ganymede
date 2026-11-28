@@ -13,6 +13,7 @@ use crate::ui::{sum_for, Releases};
 use anyhow::{bail, Context, Result};
 use clap::Args;
 use ganymede_server::lab::compare_versions;
+use ganymede_server::update::{base_version, is_main_build};
 use std::cmp::Ordering;
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -310,16 +311,6 @@ fn under_rosetta() -> bool {
             .is_ok_and(|o| o.stdout.trim_ascii() == b"1")
 }
 
-/// Whether `version` is a main build's (release.yml sets `+main.<commit>`).
-fn is_main_build(version: &str) -> bool {
-    version.contains("+main")
-}
-
-/// `version` without its `+build` part.
-fn base_version(version: &str) -> &str {
-    version.split('+').next().unwrap_or(version)
-}
-
 /// `version` if it is safe in a URL path: ASCII letters, digits, `.`, `-`.
 fn checked_version(version: &str) -> Result<String> {
     if version.is_empty()
@@ -361,6 +352,18 @@ fn tag_version(url: &str) -> Option<&str> {
 /// redirect's, which it doesn't follow: nothing is downloaded.
 pub(crate) fn latest_release() -> Result<String> {
     latest()
+}
+
+/// The [`Startup`](ganymede_server::serve::Startup) that `ganymede serve`,
+/// `lab` and `ui` start from: a way to make the update check, which
+/// `check_for_updates` turns on (#956), and the version this build is.
+/// `ganymede mcp`'s private server and the apps' servers get none.
+pub(crate) fn server_startup() -> ganymede_server::serve::Startup {
+    ganymede_server::serve::Startup {
+        update_check: Some(std::sync::Arc::new(latest_release)),
+        running_version: Some(env!("GANYMEDE_VERSION").to_string()),
+        ..Default::default()
+    }
 }
 
 /// Copies `entry` out of a `.tar.gz` into `out`, within [`MAX_BINARY_BYTES`].
@@ -564,6 +567,18 @@ mod tests {
         assert_eq!(base_version("0.8.0+main.abc123"), "0.8.0");
         assert_eq!(base_version("0.9.0"), "0.9.0");
         assert_eq!(compare_versions("0.10.0", "0.9.0"), Ordering::Greater);
+    }
+
+    /// `serve`, `lab` and `ui` hand the server the update check and this
+    /// build's version (#956), main-build suffix and all.
+    #[test]
+    fn servers_get_the_update_check() {
+        let startup = server_startup();
+        assert!(startup.update_check.is_some());
+        assert_eq!(
+            startup.running_version.as_deref(),
+            Some(env!("GANYMEDE_VERSION"))
+        );
     }
 
     #[test]

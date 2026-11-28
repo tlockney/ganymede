@@ -37,3 +37,18 @@ needs the token like the other API routes. Tests inject a fake check, so
 none of them touch the network. `docs/reference.md`, `docs/api.md`,
 `docs/security.md` and `docs/privacy.md` cover the flag, the key, the
 response and what the request carries.
+
+The issue asked that a main build compare against the latest main build.
+It doesn't, for the reason above: there is no version to compare until
+the build is downloaded, so `/api/update` says `main_build: true` and
+`ganymede update` remains the way to get a newer one.
+
+Tests: `update.rs`'s unit tests cover the answer, a failed check, main
+builds, and, with paused time, a second check a day after the first and
+none before. `tests/embedded.rs` runs `run_with` with a counting check:
+with the setting off the check is never called and `/api/update` says
+`enabled: false`; on, the fake version comes back over HTTP. The CLI's
+`serve`, `lab` and `ui` share `update::server_startup()`, which a test
+checks hands over the check and `GANYMEDE_VERSION`. The CLI's own copies
+of `is_main_build` and `base_version` are gone; it uses the server
+crate's.

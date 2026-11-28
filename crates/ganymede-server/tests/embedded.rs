@@ -513,3 +513,77 @@ async fn a_served_server_sends_its_writes_on_the_events_socket() {
         server.join().unwrap().unwrap();
     }
 }
+
+/// The update check through `run_with` (#956): `check_for_updates` turns it
+/// on, `Startup::update_check` is how it asks, and `GET /api/update`
+/// answers what it found. Off, the check is never called.
+#[tokio::test]
+async fn the_update_check_runs_only_when_the_setting_is_on() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    async fn serve(on: bool, calls: Arc<AtomicUsize>) -> Value {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = Config {
+            port: 0,
+            token: Some("t".into()),
+            root_dir: root.path().into(),
+            cookie_secret_file: Some(root.path().join("secret")),
+            notary_dir: Some(root.path().join("notary")),
+            check_for_updates: on,
+            ..Default::default()
+        };
+        let (url_tx, url_rx) = tokio::sync::oneshot::channel();
+        let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(1);
+        let check: ganymede_server::serve::UpdateCheck = Arc::new(move || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok("99.0.0".to_string())
+        });
+        let server = tokio::spawn(run_with(
+            cfg,
+            Startup {
+                on_listening: Some(Box::new(move |url: &str| {
+                    let _ = url_tx.send(url.to_string());
+                })),
+                stop: Some(stop_rx),
+                room_locks: ganymede_server::serve::RoomLocks::Off,
+                update_check: Some(check),
+                running_version: Some("0.18.0".into()),
+                ..Default::default()
+            },
+        ));
+        let url = url_rx.await.unwrap();
+        let addr = url.trim_start_matches("http://").split('/').next().unwrap();
+        let mut model = Value::Null;
+        // On, the first check runs once the server is up: wait for its answer.
+        for _ in 0..200 {
+            let (code, body) = call(addr, "GET", "/api/update", None).await;
+            assert_eq!(code, 200, "{body}");
+            model = body;
+            if !on || !model["latest"].is_null() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        if !on {
+            // Give a wrongly started check the time to run.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        stop_tx.send(()).await.unwrap();
+        server.await.unwrap().unwrap();
+        model
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let off = serve(false, calls.clone()).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "off asks no one: {off}");
+    assert_eq!(off["enabled"], false, "{off}");
+    assert_eq!(off["running"], "0.18.0", "{off}");
+    assert!(off["latest"].is_null(), "{off}");
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let on = serve(true, calls.clone()).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "one check, at start: {on}");
+    assert_eq!(on["enabled"], true, "{on}");
+    assert_eq!(on["latest"], "99.0.0", "{on}");
+    assert_eq!(on["update_available"], true, "{on}");
+}

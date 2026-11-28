@@ -44,11 +44,8 @@ pub async fn run(cfg: Config, args: Browser, lab: bool) -> Result<()> {
         port_retries: PORT_RETRIES,
         require_lab: lab,
         on_open_page,
-        // The update check (#956), which `check_for_updates` turns on;
-        // `ganymede mcp`'s private server gets none.
-        update_check: Some(std::sync::Arc::new(crate::update::latest_release)),
-        running_version: Some(env!("GANYMEDE_VERSION").to_string()),
-        ..Default::default()
+        // The update check (#956), which `check_for_updates` turns on.
+        ..crate::update::server_startup()
     };
     ganymede_server::serve::run_with(cfg, startup).await
 }

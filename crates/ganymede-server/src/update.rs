@@ -77,8 +77,8 @@ pub fn is_main_build(version: &str) -> bool {
     version.contains("+main")
 }
 
-/// `version` without its `+build` part.
-fn base_version(version: &str) -> &str {
+/// `version` without its `+build` part: `0.18.0+main.abc` is `0.18.0`.
+pub fn base_version(version: &str) -> &str {
     version.split('+').next().unwrap_or(version)
 }
 
@@ -276,6 +276,37 @@ mod tests {
         assert!(at.ends_with('Z'), "{at}");
         at.parse::<jiff::Timestamp>()
             .unwrap_or_else(|e| panic!("{at} is not RFC 3339: {e}"));
+    }
+
+    /// Once at start, then once a day: nothing more before twenty-four
+    /// hours have passed, and a second check after.
+    #[tokio::test(start_paused = true)]
+    async fn checks_again_once_a_day() {
+        async fn calls_after(calls: &Arc<AtomicUsize>, want: usize) -> usize {
+            // Let the spawned check run; paused time only moves by these sleeps.
+            for _ in 0..50 {
+                if calls.load(Ordering::SeqCst) >= want {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+            calls.load(Ordering::SeqCst)
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let update = Arc::new(Update::new("0.18.0", true, Some(newer(&calls))));
+        let task = update.start().expect("checks are on");
+        assert_eq!(calls_after(&calls, 1).await, 1, "one check, at start");
+        // A day as the docs promise it, not the constant, so changing that fails here.
+        let day = std::time::Duration::from_secs(24 * 60 * 60);
+        tokio::time::advance(day - std::time::Duration::from_secs(60)).await;
+        assert_eq!(
+            calls_after(&calls, 2).await,
+            1,
+            "none before a day has passed"
+        );
+        tokio::time::advance(std::time::Duration::from_secs(120)).await;
+        assert_eq!(calls_after(&calls, 2).await, 2, "a second, a day later");
+        task.abort();
     }
 
     #[tokio::test]
