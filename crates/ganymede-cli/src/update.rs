@@ -328,7 +328,11 @@ fn checked_version(version: &str) -> Result<String> {
 /// `<repo>/releases/latest` redirects: `.../releases/tag/vX.Y.Z`. Asked
 /// of GitHub even with a mirror, as install.sh does.
 fn latest() -> Result<String> {
-    let github = Releases::at(DEFAULT_RELEASES)?;
+    latest_from(&Releases::at(DEFAULT_RELEASES)?)
+}
+
+/// [`latest`], asked through `github`.
+fn latest_from(github: &Releases) -> Result<String> {
     let repo = DEFAULT_RELEASES.trim_end_matches("/download");
     let url = format!("{repo}/latest");
     let location = github.location(&url)?;
@@ -349,9 +353,13 @@ fn tag_version(url: &str) -> Option<&str> {
 /// `lab` and `ui` hand this to the server, which asks it once at start
 /// and once a day when `check_for_updates` is on, and reports the answer
 /// at `GET /api/update`. The one request is the `/releases/latest`
-/// redirect's, which it doesn't follow: nothing is downloaded.
+/// redirect's, which it doesn't follow: nothing is downloaded. Unlike
+/// `ganymede update`'s, it is made once, with short timeouts and nothing
+/// on stderr ([`Releases::quiet`]): the server logs a failure at debug,
+/// and a stopping server waits at most twenty seconds for a check in
+/// flight.
 pub(crate) fn latest_release() -> Result<String> {
-    latest()
+    latest_from(&Releases::quiet(DEFAULT_RELEASES)?)
 }
 
 /// The [`Startup`](ganymede_server::serve::Startup) that `ganymede serve`,

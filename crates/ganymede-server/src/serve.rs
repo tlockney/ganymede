@@ -1206,8 +1206,9 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
 
     // The update check (#956) starts once the server is up and is aborted
     // when it stops serving, so no new check starts after that. A request
-    // already in flight (a blocking thread, with its retries) runs out on
-    // its own; the process usually exits first.
+    // already in flight runs on a blocking thread, which the runtime
+    // waits for on exit; the `ganymede` binary's check is one attempt
+    // with a twenty-second limit, so that wait is short.
     let update_task = update.start();
 
     serve_until(listener, app, stop, DRAIN_TIMEOUT).await?;

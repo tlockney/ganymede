@@ -52,3 +52,14 @@ with the setting off the check is never called and `/api/update` says
 checks hands over the check and `GANYMEDE_VERSION`. The CLI's own copies
 of `is_main_build` and `base_version` are gone; it uses the server
 crate's.
+
+The check is one request with short timeouts (ten seconds to connect or
+answer, twenty in all) and no retries, through `Releases::quiet`, so a
+failure prints nothing and is logged at debug by the server, and a
+server stopped during a check waits at most that long to exit (tokio
+waits for blocking threads when the runtime drops). `ganymede update`
+keeps its retries and longer timeouts. CLI tests start `ganymede serve`
+and `ganymede lab` with `--check-for-updates` and an `HTTPS_PROXY` that
+refuses connections, so nothing leaves the machine: `/api/update` says
+the check is on and that it ran and failed. Reverting either command's
+hand-over fails its test.

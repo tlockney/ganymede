@@ -40,8 +40,8 @@ Off by default. With `check_for_updates` on (`--check-for-updates`), the
 server asks GitHub for the latest release's version
 (`github.com/tlockney/ganymede/releases/latest`) once at start and then
 once a day, and reports what it found at `GET /api/update`, which needs
-the token as the other API routes do. A check is one request, retried
-up to three times after a network error. It carries your IP address,
+the token as the other API routes do. A check is one request, not
+retried, with a twenty-second limit. It carries your IP address,
 as any request does, and a `User-Agent` of `ganymede/<version>`, which
 names the version you run; nothing about your notebooks, files, kernel
 output or token. Nothing is downloaded and nothing is installed; a
