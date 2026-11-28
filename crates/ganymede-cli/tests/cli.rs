@@ -978,25 +978,93 @@ fn serve_defaults_to_the_home_directory() {
         s.names
     );
     assert_eq!(s.root_dir, canonical(home.path()));
-    assert!(!s.stderr.contains("no home directory"), "{}", s.stderr);
+    assert!(
+        !s.stderr.contains("no usable home directory"),
+        "{}",
+        s.stderr
+    );
 }
 
-/// With no usable home directory the server serves the current directory
-/// and logs why; `--root-dir` sets the root and logs nothing of the kind.
+/// Runs `serve` in `cwd` with `HOME` set to `home` and `extra` flags, and
+/// waits up to ten seconds for it to exit. For a server that should
+/// refuse to start, this reads its exit status and stderr, where
+/// `serve_listing` wants a URL line that never comes.
+#[cfg(unix)]
+fn serve_exits(
+    home: &std::path::Path,
+    cwd: &std::path::Path,
+    extra: &[&std::ffi::OsStr],
+) -> std::process::Output {
+    let state = tempfile::tempdir().unwrap();
+    let runtime = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let mut child = ganymede(&["serve", "--port", "0", "--token", "secret"])
+        .args(extra)
+        .current_dir(cwd)
+        .env("HOME", home)
+        .env("JUPYTER_DATA_DIR", data.path())
+        .env("JUPYTER_PATH", "")
+        .env("JUPYTER_CONFIG_DIR", state.path().join("jupyter"))
+        .env("GANYMEDE_CONFIG_DIR", state.path().join("ganymede"))
+        .env("JUPYTER_RUNTIME_DIR", runtime.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "serve did not exit; it should have refused the root"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    child.wait_with_output().unwrap()
+}
+
+/// With no usable home directory and no root set, the server exits
+/// non-zero and asks for `--root-dir`, instead of serving the current
+/// directory. Nothing is created under the missing HOME.
 #[cfg(unix)]
 #[test]
-fn serve_without_a_home_serves_the_current_directory_and_says_so() {
+fn serve_refuses_a_missing_home_without_a_root() {
     let scratch = tempfile::tempdir().unwrap();
     let missing = scratch.path().join("missing");
     let cwd = tempfile::tempdir().unwrap();
     std::fs::write(cwd.path().join("in-cwd.txt"), "c").unwrap();
-    let s = serve_listing(&missing, cwd.path(), &[]);
-    assert!(s.names.contains(&"in-cwd.txt".to_string()), "{:?}", s.names);
-    assert_eq!(s.root_dir, canonical(cwd.path()));
-    assert!(s.stderr.contains("no home directory"), "{}", s.stderr);
+    let out = serve_exits(&missing, cwd.path(), &[]);
+    assert!(!out.status.success(), "exit status {}", out.status);
+    let err = stderr(&out);
+    assert!(err.contains("no usable home directory"), "{err}");
+    assert!(err.contains("--root-dir"), "{err}");
+    assert!(!missing.exists(), "nothing created under a missing HOME");
+}
 
+/// A home of `/` would serve the whole disk, so the default root refuses
+/// it. An explicit `--root-dir /` is the user's choice and still works.
+#[cfg(unix)]
+#[test]
+fn serve_refuses_the_filesystem_root_as_home() {
+    let cwd = tempfile::tempdir().unwrap();
+    let out = serve_exits(std::path::Path::new("/"), cwd.path(), &[]);
+    assert!(!out.status.success(), "exit status {}", out.status);
+    let err = stderr(&out);
+    assert!(err.contains("no usable home directory"), "{err}");
+    assert!(err.contains("home is \"/\""), "{err}");
+    assert!(err.contains("--root-dir"), "{err}");
+}
+
+/// A missing HOME is no obstacle with an explicit root, from the flag or
+/// from the config file's `root_dir`.
+#[cfg(unix)]
+#[test]
+fn serve_with_an_explicit_root_needs_no_home() {
+    let scratch = tempfile::tempdir().unwrap();
+    let missing = scratch.path().join("missing");
+    let cwd = tempfile::tempdir().unwrap();
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("in-root.txt"), "r").unwrap();
+
     let s = serve_listing(
         &missing,
         cwd.path(),
@@ -1008,7 +1076,40 @@ fn serve_without_a_home_serves_the_current_directory_and_says_so() {
         s.names
     );
     assert_eq!(s.root_dir, canonical(root.path()));
-    assert!(!s.stderr.contains("no home directory"), "{}", s.stderr);
+    assert!(
+        !s.stderr.contains("no usable home directory"),
+        "{}",
+        s.stderr
+    );
+
+    // The server above created `missing/.local/share/ganymede/recovery`,
+    // so the config-file case needs a HOME that still doesn't exist:
+    // otherwise the default would work and the test couldn't tell whether
+    // `root_is_set` read the file's `root_dir`.
+    let config = tempfile::tempdir().unwrap();
+    let file = config.path().join("ganymede.toml");
+    std::fs::write(&file, format!("root_dir = \"{}\"\n", root.path().display())).unwrap();
+    let missing_config = scratch.path().join("missing-config");
+    assert!(
+        !missing_config.exists(),
+        "the config-file case needs a missing HOME"
+    );
+    let s = serve_listing(
+        &missing_config,
+        cwd.path(),
+        &["--config".as_ref(), file.as_os_str()],
+    );
+    assert!(
+        s.names.contains(&"in-root.txt".to_string()),
+        "{:?}",
+        s.names
+    );
+    assert_eq!(s.root_dir, canonical(root.path()));
+    assert!(
+        !s.stderr.contains("no usable home directory"),
+        "{}",
+        s.stderr
+    );
 }
 
 extern "C" {

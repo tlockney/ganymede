@@ -41,7 +41,8 @@ pub struct ServeArgs {
     #[arg(long)]
     pub token: Option<String>,
     /// Directory served as the contents root. Default: your home
-    /// directory (the current directory if there is none).
+    /// directory; without a usable one (unset, missing, or `/`) the
+    /// server won't start and asks for this flag.
     #[arg(long)]
     pub root_dir: Option<PathBuf>,
     /// Directory with the notebook-signing key and trusted signatures;
@@ -266,10 +267,10 @@ impl ServeArgs {
             }
             None => Config::default(),
         };
-        crate::config::warn_if_no_home(crate::config::root_is_set(
+        crate::config::require_root(crate::config::root_is_set(
             cli.root_dir.as_deref(),
             file_text.as_deref(),
-        ));
+        ))?;
         if let Some(v) = cli.ip {
             cfg.ip = v;
         }
@@ -1316,13 +1317,14 @@ mod tests {
     #[test]
     fn root_dir_is_the_home_default_and_the_config_and_flag_override_it() {
         use crate::config::default_root_dir;
+        let home = default_root_dir().expect("a usable home directory here");
         let cfg = ServeArgs::default().into_config_with(None).unwrap();
-        assert_eq!(cfg.root_dir, default_root_dir());
+        assert_eq!(cfg.root_dir, home);
 
         // A config file without `root_dir` gets the default too.
         let (_d, bare) = config_file("port = 0\n");
         let cfg = ServeArgs::default().into_config_with(Some(bare)).unwrap();
-        assert_eq!(cfg.root_dir, default_root_dir());
+        assert_eq!(cfg.root_dir, home);
 
         let (_d, path) = config_file("root_dir = \"/x\"\n");
         let cfg = ServeArgs::default()
