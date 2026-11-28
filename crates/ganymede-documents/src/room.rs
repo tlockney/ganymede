@@ -57,9 +57,24 @@ fn hash_type_and_source<T: ReadTxn>(
     code
 }
 
-/// The id of the cell in `cells` whose `execution_count` or outputs `event`
-/// changed, if it did. A cell added or replaced whole is no such change,
-/// nor is writing the count it has.
+/// Whether a cell's `outputs` is now empty: missing, an empty `Any`
+/// array, or an empty shared array.
+fn outputs_empty(txn: &yrs::TransactionMut, cell: &yrs::MapRef) -> bool {
+    use yrs::{Array, Out};
+    match cell.get(txn, "outputs") {
+        None => true,
+        Some(Out::YArray(a)) => a.len(txn) == 0,
+        Some(Out::Any(yrs::Any::Array(items))) => items.is_empty(),
+        Some(_) => false,
+    }
+}
+
+/// The id of the cell in `cells` that `event` shows a client ran or
+/// cleared, if it did: the update set its `execution_count` to another
+/// value, or left its outputs empty. A cell added or replaced whole is no
+/// such change, nor is writing the count it has, nor adding to outputs,
+/// growing one, or replacing them with a non-empty list (a client echoing
+/// a server run).
 fn rerun_cell(
     txn: &yrs::TransactionMut,
     cells: &yrs::ArrayRef,
@@ -71,24 +86,25 @@ fn rerun_cell(
     let Some(PathSegment::Index(index)) = path.front() else {
         return None;
     };
-    let changed = match (path.get(1), event) {
-        (Some(PathSegment::Key(key)), _) => &**key == "outputs",
-        (None, Event::Map(e)) => {
-            let keys = e.keys(txn);
-            keys.contains_key("outputs")
-                || match keys.get("execution_count") {
-                    Some(EntryChange::Updated(Out::Any(old), Out::Any(new))) => old != new,
-                    change => change.is_some(),
-                }
-        }
-        _ => false,
-    };
-    if !changed {
-        return None;
-    }
     let Some(Out::YMap(cell)) = cells.get(txn, *index) else {
         return None;
     };
+    let ran = match (path.get(1), event) {
+        // A change under `outputs` counts only when it empties them.
+        (Some(PathSegment::Key(key)), _) => &**key == "outputs" && outputs_empty(txn, &cell),
+        (None, Event::Map(e)) => {
+            let keys = e.keys(txn);
+            let count = match keys.get("execution_count") {
+                Some(EntryChange::Updated(Out::Any(old), Out::Any(new))) => old != new,
+                change => change.is_some(),
+            };
+            count || (keys.contains_key("outputs") && outputs_empty(txn, &cell))
+        }
+        _ => false,
+    };
+    if !ran {
+        return None;
+    }
     match cell.get(txn, "id") {
         Some(Out::Any(yrs::Any::String(id))) => Some(id.to_string()),
         _ => None,

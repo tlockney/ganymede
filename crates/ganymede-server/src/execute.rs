@@ -42,9 +42,13 @@
 //! `stop_on_error` does for JupyterLab's Run All. A cell that ran gets
 //! `metadata.ganymede.ran_source_hash`, the hash of the source it ran,
 //! saved with the notebook. Only these runs write it: room runs
-//! (this module), `POST /api/notebooks/run` and the host API. When a client
-//! runs the cell itself, the room removes it (and `execution_skipped`),
-//! since the server doesn't see what source ran. It is cell metadata because
+//! (this module), `POST /api/notebooks/run` and the host API. A client
+//! update that sets a cell's `execution_count` to another value, or
+//! leaves its outputs empty, is the client running or clearing it, and
+//! the room removes it (and `execution_skipped`), since the server
+//! doesn't see what source ran. An update that only adds to or rewrites
+//! outputs that stay non-empty, as a client echoing a server run's
+//! outputs does, keeps it. It is cell metadata because
 //! stream and error outputs have none of their own. Input requests are refused (`allow_stdin`
 //! off).
 

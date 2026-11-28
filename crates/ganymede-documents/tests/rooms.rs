@@ -2769,26 +2769,42 @@ fn a_client_run_removes_the_ran_source_hash_and_the_skip_note() {
         let null = schema::json_to_any(&serde_json::Value::Null);
         cell.insert(txn, "execution_count", null);
     };
-    let append = |txn: &mut TransactionMut, roots: &Roots| {
-        let cell = schema::find_cell(txn, roots, "a").unwrap();
-        let out = serde_json::json!({"output_type": "stream", "name": "stdout", "text": "2\n"});
-        schema::append_outputs(txn, &cell, vec![out]);
-    };
     let clear = |txn: &mut TransactionMut, roots: &Roots| {
         let cell = schema::find_cell(txn, roots, "a").unwrap();
         schema::set_outputs(txn, &cell, Vec::new());
+    };
+    // Emptying them counts even when the count it has is written back.
+    let clear_and_same_count = |txn: &mut TransactionMut, roots: &Roots| {
+        let cell = schema::find_cell(txn, roots, "a").unwrap();
+        schema::set_outputs(txn, &cell, Vec::new());
+        cell.insert(txn, "execution_count", 1);
     };
     let replace = |txn: &mut TransactionMut, roots: &Roots| {
         let cell = schema::find_cell(txn, roots, "a").unwrap();
         cell.insert(txn, "outputs", ArrayPrelim::default());
     };
+    // Emptied and filled again in one transaction: the count still shows a run.
+    let clear_then_append = |txn: &mut TransactionMut, roots: &Roots| {
+        let cell = schema::find_cell(txn, roots, "a").unwrap();
+        schema::set_outputs(txn, &cell, Vec::new());
+        let out = serde_json::json!({"output_type": "stream", "name": "stdout", "text": "2\n"});
+        schema::append_outputs(txn, &cell, vec![out]);
+        let null = schema::json_to_any(&serde_json::Value::Null);
+        cell.insert(txn, "execution_count", null);
+    };
     type Edit<'a> = &'a dyn Fn(&mut TransactionMut, &Roots);
-    // The stream's text grows in place, under the output.
-    let edits: [(&str, Edit); 4] = [
+    let edits: [(&str, Edit); 5] = [
         ("count", &blank_count),
-        ("stream text", &append),
         ("outputs emptied", &clear),
+        (
+            "outputs emptied, count written as it is",
+            &clear_and_same_count,
+        ),
         ("outputs replaced", &replace),
+        (
+            "outputs emptied then one appended, count cleared",
+            &clear_then_append,
+        ),
     ];
     for (what, edit) in edits {
         let mut room = room_that_ran();
@@ -2808,6 +2824,54 @@ fn a_client_run_removes_the_ran_source_hash_and_the_skip_note() {
         }
         assert_eq!(run_notes(&client, "a"), cleared(), "{what}");
         assert_eq!(run_notes(&other, "a"), cleared(), "{what}");
+    }
+}
+
+/// A client that writes the outputs back after a server run, as
+/// JupyterLab or an app normalising them does, did not run anything: the
+/// hash and the skip note stay.
+#[test]
+fn a_client_that_echoes_outputs_keeps_the_ran_source_hash() {
+    let append = |txn: &mut TransactionMut, roots: &Roots| {
+        let cell = schema::find_cell(txn, roots, "a").unwrap();
+        let out = serde_json::json!({"output_type": "stream", "name": "stdout", "text": "2\n"});
+        schema::append_outputs(txn, &cell, vec![out]);
+    };
+    let same = |txn: &mut TransactionMut, roots: &Roots| {
+        let cell = schema::find_cell(txn, roots, "a").unwrap();
+        let outputs =
+            serde_json::json!([{"output_type": "stream", "name": "stdout", "text": "1\n"}]);
+        cell.insert(txn, "outputs", schema::json_to_any(&outputs));
+    };
+    // Two stream outputs merged into one.
+    let merged = |txn: &mut TransactionMut, roots: &Roots| {
+        let cell = schema::find_cell(txn, roots, "a").unwrap();
+        let outputs =
+            serde_json::json!([{"output_type": "stream", "name": "stdout", "text": "1\n2\n"}]);
+        cell.insert(txn, "outputs", schema::json_to_any(&outputs));
+    };
+    // The count it has, with an append in the same transaction.
+    let count_and_append = |txn: &mut TransactionMut, roots: &Roots| {
+        let cell = schema::find_cell(txn, roots, "a").unwrap();
+        cell.insert(txn, "execution_count", 1);
+        let out = serde_json::json!({"output_type": "stream", "name": "stdout", "text": "2\n"});
+        schema::append_outputs(txn, &cell, vec![out]);
+    };
+    type Edit<'a> = &'a dyn Fn(&mut TransactionMut, &Roots);
+    let edits: [(&str, Edit); 4] = [
+        ("appended stream", &append),
+        ("outputs replaced with what the cell has", &same),
+        ("outputs replaced with two streams merged", &merged),
+        ("the same count and an append", &count_and_append),
+    ];
+    for (what, edit) in edits {
+        let mut room = room_that_ran();
+        let client = Doc::new();
+        sync(&mut room, 1, &client);
+        let fx = client_edit(&mut room, &client, edit);
+        assert!(fx.changed, "{what}");
+        assert_eq!(run_notes(room.doc(), "a"), kept(), "{what}");
+        assert_eq!(run_notes(room.doc(), "b"), kept(), "{what}: the other cell");
     }
 }
 

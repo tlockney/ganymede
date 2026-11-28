@@ -353,14 +353,20 @@ run.
 A client that runs a cell itself, such as
 JupyterLab, writes the outputs and the execution count into the room, and
 the server doesn't see which source they came from. So when a client's
-update changes a code cell's `execution_count` or outputs (clearing them
-too), the room removes the cell's `ran_source_hash`: a cell without the
-key says nothing about which source its outputs came from. A change to
-the file keeps what the file has. The hash is in the cell's metadata, not
-each output's, because stream and error outputs have no metadata, and a
-cell can run without any output. A cell the server clears without running
-it, such as one skipped after an earlier cell failed, or one whose outputs
-an MCP tool drops, loses the key too: only a run that ends puts it back.
+update sets a code cell's `execution_count` to another value (null
+included: JupyterLab does that when a run starts and on Clear Outputs),
+or leaves its outputs empty (cleared, or replaced with an empty list),
+the room removes the cell's `ran_source_hash`: a cell without the key
+says nothing about which source its outputs came from. An update that
+only adds an output, grows a stream's text, or replaces the outputs with
+a non-empty list keeps the key: a client echoing the outputs of a server
+run, as JupyterLab and the apps do when they normalise or merge them,
+did not run anything. A change to the file keeps what the file has. The
+hash is in the cell's metadata, not each output's, because stream and
+error outputs have no metadata, and a cell can run without any output. A
+cell the server clears without running it, such as one skipped after an
+earlier cell failed, or one whose outputs an MCP tool drops, loses the
+key too: only a run that ends puts it back.
 
 ### Who runs a cell
 

@@ -55,6 +55,10 @@ KERNELSPEC_ROOT=<dir holding kernels/> validation/nb-cli.sh target/release/ganym
 
 `jupyterlab.mjs` writes every request the page made to the output JSON,
 with a screenshot next to it. It opens the page with `?token=` and relies
-on the login cookie for websockets, as a browser does. The `CODE`, `EXPECT`,
-`STDIN_CODE`, and `SLEEP_CODE` defaults are Python; set them for other
-kernels.
+on the login cookie for websockets, as a browser does. After the cell it
+ran in the page is saved, it has the server run that cell while the page
+is open, saves again, and fails unless the run's
+`metadata.ganymede.ran_source_hash` is still in the file: a client that
+receives a server run's outputs, and writes them back, did not run the
+cell (#958). The `CODE`, `EXPECT`, `STDIN_CODE`, and `SLEEP_CODE`
+defaults are Python; set them for other kernels.

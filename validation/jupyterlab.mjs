@@ -1,6 +1,8 @@
 // Drives JupyterLab, served by the server under test, in headless Chromium:
 // creates a notebook for a kernelspec over REST, opens it, runs one cell,
-// saves, and records every request the page makes.
+// saves, has the server run the cell while JupyterLab has it open, saves
+// again and checks the run's `ran_source_hash` survived, and records every
+// request the page makes.
 //
 // Usage: node jupyterlab.mjs <base-url> <token> <kernel-name> <out.json>
 // Env: CODE (cell source), EXPECT (text the output must contain).
@@ -57,6 +59,28 @@ try {
   await page.waitForTimeout(2000);
   const saved = await (await fetch(`${base}/api/contents/${name}`, { headers: auth })).json();
   result.saved = JSON.stringify(saved.content.cells[0].outputs).includes(expect);
+  // The server runs the cell while JupyterLab has the notebook open (#958):
+  // JupyterLab receives the run's outputs, may write them back, and saves.
+  // The run's `ran_source_hash` must survive that, not be taken for a run
+  // by the client.
+  const session = await (await fetch(`${base}/api/collaboration/session/${name}`, {
+    method: 'PUT', headers: auth, body: JSON.stringify({ format: 'json', type: 'notebook' }),
+  })).json();
+  const sessions = await (await fetch(`${base}/api/sessions`, { headers: auth })).json();
+  const kernelId = sessions.find(s => s.path === name)?.kernel?.id;
+  const run = await fetch(`${base}/api/kernels/${kernelId}/execute`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({
+      document_id: `json:notebook:${session.fileId}`, cells: [{ cell_id: 'c1' }], wait: 60,
+    }),
+  });
+  result.serverRun = run.ok;
+  await page.waitForTimeout(3000);
+  await page.keyboard.press('ControlOrMeta+s');
+  await page.waitForTimeout(2000);
+  const after = await (await fetch(`${base}/api/contents/${name}`, { headers: auth })).json();
+  result.hashKept =
+    typeof after.content.cells[0].metadata?.ganymede?.ran_source_hash === 'string';
 } catch (e) {
   result.error = String(e).slice(0, 500);
 }
@@ -65,4 +89,4 @@ await browser.close();
 await fetch(`${base}/api/contents/${name}`, { method: 'DELETE', headers: auth });
 fs.writeFileSync(out, JSON.stringify({ result, consoleErrors, log }, null, 1));
 console.log(JSON.stringify(result));
-process.exit(result.output?.includes(expect) && result.saved ? 0 : 1);
+process.exit(result.output?.includes(expect) && result.saved && result.hashKept ? 0 : 1);
