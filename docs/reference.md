@@ -476,7 +476,6 @@ this file — `mcp_enabled`, `mcp_read_only`, `mcp_no_execute`,
 `mcp_images`, `[tailscale] allow` and the `[host]` defaults, never
 `token` or `mcp_token` — is
 [ganymede-ui#902](https://github.com/tlockney/ganymede-ui/issues/902).
-<!-- **Unreleased in ganymede-ui.** When ganymede-ui ships #902, say here that the Mac app keeps those settings in this file. -->
 
 ### The host API
 

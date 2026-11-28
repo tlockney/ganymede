@@ -89,7 +89,9 @@ The header's two functions are new, so the docs for them carry the
 release note: `docs/embedding.md` lists both, and `docs/reference.md`'s
 config-file section says a program can edit the file through them. The
 Mac app doesn't yet, so what it will keep there is described as the plan,
-with a `**Unreleased in ganymede-ui.**` comment to update.
+naming ganymede-ui#902, which updates that text when it ships. (A
+markdown page can't hold the ganymede-ui marker as an HTML comment:
+`check-unreleased` allows that only in `site/index.html`.)
 
 The follow-up is in ganymede-ui, ganymede-ui#902: the app moves the settings it keeps in
 `UserDefaults` — the MCP switches, `[tailscale] allow`, the `[host]`
