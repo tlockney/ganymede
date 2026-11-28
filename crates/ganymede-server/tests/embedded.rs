@@ -548,6 +548,11 @@ async fn the_update_check_runs_only_when_the_setting_is_on() {
                 room_locks: ganymede_server::serve::RoomLocks::Off,
                 update_check: Some(check),
                 running_version: Some("0.18.0".into()),
+                // Kernels aren't under test; without `subprocess` a server
+                // needs a provisioner of its own.
+                kernelspecs: Some(Arc::new(App)),
+                provisioner: Some(Arc::new(App)),
+                transports: Some(Arc::new(App)),
                 ..Default::default()
             },
         ));
