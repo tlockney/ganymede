@@ -427,10 +427,10 @@ frame_ancestors = "'self'"       # who may frame the server's pages
 > the latest release. Without `root_dir` (or `--root-dir`) the latest
 > release serves the current directory.
 
-These eight keys have no flag. The terminal keys, the MCP keys other
-than `mcp_enabled`, `static_headers`, `language_servers` and
-`[kernel_providers]` have none either; the sections below and
-[Agents over MCP](mcp.md#options) cover them.
+These nine keys have no flag. The terminal keys, the MCP keys other
+than `mcp_enabled`, `static_headers` and `language_servers` have none
+either; the sections below and [Agents over MCP](mcp.md#options) cover
+them.
 
 | Key | Effect |
 | --- | --- |
