@@ -157,9 +157,19 @@ pub fn default_root_dir() -> Option<PathBuf> {
 /// don't count as homes; the original path is returned, so a normal home
 /// is unchanged.
 fn usable_home(home: Option<PathBuf>) -> Option<PathBuf> {
-    home.filter(|h| {
-        h.is_dir() && std::fs::canonicalize(h).is_ok_and(|canon| canon.parent().is_some())
-    })
+    home.filter(|h| h.is_dir() && usable_home_path(h, std::fs::canonicalize(h)))
+}
+
+/// Whether the directory `h`, whose canonical form is `canonical`, is
+/// something other than the filesystem root, judged by `canonical` when
+/// it can say. Windows' canonicalize can fail on some RAM-disk, virtual
+/// and network volumes, where refusing a real home would be worse than
+/// missing a `/` alias, so then the original path decides.
+fn usable_home_path(h: &std::path::Path, canonical: std::io::Result<PathBuf>) -> bool {
+    match canonical {
+        Ok(canon) => canon.parent().is_some(),
+        Err(_) => h.parent().is_some(),
+    }
 }
 
 /// Whether `--root-dir` (`cli_root`) or the config file's text (`file`,
@@ -280,7 +290,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::{no_usable_home_error, root_is_set, usable_home, Config};
+    use super::{no_usable_home_error, root_is_set, usable_home, usable_home_path, Config};
     use std::path::PathBuf;
 
     #[test]
@@ -318,6 +328,21 @@ mod tests {
             "{}",
             link.display()
         );
+    }
+
+    /// Where canonicalize fails, the original path decides: a real home is
+    /// kept, and `/` is still refused.
+    #[test]
+    fn an_uncanonicalizable_path_falls_back_to_the_original() {
+        fn no_canonical_path() -> std::io::Result<PathBuf> {
+            Err(std::io::Error::other("no canonical path on this volume"))
+        }
+        let home = tempfile::tempdir().unwrap();
+        assert!(usable_home_path(home.path(), no_canonical_path()));
+        assert!(!usable_home_path(
+            std::path::Path::new("/"),
+            no_canonical_path()
+        ));
     }
 
     #[test]

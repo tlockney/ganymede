@@ -875,9 +875,9 @@ fn serve_defaults_to_the_home_directory() {
 }
 
 /// Runs `serve` in `cwd` with `HOME` set to `home` and `extra` flags, and
-/// returns its output once it exits, failing the test after ten seconds:
-/// for a server that should refuse to start, `serve_listing` would wait
-/// forever for a URL line.
+/// waits up to ten seconds for it to exit. For a server that should
+/// refuse to start, this reads its exit status and stderr, where
+/// `serve_listing` wants a URL line that never comes.
 #[cfg(unix)]
 fn serve_exits(
     home: &std::path::Path,
@@ -971,11 +971,20 @@ fn serve_with_an_explicit_root_needs_no_home() {
         s.stderr
     );
 
+    // The server above created `missing/.local/share/ganymede/recovery`,
+    // so the config-file case needs a HOME that still doesn't exist:
+    // otherwise the default would work and the test couldn't tell whether
+    // `root_is_set` read the file's `root_dir`.
     let config = tempfile::tempdir().unwrap();
     let file = config.path().join("ganymede.toml");
     std::fs::write(&file, format!("root_dir = \"{}\"\n", root.path().display())).unwrap();
+    let missing_config = scratch.path().join("missing-config");
+    assert!(
+        !missing_config.exists(),
+        "the config-file case needs a missing HOME"
+    );
     let s = serve_listing(
-        &missing,
+        &missing_config,
         cwd.path(),
         &["--config".as_ref(), file.as_os_str()],
     );
