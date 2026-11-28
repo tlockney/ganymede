@@ -391,6 +391,15 @@ a loopback check doesn't exclude a proxy:
   spec from the socket never names a program to run. A name that a
   kernelspec on disk or a kernel server lists is refused, so a provider
   can't stand in front of another kernel.
+- A reserved name (`[kernel_providers] reserve`) is refused to every
+  provider whose code signature doesn't meet the reservation's
+  requirement. On macOS the server reads the peer's audit token from the
+  socket, which names the connecting process (not its pid, which another
+  process can reuse), and checks that process's signature against the
+  `csreq` requirement. The name is refused the same way when the
+  signature can't be read, the requirement doesn't parse, or the platform
+  is not macOS, so a reservation fails closed; a name that isn't reserved
+  is first come, as before.
 - When the connection closes its specs are forgotten and its kernels end
   dead with reason `lost`, with no restart, so a later launch of the name
   goes to whatever lists it then, a kernelspec installed on disk

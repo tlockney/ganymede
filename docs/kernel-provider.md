@@ -6,8 +6,8 @@ local way for a program of the same user to register a kernelspec with a
 running `ganymede serve` and run its kernels itself. It is new surface
 on the server, so this note comes before any code.
 
-**Status: implemented (#983).** The reservation of a name for one
-provider (below) is #986.
+**Status: implemented (#983), the reservation of a name for one program
+(#986) included.**
 
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
@@ -109,12 +109,22 @@ further than its own kernels.
   registration goes in place of any spec of the same name, on disk or on
   a kernel server, because the embedding app is the server's own
   process.)
-- **Names are first come.** While a connection holds a name, another
-  can't register it. A name can be reserved for one provider with
-  `[kernel_providers] reserve = { "cdp-browser" = "<bundle id or path>" }`,
-  checked against the connecting process's code signature on macOS, so a
-  process that connects before the app can't take the app's name. The
-  reservation is not built yet (#986).
+- **Names are first come, unless reserved.** While a connection holds a
+  name, another can't register it. A name can be reserved for one program
+  with `[kernel_providers] reserve = { "cdp-browser" = "<code requirement>" }`:
+  the requirement is a `csreq` string, as `codesign -r` takes it, such as
+  `identifier "net.lockney.Ganymede" and anchor apple generic and
+  certificate leaf[subject.OU] = "ABCDE12345"`. On a connection, the
+  server reads the peer's audit token from the socket
+  (`LOCAL_PEERTOKEN`, not the pid, which another process can reuse) and
+  checks the peer's code signature against the requirement with
+  `SecCodeCheckValidity`. A process that connects before the app can't
+  take the app's name, whether or not the name is free. The name is
+  refused with `kernelspec <name> is reserved for another program` when
+  the requirement fails, and just as much when the peer's signature can't
+  be read or the requirement doesn't parse (the server logs a bad
+  requirement once at startup); off macOS, where no signature is read,
+  every reserved name is refused to everyone.
 - **Capabilities are the provider's claim.** `metadata.capabilities`
   (`device` and the others in
   [Capabilities](in-app-kernel.md#capabilities)) is passed through as the
@@ -206,8 +216,7 @@ environment it likes, so no `cwd` or other `env` crosses the socket.
   - Tests drive a fake provider over a real socket: hello, register,
     start, a message each way, interrupt, shutdown, a dropped connection,
     a reconnect, each refusal (other user, bad token, a name on disk,
-    `argv` dropped), a full queue and a slow provider. A reserved name
-    comes with #986.
+    `argv` dropped, a reserved name), a full queue and a slow provider.
 - **ganymede-ui**: when the app's notebooks go through the background
   server (#965 section 4), `AppKernels` and `ServerHost` register the
   TypeScript kernel there over the socket instead of through the C ABI.
