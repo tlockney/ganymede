@@ -17,7 +17,7 @@ use serde_json::{Map, Value as JsonValue};
 use toml_edit::{DocumentMut, InlineTable, Item, Table, Value};
 
 use crate::config::Config;
-use crate::serve::{default_config, ganymede_config_dir, DEFAULT_CONFIG_FILE};
+use crate::serve::{find_default_config, ganymede_config_dir, DEFAULT_CONFIG_FILE};
 
 /// The config file [`read`] and [`set`] use: [`DEFAULT_CONFIG_FILE`] in
 /// `dir`, or, with `dir` None, in [`ganymede_config_dir`].
@@ -33,27 +33,15 @@ pub fn config_file_path(dir: Option<&Path>) -> Result<PathBuf> {
 /// The file's keys as a JSON object; an empty object when there is no file.
 ///
 /// With `dir` None and no file in Ganymede's config dir, the file
-/// [`default_config`] finds, which may be the legacy one in the Jupyter
-/// config dir that `ganymede serve` reads. The keys are not checked
+/// [`find_default_config`] finds, as `ganymede serve` does, which may be
+/// the legacy one in the Jupyter config dir. The keys are not checked
 /// against [`Config`]: this returns what the file holds, so an older
 /// `ganymede serve`'s keys or a newer one's survive the round trip.
 /// Strings, integers, floats, booleans and arrays are themselves, tables
 /// are objects, and a datetime is its TOML string. The object's keys are
 /// sorted, not in the file's order: [`set`] is what keeps that.
 pub fn read(dir: Option<&Path>) -> Result<Map<String, JsonValue>> {
-    let path = config_file_path(dir)?;
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == ErrorKind::NotFound => match legacy_path(&path, dir) {
-            Some(legacy) => std::fs::read_to_string(&legacy)
-                .with_context(|| format!("reading {}", legacy.display()))?,
-            None => return Ok(Map::new()),
-        },
-        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
-    };
-    let table = toml::from_str::<toml::Table>(&text)
-        .with_context(|| format!("reading {}", path.display()))?;
-    Ok(table.into_iter().map(|(k, v)| (k, to_json(&v))).collect())
+    read_in(&config_file_path(dir)?, legacy_dir(dir).as_deref())
 }
 
 /// Applies `patch` to the file and writes it back.
@@ -65,19 +53,16 @@ pub fn read(dir: Option<&Path>) -> Result<Map<String, JsonValue>> {
 ///
 /// With `dir` None and no file in Ganymede's config dir but the legacy one
 /// in the Jupyter config dir, this is an error: a new file here would make
-/// the server read no file at all, and ignore the settings it has.
+/// the server ignore the settings the legacy file has.
 ///
 /// A symlinked file is written where the link points, so a dotfile
 /// manager's link stays one. The file is replaced atomically, with mode
-/// 0600, and its dir is created 0700 when missing. Nothing is locked: each
-/// call re-reads the file, so two writers lose only a concurrent edit made
-/// during the call's own read and write, which is a moment.
+/// 0600, and its dir is created 0700 when missing. Calls in one process
+/// take turns. Nothing is locked across processes: each call re-reads the
+/// file, so two processes lose only a concurrent edit made during one
+/// call's own read and write, which is a moment.
 pub fn set(dir: Option<&Path>, patch: &JsonValue) -> Result<()> {
-    let path = config_file_path(dir)?;
-    if !exists(&path) {
-        refuse_legacy(&path, legacy_path(&path, dir).as_deref())?;
-    }
-    write(&path, patch)
+    set_in(&config_file_path(dir)?, legacy_dir(dir).as_deref(), patch)
 }
 
 /// `text` with `patch` applied, validated as [`Config`].
@@ -91,33 +76,54 @@ pub fn apply(text: &str, patch: &JsonValue) -> Result<String> {
     apply_to(text, patch, "the config")
 }
 
-/// The file `ganymede serve` would read in this call's place: the legacy
-/// one in the Jupyter config dir, when `dir` is None, the file is not
-/// there, and [`default_config`] finds one.
-fn legacy_path(path: &Path, dir: Option<&Path>) -> Option<PathBuf> {
-    if dir.is_some() || exists(path) {
-        return None;
+/// Where `ganymede serve` looks for the legacy file: the Jupyter config
+/// dir when `dir` is None (the default config dir), else nowhere.
+fn legacy_dir(dir: Option<&Path>) -> Option<PathBuf> {
+    match dir {
+        Some(_) => None,
+        None => Some(ganymede_kernel_host::kernelspec::jupyter_config_dir()),
     }
-    default_config().path.filter(|p| p != path)
 }
 
-/// Refuses a write the server would not read: `serving` is the file
-/// `ganymede serve` reads now, which a new file at `path` would make it
-/// ignore silently.
-fn refuse_legacy(path: &Path, serving: Option<&Path>) -> Result<()> {
-    match serving.filter(|p| *p != path) {
-        Some(old) => bail!(
+/// The file `ganymede serve` reads when `path` is its default config file
+/// and `legacy_dir` the Jupyter config dir: [`find_default_config`]'s
+/// answer, so a dangling link at `path` reads as no file, as it does there.
+fn served_file(path: &Path, legacy_dir: Option<&Path>) -> Option<PathBuf> {
+    find_default_config(path.parent(), legacy_dir).path
+}
+
+/// [`read`] of `path`, or of the legacy file in `legacy_dir` that
+/// `ganymede serve` would read in its place.
+fn read_in(path: &Path, legacy_dir: Option<&Path>) -> Result<Map<String, JsonValue>> {
+    let Some(file) = served_file(path, legacy_dir) else {
+        return Ok(Map::new());
+    };
+    let text = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Map::new()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", file.display())),
+    };
+    let table = toml::from_str::<toml::Table>(&text)
+        .with_context(|| format!("reading {}", file.display()))?;
+    Ok(table.into_iter().map(|(k, v)| (k, to_json(&v))).collect())
+}
+
+/// Serializes [`set`] calls in this process, so two threads' edits can't
+/// both read the old file and the second rename drop the first's edit.
+static SET_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// [`set`] of `path`, refused when `ganymede serve` reads the legacy file
+/// in `legacy_dir` instead.
+fn set_in(path: &Path, legacy_dir: Option<&Path>, patch: &JsonValue) -> Result<()> {
+    let _turn = SET_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(old) = served_file(path, legacy_dir).filter(|f| f != path) {
+        bail!(
             "{} is in the Jupyter config dir; move it to {} before changing settings",
             old.display(),
             path.display()
-        ),
-        None => Ok(()),
+        );
     }
-}
-
-/// Whether anything is at `path`, a dangling symlink included.
-fn exists(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok()
+    write(path, patch)
 }
 
 /// Reads, edits and writes the file at `path`.
@@ -396,7 +402,7 @@ fn create_temp(dir: &Path) -> Result<(PathBuf, std::fs::File)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply, read, refuse_legacy, set, to_value, DEFAULT_CONFIG_FILE};
+    use super::{apply, read, read_in, set, set_in, to_value, DEFAULT_CONFIG_FILE};
     use serde_json::{json, Map};
     use std::path::{Path, PathBuf};
 
@@ -715,18 +721,121 @@ lab_started = 1979-05-27T07:32:00Z
         assert!(shown.contains("TOML parse error"), "{shown}");
     }
 
+    /// A config dir and a Jupyter config dir side by side in a temp dir,
+    /// with the path of the config file in the first (not created).
+    fn dirs() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("config").join("ganymede");
+        let jupyter = root.path().join("jupyter");
+        std::fs::create_dir_all(&jupyter).unwrap();
+        let path = config.join(DEFAULT_CONFIG_FILE);
+        (root, path, jupyter)
+    }
+
     #[test]
-    fn a_write_is_refused_while_the_jupyter_file_is_read() {
-        let new = Path::new("/home/me/.config/ganymede/ganymede.toml");
-        let old = Path::new("/home/me/.jupyter/ganymede.toml");
-        let err = refuse_legacy(new, Some(old)).unwrap_err();
+    fn the_legacy_file_is_read_when_it_is_the_one_served() {
+        let (_root, path, jupyter) = dirs();
+        std::fs::write(jupyter.join(DEFAULT_CONFIG_FILE), "port = 9999\n").unwrap();
+        let keys = read_in(&path, Some(&jupyter)).unwrap();
+        assert_eq!(keys.get("port"), Some(&json!(9999)));
+        // Without the legacy dir (an explicit dir), there is no file.
+        assert_eq!(read_in(&path, None).unwrap(), Map::new());
+    }
+
+    #[test]
+    fn a_broken_legacy_file_is_named_in_the_error() {
+        let (_root, path, jupyter) = dirs();
+        let legacy = jupyter.join(DEFAULT_CONFIG_FILE);
+        std::fs::write(&legacy, "[host\n").unwrap();
+        let err = format!("{:#}", read_in(&path, Some(&jupyter)).unwrap_err());
+        assert!(
+            err.starts_with(&format!("reading {}", legacy.display())),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_write_is_refused_while_the_legacy_file_is_served() {
+        let (_root, path, jupyter) = dirs();
+        let legacy = jupyter.join(DEFAULT_CONFIG_FILE);
+        std::fs::write(&legacy, "port = 9999\n").unwrap();
+        let err = set_in(&path, Some(&jupyter), &json!({"mcp_enabled": true})).unwrap_err();
         assert_eq!(
             err.to_string(),
-            "/home/me/.jupyter/ganymede.toml is in the Jupyter config dir; move it to \
-             /home/me/.config/ganymede/ganymede.toml before changing settings"
+            format!(
+                "{} is in the Jupyter config dir; move it to {} before changing settings",
+                legacy.display(),
+                path.display()
+            )
         );
-        refuse_legacy(new, None).unwrap();
-        refuse_legacy(new, Some(new)).unwrap();
+        assert!(!path.parent().unwrap().exists(), "nothing created");
+        assert_eq!(std::fs::read_to_string(&legacy).unwrap(), "port = 9999\n");
+    }
+
+    #[test]
+    fn with_both_files_the_new_one_is_written() {
+        let (_root, path, jupyter) = dirs();
+        std::fs::write(jupyter.join(DEFAULT_CONFIG_FILE), "port = 9999\n").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "port = 1\n").unwrap();
+        set_in(&path, Some(&jupyter), &json!({"mcp_enabled": true})).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "port = 1\nmcp_enabled = true\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(jupyter.join(DEFAULT_CONFIG_FILE)).unwrap(),
+            "port = 9999\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_link_reads_the_legacy_file_as_the_server_does() {
+        let (_root, path, jupyter) = dirs();
+        std::fs::write(jupyter.join(DEFAULT_CONFIG_FILE), "port = 9999\n").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(path.with_file_name("gone.toml"), &path).unwrap();
+        let keys = read_in(&path, Some(&jupyter)).unwrap();
+        assert_eq!(keys.get("port"), Some(&json!(9999)));
+        assert!(set_in(&path, Some(&jupyter), &json!({"port": 1})).is_err());
+    }
+
+    #[test]
+    fn a_patch_that_changes_nothing_creates_no_file() {
+        let (_root, path, _jupyter) = dirs();
+        set_in(&path, None, &json!({})).unwrap();
+        set_in(&path, None, &json!({"port": null})).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_write_leaves_no_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // The config file is a non-empty dir, so the rename fails.
+        let path = dir.path().join(DEFAULT_CONFIG_FILE);
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("x"), "").unwrap();
+        assert!(super::write_atomic(&path, "port = 1\n").is_err());
+        assert_eq!(entries(dir.path()), vec![DEFAULT_CONFIG_FILE.to_string()]);
+    }
+
+    #[test]
+    fn sets_from_many_threads_all_land() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DEFAULT_CONFIG_FILE);
+        std::thread::scope(|s| {
+            for i in 0..64 {
+                let path = &path;
+                s.spawn(move || {
+                    let patch = json!({"static_headers": {format!("/p{i}"): {"X-N": "1"}}});
+                    set_in(path, None, &patch).unwrap();
+                });
+            }
+        });
+        let keys = read_in(&path, None).unwrap();
+        assert_eq!(keys["static_headers"].as_object().unwrap().len(), 64);
     }
 
     #[test]

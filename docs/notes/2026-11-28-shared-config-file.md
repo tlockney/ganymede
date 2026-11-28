@@ -1,10 +1,10 @@
 ## 2026-11-28, one config file for the app and the server (#995)
 
-`ganymede.toml` is now the Mac app's settings file and `ganymede serve`'s,
-one file both read: `ganymede_config_read` gives its keys as the JSON
+`ganymede.toml` can now be the Mac app's settings file as well as
+`ganymede serve`'s, one file both read: `ganymede_config_read` gives its keys as the JSON
 object `ganymede_server_start` takes as `config_json`, and
-`ganymede_config_set` applies a JSON object to the file. The app adds the
-keys only its launch needs (`root_dir`, `static_dir`, `port`,
+`ganymede_config_set` applies a JSON object to the file. The app will add
+the keys only its launch needs (`root_dir`, `static_dir`, `port`,
 `cookie_secret_file`) and passes the result, so a setting made in the app
 is one the server reads on its next start, and a comment or key a person
 wrote in the file survives the app's edits. Swift never writes TOML.
@@ -65,8 +65,10 @@ Decisions worth the record:
   make the read fail. That is what makes `read` → add the launch keys →
   `ganymede_server_start` work for a file written by either side.
 - **A legacy file is read but not edited.** With `dir` NULL,
-  `serve::default_config` may find `ganymede.toml` in the Jupyter config
-  dir, which the server still reads; `read` reads that file, so the app
+  `serve::find_default_config` may find `ganymede.toml` in the Jupyter
+  config dir, which the server still reads; `read` and `set` decide with
+  that same function, so a dangling link in the config dir counts as no
+  file in both, and `read` reads that file, so the app
   shows what the server is serving, but `set` refuses to create a new
   file beside it — the server would then read the new file and silently
   ignore the settings in the old one — and says to move it.
@@ -75,16 +77,21 @@ Decisions worth the record:
   rather than a float, since TOML integers are signed and writing it as a
   float would change it. A datetime, which JSON has no type for, reads as
   its TOML text.
-- **Nothing is locked.** Each call re-reads the file, edits and writes,
-  so two writers lose only an edit made during the other's read and
+- **One lock, in process.** `set` calls in one process take turns on a
+  mutex, since the C functions take any thread and two threads would
+  otherwise both read the old file and the second rename drop the first's
+  edit. Across processes nothing is locked: each call re-reads the file,
+  so two processes lose only an edit made during the other's read and
   write. A lock file in the config dir would be a second thing to keep
-  correct, and the app writes settings one at a time.
+  correct, and only the app writes settings.
 
 The header's two functions are new, so the docs for them carry the
-release note: `docs/embedding.md` lists both, `docs/reference.md`'s
-config-file section says the app and the server share the file.
+release note: `docs/embedding.md` lists both, and `docs/reference.md`'s
+config-file section says a program can edit the file through them. The
+Mac app doesn't yet, so what it will keep there is described as the plan,
+with a `**Unreleased in ganymede-ui.**` comment to update.
 
-The follow-up is in ganymede-ui: the app moves the settings it keeps in
+The follow-up is in ganymede-ui, ganymede-ui#902: the app moves the settings it keeps in
 `UserDefaults` — the MCP switches, `[tailscale] allow`, the `[host]`
 defaults — into this file, through these two functions, so they outlive
 the app's server and are one set with the server's.
@@ -104,7 +111,16 @@ Tests:
   datetimes as text and an unknown key; a file that is not TOML is an
   error naming it; a new dir and file are 0700 and 0600, an existing 0644
   file becomes 0600; a symlink stays a symlink and the target changes; a
-  dangling symlink is an error; and the legacy refusal's message.
+  dangling symlink is an error; with a Jupyter config dir, the legacy file
+  is read, a broken one is named in the error, a set is refused and
+  creates nothing, a set with both files writes the new one, and a
+  dangling link reads the legacy file as the server does; a patch that
+  changes nothing creates no file; a failed rename leaves no temporary
+  file; and 64 threads setting different keys all land.
+- `ganymede-ffi/tests/config_default_dir.rs`, its own binary since it
+  sets `GANYMEDE_CONFIG_DIR` and `JUPYTER_CONFIG_DIR`: with a NULL dir,
+  read gives the legacy file, set refuses and creates nothing, and after
+  the file is moved set writes it in the config dir.
 - `ganymede-ffi/tests/config.rs`, from C's side: set then read gives the
   keys back and the file keeps its comment; a refused set returns nonzero
   with a message naming the file and changes nothing; a NULL `json` and a

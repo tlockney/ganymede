@@ -460,22 +460,23 @@ them.
 ### Programs that edit the file
 
 > [!NOTE]
-> **Unreleased in ganymede-ui.** Available only from a build of
-> ganymede-ui's `main`, not in its latest release.
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
 
-The Mac app keeps its settings in this same file — `mcp_enabled`,
-`mcp_read_only`, `mcp_no_execute`, `mcp_images`, `[tailscale] allow` and
-the `[host]` defaults — so a setting made in the app is one that
-`ganymede serve` reads on its next start, and there is no second file to
-keep in step. It reads and writes the file with
-`ganymede_config_read` and `ganymede_config_set`, the C ABI's two
-[config functions](embedding.md#the-server-in-an-app-from-c), and never
-writes TOML itself.
+A program can edit this file through the C ABI's two
+[config functions](embedding.md#the-server-in-an-app-from-c),
+`ganymede_config_read` and `ganymede_config_set`, without writing TOML
+itself. Its edits keep the comments, order and other keys a person wrote.
+An edit that would make the file invalid is refused and the file is left
+as it was, and a file it does write is replaced atomically, mode 0600.
 
-Its edits keep the comments, order and other keys a person wrote, and it
-never writes `token` or `mcp_token`: those stay the file's own. An edit
-that would make the file invalid is refused and the file is left as it
-was, and a file it does write is replaced atomically, mode 0600.
+The Mac app does not use them yet: it keeps its settings in its own
+preferences and passes them to its server at launch. Moving them into
+this file — `mcp_enabled`, `mcp_read_only`, `mcp_no_execute`,
+`mcp_images`, `[tailscale] allow` and the `[host]` defaults, never
+`token` or `mcp_token` — is
+[ganymede-ui#902](https://github.com/tlockney/ganymede-ui/issues/902).
+<!-- **Unreleased in ganymede-ui.** When ganymede-ui ships #902, say here that the Mac app keeps those settings in this file. -->
 
 ### The host API
 

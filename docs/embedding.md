@@ -246,13 +246,20 @@ code.
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
 > the latest release.
 
-The app reads `ganymede.toml` with `ganymede_config_read`, adds the keys
-only its launch needs (`root_dir`, `static_dir`, `port`,
-`cookie_secret_file`), and passes the JSON to `ganymede_server_start`, so
-the embedded server and `ganymede serve` see the same settings. It writes
-a setting with `ganymede_config_set`, so the file keeps the comments,
-order and other keys a person wrote, and the server reads the change on
-its next start: the app never writes TOML.
+`ganymede_config_read` and `ganymede_config_set` let an app keep its
+settings in the file `ganymede serve` reads. The app reads `ganymede.toml`
+with `ganymede_config_read`, adds the keys only its launch needs
+(`root_dir`, `static_dir`, `port`, `cookie_secret_file`), and passes the
+JSON to `ganymede_server_start`, so the embedded server and
+`ganymede serve` see the same settings. It writes a setting with
+`ganymede_config_set`, so the file keeps the comments, order and other
+keys a person wrote, and the server reads the change on its next start:
+the app never writes TOML. With a NULL `dir`, both follow the file
+`ganymede serve` reads: when that is still the old one in the Jupyter
+config dir, `ganymede_config_read` reads it and `ganymede_config_set`
+refuses, saying to move it, since a new file would make the server ignore
+it. Calls in one process take turns; two processes writing at once can
+lose one edit.
 
 `config_json` is a JSON object with the keys of
 [`ganymede.toml`](reference.md#config-file), or NULL. `port` defaults to
