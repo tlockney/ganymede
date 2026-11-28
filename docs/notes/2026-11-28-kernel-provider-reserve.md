@@ -102,7 +102,7 @@ Tests:
   only `always`. These macOS tests run in CI's macOS job.
 - CLI (`ganymede-cli/tests/cli.rs`): `ganymede serve` with
   `reserve = { "cdp-browser" = "never" }` in `ganymede.toml` refuses
-  `cdp-browser` over the socket and registers `cdp-node`, so the config
+  `cdp-browser` over the socket and registers an unreserved name, so the config
   reaches the listener through `serve.rs`.
 - Config unit: keys are lowercased, and two spellings of one name are an
   error.

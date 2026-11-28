@@ -859,7 +859,7 @@ fn serve_names_the_kernel_provider_socket() {
         "{reply}"
     );
     let reply = talk(
-        serde_json::json!({"op": "register", "spec": {"name": "cdp-node", "display_name": "Node"}}),
+        serde_json::json!({"op": "register", "spec": {"name": "ganymede-test-unreserved", "display_name": "Unreserved"}}),
     );
     assert!(reply.get("error").is_none(), "{reply}");
     unsafe {
