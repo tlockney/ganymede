@@ -6,7 +6,13 @@ local way for a program of the same user to register a kernelspec with a
 running `ganymede serve` and run its kernels itself. It is new surface
 on the server, so this note comes before any code.
 
-**Status: proposed.** Nothing here is built yet.
+**Status: implemented (#983).** The reservation of a name for one
+provider (below) is #986.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. The latest release doesn't know
+> `[kernel_providers]` and refuses to start with it in its config.
 
 ## The problem
 
@@ -54,15 +60,27 @@ route can't say it well:
   mistake.
 
 A socket file in the runtime directory makes the boundary the file
-system's: the directory is created `0700` and the socket `0600`, so only
-this user's processes can connect, and nothing on the network, behind a
+system's: the directory is `0700` and the socket `0600`, so only this
+user's processes can connect, and nothing on the network, behind a
 proxy or in a browser can. It isn't a route, so nothing forwards it.
+The server makes the directory `0700` if it is missing, then checks it
+has no group or other write bit and is owned by the server's own user;
+anything else and the socket isn't opened: in a directory another user
+can write, the socket's own mode would mean nothing. The socket is made
+in a private temp dir inside the runtime dir, made `0600` there, and
+only then renamed into place, so it is never visible with a wider mode.
+A path over the platform's `sun_path` limit (103 bytes on macOS and the
+BSDs, 107 on Linux and Android) means no socket, with a warning naming
+the path and its length; the staged path is checked too, as it can be
+the longer of the two.
 
 ### Who may connect
 
 - **Off by default.** `[kernel_providers] enabled = true` in the server's
   config makes the server open the socket. The background server the Mac
-  app starts turns it on; a `ganymede serve` started by hand doesn't.
+  app starts turns it on; a `ganymede serve` started by hand doesn't. With
+  auth off (`token = ""`) the socket stays closed: anyone who can reach
+  the port can run code already, so a provider check adds nothing.
 - **This user only**, by the file modes above. The server also checks the
   peer's user id (`SO_PEERCRED` on Linux, `getpeereid` on macOS) and
   closes a connection from any other user.
@@ -95,7 +113,8 @@ further than its own kernels.
   can't register it. A name can be reserved for one provider with
   `[kernel_providers] reserve = { "cdp-browser" = "<bundle id or path>" }`,
   checked against the connecting process's code signature on macOS, so a
-  process that connects before the app can't take the app's name.
+  process that connects before the app can't take the app's name. The
+  reservation is not built yet (#986).
 - **Capabilities are the provider's claim.** `metadata.capabilities`
   (`device` and the others in
   [Capabilities](in-app-kernel.md#capabilities)) is passed through as the
@@ -126,32 +145,40 @@ From the server:
 | --- | --- | --- |
 | `welcome` | or `error`, then the connection closes | none |
 | `registered` | `name`, or `name` and `error` | `register`'s return value |
-| `start` | `kernel_id`, `launch` (`cwd`, `env.JPY_SESSION_NAME`) | `start` |
+| `start` | `kernel_id`, `launch` (`env.JPY_SESSION_NAME` only) | `start` |
 | `send` | `kernel_id`, `channel`, `msg` | `send` |
 | `stop` | `kernel_id` | `stop` |
 
 `started` exists because a frame can't return a value. The server waits
 for it, within the kernel's startup timeout, before it waits for
 `kernel_info_reply`. A `started` with an `error` fails the start at once,
-as a nonzero return from the C ABI's `start` does, with no retry.
+as a nonzero return from the C ABI's `start` does, with no retry; so does
+a provider that never answers, at the timeout. Both reach the API's
+caller as a 500: the first names the provider's reason, the second says
+the kernel did not start within the timeout. A `start` carries only the
+session name: a provider runs the kernel where and with whatever
+environment it likes, so no `cwd` or other `env` crosses the socket.
 
 ### Lifetime
 
 - **A registration lasts as long as its connection.** When the
   connection closes, its kernelspecs are unregistered and each of its
   running kernels ends at once, dead with `"reason": "lost"`, with no
-  restart: there is no one left to run it. A name a connection
-  registered and then lost is never launched through the fallback
-  provisioner or a kernel server. A provider that reconnects registers
-  again and gets new kernels; a kernel id from before never reaches it.
+  restart: there is no one left to run it. A name a connection registered
+  and then lost is never launched through the fallback provisioner or a
+  kernel server for a kernel that was already running, but a later launch
+  of the name goes to whatever lists it then, so a kernelspec installed
+  on disk afterwards wins. A provider that reconnects registers again and
+  gets new kernels; a kernel id from before never reaches it.
 - **Ordering** is the C ABI's: per kernel, messages keep their order in
   both directions.
 - **Backpressure.** The server's frames to a provider go through a bounded
-  queue. When it is full, or the provider takes nothing for 10 seconds,
-  the server closes the connection rather than drop a frame, as the events
-  socket does for a client that stops reading
+  queue, 1024 frames by default. When it is full, or the provider takes
+  nothing for 10 seconds, the server closes the connection rather than
+  drop a frame, as the events socket does for a client that stops reading
   ([Hear of a write](api.md#hear-of-a-write)). Its kernels are then lost
-  as above.
+  as above. A close and a `start` are ordered by the same lock, so a
+  launch racing a disconnect never leaves a `started` answer pending.
 - **Server restart** removes the socket file and closes every connection.
   The provider watches the runtime directory for the new
   `jpserver-<pid>.json` and connects again.
@@ -163,12 +190,12 @@ as a nonzero return from the C ABI's `start` does, with no retry.
     file, the `[kernel_providers]` config, the peer-user and token checks,
     and an `AppKernel` per connection.
   - `ganymede serve` builds a `RegisteredKernels` in front of its own
-    kernels, as `ganymede-ffi` does today; only the embedded server has
-    one now.
+    kernels, as `ganymede-ffi` does; before this, only the embedded server
+    had one.
   - ganymede-kernel-host, `RegisteredKernels`:
     - `unregister(name)`;
     - an origin per spec, so a socket's specs are listed and launched
-      after the fallback's, and a lost socket name is never launched
+      after the fallback's, and a lost kernel is never restarted
       through the fallback;
     - a start that waits for the provider's acknowledgement:
       `AppKernel::start` can't block, so `launch` gets an async step that
@@ -178,8 +205,9 @@ as a nonzero return from the C ABI's `start` does, with no retry.
     docs/security.md for the boundary.
   - Tests drive a fake provider over a real socket: hello, register,
     start, a message each way, interrupt, shutdown, a dropped connection,
-    a reconnect, each refusal (other user, bad token, a name on disk, a
-    reserved name, `argv` dropped), a full queue and a slow provider.
+    a reconnect, each refusal (other user, bad token, a name on disk,
+    `argv` dropped), a full queue and a slow provider. A reserved name
+    comes with #986.
 - **ganymede-ui**: when the app's notebooks go through the background
   server (#965 section 4), `AppKernels` and `ServerHost` register the
   TypeScript kernel there over the socket instead of through the C ABI.

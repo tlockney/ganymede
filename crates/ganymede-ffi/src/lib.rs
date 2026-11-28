@@ -37,7 +37,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use ganymede_api::StaticKernelspecs;
-use ganymede_kernel_host::protocol::{Channel, Message};
+use ganymede_kernel_host::protocol::{self, Channel, Message};
 use ganymede_kernel_host::{
     AppKernel, Ended, Kernelspec, LaunchOptions, LaunchedKernel, Origin, Provisioner,
     RegisteredKernels, TransportFactory,
@@ -530,42 +530,12 @@ impl AppKernel for CKernel {
 /// `msg` in the websocket's JSON shape, with its buffers as base64
 /// strings in `buffers`.
 fn message_json(msg: &Message) -> anyhow::Result<String> {
-    use base64::Engine;
-    let mut v = serde_json::to_value(msg)?;
-    v["buffers"] = msg
-        .buffers
-        .iter()
-        .map(|b| base64::engine::general_purpose::STANDARD.encode(b).into())
-        .collect::<Vec<serde_json::Value>>()
-        .into();
-    Ok(serde_json::to_string(&v)?)
+    Ok(serde_json::to_string(&protocol::message_to_json(msg)?)?)
 }
 
 /// The other way: base64 strings in `buffers` become the buffers.
 fn parse_message(json: &str) -> anyhow::Result<Message> {
-    use base64::Engine;
-    let mut v: serde_json::Value = serde_json::from_str(json)?;
-    let buffers = match v.as_object_mut().and_then(|m| m.remove("buffers")) {
-        None | Some(serde_json::Value::Null) => Vec::new(),
-        Some(serde_json::Value::Array(items)) => items
-            .iter()
-            .map(|b| {
-                let text = b
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("a buffer is not a base64 string"))?;
-                Ok(base64::engine::general_purpose::STANDARD
-                    .decode(text)?
-                    .into())
-            })
-            .collect::<anyhow::Result<_>>()?,
-        Some(_) => anyhow::bail!("buffers is not a list"),
-    };
-    if let Some(m) = v.as_object_mut() {
-        m.remove("channel");
-    }
-    let mut msg: Message = serde_json::from_value(v)?;
-    msg.buffers = buffers;
-    Ok(msg)
+    Ok(protocol::message_from_json(serde_json::from_str(json)?)?)
 }
 
 /// A UTF-8 string from C, or None for NULL.

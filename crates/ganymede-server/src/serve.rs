@@ -950,6 +950,10 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
         .registered
         .unwrap_or_else(|| Arc::new(RegisteredKernels::new()));
     registered.set_fallback(specs, provisioner, transports);
+    // For the provider socket, which starts before the info file is
+    // written so the file can name it (#983).
+    #[cfg(unix)]
+    let provider_kernels = registered.clone();
     let (specs, provisioner, transports) = (
         registered.clone() as Arc<dyn KernelspecSource>,
         registered.clone() as Arc<dyn Provisioner>,
@@ -1157,8 +1161,22 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
             );
         }
     }
-    // Written before the URL is printed, so whoever reads the URL finds
-    // them. An embedding app has no use for them, and on iOS no runtime dir.
+    // Before the URL is printed, so whoever reads the URL finds them. An
+    // embedding app has no use for them, and on iOS no runtime dir.
+    // The provider socket (#983) opens first, so the info file names it,
+    // and stays open until the server stops.
+    #[cfg(unix)]
+    let kernel_providers = crate::kernel_providers::start(
+        cfg.kernel_providers.enabled,
+        embedded,
+        token.as_deref(),
+        Default::default(),
+        provider_kernels,
+    );
+    #[cfg(not(unix))]
+    if cfg.kernel_providers.enabled {
+        tracing::warn!("the kernel provider socket is Unix only; not opened");
+    }
     let info_files = (!embedded).then(|| {
         crate::server_info::ServerInfoFiles::write(
             &ganymede_kernel_host::kernelspec::jupyter_runtime_dir(),
@@ -1169,6 +1187,10 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
                 token: token.as_deref(),
                 root_dir: &root_dir,
                 page,
+                #[cfg(unix)]
+                kernel_providers_socket: kernel_providers.as_ref().map(|l| l.path()),
+                #[cfg(not(unix))]
+                kernel_providers_socket: None,
             },
         )
     });
@@ -1199,6 +1221,8 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
     if let Some(l) = &lsp {
         l.shutdown_all();
     }
+    #[cfg(unix)]
+    drop(kernel_providers);
     kernels.shutdown_all().await;
     drop(host);
     Ok(())

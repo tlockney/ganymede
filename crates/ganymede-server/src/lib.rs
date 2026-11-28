@@ -14,6 +14,8 @@ pub mod config;
 pub mod execute;
 pub mod folder;
 pub mod host;
+#[cfg(unix)]
+pub mod kernel_providers;
 pub mod lab;
 pub mod mcp;
 pub mod metrics;

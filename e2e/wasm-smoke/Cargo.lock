@@ -305,6 +305,7 @@ dependencies = [
 name = "ganymede-protocol"
 version = "0.18.0"
 dependencies = [
+ "base64",
  "bytes",
  "hex",
  "hmac",
