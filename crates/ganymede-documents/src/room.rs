@@ -57,40 +57,64 @@ fn hash_type_and_source<T: ReadTxn>(
     code
 }
 
-/// The id of the cell in `cells` whose `execution_count` or outputs `event`
-/// changed, if it did. A cell added or replaced whole is no such change,
-/// nor is writing the count it has.
+/// Whether a cell's `outputs` is now empty: missing, an empty `Any`
+/// array, or an empty shared array.
+fn outputs_empty<T: ReadTxn>(txn: &T, cell: &yrs::MapRef) -> bool {
+    use yrs::{Array, Out};
+    match cell.get(txn, "outputs") {
+        None => true,
+        Some(Out::YArray(a)) => a.len(txn) == 0,
+        Some(Out::Any(yrs::Any::Array(items))) => items.is_empty(),
+        Some(_) => false,
+    }
+}
+
+/// The id of the cell in `cells` that `event` shows a client ran or
+/// cleared, if it did, and whether it shows that by the count: the update
+/// set its `execution_count` to another value (`true`), or left its
+/// outputs empty (`false`; [`Room::receive`] counts that only for a cell
+/// whose outputs weren't empty before). A cell added or replaced whole is
+/// no such change, nor is writing the count it has, nor adding to
+/// outputs, growing one, or replacing them with a non-empty list (a client
+/// echoing a server run).
 fn rerun_cell(
     txn: &yrs::TransactionMut,
     cells: &yrs::ArrayRef,
     event: &yrs::types::Event,
-) -> Option<String> {
+) -> Option<(String, bool)> {
     use yrs::types::{EntryChange, Event, PathSegment};
     use yrs::{Array, Out};
     let path = event.path();
     let Some(PathSegment::Index(index)) = path.front() else {
         return None;
     };
-    let changed = match (path.get(1), event) {
-        (Some(PathSegment::Key(key)), _) => &**key == "outputs",
-        (None, Event::Map(e)) => {
-            let keys = e.keys(txn);
-            keys.contains_key("outputs")
-                || match keys.get("execution_count") {
-                    Some(EntryChange::Updated(Out::Any(old), Out::Any(new))) => old != new,
-                    change => change.is_some(),
-                }
-        }
-        _ => false,
-    };
-    if !changed {
-        return None;
-    }
     let Some(Out::YMap(cell)) = cells.get(txn, *index) else {
         return None;
     };
+    // (by the count, by emptied outputs)
+    let (count, emptied) = match (path.get(1), event) {
+        // A change under `outputs` counts only when it empties them.
+        (Some(PathSegment::Key(key)), _) => {
+            (false, &**key == "outputs" && outputs_empty(txn, &cell))
+        }
+        (None, Event::Map(e)) => {
+            let keys = e.keys(txn);
+            let count = match keys.get("execution_count") {
+                Some(EntryChange::Updated(Out::Any(old), Out::Any(new))) => old != new,
+                change => change.is_some(),
+            };
+            (
+                count,
+                keys.contains_key("outputs") && outputs_empty(txn, &cell),
+            )
+        }
+        _ => (false, false),
+    };
+    if !count && !emptied {
+        return None;
+    }
     match cell.get(txn, "id") {
-        Some(Out::Any(yrs::Any::String(id))) => Some(id.to_string()),
+        Some(Out::Any(yrs::Any::String(id))) => Some((id.to_string(), count)),
         _ => None,
     }
 }
@@ -218,10 +242,11 @@ pub struct Room {
     /// Set when a transaction touches `cells` or `meta` (not `state`,
     /// which clients write too: `document_id` on connect).
     content_changed: Arc<AtomicBool>,
-    /// Ids of the cells whose `execution_count` or outputs changed since
-    /// this was last emptied, from the observer of `cells`. A client's
-    /// update is emptied before and read after; the rest is ignored.
-    rerun: Arc<Mutex<HashSet<String>>>,
+    /// Ids of the cells [`rerun_cell`] found since this was last emptied,
+    /// each `true` when its count changed, `false` when only its outputs
+    /// were emptied, from the observer of `cells`. A client's update is
+    /// emptied before and read after; the rest is ignored.
+    rerun: Arc<Mutex<HashMap<String, bool>>>,
     /// Another process owns the file (#272): see [`Room::set_read_only`].
     read_only: bool,
     /// The depth of each nested shared type, by the id of the item holding
@@ -280,7 +305,7 @@ impl Room {
         let doc = Doc::new();
         let roots = notebook.then(|| Roots::get(&doc));
         let content_changed: Arc<AtomicBool> = Arc::default();
-        let rerun: Arc<Mutex<HashSet<String>>> = Arc::default();
+        let rerun: Arc<Mutex<HashMap<String, bool>>> = Arc::default();
         if let Some(roots) = &roots {
             use yrs::DeepObservable;
             let flag = content_changed.clone();
@@ -288,7 +313,9 @@ impl Room {
             roots.cells.observe_deep(OBSERVER, move |txn, events| {
                 flag.store(true, Ordering::Relaxed);
                 let mut ids = ids.lock().expect("rerun cells");
-                ids.extend(events.iter().filter_map(|e| rerun_cell(txn, &cells, e)));
+                for (id, count) in events.iter().filter_map(|e| rerun_cell(txn, &cells, e)) {
+                    *ids.entry(id).or_default() |= count;
+                }
             });
             let flag = content_changed.clone();
             roots.meta.observe_deep(OBSERVER, move |_, _| {
@@ -535,6 +562,10 @@ impl Room {
                 // Each cell's source and type before, to tell which the
                 // update changed.
                 let before = (refused.is_none() && !self.read_only).then(|| self.prints());
+                // The cells that had outputs: emptying a cell's outputs is
+                // a run (or a clear) only when there was something to
+                // empty, not a client writing back a server run's none.
+                let had_outputs = before.as_ref().map(|_| self.cells_with_outputs());
                 let run_before = before.as_ref().and_then(|_| self.run_print_if_stamped());
                 self.take_rerun();
                 let applied = match refused {
@@ -597,7 +628,13 @@ impl Room {
                             person: true,
                         };
                         self.attribute(&before, &author);
-                        let rerun = self.take_rerun();
+                        let had = had_outputs.unwrap_or_default();
+                        let rerun: HashSet<String> = self
+                            .take_rerun()
+                            .into_iter()
+                            .filter(|(id, count)| *count || had.contains(id))
+                            .map(|(id, _)| id)
+                            .collect();
                         self.clear_run_notes(&before, &rerun);
                     }
                 }
@@ -1034,8 +1071,28 @@ impl Room {
         out
     }
 
+    /// The ids of the cells whose outputs aren't empty.
+    fn cells_with_outputs(&self) -> HashSet<String> {
+        use yrs::{Array, Out};
+        let Some(roots) = &self.roots else {
+            return HashSet::new();
+        };
+        let txn = self.doc().transact();
+        let mut out = HashSet::new();
+        for cell in roots.cells.iter(&txn) {
+            let Out::YMap(m) = cell else { continue };
+            let Some(Out::Any(yrs::Any::String(id))) = m.get(&txn, "id") else {
+                continue;
+            };
+            if !outputs_empty(&txn, &m) {
+                out.insert(id.to_string());
+            }
+        }
+        out
+    }
+
     /// The cells in [`Room::rerun`], which is empty afterwards.
-    fn take_rerun(&self) -> HashSet<String> {
+    fn take_rerun(&self) -> HashMap<String, bool> {
         std::mem::take(&mut *self.rerun.lock().expect("rerun cells"))
     }
 
