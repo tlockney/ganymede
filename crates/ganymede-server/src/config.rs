@@ -3,6 +3,7 @@
 //! with a random token.
 
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -165,6 +166,35 @@ pub struct KernelProvidersConfig {
     /// needs auth on, a Unix platform, and a runtime dir only this user
     /// can write.
     pub enabled: bool,
+    /// Kernelspec names reserved for one program, each mapped to the
+    /// macOS code requirement its process must meet (`csreq`, as
+    /// `codesign -r` takes it). A name here can be registered only by a
+    /// peer whose code signature satisfies the requirement; off macOS,
+    /// or when the peer's signature can't be read or the requirement
+    /// doesn't parse, it is refused to everyone. Names are lowercased, as
+    /// `register` lowercases them. Empty by default.
+    #[serde(deserialize_with = "lowercase_keys")]
+    pub reserve: BTreeMap<String, String>,
+}
+
+/// A string map from the config with its keys lowercased: `reserve`'s
+/// kernelspec names, which a provider may spell in any case.
+fn lowercase_keys<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let map = BTreeMap::<String, String>::deserialize(deserializer)?;
+    let mut out = BTreeMap::new();
+    for (name, requirement) in map {
+        let lower = name.to_lowercase();
+        if out.contains_key(&lower) {
+            return Err(serde::de::Error::custom(format!(
+                "kernelspec {lower:?} is listed more than once, in different case"
+            )));
+        }
+        out.insert(lower, requirement);
+    }
+    Ok(out)
 }
 
 /// The server's root when neither `--root-dir` nor `root_dir` is set: the
@@ -486,6 +516,24 @@ Cross-Origin-Embedder-Policy = "require-corp"
         assert!(cfg.kernel_providers.enabled);
         // Unknown keys in the table are an error, as at the top level.
         assert!(Config::from_toml("[kernel_providers]\nenabeld = true\n").is_err());
+    }
+
+    /// A reservation's name is lowercased on load, as `register`
+    /// lowercases the names it is given; empty by default.
+    #[test]
+    fn kernel_provider_reservations_are_lowercased() {
+        assert!(Config::default().kernel_providers.reserve.is_empty());
+        let cfg =
+            Config::from_toml("[kernel_providers]\nreserve = { \"CDP-Browser\" = \"always\" }\n")
+                .unwrap();
+        assert_eq!(cfg.kernel_providers.reserve["cdp-browser"], "always");
+        assert_eq!(cfg.kernel_providers.reserve.len(), 1);
+        // Two spellings of one name would leave one requirement silently.
+        let err = Config::from_toml(
+            "[kernel_providers]\nreserve = { \"CDP-Browser\" = \"always\", \"cdp-browser\" = \"never\" }\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("more than once"), "{err}");
     }
 
     #[test]

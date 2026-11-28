@@ -70,6 +70,17 @@ notify = { version = "8", default-features = false, features = ["macos_fsevent"]
 # iOS, kernels have no process to measure and replies say so.
 sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 
+# A kernel provider's code signature, for `[kernel_providers] reserve`: the
+# peer's audit token from the socket, and the requirement check against it.
+# On other platforms a reserved name is refused to everyone. No new crate
+# in the build: security-framework is already here through
+# rustls-platform-verifier, and core-foundation through it for the
+# audit-token attribute.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+security-framework = { version = "3", default-features = false }
+core-foundation = "0.10"
+
 [dev-dependencies]
 # Paused time in tests (no new crate).
 tokio = { workspace = true, features = ["test-util"] }

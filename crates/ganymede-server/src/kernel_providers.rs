@@ -19,6 +19,12 @@
 //! display-only kernelspecs (no `argv`, no `env`) and answer `start`,
 //! `send` and `stop` for the kernels it started. When it closes, its
 //! kernels end as lost and are never restarted.
+//!
+//! A name in `[kernel_providers] reserve` is refused to every provider
+//! whose code signature does not meet the reservation's requirement,
+//! checked on macOS against the peer's audit token: off macOS, with no
+//! token, with a requirement that doesn't parse, or with a peer that
+//! doesn't meet it, the name is refused.
 
 use crate::auth::constant_time_eq;
 use anyhow::Context;
@@ -29,6 +35,7 @@ use ganymede_protocol::{message_from_json, message_to_json, Channel, Message};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -104,13 +111,15 @@ impl Drop for Listener {
 /// stays closed: `[kernel_providers] enabled` is off, the server is
 /// embedded, auth is off, or the runtime dir, path or bind wouldn't give
 /// a socket only this user can reach. Every case but "off" logs one
-/// warning.
+/// warning. `reserve` is `[kernel_providers] reserve`: names only a
+/// provider whose code signature meets the requirement may register.
 pub fn start(
     enabled: bool,
     embedded: bool,
     token: Option<&str>,
     timing: Timing,
     registered: Arc<RegisteredKernels>,
+    reserve: &BTreeMap<String, String>,
 ) -> Option<Listener> {
     if !enabled {
         return None;
@@ -129,12 +138,33 @@ pub fn start(
         );
         return None;
     };
-    match listen(&registered, &token, timing) {
+    match listen(&registered, &token, timing, Arc::new(reserve.clone())) {
         Ok(listener) => Some(listener),
         Err(e) => {
             tracing::warn!("kernel providers: the socket stays closed: {e:#}");
             None
         }
+    }
+}
+
+/// Warns once for each reservation whose requirement doesn't parse, so a
+/// typo in `[kernel_providers] reserve` shows at startup, not at the first
+/// provider refused. Off macOS every reserved name is refused; one
+/// warning says why.
+fn warn_bad_requirements(reserve: &BTreeMap<String, String>) {
+    #[cfg(target_os = "macos")]
+    for (name, requirement) in reserve {
+        if let Err(e) = parse_requirement(requirement) {
+            tracing::warn!("[kernel_providers] reserve: {name:?}: {e}");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    if !reserve.is_empty() {
+        tracing::warn!(
+            "[kernel_providers] reserve: a code signature is checked on macOS only, so {} \
+             reserved name(s) stay refused to every provider",
+            reserve.len()
+        );
     }
 }
 
@@ -144,7 +174,9 @@ fn listen(
     registered: &Arc<RegisteredKernels>,
     token: &str,
     timing: Timing,
+    reserve: Arc<BTreeMap<String, String>>,
 ) -> anyhow::Result<Listener> {
+    warn_bad_requirements(&reserve);
     let dir = ganymede_kernel_host::kernelspec::jupyter_runtime_dir();
     crate::server_info::create_private_dir(&dir)
         .with_context(|| format!("cannot create {}", dir.display()))?;
@@ -196,6 +228,7 @@ fn listen(
         token.into(),
         own_uid,
         timing,
+        reserve,
         stop,
     ));
     Ok(Listener {
@@ -213,6 +246,7 @@ async fn accept_loop(
     token: Arc<str>,
     own_uid: u32,
     timing: Timing,
+    reserve: Arc<BTreeMap<String, String>>,
     mut stop: watch::Receiver<bool>,
 ) {
     loop {
@@ -229,9 +263,10 @@ async fn accept_loop(
         };
         let registered = registered.clone();
         let token = token.clone();
+        let reserve = reserve.clone();
         let stop = stop.clone();
         tokio::spawn(async move {
-            run_connection(stream, registered, token, own_uid, timing, stop).await;
+            run_connection(stream, registered, token, own_uid, timing, reserve, stop).await;
         });
     }
 }
@@ -240,6 +275,117 @@ async fn accept_loop(
 /// refusal that CI can't arrange.
 fn peer_allowed(peer_uid: u32, own_uid: u32) -> bool {
     peer_uid == own_uid
+}
+
+/// The peer's audit token from `fd`, which `SecCodeCopyGuestWithAttributes`
+/// takes to name the connecting process, or `None` when the call fails.
+/// `getsockopt` copies 32 bytes into `token` and its length into `len`;
+/// both point at this frame, and `fd` is a socket the caller's stream owns
+/// for the duration of the call.
+#[cfg(target_os = "macos")]
+fn peer_audit_token(fd: RawFd) -> Option<[u8; 32]> {
+    let mut token = [0u8; 32];
+    let mut len = token.len() as libc::socklen_t;
+    // SAFETY: `token` is a 32-byte buffer and `len` its length, as
+    // `LOCAL_PEERTOKEN` wants, and the file descriptor is open for the
+    // call: the stream the caller took it from is alive here.
+    let r = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERTOKEN,
+            token.as_mut_ptr().cast(),
+            &mut len,
+        )
+    };
+    if r != 0 {
+        tracing::warn!(
+            "cannot read a kernel provider's audit token: {}",
+            std::io::Error::last_os_error()
+        );
+        return None;
+    }
+    if len as usize != token.len() {
+        tracing::warn!(
+            "a kernel provider's audit token is {len} bytes, not {}",
+            token.len()
+        );
+        return None;
+    }
+    Some(token)
+}
+
+/// Off macOS nothing reads a peer's code signature, so no connection has
+/// an audit token: a reserved name is refused to everyone.
+#[cfg(not(target_os = "macos"))]
+fn peer_audit_token(_fd: RawFd) -> Option<[u8; 32]> {
+    None
+}
+
+/// Whether a peer's process meets a code requirement: the audit token
+/// names the guest, and the requirement (`csreq`, as `codesign -r` takes
+/// it) is checked against its code signature. The pid is never used: it
+/// can be reused by another process between the connection and the check.
+#[cfg(target_os = "macos")]
+fn peer_meets(token: &[u8; 32], requirement: &str) -> Result<(), String> {
+    use core_foundation::base::TCFType;
+    use core_foundation::data::CFData;
+    use security_framework::os::macos::code_signing::{
+        Flags, GuestAttributes, SecCode, SecRequirement,
+    };
+
+    let requirement: SecRequirement = parse_requirement(requirement)?;
+    let guest = CFData::from_buffer(token);
+    let mut attrs = GuestAttributes::new();
+    attrs.set_audit_token(guest.as_concrete_TypeRef());
+    let code = SecCode::copy_guest_with_attribues(None, &attrs, Flags::NONE)
+        .map_err(|e| format!("no code object for the peer's audit token: {e:?}"))?;
+    code.check_validity(Flags::NONE, &requirement)
+        .map_err(|e| format!("the peer's code signature does not meet it: {e:?}"))
+}
+
+/// Off macOS there is no code signature to check, so no peer meets a
+/// requirement.
+#[cfg(not(target_os = "macos"))]
+fn peer_meets(_token: &[u8; 32], _requirement: &str) -> Result<(), String> {
+    Err("a code signature is checked on macOS only".into())
+}
+
+/// A `csreq` requirement string, parsed.
+#[cfg(target_os = "macos")]
+fn parse_requirement(
+    requirement: &str,
+) -> Result<security_framework::os::macos::code_signing::SecRequirement, String> {
+    requirement
+        .parse()
+        .map_err(|e: security_framework::base::Error| format!("not a code requirement: {e:?}"))
+}
+
+/// Whether `name` may be registered: a name not in `reserve` always may,
+/// and a reserved one only when the peer's code signature meets its
+/// requirement. The refusal reads the same in every case, so a provider
+/// learns nothing about why from a name that isn't its own; the reason is
+/// logged at `debug`.
+fn reservation_allows(
+    reserve: &BTreeMap<String, String>,
+    name: &str,
+    token: Option<&[u8; 32]>,
+) -> Result<(), String> {
+    let Some(requirement) = reserve.get(name) else {
+        return Ok(());
+    };
+    let refused = || Err(format!("kernelspec {name} is reserved for another program"));
+    let Some(token) = token else {
+        tracing::debug!("{name:?} is reserved, and the peer has no audit token to check");
+        return refused();
+    };
+    match peer_meets(token, requirement) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            tracing::debug!("a provider may not register the reserved {name:?}: {e}");
+            refused()
+        }
+    }
 }
 
 /// Fails, naming the first path and its length, when any of `paths` is
@@ -320,6 +466,7 @@ async fn run_connection(
     token: Arc<str>,
     own_uid: u32,
     timing: Timing,
+    reserve: Arc<BTreeMap<String, String>>,
     mut stop: watch::Receiver<bool>,
 ) {
     match stream.peer_cred() {
@@ -336,6 +483,10 @@ async fn run_connection(
             return;
         }
     }
+    // The peer's code signature, for `reserve`: `None` off macOS, or when
+    // the socket can't say. Read here, before the handshake, so the call
+    // happens on the stream as accepted, as `peer_cred` does.
+    let audit_token = peer_audit_token(stream.as_raw_fd());
     let (read_half, mut write_half) = tokio::io::split(stream);
     let mut reader = BufReader::new(read_half);
 
@@ -413,7 +564,7 @@ async fn run_connection(
                 break;
             }
         };
-        if !kernel.handle(frame, &registered, &app) {
+        if !kernel.handle(frame, &registered, &app, &reserve, audit_token.as_ref()) {
             break;
         }
     }
@@ -574,6 +725,8 @@ impl ProviderKernel {
         frame: Incoming,
         registered: &Arc<RegisteredKernels>,
         app: &Arc<dyn AppKernel>,
+        reserve: &BTreeMap<String, String>,
+        audit_token: Option<&[u8; 32]>,
     ) -> bool {
         match frame.op.as_str() {
             "register" => {
@@ -585,16 +738,27 @@ impl ProviderKernel {
                 // run. `argv`, `env` and the rest are dropped here.
                 let spec = display_spec(spec);
                 let name = spec.name.clone();
-                let reply =
-                    match registered
-                        .register(spec, ganymede_kernel_host::Origin::Provider, || app.clone())
-                    {
-                        Ok(()) => {
-                            self.state.lock().unwrap().names.insert(name.clone());
-                            json!({"op": "registered", "name": name})
+                let reply = match reservation_allows(reserve, &name, audit_token) {
+                    // A reserved name is refused before the first-come
+                    // check: another program's name is not this provider's
+                    // to take, whether or not it is free.
+                    Err(e) => json!({"op": "registered", "name": name, "error": e}),
+                    Ok(()) => {
+                        match registered.register(
+                            spec,
+                            ganymede_kernel_host::Origin::Provider,
+                            || app.clone(),
+                        ) {
+                            Ok(()) => {
+                                self.state.lock().unwrap().names.insert(name.clone());
+                                json!({"op": "registered", "name": name})
+                            }
+                            Err(e) => {
+                                json!({"op": "registered", "name": name, "error": e.to_string()})
+                            }
                         }
-                        Err(e) => json!({"op": "registered", "name": name, "error": e.to_string()}),
-                    };
+                    }
+                };
                 self.enqueue(reply)
             }
             "unregister" => {
@@ -857,6 +1021,97 @@ mod tests {
         assert!(peer_allowed(0, 0));
         assert!(!peer_allowed(501, 502));
         assert!(!peer_allowed(0, 501));
+    }
+
+    /// A name not reserved is allowed with no token at all; a reserved one
+    /// is refused without one, whatever the platform.
+    #[test]
+    fn a_reserved_name_needs_a_peer() {
+        let reserve = BTreeMap::from([("cdp-browser".to_string(), "always".to_string())]);
+        assert!(reservation_allows(&BTreeMap::new(), "cdp-browser", None).is_ok());
+        let e = reservation_allows(&reserve, "cdp-browser", None).unwrap_err();
+        assert!(e.contains("reserved"), "{e}");
+        // A name with no reservation at all is first come, as before.
+        assert!(reservation_allows(&reserve, "cdp-node", None).is_ok());
+    }
+
+    /// Off macOS no peer's code signature is read, so a reserved name is
+    /// refused even to a peer that presented a token.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_reserved_name_is_refused_off_macos_even_with_a_token() {
+        let reserve = BTreeMap::from([("cdp-browser".to_string(), "always".to_string())]);
+        let e = reservation_allows(&reserve, "cdp-browser", Some(&[0u8; 32])).unwrap_err();
+        assert!(e.contains("reserved"), "{e}");
+    }
+
+    /// This process's own audit token, read from a socket pair with the
+    /// function the server uses, meets `always` and fails `never`, another
+    /// program's identifier, and a requirement that doesn't parse.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_peer_check_reads_this_processs_signature() {
+        let reserve = BTreeMap::from([
+            ("always".to_string(), "always".to_string()),
+            ("never".to_string(), "never".to_string()),
+            (
+                "other".to_string(),
+                "identifier \"no.such.app\" and anchor apple generic".to_string(),
+            ),
+            ("bad".to_string(), "not a requirement((".to_string()),
+        ]);
+        let (here, _there) = std::os::unix::net::UnixStream::pair().unwrap();
+        let token = peer_audit_token(here.as_raw_fd()).expect("a token from the pair");
+        assert!(
+            reservation_allows(&reserve, "always", Some(&token)).is_ok(),
+            "`always` meets any signed process"
+        );
+        for name in ["never", "other", "bad"] {
+            let e = reservation_allows(&reserve, name, Some(&token)).unwrap_err();
+            assert!(e.contains("reserved"), "{name}: {e}");
+        }
+    }
+
+    /// The test binary's own designated requirement, as `codesign` prints
+    /// it (for the linker's ad-hoc signature, `cdhash H"..."`), is met by
+    /// this process; the same form with another hash is not. So the check
+    /// matches a signature, not only `always`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_peer_check_matches_this_binarys_own_requirement() {
+        let exe = std::env::current_exe().unwrap();
+        let out = std::process::Command::new("codesign")
+            .args(["-d", "-r-"])
+            .arg(&exe)
+            .output()
+            .expect("codesign runs");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let designated = text
+            .lines()
+            .find_map(|l| {
+                l.trim_start_matches("# ")
+                    .strip_prefix("designated => ")
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| panic!("no designated requirement in: {text}"));
+        let other = format!("cdhash H\"{}\"", "0".repeat(40));
+        assert_ne!(designated, other);
+        let reserve = BTreeMap::from([
+            ("mine".to_string(), designated.clone()),
+            ("other".to_string(), other),
+        ]);
+        let (here, _there) = std::os::unix::net::UnixStream::pair().unwrap();
+        let token = peer_audit_token(here.as_raw_fd()).expect("a token from the pair");
+        assert!(
+            reservation_allows(&reserve, "mine", Some(&token)).is_ok(),
+            "this binary meets its own requirement: {designated}"
+        );
+        let e = reservation_allows(&reserve, "other", Some(&token)).unwrap_err();
+        assert!(e.contains("reserved"), "{e}");
     }
 
     /// A runtime dir this user made owner-only is fine; one another user

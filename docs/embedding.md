@@ -382,7 +382,10 @@ The socket is Unix only, off by default, and opens only when auth is on:
 a client must come from this user's uid and say `hello` with the
 server's token. While a connection holds it, it registers names, and a
 name is first come: one registered elsewhere, or by another connection,
-is refused.
+is refused. A name in `[kernel_providers] reserve` is the exception: only
+a provider whose code signature meets the reservation's requirement
+(on macOS) may register it, and anyone else gets `registered` with
+`error` `kernelspec <name> is reserved for another program`.
 
 Frames are newline-delimited JSON, one object per line, with an `op`.
 Jupyter messages are the websocket's JSON shape, as the C ABI carries

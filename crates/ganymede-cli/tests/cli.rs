@@ -823,6 +823,50 @@ fn serve_names_the_kernel_provider_socket() {
     assert!(child.wait().unwrap().success(), "clean exit on SIGTERM");
     assert!(!socket.exists(), "removed on exit");
 
+    // A reservation in the config reaches the socket: a provider whose
+    // signature can't meet `never` is refused the name, and gets another.
+    let config = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config.path().join("ganymede.toml"),
+        "[kernel_providers]\nenabled = true\nreserve = { \"cdp-browser\" = \"never\" }\n",
+    )
+    .unwrap();
+    let runtime = tempfile::tempdir().unwrap();
+    let mut child = start(config.path(), runtime.path());
+    let socket = runtime
+        .path()
+        .join(format!("ganymede-kernels-{}.sock", child.id()));
+    let stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+    let mut talk = |frame: serde_json::Value| -> serde_json::Value {
+        let mut w = &stream;
+        writeln!(w, "{frame}").unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    };
+    let welcome = talk(serde_json::json!({"op": "hello", "token": "secret"}));
+    assert_eq!(welcome["op"], "welcome", "{welcome}");
+    assert!(welcome.get("error").is_none(), "{welcome}");
+    let reply = talk(
+        serde_json::json!({"op": "register", "spec": {"name": "cdp-browser", "display_name": "Browser"}}),
+    );
+    assert!(
+        reply["error"].as_str().unwrap_or("").contains("reserved"),
+        "{reply}"
+    );
+    let reply = talk(
+        serde_json::json!({"op": "register", "spec": {"name": "ganymede-test-unreserved", "display_name": "Unreserved"}}),
+    );
+    assert!(reply.get("error").is_none(), "{reply}");
+    unsafe {
+        kill(child.id() as i32, 15);
+    }
+    assert!(child.wait().unwrap().success(), "clean exit on SIGTERM");
+
     // The default: no socket, and no key naming one.
     let config = tempfile::tempdir().unwrap();
     let runtime = tempfile::tempdir().unwrap();

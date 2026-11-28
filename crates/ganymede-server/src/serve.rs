@@ -1173,6 +1173,7 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
         token.as_deref(),
         Default::default(),
         provider_kernels,
+        &cfg.kernel_providers.reserve,
     );
     #[cfg(not(unix))]
     if cfg.kernel_providers.enabled {
