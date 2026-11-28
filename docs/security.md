@@ -370,8 +370,9 @@ a Unix socket, not a route, because the API's token reaches browsers and
 a loopback check doesn't exclude a proxy:
 
 - Off by default: `[kernel_providers] enabled = true` opens it. A server
-  started by hand has no provider, and the background server the Mac app
-  starts turns it on for the app's kernel.
+  started by hand has no provider. The background server the Mac app
+  will start ([#965](https://github.com/tlockney/ganymede/issues/965))
+  is to turn it on for the app's kernel.
 - Unix only. On Windows the server doesn't open the socket; with
   `enabled` set it warns and serves as usual.
 - The socket file is `0600` and lives in the Jupyter runtime dir, which

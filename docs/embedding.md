@@ -429,6 +429,12 @@ that reconnects registers again and gets new kernels; a kernel id from
 before never reaches it. The server keeps one small entry per kernel id a
 provider started until its connection closes.
 
+A restart reuses the kernel's id: the server sends `stop`, then `start`
+with the same `kernel_id`. Frames carry only that id, so once a provider
+has received `stop` it sends nothing more for the old run, no `deliver`
+and no `ended`, until it has answered the next `start`: a late frame
+would reach the new run.
+
 ### Connected machines
 
 An app can show another computer running `ganymede serve` (a connected

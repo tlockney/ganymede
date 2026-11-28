@@ -446,8 +446,8 @@ them.
 
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. The latest release has no kernel provider socket,
-> so `[kernel_providers] enabled` has no effect there.
+> the latest release. The latest release doesn't know
+> `[kernel_providers]` and refuses to start with it in its config.
 
 ### The host API
 

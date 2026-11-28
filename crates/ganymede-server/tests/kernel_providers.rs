@@ -1247,7 +1247,7 @@ async fn another_connection_cannot_deliver_to_or_end_a_kernel() {
         .register(json!({"name": "cdp-node", "display_name": "Node"}))
         .await;
     let log = Frames::default();
-    let _serving = tokio::spawn(serve(first, log, Arc::new(AtomicBool::new(false))));
+    let _serving = tokio::spawn(serve(first, log.clone(), Arc::new(AtomicBool::new(false))));
 
     let (code, kernel) = call(
         &app,
@@ -1258,15 +1258,23 @@ async fn another_connection_cannot_deliver_to_or_end_a_kernel() {
     .await;
     assert_eq!(code, StatusCode::CREATED, "{kernel}");
     let id = kernel["id"].as_str().unwrap().to_string();
+    let starts = || {
+        log.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|f| f["op"] == "start")
+            .count()
+    };
+    assert_eq!(starts(), 1);
 
-    // A second provider, holding no kernel of its own, tries both.
+    // A second provider, holding no kernel of its own, tries both. A
+    // status with no parent sets the kernel's execution state, so a
+    // delivered one would show at /api/kernels/<id>; an ended one would
+    // have the host restart the kernel through its provider, a second
+    // `start`.
     let mut second = Fake::connect(listener.path()).await;
-    let injected = Message::new(
-        "execute_result",
-        "s",
-        "u",
-        &json!({"data": {"text/plain": "injected"}, "execution_count": 1, "metadata": {}}),
-    );
+    let injected = Message::new("status", "s", "u", &json!({"execution_state": "busy"}));
     second
         .send(json!({
             "op": "deliver", "kernel_id": id, "channel": "iopub", "msg": wire(&injected),
@@ -1290,6 +1298,15 @@ async fn another_connection_cannot_deliver_to_or_end_a_kernel() {
             .iter()
             .any(|k| k["id"] == json!(id)),
         "the first connection's kernel is still there: {listing}"
+    );
+    // Give a restart, had there been one, time to reach the provider.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(starts(), 1, "no restart after another connection's `ended`");
+    let (code, model) = call(&app, "GET", &format!("/api/kernels/{id}"), None).await;
+    assert_eq!(code, StatusCode::OK, "{model}");
+    assert_ne!(
+        model["execution_state"], "busy",
+        "another connection's status was delivered: {model}"
     );
 
     // Its output is the provider's, with nothing injected.
@@ -1321,10 +1338,6 @@ async fn another_connection_cannot_deliver_to_or_end_a_kernel() {
     assert_eq!(code, StatusCode::OK, "{v}");
     let outputs = v["cells"][0]["outputs"].to_string();
     assert!(outputs.contains("ran 2+2"), "{v:#}");
-    assert!(
-        !outputs.contains("injected"),
-        "a second connection's message: {v:#}"
-    );
 }
 
 /// The queue's capacity is what cuts a provider off when it stops reading,
@@ -1430,6 +1443,15 @@ async fn a_refusal_leaves_no_socket() {
     // A runtime dir another user can write: the socket's mode would mean
     // nothing.
     let at = runtime_dir();
+    // Back to owner-only even when an assertion below fails, so later
+    // tests don't run against an open runtime dir.
+    struct Restore(std::path::PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    let restore = Restore(at.clone());
     std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o777)).unwrap();
     let refused = kernel_providers::start(
         true,
@@ -1440,7 +1462,7 @@ async fn a_refusal_leaves_no_socket() {
     );
     assert!(refused.is_none(), "a world-writable runtime dir is refused");
     assert!(!socket(&at).exists(), "no socket in it");
-    std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o700)).unwrap();
+    drop(restore);
 
     // A path over the platform's `sun_path` limit.
     let long = dir.path().join("a".repeat(120));

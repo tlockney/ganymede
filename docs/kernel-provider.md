@@ -11,8 +11,8 @@ provider (below) is #986.
 
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. The kernel provider socket is not in the latest
-> release, so `[kernel_providers] enabled` has no effect there.
+> the latest release. The latest release doesn't know
+> `[kernel_providers]` and refuses to start with it in its config.
 
 ## The problem
 
@@ -154,7 +154,8 @@ for it, within the kernel's startup timeout, before it waits for
 `kernel_info_reply`. A `started` with an `error` fails the start at once,
 as a nonzero return from the C ABI's `start` does, with no retry; so does
 a provider that never answers, at the timeout. Both reach the API's
-caller as a 500 naming the provider's reason. A `start` carries only the
+caller as a 500: the first names the provider's reason, the second says
+the kernel did not start within the timeout. A `start` carries only the
 session name: a provider runs the kernel where and with whatever
 environment it likes, so no `cwd` or other `env` crosses the socket.
 
@@ -194,7 +195,7 @@ environment it likes, so no `cwd` or other `env` crosses the socket.
   - ganymede-kernel-host, `RegisteredKernels`:
     - `unregister(name)`;
     - an origin per spec, so a socket's specs are listed and launched
-      after the fallback's, and a lost socket name is never launched
+      after the fallback's, and a lost kernel is never restarted
       through the fallback;
     - a start that waits for the provider's acknowledgement:
       `AppKernel::start` can't block, so `launch` gets an async step that
@@ -204,8 +205,9 @@ environment it likes, so no `cwd` or other `env` crosses the socket.
     docs/security.md for the boundary.
   - Tests drive a fake provider over a real socket: hello, register,
     start, a message each way, interrupt, shutdown, a dropped connection,
-    a reconnect, each refusal (other user, bad token, a name on disk, a
-    reserved name, `argv` dropped), a full queue and a slow provider.
+    a reconnect, each refusal (other user, bad token, a name on disk,
+    `argv` dropped), a full queue and a slow provider. A reserved name
+    comes with #986.
 - **ganymede-ui**: when the app's notebooks go through the background
   server (#965 section 4), `AppKernels` and `ServerHost` register the
   TypeScript kernel there over the socket instead of through the C ABI.

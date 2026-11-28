@@ -167,16 +167,7 @@ fn listen(
     let staged = staging.path().join("s");
     // The path actually bound is the staged one, so the check has to cover
     // it too: on a long runtime dir it can be the longer of the two.
-    let max = max_socket_path_len();
-    for p in [&path, &staged] {
-        let len = p.as_os_str().as_encoded_bytes().len();
-        if len > max {
-            anyhow::bail!(
-                "{} is {len} bytes, over the platform's {max}-byte socket path limit",
-                p.display()
-            );
-        }
-    }
+    check_socket_paths(&[&path, &staged], max_socket_path_len())?;
 
     let listener = std::os::unix::net::UnixListener::bind(&staged)
         .with_context(|| format!("cannot bind {}", staged.display()))?;
@@ -249,6 +240,21 @@ async fn accept_loop(
 /// refusal that CI can't arrange.
 fn peer_allowed(peer_uid: u32, own_uid: u32) -> bool {
     peer_uid == own_uid
+}
+
+/// Fails, naming the first path and its length, when any of `paths` is
+/// longer than `max` bytes, the platform's socket path limit.
+fn check_socket_paths(paths: &[&Path], max: usize) -> anyhow::Result<()> {
+    for p in paths {
+        let len = p.as_os_str().as_encoded_bytes().len();
+        if len > max {
+            anyhow::bail!(
+                "{} is {len} bytes, over the platform's {max}-byte socket path limit",
+                p.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 /// The longest path a Unix socket may have here: `sockaddr_un.sun_path`
@@ -846,6 +852,19 @@ mod tests {
             .err()
             .unwrap();
         assert!(e.to_string().contains("owned by uid"), "{e}");
+    }
+
+    /// Any path over the limit refuses the socket, the staged one too.
+    #[test]
+    fn a_path_over_the_limit_is_refused() {
+        let short = Path::new("/r/ganymede-kernels-1.sock");
+        let long = Path::new("/r/.gk-abcdef/s-much-longer-than-ten");
+        let at = short.as_os_str().len();
+        assert!(check_socket_paths(&[short], at).is_ok());
+        let e = check_socket_paths(&[short], at - 1).unwrap_err();
+        assert!(e.to_string().contains(&format!("is {at} bytes")), "{e}");
+        let e = check_socket_paths(&[short, long], at).unwrap_err();
+        assert!(e.to_string().contains("/r/.gk-abcdef"), "{e}");
     }
 
     /// The limit comes from the platform's `sun_path`: 104 bytes less the
