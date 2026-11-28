@@ -178,10 +178,17 @@ where
     D: serde::Deserializer<'de>,
 {
     let map = BTreeMap::<String, String>::deserialize(deserializer)?;
-    Ok(map
-        .into_iter()
-        .map(|(name, requirement)| (name.to_lowercase(), requirement))
-        .collect())
+    let mut out = BTreeMap::new();
+    for (name, requirement) in map {
+        let lower = name.to_lowercase();
+        if out.contains_key(&lower) {
+            return Err(serde::de::Error::custom(format!(
+                "kernelspec {lower:?} is listed more than once, in different case"
+            )));
+        }
+        out.insert(lower, requirement);
+    }
+    Ok(out)
 }
 
 /// The server's root when neither `--root-dir` nor `root_dir` is set:
@@ -454,6 +461,12 @@ Cross-Origin-Embedder-Policy = "require-corp"
                 .unwrap();
         assert_eq!(cfg.kernel_providers.reserve["cdp-browser"], "always");
         assert_eq!(cfg.kernel_providers.reserve.len(), 1);
+        // Two spellings of one name would leave one requirement silently.
+        let err = Config::from_toml(
+            "[kernel_providers]\nreserve = { \"CDP-Browser\" = \"always\", \"cdp-browser\" = \"never\" }\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("more than once"), "{err}");
     }
 
     #[test]

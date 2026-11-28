@@ -399,7 +399,13 @@ a loopback check doesn't exclude a proxy:
   `csreq` requirement. The name is refused the same way when the
   signature can't be read, the requirement doesn't parse, or the platform
   is not macOS, so a reservation fails closed; a name that isn't reserved
-  is first come, as before.
+  is first come, as before. A requirement should pin the team
+  (`certificate leaf[subject.OU]`): an `identifier` alone is met by any
+  binary signed, even ad hoc, with that identifier. The token is read
+  when the server accepts the connection, so a process that hands its
+  end of the socket to one that then runs a program meeting the
+  requirement may pass as that program; such a process is of the same
+  user, which this boundary already trusts with the socket.
 - When the connection closes its specs are forgotten and its kernels end
   dead with reason `lost`, with no restart, so a later launch of the name
   goes to whatever lists it then, a kernelspec installed on disk

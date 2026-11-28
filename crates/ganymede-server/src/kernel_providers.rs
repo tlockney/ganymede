@@ -1072,6 +1072,48 @@ mod tests {
         }
     }
 
+    /// The test binary's own designated requirement, as `codesign` prints
+    /// it (for the linker's ad-hoc signature, `cdhash H"..."`), is met by
+    /// this process; the same form with another hash is not. So the check
+    /// matches a signature, not only `always`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_peer_check_matches_this_binarys_own_requirement() {
+        let exe = std::env::current_exe().unwrap();
+        let out = std::process::Command::new("codesign")
+            .args(["-d", "-r-"])
+            .arg(&exe)
+            .output()
+            .expect("codesign runs");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let designated = text
+            .lines()
+            .find_map(|l| {
+                l.trim_start_matches("# ")
+                    .strip_prefix("designated => ")
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| panic!("no designated requirement in: {text}"));
+        let other = format!("cdhash H\"{}\"", "0".repeat(40));
+        assert_ne!(designated, other);
+        let reserve = BTreeMap::from([
+            ("mine".to_string(), designated.clone()),
+            ("other".to_string(), other),
+        ]);
+        let (here, _there) = std::os::unix::net::UnixStream::pair().unwrap();
+        let token = peer_audit_token(here.as_raw_fd()).expect("a token from the pair");
+        assert!(
+            reservation_allows(&reserve, "mine", Some(&token)).is_ok(),
+            "this binary meets its own requirement: {designated}"
+        );
+        let e = reservation_allows(&reserve, "other", Some(&token)).unwrap_err();
+        assert!(e.contains("reserved"), "{e}");
+    }
+
     /// A runtime dir this user made owner-only is fine; one another user
     /// can write, or one another user owns, is refused.
     #[test]

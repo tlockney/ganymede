@@ -78,7 +78,7 @@ sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 # audit-token attribute.
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
-security-framework = { version = "3", default-features = false, features = ["OSX_10_15"] }
+security-framework = { version = "3", default-features = false }
 core-foundation = "0.10"
 
 [dev-dependencies]

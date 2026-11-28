@@ -124,7 +124,11 @@ further than its own kernels.
   the requirement fails, and just as much when the peer's signature can't
   be read or the requirement doesn't parse (the server logs a bad
   requirement once at startup); off macOS, where no signature is read,
-  every reserved name is refused to everyone.
+  every reserved name is refused to everyone. Pin the team in the
+  requirement: an `identifier` alone is met by any binary signed with
+  it, even ad hoc. The token is read at accept, so a same-user process
+  that passes its end of the socket to a program meeting the requirement
+  may pass as that program.
 - **Capabilities are the provider's claim.** `metadata.capabilities`
   (`device` and the others in
   [Capabilities](in-app-kernel.md#capabilities)) is passed through as the

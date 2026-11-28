@@ -414,7 +414,7 @@ frame_ancestors = "'self'"       # who may frame the server's pages
 # providers):
 # [kernel_providers]
 # enabled = false                # true: open the socket (Unix only, needs auth)
-# reserve = { "cdp-browser" = "identifier \"net.lockney.Ganymede\" and anchor apple generic" }
+# reserve = { "cdp-browser" = "identifier \"net.lockney.Ganymede\" and anchor apple generic and certificate leaf[subject.OU] = \"ABCDE12345\"" }
 #                                # names only a program whose macOS code signature
 #                                # meets the requirement may register (see Kernel providers)
 

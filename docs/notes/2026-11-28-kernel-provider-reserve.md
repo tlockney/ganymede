@@ -47,17 +47,41 @@ Decisions worth the record:
   give up: it is refused whether or not it is free.
 - **Dependencies: `libc`, `security-framework` and `core-foundation`,
   macOS only.** `libc = "0.2"` and `security-framework = { version = "3",
-  default-features = false, features = ["OSX_10_15"] }` are under
-  `[target.'cfg(target_os = "macos")'.dependencies]`, as the brief has
-  them. `core-foundation = "0.10"` is there too, which the brief did not
-  list: `GuestAttributes::set_audit_token` takes a `CFDataRef`, and
+  default-features = false }` are under
+  `[target.'cfg(target_os = "macos")'.dependencies]`.
+  `core-foundation = "0.10"` is there too: `GuestAttributes::set_audit_token` takes a `CFDataRef`, and
   `security-framework` re-exports neither `CFData` nor
   `core-foundation`, so the token needs `CFData::from_buffer` from that
   crate directly. All three are already in `Cargo.lock` (through
   `rustls-platform-verifier` and `security-framework`); `Cargo.lock` gains
   no `[[package]]`, only the three names in `ganymede-server`'s dependency
-  list. The features `security-framework` is asked for are the union
-  Cargo already resolved, so the build compiles the same crate it did.
+  list. `security-framework` is asked for no features: `code_signing` is
+  not behind one, and `cargo tree -e features -i security-framework
+  --target aarch64-apple-darwin` shows the same features as on `main`
+  (`OSX_10_14`, `alpn`, `session-tickets`; `-sys` on `OSX_10_13`), so
+  the build compiles the same crate it did. An earlier draft asked for
+  `OSX_10_15`, which turned on code paths for every user of the crate;
+  it was dropped.
+- **The value is a `csreq` string, not an identifier or a path.** The
+  issue proposed `"<signing identifier or path>"` with a requirement
+  built from the identifier. A requirement string covers the identifier
+  (`identifier "…"`) and can also pin the team, which an identifier
+  alone can't: any binary, even ad-hoc signed, can carry an identifier.
+  A path is not taken: it names a file, not signed code, and the same
+  user can put another binary there. A value that isn't a requirement
+  (a bare identifier) fails to parse, is logged at startup, and the name
+  is refused to everyone, so the mistake fails closed.
+- **The check runs on the connection's task.** `peer_meets` calls
+  Security synchronously, once per `register` of a reserved name;
+  validating a running process's signature is quick, so it isn't moved
+  to a blocking thread.
+- **Known limit: the token is read at accept.** A same-user process can
+  hand its end of the socket to a program that meets the requirement
+  after the server read the token, or before; the docs say so. Same-user
+  processes are already inside the socket's boundary.
+- **Duplicate spellings are an error.** Two keys that differ only in
+  case (`"CDP-Browser"` and `"cdp-browser"`) refuse the config, rather
+  than keeping one requirement silently.
 
 Tests:
 
@@ -71,6 +95,17 @@ Tests:
   `peer_audit_token` the server uses (which also covers that function),
   meets `always`, and fails `never`, `identifier "no.such.app" and anchor
   apple generic`, and an unparsable `not a requirement((`.
+- `#[cfg(target_os = "macos")]`, unit: the test binary's own designated
+  requirement, read with `codesign -d -r-` (`cdhash H"…"` for the
+  linker's ad-hoc signature), is met by this process, and the same form
+  with another hash is not, so a match on a real signature is tested, not
+  only `always`. These macOS tests run in CI's macOS job.
+- CLI (`ganymede-cli/tests/cli.rs`): `ganymede serve` with
+  `reserve = { "cdp-browser" = "never" }` in `ganymede.toml` refuses
+  `cdp-browser` over the socket and registers `cdp-node`, so the config
+  reaches the listener through `serve.rs`.
+- Config unit: keys are lowercased, and two spellings of one name are an
+  error.
 - All platforms, integration (`tests/kernel_providers.rs`):
   `reserve = { "cdp-browser" = "never" }` into `kernel_providers::start`;
   a provider registering `cdp-browser` gets `registered` with an `error`
