@@ -51,7 +51,7 @@ same name in snake case, except where the last column says otherwise.
 
 | Flag | Effect | Config key |
 | --- | --- | --- |
-| `--root-dir` | Where notebooks and files are served from. Default: the current directory. | |
+| `--root-dir` | Where notebooks and files are served from. Default: your home directory (the current directory if there is none). `jupyter_server` defaults to the current directory. A project outside the home directory needs `--root-dir`. | |
 | `--ip` | Address to listen on. Default `127.0.0.1`; a non-loopback address also turns on `--allow-remote-access`. | |
 | `--port` | Default 8888. `0` picks a free port. `lab` and `ui` try up to 50 more while it is taken. | |
 | `--token` | The auth token. Unset generates one; an empty string disables auth. | |
@@ -77,6 +77,10 @@ same name in snake case, except where the last column says otherwise.
 | `--mcp` | Serve notebook tools for coding agents at `/mcp`, behind the token; see [Agents over MCP](mcp.md). | `mcp_enabled` |
 | `--config <file>` | The config file to read. Default: `ganymede.toml` in Ganymede's config dir, if it exists; see [Config file](#config-file). | |
 | `--log-level`, `--log-file` | See [Logging](#logging). | |
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. The latest release serves the current directory by default.
 
 `serve` prints the URL, with its token, as the only line on stdout.
 [Security](security.md) covers what `--ip 0.0.0.0` and `--token ""`
@@ -351,7 +355,7 @@ Every key, with its default:
 ip = "127.0.0.1"
 port = 8888
 # token = "..."                  # unset: a new random token each start; "" turns auth off
-root_dir = "."                   # the current directory
+# root_dir = "/path"             # unset: your home directory
 # checkpoint_dir = "/path"       # unset: .ipynb_checkpoints beside each file
 # notary_dir = "/path"           # unset: the Jupyter data dir
 # cookie_secret_file = "/path"   # unset: jupyter_cookie_secret in the runtime dir
@@ -418,7 +422,12 @@ frame_ancestors = "'self'"       # who may frame the server's pages
 # mime_types = ["text/x-python"]
 ```
 
-These nine keys have no flag. The terminal keys, the MCP keys other
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. Without `root_dir` (or `--root-dir`) the latest
+> release serves the current directory.
+
+These eight keys have no flag. The terminal keys, the MCP keys other
 than `mcp_enabled`, `static_headers`, `language_servers` and
 `[kernel_providers]` have none either; the sections below and
 [Agents over MCP](mcp.md#options) cover them.
@@ -492,8 +501,16 @@ ganymede grant --revoke downloaded.ipynb          # back to the defaults
 `[host] read` for it, so it can narrow the default or widen it; `run=PATH`
 does the same for `[host] run`. Revoking every read path leaves the
 notebook only itself; `--revoke NOTEBOOK read` (or `run`) goes back to
-the default. `--root-dir` names the server's root when it
-isn't the current directory, since grants are kept per root.
+the default. Grants are kept per root, so `grant`'s root must be the
+server's. `grant` uses the current directory; `--root-dir` names another.
+A server started without `--root-dir` serves your home directory, so a
+grant made in a project directory doesn't reach it: use
+`ganymede grant --root-dir ~ …`, or start the server with `--root-dir .`.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. The latest release's default server root is the
+> current directory, the same as `grant`'s.
 
 Clients such as the apps set the same grants over HTTP, with the
 server's token:

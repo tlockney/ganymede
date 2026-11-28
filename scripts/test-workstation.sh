@@ -194,7 +194,7 @@ stop_server() {
 
 step "ganymede lab --no-browser"
 mkdir -p "$work/notebooks"
-(cd "$work/notebooks" && exec ganymede lab --no-browser >"$work/lab.out" 2>"$work/lab.err") &
+(cd "$work/notebooks" && exec ganymede lab --no-browser --root-dir . >"$work/lab.out" 2>"$work/lab.err") &
 server=$!
 wait_url "$work/lab.out" 'http://[^ ]+/lab\?token=[^ ]+'
 [ -n "$url" ] || fail "no URL from ganymede lab: $(cat "$work/lab.err")"
@@ -270,7 +270,7 @@ if [ -n "${NB:-}" ]; then
 fi
 
 step "ganymede serve, with the VS Code Jupyter extension's remote-server flow"
-(cd "$work/notebooks" && exec ganymede serve >"$work/serve.out" 2>"$work/serve.err") &
+(cd "$work/notebooks" && exec ganymede serve --root-dir . >"$work/serve.out" 2>"$work/serve.err") &
 server=$!
 wait_url "$work/serve.out" 'http://[^ ]+/\?token=[^ ]+'
 [ -n "$url" ] || fail "no URL from ganymede serve: $(cat "$work/serve.err")"

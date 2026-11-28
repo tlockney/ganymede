@@ -338,7 +338,16 @@ edit_self = true     # the self.* calls; false turns them off
 - **Granting** is `ganymede grant <notebook> run=<path>` on the command
   line first, with `--list` to show a notebook's grants (or every
   notebook's) and `--revoke` to remove one, then a sheet in the apps. A notebook with no file (an
-  untitled console) gets the defaults.
+  untitled console) gets the defaults. A grant belongs to the root it was
+  made under, so `grant`'s root (the current directory, or `--root-dir`)
+  must be the server's. A server started without `--root-dir` serves your
+  home directory: use `ganymede grant --root-dir ~ …`, or start the server
+  with `--root-dir .`.
+
+  > [!NOTE]
+  > **Unreleased.** Available only from a build of `main` (HEAD), not in
+  > the latest release. The latest release's default server root is the
+  > current directory, the same as `grant`'s.
 - **`ganymede execute`** uses `[host]` from the config with
   `--grant read=<path>` or `--grant run=<path>` in place of a key as the
   defaults, and a notebook's own grant over them, as a server does. It

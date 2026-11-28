@@ -9,7 +9,12 @@ set -eu
 image=${1:-ganymede}
 name=ganymede-smoke-$$
 port=${SMOKE_PORT:-18888}
-trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+notes=$(mktemp -d)
+trap 'docker rm -f "$name" >/dev/null 2>&1 || true; rm -rf "$notes"' EXIT
+# The container's user (uid 1000) must read the mounted folder.
+chmod 755 "$notes"
+echo marker >"$notes/smoke-marker.txt"
+chmod 644 "$notes/smoke-marker.txt"
 
 fail() {
 	printf 'FAIL %s\n' "$*" >&2
@@ -25,7 +30,7 @@ out=$(docker run --rm "$image" ganymede run -k cdp-node 'const x: number = 2; x 
 [ "$out" = 42 ] || fail "cdp-node cell printed: $out"
 echo "ok   cdp-node cell"
 
-docker run -d --name "$name" -p "127.0.0.1:$port:8888" "$image" >/dev/null
+docker run -d --name "$name" -p "127.0.0.1:$port:8888" -v "$notes:/notebooks" "$image" >/dev/null
 url=
 for _ in $(seq 60); do
 	url=$(docker logs "$name" 2>/dev/null | grep -o 'http://[^ ]*/lab?token=[0-9a-f]*' | head -n 1) || true
@@ -45,3 +50,8 @@ curl -fsS -H "Authorization: token $token" "$base/api/kernelspecs" | grep -q '"c
 	fail "/api/kernelspecs has no cdp-node"
 curl -fsS -o /dev/null "$base/lab?token=$token" || fail "/lab returned an error"
 echo "ok   ganymede lab serves JupyterLab and the API"
+
+# The default command serves the mounted /notebooks, not the user's home.
+curl -fsS -H "Authorization: token $token" "$base/api/contents" | grep -q 'smoke-marker.txt' ||
+	fail "/api/contents does not list the file in the mounted /notebooks"
+echo "ok   the default command serves the mounted /notebooks"

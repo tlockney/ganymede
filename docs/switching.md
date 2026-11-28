@@ -24,6 +24,13 @@ missing, so you can judge the switch before making it.
 
 ## What is different
 
+- **The default root.** `ganymede serve`, `lab` and `ui` serve your home
+  directory where `jupyter_server` serves the current directory. Pass
+  `--root-dir .` for the old behaviour.
+
+  > [!NOTE]
+  > **Unreleased.** Available only from a build of `main` (HEAD), not in
+  > the latest release. The latest release serves the current directory.
 - **Installing JupyterLab.** `ganymede lab install` downloads JupyterLab's
   browser files from PyPI without running Python, instead of
   `pip install jupyterlab`. Prebuilt extensions install with

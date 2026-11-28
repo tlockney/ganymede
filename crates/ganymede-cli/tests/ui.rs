@@ -37,6 +37,8 @@ fn ui_serves_the_newest_install_and_logs_in() {
 
     let mut child = KillOnDrop(
         ganymede(&["ui", "--no-browser", "--port", "0"])
+            .arg("--root-dir")
+            .arg(root.path())
             .current_dir(root.path())
             .env("GANYMEDE_DATA_DIR", data.path())
             .env("JUPYTER_CONFIG_DIR", state.path().join("config"))
