@@ -355,6 +355,52 @@ A page the machine serves can run only in the sandbox; it can't act as the
 app's UI. A machine you mount is trusted with what the mount sends it: the
 page's requests to its allowlisted routes, with your token.
 
+## Kernel providers
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+A kernel provider is a program of the same user that registers
+kernelspecs with a `ganymede serve` and runs their kernels
+([Embedding](embedding.md#kernel-providers)). A registered kernel sees
+every cell any client runs on it, and its replies become the outputs, so
+who may register matters more than who may call the API. The channel is
+a Unix socket, not a route, because the API's token reaches browsers and
+a loopback check doesn't exclude a proxy:
+
+- Off by default: `[kernel_providers] enabled = true` opens it. A server
+  started by hand has no provider. The background server the Mac app
+  will start ([#965](https://github.com/tlockney/ganymede/issues/965))
+  is to turn it on for the app's kernel.
+- Unix only. On Windows the server doesn't open the socket; with
+  `enabled` set it warns and serves as usual.
+- The socket file is `0600` and lives in the Jupyter runtime dir, which
+  the server makes `0700` if it is missing and then checks has no group
+  or other write bit and is owned by this user. It is made in a private
+  temp dir inside that dir, `chmod`ed, then renamed into place, so it is
+  never visible with a wider mode. A runtime dir another user can write,
+  or another user owns, means no socket, with a warning: in such a dir
+  the socket's own mode would mean nothing.
+- The peer's uid must be this server's, read from the connection, and
+  the first frame must carry the server's token, compared in constant
+  time. Another user's connection is closed with no frame; a wrong
+  token gets `welcome` with an error and is closed.
+- A provider's spec is display only: `name`, `display_name`, `language`
+  and `metadata`. `argv`, `env` and everything else are dropped, so a
+  spec from the socket never names a program to run. A name that a
+  kernelspec on disk or a kernel server lists is refused, so a provider
+  can't stand in front of another kernel.
+- When the connection closes its specs are forgotten and its kernels end
+  dead with reason `lost`, with no restart, so a later launch of the name
+  goes to whatever lists it then, a kernelspec installed on disk
+  afterwards included.
+
+With auth off (`token = ""`), anyone who can reach the port can run
+code, so there is nothing a provider check would add: the socket stays
+closed, with a warning. An embedded server opens none either; the app's
+own kernels go through the C ABI.
+
 ## JupyterLab extensions are code
 
 A JupyterLab extension is JavaScript that JupyterLab loads into its page.

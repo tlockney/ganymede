@@ -1181,7 +1181,6 @@ version = "0.18.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.23.1",
  "ganymede-api",
  "ganymede-kernel-host",
  "ganymede-server",
@@ -1285,6 +1284,7 @@ dependencies = [
 name = "ganymede-protocol"
 version = "0.18.0"
 dependencies = [
+ "base64 0.23.1",
  "bytes",
  "hex",
  "hmac",

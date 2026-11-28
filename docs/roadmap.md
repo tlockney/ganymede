@@ -141,7 +141,8 @@ In order of priority.
      with no window open
      ([#965](https://github.com/tlockney/ganymede/issues/965)); the
      in-app kernel then registers with it over a local socket
-     ([Kernel providers](kernel-provider.md), proposed).
+     ([Kernel providers](kernel-provider.md); the socket is built, the app
+     side is not).
 3. **A person and an agent in one live notebook.** The apps open
    notebooks through rooms (done, above). The app's journal view, which
    shows the agent's journal as it is written
