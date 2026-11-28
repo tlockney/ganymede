@@ -120,6 +120,11 @@ pub struct ServeArgs {
     /// `ganymede mcp`.
     #[arg(long)]
     pub mcp: bool,
+    /// Check GitHub for a newer release at start and every 24 hours, and
+    /// report it at `GET /api/update`. Off by default; see
+    /// `check_for_updates` in the config file.
+    #[arg(long)]
+    pub check_for_updates: bool,
 }
 
 /// The file name looked for in [`ganymede_config_dir`] when `--config`
@@ -331,6 +336,9 @@ impl ServeArgs {
         if cli.mcp {
             cfg.mcp_enabled = true;
         }
+        if cli.check_for_updates {
+            cfg.check_for_updates = true;
+        }
         cfg.kernelspec_roots.extend(cli.kernelspec_root);
         cfg.labextensions_paths.extend(cli.labextensions_path);
 
@@ -413,6 +421,13 @@ pub type OnListening = Box<dyn FnOnce(&str) + Send>;
 /// server wrote (`None` when it wrote none) once the port is bound.
 pub type OnOpenPage = Box<dyn FnOnce(&str, Option<&Path>) + Send>;
 
+/// How the binary finds the latest release (#956): it answers the
+/// version, such as `0.19.0`, and does the HTTP itself, so this crate
+/// brings no HTTP client. `ganymede serve`, `ganymede lab` and
+/// `ganymede ui` give one; an app embedding the server gives none, and
+/// never checks.
+pub type UpdateCheck = Arc<dyn Fn() -> anyhow::Result<String> + Send + Sync>;
+
 /// Whether a server's rooms lock their files in the Jupyter runtime
 /// dir, so the first server with a room open on a notebook owns it and
 /// another server's room on the same file is read-only (#272,
@@ -468,6 +483,17 @@ pub struct Startup {
     /// replace its function while the server runs. Nothing is reported
     /// unless the contents are a local directory.
     pub write_observer: Option<Arc<crate::write_observer::WriteObserver>>,
+    /// How to find the latest release for the update check (#956). `None`
+    /// — an app's server, or `ganymede mcp`'s — never checks and asks no
+    /// one anything; `ganymede serve`, `lab` and `ui` give one and turn
+    /// the check on with `check_for_updates`.
+    pub update_check: Option<UpdateCheck>,
+    /// The version this build is, as `ganymede --version` prints it:
+    /// `0.18.0`, or `0.18.0+main.<commit>` for a build of main, which the
+    /// update check reads to leave those builds alone (#956). `None` — an
+    /// app's server, or `ganymede mcp`'s — is this crate's version, which
+    /// is what a release build has.
+    pub running_version: Option<String>,
 }
 
 #[cfg(feature = "subprocess")]
@@ -701,6 +727,8 @@ impl LocalHost {
             host: Arc::new(cfg.host.clone()),
             machines: Default::default(),
             registered: None,
+            // `ganymede grant`'s host API asks no one anything.
+            update: Default::default(),
         };
         let api = Arc::new(crate::host::HostApi::new(state.clone(), &cfg.host));
         let responder: Arc<dyn ganymede_host::Responder> = api.clone();
@@ -1000,6 +1028,19 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
     }
     let state_collab = Arc::new(collab);
     let contents = contents_for(&root_dir, fs_options, &state_collab)?;
+    // `/api/update` (#956): the check `startup` gave a way to make, on only
+    // when `check_for_updates` is, and never for a build of main. The
+    // version is the binary's, `+main.<commit>` and all; a server embedded
+    // in an app has this crate's, which is what a release build has.
+    let running = startup
+        .running_version
+        .clone()
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    let update = Arc::new(crate::update::Update::new(
+        running,
+        cfg.check_for_updates,
+        startup.update_check.clone(),
+    ));
     let state = AppState {
         kernels: kernels.clone(),
         sessions,
@@ -1041,6 +1082,7 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
         host: Arc::new(cfg.host.clone()),
         machines: startup.machines.clone().unwrap_or_default(),
         registered: Some(registered),
+        update: update.clone(),
     };
 
     // Kept here for as long as the server runs: the manager holds it
@@ -1140,7 +1182,14 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
         f(&url, info_files.as_ref().and_then(|f| f.open_html()));
     }
 
+    // The update check (#956) starts once the server is up, and stops with
+    // it: nothing is asked of anyone after the server stops serving.
+    let update_task = update.start();
+
     serve_until(listener, app, stop, DRAIN_TIMEOUT).await?;
+    if let Some(task) = update_task {
+        task.abort();
+    }
     state_collab.flush_all().await;
     if let Some(t) = &terminals {
         t.shutdown_all();
@@ -1286,6 +1335,27 @@ mod tests {
         let cfg = ServeArgs::default().into_config_with(None).unwrap();
         assert_eq!((cfg.ip.as_str(), cfg.port), ("127.0.0.1", 8888));
         assert_eq!(cfg.token, None);
+    }
+
+    #[test]
+    fn check_for_updates_is_off_by_default_and_the_flag_or_the_file_sets_it() {
+        let cfg = ServeArgs::default().into_config_with(None).unwrap();
+        assert!(!cfg.check_for_updates, "off by default");
+
+        let cfg = ServeArgs {
+            check_for_updates: true,
+            ..Default::default()
+        }
+        .into_config_with(None)
+        .unwrap();
+        assert!(cfg.check_for_updates, "the flag sets it");
+
+        let (_d, path) = config_file("check_for_updates = true\n");
+        let cfg = ServeArgs::default().into_config_with(Some(path)).unwrap();
+        assert!(cfg.check_for_updates, "the file's key sets it");
+        let (_d, path) = config_file("check_for_updates = false\n");
+        let cfg = ServeArgs::default().into_config_with(Some(path)).unwrap();
+        assert!(!cfg.check_for_updates);
     }
 
     #[test]

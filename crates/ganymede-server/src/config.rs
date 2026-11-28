@@ -141,6 +141,12 @@ pub struct Config {
     /// Tailnet identity in place of the token (`docs/security.md`).
     /// `[tailscale] allow` lists the logins let in; empty by default.
     pub tailscale: crate::tailscale::TailscaleConfig,
+    /// Check GitHub for a newer release at start and every 24 hours, and
+    /// report it at `GET /api/update` (#956). Off by default, so nothing is
+    /// asked of anyone unless a person turns it on; `--check-for-updates`
+    /// sets it. Only the `ganymede` binary can check, and a build of main
+    /// is not checked.
+    pub check_for_updates: bool,
 }
 
 /// The server's root when neither `--root-dir` nor `root_dir` is set:
@@ -236,6 +242,7 @@ impl Default for Config {
             crash_reporting: false,
             host: Default::default(),
             tailscale: Default::default(),
+            check_for_updates: false,
         }
     }
 }

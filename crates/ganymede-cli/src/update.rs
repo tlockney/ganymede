@@ -354,6 +354,15 @@ fn tag_version(url: &str) -> Option<&str> {
     url.rsplit_once("/tag/v").map(|(_, v)| v.trim())
 }
 
+/// [`latest`], for a server's update check (#956): `ganymede serve`,
+/// `lab` and `ui` hand this to the server, which asks it once at start
+/// and once a day when `check_for_updates` is on, and reports the answer
+/// at `GET /api/update`. The one request is the `/releases/latest`
+/// redirect's, which it doesn't follow: nothing is downloaded.
+pub(crate) fn latest_release() -> Result<String> {
+    latest()
+}
+
 /// Copies `entry` out of a `.tar.gz` into `out`, within [`MAX_BINARY_BYTES`].
 fn untar_one(archive: impl Read, entry: &str, out: &mut impl Write) -> Result<()> {
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));

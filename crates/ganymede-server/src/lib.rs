@@ -30,6 +30,7 @@ mod stamping;
 pub mod static_headers;
 mod svg;
 pub mod tailscale;
+pub mod update;
 pub mod watch;
 pub mod write_observer;
 pub mod ws;
@@ -122,6 +123,10 @@ pub struct AppState {
     /// somewhere to register its specs. [`serve::LocalHost`] and the tests
     /// leave it `None`.
     pub registered: Option<Arc<ganymede_kernel_host::RegisteredKernels>>,
+    /// `/api/update`: whether this server checks GitHub for a newer
+    /// release, and what the last check found (#956). Off unless
+    /// `check_for_updates` is set and the binary gave a way to check.
+    pub update: Arc<update::Update>,
 }
 
 /// The API router, login pages, and JupyterLab or generic static assets

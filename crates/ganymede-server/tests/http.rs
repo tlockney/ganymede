@@ -132,6 +132,7 @@ fn state_specs(
         host: Default::default(),
         machines: Default::default(),
         registered: None,
+        update: Default::default(),
     }
 }
 
@@ -12734,4 +12735,161 @@ async fn the_mount_takes_the_token_and_cookie_only_from_loopback() {
         StatusCode::FORBIDDEN
     );
     assert_eq!(with_cookie(None).await, StatusCode::FORBIDDEN);
+}
+
+/// The update check (#956): opt-in, off unless `check_for_updates` is set
+/// *and* the binary gave the server a way to ask, reported at
+/// `GET /api/update` and nowhere else.
+mod update {
+    use super::*;
+    use ganymede_server::serve::UpdateCheck;
+    use ganymede_server::update::{Update, UpdateModel};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A check that counts its calls and answers `answer`.
+    fn counting(calls: Arc<AtomicUsize>, answer: &'static str) -> UpdateCheck {
+        Arc::new(move || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(answer.to_string())
+        })
+    }
+
+    fn calls() -> Arc<AtomicUsize> {
+        Arc::new(AtomicUsize::new(0))
+    }
+
+    /// Waits for the check's answer to land, or fails after a second.
+    async fn settle(update: &Update) -> UpdateModel {
+        for _ in 0..200 {
+            let model = update.model();
+            if model.latest.is_some() || model.last_check_failed {
+                return model;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("the update check never answered");
+    }
+
+    #[tokio::test]
+    async fn off_asks_nobody() {
+        let dir = tempfile::tempdir().unwrap();
+        let made = calls();
+        let mut st = state(dir.path());
+        st.update = Arc::new(Update::new(
+            "0.18.0",
+            false,
+            Some(counting(made.clone(), "0.19.0")),
+        ));
+        let update = st.update.clone();
+        let app = build_router(st);
+        assert!(update.start().is_none());
+        assert_eq!(made.load(Ordering::SeqCst), 0);
+        let (status, body) = call(&app, "GET", "/api/update", None, Some(TOKEN)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["enabled"], json!(false));
+        assert_eq!(body["latest"], Value::Null);
+        assert_eq!(body["update_available"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn on_without_a_way_to_ask_stays_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut st = state(dir.path());
+        st.update = Arc::new(Update::new("0.18.0", true, None));
+        let update = st.update.clone();
+        let app = build_router(st);
+        assert!(update.start().is_none());
+        let (_, body) = call(&app, "GET", "/api/update", None, Some(TOKEN)).await;
+        assert_eq!(body["enabled"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn a_newer_release_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut st = state(dir.path());
+        st.update = Arc::new(Update::new(
+            "0.18.0",
+            true,
+            Some(counting(calls(), "0.19.0")),
+        ));
+        let update = st.update.clone();
+        let app = build_router(st);
+        let task = update.start().expect("a check is made");
+        let model = settle(&update).await;
+        task.abort();
+        assert!(model.enabled);
+        assert_eq!(model.running, "0.18.0");
+        assert_eq!(model.latest.as_deref(), Some("0.19.0"));
+        assert!(model.update_available);
+        assert!(!model.last_check_failed);
+        assert!(!model.main_build);
+        let (_, body) = call(&app, "GET", "/api/update", None, Some(TOKEN)).await;
+        assert_eq!(body["enabled"], json!(true));
+        assert_eq!(body["running"], json!("0.18.0"));
+        assert_eq!(body["latest"], json!("0.19.0"));
+        assert_eq!(body["update_available"], json!(true));
+        // `2026-11-28T01:00:00Z`, to the second.
+        let at = body["checked_at"].as_str().expect("a time");
+        assert_eq!(at.len(), 20);
+        assert!(at.ends_with('Z'));
+    }
+
+    #[tokio::test]
+    async fn the_running_version_is_not_newer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut st = state(dir.path());
+        st.update = Arc::new(Update::new(
+            "0.19.0",
+            true,
+            Some(counting(calls(), "0.19.0")),
+        ));
+        let update = st.update.clone();
+        let _ = build_router(st);
+        let task = update.start().expect("a check is made");
+        let model = settle(&update).await;
+        task.abort();
+        assert_eq!(model.latest.as_deref(), Some("0.19.0"));
+        assert!(!model.update_available);
+    }
+
+    #[tokio::test]
+    async fn a_failed_check_is_flagged() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut st = state(dir.path());
+        st.update = Arc::new(Update::new(
+            "0.18.0",
+            true,
+            Some(Arc::new(|| anyhow::bail!("offline"))),
+        ));
+        let update = st.update.clone();
+        let app = build_router(st);
+        let task = update.start().expect("a check is made");
+        let model = settle(&update).await;
+        task.abort();
+        assert!(model.last_check_failed);
+        assert_eq!(model.latest, None);
+        assert!(!model.update_available);
+        // A failed check is not a failed server.
+        assert_eq!(
+            call(&app, "GET", "/api/status", None, Some(TOKEN)).await.0,
+            StatusCode::OK
+        );
+        let (_, body) = call(&app, "GET", "/api/update", None, Some(TOKEN)).await;
+        assert_eq!(body["last_check_failed"], json!(true));
+        assert_eq!(body["latest"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn the_update_endpoint_needs_the_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = build_router(state(dir.path()));
+        assert_eq!(
+            call(&app, "GET", "/api/update", None, None).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            call(&app, "GET", "/api/update", None, Some(TOKEN)).await.0,
+            StatusCode::OK
+        );
+    }
 }

@@ -12,7 +12,14 @@ update check, below, fetches a file and reports nothing.)
 Features you set up yourself do talk to other machines: a remote kernel
 gateway (`--gateway-url`) gets the code you run and returns its output,
 `ganymede lab install` and `ganymede ui install` download from PyPI and
-GitHub, and an agent you connect over MCP sees what its tools return.
+GitHub, `check_for_updates` has the server ask GitHub for the latest
+release's version once a day
+([Security](security.md#update-check)), and an agent you connect over
+MCP sees what its tools return.
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release: the latest release has no `check_for_updates`.
 
 From ganymede-ui 0.11.0 on, the Mac app gives its own server, on your Mac, your account's full name
 when it opens a notebook, so an agent working in the notebook is told

@@ -75,12 +75,14 @@ same name in snake case, except where the last column says otherwise.
 | `--startup-timeout` | As above. | `startup_timeout_secs` |
 | `-q`, `--quiet` | As above. | `quiet` |
 | `--mcp` | Serve notebook tools for coding agents at `/mcp`, behind the token; see [Agents over MCP](mcp.md). | `mcp_enabled` |
+| `--check-for-updates` | Check GitHub once at start, then once a day, for a newer release, and report it at `GET /api/update`; see [Security](security.md#update-check). Off by default. A build of `main` is not checked. | `check_for_updates` |
 | `--config <file>` | The config file to read. Default: `ganymede.toml` in Ganymede's config dir, if it exists; see [Config file](#config-file). | |
 | `--log-level`, `--log-file` | See [Logging](#logging). | |
 
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
-> the latest release. The latest release serves the current directory by default.
+> the latest release. The latest release serves the current directory by
+> default, and has no `--check-for-updates`.
 
 `serve` prints the URL, with its token, as the only line on stdout.
 [Security](security.md) covers what `--ip 0.0.0.0` and `--token ""`
@@ -387,6 +389,7 @@ mcp_no_execute = false           # /mcp edits notebooks but runs no code
 mcp_images = false               # /mcp sends images in outputs to the model
 # mcp_token = "..."              # a token only /mcp accepts (see MCP)
 crash_reporting = false          # true: send crash reports (see Privacy)
+check_for_updates = false        # true: ask GitHub once a day for a newer release (see Security)
 frame_ancestors = "'self'"       # who may frame the server's pages
 
 # Extra response headers for files from a static_dir that
@@ -419,7 +422,8 @@ frame_ancestors = "'self'"       # who may frame the server's pages
 > [!NOTE]
 > **Unreleased.** Available only from a build of `main` (HEAD), not in
 > the latest release. Without `root_dir` (or `--root-dir`) the latest
-> release serves the current directory.
+> release serves the current directory, and it has no
+> `check_for_updates` key.
 
 These eight keys have no flag. The terminal keys, the MCP keys other
 than `mcp_enabled`, `static_headers` and `language_servers` have none
