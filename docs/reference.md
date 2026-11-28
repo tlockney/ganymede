@@ -441,8 +441,13 @@ them.
 | `[tailscale] allow` | Tailnet login names let in without the token when `tailscale serve` forwards their requests to a loopback port, and with `whois` tags (`tag:agent`). Default `[]`, off. See [Security](security.md#tailnet-identity). |
 | `[tailscale] whois` | Identify requests from tailnet addresses with `tailscale whois`. Needs `ip` set to this machine's tailnet address; the server refuses to start otherwise. Default `false`. See [Security](security.md#on-the-tailnet-address). |
 | `[tailscale] cli` | The `tailscale` command `whois` runs. Default `tailscale` on `PATH`. |
-| `[kernel_providers] enabled` | Open the kernel provider socket in the runtime dir, so a program of this user can register kernelspecs and run their kernels. Unix only, needs auth on, and refused when the runtime dir isn't owner-only. Default `false`. See [Kernel providers](embedding.md#kernel-providers). |
+| `[kernel_providers] enabled` | Open the kernel provider socket in the runtime dir, so a program of this user can register kernelspecs and run their kernels. Unix only, needs auth on, and refused when the runtime dir has a group or other write bit or another user owns it. Default `false`. See [Kernel providers](kernel-provider.md). |
 | `frame_ancestors` | The CSP sources allowed to frame the server's pages, added to every response as `frame-ancestors <sources>`. Default `'self'`, as `jupyter_server`; add an origin, such as `'self' https://portal.example.com`, to embed `/lab` in that site. See [Security](security.md#defaults). |
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release. The latest release has no kernel provider socket,
+> so `[kernel_providers] enabled` has no effect there.
 
 ### The host API
 

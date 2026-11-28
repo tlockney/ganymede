@@ -375,11 +375,12 @@ a loopback check doesn't exclude a proxy:
 - Unix only. On Windows the server doesn't open the socket; with
   `enabled` set it warns and serves as usual.
 - The socket file is `0600` and lives in the Jupyter runtime dir, which
-  must already be owner-only (no group or other write bit, owned by this
-  user). It is made in a private temp dir inside that dir, `chmod`ed,
-  then renamed into place, so it is never visible with a wider mode. A
-  runtime dir another user can write means no socket, with a warning: in
-  such a dir the socket's own mode would mean nothing.
+  the server makes `0700` if it is missing and then checks has no group
+  or other write bit and is owned by this user. It is made in a private
+  temp dir inside that dir, `chmod`ed, then renamed into place, so it is
+  never visible with a wider mode. A runtime dir another user can write,
+  or another user owns, means no socket, with a warning: in such a dir
+  the socket's own mode would mean nothing.
 - The peer's uid must be this server's, read from the connection, and
   the first frame must carry the server's token, compared in constant
   time. Another user's connection is closed with no frame; a wrong

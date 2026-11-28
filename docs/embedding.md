@@ -406,7 +406,7 @@ From the server:
 | --- | --- | --- |
 | `welcome` | or `error`, then the connection closes | none |
 | `registered` | `name`, or `name` and `error` | `register`'s return value |
-| `start` | `kernel_id`, `launch` (`cwd`, `env.JPY_SESSION_NAME`) | `start` |
+| `start` | `kernel_id`, `launch` (`env.JPY_SESSION_NAME` only) | `start` |
 | `send` | `kernel_id`, `channel`, `msg` | `send` |
 | `stop` | `kernel_id` | `stop` |
 
