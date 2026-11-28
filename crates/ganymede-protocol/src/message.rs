@@ -202,6 +202,48 @@ impl Message {
     }
 }
 
+/// `msg` in the websocket's JSON shape, with its buffers as base64
+/// strings in `buffers`. This is what the C ABI and the kernel provider
+/// socket carry.
+pub fn message_to_json(msg: &Message) -> crate::Result<Value> {
+    use base64::Engine;
+    let mut v = serde_json::to_value(msg)?;
+    v["buffers"] = msg
+        .buffers
+        .iter()
+        .map(|b| base64::engine::general_purpose::STANDARD.encode(b).into())
+        .collect::<Vec<Value>>()
+        .into();
+    Ok(v)
+}
+
+/// The other way from [`message_to_json`]: base64 strings in `buffers`
+/// become the buffers.
+pub fn message_from_json(mut v: Value) -> crate::Result<Message> {
+    use base64::Engine;
+    let buffers = match v.as_object_mut().and_then(|m| m.remove("buffers")) {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|b| {
+                let text = b
+                    .as_str()
+                    .ok_or(crate::Error::Malformed("a buffer is not a base64 string"))?;
+                Ok(base64::engine::general_purpose::STANDARD
+                    .decode(text)?
+                    .into())
+            })
+            .collect::<crate::Result<_>>()?,
+        Some(_) => return Err(crate::Error::Malformed("buffers is not a list")),
+    };
+    if let Some(m) = v.as_object_mut() {
+        m.remove("channel");
+    }
+    let mut msg: Message = serde_json::from_value(v)?;
+    msg.buffers = buffers;
+    Ok(msg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

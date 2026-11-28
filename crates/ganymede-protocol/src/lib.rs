@@ -20,7 +20,7 @@ pub mod wire;
 pub mod ws;
 
 pub use connection::ConnectionInfo;
-pub use message::{Channel, Header, Message, PROTOCOL_VERSION};
+pub use message::{message_from_json, message_to_json, Channel, Header, Message, PROTOCOL_VERSION};
 
 /// Errors from encoding or decoding messages.
 #[derive(Debug, thiserror::Error)]
@@ -37,6 +37,8 @@ pub enum Error {
     UnsupportedScheme(String),
     #[error("unknown channel: {0}")]
     UnknownChannel(String),
+    #[error("base64: {0}")]
+    Base64(#[from] base64::DecodeError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
