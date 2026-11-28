@@ -51,7 +51,7 @@ same name in snake case, except where the last column says otherwise.
 
 | Flag | Effect | Config key |
 | --- | --- | --- |
-| `--root-dir` | Where notebooks and files are served from. Default: your home directory (the current directory if there is none). `jupyter_server` defaults to the current directory. A project outside the home directory needs `--root-dir`. | |
+| `--root-dir` | Where notebooks and files are served from. Default: your home directory. Without a usable home directory (unset, missing, or `/`) the server won't start and asks for `--root-dir`. `jupyter_server` defaults to the current directory. A project outside the home directory needs `--root-dir`. | |
 | `--ip` | Address to listen on. Default `127.0.0.1`; a non-loopback address also turns on `--allow-remote-access`. | |
 | `--port` | Default 8888. `0` picks a free port. `lab` and `ui` try up to 50 more while it is taken. | |
 | `--token` | The auth token. Unset generates one; an empty string disables auth. | |
