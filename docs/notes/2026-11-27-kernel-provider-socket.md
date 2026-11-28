@@ -59,8 +59,8 @@ Decisions worth the record:
   only `env.JPY_SESSION_NAME`: a provider runs the kernel where and with
   whatever environment it likes, so no `cwd` or other `env` is sent, and
   no `argv`/`env` from a `register` is kept. A close takes the state lock
-  before marking the connection closed, and `start` queues under the same
-  lock, so a launch racing a disconnect leaves no pending `started`
+  before marking the connection closed, and `start` records its pending
+  answer under the same lock, so a launch racing a disconnect leaves no pending `started`
   sender.
 
 Tests. `crates/ganymede-server/tests/kernel_providers.rs` drives

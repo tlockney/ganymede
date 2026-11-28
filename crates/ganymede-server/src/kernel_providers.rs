@@ -33,7 +33,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, WriteHalf};
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -343,7 +343,7 @@ async fn run_connection(
     // welcome must reach the provider before the connection closes.
     let hello = tokio::select! {
         _ = stop.changed() => return,
-        hello = tokio::time::timeout(timing.hello, read_frame(&mut reader)) => hello,
+        hello = tokio::time::timeout(timing.hello, read_frame(&mut reader, MAX_LINE)) => hello,
     };
     let why = match hello {
         Err(_) => Some(format!("no hello within {}s", timing.hello.as_secs_f32())),
@@ -397,7 +397,7 @@ async fn run_connection(
         let line = tokio::select! {
             _ = stop.changed() => break,
             _ = closed_rx.changed() => break,
-            read = read_frame(&mut reader) => match read {
+            read = read_frame(&mut reader, MAX_LINE) => match read {
                 Ok(Some(line)) => line,
                 Ok(None) => break,
                 Err(e) => {
@@ -438,8 +438,9 @@ async fn run_connection(
 
 /// One newline-delimited JSON line, or `None` at EOF. A line over
 /// [`MAX_LINE`] is an error, and the connection closes.
-async fn read_frame(
-    reader: &mut BufReader<ReadHalf<UnixStream>>,
+async fn read_frame<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
+    max: usize,
 ) -> std::io::Result<Option<String>> {
     let mut line: Vec<u8> = Vec::new();
     loop {
@@ -453,10 +454,10 @@ async fn read_frame(
         let take = end.unwrap_or(available.len());
         line.extend_from_slice(&available[..take]);
         reader.consume(take + usize::from(end.is_some()));
-        if line.len() > MAX_LINE {
+        if line.len() > max {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("a frame over {MAX_LINE} bytes"),
+                format!("a frame over {max} bytes"),
             ));
         }
         if end.is_some() {
@@ -816,6 +817,36 @@ struct SpecIn {
 
 #[cfg(test)]
 mod tests {
+    /// A line over the limit is an error, whether or not its newline has
+    /// arrived yet; one at the limit is a frame.
+    #[tokio::test]
+    async fn a_line_over_the_limit_closes_the_connection() {
+        use tokio::io::AsyncWriteExt;
+        let read = |bytes: Vec<u8>| async move {
+            let (mut tx, rx) = tokio::io::duplex(64);
+            let writer = tokio::spawn(async move {
+                let _ = tx.write_all(&bytes).await;
+            });
+            let mut reader = tokio::io::BufReader::with_capacity(4, rx);
+            let r = super::read_frame(&mut reader, 8).await;
+            writer.abort();
+            r
+        };
+        assert_eq!(
+            read(b"12345678\n".to_vec()).await.unwrap().as_deref(),
+            Some("12345678")
+        );
+        let e = read(b"123456789\n".to_vec()).await.unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+        // No newline, and the writer keeps the stream open.
+        let (mut tx, rx) = tokio::io::duplex(64);
+        tx.write_all(b"123456789abc").await.unwrap();
+        let mut reader = tokio::io::BufReader::with_capacity(4, rx);
+        let e = super::read_frame(&mut reader, 8).await.unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+        drop(tx);
+    }
+
     use super::*;
 
     /// Only this user's processes connect: another uid is closed at once.
