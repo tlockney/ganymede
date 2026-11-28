@@ -2418,3 +2418,45 @@ fn mcp_call_reaches_an_agents_own_server() {
         .collect();
     assert!(left.is_empty(), "{left:?}");
 }
+
+/// `ganymede serve --check-for-updates` hands the server its update check
+/// (#956): `/api/update` says it is on, and the check runs. The check
+/// goes through a proxy that refuses connections, so nothing leaves this
+/// machine and the check fails at once.
+#[test]
+fn serve_hands_the_server_its_update_check() {
+    let root = tempfile::tempdir().unwrap();
+    let mut child = ganymede(&[
+        "serve",
+        "--check-for-updates",
+        "--port",
+        "0",
+        "--token",
+        "secret",
+        "--root-dir",
+    ])
+    .arg(root.path())
+    .env("HTTPS_PROXY", "http://127.0.0.1:1")
+    .env("ALL_PROXY", "http://127.0.0.1:1")
+    .env_remove("NO_PROXY")
+    .env_remove("no_proxy")
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null())
+    .spawn()
+    .unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let base = line.trim().split('?').next().unwrap().to_string();
+    let v = update_status(&base);
+    unsafe {
+        kill(child.id() as i32, 15);
+    }
+    assert!(child.wait().unwrap().success(), "clean exit on SIGTERM");
+    assert_eq!(v["enabled"], true, "{v}");
+    assert_eq!(v["running"], env!("GANYMEDE_VERSION"), "{v}");
+    if v["main_build"] == false {
+        assert_eq!(v["last_check_failed"], true, "the check ran: {v}");
+    }
+}

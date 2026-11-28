@@ -122,3 +122,52 @@ fn lab_without_bundle_says_how_to_install() {
         stderr(&out)
     );
 }
+
+/// `ganymede lab --check-for-updates` hands the server its update check
+/// (#956), as `serve` does; `ui` starts through the same `lab_start::run`.
+/// A proxy that refuses connections keeps the check on this machine.
+#[test]
+fn lab_hands_the_server_its_update_check() {
+    let data = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    fake_bundle(data.path(), "4.6.4");
+    let mut child = KillOnDrop(
+        ganymede(&[
+            "lab",
+            "--no-browser",
+            "--check-for-updates",
+            "--port",
+            "0",
+            "--token",
+            "secret",
+        ])
+        .arg("--root-dir")
+        .arg(root.path())
+        .current_dir(root.path())
+        .env("GANYMEDE_DATA_DIR", data.path())
+        .env("JUPYTER_CONFIG_DIR", state.path().join("config"))
+        .env("GANYMEDE_CONFIG_DIR", state.path().join("config"))
+        .env("JUPYTER_RUNTIME_DIR", state.path().join("runtime"))
+        .env("HTTPS_PROXY", "http://127.0.0.1:1")
+        .env("ALL_PROXY", "http://127.0.0.1:1")
+        .env_remove("NO_PROXY")
+        .env_remove("no_proxy")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap(),
+    );
+    let mut line = String::new();
+    std::io::BufReader::new(child.0.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let page = line.trim().split('?').next().unwrap();
+    let base = page.trim_end_matches("lab");
+    let v = update_status(base);
+    assert_eq!(v["enabled"], true, "{v}");
+    assert_eq!(v["running"], env!("GANYMEDE_VERSION"), "{v}");
+    if v["main_build"] == false {
+        assert_eq!(v["last_check_failed"], true, "the check ran: {v}");
+    }
+}

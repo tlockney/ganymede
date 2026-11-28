@@ -791,7 +791,9 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
         }
         Cmd::Serve(args) => {
             let cfg = server_config(*args, &cli.kernelspec_root, cli.startup_timeout, cli.quiet)?;
-            ganymede_server::serve::run(cfg).await?;
+            // The update check is `check_for_updates`' to turn on (#956);
+            // the server only gets a way to make it.
+            ganymede_server::serve::run_with(cfg, update::server_startup()).await?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Mcp(args) => {
@@ -1674,6 +1676,19 @@ mod tests {
             "--no-browser",
         ]));
         assert_eq!((cfg.startup_timeout_secs, cfg.quiet), (7, true));
+    }
+
+    #[test]
+    fn check_for_updates_reaches_the_server_config() {
+        assert!(!serve_config(parse(&["serve"])).check_for_updates, "off");
+        assert!(
+            serve_config(parse(&["serve", "--check-for-updates"])).check_for_updates,
+            "the flag turns the check on"
+        );
+        assert!(
+            serve_config(parse(&["lab", "--check-for-updates"])).check_for_updates,
+            "lab's server too"
+        );
     }
 
     #[test]

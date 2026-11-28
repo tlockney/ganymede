@@ -122,6 +122,7 @@ fn state_with(
         host: Default::default(),
         machines: Default::default(),
         registered: None,
+        update: Default::default(),
     }
 }
 

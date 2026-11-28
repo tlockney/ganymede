@@ -72,6 +72,7 @@ pub const JUPYTER_SERVER_VERSION: &str = "2.21.1";
 pub fn router(state: AppState) -> Router {
     let api = Router::new()
         .route("/api/status", get(status))
+        .route("/api/update", get(update_status))
         .route("/api/me", get(me))
         .route("/api/config/{section}", get(get_config).patch(patch_config))
         .route("/api/nbconvert", get(nbconvert))
@@ -543,6 +544,14 @@ async fn status(State(s): State<AppState>) -> Json<StatusModel> {
         connections: s.kernels.connections(),
         kernels: s.kernels.list().len(),
     })
+}
+
+/// `GET /api/update`: whether this server checks GitHub for a newer
+/// release, what the last check found, and whether one is newer than this
+/// build (#956). `enabled` is false unless `check_for_updates` is set and
+/// the binary gave a way to check; a build of main is never checked.
+async fn update_status(State(s): State<AppState>) -> Json<crate::update::UpdateModel> {
+    Json(s.update.model())
 }
 
 async fn kernelspecs(

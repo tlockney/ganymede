@@ -44,7 +44,8 @@ pub async fn run(cfg: Config, args: Browser, lab: bool) -> Result<()> {
         port_retries: PORT_RETRIES,
         require_lab: lab,
         on_open_page,
-        ..Default::default()
+        // The update check (#956), which `check_for_updates` turns on.
+        ..crate::update::server_startup()
     };
     ganymede_server::serve::run_with(cfg, startup).await
 }

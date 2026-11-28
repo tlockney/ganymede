@@ -521,6 +521,39 @@ outlive it. [The host API](reference.md#the-host-api) has the keys and
 the rest of the errors; `ganymede grant` does the same from the command
 line.
 
+## Check for a newer release
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+Off by default. With `check_for_updates` on, `ganymede serve`, `lab` and
+`ui` ask GitHub for the latest release's version once at start and then
+once a day, and this endpoint reports what they found. It needs the
+token, as the other API routes do.
+
+```http
+GET /api/update
+Authorization: token ***
+```
+
+```json
+{"enabled": true, "running": "0.18.0", "latest": "0.19.0",
+ "update_available": true, "checked_at": "2026-11-28T01:00:00Z",
+ "last_check_failed": false, "main_build": false}
+```
+
+`enabled` is `false` when `check_for_updates` is off, and when the
+server was given no way to check: an app embedding the server never
+checks, since the Mac app updates with Sparkle. `latest` and `checked_at`
+are `null` until a check answers, and stay at the last good answer when
+a check fails, which sets `last_check_failed`. `main_build` is `true`
+for a build of `main`, which is not checked: its next release is the
+latest main build, and that is only known once it is downloaded.
+`update_available` says `latest` is newer than `running`. Nothing is
+downloaded or installed; a person runs `ganymede update`.
+[Security](security.md#update-check) has what the request carries.
+
 ## Every route
 
 What `ganymede serve` answers, beyond the examples above:
@@ -544,6 +577,7 @@ What `ganymede serve` answers, beyond the examples above:
 - Ganymede's own: `/api/kernels/{id}/log`, `/api/notebooks/run`
   ([Run a notebook](#run-a-notebook),
   [Parameters and named results](reference.md#parameters-and-named-results)),
+  `/api/update` ([Check for a newer release](#check-for-a-newer-release)),
   `/api/collaboration/rooms`, which lists the open rooms ([Listing open
   rooms](rooms.md#listing-open-rooms)),
   `/api/collaboration/recovery`, which lists, returns and discards the

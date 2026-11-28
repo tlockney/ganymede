@@ -334,6 +334,7 @@ fn state(
         host: Default::default(),
         machines: Default::default(),
         registered: Some(registered.clone()),
+        update: Default::default(),
     }
 }
 

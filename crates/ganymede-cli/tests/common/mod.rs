@@ -238,3 +238,29 @@ pub fn first_difference(a: &str, b: &str) -> String {
         b.lines().count()
     )
 }
+
+/// `GET /api/update` on the server at `base` (`http://host:port/`), once
+/// its first check has answered (or at once for a build of main, which
+/// isn't checked). The server's token is `secret`.
+pub fn update_status(base: &str) -> serde_json::Value {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let http = reqwest::Client::new();
+        let mut v = serde_json::Value::Null;
+        for _ in 0..300 {
+            let r = http
+                .get(format!("{base}api/update"))
+                .header("Authorization", "token secret")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 200);
+            v = r.json().await.unwrap();
+            if v["main_build"] == true || v["last_check_failed"] == true || !v["latest"].is_null() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        v
+    })
+}

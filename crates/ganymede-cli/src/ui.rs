@@ -151,6 +151,9 @@ pub(crate) struct Releases {
     base: String,
     hosts: Vec<String>,
     agent: ureq::Agent,
+    /// Whether a request that fails with a transient error is sent again,
+    /// saying so on stderr ([`retry`]). Off for a background check.
+    retries: bool,
 }
 
 impl Releases {
@@ -178,7 +181,18 @@ impl Releases {
             base,
             hosts,
             agent: agent(),
+            retries: true,
         })
+    }
+
+    /// [`Releases::at`] for a request made in the background, such as a
+    /// server's update check (#956): one attempt, shorter timeouts, and
+    /// nothing printed. The caller logs the error.
+    pub(crate) fn quiet(base: &str) -> Result<Releases> {
+        let mut releases = Releases::at(base)?;
+        releases.agent = crate::lab::pypi::quick_agent();
+        releases.retries = false;
+        Ok(releases)
     }
 
     fn url(&self, version: &str, file: &str) -> String {
@@ -194,7 +208,7 @@ impl Releases {
     /// answer that is not a redirect.
     pub(crate) fn location(&self, url: &str) -> Result<Option<String>> {
         self.check(url)?;
-        let resp = retry(url, || {
+        let send = || {
             self.agent
                 .get(url)
                 .config()
@@ -202,7 +216,12 @@ impl Releases {
                 .max_redirects_will_error(false)
                 .build()
                 .call()
-        })
+        };
+        let resp = if self.retries {
+            retry(url, send)
+        } else {
+            send()
+        }
         .with_context(|| format!("fetching {url}"))?;
         if !resp.status().is_redirection() {
             return Ok(None);
@@ -474,6 +493,7 @@ mod tests {
             base: DEFAULT_RELEASES.into(),
             hosts: vec!["github.com".into(), ASSET_HOSTS[0].into()],
             agent: agent(),
+            retries: true,
         };
         assert!(r.check(&r.url("0.1.0", "x.zip")).is_ok());
         assert!(r.check("https://objects.githubusercontent.com/a").is_ok());

@@ -124,6 +124,27 @@ impl Index {
 /// there is trusted, and `HTTPS_PROXY`/`ALL_PROXY` from the environment.
 /// Timeouts keep a stalled server from hanging the install.
 pub(crate) fn agent() -> ureq::Agent {
+    agent_with(
+        Duration::from_secs(30),
+        Duration::from_secs(60),
+        Duration::from_secs(15 * 60),
+    )
+}
+
+/// [`agent`] with shorter waits, for a request made in the background
+/// that nobody waits on: a server's update check (#956), which must not
+/// hold up the server's exit for long.
+pub(crate) fn quick_agent() -> ureq::Agent {
+    agent_with(
+        Duration::from_secs(10),
+        Duration::from_secs(10),
+        Duration::from_secs(20),
+    )
+}
+
+/// [`agent`]'s configuration, with `connect` and `response` as the
+/// connect and first-byte timeouts and `global` as the whole request's.
+fn agent_with(connect: Duration, response: Duration, global: Duration) -> ureq::Agent {
     use ureq::tls::{RootCerts, TlsConfig};
     let config = ureq::Agent::config_builder()
         .tls_config(
@@ -132,10 +153,10 @@ pub(crate) fn agent() -> ureq::Agent {
                 .build(),
         )
         .https_only(true)
-        .timeout_connect(Some(Duration::from_secs(30)))
-        .timeout_recv_response(Some(Duration::from_secs(60)))
-        .timeout_recv_body(Some(Duration::from_secs(10 * 60)))
-        .timeout_global(Some(Duration::from_secs(15 * 60)))
+        .timeout_connect(Some(connect))
+        .timeout_recv_response(Some(response))
+        .timeout_recv_body(Some(Duration::from_secs(10 * 60).min(global)))
+        .timeout_global(Some(global))
         .max_redirects(5)
         .user_agent(concat!("ganymede/", env!("CARGO_PKG_VERSION")))
         .build();
