@@ -342,6 +342,86 @@ pub unsafe extern "C" fn ganymede_server_stop(server: *mut GanymedeServer) {
     drop(server);
 }
 
+/// The keys of `ganymede.toml` in `dir` (NULL: Ganymede's config dir) as a
+/// JSON object, `"{}"` when there is no file. Free it with
+/// [`ganymede_string_free`]. NULL on failure, with `*error_out` (when
+/// `error_out` is not NULL) set to a message to free with
+/// [`ganymede_string_free`]. Any thread; no server needed.
+///
+/// The keys are the file's, not checked against the server's: an unknown
+/// key from a newer Ganymede is returned as it is. With `dir` NULL and no
+/// file in Ganymede's config dir, this reads the one `ganymede serve`
+/// would: the legacy file in the Jupyter config dir, when it exists.
+///
+/// # Safety
+///
+/// `dir` is NULL or a NUL-terminated string; `error_out` is NULL or valid
+/// for a write.
+#[no_mangle]
+pub unsafe extern "C" fn ganymede_config_read(
+    dir: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    let result = (|| -> anyhow::Result<String> {
+        // SAFETY: the caller passes a string or NULL.
+        let dir = unsafe { from_c(dir) };
+        let keys = ganymede_server::config_file::read(dir.as_deref().map(std::path::Path::new))?;
+        Ok(serde_json::to_string(&keys)?)
+    })();
+    match result {
+        Ok(json) => into_c(json),
+        Err(e) => {
+            if !error_out.is_null() {
+                // SAFETY: the caller passes a pointer valid for a write.
+                unsafe { *error_out = into_c(format!("{e:#}")) };
+            }
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Applies `json`, a JSON object, to `ganymede.toml` in `dir` (NULL:
+/// Ganymede's config dir): a value sets a key, `null` removes it, an
+/// object merges into that table. Comments, order and other keys are
+/// kept. An edit that would make the config invalid is refused and the
+/// file is left as it was. The file is written atomically, mode 0600, and
+/// its dir created 0700. Returns 0, or nonzero with `*error_out` set as
+/// above. Any thread; no server needed.
+///
+/// The file is the one `ganymede serve` reads, so the app's settings and
+/// the server's are one file: read it with [`ganymede_config_read`], add
+/// the keys only the app's launch needs, and pass the JSON to
+/// [`ganymede_server_start`]. A symlinked file is written where it points.
+///
+/// # Safety
+///
+/// `dir` and `json` are NULL or NUL-terminated strings; `error_out` is
+/// NULL or valid for a write.
+#[no_mangle]
+pub unsafe extern "C" fn ganymede_config_set(
+    dir: *const c_char,
+    json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let result = (|| -> anyhow::Result<()> {
+        // SAFETY: the caller passes strings or NULL.
+        let (dir, json) = unsafe { (from_c(dir), from_c(json)) };
+        let json = json.ok_or_else(|| anyhow::anyhow!("json is NULL"))?;
+        let patch: serde_json::Value = serde_json::from_str(&json)?;
+        ganymede_server::config_file::set(dir.as_deref().map(std::path::Path::new), &patch)
+    })();
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            if !error_out.is_null() {
+                // SAFETY: the caller passes a pointer valid for a write.
+                unsafe { *error_out = into_c(format!("{e:#}")) };
+            }
+            1
+        }
+    }
+}
+
 /// Frees a string this library returned. NULL is ignored.
 ///
 /// # Safety
