@@ -457,6 +457,26 @@ them.
 > the latest release. The latest release doesn't know
 > `[kernel_providers]` and refuses to start with it in its config.
 
+### Programs that edit the file
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+A program can edit this file through the C ABI's two
+[config functions](embedding.md#the-server-in-an-app-from-c),
+`ganymede_config_read` and `ganymede_config_set`, without writing TOML
+itself. Its edits keep the comments, order and other keys a person wrote.
+An edit that would make the file invalid is refused and the file is left
+as it was, and a file it does write is replaced atomically, mode 0600.
+
+The Mac app does not use them yet: it keeps its settings in its own
+preferences and passes them to its server at launch. Moving them into
+this file — `mcp_enabled`, `mcp_read_only`, `mcp_no_execute`,
+`mcp_images`, `[tailscale] allow` and the `[host]` defaults, never
+`token` or `mcp_token` — is
+[ganymede-ui#902](https://github.com/tlockney/ganymede-ui/issues/902).
+
 ### The host API
 
 `[host] read` lists the API paths that cell code may read through the

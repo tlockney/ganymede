@@ -2,7 +2,9 @@
  * does: start, print the URL, register a kernel, stop. CI builds and runs
  * it. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "ganymede.h"
 
 static int released = 0;
@@ -91,6 +93,36 @@ int main(void) {
         return 1;
     }
     ganymede_string_free(machines);
+    /* The config file, through the header's same two functions: a dir with
+     * none reads as "{}", a set writes one, and a read gives it back. */
+    char config_dir[] = "/tmp/ganymede-smoke-XXXXXX";
+    if (!mkdtemp(config_dir)) {
+        fprintf(stderr, "mkdtemp failed\n");
+        return 1;
+    }
+    char *keys = ganymede_config_read(config_dir, &err);
+    if (!keys || strcmp(keys, "{}") != 0) {
+        fprintf(stderr, "config read gave %s\n", keys ? keys : "NULL");
+        return 1;
+    }
+    ganymede_string_free(keys);
+    if (ganymede_config_set(config_dir, "{\"mcp_enabled\": true}", &err) != 0) {
+        fprintf(stderr, "config set failed: %s\n", err);
+        ganymede_string_free(err);
+        return 1;
+    }
+    keys = ganymede_config_read(config_dir, &err);
+    if (!keys || strcmp(keys, "{\"mcp_enabled\":true}") != 0) {
+        fprintf(stderr, "config read gave %s after a set\n", keys ? keys : "NULL");
+        return 1;
+    }
+    ganymede_string_free(keys);
+    {
+        char config_file[64];
+        snprintf(config_file, sizeof config_file, "%s/ganymede.toml", config_dir);
+        remove(config_file);
+    }
+    rmdir(config_dir);
     /* The write observer is set, replaced and removed. */
     ganymede_server_set_write_observer(server, wrote, wrote_release, &wrote_released);
     ganymede_server_set_write_observer(server, wrote, wrote_release, &wrote_released);

@@ -91,6 +91,20 @@ void ganymede_server_set_write_observer(GanymedeServer *server,
 /* Frees a string returned by this library. NULL is ignored. */
 void ganymede_string_free(char *s);
 
+/* The keys of ganymede.toml in dir (NULL: Ganymede's config dir) as a JSON
+ * object, "{}" when there is no file. Free it with ganymede_string_free.
+ * NULL on failure, with *error_out (when error_out is not NULL) set to a
+ * message to free with ganymede_string_free. Any thread; no server needed. */
+char *ganymede_config_read(const char *dir, char **error_out);
+
+/* Applies json, a JSON object, to ganymede.toml in dir (NULL: Ganymede's
+ * config dir): a value sets a key, null removes it, an object merges into
+ * that table. Comments, order and other keys are kept. An edit that would
+ * make the config invalid is refused and the file is left as it was. The
+ * file is written atomically, mode 0600, and the dir created 0700. Returns 0,
+ * or nonzero with *error_out set as above. Any thread; no server needed. */
+int ganymede_config_set(const char *dir, const char *json, char **error_out);
+
 /* An app's callbacks for kernels it runs itself (#266). The server calls
  * start, send and stop on its own threads, never the main thread, maybe at
  * once for different kernels; they must not block. send calls for one

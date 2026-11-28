@@ -236,9 +236,30 @@ code.
 | `int ganymede_server_add_machine(GanymedeServer *server, const char *id, const char *url, const char *token, char **error_out)` | Mounts the Ganymede server at `url` as machine `id` (see [Connected machines](#connected-machines)). `token` may be NULL. Returns 0, or nonzero for a bad `id` or `url`, and then `*error_out` holds a message. Any thread. |
 | `int ganymede_server_remove_machine(GanymedeServer *server, const char *id)` | Unmounts machine `id` and closes its open websockets. Its requests still waiting for an answer end with a 502, and its response bodies still streaming end with an error. Returns 1 if it was mounted, 0 if not. Any thread. |
 | `char *ganymede_server_machines(const GanymedeServer *server)` | The ids of the machines mounted now, sorted, as a JSON array of strings (`["laptop","mini"]`, or `[]`). Free it with `ganymede_string_free`. NULL when `server` is NULL. Any thread. |
-| `void ganymede_string_free(char *s)` | Frees a string the library returned, such as the error or the list of machines. NULL is ignored. |
+| `char *ganymede_config_read(const char *dir, char **error_out)` | The keys of `ganymede.toml` in `dir` (NULL: Ganymede's config dir) as a JSON object, `"{}"` when there is no file, for passing to `ganymede_server_start`. The file's keys as they are, not checked against the server's. Free it with `ganymede_string_free`. NULL on failure, and then `*error_out` holds a message. Any thread; no server needed. |
+| `int ganymede_config_set(const char *dir, const char *json, char **error_out)` | Applies `json`, a JSON object, to `ganymede.toml` in `dir` (NULL: Ganymede's config dir): a value sets a key, `null` removes it, an object merges into that table. Comments, order and other keys are kept, and the file is replaced atomically with mode 0600. An edit that would make the config invalid is refused and the file is left as it was. Returns 0, or nonzero with `*error_out` set. Any thread; no server needed. |
+| `void ganymede_string_free(char *s)` | Frees a string the library returned, such as the error, the list of machines or the config's keys. NULL is ignored. |
 | `void ganymede_set_panic_callback(GanymedePanicCallback cb)` | Calls `cb(message)` on the panicking thread after any panic in the library, with `panicked at <file>:<line>:<col>: <message>`, valid during the call. For the app's crash reporter: a panic in a server task doesn't end the app, so this is how it hears of one. NULL removes it. The library sends nothing itself. |
 | `void ganymede_debug_panic(void)` | Panics on the calling thread, which aborts the process. For testing crash reports. |
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+`ganymede_config_read` and `ganymede_config_set` let an app keep its
+settings in the file `ganymede serve` reads. The app reads `ganymede.toml`
+with `ganymede_config_read`, adds the keys only its launch needs
+(`root_dir`, `static_dir`, `port`, `cookie_secret_file`), and passes the
+JSON to `ganymede_server_start`, so the embedded server and
+`ganymede serve` see the same settings. It writes a setting with
+`ganymede_config_set`, so the file keeps the comments, order and other
+keys a person wrote, and the server reads the change on its next start:
+the app never writes TOML. With a NULL `dir`, both follow the file
+`ganymede serve` reads: when that is still the old one in the Jupyter
+config dir, `ganymede_config_read` reads it and `ganymede_config_set`
+refuses, saying to move it, since a new file would make the server ignore
+it. Calls in one process take turns; two processes writing at once can
+lose one edit.
 
 `config_json` is a JSON object with the keys of
 [`ganymede.toml`](reference.md#config-file), or NULL. `port` defaults to
