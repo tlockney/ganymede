@@ -23,6 +23,7 @@ use ganymede_kernel_host::{
 use ganymede_server::kernel_providers::{self, Timing};
 use ganymede_server::{build_router, AppState};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -414,6 +415,7 @@ async fn the_socket_is_off_by_default() {
         Some(TOKEN),
         Timing::default(),
         registered.clone(),
+        &BTreeMap::new(),
     );
     assert!(off.is_none(), "nothing opens with [kernel_providers] off");
     assert!(!path.exists(), "no socket file, {}", path.display());
@@ -430,8 +432,15 @@ async fn the_handshake_is_checked() {
         write_stall: Duration::from_secs(5),
         ..Timing::default()
     };
-    let listener = kernel_providers::start(true, false, Some(TOKEN), timing, registered.clone())
-        .expect("the socket opens");
+    let listener = kernel_providers::start(
+        true,
+        false,
+        Some(TOKEN),
+        timing,
+        registered.clone(),
+        &BTreeMap::new(),
+    )
+    .expect("the socket opens");
 
     // A wrong token: `welcome` with the error, then closed.
     let mut wrong = UnixStream::connect(listener.path()).await.unwrap();
@@ -500,6 +509,7 @@ async fn the_socket_is_named_in_the_info_file() {
         Some(TOKEN),
         Timing::default(),
         registered.clone(),
+        &BTreeMap::new(),
     )
     .expect("the socket opens");
     let path = listener.path().to_path_buf();
@@ -544,6 +554,7 @@ async fn a_provider_kernel_runs_through_the_api() {
         Some(TOKEN),
         Timing::default(),
         registered.clone(),
+        &BTreeMap::new(),
     )
     .expect("the socket opens");
 
@@ -683,6 +694,80 @@ async fn a_provider_kernel_runs_through_the_api() {
     );
 }
 
+/// A reserved name is refused to a provider whose signature doesn't meet
+/// the requirement, before the first-come check, and isn't listed; a name
+/// with no reservation on the same connection still registers.
+#[tokio::test]
+async fn a_reserved_name_is_refused_and_another_registers() {
+    let _serial = serial().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (registered, kernels) = kit(dir.path(), vec![]);
+    let app = build_router(state(dir.path(), &registered, kernels.clone()));
+    let reserve = BTreeMap::from([("cdp-browser".to_string(), "never".to_string())]);
+    let listener = kernel_providers::start(
+        true,
+        false,
+        Some(TOKEN),
+        Timing::default(),
+        registered.clone(),
+        &reserve,
+    )
+    .expect("the socket opens");
+
+    let mut fake = Fake::connect(listener.path()).await;
+    let reply = fake
+        .register(json!({"name": "cdp-browser", "display_name": "Browser"}))
+        .await;
+    assert!(
+        reply["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("reserved"),
+        "{reply}"
+    );
+    let (code, specs) = call(&app, "GET", "/api/kernelspecs", None).await;
+    assert_eq!(code, StatusCode::OK);
+    assert!(specs["kernelspecs"]["cdp-browser"].is_null(), "{specs}");
+
+    // Not the connection's fault, and not the first-come check's: its own
+    // name registers, and is listed.
+    let reply = fake
+        .register(json!({"name": "cdp-node", "display_name": "Node"}))
+        .await;
+    assert!(reply.get("error").is_none(), "{reply}");
+    let (_, specs) = call(&app, "GET", "/api/kernelspecs", None).await;
+    assert!(specs["kernelspecs"]["cdp-node"].is_object(), "{specs}");
+}
+
+/// On macOS a provider whose signature meets the requirement registers the
+/// reserved name as any other name.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_reserved_name_is_allowed_to_the_program_that_meets_it() {
+    let _serial = serial().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (registered, kernels) = kit(dir.path(), vec![]);
+    let app = build_router(state(dir.path(), &registered, kernels.clone()));
+    let reserve = BTreeMap::from([("cdp-browser".to_string(), "always".to_string())]);
+    let listener = kernel_providers::start(
+        true,
+        false,
+        Some(TOKEN),
+        Timing::default(),
+        registered.clone(),
+        &reserve,
+    )
+    .expect("the socket opens");
+
+    let mut fake = Fake::connect(listener.path()).await;
+    let reply = fake
+        .register(json!({"name": "cdp-browser", "display_name": "Browser"}))
+        .await;
+    assert!(reply.get("error").is_none(), "{reply}");
+    let (_, specs) = call(&app, "GET", "/api/kernelspecs", None).await;
+    assert!(specs["kernelspecs"]["cdp-browser"].is_object(), "{specs}");
+}
+
 /// A second connection can't take a name the first holds, a name on disk
 /// is refused, and a provider's own name can be given back.
 #[tokio::test]
@@ -697,6 +782,7 @@ async fn registrations_are_first_come_and_dropped_from_the_fallback() {
         Some(TOKEN),
         Timing::default(),
         registered.clone(),
+        &BTreeMap::new(),
     )
     .expect("the socket opens");
 
@@ -769,6 +855,7 @@ async fn a_dropped_connection_loses_its_kernels() {
         Some(TOKEN),
         Timing::default(),
         registered.clone(),
+        &BTreeMap::new(),
     )
     .expect("the socket opens");
 
@@ -849,8 +936,15 @@ async fn a_provider_that_takes_nothing_is_closed() {
         write_stall: Duration::from_millis(200),
         ..Timing::default()
     };
-    let listener = kernel_providers::start(true, false, Some(TOKEN), timing, registered.clone())
-        .expect("the socket opens");
+    let listener = kernel_providers::start(
+        true,
+        false,
+        Some(TOKEN),
+        timing,
+        registered.clone(),
+        &BTreeMap::new(),
+    )
+    .expect("the socket opens");
 
     let mut fake = Fake::connect(listener.path()).await;
     fake.register(json!({"name": "cdp-node", "display_name": "Node"}))
@@ -936,6 +1030,7 @@ async fn a_start_carries_only_the_session_name() {
         Some(TOKEN),
         Timing::default(),
         registered.clone(),
+        &BTreeMap::new(),
     )
     .expect("the socket opens");
 
@@ -1007,6 +1102,7 @@ async fn a_refused_start_is_a_500_and_is_not_retried() {
         Some(TOKEN),
         Timing::default(),
         registered.clone(),
+        &BTreeMap::new(),
     )
     .expect("the socket opens");
 
@@ -1087,6 +1183,7 @@ async fn a_start_nobody_answers_times_out_as_a_500() {
         Some(TOKEN),
         Timing::default(),
         registered.clone(),
+        &BTreeMap::new(),
     )
     .expect("the socket opens");
 
@@ -1137,8 +1234,15 @@ async fn a_quiet_connection_is_closed_at_the_hello_deadline() {
         hello: Duration::from_millis(100),
         ..Timing::default()
     };
-    let listener = kernel_providers::start(true, false, Some(TOKEN), timing, registered.clone())
-        .expect("the socket opens");
+    let listener = kernel_providers::start(
+        true,
+        false,
+        Some(TOKEN),
+        timing,
+        registered.clone(),
+        &BTreeMap::new(),
+    )
+    .expect("the socket opens");
 
     // Not one byte, not even a hello: the refusal is a `welcome` with an
     // error, as for any failed handshake, and then EOF.
@@ -1190,6 +1294,7 @@ async fn a_session_start_names_the_notebook() {
         Some(TOKEN),
         Timing::default(),
         registered.clone(),
+        &BTreeMap::new(),
     )
     .expect("the socket opens");
 
@@ -1239,6 +1344,7 @@ async fn another_connection_cannot_deliver_to_or_end_a_kernel() {
         Some(TOKEN),
         Timing::default(),
         registered.clone(),
+        &BTreeMap::new(),
     )
     .expect("the socket opens");
 
@@ -1353,8 +1459,15 @@ async fn a_full_queue_closes_the_connection() {
         write_stall: Duration::from_secs(60),
         queue: 4,
     };
-    let listener = kernel_providers::start(true, false, Some(TOKEN), timing, registered.clone())
-        .expect("the socket opens");
+    let listener = kernel_providers::start(
+        true,
+        false,
+        Some(TOKEN),
+        timing,
+        registered.clone(),
+        &BTreeMap::new(),
+    )
+    .expect("the socket opens");
 
     let mut fake = Fake::connect(listener.path()).await;
     fake.register(json!({"name": "cdp-node", "display_name": "Node"}))
@@ -1418,16 +1531,23 @@ async fn a_refusal_leaves_no_socket() {
 
     // No token: the socket would be open to anyone who can reach it.
     let (registered, _) = kit(dir.path(), vec![]);
-    assert!(
-        kernel_providers::start(true, false, None, Timing::default(), registered.clone()).is_none()
-    );
+    assert!(kernel_providers::start(
+        true,
+        false,
+        None,
+        Timing::default(),
+        registered.clone(),
+        &BTreeMap::new()
+    )
+    .is_none());
     // Embedded: no socket at all.
     assert!(kernel_providers::start(
         true,
         true,
         Some(TOKEN),
         Timing::default(),
-        registered.clone()
+        registered.clone(),
+        &BTreeMap::new()
     )
     .is_none());
     // Off.
@@ -1436,7 +1556,8 @@ async fn a_refusal_leaves_no_socket() {
         false,
         Some(TOKEN),
         Timing::default(),
-        registered.clone()
+        registered.clone(),
+        &BTreeMap::new()
     )
     .is_none());
 
@@ -1459,6 +1580,7 @@ async fn a_refusal_leaves_no_socket() {
         Some(TOKEN),
         Timing::default(),
         registered.clone(),
+        &BTreeMap::new(),
     );
     assert!(refused.is_none(), "a world-writable runtime dir is refused");
     assert!(!socket(&at).exists(), "no socket in it");
@@ -1469,7 +1591,14 @@ async fn a_refusal_leaves_no_socket() {
     std::fs::create_dir_all(&long).unwrap();
     std::fs::set_permissions(&long, std::fs::Permissions::from_mode(0o700)).unwrap();
     std::env::set_var("JUPYTER_RUNTIME_DIR", &long);
-    let refused = kernel_providers::start(true, false, Some(TOKEN), Timing::default(), registered);
+    let refused = kernel_providers::start(
+        true,
+        false,
+        Some(TOKEN),
+        Timing::default(),
+        registered,
+        &BTreeMap::new(),
+    );
     std::env::set_var("JUPYTER_RUNTIME_DIR", runtime_dir());
     assert!(refused.is_none(), "a path over the limit is refused");
     assert!(!socket(&long).exists(), "no socket there");
@@ -1482,8 +1611,15 @@ async fn dropping_the_listener_closes_live_connections() {
     let _serial = serial().await;
     let dir = tempfile::tempdir().unwrap();
     let (registered, _) = kit(dir.path(), vec![]);
-    let listener = kernel_providers::start(true, false, Some(TOKEN), Timing::default(), registered)
-        .expect("the socket opens");
+    let listener = kernel_providers::start(
+        true,
+        false,
+        Some(TOKEN),
+        Timing::default(),
+        registered,
+        &BTreeMap::new(),
+    )
+    .expect("the socket opens");
     let path = listener.path().to_path_buf();
 
     let mut fake = Fake::connect(&path).await;
