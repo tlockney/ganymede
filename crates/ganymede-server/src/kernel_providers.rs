@@ -11,9 +11,10 @@
 //! The socket lives in the Jupyter runtime dir, `ganymede-kernels-<pid>.sock`,
 //! and is named in `jpserver-<pid>.json` as `kernel_providers_socket`. It
 //! is made `0600` in a private temp dir and renamed into place, so it is
-//! never visible with a wider mode; the runtime dir itself must already
-//! be owner-only. A connection must come from this user (checked with the
-//! peer's uid) and say `hello` with the server's token within
+//! never visible with a wider mode; the runtime dir itself must have no
+//! group or other write bit and be owned by this user. A connection must
+//! come from this user (checked with the peer's uid) and say `hello` with
+//! the server's token within
 //! [`Timing::hello`]. While it holds the connection it may register
 //! display-only kernelspecs (no `argv`, no `env`) and answer `start`,
 //! `send` and `stop` for the kernels it started. When it closes, its
@@ -24,11 +25,11 @@ use anyhow::Context;
 use ganymede_kernel_host::{
     AppKernel, Ended, InterruptMode, Kernelspec, LaunchOptions, RegisteredKernels,
 };
-use ganymede_protocol::{Channel, Message};
+use ganymede_protocol::{message_from_json, message_to_json, Channel, Message};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -40,14 +41,13 @@ use tokio::sync::{mpsc, oneshot, watch};
 /// can be large. A longer one closes the connection.
 const MAX_LINE: usize = 64 * 1024 * 1024;
 
-/// Frames waiting for the writer before the connection is closed rather
-/// than drop one. The events socket's rule (#978), one queue per
-/// connection.
-const QUEUE: usize = 1024;
+/// The default number of frames waiting for the writer before a
+/// connection is closed rather than drop one.
+pub const DEFAULT_QUEUE: usize = 1024;
 
-/// How a connection's handshake and writes are timed. The defaults are
-/// what a provider gets; a test overrides them, since it can't wait
-/// seconds, through [`crate::serve::Startup::kernel_provider_timing`].
+/// How a connection's handshake, writes and queue are sized and timed.
+/// The defaults are what a provider gets; a test overrides them, since it
+/// can't wait seconds.
 #[derive(Debug, Clone, Copy)]
 pub struct Timing {
     /// How long a new connection has to send `hello`.
@@ -55,6 +55,10 @@ pub struct Timing {
     /// How long one write to a provider may take before the connection is
     /// closed: a provider that takes nothing is not reading.
     pub write_stall: Duration,
+    /// Frames waiting for the writer. When the queue is full, the
+    /// connection is closed rather than drop a frame, as the events
+    /// socket does (#980).
+    pub queue: usize,
 }
 
 impl Default for Timing {
@@ -62,6 +66,7 @@ impl Default for Timing {
         Timing {
             hello: Duration::from_secs(10),
             write_stall: Duration::from_secs(10),
+            queue: DEFAULT_QUEUE,
         }
     }
 }
@@ -143,24 +148,36 @@ fn listen(
     let dir = ganymede_kernel_host::kernelspec::jupyter_runtime_dir();
     crate::server_info::create_private_dir(&dir)
         .with_context(|| format!("cannot create {}", dir.display()))?;
-    check_private_dir(&dir)?;
-    let path = dir.join(format!("ganymede-kernels-{}.sock", std::process::id()));
-    let len = path.as_os_str().as_encoded_bytes().len();
-    let max = max_socket_path_len();
-    if len > max {
-        anyhow::bail!(
-            "{} is {len} bytes, over the platform's {max}-byte socket path limit",
-            path.display()
-        );
-    }
 
     // Made in a private temp dir and renamed into place, so the socket is
     // never visible with the mode `bind` gives it (0077 less the umask).
+    // The temp dir is this process's, so its owner is this process's uid.
     let staging = tempfile::Builder::new()
-        .prefix(".ganymede-kernels-")
+        .prefix(".gk-")
         .tempdir_in(&dir)
         .context("cannot make a temp dir for the socket")?;
-    let staged = staging.path().join("socket");
+    let own_uid = staging
+        .path()
+        .metadata()
+        .with_context(|| format!("cannot read {}", staging.path().display()))?
+        .uid();
+    check_private_dir_for(&dir, own_uid)?;
+
+    let path = dir.join(format!("ganymede-kernels-{}.sock", std::process::id()));
+    let staged = staging.path().join("s");
+    // The path actually bound is the staged one, so the check has to cover
+    // it too: on a long runtime dir it can be the longer of the two.
+    let max = max_socket_path_len();
+    for p in [&path, &staged] {
+        let len = p.as_os_str().as_encoded_bytes().len();
+        if len > max {
+            anyhow::bail!(
+                "{} is {len} bytes, over the platform's {max}-byte socket path limit",
+                p.display()
+            );
+        }
+    }
+
     let listener = std::os::unix::net::UnixListener::bind(&staged)
         .with_context(|| format!("cannot bind {}", staged.display()))?;
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600))
@@ -186,6 +203,7 @@ fn listen(
         listener,
         registered.clone(),
         token.into(),
+        own_uid,
         timing,
         stop,
     ));
@@ -202,10 +220,10 @@ async fn accept_loop(
     listener: tokio::net::UnixListener,
     registered: Arc<RegisteredKernels>,
     token: Arc<str>,
+    own_uid: u32,
     timing: Timing,
     mut stop: watch::Receiver<bool>,
 ) {
-    let own_uid = own_uid();
     loop {
         let (stream, _) = tokio::select! {
             _ = stop.changed() => break,
@@ -233,28 +251,41 @@ fn peer_allowed(peer_uid: u32, own_uid: u32) -> bool {
     peer_uid == own_uid
 }
 
-/// This process's effective uid, which a connection's peer uid must
-/// match.
-fn own_uid() -> u32 {
-    // SAFETY: `geteuid` takes no arguments and cannot fail on any Unix.
-    unsafe { libc::geteuid() }
-}
-
 /// The longest path a Unix socket may have here: `sockaddr_un.sun_path`
-/// less the terminating NUL (104 bytes on macOS, 108 on Linux).
+/// less the terminating NUL.
 fn max_socket_path_len() -> usize {
-    // SAFETY: `sockaddr_un` is plain data of integer arrays and scalars;
-    // all-zero is a valid, if unbound, value, and only its layout is read.
-    let addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    addr.sun_path.len() - 1
+    // `sun_path` is 104 bytes on macOS and the BSDs, 108 on Linux and
+    // Android.
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    const SUN_PATH: usize = 104;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    const SUN_PATH: usize = 108;
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly",
+        target_os = "linux",
+        target_os = "android"
+    )))]
+    const SUN_PATH: usize = 108;
+    SUN_PATH - 1
 }
 
-/// Whether `dir` is one only this user can write: no group or other write
-/// bit (so no one else can plant a socket or a file there), and owned by
-/// this user. Anything else and the socket isn't opened: the file mode of
-/// the socket would mean nothing in a dir another user can write.
-fn check_private_dir(dir: &Path) -> anyhow::Result<()> {
-    use std::os::unix::fs::MetadataExt;
+/// Whether `dir` is one only `own_uid`'s user can write: no group or other
+/// write bit (so no one else can plant a socket or a file there), and
+/// owned by that uid. Anything else and the socket isn't opened: the file
+/// mode of the socket would mean nothing in a dir another user can write.
+fn check_private_dir_for(dir: &Path, own_uid: u32) -> anyhow::Result<()> {
     let meta = dir
         .metadata()
         .with_context(|| format!("cannot read {}", dir.display()))?;
@@ -265,10 +296,9 @@ fn check_private_dir(dir: &Path) -> anyhow::Result<()> {
             dir.display()
         );
     }
-    let own = own_uid();
-    if meta.uid() != own {
+    if meta.uid() != own_uid {
         anyhow::bail!(
-            "{} is owned by uid {}, not this server's {own}",
+            "{} is owned by uid {}, not this server's {own_uid}",
             dir.display(),
             meta.uid()
         );
@@ -340,7 +370,7 @@ async fn run_connection(
         return;
     }
 
-    let (out, out_rx) = mpsc::channel::<String>(QUEUE);
+    let (out, out_rx) = mpsc::channel::<String>(timing.queue);
     let (closed, closed_rx) = watch::channel(false);
     let kernel = Arc::new(ProviderKernel {
         out,
@@ -490,6 +520,10 @@ struct ProviderKernel {
 
 #[derive(Default)]
 struct KernelState {
+    /// Set when the connection is closing, under the same lock `start`
+    /// checks before it queues anything, so a late start never leaves a
+    /// pending `started` sender.
+    closed: bool,
     /// The `started` answer of each start, for [`AppKernel::started`],
     /// which the host calls right after `start` returns.
     acks: HashMap<String, oneshot::Receiver<std::result::Result<(), String>>>,
@@ -516,7 +550,14 @@ impl ProviderKernel {
         }
     }
 
+    /// Marks the connection closed and wakes its reader and writer. The
+    /// flag goes under the state lock so [`AppKernel::start`] sees it.
     fn close(&self) {
+        let mut state = self.state.lock().unwrap();
+        if state.closed {
+            return;
+        }
+        state.closed = true;
         let _ = self.closed.send(true);
     }
 
@@ -533,21 +574,10 @@ impl ProviderKernel {
                     tracing::debug!("a register frame has no spec");
                     return false;
                 };
-                let name = spec.name.to_lowercase();
                 // Display fields only: a provider never names a program to
                 // run. `argv`, `env` and the rest are dropped here.
-                let spec = Kernelspec {
-                    name: name.clone(),
-                    resource_dir: PathBuf::new(),
-                    gateway: false,
-                    argv: Vec::new(),
-                    display_name: spec.display_name,
-                    language: spec.language,
-                    interrupt_mode: InterruptMode::Message,
-                    env: BTreeMap::new(),
-                    metadata: spec.metadata,
-                    extra: Map::new(),
-                };
+                let spec = display_spec(spec);
+                let name = spec.name.clone();
                 let reply =
                     match registered
                         .register(spec, ganymede_kernel_host::Origin::Provider, || app.clone())
@@ -664,6 +694,12 @@ impl AppKernel for ProviderKernel {
         let (tx, rx) = oneshot::channel();
         {
             let mut state = self.state.lock().unwrap();
+            // Under the same lock close takes: a launch racing a close
+            // either queues before the provider went away or fails here,
+            // never leaving a pending `started` sender behind.
+            if state.closed {
+                return Err("provider disconnected".into());
+            }
             state.pending.insert(kernel_id.to_string(), tx);
             state.acks.insert(kernel_id.to_string(), rx);
             state.started.insert(kernel_id.to_string());
@@ -672,15 +708,19 @@ impl AppKernel for ProviderKernel {
         if let Some((_, session)) = opts.env.iter().find(|(k, _)| k == "JPY_SESSION_NAME") {
             env.insert("JPY_SESSION_NAME".into(), Value::from(session.as_str()));
         }
-        let mut launch = json!({ "env": env });
-        if let Some(cwd) = &opts.cwd {
-            launch["cwd"] = Value::from(cwd.to_string_lossy().as_ref());
-        }
+        // Only the session name: a provider runs the kernel where and with
+        // whatever environment it likes, so no `cwd` or other `env` is
+        // sent.
+        let launch = json!({ "env": env });
         let frame = json!({"op": "start", "kernel_id": kernel_id, "launch": launch});
         if self.enqueue(frame) {
             Ok(())
         } else {
-            Err("the provider's connection closed".into())
+            let mut state = self.state.lock().unwrap();
+            state.pending.remove(kernel_id);
+            state.acks.remove(kernel_id);
+            state.started.remove(kernel_id);
+            Err("provider disconnected".into())
         }
     }
 
@@ -710,6 +750,24 @@ impl AppKernel for ProviderKernel {
 
     fn stop(&self, kernel_id: &str) {
         self.enqueue(json!({"op": "stop", "kernel_id": kernel_id}));
+    }
+}
+
+/// The kernelspec a provider's `register` lists: its name lowercased and
+/// only its display fields, so no spec from the socket names a program to
+/// run.
+fn display_spec(spec: SpecIn) -> Kernelspec {
+    Kernelspec {
+        name: spec.name.to_lowercase(),
+        resource_dir: PathBuf::new(),
+        gateway: false,
+        argv: Vec::new(),
+        display_name: spec.display_name,
+        language: spec.language,
+        interrupt_mode: InterruptMode::Message,
+        env: BTreeMap::new(),
+        metadata: spec.metadata,
+        extra: Map::new(),
     }
 }
 
@@ -750,46 +808,6 @@ struct SpecIn {
     metadata: Map<String, Value>,
 }
 
-/// `msg` in the websocket's JSON shape, with its buffers as base64
-/// strings in `buffers` (the C ABI's shape).
-fn message_to_json(msg: &Message) -> anyhow::Result<Value> {
-    use base64::Engine;
-    let mut v = serde_json::to_value(msg)?;
-    v["buffers"] = msg
-        .buffers
-        .iter()
-        .map(|b| base64::engine::general_purpose::STANDARD.encode(b).into())
-        .collect::<Vec<Value>>()
-        .into();
-    Ok(v)
-}
-
-/// The other way: base64 strings in `buffers` become the buffers.
-fn message_from_json(mut v: Value) -> anyhow::Result<Message> {
-    use base64::Engine;
-    let buffers = match v.as_object_mut().and_then(|m| m.remove("buffers")) {
-        None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(items)) => items
-            .iter()
-            .map(|b| {
-                let text = b
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("a buffer is not a base64 string"))?;
-                Ok(base64::engine::general_purpose::STANDARD
-                    .decode(text)?
-                    .into())
-            })
-            .collect::<anyhow::Result<_>>()?,
-        Some(_) => anyhow::bail!("buffers is not a list"),
-    };
-    if let Some(m) = v.as_object_mut() {
-        m.remove("channel");
-    }
-    let mut msg: Message = serde_json::from_value(v)?;
-    msg.buffers = buffers;
-    Ok(msg)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -805,33 +823,49 @@ mod tests {
     }
 
     /// A runtime dir this user made owner-only is fine; one another user
-    /// can write is refused, socket or no socket.
+    /// can write, or one another user owns, is refused.
     #[test]
     fn the_runtime_dir_must_be_owner_only() {
         let dir = tempfile::tempdir().unwrap();
+        let own = dir.path().metadata().unwrap().uid();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(check_private_dir(dir.path()).is_ok());
+        assert!(check_private_dir_for(dir.path(), own).is_ok());
         for mode in [0o770, 0o777, 0o777 & !0o400] {
             std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(mode)).unwrap();
-            let e = check_private_dir(dir.path()).err().unwrap();
+            let e = check_private_dir_for(dir.path(), own).err().unwrap();
             assert!(e.to_string().contains("group- or world-writable"), "{e}");
         }
         // 0700 with the owner's read bit off still can't be another
         // user's, so it is allowed.
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o300)).unwrap();
-        assert!(check_private_dir(dir.path()).is_ok());
+        assert!(check_private_dir_for(dir.path(), own).is_ok());
+
+        // Another owner is refused even when the mode is 0700.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let e = check_private_dir_for(dir.path(), own.wrapping_add(1))
+            .err()
+            .unwrap();
+        assert!(e.to_string().contains("owned by uid"), "{e}");
     }
 
-    /// The limit comes from the platform's `sun_path`, not a guess:
-    /// 103 bytes on macOS (104 less the NUL) and 107 on Linux.
+    /// The limit comes from the platform's `sun_path`: 104 bytes less the
+    /// NUL on macOS and the BSDs, 108 less the NUL on Linux and Android.
     #[test]
     fn the_socket_path_limit_comes_from_sun_path() {
         let max = max_socket_path_len();
-        let expected = if cfg!(target_os = "macos") { 103 } else { 107 };
-        if cfg!(any(target_os = "macos", target_os = "linux")) {
-            assert_eq!(max, expected);
-        }
-        assert!((100..=108).contains(&max), "{max}");
+        let expected = if cfg!(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        )) {
+            103
+        } else {
+            107
+        };
+        assert_eq!(max, expected);
     }
 
     /// A spec keeps only the fields a provider may set: whatever else it
@@ -849,18 +883,7 @@ mod tests {
         }))
         .unwrap();
         let metadata = spec.metadata.clone();
-        let stripped = Kernelspec {
-            name: spec.name.to_lowercase(),
-            resource_dir: PathBuf::new(),
-            gateway: false,
-            argv: Vec::new(),
-            display_name: spec.display_name,
-            language: spec.language,
-            interrupt_mode: InterruptMode::Message,
-            env: BTreeMap::new(),
-            metadata: spec.metadata,
-            extra: Map::new(),
-        };
+        let stripped = display_spec(spec);
         assert_eq!(stripped.name, "cdp-browser");
         assert!(stripped.argv.is_empty());
         assert!(stripped.env.is_empty());
@@ -882,5 +905,72 @@ mod tests {
         assert_eq!(value["buffers"][0], "AAEC");
         let back = message_from_json(value).unwrap();
         assert_eq!(back, msg);
+    }
+
+    /// A `ProviderKernel` whose queue holds `queue` frames, with the far
+    /// ends so a test can fill and watch it.
+    fn provider_kernel(
+        queue: usize,
+    ) -> (
+        ProviderKernel,
+        mpsc::Receiver<String>,
+        watch::Receiver<bool>,
+    ) {
+        let (out, rx) = mpsc::channel(queue);
+        let (closed, watch) = watch::channel(false);
+        (
+            ProviderKernel {
+                out,
+                closed,
+                state: Mutex::new(KernelState::default()),
+            },
+            rx,
+            watch,
+        )
+    }
+
+    /// A start queues nothing once the connection has closed: the two are
+    /// ordered by the state lock, so a launch racing a disconnect cannot
+    /// leave a pending `started` sender behind.
+    #[test]
+    fn a_start_after_a_close_leaves_nothing_pending() {
+        let (kernel, _rx, mut watch) = provider_kernel(4);
+        kernel.close();
+        assert!(
+            watch.borrow_and_update().to_owned(),
+            "close wakes the reader"
+        );
+
+        let opts = LaunchOptions {
+            kernel_id: Some("k".into()),
+            cwd: Some(PathBuf::from("/tmp")),
+            env: vec![("JPY_SESSION_NAME".into(), "s".into())],
+            ..Default::default()
+        };
+        let spec: Kernelspec = serde_json::from_value(json!({"argv": ["true"]})).unwrap();
+        let e = kernel.start("k", &spec, &opts).unwrap_err();
+        assert!(e.contains("disconnected"), "{e}");
+        let state = kernel.state.lock().unwrap();
+        assert!(state.pending.is_empty(), "no sender waits for `started`");
+        assert!(state.acks.is_empty(), "and no receiver waits for an answer");
+        assert!(state.started.is_empty(), "nor is the id taken as started");
+    }
+
+    /// A full queue closes the connection instead of dropping a frame: the
+    /// writer is not keeping up, and a silently lost frame would leave the
+    /// kernel waiting for it.
+    #[test]
+    fn a_full_queue_closes_the_connection_rather_than_dropping_a_frame() {
+        let (kernel, _rx, mut watch) = provider_kernel(1);
+        assert!(kernel.enqueue(json!({"op": "one"})));
+        // The second frame finds the queue full, held by `_rx`.
+        assert!(!kernel.enqueue(json!({"op": "two"})));
+        assert!(
+            watch.borrow_and_update().to_owned(),
+            "the close is signalled"
+        );
+        assert!(kernel.state.lock().unwrap().closed);
+        // Closing twice is one wake-up, not two.
+        kernel.close();
     }
 }

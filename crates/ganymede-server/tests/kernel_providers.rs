@@ -106,6 +106,17 @@ impl Frames {
             .collect()
     }
 
+    /// The `launch` of each `start` frame.
+    fn starts(&self) -> Vec<Value> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|f| f["op"] == "start")
+            .map(|f| f["launch"].clone())
+            .collect()
+    }
+
     /// The frames' ops, in order.
     fn ops(&self) -> Vec<String> {
         self.0
@@ -113,6 +124,17 @@ impl Frames {
             .unwrap()
             .iter()
             .map(|f| f["op"].as_str().unwrap_or("").to_string())
+            .collect()
+    }
+
+    /// The `send` frames themselves, channel included.
+    fn sends(&self) -> Vec<Value> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|f| f["op"] == "send")
+            .cloned()
             .collect()
     }
 }
@@ -206,7 +228,11 @@ async fn serve(mut fake: Fake, log: Frames, mute: Arc<AtomicBool>) {
         match frame["op"].as_str().unwrap_or_default() {
             "start" => {
                 let launch = &frame["launch"];
-                assert!(launch["cwd"].is_string(), "a start names its cwd: {frame}");
+                // Only the session name, if any: no cwd, no other env.
+                assert!(launch.get("cwd").is_none(), "a start names no cwd: {frame}");
+                for key in launch["env"].as_object().unwrap().keys() {
+                    assert_eq!(key, "JPY_SESSION_NAME", "a start names no env: {frame}");
+                }
                 fake.send(json!({"op": "started", "kernel_id": id})).await;
             }
             "send" => {
@@ -402,6 +428,7 @@ async fn the_handshake_is_checked() {
     let timing = Timing {
         hello: Duration::from_millis(300),
         write_stall: Duration::from_secs(5),
+        ..Timing::default()
     };
     let listener = kernel_providers::start(true, false, Some(TOKEN), timing, registered.clone())
         .expect("the socket opens");
@@ -644,6 +671,16 @@ async fn a_provider_kernel_runs_through_the_api() {
             .any(|m| m.msg_type() == "shutdown_request"),
         "{ops:?}"
     );
+    let interrupt = log
+        .sends()
+        .into_iter()
+        .find(|f| f["msg"]["header"]["msg_type"] == "interrupt_request")
+        .unwrap_or_else(|| panic!("{ops:?}"));
+    assert_eq!(
+        interrupt["channel"], "control",
+        "an interrupt goes on control, not {}",
+        interrupt["channel"]
+    );
 }
 
 /// A second connection can't take a name the first holds, a name on disk
@@ -696,10 +733,16 @@ async fn registrations_are_first_come_and_dropped_from_the_fallback() {
             .contains("already registered"),
         "{reply}"
     );
-    // A name it doesn't hold: nothing happens, and the holder keeps it.
+    // A name it doesn't hold: nothing happens, and the holder keeps it. A
+    // round trip first, so the unregister is certainly processed and this
+    // isn't passing only because it hadn't been read yet.
     second
         .send(json!({"op": "unregister", "name": "cdp-node"}))
         .await;
+    let reply = second
+        .register(json!({"name": "second-only", "display_name": "Second"}))
+        .await;
+    assert_eq!(reply["name"], "second-only", "{reply}");
     let (_, specs) = call(&app, "GET", "/api/kernelspecs", None).await;
     assert!(specs["kernelspecs"]["cdp-node"].is_object(), "{specs}");
 
@@ -804,6 +847,7 @@ async fn a_provider_that_takes_nothing_is_closed() {
     let timing = Timing {
         hello: Duration::from_secs(5),
         write_stall: Duration::from_millis(200),
+        ..Timing::default()
     };
     let listener = kernel_providers::start(true, false, Some(TOKEN), timing, registered.clone())
         .expect("the socket opens");
@@ -877,4 +921,560 @@ async fn a_provider_that_takes_nothing_is_closed() {
         "there is no one to restart it"
     );
     assert!(registered.list().unwrap().is_empty(), "its spec went too");
+}
+
+/// A provider is told which session a kernel belongs to, and nothing else
+/// about how to run it: no working directory, no environment.
+#[tokio::test]
+async fn a_start_carries_only_the_session_name() {
+    let _serial = serial().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (registered, _) = kit(dir.path(), vec![]);
+    let listener = kernel_providers::start(
+        true,
+        false,
+        Some(TOKEN),
+        Timing::default(),
+        registered.clone(),
+    )
+    .expect("the socket opens");
+
+    let mut fake = Fake::connect(listener.path()).await;
+    fake.register(json!({"name": "cdp-node"})).await;
+    let log = Frames::default();
+    let record = log.clone();
+    let serving = tokio::spawn(async move {
+        while let Some(frame) = fake.next().await {
+            record.push(&frame);
+            match frame["op"].as_str() {
+                Some("start") => {
+                    let id = frame["kernel_id"].as_str().unwrap().to_string();
+                    fake.send(json!({"op": "started", "kernel_id": id})).await;
+                }
+                Some("stop") => return,
+                _ => {}
+            }
+        }
+    });
+
+    let launched = registered
+        .launch(
+            &spec("cdp-node"),
+            LaunchOptions {
+                kernel_id: Some("k".into()),
+                cwd: Some(dir.path().into()),
+                env: vec![
+                    ("PATH".into(), "/tmp/evil".into()),
+                    ("JPY_SESSION_NAME".into(), "sess".into()),
+                ],
+                startup_timeout: Some(Duration::from_secs(10)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("the provider starts it");
+
+    let starts = log.starts();
+    assert_eq!(starts.len(), 1, "{starts:?}");
+    let launch = &starts[0];
+    assert!(
+        launch.get("cwd").is_none(),
+        "a provider runs where it likes: {launch}"
+    );
+    assert_eq!(
+        launch["env"],
+        json!({"JPY_SESSION_NAME": "sess"}),
+        "only the session name crosses: {launch}"
+    );
+
+    drop(launched);
+    drop(listener);
+    serving.abort();
+}
+
+/// A start the provider refuses is the caller's 500, its message intact,
+/// and is tried once: a refused start is the app's own answer, not a
+/// crash to retry, and no kernel is left behind.
+#[tokio::test]
+async fn a_refused_start_is_a_500_and_is_not_retried() {
+    let _serial = serial().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (registered, kernels) = kit(dir.path(), vec![]);
+    let app = build_router(state(dir.path(), &registered, kernels.clone()));
+    let listener = kernel_providers::start(
+        true,
+        false,
+        Some(TOKEN),
+        Timing::default(),
+        registered.clone(),
+    )
+    .expect("the socket opens");
+
+    let mut fake = Fake::connect(listener.path()).await;
+    fake.register(json!({"name": "cdp-node"})).await;
+    let log = Frames::default();
+    let record = log.clone();
+    let _serving = tokio::spawn(async move {
+        while let Some(frame) = fake.next().await {
+            record.push(&frame);
+            if frame["op"] == "start" {
+                let id = frame["kernel_id"].as_str().unwrap().to_string();
+                fake.send(json!({
+                    "op": "started",
+                    "kernel_id": id,
+                    "error": "no browser on this machine",
+                }))
+                .await;
+            }
+        }
+    });
+
+    let (code, body) = call(
+        &app,
+        "POST",
+        "/api/kernels",
+        Some(json!({"name": "cdp-node"})),
+    )
+    .await;
+    assert_eq!(code, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no browser on this machine"),
+        "{body}"
+    );
+
+    // One start only: a refusal is not a crash and is not retried.
+    let starts = log.ops().iter().filter(|op| *op == "start").count();
+    assert_eq!(starts, 1, "{:?}", log.ops());
+    let (_, listed) = call(&app, "GET", "/api/kernels", None).await;
+    assert!(
+        listed.as_array().unwrap().is_empty(),
+        "nothing is left of a kernel that never started: {listed}"
+    );
+}
+
+/// A provider that accepts the start and never says whether it worked
+/// doesn't hang the caller: the launch times out as a 500, and the kernel
+/// is not left behind.
+#[tokio::test]
+async fn a_start_nobody_answers_times_out_as_a_500() {
+    let _serial = serial().await;
+    let dir = tempfile::tempdir().unwrap();
+    let registered = Arc::new(RegisteredKernels::new());
+    registered.set_fallback(
+        Arc::new(StaticKernelspecs(vec![])),
+        Arc::new(Never),
+        Arc::new(Never),
+    );
+    // The API's start waits this long for `started`; a test can't wait the
+    // default minute.
+    let kernels = Arc::new(KernelManager::new(
+        registered.clone(),
+        registered.clone(),
+        registered.clone(),
+        KernelManagerConfig {
+            startup_timeout: Duration::from_millis(300),
+            root_dir: dir.path().into(),
+            ..Default::default()
+        },
+    ));
+    let app = build_router(state(dir.path(), &registered, kernels.clone()));
+    let listener = kernel_providers::start(
+        true,
+        false,
+        Some(TOKEN),
+        Timing::default(),
+        registered.clone(),
+    )
+    .expect("the socket opens");
+
+    let mut fake = Fake::connect(listener.path()).await;
+    fake.register(json!({"name": "cdp-node"})).await;
+    let log = Frames::default();
+    let record = log.clone();
+    let _serving = tokio::spawn(async move {
+        while let Some(frame) = fake.next().await {
+            // Reads, and answers nothing: the start is accepted and then
+            // silence.
+            record.push(&frame);
+        }
+    });
+
+    let (code, body) = call(
+        &app,
+        "POST",
+        "/api/kernels",
+        Some(json!({"name": "cdp-node"})),
+    )
+    .await;
+    assert_eq!(code, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("did not start"),
+        "{body}"
+    );
+    let (_, listed) = call(&app, "GET", "/api/kernels", None).await;
+    assert!(
+        listed.as_array().unwrap().is_empty(),
+        "a kernel whose start never answered is stopped, not listed: {listed}"
+    );
+}
+
+/// A connection that sends nothing is closed at the hello deadline, not
+/// held open forever.
+#[tokio::test]
+async fn a_quiet_connection_is_closed_at_the_hello_deadline() {
+    use tokio::io::AsyncReadExt;
+
+    let _serial = serial().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (registered, _) = kit(dir.path(), vec![]);
+    let timing = Timing {
+        hello: Duration::from_millis(100),
+        ..Timing::default()
+    };
+    let listener = kernel_providers::start(true, false, Some(TOKEN), timing, registered.clone())
+        .expect("the socket opens");
+
+    // Not one byte, not even a hello: the refusal is a `welcome` with an
+    // error, as for any failed handshake, and then EOF.
+    let stream = UnixStream::connect(listener.path()).await.unwrap();
+    let (r, _w) = tokio::io::split(stream);
+    let mut reader = BufReader::new(r);
+    let mut line = String::new();
+    tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut line))
+        .await
+        .expect("the server refused a silent connection")
+        .unwrap();
+    let welcome: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(welcome["op"], "welcome", "{welcome}");
+    assert!(
+        welcome["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("hello"),
+        "{welcome}"
+    );
+    let mut buf = [0u8; 1];
+    let n = tokio::time::timeout(Duration::from_secs(5), reader.read(&mut buf))
+        .await
+        .expect("the server closed a silent connection")
+        .unwrap();
+    assert_eq!(n, 0, "a connection that never said hello reads EOF");
+}
+
+/// A session started through `/api/sessions` names its notebook in
+/// `launch.env.JPY_SESSION_NAME`, as a local kernel does.
+#[tokio::test]
+async fn a_session_start_names_the_notebook() {
+    let _serial = serial().await;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::write(
+        root.join("nb.ipynb"),
+        serde_json::to_string(&json!({
+            "cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let (registered, kernels) = kit(&root, vec![]);
+    let app = build_router(state(&root, &registered, kernels));
+    let listener = kernel_providers::start(
+        true,
+        false,
+        Some(TOKEN),
+        Timing::default(),
+        registered.clone(),
+    )
+    .expect("the socket opens");
+
+    let mut fake = Fake::connect(listener.path()).await;
+    fake.register(json!({"name": "cdp-node", "display_name": "Node"}))
+        .await;
+    let log = Frames::default();
+    let _serving = tokio::spawn(serve(fake, log.clone(), Arc::new(AtomicBool::new(false))));
+
+    let (code, session) = call(
+        &app,
+        "POST",
+        "/api/sessions",
+        Some(json!({
+            "path": "nb.ipynb",
+            "name": "nb.ipynb",
+            "type": "notebook",
+            "kernel": {"name": "cdp-node"},
+        })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::CREATED, "{session}");
+    let starts = log.starts();
+    assert_eq!(starts.len(), 1, "{starts:?}");
+    assert_eq!(
+        starts[0]["env"]["JPY_SESSION_NAME"],
+        json!(root.join("nb.ipynb").to_str().unwrap()),
+        "the session's notebook is the kernel's name: {starts:?}"
+    );
+    assert!(
+        starts[0].get("cwd").is_none() && starts[0]["env"].as_object().unwrap().len() == 1,
+        "and nothing else: {starts:?}"
+    );
+}
+
+/// A second connection can neither deliver into nor end a kernel the
+/// first connection started.
+#[tokio::test]
+async fn another_connection_cannot_deliver_to_or_end_a_kernel() {
+    let _serial = serial().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (registered, kernels) = kit(dir.path(), vec![]);
+    let app = build_router(state(dir.path(), &registered, kernels));
+    let listener = kernel_providers::start(
+        true,
+        false,
+        Some(TOKEN),
+        Timing::default(),
+        registered.clone(),
+    )
+    .expect("the socket opens");
+
+    let mut first = Fake::connect(listener.path()).await;
+    first
+        .register(json!({"name": "cdp-node", "display_name": "Node"}))
+        .await;
+    let log = Frames::default();
+    let _serving = tokio::spawn(serve(first, log, Arc::new(AtomicBool::new(false))));
+
+    let (code, kernel) = call(
+        &app,
+        "POST",
+        "/api/kernels",
+        Some(json!({"name": "cdp-node"})),
+    )
+    .await;
+    assert_eq!(code, StatusCode::CREATED, "{kernel}");
+    let id = kernel["id"].as_str().unwrap().to_string();
+
+    // A second provider, holding no kernel of its own, tries both.
+    let mut second = Fake::connect(listener.path()).await;
+    let injected = Message::new(
+        "execute_result",
+        "s",
+        "u",
+        &json!({"data": {"text/plain": "injected"}, "execution_count": 1, "metadata": {}}),
+    );
+    second
+        .send(json!({
+            "op": "deliver", "kernel_id": id, "channel": "iopub", "msg": wire(&injected),
+        }))
+        .await;
+    second
+        .send(json!({"op": "ended", "kernel_id": id, "reason": "exited"}))
+        .await;
+    // A round trip, so both frames are certainly processed.
+    let reply = second
+        .register(json!({"name": "second-only", "display_name": "Second"}))
+        .await;
+    assert_eq!(reply["name"], "second-only", "{reply}");
+
+    let (code, listing) = call(&app, "GET", "/api/kernels", None).await;
+    assert_eq!(code, StatusCode::OK);
+    assert!(
+        listing
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|k| k["id"] == json!(id)),
+        "the first connection's kernel is still there: {listing}"
+    );
+
+    // Its output is the provider's, with nothing injected.
+    std::fs::write(
+        dir.path().join("run.ipynb"),
+        serde_json::to_string(&json!({
+            "cells": [{"cell_type": "code", "execution_count": null, "id": "a",
+                       "metadata": {}, "outputs": [], "source": "2+2"}],
+            "metadata": {}, "nbformat": 4, "nbformat_minor": 5
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let (code, v) = call(&app, "POST", "/api/fileid/index?path=run.ipynb", None).await;
+    assert_eq!(code, StatusCode::OK, "{v}");
+    let document = format!("json:notebook:{}", v["id"].as_str().unwrap());
+    let hash = ganymede_documents::murmur2(b"2+2", 0).to_string();
+    let (code, v) = call(
+        &app,
+        "POST",
+        &format!("/api/kernels/{id}/execute"),
+        Some(json!({
+            "document_id": document,
+            "wait": 15,
+            "cells": [{"cell_id": "a", "source_hash": hash}],
+        })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{v}");
+    let outputs = v["cells"][0]["outputs"].to_string();
+    assert!(outputs.contains("ran 2+2"), "{v:#}");
+    assert!(
+        !outputs.contains("injected"),
+        "a second connection's message: {v:#}"
+    );
+}
+
+/// The queue's capacity is what cuts a provider off when it stops reading,
+/// not the write stall: with a long stall and a short queue, the
+/// connection closes and the kernel is lost.
+#[tokio::test]
+async fn a_full_queue_closes_the_connection() {
+    let _serial = serial().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (registered, _) = kit(dir.path(), vec![]);
+    let timing = Timing {
+        hello: Duration::from_secs(5),
+        write_stall: Duration::from_secs(60),
+        queue: 4,
+    };
+    let listener = kernel_providers::start(true, false, Some(TOKEN), timing, registered.clone())
+        .expect("the socket opens");
+
+    let mut fake = Fake::connect(listener.path()).await;
+    fake.register(json!({"name": "cdp-node", "display_name": "Node"}))
+        .await;
+    let log = Frames::default();
+    let mute = Arc::new(AtomicBool::new(false));
+    let _serving = tokio::spawn(serve(fake, log, mute.clone()));
+
+    let spec = spec("cdp-node");
+    let launched = registered
+        .launch(
+            &spec,
+            LaunchOptions {
+                kernel_id: Some("full".into()),
+                cwd: Some(dir.path().into()),
+                startup_timeout: Some(Duration::from_secs(10)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("the provider starts the kernel");
+    let session = KernelSession::start(
+        registered.connect(&launched).await.unwrap(),
+        Some(&launched),
+    );
+
+    // Mute, then past the four-frame queue with messages too big for the
+    // socket's buffers. The stall is a minute, so only the queue can close
+    // this in the time the test waits.
+    mute.store(true, Ordering::SeqCst);
+    let started = std::time::Instant::now();
+    for _ in 0..10 {
+        let mut big = Message::new("execute_request", "s", "u", &json!({"code": "x"}));
+        big.buffers = vec![vec![0u8; 16 * 1024 * 1024].into()];
+        let _ =
+            tokio::time::timeout(Duration::from_secs(2), session.send(Channel::Shell, big)).await;
+        if !launched.process.is_alive() {
+            break;
+        }
+    }
+    let deadline = started + Duration::from_secs(10);
+    while launched.process.is_alive() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a full queue did not close the connection"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(launched.process.exit_reason(), Some("lost"));
+    assert!(!launched.process.restartable());
+}
+
+/// Each refusal returns `None` and leaves no socket file.
+#[tokio::test]
+async fn a_refusal_leaves_no_socket() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _serial = serial().await;
+    let dir = tempfile::tempdir().unwrap();
+    let socket = |at: &Path| at.join(format!("ganymede-kernels-{}.sock", std::process::id()));
+
+    // No token: the socket would be open to anyone who can reach it.
+    let (registered, _) = kit(dir.path(), vec![]);
+    assert!(
+        kernel_providers::start(true, false, None, Timing::default(), registered.clone()).is_none()
+    );
+    // Embedded: no socket at all.
+    assert!(kernel_providers::start(
+        true,
+        true,
+        Some(TOKEN),
+        Timing::default(),
+        registered.clone()
+    )
+    .is_none());
+    // Off.
+    assert!(kernel_providers::start(
+        false,
+        false,
+        Some(TOKEN),
+        Timing::default(),
+        registered.clone()
+    )
+    .is_none());
+
+    // A runtime dir another user can write: the socket's mode would mean
+    // nothing.
+    let at = runtime_dir();
+    std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let refused = kernel_providers::start(
+        true,
+        false,
+        Some(TOKEN),
+        Timing::default(),
+        registered.clone(),
+    );
+    assert!(refused.is_none(), "a world-writable runtime dir is refused");
+    assert!(!socket(&at).exists(), "no socket in it");
+    std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    // A path over the platform's `sun_path` limit.
+    let long = dir.path().join("a".repeat(120));
+    std::fs::create_dir_all(&long).unwrap();
+    std::fs::set_permissions(&long, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::env::set_var("JUPYTER_RUNTIME_DIR", &long);
+    let refused = kernel_providers::start(true, false, Some(TOKEN), Timing::default(), registered);
+    std::env::set_var("JUPYTER_RUNTIME_DIR", runtime_dir());
+    assert!(refused.is_none(), "a path over the limit is refused");
+    assert!(!socket(&long).exists(), "no socket there");
+}
+
+/// Dropping the listener closes the connections it accepted, not just the
+/// file, and removes the file.
+#[tokio::test]
+async fn dropping_the_listener_closes_live_connections() {
+    let _serial = serial().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (registered, _) = kit(dir.path(), vec![]);
+    let listener = kernel_providers::start(true, false, Some(TOKEN), Timing::default(), registered)
+        .expect("the socket opens");
+    let path = listener.path().to_path_buf();
+
+    let mut fake = Fake::connect(&path).await;
+    fake.register(json!({"name": "cdp-node", "display_name": "Node"}))
+        .await;
+
+    drop(listener);
+    assert!(!path.exists(), "the socket file went with it");
+    let frame = tokio::time::timeout(Duration::from_secs(5), fake.next())
+        .await
+        .expect("the provider's connection was closed");
+    assert!(
+        frame.is_none(),
+        "a frame after the listener went away: {frame:?}"
+    );
 }

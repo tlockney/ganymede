@@ -468,11 +468,6 @@ pub struct Startup {
     /// replace its function while the server runs. Nothing is reported
     /// unless the contents are a local directory.
     pub write_observer: Option<Arc<crate::write_observer::WriteObserver>>,
-    /// How a kernel provider connection's handshake and writes are timed
-    /// (#983). The default (10 s) is what a provider gets; a test sets it
-    /// lower, as it can't wait.
-    #[cfg(unix)]
-    pub kernel_provider_timing: Option<crate::kernel_providers::Timing>,
 }
 
 #[cfg(feature = "subprocess")]
@@ -1133,9 +1128,13 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
         cfg.kernel_providers.enabled,
         embedded,
         token.as_deref(),
-        startup.kernel_provider_timing.unwrap_or_default(),
+        Default::default(),
         provider_kernels,
     );
+    #[cfg(not(unix))]
+    if cfg.kernel_providers.enabled {
+        tracing::warn!("the kernel provider socket is Unix only; not opened");
+    }
     let info_files = (!embedded).then(|| {
         crate::server_info::ServerInfoFiles::write(
             &ganymede_kernel_host::kernelspec::jupyter_runtime_dir(),

@@ -771,6 +771,73 @@ fn serve_writes_a_server_info_file_while_running() {
     assert!(!open.exists(), "removed on exit");
 }
 
+/// `[kernel_providers] enabled` names the socket in the info file, and the
+/// file is there while the server runs and gone after it stops; with the
+/// default, the key is absent.
+#[cfg(unix)]
+#[test]
+fn serve_names_the_kernel_provider_socket() {
+    fn start(config: &std::path::Path, runtime: &std::path::Path) -> std::process::Child {
+        let root = config.join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut child = ganymede(&["serve", "--port", "0", "--token", "secret", "--root-dir"])
+            .arg(&root)
+            .env("GANYMEDE_CONFIG_DIR", config)
+            .env("JUPYTER_RUNTIME_DIR", runtime)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        child
+    }
+    fn info(runtime: &std::path::Path, pid: u32) -> serde_json::Value {
+        let file = runtime.join(format!("jpserver-{pid}.json"));
+        serde_json::from_slice(&std::fs::read(&file).expect("jpserver file")).unwrap()
+    }
+
+    // Enabled, with auth on: the socket is named and exists.
+    let config = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config.path().join("ganymede.toml"),
+        "[kernel_providers]\nenabled = true\n",
+    )
+    .unwrap();
+    let runtime = tempfile::tempdir().unwrap();
+    let mut child = start(config.path(), runtime.path());
+    let pid = child.id();
+    let server_info = info(runtime.path(), pid);
+    let socket = runtime.path().join(format!("ganymede-kernels-{pid}.sock"));
+    assert_eq!(
+        server_info["kernel_providers_socket"],
+        socket.to_str().unwrap(),
+        "{server_info}"
+    );
+    assert!(socket.exists(), "the socket is there while the server runs");
+    unsafe {
+        kill(child.id() as i32, 15);
+    }
+    assert!(child.wait().unwrap().success(), "clean exit on SIGTERM");
+    assert!(!socket.exists(), "removed on exit");
+
+    // The default: no socket, and no key naming one.
+    let config = tempfile::tempdir().unwrap();
+    let runtime = tempfile::tempdir().unwrap();
+    let mut child = start(config.path(), runtime.path());
+    let server_info = info(runtime.path(), child.id());
+    assert!(
+        server_info.get("kernel_providers_socket").is_none(),
+        "{server_info}"
+    );
+    unsafe {
+        kill(child.id() as i32, 15);
+    }
+    assert!(child.wait().unwrap().success(), "clean exit on SIGTERM");
+}
+
 /// What `serve` did: the names `GET /api/contents` listed, the `root_dir`
 /// in its server info, and its stderr.
 #[cfg(unix)]
