@@ -392,8 +392,9 @@ fn check_xsrf(
 }
 
 /// Compares secrets without stopping at the first difference, so response
-/// timing does not reveal how much of a guess was right.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+/// timing does not reveal how much of a guess was right. The kernel
+/// provider socket's `hello` compares its token with it too (#983).
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 

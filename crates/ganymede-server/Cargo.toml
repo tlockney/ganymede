@@ -70,6 +70,13 @@ notify = { version = "8", default-features = false, features = ["macos_fsevent"]
 # iOS, kernels have no process to measure and replies say so.
 sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 
+[target.'cfg(unix)'.dependencies]
+# The kernel provider socket (#983): `sockaddr_un`'s `sun_path` length,
+# which decides whether a socket path fits, and `geteuid`, which a
+# connection's peer uid is checked against. Tokio gives the peer's uid
+# (`UnixStream::peer_cred`), so nothing else is needed.
+libc = "0.2"
+
 [dev-dependencies]
 # Paused time in tests (no new crate).
 tokio = { workspace = true, features = ["test-util"] }

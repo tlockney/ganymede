@@ -462,6 +462,11 @@ pub struct Startup {
     /// replace its function while the server runs. Nothing is reported
     /// unless the contents are a local directory.
     pub write_observer: Option<Arc<crate::write_observer::WriteObserver>>,
+    /// How a kernel provider connection's handshake and writes are timed
+    /// (#983). The default (10 s) is what a provider gets; a test sets it
+    /// lower, as it can't wait.
+    #[cfg(unix)]
+    pub kernel_provider_timing: Option<crate::kernel_providers::Timing>,
 }
 
 #[cfg(feature = "subprocess")]
@@ -916,6 +921,10 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
         .registered
         .unwrap_or_else(|| Arc::new(RegisteredKernels::new()));
     registered.set_fallback(specs, provisioner, transports);
+    // For the provider socket, which starts before the info file is
+    // written so the file can name it (#983).
+    #[cfg(unix)]
+    let provider_kernels = registered.clone();
     let (specs, provisioner, transports) = (
         registered.clone() as Arc<dyn KernelspecSource>,
         registered.clone() as Arc<dyn Provisioner>,
@@ -1109,8 +1118,18 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
             );
         }
     }
-    // Written before the URL is printed, so whoever reads the URL finds
-    // them. An embedding app has no use for them, and on iOS no runtime dir.
+    // Before the URL is printed, so whoever reads the URL finds them. An
+    // embedding app has no use for them, and on iOS no runtime dir.
+    // The provider socket (#983) opens first, so the info file names it,
+    // and stays open until the server stops.
+    #[cfg(unix)]
+    let kernel_providers = crate::kernel_providers::start(
+        cfg.kernel_providers.enabled,
+        embedded,
+        token.as_deref(),
+        startup.kernel_provider_timing.unwrap_or_default(),
+        provider_kernels,
+    );
     let info_files = (!embedded).then(|| {
         crate::server_info::ServerInfoFiles::write(
             &ganymede_kernel_host::kernelspec::jupyter_runtime_dir(),
@@ -1121,6 +1140,10 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
                 token: token.as_deref(),
                 root_dir: &root_dir,
                 page,
+                #[cfg(unix)]
+                kernel_providers_socket: kernel_providers.as_ref().map(|l| l.path()),
+                #[cfg(not(unix))]
+                kernel_providers_socket: None,
             },
         )
     });
@@ -1142,6 +1165,8 @@ pub async fn run_with(mut cfg: Config, startup: Startup) -> Result<()> {
     if let Some(l) = &lsp {
         l.shutdown_all();
     }
+    #[cfg(unix)]
+    drop(kernel_providers);
     kernels.shutdown_all().await;
     drop(host);
     Ok(())

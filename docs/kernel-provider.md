@@ -6,7 +6,8 @@ local way for a program of the same user to register a kernelspec with a
 running `ganymede serve` and run its kernels itself. It is new surface
 on the server, so this note comes before any code.
 
-**Status: proposed.** Nothing here is built yet.
+**Status: implemented (#983).** The reservation of a name for one
+provider (below) is #986.
 
 ## The problem
 
@@ -54,15 +55,24 @@ route can't say it well:
   mistake.
 
 A socket file in the runtime directory makes the boundary the file
-system's: the directory is created `0700` and the socket `0600`, so only
-this user's processes can connect, and nothing on the network, behind a
+system's: the directory is `0700` and the socket `0600`, so only this
+user's processes can connect, and nothing on the network, behind a
 proxy or in a browser can. It isn't a route, so nothing forwards it.
+The directory must already be owner-only, or the socket isn't opened: in
+a directory another user can write, the socket's own mode would mean
+nothing. The socket is made in a private temp dir inside the runtime
+dir, made `0600` there, and only then renamed into place, so it is never
+visible with a wider mode. A path over the platform's `sun_path` limit
+(103 bytes on macOS, 107 on Linux) means no socket, with a warning
+naming the path and its length.
 
 ### Who may connect
 
 - **Off by default.** `[kernel_providers] enabled = true` in the server's
   config makes the server open the socket. The background server the Mac
-  app starts turns it on; a `ganymede serve` started by hand doesn't.
+  app starts turns it on; a `ganymede serve` started by hand doesn't. With
+  auth off (`token = ""`) the socket stays closed: anyone who can reach
+  the port can run code already, so a provider check adds nothing.
 - **This user only**, by the file modes above. The server also checks the
   peer's user id (`SO_PEERCRED` on Linux, `getpeereid` on macOS) and
   closes a connection from any other user.
@@ -95,7 +105,8 @@ further than its own kernels.
   can't register it. A name can be reserved for one provider with
   `[kernel_providers] reserve = { "cdp-browser" = "<bundle id or path>" }`,
   checked against the connecting process's code signature on macOS, so a
-  process that connects before the app can't take the app's name.
+  process that connects before the app can't take the app's name. The
+  reservation is #986, and not in this build.
 - **Capabilities are the provider's claim.** `metadata.capabilities`
   (`device` and the others in
   [Capabilities](in-app-kernel.md#capabilities)) is passed through as the
@@ -140,10 +151,12 @@ as a nonzero return from the C ABI's `start` does, with no retry.
 - **A registration lasts as long as its connection.** When the
   connection closes, its kernelspecs are unregistered and each of its
   running kernels ends at once, dead with `"reason": "lost"`, with no
-  restart: there is no one left to run it. A name a connection
-  registered and then lost is never launched through the fallback
-  provisioner or a kernel server. A provider that reconnects registers
-  again and gets new kernels; a kernel id from before never reaches it.
+  restart: there is no one left to run it. A name a connection registered
+  and then lost is never launched through the fallback provisioner or a
+  kernel server for a kernel that was already running, but a later launch
+  of the name goes to whatever lists it then, so a kernelspec installed
+  on disk afterwards wins. A provider that reconnects registers again and
+  gets new kernels; a kernel id from before never reaches it.
 - **Ordering** is the C ABI's: per kernel, messages keep their order in
   both directions.
 - **Backpressure.** The server's frames to a provider go through a bounded

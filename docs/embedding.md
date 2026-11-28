@@ -361,6 +361,74 @@ with binary buffers as base64 strings in `buffers`, and nothing is
 signed. Interrupts go over the control channel as `interrupt_request`,
 whatever the kernelspec says.
 
+### Kernel providers
+
+> [!NOTE]
+> **Unreleased.** Available only from a build of `main` (HEAD), not in
+> the latest release.
+
+A program of the same user can register kernelspecs with a running
+`ganymede serve` and run their kernels itself, which the C ABI above
+can't do for a server in another process. The server opens a Unix socket
+in the Jupyter runtime dir, `ganymede-kernels-<pid>.sock`, when
+`[kernel_providers] enabled = true`, and names it in
+`jpserver-<pid>.json` as `kernel_providers_socket`. Each connection is an
+`AppKernel` behind the server's registered set, so its kernels run
+through the same sessions, rooms and execute endpoint as any other. The
+design is [Kernel providers](kernel-provider.md), and
+[Security](security.md#kernel-providers) covers the boundary.
+
+The socket is Unix only, off by default, and opens only when auth is on:
+a client must come from this user's uid and say `hello` with the
+server's token. While a connection holds it, it registers names, and a
+name is first come: one registered elsewhere, or by another connection,
+is refused.
+
+Frames are newline-delimited JSON, one object per line, with an `op`.
+Jupyter messages are the websocket's JSON shape, as the C ABI carries
+them, with binary buffers as base64 strings in `buffers`. A line longer
+than 64 MiB closes the connection.
+
+From the provider:
+
+| `op` | Fields | C ABI equivalent |
+| --- | --- | --- |
+| `hello` | `token` | none |
+| `register` | `spec` (`name`, `display_name`, `language`, `metadata`; anything else, `argv` and `env` included, is dropped) | `ganymede_kernel_register` |
+| `unregister` | `name` | none |
+| `started` | `kernel_id`, or `kernel_id` and `error` | `start`'s return value |
+| `deliver` | `kernel_id`, `channel`, `msg` | `ganymede_kernel_deliver` |
+| `ended` | `kernel_id`, `reason` (`exited` or `lost`) | `ganymede_kernel_ended` |
+
+From the server:
+
+| `op` | Fields | C ABI equivalent |
+| --- | --- | --- |
+| `welcome` | or `error`, then the connection closes | none |
+| `registered` | `name`, or `name` and `error` | `register`'s return value |
+| `start` | `kernel_id`, `launch` (`cwd`, `env.JPY_SESSION_NAME`) | `start` |
+| `send` | `kernel_id`, `channel`, `msg` | `send` |
+| `stop` | `kernel_id` | `stop` |
+
+The first frame must be `hello`, within 10 seconds; anything else gets
+`{"op": "welcome", "error": "..."}` and a closed connection. After
+`welcome`, the connection stays open until either side closes it.
+
+A start happens in two steps, because a frame can't return a value: the
+server sends `start` and waits up to `startup_timeout_secs` for
+`started`, then up to `startup_timeout_secs` again for the kernel's
+`kernel_info_reply`, so a launch can wait twice that. A `started` with an
+`error` fails the launch at once, with no retry.
+
+The server's frames go through a queue of 1024, and a write that takes
+more than 10 seconds closes the connection, as the events socket does for
+a client that stops reading. When a connection closes for any reason,
+its specs are forgotten and its running kernels end dead with reason
+`lost`, never restarted: there is no one left to run them. A provider
+that reconnects registers again and gets new kernels; a kernel id from
+before never reaches it. The server keeps one small entry per kernel id a
+provider started until its connection closes.
+
 ### Connected machines
 
 An app can show another computer running `ganymede serve` (a connected

@@ -24,6 +24,9 @@ pub struct ServerInfo<'a> {
     /// The page the open file redirects to, under `base_url`: `lab` or
     /// empty.
     pub page: &'a str,
+    /// The kernel provider socket (`docs/kernel-provider.md`), when the
+    /// server opened one. Left out of the file when `None`.
+    pub kernel_providers_socket: Option<&'a Path>,
 }
 
 impl ServerInfo<'_> {
@@ -40,9 +43,10 @@ impl ServerInfo<'_> {
     }
 
     /// `jupyter_server`'s `ServerApp.server_info()`, key for key, plus
-    /// `ganymede_version` so a client can tell the two apart.
+    /// `ganymede_version` so a client can tell the two apart, and
+    /// `kernel_providers_socket` when the server opened the socket.
     pub fn to_json(&self) -> Value {
-        json!({
+        let mut v = json!({
             "url": self.url(),
             "hostname": if self.ip.is_empty() { "localhost" } else { self.ip },
             "port": self.addr.port(),
@@ -55,7 +59,11 @@ impl ServerInfo<'_> {
             "pid": std::process::id(),
             "version": crate::routes::JUPYTER_SERVER_VERSION,
             "ganymede_version": env!("CARGO_PKG_VERSION"),
-        })
+        });
+        if let Some(sock) = self.kernel_providers_socket {
+            v["kernel_providers_socket"] = sock.to_string_lossy().into_owned().into();
+        }
+        v
     }
 
     /// The page that sends a browser to the server with the token, so the
@@ -190,6 +198,7 @@ mod tests {
             token,
             root_dir: root,
             page: "lab",
+            kernel_providers_socket: None,
         }
     }
 
@@ -222,6 +231,23 @@ mod tests {
         assert_eq!(v["root_dir"], "/notebooks");
         assert_eq!(v["pid"], std::process::id());
         assert_eq!(info(root, None).to_json()["token"], "");
+        assert!(
+            v.get("kernel_providers_socket").is_none(),
+            "the key is left out when there is no socket"
+        );
+    }
+
+    #[test]
+    fn the_json_names_the_kernel_provider_socket_when_there_is_one() {
+        let root = Path::new("/notebooks");
+        let sock = Path::new("/run/user/501/jupyter/ganymede-kernels-12.sock");
+        let mut i = info(root, Some("abc"));
+        i.kernel_providers_socket = Some(sock);
+        let v = i.to_json();
+        assert_eq!(
+            v["kernel_providers_socket"],
+            sock.to_string_lossy().as_ref()
+        );
     }
 
     #[test]

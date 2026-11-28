@@ -139,6 +139,24 @@ pub struct Config {
     /// Tailnet identity in place of the token (`docs/security.md`).
     /// `[tailscale] allow` lists the logins let in; empty by default.
     pub tailscale: crate::tailscale::TailscaleConfig,
+    /// The kernel provider socket (`docs/kernel-provider.md`): a program
+    /// of the same user registers kernelspecs and runs their kernels.
+    /// Off by default.
+    pub kernel_providers: KernelProvidersConfig,
+}
+
+/// `[kernel_providers]`: the socket in the Jupyter runtime dir that a
+/// program of the same user connects to, to register kernelspecs and run
+/// their kernels (#983). The design is `docs/kernel-provider.md`; the
+/// frames are in `docs/embedding.md`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct KernelProvidersConfig {
+    /// Open the socket. Off by default: a server started by hand doesn't
+    /// need it, and nothing listens that could be connected to. It also
+    /// needs auth on, a Unix platform, and a runtime dir only this user
+    /// can write.
+    pub enabled: bool,
 }
 
 impl Default for Config {
@@ -184,6 +202,7 @@ impl Default for Config {
             crash_reporting: false,
             host: Default::default(),
             tailscale: Default::default(),
+            kernel_providers: Default::default(),
         }
     }
 }
@@ -278,6 +297,15 @@ Cross-Origin-Embedder-Policy = "require-corp"
         assert_eq!(k["Cross-Origin-Opener-Policy"], "same-origin");
         assert_eq!(k["Cross-Origin-Embedder-Policy"], "require-corp");
         assert!(Config::default().static_headers.is_empty());
+    }
+
+    #[test]
+    fn kernel_providers_is_a_table_off_by_default() {
+        assert!(!Config::default().kernel_providers.enabled);
+        let cfg = Config::from_toml("[kernel_providers]\nenabled = true\n").unwrap();
+        assert!(cfg.kernel_providers.enabled);
+        // Unknown keys in the table are an error, as at the top level.
+        assert!(Config::from_toml("[kernel_providers]\nenabeld = true\n").is_err());
     }
 
     #[test]
